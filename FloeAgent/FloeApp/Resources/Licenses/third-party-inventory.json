@@ -2597,7 +2597,7 @@
     {
       "id": "verification",
       "textKey": "settings.licenses.note.verification",
-      "fallback": "Every Swift package license was read from the resolved checkout license file. scripts/license-evidence.json records the exact file and sha256, and this generator re-verifies them when a checkout is present."
+      "fallback": "Every Swift package license was read from the resolved checkout at the exact revision declared in the lock; scripts/license-evidence.json records the file, its sha256 and the pin revision+source, and this generator re-verifies them whenever a checkout is present."
     }
   ],
   "counts": {

@@ -646,7 +646,13 @@ jobs:
           scripts/sbom.sh
 
       - name: License inventory
-        run: scripts/license_inventory.sh
+        run: |
+          # Read-only check first: a tracked manifest that no longer matches the
+          # declared pins/license files must fail the job, never be rewritten by
+          # the generator and silently healed. The check reuses recorded
+          # revision-bound evidence and does not need a resolved checkout.
+          scripts/license_inventory.sh --check
+          scripts/license_inventory.sh
 
       - name: Upload artifacts
         if: always()

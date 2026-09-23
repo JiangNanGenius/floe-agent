@@ -24,6 +24,41 @@ Artifacts (relative to ``FloeAgent/``)::
 ``--check`` is read-only: it recomputes every artifact in memory, compares the
 committed bytes, verifies the recorded license evidence hashes, the bundle
 mapping, the localization keys and the GPL gate, and exits non-zero on drift.
+
+Revision binding
+----------------
+
+Every recorded evidence row is bound to the exact pin ``revision`` and
+``location``. A license is accepted only from
+
+* a resolved checkout whose ``HEAD`` equals the declared revision (the
+  generator never checks out, fetches or resets anything itself),
+* a repository-tracked notice for an app-only package, or
+* a recorded row whose revision *and* source still match.
+
+A changed or unreadable checkout revision, and a changed pin revision without a
+verified checkout, fail explicitly instead of silently keeping the license
+text of an older version. ``--check`` therefore works in a clean checkout with
+no ``.build`` as long as every recorded row still matches its declared pin.
+
+Regenerating after a dependency change (for the primary agent)
+--------------------------------------------------------------
+
+1. Update the dependency the normal way (``Package.resolved``; ``project.yml``
+   for an Xcode app-only package). Never hand-edit the generated artifacts.
+2. Resolve the package so ``.build/checkouts/<identity>`` matches the pin
+   (``swift package resolve``). For an Xcode app-only package, refresh its
+   repository notice under ``FloeApp/Resources/Licenses`` in the same review.
+   The generator never performs the checkout itself.
+3. Run ``scripts/license_inventory.sh`` and review the diff of
+   ``scripts/license-evidence.json`` and the packaged manifest (new revision,
+   source and sha256), then commit them together with the pin change.
+4. ``scripts/license_inventory.sh --check`` (and CI) fails on a stale tracked
+   manifest instead of rewriting it.
+
+A future pinned dependency needs no catalog edit: the generator discovers it
+from the lock and its checkout, and the same steps apply. Nothing here guesses
+a dependency that does not exist yet.
 """
 
 from __future__ import annotations
@@ -60,6 +95,16 @@ INVENTORY_REPOSITORY_PATH = "FloeAgent/LICENSES-THIRD-PARTY.md"
 MANIFEST_BUNDLE_PATH = "Licenses/third-party-inventory.json"
 LIBGIT2_COPYING_BUNDLE_PATH = "Licenses/libgit2-COPYING.txt"
 LIBGIT2_EVIDENCE = ".build/checkouts/libgit2/COPYING"
+# Recorded evidence under this prefix comes from a resolved checkout and is
+# expected to be absent in a clean tree; anything else must stay readable.
+CHECKOUT_EVIDENCE_PREFIX = ".build/checkouts/"
+
+# Xcode app-only packages never appear in .build/checkouts. Their license text
+# is repository-tracked here, so it is reviewable in the same commit as the pin
+# and is still bound to the declared revision by the recorded evidence row.
+APP_ONLY_NOTICES = {
+    "whisperkit": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
+}
 
 LICENSE_FILE_CANDIDATES = (
     "LICENSE",
@@ -190,10 +235,10 @@ NOTES = (
     ),
     (
         "verification",
-        "Every Swift package license was read from the resolved checkout "
-        "license file. scripts/license-evidence.json records the exact file "
-        "and sha256, and this generator re-verifies them when a checkout is "
-        "present.",
+        "Every Swift package license was read from the resolved checkout at the "
+        "exact revision declared in the lock; scripts/license-evidence.json "
+        "records the file, its sha256 and the pin revision+source, and this "
+        "generator re-verifies them whenever a checkout is present.",
     ),
 )
 
@@ -1061,19 +1106,58 @@ def load_pins() -> list[dict]:
     rows = []
     for pin in pins:
         state = pin["state"]
+        # The revision is what the evidence binds to; the version is only the
+        # display value. A pin that carries a semver still keeps its revision so
+        # a changed revision can never reuse the license of another revision.
+        revision = state.get("revision")
+        if not revision:
+            raise ValueError(f"resolved pin without an immutable revision: {pin['identity']}")
         rows.append(
             {
                 "identity": pin["identity"],
                 "location": pin["location"],
-                "version": state.get("version") or state["revision"],
+                "revision": revision,
+                "version": state.get("version") or revision,
             }
         )
     return rows
 
 
-def detect_pin_license(identity: str) -> tuple[str | None, str | None, str | None]:
-    """Read the upstream license of a resolved package from its checkout."""
-    checkout = CHECKOUTS / identity
+def read_checkout_revision(identity: str, checkouts: Path | None = None) -> tuple[str, str | None]:
+    """Probe ``.build/checkouts/<identity>`` without touching it.
+
+    Returns ``("absent", None)`` when there is no checkout, ``("ok", revision)``
+    when HEAD is a readable commit, and ``("unknown", detail)`` when a checkout
+    exists but its revision cannot be established. Nothing is fetched, checked
+    out or reset here.
+    """
+    if checkouts is None:
+        checkouts = CHECKOUTS
+    checkout = checkouts / identity
+    if not checkout.exists():
+        return "absent", None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:  # git missing or unreadable directory
+        return "unknown", str(error)
+    revision = completed.stdout.strip()
+    if completed.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        detail = completed.stderr.strip() or f"unexpected git output {revision!r}"
+        return "unknown", detail
+    return "ok", revision
+
+
+def detect_pin_license(
+    identity: str, checkouts: Path | None = None
+) -> tuple[str | None, str | None, str | None]:
+    """Read the upstream license of a checkout whose revision was verified."""
+    if checkouts is None:
+        checkouts = CHECKOUTS
+    checkout = checkouts / identity
     for name in LICENSE_FILE_CANDIDATES:
         path = checkout / name
         if path.is_file():
@@ -1082,16 +1166,26 @@ def detect_pin_license(identity: str) -> tuple[str | None, str | None, str | Non
                 f".build/checkouts/{identity}/{name}",
                 sha256_file(path),
             )
-    if identity == "whisperkit":
-        # Xcode app-only package: the license ships as a bundled notice.
-        path = ROOT / "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt"
-        if path.is_file():
-            return (
-                classify_license(path.read_text(encoding="utf-8", errors="replace")),
-                "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
-                sha256_file(path),
-            )
     return None, None, None
+
+
+def detect_bundled_notice(
+    identity: str, root: Path | None = None
+) -> tuple[str | None, str | None, str | None]:
+    """Read the repository-tracked notice of an Xcode app-only package."""
+    if root is None:
+        root = ROOT
+    relative = APP_ONLY_NOTICES.get(identity)
+    if relative is None:
+        return None, None, None
+    path = root / relative
+    if not path.is_file():
+        return None, None, None
+    return (
+        classify_license(path.read_text(encoding="utf-8", errors="replace")),
+        relative,
+        sha256_file(path),
+    )
 
 
 def load_evidence() -> dict[str, dict]:
@@ -1101,52 +1195,150 @@ def load_evidence() -> dict[str, dict]:
     return {row["identity"]: row for row in document.get("licenses", [])}
 
 
-def resolve_pins(pins: list[dict], recorded: dict[str, dict], problems: list[str]):
-    """Resolve licenses for pins from actual files, verifying recorded evidence."""
+def resolve_pins(
+    pins: list[dict],
+    recorded: dict[str, dict],
+    problems: list[str],
+    checkouts: Path | None = None,
+    root: Path | None = None,
+) -> tuple[list[dict], list[dict], dict[str, int]]:
+    """Resolve licenses for pins and bind each evidence row to its exact pin.
+
+    Evidence is accepted only from a checkout whose HEAD equals the declared
+    revision, from a repository-tracked app-only notice, or from a recorded row
+    whose revision and source still match. A stale or unreadable checkout is
+    never read, and a changed pin revision without a verified checkout fails
+    explicitly instead of reusing the license text of an older revision.
+    """
+    if checkouts is None:
+        checkouts = CHECKOUTS
+    if root is None:
+        root = ROOT
     rows = []
     evidence = []
+    stats = {"checkout": 0, "notice": 0, "recorded": 0, "unknown": 0}
     for pin in pins:
         identity = pin["identity"]
-        license_name, evidence_path, digest = detect_pin_license(identity)
-        note = None
+        revision = pin["revision"]
+        source = pin["location"]
+        previous = recorded.get(identity)
+        bound = (
+            previous is not None
+            and previous.get("revision") == revision
+            and previous.get("source") == source
+            and bool(previous.get("sha256"))
+        )
+        # A row that actually recorded a revision/source and no longer matches
+        # is a moved pin; a legacy identity-only row is not.
+        moved = (
+            previous is not None
+            and bool(previous.get("revision"))
+            and bool(previous.get("source"))
+            and not bound
+        )
+        state, actual = read_checkout_revision(identity, checkouts)
+        conflict = state == "unknown" or (state == "ok" and actual != revision)
+        if state == "ok" and actual != revision:
+            problems.append(
+                f"{identity}: checkout HEAD {actual} does not match the declared pin "
+                f"revision {revision}; refusing to read its license (resolve the "
+                "dependency; the generator never resets a checkout)"
+            )
+        elif state == "unknown":
+            problems.append(
+                f"{identity}: a checkout exists but its revision could not be read "
+                f"({actual}); refusing to accept an unverified revision"
+            )
+
+        license_name = evidence_path = digest = None
+        origin = None
+        if not conflict:
+            if state == "ok":  # verified at the declared revision
+                license_name, evidence_path, digest = detect_pin_license(identity, checkouts)
+                if license_name is not None:
+                    origin = "checkout"
+            if license_name is None:
+                license_name, evidence_path, digest = detect_bundled_notice(identity, root)
+                if license_name is not None:
+                    origin = "notice"
+
         if license_name is None:
-            previous = recorded.get(identity)
-            if previous:
+            if bound:
                 license_name = previous["license"]
                 evidence_path = previous["evidence"]
                 digest = previous["sha256"]
-                note = f"checkout unavailable; reusing recorded evidence for {identity}"
+                origin = "recorded"
+                if state == "absent":
+                    print(
+                        f"note: checkout unavailable for {identity}; reusing evidence "
+                        f"recorded for revision {revision}",
+                        file=sys.stderr,
+                    )
+                elif state == "ok":
+                    problems.append(
+                        f"{identity}: no classifiable license file in the verified checkout "
+                        f"at {revision}; reusing the recorded digest, review the checkout"
+                    )
+                if evidence_path and not evidence_path.startswith(CHECKOUT_EVIDENCE_PREFIX):
+                    recorded_file = root / evidence_path
+                    if not recorded_file.is_file():
+                        problems.append(
+                            f"{identity}: recorded evidence file is missing: {evidence_path}"
+                        )
+                    elif sha256_file(recorded_file) != digest:
+                        problems.append(
+                            f"{identity}: recorded evidence file changed since it was "
+                            f"recorded: {evidence_path}"
+                        )
             else:
-                problems.append(
-                    f"{identity}: license undetected and no recorded evidence; "
-                    "manual review required"
-                )
+                if previous is None:
+                    problems.append(
+                        f"{identity}: license undetected and no recorded evidence; "
+                        "manual review required"
+                    )
+                else:
+                    problems.append(
+                        f"{identity}: cannot verify revision {revision} / {source}: recorded "
+                        f"evidence is bound to {previous.get('revision') or 'no revision'} / "
+                        f"{previous.get('source') or 'no source'} and no verified checkout or "
+                        "repository notice is available; resolve the dependency, then regenerate"
+                    )
                 license_name = "UNKNOWN"
-        elif identity in recorded and recorded[identity]["sha256"] != digest:
-            previous = recorded[identity]
-            problems.append(
-                f"{identity}: upstream license changed since the recorded evidence "
-                f"({previous['evidence']} {previous['sha256'][:12]} -> "
-                f"{evidence_path} {digest[:12]}); review before regenerating"
-            )
-        if note:
-            print(f"note: {note}", file=sys.stderr)
-        if identity not in recorded or recorded[identity]["sha256"] != digest:
-            print(
-                f"note: recording license evidence for {identity}: "
-                f"{license_name} from {evidence_path}",
-                file=sys.stderr,
-            )
+                origin = "unknown"
+        elif origin in ("checkout", "notice"):
+            if bound:
+                if previous["sha256"] != digest:
+                    problems.append(
+                        f"{identity}: upstream license changed since the recorded evidence "
+                        f"({previous['evidence']} {previous['sha256'][:12]} -> "
+                        f"{evidence_path} {digest[:12]}); review before regenerating"
+                    )
+            elif moved and origin == "notice":
+                problems.append(
+                    f"{identity}: pin moved to revision {revision} / {source} while only the "
+                    f"repository notice {evidence_path} is available; verify it matches the "
+                    "new revision, then regenerate"
+                )
+            else:
+                print(
+                    f"note: recording license evidence for {identity}: "
+                    f"{license_name} from {evidence_path}",
+                    file=sys.stderr,
+                )
+
+        stats[origin or "unknown"] += 1
         evidence.append(
             {
                 "identity": identity,
                 "license": license_name,
                 "evidence": evidence_path,
                 "sha256": digest,
+                "revision": revision,
+                "source": source,
             }
         )
         rows.append({"pin": pin, "license": license_name, "evidence": evidence_path})
-    return rows, evidence
+    return rows, evidence, stats
 
 
 PIN_NOTES = {
@@ -1373,6 +1565,11 @@ def render_markdown(manifest) -> str:
         "bundled under Licenses/) together with the complete notice texts copied "
         "into the app bundle.",
         "",
+        "Regenerate with FloeAgent/scripts/license_inventory.sh after changing a "
+        "declared pin. `--check` is read-only and fails on a stale manifest or on "
+        "evidence that is no longer bound to the exact pin revision and source; it "
+        "never checks out or resets a dependency.",
+        "",
     ]
     for section_id, title in SECTIONS:
         rows = by_section.get(section_id)
@@ -1545,7 +1742,7 @@ def license_gate(components) -> tuple[list[str], list[str]]:
     return violations, notices
 
 
-def validate(manifest, evidence_document, libgit2_bytes, problems, warnings):
+def validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings):
     rules = bundle_rules(PROJECT_YML.read_text())
     for document in manifest["documents"]:
         expected = bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"])
@@ -1566,6 +1763,20 @@ def validate(manifest, evidence_document, libgit2_bytes, problems, warnings):
     for document in manifest["documents"]:
         if document["required"] and not (ROOT / document["repositoryPath"]).is_file():
             warnings.append(f"required notice is not staged in this checkout: {document['repositoryPath']}")
+    # Every recorded evidence row must stay bound to the exact declared pin, so
+    # a later pin edit can never silently inherit another revision's license.
+    evidence_by_identity = {row["identity"]: row for row in evidence_document["licenses"]}
+    for pin in pins:
+        row = evidence_by_identity.get(pin["identity"])
+        if row is None:
+            problems.append(f"missing license evidence row: {pin['identity']}")
+            continue
+        if row.get("revision") != pin["revision"] or row.get("source") != pin["location"]:
+            problems.append(
+                f"{pin['identity']}: evidence is not bound to the declared pin "
+                f"({row.get('revision')} / {row.get('source')} != "
+                f"{pin['revision']} / {pin['location']})"
+            )
     libgit2_record = next(
         (row for row in evidence_document["licenses"] if row["identity"] == "libgit2"), None
     )
@@ -1587,19 +1798,21 @@ def build():
     recorded = load_evidence()
     problems: list[str] = []
     warnings: list[str] = []
-    pin_rows, evidence_rows = resolve_pins(pins, recorded, problems)
+    pin_rows, evidence_rows, stats = resolve_pins(pins, recorded, problems)
     font_families = json.loads(FONTS_MANIFEST.read_text())["families"]
     npm_packages = json.loads(CONVERSION_INVENTORY.read_text())["packages"]
     components = build_components(pin_rows, font_families, npm_packages)
     documents = build_documents(font_families)
     manifest = build_manifest(components, documents)
     evidence_document = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedBy": "scripts/license_inventory.sh",
         "note": (
             "Recorded license detection evidence for the resolved Swift packages. "
-            "sha256 binds the exact upstream license file the license was read from; "
-            "--check re-verifies it whenever the checkout is present."
+            "revision+source bind each row to the exact declared pin; sha256 binds "
+            "the exact upstream license file the license was read from. A missing "
+            "checkout may only reuse a row whose revision and source still match, "
+            "and --check never checks out or resets a dependency."
         ),
         "licenses": sorted(evidence_rows, key=lambda row: row["identity"]),
     }
@@ -1607,10 +1820,11 @@ def build():
     source = ROOT / LIBGIT2_EVIDENCE
     if source.is_file():
         libgit2_bytes = source.read_bytes()
-    validate(manifest, evidence_document, libgit2_bytes, problems, warnings)
+    validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings)
     return {
         "manifest": manifest,
         "evidence": evidence_document,
+        "stats": stats,
         "markdown": render_markdown(manifest),
         "manifest_text": render_json(manifest),
         "evidence_text": render_json(evidence_document),
@@ -1630,7 +1844,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="read-only: verify committed artifacts, evidence, bundle mapping and localization",
+        help=(
+            "read-only: verify committed artifacts, revision-bound evidence, bundle "
+            "mapping and localization; never writes or checks out anything"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -1704,14 +1921,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {problem}", file=sys.stderr)
         return 1
     counts = result["manifest"]["counts"]
+    stats = result["stats"]
+    binding = (
+        f"{stats['checkout']} verified checkouts, {stats['notice']} repository notices, "
+        f"{stats['recorded']} recorded reuse, {stats['unknown']} unknown"
+    )
     if args.check:
         print(
             "license_inventory --check OK: "
             f"{counts['components']} components, {counts['documents']} bundled notices, "
-            f"{counts['pins']} resolved Swift pins"
+            f"{counts['pins']} resolved Swift pins ({binding})"
         )
     else:
-        print(f"license_inventory OK: {counts['components']} dependencies inventoried")
+        print(
+            f"license_inventory OK: {counts['components']} dependencies inventoried "
+            f"({binding})"
+        )
     return 0
 
 

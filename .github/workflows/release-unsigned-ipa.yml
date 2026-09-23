@@ -289,6 +289,10 @@ jobs:
           python3 scripts/tests/test_resolved_pins.py
           python3 scripts/tests/test_resolve_xcode_dependencies.py
           scripts/pin_check.sh
+          # Read-only check first: the committed evidence must still be bound to
+          # the exact pins and upstream license files. A stale manifest fails
+          # here instead of being auto-healed by the following generator.
+          scripts/license_inventory.sh --check
           scripts/license_inventory.sh
 
       # `swift package resolve` above uses SwiftPM's default cache, but
@@ -682,6 +686,9 @@ jobs:
       - name: Generate dependency and license artifacts
         run: |
           scripts/pin_check.sh
+          # The release table may only be (re)generated after the tracked
+          # manifest/evidence pass the read-only revision-binding check.
+          scripts/license_inventory.sh --check
           scripts/license_inventory.sh
           scripts/sbom.sh
 

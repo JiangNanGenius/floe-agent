@@ -1,205 +1,271 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "generatedBy": "scripts/license_inventory.sh",
-  "note": "Recorded license detection evidence for the resolved Swift packages. sha256 binds the exact upstream license file the license was read from; --check re-verifies it whenever the checkout is present.",
+  "note": "Recorded license detection evidence for the resolved Swift packages. revision+source bind each row to the exact declared pin; sha256 binds the exact upstream license file the license was read from. A missing checkout may only reuse a row whose revision and source still match, and --check never checks out or resets a dependency.",
   "licenses": [
     {
       "identity": "bigint",
       "license": "MIT",
       "evidence": ".build/checkouts/bigint/LICENSE.md",
-      "sha256": "c3dfd0dca467f6d198bf365a954d4be6cb6b0e3d848ec724f86e5f579ca38d9e"
+      "sha256": "c3dfd0dca467f6d198bf365a954d4be6cb6b0e3d848ec724f86e5f579ca38d9e",
+      "revision": "e07e00fa1fd435143a2dcf8b7eec9a7710b2fdfe",
+      "source": "https://github.com/attaswift/BigInt.git"
     },
     {
       "identity": "bitbytedata",
       "license": "MIT",
       "evidence": ".build/checkouts/bitbytedata/LICENSE",
-      "sha256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084"
+      "sha256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084",
+      "revision": "e1a5443be67daf0833cbb5f4fa3a06a265ca3105",
+      "source": "https://github.com/tsolomko/BitByteData"
     },
     {
       "identity": "citadel",
       "license": "MIT",
       "evidence": ".build/checkouts/citadel/LICENSE",
-      "sha256": "580a39b7c09cba3cd18a5b1e0d4376e9d1ac200d241bda87e95ed74917bc3b31"
+      "sha256": "580a39b7c09cba3cd18a5b1e0d4376e9d1ac200d241bda87e95ed74917bc3b31",
+      "revision": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
+      "source": "https://github.com/orlandos-nl/Citadel.git"
     },
     {
       "identity": "cryptoswift",
       "license": "Zlib",
       "evidence": ".build/checkouts/cryptoswift/LICENSE",
-      "sha256": "e4ea9188602dd4217309aec044481b0a7d2f9d539b1d1673b9a1809709c804e0"
+      "sha256": "e4ea9188602dd4217309aec044481b0a7d2f9d539b1d1673b9a1809709c804e0",
+      "revision": "a59b4d91ebb22011656c830f874fe7152e183a57",
+      "source": "https://github.com/royalapplications/CryptoSwift.git"
     },
     {
       "identity": "eventsource",
       "license": "MIT",
       "evidence": ".build/checkouts/eventsource/LICENSE.md",
-      "sha256": "2f9b695627d569a3ce452b2c03fdd34310df78c8ea94edfafd9ce38381e5b502"
+      "sha256": "2f9b695627d569a3ce452b2c03fdd34310df78c8ea94edfafd9ce38381e5b502",
+      "revision": "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
+      "source": "https://github.com/mattt/EventSource.git"
     },
     {
       "identity": "grdb.swift",
       "license": "MIT",
       "evidence": ".build/checkouts/grdb.swift/LICENSE",
-      "sha256": "9853f9dce81365fcc1d9b46004633354450164b8d17904e92e80c444545f7e87"
+      "sha256": "9853f9dce81365fcc1d9b46004633354450164b8d17904e92e80c444545f7e87",
+      "revision": "18497b68fdbb3a09528d260a0a0e1e7e61c8c53d",
+      "source": "https://github.com/groue/GRDB.swift.git"
     },
     {
       "identity": "h",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/h/LICENSE",
-      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4"
+      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4",
+      "revision": "aa3626829160917d4378330617971977cbd78f5b",
+      "source": "https://github.com/rarestype/h"
     },
     {
       "identity": "libgit2",
       "license": "GPL-2.0 WITH libgit2 linking exception",
       "evidence": ".build/checkouts/libgit2/COPYING",
-      "sha256": "330f7f86a0f7fa88f7763b6ef0aba06dec33bf5b1ea8c304b76e883d73471f95"
+      "sha256": "330f7f86a0f7fa88f7763b6ef0aba06dec33bf5b1ea8c304b76e883d73471f95",
+      "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f",
+      "source": "https://github.com/ibrahimcetin/libgit2.git"
     },
     {
       "identity": "mlx-swift",
       "license": "MIT",
       "evidence": ".build/checkouts/mlx-swift/LICENSE",
-      "sha256": "44326a4ea062241ae6fc26ee2ec90bdc81af7eb7b9d3966181b733fa69d42057"
+      "sha256": "44326a4ea062241ae6fc26ee2ec90bdc81af7eb7b9d3966181b733fa69d42057",
+      "revision": "ab924c82ead3b970caaa1c0ac11171de23f0305a",
+      "source": "https://github.com/ml-explore/mlx-swift.git"
     },
     {
       "identity": "mlx-swift-lm",
       "license": "MIT",
       "evidence": ".build/checkouts/mlx-swift-lm/LICENSE",
-      "sha256": "7b1d86acac816ce8192209d7e01141c129b4d48d474c15cc5fb4af62f497c323"
+      "sha256": "7b1d86acac816ce8192209d7e01141c129b4d48d474c15cc5fb4af62f497c323",
+      "revision": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
+      "source": "https://github.com/ml-explore/mlx-swift-lm.git"
     },
     {
       "identity": "smbclient",
       "license": "MIT",
       "evidence": ".build/checkouts/smbclient/LICENSE",
-      "sha256": "92b9785672f66ae9c75550d328a00ff06ee6728f7d1b8874355b5dbeaf23c753"
+      "sha256": "92b9785672f66ae9c75550d328a00ff06ee6728f7d1b8874355b5dbeaf23c753",
+      "revision": "78ecf6cb8055c4f6d9e6af6022091e06c927004e",
+      "source": "https://github.com/kishikawakatsumi/SMBClient.git"
     },
     {
       "identity": "swcompression",
       "license": "MIT",
       "evidence": ".build/checkouts/swcompression/LICENSE",
-      "sha256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084"
+      "sha256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084",
+      "revision": "03a68e67991815a267e28174a0a01fbe0cff937b",
+      "source": "https://github.com/tsolomko/SWCompression.git"
     },
     {
       "identity": "swift-argument-parser",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-argument-parser/LICENSE.txt",
-      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55",
+      "revision": "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+      "source": "https://github.com/apple/swift-argument-parser"
     },
     {
       "identity": "swift-asn1",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-asn1/LICENSE.txt",
-      "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"
+      "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac",
+      "revision": "a9a5efd40eaf558a2bcd48d64b1d1646be686008",
+      "source": "https://github.com/apple/swift-asn1.git"
     },
     {
       "identity": "swift-atomics",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-atomics/LICENSE.txt",
-      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55",
+      "revision": "0442cb5a3f98ab802acb777929fdb446bda11a34",
+      "source": "https://github.com/apple/swift-atomics.git"
     },
     {
       "identity": "swift-collections",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-collections/LICENSE.txt",
-      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55",
+      "revision": "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
+      "source": "https://github.com/apple/swift-collections.git"
     },
     {
       "identity": "swift-crypto",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-crypto/LICENSE.txt",
-      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "revision": "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
+      "source": "https://github.com/apple/swift-crypto.git"
     },
     {
       "identity": "swift-huggingface",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-huggingface/LICENSE",
-      "sha256": "4d6ad72952a8329063a71de28329b493de96cf57459e2ac217110d1a6a5f84ae"
+      "sha256": "4d6ad72952a8329063a71de28329b493de96cf57459e2ac217110d1a6a5f84ae",
+      "revision": "b721959445b617d0bf03910b2b4aced345fd93bf",
+      "source": "https://github.com/huggingface/swift-huggingface.git"
     },
     {
       "identity": "swift-jinja",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-jinja/LICENSE",
-      "sha256": "648b81e6c6f9975c3b6cf6d630229b6c8d6f1ddaef55f5770f576adda19f3495"
+      "sha256": "648b81e6c6f9975c3b6cf6d630229b6c8d6f1ddaef55f5770f576adda19f3495",
+      "revision": "7d0b8880ef8e567dd4e0089f8b99fb354129017c",
+      "source": "https://github.com/huggingface/swift-jinja.git"
     },
     {
       "identity": "swift-jpeg",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-jpeg/LICENSE",
-      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4"
+      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4",
+      "revision": "c7aa48486cd8920120dd69cda5de62aeb93e1708",
+      "source": "https://github.com/tayloraswift/swift-jpeg"
     },
     {
       "identity": "swift-log",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-log/LICENSE.txt",
-      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "revision": "3ffafb9722d5d918c614feb496c8789a3b59d222",
+      "source": "https://github.com/apple/swift-log.git"
     },
     {
       "identity": "swift-nio",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-nio/LICENSE.txt",
-      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "revision": "a24771a4c228ff116df343c85fcf3dcfae31a06c",
+      "source": "https://github.com/apple/swift-nio.git"
     },
     {
       "identity": "swift-nio-ssh",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-nio-ssh/LICENSE.txt",
-      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "revision": "a05e6bbe6b141ee68da3030e00275504c0595d4d",
+      "source": "https://github.com/Wellz26/swift-nio-ssh.git"
     },
     {
       "identity": "swift-numerics",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-numerics/LICENSE.txt",
-      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55",
+      "revision": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+      "source": "https://github.com/apple/swift-numerics"
     },
     {
       "identity": "swift-png",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-png/LICENSE",
-      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4"
+      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4",
+      "revision": "8a0bcd4df5e4b307c804937776a56dd6ecdf6396",
+      "source": "https://github.com/tayloraswift/swift-png"
     },
     {
       "identity": "swift-syntax",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-syntax/LICENSE.txt",
-      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55",
+      "revision": "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
+      "source": "https://github.com/swiftlang/swift-syntax.git"
     },
     {
       "identity": "swift-system",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-system/LICENSE.txt",
-      "sha256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3"
+      "sha256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3",
+      "revision": "704705c5c51156ede21172a38654d522ce487074",
+      "source": "https://github.com/apple/swift-system.git"
     },
     {
       "identity": "swift-transformers",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-transformers/LICENSE",
-      "sha256": "648b81e6c6f9975c3b6cf6d630229b6c8d6f1ddaef55f5770f576adda19f3495"
+      "sha256": "648b81e6c6f9975c3b6cf6d630229b6c8d6f1ddaef55f5770f576adda19f3495",
+      "revision": "b38443e44d93eca770f2eb68e2a4d0fa100f9aa2",
+      "source": "https://github.com/huggingface/swift-transformers.git"
     },
     {
       "identity": "swiftgitx",
       "license": "MIT",
       "evidence": ".build/checkouts/swiftgitx/LICENSE",
-      "sha256": "9de5d708c401c993b7a82fbbc4ad5df67958e3c53ac98ed3872026d6a4277f79"
+      "sha256": "9de5d708c401c993b7a82fbbc4ad5df67958e3c53ac98ed3872026d6a4277f79",
+      "revision": "fcfb71e3dcbbaa70d120b98b7477ce173074aec3",
+      "source": "https://github.com/ibrahimcetin/SwiftGitX.git"
     },
     {
       "identity": "swiftterm",
       "license": "MIT",
       "evidence": ".build/checkouts/swiftterm/LICENSE",
-      "sha256": "1b17fa27394e89b3dc62d60c81ebe7e5554639b2382e4b057b4277ed202bfd77"
+      "sha256": "1b17fa27394e89b3dc62d60c81ebe7e5554639b2382e4b057b4277ed202bfd77",
+      "revision": "ca6f80ef534248d2f65c1b640656e3c9a270bfeb",
+      "source": "https://github.com/migueldeicaza/SwiftTerm.git"
     },
     {
       "identity": "whisperkit",
       "license": "MIT",
       "evidence": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
-      "sha256": "b8673adf319f1d6905c5c38cf69513f8857930fb3445566fa9839c6948bb85c4"
+      "sha256": "b8673adf319f1d6905c5c38cf69513f8857930fb3445566fa9839c6948bb85c4",
+      "revision": "1e2a163736dfa5a198e637ae44c114e1c6d5cc2d",
+      "source": "https://github.com/argmaxinc/WhisperKit.git"
     },
     {
       "identity": "yyjson",
       "license": "MIT",
       "evidence": ".build/checkouts/yyjson/LICENSE",
-      "sha256": "45e384d3d52c73cba3a64d6e6c25d47cd738cd8a55c30629e3201046eda62947"
+      "sha256": "45e384d3d52c73cba3a64d6e6c25d47cd738cd8a55c30629e3201046eda62947",
+      "revision": "8b4a38dc994a110abaec8a400615567bd996105f",
+      "source": "https://github.com/ibireme/yyjson.git"
     },
     {
       "identity": "zipfoundation",
       "license": "MIT",
       "evidence": ".build/checkouts/zipfoundation/LICENSE",
-      "sha256": "93a5b6f4c4fcfbca71aaf17f5758d249cf205d5d1c237becc37f14e43af09f6b"
+      "sha256": "93a5b6f4c4fcfbca71aaf17f5758d249cf205d5d1c237becc37f14e43af09f6b",
+      "revision": "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+      "source": "https://github.com/weichsel/ZIPFoundation.git"
     }
   ]
 }

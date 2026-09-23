@@ -1,8 +1,13 @@
+import contextlib
 import hashlib
+import io
 import json
+import re
 import subprocess
 import sys
+import tempfile
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -11,6 +16,36 @@ REPO = ROOT.parent
 sys.path.insert(0, str(SCRIPTS))
 
 import license_inventory as li  # noqa: E402
+
+MIT_TEXT = (
+    "MIT License\n\n"
+    "Copyright (c) 2026 Example\n\n"
+    "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
+    "of this software and associated documentation files (the \"Software\"), to deal\n"
+    "in the Software without restriction.\n"
+)
+
+
+def make_checkout(checkouts: Path, identity: str, license_text: str = MIT_TEXT) -> str:
+    """Create a resolved-looking git checkout and return its real HEAD revision."""
+    checkout = checkouts / identity
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
+    (checkout / "LICENSE").write_text(license_text, encoding="utf-8")
+    subprocess.run(["git", "-C", str(checkout), "add", "LICENSE"], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git", "-C", str(checkout),
+            "-c", "user.name=Floe Test",
+            "-c", "user.email=floe@example.invalid",
+            "commit", "-q", "-m", "license",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return subprocess.check_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+    ).strip()
 
 
 class LicenseInventoryTests(unittest.TestCase):
@@ -40,6 +75,8 @@ class LicenseInventoryTests(unittest.TestCase):
             self.assertNotEqual(row["license"], "UNKNOWN")
             self.assertTrue(row["evidence"], component["name"])
             self.assertRegex(row["sha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(row["revision"], r"^[0-9a-f]{40}$", component["name"])
+            self.assertTrue(row["source"], component["name"])
             path = ROOT / row["evidence"]
             if path.is_file():
                 self.assertEqual(li.sha256_file(path), row["sha256"], row["evidence"])
@@ -134,6 +171,221 @@ class LicenseInventoryTests(unittest.TestCase):
         ids = {document["id"] for document in self.manifest["documents"]}
         for required in ("occt", "occt-exception", "whisperkit", "ide-notice", "royalvnc", "pdfium", "libarchive"):
             self.assertIn(required, ids)
+
+    def test_pins_keep_the_revision_alongside_a_semver(self):
+        pins = li.load_pins()
+        versioned = [pin for pin in pins if re.match(r"^\d+\.", pin["version"])]
+        self.assertTrue(versioned)
+        for pin in versioned:
+            self.assertRegex(pin["revision"], r"^[0-9a-f]{40}$", pin["identity"])
+            self.assertNotEqual(pin["revision"], pin["version"], pin["identity"])
+
+    def test_committed_evidence_binds_every_pin_revision_and_source(self):
+        pins = {pin["identity"]: pin for pin in li.load_pins()}
+        evidence = li.load_evidence()
+        self.assertEqual(set(pins), set(evidence))
+        self.assertEqual(self.result["evidence"]["schemaVersion"], 2)
+        for identity, pin in pins.items():
+            self.assertEqual(evidence[identity]["revision"], pin["revision"], identity)
+            self.assertEqual(evidence[identity]["source"], pin["location"], identity)
+
+
+class EvidenceRevisionBindingTests(unittest.TestCase):
+    """resolve_pins must bind evidence to the exact pin, never to an identity."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.checkouts = self.tmp / "checkouts"
+        self.checkouts.mkdir()
+
+    @staticmethod
+    def pin(identity="alpha", revision="a" * 40, location="https://example.com/alpha.git"):
+        return {
+            "identity": identity,
+            "location": location,
+            "revision": revision,
+            "version": "1.0.0",
+        }
+
+    @staticmethod
+    def record(
+        identity="alpha",
+        revision="a" * 40,
+        location="https://example.com/alpha.git",
+        license_name="MIT",
+        evidence=".build/checkouts/alpha/LICENSE",
+        sha256="f" * 64,
+    ):
+        return {
+            "identity": identity,
+            "license": license_name,
+            "evidence": evidence,
+            "sha256": sha256,
+            "revision": revision,
+            "source": location,
+        }
+
+    def resolve(self, pins, recorded):
+        problems = []
+        rows, evidence, stats = li.resolve_pins(
+            pins, recorded, problems, checkouts=self.checkouts, root=self.tmp
+        )
+        return problems, rows, evidence, stats
+
+    def test_same_pin_offline_reuse_succeeds(self):
+        problems, rows, evidence, stats = self.resolve([self.pin()], {"alpha": self.record()})
+        self.assertEqual(problems, [])
+        self.assertEqual(rows[0]["license"], "MIT")
+        self.assertEqual(rows[0]["evidence"], ".build/checkouts/alpha/LICENSE")
+        self.assertEqual(evidence[0]["revision"], "a" * 40)
+        self.assertEqual(evidence[0]["source"], "https://example.com/alpha.git")
+        self.assertEqual(stats["recorded"], 1)
+
+    def test_changed_revision_without_checkout_is_rejected(self):
+        recorded = {"alpha": self.record()}
+        problems, _, evidence, stats = self.resolve([self.pin(revision="b" * 40)], recorded)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("cannot verify revision", problems[0])
+        self.assertEqual(evidence[0]["license"], "UNKNOWN")
+        self.assertIsNone(evidence[0]["sha256"])
+        self.assertNotEqual(evidence[0]["sha256"], recorded["alpha"]["sha256"])
+        self.assertEqual(evidence[0]["revision"], "b" * 40)
+        self.assertEqual(stats["unknown"], 1)
+
+    def test_changed_source_without_checkout_is_rejected(self):
+        recorded = {"alpha": self.record()}
+        problems, _, evidence, _ = self.resolve(
+            [self.pin(location="https://example.com/fork.git")], recorded
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("cannot verify revision", problems[0])
+        self.assertEqual(evidence[0]["license"], "UNKNOWN")
+
+    def test_legacy_recorded_row_without_revision_is_rejected_offline(self):
+        legacy = {
+            "identity": "alpha",
+            "license": "MIT",
+            "evidence": ".build/checkouts/alpha/LICENSE",
+            "sha256": "f" * 64,
+        }
+        problems, _, evidence, _ = self.resolve([self.pin()], {"alpha": legacy})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no revision", problems[0])
+        self.assertEqual(evidence[0]["license"], "UNKNOWN")
+
+    def test_verified_checkout_license_is_recorded_at_the_declared_revision(self):
+        actual = make_checkout(self.checkouts, "alpha")
+        problems, _, evidence, stats = self.resolve([self.pin(revision=actual)], {})
+        self.assertEqual(problems, [])
+        self.assertEqual(evidence[0]["license"], "MIT")
+        self.assertEqual(evidence[0]["revision"], actual)
+        self.assertEqual(evidence[0]["source"], "https://example.com/alpha.git")
+        self.assertEqual(evidence[0]["evidence"], ".build/checkouts/alpha/LICENSE")
+        self.assertEqual(
+            evidence[0]["sha256"], li.sha256_file(self.checkouts / "alpha" / "LICENSE")
+        )
+        self.assertEqual(stats["checkout"], 1)
+
+    def test_wrong_checkout_revision_is_rejected_and_never_read(self):
+        make_checkout(self.checkouts, "alpha")
+        problems, _, evidence, stats = self.resolve([self.pin(revision="b" * 40)], {})
+        self.assertTrue(any("does not match the declared pin" in p for p in problems))
+        self.assertEqual(evidence[0]["license"], "UNKNOWN")
+        self.assertIsNone(evidence[0]["sha256"])
+        self.assertNotEqual(
+            evidence[0]["sha256"], li.sha256_file(self.checkouts / "alpha" / "LICENSE")
+        )
+        self.assertEqual(stats["unknown"], 1)
+
+    def test_wrong_checkout_rejects_even_when_recorded_evidence_matches_the_pin(self):
+        make_checkout(self.checkouts, "alpha")
+        declared = "b" * 40
+        recorded = {"alpha": self.record(revision=declared)}
+        problems, _, evidence, _ = self.resolve([self.pin(revision=declared)], recorded)
+        self.assertTrue(any("does not match the declared pin" in p for p in problems))
+        # The declared-revision record is reused; the wrong checkout is not read.
+        self.assertEqual(evidence[0]["sha256"], recorded["alpha"]["sha256"])
+        self.assertNotEqual(
+            evidence[0]["sha256"], li.sha256_file(self.checkouts / "alpha" / "LICENSE")
+        )
+
+    def test_checkout_with_unreadable_revision_is_rejected(self):
+        (self.checkouts / "alpha").mkdir()
+        problems, _, evidence, _ = self.resolve([self.pin()], {})
+        self.assertTrue(any("could not be read" in p for p in problems))
+        self.assertEqual(evidence[0]["license"], "UNKNOWN")
+
+    def test_same_revision_license_change_is_flagged(self):
+        actual = make_checkout(self.checkouts, "alpha")
+        recorded = {"alpha": self.record(revision=actual)}
+        problems, _, evidence, _ = self.resolve([self.pin(revision=actual)], recorded)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("upstream license changed", problems[0])
+        self.assertEqual(evidence[0]["license"], "MIT")
+
+    def test_moved_pin_with_only_a_repository_notice_is_flagged(self):
+        notice = self.tmp / "notice" / "LICENSE.txt"
+        notice.parent.mkdir(parents=True)
+        notice.write_text(MIT_TEXT, encoding="utf-8")
+        digest = li.sha256_file(notice)
+        recorded = {
+            "alpha": self.record(
+                revision="a" * 40, evidence="notice/LICENSE.txt", sha256=digest
+            )
+        }
+        with mock.patch.dict(li.APP_ONLY_NOTICES, {"alpha": "notice/LICENSE.txt"}, clear=True):
+            problems, _, evidence, _ = self.resolve([self.pin(revision="b" * 40)], recorded)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("repository notice", problems[0])
+        self.assertEqual(evidence[0]["revision"], "b" * 40)
+
+    def test_same_pin_repository_notice_is_verified_and_tampering_is_flagged(self):
+        notice = self.tmp / "notice" / "LICENSE.txt"
+        notice.parent.mkdir(parents=True)
+        notice.write_text(MIT_TEXT, encoding="utf-8")
+        digest = li.sha256_file(notice)
+        recorded = {
+            "alpha": self.record(evidence="notice/LICENSE.txt", sha256=digest)
+        }
+        with mock.patch.dict(li.APP_ONLY_NOTICES, {"alpha": "notice/LICENSE.txt"}, clear=True):
+            problems, _, evidence, stats = self.resolve([self.pin()], recorded)
+            self.assertEqual(problems, [])
+            self.assertEqual(evidence[0]["sha256"], digest)
+            self.assertEqual(stats["notice"], 1)
+            notice.write_text(MIT_TEXT + "\nmodified\n", encoding="utf-8")
+            problems, _, _, _ = self.resolve([self.pin()], recorded)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("upstream license changed", problems[0])
+
+    def test_reused_repository_evidence_must_still_match_its_digest(self):
+        notice = self.tmp / "notice" / "LICENSE.txt"
+        notice.parent.mkdir(parents=True)
+        notice.write_text(MIT_TEXT, encoding="utf-8")
+        recorded = {"alpha": self.record(evidence="notice/LICENSE.txt", sha256="0" * 64)}
+        with mock.patch.dict(li.APP_ONLY_NOTICES, {}, clear=True):
+            problems, _, _, _ = self.resolve([self.pin()], recorded)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("recorded evidence file changed", problems[0])
+
+    def test_check_mode_succeeds_without_any_checkout(self):
+        artifacts = [
+            li.MARKDOWN,
+            li.MANIFEST,
+            li.EVIDENCE,
+            ROOT / "FloeApp/Resources" / li.LIBGIT2_COPYING_BUNDLE_PATH,
+        ]
+        before = {path: (path.stat().st_mtime_ns, path.stat().st_size) for path in artifacts}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(li, "CHECKOUTS", self.checkouts):
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = li.main(["--check"])
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertIn("--check OK", stdout.getvalue())
+        self.assertIn("recorded reuse", stdout.getvalue())
+        for path in artifacts:
+            self.assertEqual(before[path], (path.stat().st_mtime_ns, path.stat().st_size), path)
 
 
 if __name__ == "__main__":
