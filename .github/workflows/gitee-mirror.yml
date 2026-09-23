@@ -116,6 +116,16 @@ on:
         required: false
         type: string
         default: '600'
+      upload_workers:
+        description: 'Parallel Gitee upload connections for sharded assets'
+        required: false
+        type: string
+        default: '4'
+      progress_mib:
+        description: 'Emit one progress line per N MiB transferred'
+        required: false
+        type: string
+        default: '64'
       prune_unknown:
         description: 'Delete owned-but-unplanned attachments from the mirrored release'
         required: false
@@ -304,24 +314,58 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "GitHub ${TAG} -> ${SHA}"
 
-      - name: Diagnose GitHub asset download throughput (read-only)
+      - name: Diagnose transfer throughput (read-only except one deleted probe)
         if: ${{ steps.target.outputs.skip != 'true' && github.event_name == 'workflow_dispatch' && inputs.diagnose_download }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           REPO: ${{ github.repository }}
           TAG: ${{ steps.target.outputs.tag }}
         run: |
           set -euo pipefail
+          : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
           umask 077
-          HEADER_FILE="$(mktemp "${RUNNER_TEMP}/gh-auth-header.XXXXXX")"
-          trap 'rm -f "$HEADER_FILE"' EXIT
-          printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$HEADER_FILE"
-          URL="$(curl -fsS -H @"$HEADER_FILE" "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+          GH_HEADER="$(mktemp "${RUNNER_TEMP}/gh-auth-header.XXXXXX")"
+          GITEE_HEADER="$(mktemp "${RUNNER_TEMP}/gitee-auth-header.XXXXXX")"
+          trap 'rm -f "$GH_HEADER" "$GITEE_HEADER"' EXIT
+          printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$GH_HEADER"
+          printf 'Authorization: token %s\n' "$GITEE_TOKEN" > "$GITEE_HEADER"
+
+          URL="$(curl -fsS -H @"$GH_HEADER" "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
             | python3 -c 'import json,sys; assets=[a for a in json.load(sys.stdin)["assets"] if a["size"]>1048576]; print(assets[0]["browser_download_url"] if assets else "")')"
           if [ -z "$URL" ]; then echo "no asset larger than 1 MiB found" >&2; exit 1; fi
-          echo "measuring first 64 MiB of $(basename "$URL") with curl"
-          curl -fsS -o /dev/null --max-time 300 -r 0-67108863 \
-            -w 'curl: http=%{http_code} bytes=%{size_download} seconds=%{time_total} speed_Bps=%{speed_download}\n' "$URL"
+          curl -fsSL -o /dev/null --max-time 300 -r 0-67108863 \
+            -w 'github-download: http=%{http_code} bytes=%{size_download} seconds=%{time_total} speed_Bps=%{speed_download}\n' "$URL"
+
+          # Bounded Gitee upload probe: 16 MiB, deleted again below.
+          RELEASE_ID="$(curl -fsS -H @"$GITEE_HEADER" \
+            "https://gitee.com/api/v5/repos/JiangNanGenius/floe-agent/releases/tags/${TAG}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          head -c 16777216 /dev/urandom > "${RUNNER_TEMP}/upload-probe.bin"
+          set +e
+          curl -sS --max-time 240 -o "${RUNNER_TEMP}/upload-probe-response.json" \
+            -w 'gitee-upload-16MiB: http=%{http_code} bytes=%{size_upload} seconds=%{time_total} speed_Bps=%{speed_upload}\n' \
+            -X POST -H @"$GITEE_HEADER" -F "file=@${RUNNER_TEMP}/upload-probe.bin;type=application/octet-stream" \
+            "https://gitee.com/api/v5/repos/JiangNanGenius/floe-agent/releases/${RELEASE_ID}/attach_files"
+          PROBE_EXIT=$?
+          set -e
+          echo "gitee upload probe exit code: ${PROBE_EXIT}"
+          head -c 300 "${RUNNER_TEMP}/upload-probe-response.json" || true
+          echo
+          curl -fsS -H @"$GITEE_HEADER" \
+            "https://gitee.com/api/v5/repos/JiangNanGenius/floe-agent/releases/${RELEASE_ID}/attach_files?per_page=100" \
+            | python3 -c '
+          import json, sys
+          for item in json.load(sys.stdin):
+              if item.get("name") == "upload-probe.bin":
+                  print(item["id"])
+          ' | while read -r fid; do
+            curl -fsS -X DELETE -H @"$GITEE_HEADER" \
+              "https://gitee.com/api/v5/repos/JiangNanGenius/floe-agent/releases/${RELEASE_ID}/attach_files/${fid}" >/dev/null
+            echo "deleted upload-probe.bin attach ${fid}"
+          done
+          rm -f "${RUNNER_TEMP}/upload-probe.bin"
+          echo "diagnostic complete (probe exit ${PROBE_EXIT})"
 
       - name: Ensure the immutable tag exists on Gitee (one-way, never forced)
         if: ${{ steps.target.outputs.skip != 'true' && !(github.event_name == 'workflow_dispatch' && inputs.diagnose_download) }}
@@ -370,6 +414,8 @@ jobs:
           PRUNE_UNKNOWN: ${{ github.event_name == 'workflow_dispatch' && inputs.prune_unknown || 'false' }}
           TIME_BUDGET_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.time_budget_minutes || '300' }}
           SOCKET_TIMEOUT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.socket_timeout_seconds || '600' }}
+          UPLOAD_WORKERS: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_workers || '4' }}
+          PROGRESS_MIB: ${{ github.event_name == 'workflow_dispatch' && inputs.progress_mib || '64' }}
         run: |
           set -euo pipefail
           : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
@@ -387,7 +433,8 @@ jobs:
             --shard-mib "$SHARD_MIB"
             --summary-json "${RUNNER_TEMP}/gitee-release-mirror-summary.json"
             --min-free-mib 2048
-            --progress-mib 64
+            --progress-mib "$PROGRESS_MIB"
+            --upload-workers "$UPLOAD_WORKERS"
             --timeout "$SOCKET_TIMEOUT_SECONDS"
             # Keep the step bounded well inside the job timeout so a slow
             # cross-border transfer ends with a truthful partial summary that

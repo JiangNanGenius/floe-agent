@@ -57,6 +57,7 @@ import ssl
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -922,7 +923,8 @@ class MirrorRunner:
                     verdict = self._verify_gitee_file(release_id, item, expected["bytes"], expected["digests"], algos)
                     if verdict["ok"]:
                         parts.append({"index": idx, "name": part_name, "bytes": expected["bytes"],
-                                      "digests": expected["digests"], "status": "skipped"})
+                                      "digests": expected["digests"], "status": "skipped",
+                                      "verification": verdict.get("level")})
                         continue
                 need_download = True
                 parts.append({"index": idx, "name": part_name, "bytes": int(item.get("size")), "digests": {}, "status": "pending"})
@@ -974,45 +976,96 @@ class MirrorRunner:
                     % (name, whole["sha256"], github_digest)
                 )
 
-        # Upload missing parts, verify all.
+        # Resolve existing copies (sequential), then upload the rest. Uploads
+        # are independent streams; --upload-workers raises aggregate
+        # throughput on high-latency cross-border paths where one connection
+        # is window-limited.
+        upload_queue = []
         for part in parts:
-            part_name = part["name"]
-            item = self._best_existing(index, part_name)
             if part["status"] == "skipped":
                 continue
-            if item is not None and int(item.get("size") or -1) != part["bytes"]:
-                self.log.emit("[replace] %s: removing size-mismatched copy id=%s" % (part_name, item["id"]))
+            part_name = part["name"]
+            item = self._best_existing(index, part_name)
+            if item is not None:
+                if int(item.get("size") or -1) == part["bytes"]:
+                    expected = {key: value for key, value in part["digests"].items() if key in algos}
+                    verdict = self._verify_gitee_file(release_id, item, part["bytes"], expected, algos)
+                    if verdict["ok"]:
+                        part["status"] = "skipped"
+                        part["verification"] = verdict.get("level")
+                        continue
+                    self.log.emit("[replace] %s: removing unverified copy id=%s" % (part_name, item["id"]))
+                else:
+                    self.log.emit("[replace] %s: removing size-mismatched copy id=%s" % (part_name, item["id"]))
                 self.gitee.delete_attach_file(release_id, item["id"])
-                item = None
-            if item is None:
-                self._check_budget()
-                local_path = os.path.join(self.work_dir, "parts", part_name)
-                upload_started = time.monotonic()
-                uploaded = self.gitee.upload_attach_file(
-                    release_id, local_path, part_name,
-                    progress=self._progress("upload " + part_name, part["bytes"]),
-                )
-                item = self._attach_item_by_id(release_id, uploaded.get("id")) or uploaded
-                part["status"] = "uploaded"
-                part["attachId"] = uploaded.get("id")
-                self.log.emit(
-                    "[part] %s %s -> attach %s in %.0fs (%.2f MiB/s)"
-                    % (
-                        part_name,
-                        human_bytes(part["bytes"]),
-                        uploaded.get("id"),
-                        time.monotonic() - upload_started,
-                        part["bytes"] / 1048576.0 / max(time.monotonic() - upload_started, 0.001),
-                    )
-                )
+            upload_queue.append(part)
+
+        def upload_part(part):
             self._check_budget()
+            part_name = part["name"]
+            local_path = os.path.join(self.work_dir, "parts", part_name)
+            started = time.monotonic()
+            uploaded = self.gitee.upload_attach_file(
+                release_id, local_path, part_name,
+                progress=self._progress("upload " + part_name, part["bytes"]),
+            )
+            elapsed = max(time.monotonic() - started, 0.001)
+            self.log.emit(
+                "[part] %s %s -> attach %s in %.0fs (%.2f MiB/s)"
+                % (part_name, human_bytes(part["bytes"]), uploaded.get("id"), elapsed,
+                   part["bytes"] / 1048576.0 / elapsed)
+            )
+            return part, uploaded
+
+        part_errors = []
+        outcomes = []
+        if upload_queue:
+            workers = max(1, min(int(self.args.upload_workers), len(upload_queue)))
+            if workers > 1:
+                self.log.emit("[upload] %d parts over %d parallel connections" % (len(upload_queue), workers))
+            if workers == 1:
+                for part in upload_queue:
+                    try:
+                        outcomes.append(upload_part(part))
+                    except BudgetExceeded:
+                        raise
+                    except (MirrorError, OSError) as error:
+                        part_errors.append("%s: %s" % (part["name"], error))
+                        self.log.emit("[fail] part %s: %s" % (part["name"], error))
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    future_parts = {pool.submit(upload_part, part): part for part in upload_queue}
+                    for future, part in future_parts.items():
+                        try:
+                            outcomes.append(future.result())
+                        except BudgetExceeded:
+                            raise
+                        except (MirrorError, OSError) as error:
+                            part_errors.append("%s: %s" % (part["name"], error))
+                            self.log.emit("[fail] part %s: %s" % (part["name"], error))
+
+        for part, uploaded in outcomes:
+            self._check_budget()
+            item = self._attach_item_by_id(release_id, uploaded.get("id")) or uploaded
             expected = {key: value for key, value in part["digests"].items() if key in algos}
             verdict = self._verify_gitee_file(release_id, item, part["bytes"], expected, algos)
             if not verdict["ok"]:
-                raise AssetFailure("%s failed verification: %s" % (part_name, verdict.get("reason")))
+                part_errors.append("%s: %s" % (part["name"], verdict.get("reason")))
+                self.log.emit("[fail] part %s verification: %s" % (part["name"], verdict.get("reason")))
+                continue
+            part["status"] = "uploaded"
+            part["attachId"] = uploaded.get("id")
             part["verification"] = verdict.get("level")
-            if part["status"] != "uploaded":
-                part["status"] = "skipped" if part["status"] == "pending" else part["status"]
+
+        incomplete = [
+            p["name"] for p in parts
+            if p["status"] not in ("skipped", "uploaded") or not p.get("verification") or not p["digests"]
+        ]
+        if part_errors or incomplete:
+            raise AssetFailure(
+                "sharded asset %s is incomplete; %s"
+                % (name, "; ".join((part_errors + ["missing verified parts: " + ", ".join(incomplete)]) if incomplete else part_errors))
+            )
 
         # Manifest last: it is the contract the App uses.
         manifest = self._shard_manifest(entry, parts, whole)
@@ -1518,6 +1571,8 @@ def parse_args(argv):
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--progress-mib", type=float, default=64.0,
                         help="emit one progress line per N MiB transferred (default 64)")
+    parser.add_argument("--upload-workers", type=int, default=1,
+                        help="parallel upload connections for sharded assets (default 1)")
     parser.add_argument("--time-budget-minutes", type=float, default=0.0,
                         help="stop starting new transfers after N minutes and report deferred work "
                              "(0 = no budget; a re-run resumes)")

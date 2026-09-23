@@ -402,6 +402,18 @@ class MirrorTestCase(unittest.TestCase):
         count = (size + shard - 1) // shard
         return [min(shard, size - i * shard) for i in range(count)]
 
+    def attachment_data(self, name):
+        items = [item for item in self.state.gitee_attach.values() if item["name"] == name]
+        self.assertTrue(items, "missing attachment %s" % name)
+        return items[0]["data"]
+
+    def reassembled(self, prefix):
+        """Byte concatenation of attachments whose names start with prefix,
+        ordered by name (parallel uploads finish out of order)."""
+        items = [item for item in self.state.gitee_attach.values() if item["name"].startswith(prefix)]
+        items.sort(key=lambda item: item["name"])
+        return b"".join(item["data"] for item in items)
+
     def seed_app_release(self):
         release_id = self.state.add_github_release("v1.7.0-beta.82", "Floe Agent (build 225)", "Release body", prerelease=True)
         self.state.add_github_asset(release_id, "notes.txt", b"hello mirror\n")
@@ -429,14 +441,13 @@ class MirrorTestCase(unittest.TestCase):
             names,
         )
         # Reassembled shards are byte-identical to the GitHub asset.
-        parts = [self.state.gitee_attach[fid]["data"] for fid in sorted(self.state.gitee_attach)
-                 if self.state.gitee_attach[fid]["name"].startswith("medium.bin.part-")]
-        self.assertEqual(big, b"".join(parts))
+        parts = self.reassembled("medium.bin.part-")
+        self.assertEqual(big, parts)
         manifest = json.loads(self.gitee_attach_by_name("medium.bin.parts.json")[0]["data"].decode())
         self.assertEqual("floe-release-shard-manifest/v1", manifest["schema"])
         self.assertEqual(sha256_hex(big), manifest["sha256"])
         self.assertEqual(self.expected_block(len(big)), [part["bytes"] for part in manifest["parts"]])
-        self.assertEqual(sha256_hex(parts[0]), manifest["parts"][0]["sha256"])
+        self.assertEqual(sha256_hex(self.attachment_data("medium.bin.part-00.bin")), manifest["parts"][0]["sha256"])
         # No credential leaks in logs or summary.
         self.assertNotIn(TOKEN, result.stdout + result.stderr + json.dumps(summary))
 
@@ -479,9 +490,8 @@ class MirrorTestCase(unittest.TestCase):
         self.assertTrue(second["ok"])
         uploads_second = len([1 for method, path in self.state.requests if method == "POST" and "attach_files" in path]) - uploads_first
         self.assertLess(uploads_second, uploads_first, "resume must not re-upload verified parts")
-        parts = [self.state.gitee_attach[fid]["data"] for fid in sorted(self.state.gitee_attach)
-                 if self.state.gitee_attach[fid]["name"].startswith("medium.bin.part-")]
-        self.assertEqual(big, b"".join(parts))
+        parts = self.reassembled("medium.bin.part-")
+        self.assertEqual(big, parts)
 
     def test_dry_run_never_mutates(self):
         self.seed_app_release()
@@ -541,10 +551,9 @@ class MirrorTestCase(unittest.TestCase):
         self.assertEqual(sha512_hex(archive), manifest["archiveSHA512"])
         self.assertEqual([0, 1, 2], [shard["index"] for shard in manifest["shards"]])
         self.assertEqual(["part-00.bin", "part-01.bin", "part-02.bin"], [shard["name"] for shard in manifest["shards"]])
-        parts = [self.state.gitee_attach[fid]["data"] for fid in sorted(self.state.gitee_attach)
-                 if self.state.gitee_attach[fid]["name"].startswith("part-")]
-        self.assertEqual(archive, b"".join(parts))
-        self.assertEqual(sha512_hex(parts[0]), manifest["shards"][0]["sha512"])
+        parts = self.reassembled("part-")
+        self.assertEqual(archive, parts)
+        self.assertEqual(sha512_hex(self.attachment_data("part-00.bin")), manifest["shards"][0]["sha512"])
         # The oversized archive itself is not published verbatim.
         self.assertEqual([], [item for item in self.state.gitee_attach.values()
                               if item["name"].endswith(".zip")])
@@ -597,6 +606,22 @@ class MirrorTestCase(unittest.TestCase):
         self.assertEqual([], self.state.requests)
         self.assertIn("suspicious tag", result.stdout + result.stderr)
 
+    def test_parallel_uploads_are_independent_and_resumable(self):
+        _, big = self.seed_app_release()
+        self.state.fail_upload_names["medium.bin.part-01.bin"] = 99
+        result, first = self.run_mirror("v1.7.0-beta.82", extra=["--upload-workers", "3"], expect=3)
+        self.assertFalse(first["ok"])
+        # The other parts still completed; no manifest pins an incomplete set.
+        self.assertEqual([], [item for item in self.state.gitee_attach.values()
+                              if item["name"] == "medium.bin.parts.json"])
+        self.assertEqual(2, len([1 for item in self.state.gitee_attach.values()
+                                 if item["name"].startswith("medium.bin.part-")]))
+        self.state.fail_upload_names.clear()
+        _, second = self.run_mirror("v1.7.0-beta.82", extra=["--upload-workers", "3"])
+        self.assertTrue(second["ok"])
+        parts = self.reassembled("medium.bin.part-")
+        self.assertEqual(big, parts)
+
     def test_time_budget_defers_work_truthfully(self):
         self.seed_app_release()
         _, summary = self.run_mirror(
@@ -635,9 +660,8 @@ class MirrorTestCase(unittest.TestCase):
         usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         peak = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
         self.assertLess(peak, 256 * 1024 * 1024, "child peak RSS %d bytes suggests the asset was buffered in memory" % peak)
-        parts = [self.state.gitee_attach[fid]["data"] for fid in sorted(self.state.gitee_attach)
-                 if self.state.gitee_attach[fid]["name"].startswith("large.bin.part-")]
-        self.assertEqual(data, b"".join(parts))
+        parts = self.reassembled("large.bin.part-")
+        self.assertEqual(data, parts)
 
 
 if __name__ == "__main__":
