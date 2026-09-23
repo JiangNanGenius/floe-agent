@@ -277,9 +277,13 @@ if [ "$rebuild" = 1 ]; then
     done
     [ -n "$bbl_elf" ] || die "riscv-pk produced no ELF boot loader (looked in build/bbl and bbl/bbl)"
     log "boot loader ELF: $bbl_elf"
-    bbl_entry="$(riscv64-linux-gnu-readelf -h "$bbl_elf" | awk '/Entry point address/{print $NF}')"
+    # readelf pads addresses to the ELF class width (0x0000000080000000), so
+    # compare numerically instead of as strings (the string compare rejected
+    # a correct build once)
+    norm_hex() { printf '0x%x' "$1" 2>/dev/null || printf '%s' "$1"; }
+    bbl_entry="$(norm_hex "$(riscv64-linux-gnu-readelf -h "$bbl_elf" | awk '/Entry point address/{print $NF}')")"
     # lowest LOAD segment address = where a raw copy must be loaded
-    bbl_load="$(riscv64-linux-gnu-readelf -l "$bbl_elf" | awk '$1=="LOAD"{print $3}' | sort | head -1)"
+    bbl_load="$(norm_hex "$(riscv64-linux-gnu-readelf -l "$bbl_elf" | awk '$1=="LOAD"{print $3}' | sort | head -1)")"
     [ "$bbl_entry" = "0x80000000" ] || die "bbl entry $bbl_entry != 0x80000000 (reset address)"
     [ "$bbl_load" = "0x80000000" ] || die "bbl lowest LOAD addr $bbl_load != 0x80000000"
     riscv64-linux-gnu-objcopy -O binary "$bbl_elf" "$bbl_raw"
