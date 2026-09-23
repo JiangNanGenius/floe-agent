@@ -792,7 +792,10 @@ jobs:
           # when a second hart exists (measured on the pinned UP kernel: a
           # userland spin at one fixed PC; S1 keeps that retained result).
           cat > work/smp/smpboot-script.txt <<'EOF'
-          @12 mount -t proc proc /proc
+          @8 printf 'FLOE_SMP_PROBE_%s\n' BUILTIN
+          @10 : > /tmp/floe-probe.txt && printf 'FLOE_SMP_PROBE_%s\n' WRITE
+          @12 /bin/true && printf 'FLOE_SMP_PROBE_%s\n' FORKEXEC
+          @16 mount -t proc proc /proc
           @14 mkdir -p /mnt
           @16 mount -t 9p -o trans=virtio,version=9p2000.L /dev/root /mnt 2>/dev/null || true
           @20 grep -c '^hart' /proc/cpuinfo > /mnt/smp-cpu-count.txt
@@ -864,6 +867,19 @@ jobs:
                   problems.append(f"vcpu={v}: transcript does not show the boot pair's kernel ident "
                                   f"({pair['kernel_ident'][:60]})")
               if v == "2":
+                  # the probe sequence localizes a dual-hart stall: a builtin
+                  # and a redirection (write syscall) need no fork, while
+                  # running any external command does
+                  for probe in ("BUILTIN", "WRITE", "FORKEXEC"):
+                      if f"FLOE_SMP_PROBE_{probe}" not in transcript:
+                          problems.append(f"vcpu=2: guest probe {probe} missing")
+                  if "FLOE_SMP_PROBE_FORKEXEC" in transcript and "FLOE_SMP_CPUS_2" not in transcript:
+                      problems.append("vcpu=2: fork/exec worked but the guest reported fewer than 2 CPUs")
+                  if "FLOE_SMP_PROBE_BUILTIN" in transcript and "FLOE_SMP_PROBE_FORKEXEC" not in transcript:
+                      print("vcpu=2 diagnosis: shell builtins and write syscalls ran, "
+                            "the first fork/exec did not -> dual-hart process creation stalls")
+                  print("vcpu=2 transcript tail:",
+                        [l for l in open(base + "-transcript.txt", errors="replace").read().splitlines()][-4:])
                   if "FLOE_SMP_CPUS_2" not in transcript:
                       problems.append("vcpu=2: the guest kernel did not report 2 CPUs")
                   if host_threads != 2:
