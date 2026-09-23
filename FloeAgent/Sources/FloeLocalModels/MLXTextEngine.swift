@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import MLX
+import MLXNN
 import MLXLMCommon
 import MLXLLM
 import MLXVLM
@@ -110,6 +111,31 @@ public actor MLXTextEngine {
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
+    /// Maps an upstream load error to the pipeline stage that produced it.
+    /// The pinned factory raises distinct Swift types per phase: config
+    /// file/decode failures are `ModelFactoryError` configuration cases,
+    /// tokenizer construction errors are `TokenizerError`, weight
+    /// application failures are `MLXNN.UpdateError`, and errors escaping the
+    /// C++ runtime are `MLXError`. Anything unrecognized stays `.container`
+    /// rather than being misattributed; the bounded message carries the rest.
+    nonisolated static func loadStage(for error: Error) -> LocalModelLoadStage {
+        if let factoryError = error as? ModelFactoryError {
+            switch factoryError {
+            case .configurationFileError, .configurationDecodingError, .unsupportedModelType:
+                return .configuration
+            default:
+                return .container
+            }
+        }
+        if error is Tokenizers.TokenizerError || error is MLXLMCommon.TokenizerError {
+            return .tokenizer
+        }
+        if error is MLXNN.UpdateError {
+            return .weights
+        }
+        return .container
+    }
+
     /// Teardown variant of `drainMLXPipeline()` plus `Memory.clearCache()`.
     ///
     /// These calls run outside the generation error scope (`defer`,
@@ -186,6 +212,41 @@ public actor MLXTextEngine {
         // new load from a known baseline so the preflight allowance describes
         // this model, rather than this model plus stale MLX cache pages.
         Self.drainPipelineAndClearCaches(context: "modelLoadBaseline")
+        // Staged attribution: the tokenizer is loaded in its own stage before
+        // the container construction so a tokenizer.json/chat-template parse
+        // failure is reported as `tokenizer`, not masked by (or blamed on) the
+        // weight mapping and first graph evaluation that run afterwards. The
+        // loader caches the constructed tokenizer for this load, so the
+        // factory's own tokenizer request inside `loadContainer` reuses it —
+        // the success path pays the parse exactly once.
+        let tokenizerLoader = FloeTokenizerLoader()
+        do {
+            _ = try await tokenizerLoader.load(from: modelDirectory)
+        } catch {
+            Self.drainPipelineAndClearCaches(context: "modelLoadTokenizerFailure")
+            let mappedBytes = Self.safetensorsBytes(in: modelDirectory)
+            let headroom = LocalInferenceResourcePolicy.effectiveHeadroomBytes()
+            switch LocalModelLoadFailure.classify(
+                error: error,
+                snapshotProblems: snapshotProblems,
+                mappedBytes: mappedBytes,
+                headroomBytes: headroom,
+                stage: .tokenizer
+            ) {
+            case .corruptSnapshot(let reason):
+                throw LocalInferenceError.corruptModelSnapshot(reason)
+            case .insufficientMemory(let required, let available):
+                throw LocalInferenceError.insufficientMemory(
+                    required: required,
+                    physical: available,
+                    reserved: UInt64(max(0, ResidentMemoryReservations.totalBytes()))
+                )
+            case .unknown(let detail):
+                throw LocalInferenceError.modelLoadFailedWithReason(
+                    "Local model tokenizer initialization failed (" + detail + "). Verify the model snapshot, then retry."
+                )
+            }
+        }
         do {
             // MLX's default error handler exits the process when no scoped
             // handler is installed. Weight loading and graph construction can
@@ -197,7 +258,7 @@ public actor MLXTextEngine {
                     if includesVisionProjector {
                         container = try await VLMModelFactory.shared.loadContainer(
                             from: modelDirectory,
-                            using: FloeTokenizerLoader()
+                            using: tokenizerLoader
                         )
                     } else {
                         // Qwen3.5/3.8 and Gemma 4 snapshots include a vision
@@ -209,7 +270,7 @@ public actor MLXTextEngine {
                         // construction on iPad.
                         container = try await LLMModelFactory.shared.loadContainer(
                             from: modelDirectory,
-                            using: FloeTokenizerLoader()
+                            using: tokenizerLoader
                         )
                     }
                     try errors.check()
@@ -227,11 +288,17 @@ public actor MLXTextEngine {
             Self.drainPipelineAndClearCaches(context: "modelLoadFailure")
             let mappedBytes = Self.safetensorsBytes(in: modelDirectory)
             let headroom = LocalInferenceResourcePolicy.effectiveHeadroomBytes()
+            // Attribute the failure to the pipeline stage that produced it.
+            // The generic "MLX.MLXError code 0" identified nothing; the stage
+            // plus the bounded underlying message make the next host log
+            // actionable without ever surfacing prompt text or paths.
+            let stage = Self.loadStage(for: error)
             switch LocalModelLoadFailure.classify(
                 error: error,
                 snapshotProblems: snapshotProblems,
                 mappedBytes: mappedBytes,
-                headroomBytes: headroom
+                headroomBytes: headroom,
+                stage: stage
             ) {
             case .corruptSnapshot(let reason):
                 throw LocalInferenceError.corruptModelSnapshot(reason)
@@ -635,10 +702,22 @@ extension MLXTextEngine: LocalModelTextEngine {}
 /// sources are reached. Keep the same runtime behavior with a small direct
 /// adapter over swift-transformers and avoid shipping a compiler plugin as an
 /// app dependency.
-private struct FloeTokenizerLoader: MLXLMCommon.TokenizerLoader {
+///
+/// The loader also caches the constructed tokenizer for one load: the runtime
+/// pre-loads the tokenizer as its own attributed stage, and the factory's
+/// internal tokenizer request inside `loadContainer` then reuses the cached
+/// value instead of parsing tokenizer.json a second time.
+private final class FloeTokenizerLoader: MLXLMCommon.TokenizerLoader, @unchecked Sendable {
+    private let cache = Mutex<(directory: URL, tokenizer: any MLXLMCommon.Tokenizer)?>(nil)
+
     func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
+        if let cached = cache.withLock({ $0 }), cached.directory == directory {
+            return cached.tokenizer
+        }
         let tokenizer = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
-        return FloeTokenizerAdapter(tokenizer)
+        let adapter = FloeTokenizerAdapter(tokenizer)
+        cache.withLock { $0 = (directory, adapter) }
+        return adapter
     }
 }
 

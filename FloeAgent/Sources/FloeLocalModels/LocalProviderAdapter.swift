@@ -113,6 +113,15 @@ public actor LocalModelRuntime {
     private var activeEngine: ActiveEngine?
     private var loadState: LoadState = .unloaded
     private var taskResidency = LocalModelTaskResidencyLedger()
+    /// Transient engine claims held by the unified load/benchmark/chat entry
+    /// points (`withEngineLease`). A resident mapping is never evicted —
+    /// neither by a failure cleanup nor by the idle timer — while any claim
+    /// or any durable task still needs it: a settings-page benchmark must not
+    /// unload the model a chat task is using, and an idle unload must never
+    /// fire mid-operation. The Build 222 idle window starts when the last
+    /// claim is released (or the last task is released), not when an
+    /// individual operation happens to finish.
+    private var engineLeaseCount = 0
     private var inferenceBusy = false
     private var inferenceWaiters: [CheckedContinuation<Void, Never>] = []
     private let makeEngine: EngineFactory
@@ -245,9 +254,9 @@ public actor LocalModelRuntime {
     private func scheduleIdleUnload(reason: String) {
         idleUnloadTask?.cancel()
         activityGeneration &+= 1
-        guard taskResidency.activeTaskCount == 0 else {
+        guard taskResidency.activeTaskCount == 0, engineLeaseCount == 0 else {
             FloeLogger(category: .providers).debug(
-                "localInferenceIdleUnloadDeferred reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+                "localInferenceIdleUnloadDeferred reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) activeLeases=\(engineLeaseCount) resident=\(activeEngine?.key.modelID ?? "none")"
             )
             return
         }
@@ -272,21 +281,52 @@ public actor LocalModelRuntime {
         activityGeneration &+= 1
     }
 
+    /// Unified engine coordination shared by the load (preload), benchmark
+    /// and chat entry points. Every caller acquires one transient claim for
+    /// the exact duration of its engine use:
+    ///
+    /// - entering cancels a pending idle unload (this operation counts as
+    ///   activity) and claims the resident mapping;
+    /// - leaving drops the claim and, only when the LAST claim is gone and no
+    ///   durable task retains the model, arms the accepted idle window.
+    ///
+    /// Concurrent same-model operations serialize on the inference slot and
+    /// share the one resident engine through `prepareEngine`'s cache, so a
+    /// 加载 followed by (or racing) a 测速 on the same model performs exactly
+    /// one container construction. A benchmark ending — successfully or not —
+    /// therefore never unloads a mapping a chat task still claims.
+    private func withEngineLease<T>(
+        unloadReason: String,
+        operation: () async throws -> T
+    ) async throws -> T {
+        cancelIdleUnload()
+        engineLeaseCount += 1
+        defer {
+            engineLeaseCount -= 1
+            if engineLeaseCount == 0 {
+                scheduleIdleUnload(reason: unloadReason)
+            }
+        }
+        return try await operation()
+    }
+
     /// Idle timer body. Waits for the FIFO slot so an unload can never race a
     /// decode, re-checks that no newer activity happened, then releases the
     /// container and its process-wide MLX caches. Build 224: the fire-time
     /// ledger check is the authoritative backstop — a timer that was armed
     /// before a task retained (or before a turn landed) must never evict an
-    /// engine a durable run still owns. The skip is safe: the task's next
-    /// activity cancels/re-arms as usual, and `releaseForTask` schedules the
-    /// real unload when the last claim drops.
+    /// engine a durable run still owns. The lease check is the same backstop
+    /// for transient operations: an idle unload never fires while a
+    /// load/benchmark/chat claim is still active. The skip is safe: the
+    /// task's next activity cancels/re-arms as usual, and `releaseForTask`
+    /// schedules the real unload when the last claim drops.
     private func performIdleUnload(generation: UInt64, reason: String) async {
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
         guard generation == activityGeneration else { return }
-        guard taskResidency.activeTaskCount == 0 else {
+        guard taskResidency.activeTaskCount == 0, engineLeaseCount == 0 else {
             FloeLogger(category: .providers).info(
-                "localInferenceIdleUnloadSkipped reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+                "localInferenceIdleUnloadSkipped reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) activeLeases=\(engineLeaseCount) resident=\(activeEngine?.key.modelID ?? "none")"
             )
             return
         }
@@ -312,21 +352,23 @@ public actor LocalModelRuntime {
         defer { arbiter.endLocalInferenceSession() }
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
-        cancelIdleUnload()
-        _ = try await prepareEngine(
-            modelID: modelID,
-            // Public on-device inference is text-only. Never map the vision
-            // projector even if an older caller still requests it.
-            wantsVision: false,
-            traceID: UUID().uuidString
-        )
+        try await withEngineLease(unloadReason: "preloadFinished") {
+            _ = try await prepareEngine(
+                modelID: modelID,
+                // Public on-device inference is text-only. Never map the
+                // vision projector even if an older caller still requests it.
+                wantsVision: false,
+                traceID: UUID().uuidString
+            )
+        }
         // Build 222: an explicit preload is governed by the same idle window.
         // Two minutes without a message or tool continuation releases the
         // mapping instead of leaving a settings preload resident forever.
         // Build 224: while a durable task is retained (task launch preloads
         // before the preparing phase), the window is deferred to
         // `releaseForTask` so the timer cannot evict the engine mid-task.
-        scheduleIdleUnload(reason: "preloadFinished")
+        // The lease released above arms that window only when nothing else
+        // claims the engine.
     }
 
     @available(macOS 15.4, iOS 26.0, *)
@@ -404,104 +446,110 @@ public actor LocalModelRuntime {
             )
             throw CancellationError()
         }
-        var prepared: ActiveEngine?
-        var availableBeforeInference: UInt64 = 0
-        do {
-            let engine = try await prepareEngine(
-                modelID: modelID,
-                wantsVision: wantsVision,
-                traceID: traceID
-            )
-            prepared = engine
-            availableBeforeInference = measureAvailableMemory()
-            FloeLogger(category: .providers).info(
-                "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, engine.profile.maximumOutputTokens)) availableBeforeBytes=\(availableBeforeInference) physicalBytes=\(ProcessInfo.processInfo.physicalMemory) tier=\(engine.profile.tier.rawValue) context=\(engine.profile.contextSize) batch=\(engine.profile.batchSize)"
-            )
-            let output = try await runGeneration(
-                engine: engine.engine,
-                profile: engine.profile,
-                modelID: modelID,
-                instructions: instructions,
-                prompt: prompt,
-                images: images,
-                tools: tools,
-                maxTokens: maxTokens,
-                traceID: traceID
-            )
-            return try await finishSuccess(
-                prepared: engine,
-                output: output,
-                modelID: modelID,
-                startedAt: startedAt,
-                availableBeforeInference: availableBeforeInference,
-                traceID: traceID,
-                decodeRetried: false
-            )
-        } catch {
-            // A mid-decode Metal failure is often transient: the failed graph
-            // leaves process-wide cached pages that exaggerate the next
-            // measurement, and the turn that the build-198 report showed
-            // failing on the second user message recovered when retried after
-            // cleanup. Unload, reclaim, recreate, and run the generation once
-            // more. Cancellation and every other error keep the single
-            // user-visible failure path below.
-            if Self.isRetriableDecodeFailure(error), let current = prepared {
-                lifecycle.recordDecodeRetry()
-                lifecycle.log(
-                    "decodeRetryScheduled",
-                    extra: "trace=\(traceID) model=\(modelID) error=\(Self.boundedErrorDescription(error))"
+        // The turn runs under one transient engine lease: a chat turn, a
+        // settings preload and a benchmark now share the same claim model, so
+        // whichever finishes last owns arming the idle window and no single
+        // operation can evict the mapping another one is still using.
+        return try await withEngineLease(unloadReason: "turnFinished") {
+            var prepared: ActiveEngine?
+            var availableBeforeInference: UInt64 = 0
+            do {
+                let engine = try await prepareEngine(
+                    modelID: modelID,
+                    wantsVision: wantsVision,
+                    traceID: traceID
                 )
-                await unloadResidentEngine(prepared: current, reason: "decodeRetry")
-                reclaimMemory(context: "decodeRetry", traceID: traceID)
-                do {
-                    let reloaded = try await prepareEngine(
-                        modelID: modelID,
-                        wantsVision: wantsVision,
-                        traceID: traceID + ".decodeRetry"
+                prepared = engine
+                availableBeforeInference = measureAvailableMemory()
+                FloeLogger(category: .providers).info(
+                    "localInferenceStarted trace=\(traceID) model=\(modelID) promptCharacters=\(prompt.count) images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) requestedMaxTokens=\(maxTokens) effectiveMaxTokens=\(min(maxTokens, engine.profile.maximumOutputTokens)) availableBeforeBytes=\(availableBeforeInference) physicalBytes=\(ProcessInfo.processInfo.physicalMemory) tier=\(engine.profile.tier.rawValue) context=\(engine.profile.contextSize) batch=\(engine.profile.batchSize)"
+                )
+                let output = try await runGeneration(
+                    engine: engine.engine,
+                    profile: engine.profile,
+                    modelID: modelID,
+                    instructions: instructions,
+                    prompt: prompt,
+                    images: images,
+                    tools: tools,
+                    maxTokens: maxTokens,
+                    traceID: traceID
+                )
+                return try await finishSuccess(
+                    prepared: engine,
+                    output: output,
+                    modelID: modelID,
+                    startedAt: startedAt,
+                    availableBeforeInference: availableBeforeInference,
+                    traceID: traceID,
+                    decodeRetried: false
+                )
+            } catch {
+                // A mid-decode Metal failure is often transient: the failed graph
+                // leaves process-wide cached pages that exaggerate the next
+                // measurement, and the turn that the build-198 report showed
+                // failing on the second user message recovered when retried after
+                // cleanup. Unload, reclaim, recreate, and run the generation once
+                // more. Cancellation and every other error keep the single
+                // user-visible failure path below.
+                if Self.isRetriableDecodeFailure(error), let current = prepared {
+                    lifecycle.recordDecodeRetry()
+                    lifecycle.log(
+                        "decodeRetryScheduled",
+                        extra: "trace=\(traceID) model=\(modelID) error=\(Self.boundedErrorDescription(error))"
                     )
-                    prepared = reloaded
-                    availableBeforeInference = measureAvailableMemory()
-                    let output = try await runGeneration(
-                        engine: reloaded.engine,
-                        profile: reloaded.profile,
-                        modelID: modelID,
-                        instructions: instructions,
-                        prompt: prompt,
-                        images: images,
-                        tools: tools,
-                        maxTokens: maxTokens,
-                        traceID: traceID
-                    )
-                    return try await finishSuccess(
-                        prepared: reloaded,
-                        output: output,
-                        modelID: modelID,
-                        startedAt: startedAt,
-                        availableBeforeInference: availableBeforeInference,
-                        traceID: traceID,
-                        decodeRetried: true
-                    )
-                } catch {
-                    await finishFailure(
-                        prepared: prepared,
-                        error: error,
-                        modelID: modelID,
-                        startedAt: startedAt,
-                        availableBeforeInference: availableBeforeInference,
-                        traceID: traceID
-                    )
-                    throw error
+                    await unloadResidentEngine(prepared: current, reason: "decodeRetry")
+                    reclaimMemory(context: "decodeRetry", traceID: traceID)
+                    do {
+                        let reloaded = try await prepareEngine(
+                            modelID: modelID,
+                            wantsVision: wantsVision,
+                            traceID: traceID + ".decodeRetry"
+                        )
+                        prepared = reloaded
+                        availableBeforeInference = measureAvailableMemory()
+                        let output = try await runGeneration(
+                            engine: reloaded.engine,
+                            profile: reloaded.profile,
+                            modelID: modelID,
+                            instructions: instructions,
+                            prompt: prompt,
+                            images: images,
+                            tools: tools,
+                            maxTokens: maxTokens,
+                            traceID: traceID
+                        )
+                        return try await finishSuccess(
+                            prepared: reloaded,
+                            output: output,
+                            modelID: modelID,
+                            startedAt: startedAt,
+                            availableBeforeInference: availableBeforeInference,
+                            traceID: traceID,
+                            decodeRetried: true
+                        )
+                    } catch {
+                        await finishFailure(
+                            prepared: prepared,
+                            error: error,
+                            modelID: modelID,
+                            startedAt: startedAt,
+                            availableBeforeInference: availableBeforeInference,
+                            traceID: traceID
+                        )
+                        throw error
+                    }
                 }
+                await finishFailure(
+                    prepared: prepared,
+                    error: error,
+                    modelID: modelID,
+                    startedAt: startedAt,
+                    availableBeforeInference: availableBeforeInference,
+                    traceID: traceID
+                )
+                throw error
             }
-            await finishFailure(
-                prepared: prepared,
-                error: error,
-                modelID: modelID,
-                startedAt: startedAt,
-                availableBeforeInference: availableBeforeInference,
-                traceID: traceID
-            )
-            throw error
         }
     }
 
@@ -582,11 +630,15 @@ public actor LocalModelRuntime {
         }
     }
 
-    /// Success bookkeeping shared by the first attempt and the decode retry:
-    /// release the multi-gigabyte container before the harness executes a
-    /// tool or renders the answer (device reports showed occasional process
-    /// termination precisely in that gap), then log one structured finish
-    /// line with the lifecycle summary.
+    /// Success bookkeeping shared by the first attempt and the decode retry.
+    /// The multi-gigabyte container is NOT released here: the per-turn
+    /// teardown inside MLXTextEngine already drains the GPU stream, clears the
+    /// allocator cache and drops the completed turn's KV pages, and the
+    /// surrounding engine lease keeps the mapping resident for the next turn
+    /// (a tool continuation, the second or third user message). The lease
+    /// release arms the accepted idle window only when no other claim or
+    /// durable task needs the engine. One structured finish line records the
+    /// lifecycle summary.
     private func finishSuccess(
         prepared: ActiveEngine,
         output: LocalGenerationResult,
@@ -596,16 +648,6 @@ public actor LocalModelRuntime {
         traceID: String,
         decodeRetried: Bool
     ) async throws -> LocalRuntimeCompletion {
-        // Build 222: the mapped container survives the turn. The per-turn
-        // teardown inside MLXTextEngine already drains the GPU stream, clears
-        // the allocator cache and drops the completed turn's KV pages, so the
-        // next turn (a tool continuation, the second or third user message)
-        // reuses the weights instead of paying a reload that device logs tied
-        // to repeated failures. `scheduleIdleUnload` releases the mapping
-        // after two minutes without a message or tool continuation once no
-        // durable task retains the model (Build 224); a retained task keeps
-        // the engine through approval waits and slow mid-run gaps.
-        scheduleIdleUnload(reason: "turnFinished")
         let endedAt = Date()
         let availableAfterInference = measureAvailableMemory()
         let prepareDurationMs = max(0, Int(endedAt.timeIntervalSince(startedAt) * 1_000))
@@ -627,10 +669,19 @@ public actor LocalModelRuntime {
         )
     }
 
-    /// Failure bookkeeping shared by every exit: unload and mark the runtime
-    /// (silently for cancellation), record the lifecycle counters, and log one
-    /// structured failure line. The caller then rethrows the original error so
-    /// the failed turn still surfaces exactly one actionable error card.
+    /// Failure bookkeeping shared by every exit. Eviction is claim-aware: the
+    /// failing operation releases its own lease when it returns, so the
+    /// engine is torn down here only when nothing else still claims it —
+    /// no other load/benchmark/chat lease and no retained durable task.
+    /// A settings-page benchmark (or a cancelled chat turn) must therefore
+    /// never unload the resident mapping another chat task is using; when
+    /// claims remain, the failure is recorded, the runtime stays truthful
+    /// about the still-resident engine, and the caller rethrows the original
+    /// error so the failed turn still surfaces exactly one actionable error
+    /// card. Half-initialized state is fully cleaned on the real eviction
+    /// path: the container reference, the process-wide MLX caches (inside the
+    /// engine's own failure teardown) and the heavy-runtime session (the
+    /// caller's defer) all go away, leaving the runtime retryable.
     private func finishFailure(
         prepared: ActiveEngine?,
         error: Error,
@@ -639,7 +690,8 @@ public actor LocalModelRuntime {
         availableBeforeInference: UInt64,
         traceID: String
     ) async {
-        if let prepared, activeEngine?.key == prepared.key {
+        let engineStillClaimed = engineLeaseCount > 1 || taskResidency.activeTaskCount > 0
+        if let prepared, activeEngine?.key == prepared.key, !engineStillClaimed {
             activeEngine = nil
             await prepared.engine.shutdown()
             lifecycle.recordEngineShutdown()
@@ -653,6 +705,17 @@ public actor LocalModelRuntime {
                     message: String(error.localizedDescription.prefix(300))
                 )
             }
+        } else if let prepared, activeEngine?.key == prepared.key {
+            // Another lease or a durable task still claims this engine. The
+            // failure is recorded below, but the shared model stays mapped
+            // and the settings surface keeps reporting it as ready.
+            loadState = .ready(
+                modelID: prepared.key.modelID,
+                includesVisionProjector: prepared.key.includesVisionProjector
+            )
+            FloeLogger(category: .providers).info(
+                "localInferenceEngineRetainedDespiteFailure trace=\(traceID) model=\(modelID) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount)"
+            )
         }
         lifecycle.recordTurnFailed(
             stage: prepared == nil ? "prepare" : "generation",
@@ -1047,6 +1110,35 @@ public actor LocalModelRuntime {
         FloeLogger(category: .providers).info(
             "localInferenceUnloaded requested=\(modelID ?? "all") released=\(previous != nil && (modelID == nil || previous?.key.modelID == modelID))"
         )
+    }
+
+    /// Heavy-runtime admission support, consumed by the Core arbiter side
+    /// (integration contract B2↔F): physically releases the resident engine
+    /// when — and only when — nothing claims it (no transient
+    /// load/benchmark/chat lease, no retained durable task). Linux admission
+    /// must shrink the process's mapped footprint, not merely decrement an
+    /// inference-session count, and must never steal a model a chat task is
+    /// using. Returns the released model identifier, or nil when an engine
+    /// was retained by a claim or no engine was resident.
+    public func releaseIdleResidentEngineIfUnclaimed(reason: String) async -> String? {
+        cancelIdleUnload()
+        await acquireInferenceSlot()
+        defer { releaseInferenceSlot() }
+        guard engineLeaseCount == 0, taskResidency.activeTaskCount == 0,
+              let resident = activeEngine else {
+            FloeLogger(category: .providers).info(
+                "localInferenceIdleResidentKeep reason=\(reason) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+            )
+            return nil
+        }
+        activeEngine = nil
+        await resident.engine.shutdown()
+        lifecycle.recordEngineShutdown()
+        loadState = .unloaded
+        FloeLogger(category: .providers).info(
+            "localInferenceIdleResidentReleased reason=\(reason) releasedModel=\(resident.key.modelID)"
+        )
+        return resident.key.modelID
     }
 
     private func acquireInferenceSlot() async {

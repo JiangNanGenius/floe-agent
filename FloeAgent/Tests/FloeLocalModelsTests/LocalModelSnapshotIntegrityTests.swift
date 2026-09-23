@@ -9,9 +9,12 @@
 
 import Foundation
 import Testing
+import MLXNN
+import MLXLMCommon
+import Tokenizers
 import FloeCore
-import FloeLocalModelCatalog
-import FloeLocalModels
+@testable import FloeLocalModelCatalog
+@testable import FloeLocalModels
 
 private func makeSafetensors(at url: URL, dataBytes: Int, declaredBytes: Int? = nil, valid: Bool = true) throws {
     let declared = declaredBytes ?? dataBytes
@@ -133,13 +136,90 @@ struct LocalModelLoadFailureTests {
         #expect(reason.contains("model.safetensors"))
     }
 
-    @Test("An unrecognized failure keeps its domain and code")
-    func unknownKeepsClassAndCode() {
+    @Test("An unrecognized failure keeps its stage, domain, code and a bounded underlying message")
+    func unknownKeepsStagedDiagnostic() {
         let error = NSError(domain: "MLX.MLXError", code: 7, userInfo: [
             NSLocalizedDescriptionKey: "unsupported operation"
         ])
         #expect(LocalModelLoadFailure.classify(error: error, mappedBytes: 1, headroomBytes: 1_000)
-            == .unknown("domain MLX.MLXError, code 7"))
+            == .unknown("stage=container domain MLX.MLXError, code 7, unsupported operation"))
+    }
+
+    @Test("The caller-supplied stage is preserved in the unknown diagnostic")
+    func unknownPreservesStage() {
+        let error = NSError(domain: "MLX.MLXError", code: 0, userInfo: [
+            NSLocalizedDescriptionKey: "shape mismatch for language_model.model.layers.0.self_attn.q_proj.weight"
+        ])
+        #expect(LocalModelLoadFailure.classify(
+            error: error, mappedBytes: 1, headroomBytes: 1_000, stage: .weights
+        ) == .unknown(
+            "stage=weights domain MLX.MLXError, code 0, "
+                + "shape mismatch for language_model.model.layers.0.self_attn.q_proj.weight"
+        ))
+    }
+
+    @Test("Bounded messages are single-line, boilerplate-stripped and length-limited")
+    func boundedMessageSanitizes() {
+        let mlxStyle = NSError(domain: "MLX.MLXError", code: 0, userInfo: [
+            NSLocalizedDescriptionKey: "MLX Error: failed to allocate buffer\n[metal::allocate]  retried  3 times"
+        ])
+        let bounded = LocalModelLoadFailure.boundedMessage(mlxStyle)
+        #expect(!bounded.contains("\n"))
+        #expect(!bounded.hasPrefix("MLX Error: "))
+        #expect(bounded.contains("failed to allocate buffer"))
+        #expect(bounded.contains("[metal::allocate] retried 3 times"))
+
+        let long = NSError(domain: "MLX.MLXError", code: 0, userInfo: [
+            NSLocalizedDescriptionKey: String(repeating: "x", count: 500)
+        ])
+        #expect(LocalModelLoadFailure.boundedMessage(long).count <= 160)
+
+        let empty = NSError(domain: "MLX.MLXError", code: 0, userInfo: [
+            NSLocalizedDescriptionKey: ""
+        ])
+        #expect(LocalModelLoadFailure.boundedMessage(empty) == "no diagnostic")
+    }
+
+    @Test("Absolute paths are redacted; relative kernel names are preserved")
+    func boundedMessageRedactsPaths() {
+        let withPath = NSError(domain: "NSCocoaErrorDomain", code: 260, userInfo: [
+            NSLocalizedDescriptionKey:
+                "could not open file /var/mobile/Containers/Data/Application/ABCD-1234/Library/model.safetensors for reading"
+        ])
+        let bounded = LocalModelLoadFailure.boundedMessage(withPath)
+        #expect(!bounded.contains("/var/mobile"))
+        #expect(!bounded.contains("ABCD-1234"))
+        #expect(bounded.contains("<path>"))
+        #expect(bounded.contains("could not open file"))
+
+        // Relative fragments stay: they identify the failing kernel.
+        let kernel = NSError(domain: "MLX.MLXError", code: 0, userInfo: [
+            NSLocalizedDescriptionKey: "error in reduce.metal at threadgroup barrier"
+        ])
+        #expect(LocalModelLoadFailure.boundedMessage(kernel).contains("reduce.metal"))
+    }
+}
+
+@Suite("MLX load stage attribution")
+struct LocalModelLoadStageTests {
+    @Test("Upstream error types map to the pipeline stage that produced them")
+    @available(macOS 15.4, iOS 26.0, *)
+    func loadStageMapping() {
+        let decoding = DecodingError.dataCorrupted(.init(
+            codingPath: [], debugDescription: "bad config"))
+        #expect(MLXTextEngine.loadStage(for: ModelFactoryError.configurationDecodingError(
+            "config.json", "model", decoding)) == .configuration)
+        #expect(MLXTextEngine.loadStage(for: ModelFactoryError.unsupportedModelType(
+            "qwen9_x")) == .configuration)
+        #expect(MLXTextEngine.loadStage(for: MLXLMCommon.TokenizerError.missingChatTemplate)
+            == .tokenizer)
+        #expect(MLXTextEngine.loadStage(for: Tokenizers.TokenizerError.missingChatTemplate)
+            == .tokenizer)
+        #expect(MLXTextEngine.loadStage(for: MLXNN.UpdateError.mismatchedSize(
+            path: [], modules: [], expectedShape: [4], actualShape: [8])) == .weights)
+        // Unrecognized errors stay at the container stage rather than being
+        // misattributed; the bounded message carries the detail.
+        #expect(MLXTextEngine.loadStage(for: CancellationError()) == .container)
     }
 }
 

@@ -583,4 +583,124 @@ struct LocalModelLifecycleTests {
             #expect(LocalModelRuntime.adjustedProfile(for: otherID, profile: roomy).batchSize == 128)
         }
     }
+
+    // MARK: 8. Unified load/benchmark/chat coordination
+
+    @Test("A failing benchmark never unloads the engine a retained chat task is using")
+    @available(macOS 15.4, iOS 26.0, *)
+    func benchmarkFailureKeepsTaskRetainedEngine() async throws {
+        let harness = Harness(memorySamples: [4_000_000_000, 4_000_000_000])
+        // The chat task claims the model first. Its first turn has not run
+        // yet — the benchmark reaches the runtime while the task is retained
+        // and fails persistently mid-decode (first engine + one transparent
+        // retry, both scripted to fail).
+        let taskID = UUID()
+        await harness.runtime.retainForTask(taskID: taskID, modelID: modelID)
+        let failing: FakeEngine.Behavior = { _ in throw LocalInferenceError.decodeFailed }
+        harness.factory.scheduleBehavior(failing, forMakeIndex: 1)
+        harness.factory.scheduleBehavior(failing, forMakeIndex: 2)
+        await #expect(throws: LocalInferenceError.self) {
+            try await harness.runtime.benchmark(modelID: modelID)
+        }
+        // The benchmark's failure must NOT evict the mapping the retained chat
+        // task is using: the retry engine stays live and the runtime reports
+        // the engine as ready, not failed.
+        #expect(harness.factory.created.count == 2)
+        #expect(harness.factory.liveCount == 1)
+        #expect(harness.factory.created[1].shutdownCount == 0)
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the task-retained engine to stay ready after the benchmark failure")
+            return
+        }
+        // Once the durable task releases its claim, the normal idle window
+        // owns the eventual unload; nothing was force-evicted by the benchmark.
+        await harness.runtime.releaseForTask(taskID: taskID, reason: "taskFinished")
+        #expect(harness.factory.created[1].shutdownCount == 0)
+        let lifecycle = await harness.runtime.lifecycleDiagnostics()
+        #expect(lifecycle.idleUnloadCount == 0)
+        await harness.runtime.unload()
+    }
+
+    @Test("Concurrent load and benchmark on the same model share one container construction")
+    @available(macOS 15.4, iOS 26.0, *)
+    func concurrentPreloadAndBenchmarkShareSingleLoad() async throws {
+        let harness = Harness(memorySamples: [4_000_000_000, 4_000_000_000])
+        // 加载 racing 测速: both serialize on the inference slot and the second
+        // reuses the resident engine — exactly one construction, never two
+        // live containers.
+        async let preload: Void = harness.runtime.preload(modelID: modelID)
+        async let benchmark = harness.runtime.benchmark(modelID: modelID)
+        let result = try await benchmark
+        try await preload
+        #expect(result.modelID == modelID)
+        #expect(harness.factory.created.count == 1)
+        #expect(harness.factory.maxLive == 1)
+        #expect(harness.factory.created[0].shutdownCount == 0)
+        let lifecycle = await harness.runtime.lifecycleDiagnostics()
+        #expect(lifecycle.engineCreateCount == 1)
+        #expect(lifecycle.engineReuseCount >= 1)
+        await harness.runtime.unload()
+        #expect(harness.factory.created[0].shutdownCount == 1)
+    }
+
+    @Test("The idle-resident release hook frees the engine only while it is unclaimed")
+    @available(macOS 15.4, iOS 26.0, *)
+    func releaseIdleResidentEngineOnlyWhenUnclaimed() async throws {
+        let harness = Harness(memorySamples: [4_000_000_000])
+        try await harness.runtime.preload(modelID: modelID)
+        #expect(harness.factory.liveCount == 1)
+
+        // A retained durable task blocks the release: Linux admission must
+        // never steal a model a chat task is using.
+        let taskID = UUID()
+        await harness.runtime.retainForTask(taskID: taskID, modelID: modelID)
+        let kept = await harness.runtime.releaseIdleResidentEngineIfUnclaimed(reason: "linuxAdmission")
+        #expect(kept == nil)
+        #expect(harness.factory.liveCount == 1)
+
+        // With the claim released the hook physically frees the mapping, which
+        // is what lets the Core arbiter admit a Linux guest on the reclaimed
+        // memory instead of merely decrementing a session counter.
+        await harness.runtime.releaseForTask(taskID: taskID, reason: "taskFinished")
+        let released = await harness.runtime.releaseIdleResidentEngineIfUnclaimed(reason: "linuxAdmission")
+        #expect(released == modelID)
+        #expect(harness.factory.liveCount == 0)
+        #expect(harness.factory.created[0].shutdownCount == 1)
+        guard case .unloaded = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the runtime to be unloaded after the idle release")
+            return
+        }
+    }
+
+    @Test("A failed preload leaves the runtime retryable end to end")
+    @available(macOS 15.4, iOS 26.0, *)
+    func failedPreloadStaysRetryable() async throws {
+        let harness = Harness(memorySamples: [4_000_000_000, 4_000_000_000])
+        let failing = Locked(true)
+        harness.factory.scheduleMakeError { _ in
+            failing.value
+                ? LocalInferenceError.modelLoadFailedWithReason(
+                    "MLX container initialization failed (stage=container domain MLX.MLXError, code 0, no diagnostic)."
+                )
+                : nil
+        }
+        await #expect(throws: LocalInferenceError.self) {
+            try await harness.runtime.preload(modelID: modelID)
+        }
+        guard case .failed = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected a failed load state after the preload failure")
+            return
+        }
+        // No half-initialized engine leaked and the failure cleanup left the
+        // runtime able to retry: the next preload succeeds.
+        #expect(harness.factory.liveCount == 0)
+        failing.value = false
+        try await harness.runtime.preload(modelID: modelID)
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the retried preload to reach the ready state")
+            return
+        }
+        #expect(harness.factory.created.count == 1)
+        await harness.runtime.unload()
+    }
 }
