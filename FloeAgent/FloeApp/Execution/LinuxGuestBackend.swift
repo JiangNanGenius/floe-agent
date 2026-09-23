@@ -170,7 +170,7 @@ enum LinuxGuestBackendAssembly {
                 let imageService = LinuxGuestImageInstallationService(root: artifactRoot, limits: .standard)
                 let officialTemplates = RuntimeV2OfficialTemplateService(
                     store: store,
-                    importer: LinuxGuestImageTemplateImportAdapter(service: imageService),
+                    importer: LinuxGuestImageTemplateAvailabilityAdapter(service: imageService),
                     downloader: LinuxGuestImageHTTPDownloader()
                 )
                 FloePlatformServices.shared.setLinuxOfficialTemplateService(officialTemplates)

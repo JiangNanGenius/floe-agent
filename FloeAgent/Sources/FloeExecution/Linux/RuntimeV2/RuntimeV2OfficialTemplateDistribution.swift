@@ -26,6 +26,7 @@
 
 import Foundation
 import FloeCore
+import ZIPFoundation
 
 // MARK: - Distribution pin
 
@@ -294,21 +295,26 @@ public struct RuntimeV2OfficialTemplateManifest: Sendable, Equatable {
 
 // MARK: - Existing-service seams
 
-/// The install half of the prepare job: the verified image store the App
+/// The reuse/status half of the prepare job: the verified image store the App
 /// already owns. Production wraps `LinuxGuestImageInstallationService`; tests
 /// inject a scripted store. This is a seam, not a second image service.
-public protocol RuntimeV2OfficialTemplateImageImporting: Sendable {
+///
+/// Extraction is deliberately NOT delegated here: the shared importer enforces
+/// a 4 GiB extracted-bytes cap, while a template disk is a sparse logical
+/// image (the cloud build grows the ext4 root before installing packages).
+/// `RuntimeV2TemplateArchiveStager` below stages the pinned archive with a
+/// sparse disk write so the device stores only the real data, and the
+/// verified image then enters the v2 store through the existing migration.
+public protocol RuntimeV2OfficialTemplateImageAvailability: Sendable {
     /// The directory that holds installed images (`…/LinuxGuest/images`).
     var imagesRootDirectory: URL { get }
     func installedImageDirectory(imageID: String) async -> URL?
     func verificationFailure(imageID: String) async -> String?
     func removeImage(imageID: String) async throws
-    @discardableResult
-    func importArchive(at archiveURL: URL, expectedSHA512: String) async throws -> LinuxGuestImage
 }
 
 /// Production adapter over the one verified image installation service.
-public struct LinuxGuestImageTemplateImportAdapter: RuntimeV2OfficialTemplateImageImporting {
+public struct LinuxGuestImageTemplateAvailabilityAdapter: RuntimeV2OfficialTemplateImageAvailability {
     private let service: LinuxGuestImageInstallationService
 
     public init(service: LinuxGuestImageInstallationService) {
@@ -334,9 +340,194 @@ public struct LinuxGuestImageTemplateImportAdapter: RuntimeV2OfficialTemplateIma
     public func removeImage(imageID: String) async throws {
         try await service.removeImage(id: imageID)
     }
+}
 
-    public func importArchive(at archiveURL: URL, expectedSHA512: String) async throws -> LinuxGuestImage {
-        try await service.importArchive(at: archiveURL, expectedSHA512: expectedSHA512)
+// MARK: - Sparse archive staging
+
+/// Stages a pinned template archive (manifest.json + boot files + a possibly
+/// sparse logical disk) into a legacy-image layout that the existing verified
+/// migration can ingest. The disk entry is written SPARSELY: zero chunks only
+/// seek forward, so a 16 GiB logical ext4 image costs its real data, not 16 GiB
+/// of device storage — and the shared importer's 4 GiB extracted-bytes cap
+/// (which exists for full-byte archives) does not apply to a hole-preserving
+/// logical image.
+public enum RuntimeV2TemplateArchiveStager {
+    public struct Limits: Sendable {
+        public var maxEntries: Int
+        public var maxManifestBytes: Int64
+        public var maxBootFileBytes: Int64
+        public var maxDiskLogicalBytes: Int64
+        /// Physical bytes actually written across all entries.
+        public var maxPhysicalBytes: Int64
+
+        public init(
+            maxEntries: Int = 16,
+            maxManifestBytes: Int64 = 2 << 20,
+            maxBootFileBytes: Int64 = 256 << 20,
+            maxDiskLogicalBytes: Int64 = LinuxGuestDiskLayout.maximumLogicalCapacityBytes,
+            maxPhysicalBytes: Int64 = 8 << 30
+        ) {
+            self.maxEntries = maxEntries
+            self.maxManifestBytes = maxManifestBytes
+            self.maxBootFileBytes = maxBootFileBytes
+            self.maxDiskLogicalBytes = maxDiskLogicalBytes
+            self.maxPhysicalBytes = maxPhysicalBytes
+        }
+    }
+
+    public enum StageError: Error, LocalizedError, Sendable {
+        case unsupportedArchive(String)
+        case missingEntry(String)
+        case unsafeEntry(String)
+        case entryTooLarge(String)
+        case physicalLimitExceeded(Int64)
+
+        public var errorDescription: String? {
+            switch self {
+            case .unsupportedArchive(let detail): return "template archive cannot be opened: \(detail)"
+            case .missingEntry(let name): return "template archive has no \(name)"
+            case .unsafeEntry(let name): return "template archive entry is not safe: \(name)"
+            case .entryTooLarge(let detail): return "template archive entry is too large: \(detail)"
+            case .physicalLimitExceeded(let limit): return "template archive exceeds the physical staging limit (\(limit) bytes)"
+            }
+        }
+    }
+
+    public static let diskEntryName = "disk.img"
+    private static let allowedEntries: Set<String> = [
+        "manifest.json", "bbl64.bin", "bios.bin", "kernel-riscv64.bin", "disk.img", "SHA512SUMS"
+    ]
+
+    /// Extracts `archiveURL` into `<root>/<imageID>/`. Any pre-existing
+    /// destination is removed first; a failure removes the partial staging.
+    @discardableResult
+    public static func stage(
+        archiveURL: URL, imageID: String, into root: URL,
+        limits: Limits = Limits(),
+        fileManager: FileManager = .default,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) throws -> URL {
+        let destination = root.appendingPathComponent(imageID, isDirectory: true)
+        let archive: Archive
+        do {
+            archive = try Archive(url: archiveURL, accessMode: .read)
+        } catch {
+            throw StageError.unsupportedArchive(error.localizedDescription)
+        }
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        var entries = 0
+        var physicalBytes: Int64 = 0
+        var sawDisk = false
+        do {
+            for entry in archive {
+                entries += 1
+                guard entries <= limits.maxEntries else {
+                    throw StageError.entryTooLarge("more than \(limits.maxEntries) entries")
+                }
+                guard allowedEntries.contains(entry.path),
+                      !entry.path.contains("/"), !entry.path.contains("..") else {
+                    throw StageError.unsafeEntry(entry.path)
+                }
+                switch entry.type {
+                case .directory:
+                    continue
+                case .symlink:
+                    throw StageError.unsafeEntry("symlink \(entry.path)")
+                case .file:
+                    break
+                }
+                let uncompressed = Int64(entry.uncompressedSize)
+                let target = destination.appendingPathComponent(entry.path, isDirectory: false)
+                if entry.path == diskEntryName {
+                    guard uncompressed <= limits.maxDiskLogicalBytes else {
+                        throw StageError.entryTooLarge(
+                            "\(entry.path) declares \(uncompressed) bytes (limit \(limits.maxDiskLogicalBytes))"
+                        )
+                    }
+                    physicalBytes += try writeSparseEntry(
+                        entry, archive: archive, to: target,
+                        limits: limits, physicalSoFar: physicalBytes, onProgress: onProgress
+                    )
+                    sawDisk = true
+                } else {
+                    let cap = entry.path == "manifest.json" ? limits.maxManifestBytes : limits.maxBootFileBytes
+                    guard uncompressed <= cap else {
+                        throw StageError.entryTooLarge("\(entry.path) declares \(uncompressed) bytes (limit \(cap))")
+                    }
+                    physicalBytes += uncompressed
+                    guard physicalBytes <= limits.maxPhysicalBytes else {
+                        throw StageError.physicalLimitExceeded(limits.maxPhysicalBytes)
+                    }
+                    try fileManager.createDirectory(
+                        at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+                    )
+                    _ = try archive.extract(entry, to: target)
+                }
+            }
+            for required in ["manifest.json"] where !fileManager.fileExists(
+                atPath: destination.appendingPathComponent(required).path
+            ) {
+                throw StageError.missingEntry(required)
+            }
+            // The BIOS name is bbl64.bin in the cloud archive; bios.bin is the
+            // historical/legacy spelling. Exactly one must be present.
+            let hasBios = fileManager.fileExists(atPath: destination.appendingPathComponent("bbl64.bin").path)
+                || fileManager.fileExists(atPath: destination.appendingPathComponent("bios.bin").path)
+            guard hasBios else { throw StageError.missingEntry("bbl64.bin") }
+            guard sawDisk else { throw StageError.missingEntry(diskEntryName) }
+            return destination
+        } catch {
+            try? fileManager.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    /// Streams one disk entry with hole preservation; returns the physical
+    /// bytes actually written.
+    private static func writeSparseEntry(
+        _ entry: Entry, archive: Archive, to target: URL,
+        limits: Limits, physicalSoFar: Int64,
+        onProgress: (@Sendable (Int64, Int64) -> Void)?
+    ) throws -> Int64 {
+        FileManager.default.createFile(atPath: target.path, contents: nil)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: target)
+        } catch {
+            throw StageError.unsupportedArchive("cannot open \(target.lastPathComponent) for writing: \(error.localizedDescription)")
+        }
+        defer { try? handle.close() }
+        var offset: Int64 = 0
+        var written: Int64 = 0
+        var failure: Error?
+        _ = try archive.extract(entry) { chunk in
+            guard failure == nil else { return }
+            do {
+                let isZero = chunk.allSatisfy { $0 == 0 }
+                if isZero {
+                    // A hole: reserve the logical range without writing bytes.
+                    try handle.seek(toOffset: UInt64(offset + Int64(chunk.count)))
+                } else {
+                    try handle.write(contentsOf: chunk)
+                    written += Int64(chunk.count)
+                    guard physicalSoFar + written <= limits.maxPhysicalBytes else {
+                        throw StageError.physicalLimitExceeded(limits.maxPhysicalBytes)
+                    }
+                }
+                offset += Int64(chunk.count)
+                onProgress?(offset, Int64(entry.uncompressedSize))
+            } catch {
+                failure = error
+            }
+        }
+        if let failure { throw failure }
+        // The sparse file must keep its declared logical length.
+        try handle.truncate(atOffset: UInt64(entry.uncompressedSize))
+        return written
     }
 }
 
@@ -347,7 +538,7 @@ public struct LinuxGuestImageTemplateImportAdapter: RuntimeV2OfficialTemplateIma
 /// at a time per template; a cancelled or failed job registers nothing.
 public actor RuntimeV2OfficialTemplateService {
     private let store: RuntimeV2Store
-    private let importer: any RuntimeV2OfficialTemplateImageImporting
+    private let importer: any RuntimeV2OfficialTemplateImageAvailability
     private let downloader: any LinuxGuestImageDownloading
     private let artifacts: [RuntimeV2OfficialTemplateArtifact]
     private let templatesDirectory: URL?
@@ -355,7 +546,7 @@ public actor RuntimeV2OfficialTemplateService {
 
     public init(
         store: RuntimeV2Store,
-        importer: any RuntimeV2OfficialTemplateImageImporting,
+        importer: any RuntimeV2OfficialTemplateImageAvailability,
         downloader: any LinuxGuestImageDownloading,
         artifacts: [RuntimeV2OfficialTemplateArtifact] = RuntimeV2OfficialTemplateDistribution.artifacts,
         templatesDirectory: URL? = nil
@@ -484,12 +675,15 @@ public actor RuntimeV2OfficialTemplateService {
 
         try Task.checkCancellation()
         let imageDirectory: URL
+        var stagedRoot: URL?
         if let existing = await importer.installedImageDirectory(imageID: artifact.imageID),
            await importer.verificationFailure(imageID: artifact.imageID) == nil {
+            // The verified image is already installed (previous prepare or a
+            // user import): reuse it, the migration below is idempotent.
             imageDirectory = existing
         } else {
             if let failure = await importer.verificationFailure(imageID: artifact.imageID) {
-                // A damaged install is re-imported from the pinned bytes; the
+                // A damaged install is replaced from the pinned bytes; the
                 // broken copy is removed before the retry so nothing partial
                 // can be verified.
                 _ = failure
@@ -521,13 +715,17 @@ public actor RuntimeV2OfficialTemplateService {
                     expected: artifact.archiveSHA512, actual: actual
                 )
             }
-            _ = try await importer.importArchive(at: archive, expectedSHA512: artifact.archiveSHA512)
-            guard let installed = await importer.installedImageDirectory(imageID: artifact.imageID) else {
-                throw RuntimeV2OfficialTemplateError.imageUnavailable(
-                    imageID: artifact.imageID, reason: "the verified import left no image directory"
-                )
-            }
-            imageDirectory = installed
+            // Sparse staging: the disk entry is written with holes preserved,
+            // so a grown logical ext4 image does not cost its full size on the
+            // device and the shared importer's flat extracted-bytes cap does
+            // not reject it. The verified migration then ingests the exact
+            // digest-bearing bytes.
+            let staged = staging.appendingPathComponent("image-root", isDirectory: true)
+            _ = try RuntimeV2TemplateArchiveStager.stage(
+                archiveURL: archive, imageID: artifact.imageID, into: staged
+            )
+            stagedRoot = staged
+            imageDirectory = staged.appendingPathComponent(artifact.imageID, isDirectory: true)
         }
 
         try Task.checkCancellation()
@@ -541,8 +739,9 @@ public actor RuntimeV2OfficialTemplateService {
         // The verified image moves into the Runtime v2 content-addressed store
         // through the existing migration, so the boot path resolves the same
         // bytes the template registers.
+        let legacyRoot = stagedRoot ?? importer.imagesRootDirectory
         _ = try await store.images.migrateLegacyImage(
-            imageID: artifact.imageID, legacyImagesRoot: importer.imagesRootDirectory
+            imageID: artifact.imageID, legacyImagesRoot: legacyRoot
         )
         guard try await store.images.isImageVerified(imageID: artifact.imageID),
               let expandedManifest = try await store.images.manifest(imageID: artifact.imageID),

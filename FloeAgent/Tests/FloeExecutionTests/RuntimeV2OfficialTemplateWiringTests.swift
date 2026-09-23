@@ -2,13 +2,15 @@
 //
 // These tests drive the REAL Runtime v2 substrate (SQLite registry,
 // content-addressed blob store, block deltas, production integrator) with a
-// scripted archive downloader and a scripted verified-image importer. They
-// pin the contracts that make the official-template flow honest:
+// scripted archive downloader. They pin the contracts that make the
+// official-template flow honest:
 //
 //   - only a cloud-pinned artifact whose archive digest, image manifest
 //     template block, recipe digest and disk digest all match can be
 //     registered; a tampered archive, an unverified guest block or a recipe
 //     mismatch registers nothing and leaves the option unavailable;
+//   - a logical (sparse) template disk is staged with holes preserved, so a
+//     grown cloud image does not cost its logical size on the device;
 //   - the production integrator materializes a pinned environment's working
 //     disk as a clone of the immutable template install plus the environment's
 //     private delta (the immutable pin reaches the boot disk);
@@ -48,24 +50,33 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
 
     // MARK: - fixtures
 
-    /// Writes one qualified legacy image (bios + disk + manifest) under its
-    /// own legacy root and returns the directory plus the disk digest.
-    /// `templateBlock` is injected at the JSON level exactly like the image
-    /// build writes it.
-    private func writeLegacyImage(
-        imageID: String, diskSeed: UInt8, diskBytes: Int = 2 << 20,
+    private struct StagedImage {
+        var directory: URL
+        var diskDigest: String
+        var diskLogicalBytes: Int
+        var zipURL: URL
+    }
+
+    /// Writes one qualified legacy image (bios + disk + manifest) and zips it
+    /// flat, exactly like the cloud build packages its candidate.
+    private func makeLegacyImageZip(
+        imageID: String, diskSeed: UInt8, diskLogicalBytes: Int = 2 << 20,
         templateBlock: [String: Any]? = nil
-    ) throws -> (directory: URL, legacyRoot: URL, diskDigest: String) {
-        let legacyRoot = root.appendingPathComponent("legacy-\(imageID)-\(UUID().uuidString)", isDirectory: true)
-        let directory = legacyRoot.appendingPathComponent(imageID, isDirectory: true)
+    ) throws -> StagedImage {
+        let directory = root.appendingPathComponent("fixture-\(imageID)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var bios = Data(count: 4096)
         for index in bios.indices { bios[index] = UInt8((index &* 7) % 251) }
-        var disk = Data(count: diskBytes)
+        // A mostly-hole sparse disk: only the first 64 KiB carry data, the
+        // rest is a hole — the staging must preserve that.
+        var disk = Data(count: 64 << 10)
         for index in disk.indices { disk[index] = UInt8((index &* Int(diskSeed)) % 253) }
+        let handle = try FileHandle(forWritingTo: try writeFile(named: "disk.img", in: directory))
+        try handle.write(contentsOf: disk)
+        try handle.truncate(atOffset: UInt64(diskLogicalBytes))
+        try handle.close()
+        let diskDigest = try FloeDigest.sha512Hex(ofFileAt: directory.appendingPathComponent("disk.img"))
         try bios.write(to: directory.appendingPathComponent("bios.bin"))
-        try disk.write(to: directory.appendingPathComponent("disk.img"))
-        let diskDigest = FloeDigest.sha512Hex(disk)
         var manifest: [String: Any] = [
             "id": imageID,
             "biosPath": "bios.bin",
@@ -75,13 +86,24 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
             "qualificationRun": "https://github.com/JiangNanGenius/floe-agent/actions/runs/999",
             "artifacts": [
                 ["role": "bios", "path": "bios.bin", "sha512": FloeDigest.sha512Hex(bios), "bytes": bios.count],
-                ["role": "disk", "path": "disk.img", "sha512": diskDigest, "bytes": disk.count]
+                ["role": "disk", "path": "disk.img", "sha512": diskDigest, "bytes": diskLogicalBytes]
             ]
         ]
         if let templateBlock { manifest["template"] = templateBlock }
         let data = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: directory.appendingPathComponent("manifest.json"))
-        return (directory, legacyRoot, diskDigest)
+        let zipURL = root.appendingPathComponent("\(imageID)-\(UUID().uuidString).zip")
+        try FileManager.default.zipItem(at: directory, to: zipURL, shouldKeepParent: false)
+        return StagedImage(
+            directory: directory, diskDigest: diskDigest,
+            diskLogicalBytes: diskLogicalBytes, zipURL: zipURL
+        )
+    }
+
+    private func writeFile(named name: String, in directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        return url
     }
 
     private func recipeBytes(name: String, packages: [String: Any]) throws -> Data {
@@ -93,14 +115,14 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
     }
 
     private func pinnedArtifact(
-        templateID: String, imageID: String, archiveBytes: Data, diskDigest: String,
+        templateID: String, imageID: String, archiveData: Data, diskDigest: String,
         recipe: Data, qualifications: String = "https://github.com/JiangNanGenius/floe-agent/actions/runs/999"
     ) -> RuntimeV2OfficialTemplateArtifact {
         RuntimeV2OfficialTemplateArtifact(
             templateID: templateID, version: 1, imageID: imageID,
             archiveURL: "https://example.invalid/\(templateID).zip",
-            archiveSHA512: FloeDigest.sha512Hex(archiveBytes),
-            archiveBytes: Int64(archiveBytes.count),
+            archiveSHA512: FloeDigest.sha512Hex(archiveData),
+            archiveBytes: Int64(archiveData.count),
             diskSHA512: diskDigest,
             recipeSHA512: FloeDigest.sha512Hex(recipe),
             recipeBase64: recipe.base64EncodedString(),
@@ -130,25 +152,18 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
         }
     }
 
-    /// Verified-image importer seam over a scripted legacy root. When not
-    /// installed it copies the scripted source image into the images root,
-    /// exactly like the real importer materializes a verified image, so the
-    /// download → import → register path is exercised end to end.
-    private actor ScriptedImporter: RuntimeV2OfficialTemplateImageImporting {
+    /// Reuse/status seam over a scripted images root.
+    private actor ScriptedAvailability: RuntimeV2OfficialTemplateImageAvailability {
         nonisolated let imagesRootDirectory: URL
-        private let sourceDirectory: URL
-        private let imageID: String
-        private var installed: Bool
+        private var installed: Set<String>
 
-        init(imagesRootDirectory: URL, sourceDirectory: URL, imageID: String, installed: Bool) {
+        init(imagesRootDirectory: URL, installed: Set<String>) {
             self.imagesRootDirectory = imagesRootDirectory
-            self.sourceDirectory = sourceDirectory
-            self.imageID = imageID
             self.installed = installed
         }
 
         func installedImageDirectory(imageID: String) async -> URL? {
-            guard installed, imageID == self.imageID else { return nil }
+            guard installed.contains(imageID) else { return nil }
             let directory = imagesRootDirectory.appendingPathComponent(imageID, isDirectory: true)
             guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path) else {
                 return nil
@@ -157,48 +172,27 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
         }
 
         func verificationFailure(imageID: String) async -> String? {
-            installed && imageID == self.imageID ? nil : nil
+            // Absence is not a verification failure (matches the production
+            // adapter): only an installed-but-damaged image reports a reason.
+            installed.contains(imageID) ? nil : nil
         }
 
         func removeImage(imageID: String) async throws {
-            installed = false
-        }
-
-        func importArchive(at archiveURL: URL, expectedSHA512: String) async throws -> LinuxGuestImage {
-            let payload = try Data(contentsOf: archiveURL)
-            guard FloeDigest.sha512Hex(payload) == expectedSHA512.lowercased() else {
-                throw LinuxGuestImageInstallError.archiveDigestMismatch(
-                    expected: expectedSHA512, actual: "scripted mismatch"
-                )
-            }
-            let destination = imagesRootDirectory.appendingPathComponent(imageID, isDirectory: true)
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.createDirectory(at: imagesRootDirectory, withIntermediateDirectories: true)
-            try FileManager.default.copyItem(at: sourceDirectory, to: destination)
-            installed = true
-            let data = try Data(contentsOf: destination.appendingPathComponent("manifest.json"))
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            guard let image = try? decoder.decode(LinuxGuestImage.self, from: data) else {
-                throw LinuxGuestImageInstallError.manifestMissing(destination.path)
-            }
-            return image
+            installed.remove(imageID)
         }
     }
 
     private struct Environment {
         var service: RuntimeV2OfficialTemplateService
         var artifact: RuntimeV2OfficialTemplateArtifact
-        var importer: ScriptedImporter
-        var legacyRoot: URL
+        var image: StagedImage
     }
 
     /// Builds the service over a scripted artifact (default `dev-document`).
     private func makeService(
         templateID: String = "dev-document",
         templateBlockVerified: Bool = true,
-        templateBlockReason: String? = nil,
-        imageInstalled: Bool = true
+        templateBlockReason: String? = nil
     ) async throws -> Environment {
         let recipe = try recipeBytes(
             name: templateID, packages: ["python3": ["min_version": "3.11"], "nodejs": NSNull()]
@@ -218,36 +212,24 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
             "checks": ["recipe:sha512", "stage2-verify:present"]
         ]
         if let templateBlockReason { block["reason"] = templateBlockReason }
-        let generated = try writeLegacyImage(
-            imageID: templateImageID, diskSeed: 0x33, templateBlock: block
+        let image = try makeLegacyImageZip(
+            imageID: templateImageID, diskSeed: 0x33,
+            diskLogicalBytes: 1 << 20, templateBlock: block
         )
-        let archivePayload = Data("archive-\(templateID)".utf8)
+        let archiveData = try Data(contentsOf: image.zipURL)
         let artifact = pinnedArtifact(
             templateID: templateID, imageID: templateImageID,
-            archiveBytes: archivePayload, diskDigest: generated.diskDigest, recipe: recipe
+            archiveData: archiveData, diskDigest: image.diskDigest, recipe: recipe
         )
-        let importerRoot = root.appendingPathComponent("importer-images-\\(UUID().uuidString)", isDirectory: true)
+        let importerRoot = root.appendingPathComponent("importer-images-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: importerRoot, withIntermediateDirectories: true)
-        if imageInstalled {
-            try FileManager.default.copyItem(
-                at: generated.directory,
-                to: importerRoot.appendingPathComponent(templateImageID, isDirectory: true)
-            )
-        }
-        let importer = ScriptedImporter(
-            imagesRootDirectory: importerRoot,
-            sourceDirectory: generated.directory,
-            imageID: templateImageID,
-            installed: imageInstalled
-        )
+        let availability = ScriptedAvailability(imagesRootDirectory: importerRoot, installed: [])
         let service = RuntimeV2OfficialTemplateService(
-            store: store, importer: importer,
-            downloader: ScriptedDownloader(payloads: ["\(templateID).zip": archivePayload]),
+            store: store, importer: availability,
+            downloader: ScriptedDownloader(payloads: ["\(templateID).zip": archiveData]),
             artifacts: [artifact]
         )
-        return Environment(
-            service: service, artifact: artifact, importer: importer, legacyRoot: generated.legacyRoot
-        )
+        return Environment(service: service, artifact: artifact, image: image)
     }
 
     // MARK: - availability
@@ -255,10 +237,7 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
     func testEmptyDistributionReportsDependencyMissingAndRefusesPrepare() async throws {
         let service = RuntimeV2OfficialTemplateService(
             store: store,
-            importer: ScriptedImporter(
-                imagesRootDirectory: root, sourceDirectory: root,
-                imageID: "none", installed: false
-            ),
+            importer: ScriptedAvailability(imagesRootDirectory: root, installed: []),
             downloader: ScriptedDownloader(payloads: [:]),
             artifacts: []
         )
@@ -277,20 +256,27 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
         }
     }
 
-    func testPrepareRegistersPinnedArtifactAndAvailabilityListsRealPackages() async throws {
-        let environment = try await makeService(imageInstalled: false)
+    func testPrepareStagesSparseZipAndRegistersRealPackages() async throws {
+        let environment = try await makeService()
         var statuses = try await environment.service.availability()
         let before = try XCTUnwrap(statuses.first { $0.templateID == "dev-document" })
         XCTAssertEqual(before.state, .available)
         XCTAssertEqual(before.imageID, templateImageID)
 
-        // Download → verify → import → migrate → register.
         let registration = try await environment.service.prepare(templateID: "dev-document")
         XCTAssertEqual(registration.pin.templateID, "dev-document")
         XCTAssertEqual(registration.pin.version, 1)
         XCTAssertEqual(registration.buildMode, .imported)
         XCTAssertEqual(registration.packages.count, 2)
         XCTAssertEqual(registration.packages.map(\.name).sorted(), ["nodejs", "python3"])
+        XCTAssertEqual(registration.diskDigest, environment.image.diskDigest)
+
+        // The staged disk kept its LOGICAL length while only the data blocks
+        // were physically written (hole preservation).
+        let expanded = try await store.images.ensureExpanded(imageID: templateImageID)
+        let diskURL = expanded.appendingPathComponent("disk.img")
+        let attributes = try FileManager.default.attributesOfItem(atPath: diskURL.path)
+        XCTAssertEqual((attributes[.size] as? NSNumber)?.intValue ?? 0, environment.image.diskLogicalBytes)
 
         statuses = try await environment.service.availability()
         let after = try XCTUnwrap(statuses.first { $0.templateID == "dev-document" })
@@ -306,7 +292,7 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
     }
 
     func testTamperedArchiveRegistersNothingAndStaysUnavailable() async throws {
-        let environment = try await makeService(imageInstalled: false)
+        let environment = try await makeService()
         let mutated = RuntimeV2OfficialTemplateArtifact(
             templateID: environment.artifact.templateID, version: 1,
             imageID: environment.artifact.imageID,
@@ -320,7 +306,10 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
             sourceRef: environment.artifact.sourceRef
         )
         let service = RuntimeV2OfficialTemplateService(
-            store: store, importer: environment.importer,
+            store: store,
+            importer: ScriptedAvailability(
+                imagesRootDirectory: root.appendingPathComponent("tampered-root", isDirectory: true), installed: []
+            ),
             downloader: ScriptedDownloader(payloads: ["dev-document.zip": Data("tampered".utf8)]),
             artifacts: [mutated]
         )
@@ -354,7 +343,7 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
     // MARK: - pin reaches the production boot disk
 
     func testPinnedEnvironmentBootsTemplateCloneThroughProductionIntegrator() async throws {
-        let environment = try await makeService(imageInstalled: false)
+        let environment = try await makeService()
         let registration = try await environment.service.prepare(templateID: "dev-document")
         let templateDiskDigest = registration.diskDigest
 
@@ -399,7 +388,7 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
     }
 
     func testTwoEnvironmentsCloneTheSameInstallAndMutateIndependently() async throws {
-        let environment = try await makeService(imageInstalled: false)
+        let environment = try await makeService()
         let registration = try await environment.service.prepare(templateID: "dev-document")
         let templateDiskDigest = registration.diskDigest
         for id in ["env-a", "env-b"] {
@@ -436,11 +425,17 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
     }
 
     func testUnpinnedEnvironmentStaysOnItsBaseImage() async throws {
-        let base = try writeLegacyImage(imageID: baseImageID, diskSeed: 0x11)
-        _ = try await store.images.migrateLegacyImage(
-            imageID: baseImageID, legacyImagesRoot: base.legacyRoot
+        // A plain base image and a separate template image.
+        let base = try makeLegacyImageZip(imageID: baseImageID, diskSeed: 0x11)
+        let baseLegacyRoot = root.appendingPathComponent("base-legacy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: baseLegacyRoot, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: base.directory, to: baseLegacyRoot.appendingPathComponent(baseImageID, isDirectory: true)
         )
-        let environment = try await makeService(imageInstalled: false)
+        _ = try await store.images.migrateLegacyImage(
+            imageID: baseImageID, legacyImagesRoot: baseLegacyRoot
+        )
+        let environment = try await makeService()
         _ = try await environment.service.prepare(templateID: "dev-document")
 
         let now = Date()
@@ -465,11 +460,16 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
     }
 
     func testRegisterPinnedEnvironmentRefusesForeignBaseImage() async throws {
-        let base = try writeLegacyImage(imageID: baseImageID, diskSeed: 0x22)
-        _ = try await store.images.migrateLegacyImage(
-            imageID: baseImageID, legacyImagesRoot: base.legacyRoot
+        let base = try makeLegacyImageZip(imageID: baseImageID, diskSeed: 0x22)
+        let baseLegacyRoot = root.appendingPathComponent("base-legacy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: baseLegacyRoot, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: base.directory, to: baseLegacyRoot.appendingPathComponent(baseImageID, isDirectory: true)
         )
-        let environment = try await makeService(imageInstalled: false)
+        _ = try await store.images.migrateLegacyImage(
+            imageID: baseImageID, legacyImagesRoot: baseLegacyRoot
+        )
+        let environment = try await makeService()
         _ = try await environment.service.prepare(templateID: "dev-document")
         let now = Date()
         try await store.registry.upsertEnvironment(RuntimeV2Registry.EnvironmentRow(
