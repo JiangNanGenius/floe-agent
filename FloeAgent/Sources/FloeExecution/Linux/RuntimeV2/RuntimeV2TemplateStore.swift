@@ -533,10 +533,46 @@ public actor RuntimeV2TemplateStore {
 
     public struct PinnedDiskClone: Sendable, Equatable {
         public var pin: RuntimeV2TemplatePin
+        /// The mode the materialization ACTUALLY ran (clonefile success or
+        /// byte-copy fallback), never inferred from sparse-file accounting.
         public var mode: CloneMode
         public var logicalBytes: Int64
         public var allocatedBytes: Int64?
+        /// Physical bytes shared with the template blob. Always nil: the
+        /// filesystem does not report per-file shared extents for APFS clones,
+        /// so no shared/saved byte figure is ever claimed here.
+        public var sharedPhysicalBytes: Int64?
         public var rootBaseImageID: String
+
+        public init(
+            pin: RuntimeV2TemplatePin, mode: CloneMode, logicalBytes: Int64,
+            allocatedBytes: Int64?, sharedPhysicalBytes: Int64? = nil, rootBaseImageID: String
+        ) {
+            self.pin = pin
+            self.mode = mode
+            self.logicalBytes = logicalBytes
+            self.allocatedBytes = allocatedBytes
+            self.sharedPhysicalBytes = sharedPhysicalBytes
+            self.rootBaseImageID = rootBaseImageID
+        }
+    }
+
+    /// The verified base an environment's working disk was actually cloned
+    /// from, resolved from the durable boot provenance (never from the current
+    /// environment pin). A delta captured against this identity contains only
+    /// the environment's private changes.
+    public struct BootBase: Sendable, Equatable {
+        public var diskURL: URL
+        public var digest: String
+        public var templatePin: RuntimeV2TemplatePin?
+        public var baseImageID: String
+
+        public init(diskURL: URL, digest: String, templatePin: RuntimeV2TemplatePin?, baseImageID: String) {
+            self.diskURL = diskURL
+            self.digest = digest
+            self.templatePin = templatePin
+            self.baseImageID = baseImageID
+        }
     }
 
     /// The exact base disk an environment's private delta is captured against
@@ -571,17 +607,35 @@ public actor RuntimeV2TemplateStore {
     }
 
     /// Injectable host seams so clone-failure fallbacks and space checks are
-    /// testable without a specific filesystem.
+    /// testable without a specific filesystem. The optional hooks exist so
+    /// fault/race tests can drive the exact interleaving windows the review
+    /// found (a pin landing between the GC pre-check and the collection
+    /// transaction, a failure between evidence staging and activation).
     public struct Seams: Sendable {
         public var cloneFile: @Sendable (String, String) -> Bool
         public var availableBytes: @Sendable (URL) -> Int64?
+        /// Replaces the evidence write (throws to inject a pre-activation IO
+        /// failure). nil = write the file normally.
+        public var evidenceWrite: (@Sendable (Data, URL) throws -> Void)?
+        /// Runs after the GC candidate listing and before the atomic
+        /// collection transaction — the exact TOCTOU window.
+        public var beforeCollectVersion: (@Sendable (String, Int) async -> Void)?
+        /// Runs after the ingest was recorded and before the activation
+        /// transaction.
+        public var beforeActivation: (@Sendable (String, Int) async -> Void)?
 
         public init(
             cloneFile: @escaping @Sendable (String, String) -> Bool,
-            availableBytes: @escaping @Sendable (URL) -> Int64?
+            availableBytes: @escaping @Sendable (URL) -> Int64?,
+            evidenceWrite: (@Sendable (Data, URL) throws -> Void)? = nil,
+            beforeCollectVersion: (@Sendable (String, Int) async -> Void)? = nil,
+            beforeActivation: (@Sendable (String, Int) async -> Void)? = nil
         ) {
             self.cloneFile = cloneFile
             self.availableBytes = availableBytes
+            self.evidenceWrite = evidenceWrite
+            self.beforeCollectVersion = beforeCollectVersion
+            self.beforeActivation = beforeActivation
         }
 
         public static let production = Seams(
@@ -604,6 +658,8 @@ public actor RuntimeV2TemplateStore {
         "home", "workspaces", "credentials", "shell-history", "caches", "conversations"
     ]
     public static let catalogReferenceID = "official-catalog"
+    public static let evidenceFileName = "template-evidence.json"
+    public static let evidenceStagingFileName = "template-evidence.json.staging"
     public static let copySpaceMarginBytes: Int64 = 32 << 20
     public static let maximumParentDepth = 4
     public static let defaultGCGrace: TimeInterval = 7 * 24 * 3600
@@ -1144,7 +1200,11 @@ public actor RuntimeV2TemplateStore {
     /// Pins an environment to exactly one verified template version. The
     /// environment's recorded base image must be the template's root base
     /// image, so a pinned boot can never mix a template rootfs with another
-    /// image's kernel/BIOS.
+    /// image's kernel/BIOS. The pin move (including replacing the old
+    /// reference) is one registry transaction that refuses while the
+    /// environment holds a live write lease: a running guest's install state
+    /// is never re-pointed under it, and a stale reference to the abandoned
+    /// version can never linger to keep it alive.
     @discardableResult
     public func pinEnvironment(
         environmentID: String, templateID: String, version: Int
@@ -1174,27 +1234,19 @@ public actor RuntimeV2TemplateStore {
         ) else {
             throw RuntimeV2Error.environmentNotFound(environmentID)
         }
-        try await registry.addTemplateReference(
-            templateID: templateID, version: version, kind: "environment", refID: environmentID
-        )
         recordPinInMetadata(environmentID: environmentID, pin: pin)
         return pin
     }
 
-    /// Removes the pin (the environment falls back to its base image). Refused
-    /// while the environment holds a live write lease: an install state is
-    /// never switched under a running guest.
+    /// Removes the pin (the environment falls back to its base image). The
+    /// registry transaction refuses while the environment holds a live write
+    /// lease and removes the environment reference with the pin, so a
+    /// swallowed/unpinned version can never keep a dangling reference.
     public func unpinEnvironment(environmentID: String) async throws {
-        if let lease = try await registry.lease(environmentID: environmentID), lease.state == "held" {
-            throw RuntimeV2Error.templateEnvironmentRunning(environmentID: environmentID)
+        guard try await registry.environment(id: environmentID) != nil else {
+            throw RuntimeV2Error.environmentNotFound(environmentID)
         }
-        if let pin = try await environmentPin(environmentID: environmentID) {
-            try await registry.removeTemplateReference(
-                templateID: pin.templateID, version: pin.version,
-                kind: "environment", refID: environmentID
-            )
-        }
-        try await registry.clearEnvironmentTemplatePin(environmentID: environmentID)
+        _ = try await registry.unpinEnvironmentTemplate(environmentID: environmentID)
         recordPinInMetadata(environmentID: environmentID, pin: nil)
     }
 
@@ -1250,10 +1302,27 @@ public actor RuntimeV2TemplateStore {
     /// environment has no pin (the caller then clones the verified base image
     /// exactly as before). The caller applies the environment's private delta
     /// afterwards.
+    ///
+    /// `expecting` is the `DeltaBase` the caller already resolved and recorded
+    /// as the working disk's provenance: when supplied, the pin must still be
+    /// exactly that identity or the clone is refused (an old delta can never
+    /// be applied over a different base's bytes).
     public func clonePinnedTemplateDisk(
-        environmentID: String, runtimeID: String, imageID: String, into diskURL: URL
+        environmentID: String, runtimeID: String, imageID: String, into diskURL: URL,
+        expecting expectedBase: DeltaBase? = nil
     ) async throws -> PinnedDiskClone? {
         guard let pin = try await environmentPin(environmentID: environmentID) else { return nil }
+        if let expectedBase {
+            guard let expectedPin = expectedBase.templatePin,
+                  expectedPin.templateID == pin.templateID,
+                  expectedPin.version == pin.version,
+                  expectedPin.digest.lowercased() == pin.digest.lowercased() else {
+                throw RuntimeV2Error.templatePinUnavailable(
+                    environmentID: environmentID, templateID: pin.templateID, version: pin.version,
+                    reason: "the pin changed after the boot base was recorded; the working disk was not cloned"
+                )
+            }
+        }
         guard let row = try await registry.template(templateID: pin.templateID, version: pin.version) else {
             throw RuntimeV2Error.templatePinUnavailable(
                 environmentID: environmentID, templateID: pin.templateID, version: pin.version,
@@ -1273,6 +1342,13 @@ public actor RuntimeV2TemplateStore {
                     + "the environment is never silently re-pointed"
             )
         }
+        if let expectedBase, expectedBase.digest.lowercased() != diskDigest.lowercased() {
+            throw RuntimeV2Error.templatePinUnavailable(
+                environmentID: environmentID, templateID: pin.templateID, version: pin.version,
+                reason: "the recorded boot base (\(expectedBase.digest.prefix(16))…) is not this version's disk "
+                    + "(\(diskDigest.prefix(16))…); the working disk was not cloned"
+            )
+        }
         let rootImage = try await rootBaseImageID(row)
         guard rootImage == imageID else {
             throw RuntimeV2Error.templateBaseImageMismatch(
@@ -1281,14 +1357,134 @@ public actor RuntimeV2TemplateStore {
             )
         }
         // The blob is the immutable template disk. Clone it to the working
-        // path; the environment's delta is applied on top by the caller.
-        try await blobs.materialize(digest: diskDigest, at: diskURL, writable: true)
-        let bytes = RuntimeV2FileBytes.measure(fileAt: diskURL)
+        // path; the environment's delta is applied on top by the caller. The
+        // mode is the materialization's actual outcome — sparse-hole
+        // accounting is NOT clone evidence, so it is never consulted here.
+        let report = try await blobs.materialize(digest: diskDigest, at: diskURL, writable: true)
         return PinnedDiskClone(
             pin: pin,
-            mode: bytes.measuredSavingsBytes == nil ? .copy : .clone,
-            logicalBytes: bytes.logicalBytes, allocatedBytes: bytes.allocatedBytes,
+            mode: report.mode == .clone ? .clone : .copy,
+            logicalBytes: report.logicalBytes, allocatedBytes: report.allocatedBytes,
+            sharedPhysicalBytes: nil,
             rootBaseImageID: rootImage
+        )
+    }
+
+    /// Resolves the capture base for a working disk from the provenance frozen
+    /// in its `runtime.json` at boot — the pinned template's immutable disk and
+    /// content digest, or the verified base image rootfs digest. The current
+    /// environment pin is only checked for equality with what the disk booted;
+    /// it is never used to re-point existing bytes. Anything unprovable or
+    /// changed fails closed so the caller preserves the disk instead of
+    /// rewriting it as private state.
+    public func bootBase(
+        matching meta: RuntimeV2WorkingDirectory.Meta, expectedImageID: String? = nil
+    ) async throws -> BootBase {
+        guard let recordedDigest = meta.bootBaseDiskDigest,
+              recordedDigest.count == 128,
+              recordedDigest.allSatisfy({ $0.isHexDigit }) else {
+            throw RuntimeV2Error.workingDirectoryProvenanceUnavailable(
+                environmentID: meta.environmentID,
+                reason: "the working directory records no boot base digest; the disk's origin cannot be proven"
+            )
+        }
+        if let expectedImageID, expectedImageID != meta.baseImageID {
+            throw RuntimeV2Error.templateBaseImageMismatch(
+                environmentID: meta.environmentID, templateBaseImage: meta.baseImageID,
+                environmentBaseImage: expectedImageID
+            )
+        }
+        let currentPin = try await environmentPin(environmentID: meta.environmentID)
+        if let templateID = meta.templateID {
+            guard let version = meta.templateVersion, let digest = meta.templateDigest else {
+                throw RuntimeV2Error.workingDirectoryProvenanceUnavailable(
+                    environmentID: meta.environmentID,
+                    reason: "the boot provenance records a partial template pin"
+                )
+            }
+            guard let currentPin else {
+                throw RuntimeV2Error.bootProvenanceMismatch(
+                    environmentID: meta.environmentID,
+                    recorded: "template \(templateID)@\(version)",
+                    current: "no pin"
+                )
+            }
+            guard currentPin.templateID == templateID,
+                  currentPin.version == version,
+                  currentPin.digest.lowercased() == digest.lowercased() else {
+                throw RuntimeV2Error.bootProvenanceMismatch(
+                    environmentID: meta.environmentID,
+                    recorded: "template \(templateID)@\(version) (\(digest.prefix(16))…)",
+                    current: currentPin.describedIdentity
+                )
+            }
+            guard let row = try await registry.template(templateID: templateID, version: version) else {
+                throw RuntimeV2Error.workingDirectoryProvenanceUnavailable(
+                    environmentID: meta.environmentID,
+                    reason: "the recorded template version \(templateID)@\(version) no longer exists"
+                )
+            }
+            guard row.state == .verified, let rowDiskDigest = row.diskDigest else {
+                throw RuntimeV2Error.workingDirectoryProvenanceUnavailable(
+                    environmentID: meta.environmentID,
+                    reason: "the recorded template version \(templateID)@\(version) is no longer verified"
+                )
+            }
+            guard row.digest.lowercased() == digest.lowercased(),
+                  rowDiskDigest.lowercased() == recordedDigest.lowercased() else {
+                throw RuntimeV2Error.bootProvenanceMismatch(
+                    environmentID: meta.environmentID,
+                    recorded: "template \(templateID)@\(version) disk \(recordedDigest.prefix(16))…",
+                    current: "content \(row.digest.prefix(16))… disk \(rowDiskDigest.prefix(16))…"
+                )
+            }
+            let rootImage = try await rootBaseImageID(row)
+            guard rootImage == meta.baseImageID else {
+                throw RuntimeV2Error.templateBaseImageMismatch(
+                    environmentID: meta.environmentID, templateBaseImage: rootImage,
+                    environmentBaseImage: meta.baseImageID
+                )
+            }
+            return BootBase(
+                diskURL: try await blobs.verifiedBlobURL(digest: recordedDigest),
+                digest: recordedDigest.lowercased(),
+                templatePin: RuntimeV2TemplatePin(templateID: templateID, version: version, digest: digest),
+                baseImageID: meta.baseImageID
+            )
+        }
+        // Base-image-only boot: the disk must be exactly the verified base
+        // image rootfs recorded at boot, and the environment must still be
+        // unpinned (a pin added under a stopped environment changes the install
+        // identity and is refused here).
+        guard currentPin == nil else {
+            throw RuntimeV2Error.bootProvenanceMismatch(
+                environmentID: meta.environmentID,
+                recorded: "base image \(meta.baseImageID) (\(recordedDigest.prefix(16))…)",
+                current: currentPin?.describedIdentity ?? "no pin"
+            )
+        }
+        guard try await images.isImageVerified(imageID: meta.baseImageID) else {
+            throw RuntimeV2Error.unverifiedImageReferenced(meta.baseImageID)
+        }
+        guard let manifest = try await images.manifest(imageID: meta.baseImageID),
+              let ref = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"] else {
+            throw RuntimeV2Error.imageNotFound(meta.baseImageID)
+        }
+        guard ref.sha512.lowercased() == recordedDigest.lowercased() else {
+            throw RuntimeV2Error.bootProvenanceMismatch(
+                environmentID: meta.environmentID,
+                recorded: "base image \(meta.baseImageID) rootfs \(recordedDigest.prefix(16))…",
+                current: "rootfs \(ref.sha512.prefix(16))…"
+            )
+        }
+        let expanded = try await images.ensureExpanded(imageID: meta.baseImageID)
+        let disk = expanded.appendingPathComponent(ref.expandedPath)
+        guard fileManager.fileExists(atPath: disk.path) else {
+            throw RuntimeV2Error.blobMissing(ref.sha512)
+        }
+        return BootBase(
+            diskURL: disk, digest: recordedDigest.lowercased(),
+            templatePin: nil, baseImageID: meta.baseImageID
         )
     }
 
@@ -1299,6 +1495,11 @@ public actor RuntimeV2TemplateStore {
     /// recovery points and quarantine are all protected; a collected version
     /// is quarantined (never hard-deleted) and its blob reference released so
     /// the blob store's own GC may reclaim the bytes.
+    ///
+    /// The listing below is only a candidate set. The protection re-check and
+    /// the state + blob-reference transition happen inside ONE registry
+    /// transaction (`collectTemplateVersionIfUnreferenced`), so a pin or
+    /// reference inserted after the listing can never be collected around.
     public func collectGarbage(
         grace: TimeInterval = RuntimeV2TemplateStore.defaultGCGrace,
         now: Date = Date()
@@ -1308,31 +1509,32 @@ public actor RuntimeV2TemplateStore {
             releasedBlobDigests: [], reclaimableBytes: 0, notes: []
         )
         for row in try await registry.unreferencedTemplateVersions() {
-            guard row.state == .verified, let diskDigest = row.diskDigest else { continue }
+            guard row.state == .verified, row.diskDigest != nil else { continue }
             guard let verifiedAt = row.verifiedAt,
                   now.timeIntervalSince(verifiedAt) >= grace else { continue }
-            // Belt and braces: an environment pin is a reference even if the
-            // reference row was lost.
-            let pinnedByEnvironment = try await registry.environments().contains {
-                $0.templateID == row.templateID && $0.templateVersion == row.version
+            if let beforeCollectVersion = seams.beforeCollectVersion {
+                await beforeCollectVersion(row.templateID, row.version)
             }
-            if pinnedByEnvironment {
-                report.skippedPinned.append(row.slotDescription)
-                continue
-            }
-            try await registry.quarantineTemplateVersion(
-                templateID: row.templateID, version: row.version,
-                reason: "collected: no environment, catalog, build, recovery or quarantine reference after \(Int(grace))s"
-            )
-            try? await blobs.release(digest: diskDigest)
-            report.collected.append(row.slotDescription)
-            report.releasedBlobDigests.append(diskDigest)
-            if let blob = try await registry.blob(digest: diskDigest), blob.refs == 0 {
-                report.reclaimableBytes += blob.bytes
-            } else {
-                report.notes.append(
-                    "blob \(diskDigest.prefix(16))… is still referenced after release; bytes were not counted as reclaimable"
-                )
+            switch try await registry.collectTemplateVersionIfUnreferenced(
+                templateID: row.templateID, version: row.version, grace: grace, now: now
+            ) {
+            case .collected(let collectedDigest, let blobBytes, let remainingRefs):
+                report.collected.append(row.slotDescription)
+                report.releasedBlobDigests.append(collectedDigest)
+                if remainingRefs == 0 {
+                    report.reclaimableBytes += blobBytes
+                } else {
+                    report.notes.append(
+                        "blob \(collectedDigest.prefix(16))… is still referenced after release; "
+                            + "bytes were not counted as reclaimable"
+                    )
+                }
+            case .skipped(let reason):
+                if reason == "environment pin" {
+                    report.skippedPinned.append(row.slotDescription)
+                } else {
+                    report.notes.append("kept \(row.slotDescription): \(reason)")
+                }
             }
         }
         for row in try await registry.templates(state: .quarantined) {
@@ -1341,9 +1543,10 @@ public actor RuntimeV2TemplateStore {
         return report
     }
 
-    /// Finalizes a template build once its replacement proved itself: the
-    /// evidence rollback point moves to recovery/trash (still not a hard
-    /// delete) and the migration record reaches `done`.
+    /// Finalizes a template build once its replacement proved itself: staged
+    /// evidence is promoted (retried here when the post-activation promotion
+    /// failed), the evidence rollback point moves to recovery/trash (still not
+    /// a hard delete) and the migration record reaches `done`.
     public func finalizeBuilds() async throws -> Int {
         var finalized = 0
         let pending = try await registry.migrations(inPhases: [.cleanupPending])
@@ -1351,6 +1554,18 @@ public actor RuntimeV2TemplateStore {
             let rollback = layout.recoveryMigrationsDirectory.appendingPathComponent(
                 migration.id, isDirectory: true
             )
+            let staged = rollback.appendingPathComponent(Self.evidenceStagingFileName)
+            if fileManager.fileExists(atPath: staged.path) {
+                // Evidence must be promoted before its rollback point is
+                // trashed; a failure keeps the migration cleanupPending (the
+                // next launch retries) and never loses the staged evidence.
+                do {
+                    try promoteStagedEvidence(migrationID: migration.id)
+                } catch {
+                    continue
+                }
+                try? await registry.setMigrationPhase(id: migration.id, phase: .cleanupPending, error: nil)
+            }
             if fileManager.fileExists(atPath: rollback.path) {
                 let trash = layout.trashDirectory.appendingPathComponent(
                     "\(migration.id)-\(UUID().uuidString)", isDirectory: true
@@ -1612,6 +1827,22 @@ public actor RuntimeV2TemplateStore {
         var stagingDirectory: URL?
     }
 
+    /// The registration state machine. Ordering is the safety property:
+    ///
+    ///   1. stage + verify the evidence file (a failure here leaves the version
+    ///      unverified — never "verified but failed");
+    ///   2. place the immutable blob WITHOUT taking a reference;
+    ///   3. record the pending owner and take exactly one blob reference in the
+    ///      same DB transaction (no ownerless references, crash-safe);
+    ///   4. activate: packages + verified bytes + reference bookkeeping +
+    ///      migration phase in ONE commit;
+    ///   5. promote the staged evidence (a failure is recorded on the migration
+    ///      row and retried by `finalizeBuilds`, it never un-verifies).
+    ///
+    /// Any failure before (4) commits runs the compensating path
+    /// (`abandonRegistration`): the recorded ingest reference is released and
+    /// cleared in the same transaction that marks the version failed, and the
+    /// staging clone is quarantined, not destroyed.
     private func finishRegistration(_ inputs: RegistrationInputs) async throws -> Registration {
         let request = inputs.request
         let bytes = RuntimeV2FileBytes.measure(fileAt: inputs.diskURL)
@@ -1622,58 +1853,74 @@ public actor RuntimeV2TemplateStore {
             )
         }
         let diskDigest = try FloeDigest.sha512Hex(ofFileAt: inputs.diskURL)
-        // Ingest stages + verifies + atomically renames; identical content is
-        // reused, never duplicated.
-        let storedDigest = try await blobs.ingest(
-            sourceURL: inputs.diskURL, expectedSHA512: diskDigest,
-            expectedBytes: bytes.logicalBytes,
-            retainFor: "template:\(request.templateID)@\(request.version)"
-        )
         let contentDigest = Self.contentDigest(
             parent: request.parent, architecture: request.architecture,
             recipe: request.recipe, packages: inputs.packages
         )
-        try await registry.setTemplatePackages(
-            templateID: request.templateID, version: request.version,
-            packages: inputs.packages.map {
-                RuntimeV2Registry.TemplatePackageRow(
+        let packageRows = inputs.packages.map {
+            RuntimeV2Registry.TemplatePackageRow(
+                templateID: request.templateID, version: request.version,
+                name: $0.name, packageVersion: $0.version,
+                architecture: $0.architecture, source: $0.source,
+                installState: $0.installState, digest: $0.digest
+            )
+        }
+        do {
+            // (1) Evidence staged and read back BEFORE anything can activate.
+            try stageEvidence(inputs: inputs, diskDigest: diskDigest, contentDigest: contentDigest)
+            // (2) Content-addressed placement; identical content is reused.
+            let storedDigest = try await blobs.stageUnreferenced(
+                sourceURL: inputs.diskURL, expectedSHA512: diskDigest,
+                expectedBytes: bytes.logicalBytes
+            )
+            // (3) The reference and the pending owner commit together.
+            guard try await registry.recordTemplateIngest(
+                templateID: request.templateID, version: request.version,
+                diskDigest: storedDigest, bytes: bytes.logicalBytes
+            ) else {
+                throw RuntimeV2Error.templateNotVerified(
                     templateID: request.templateID, version: request.version,
-                    name: $0.name, packageVersion: $0.version,
-                    architecture: $0.architecture, source: $0.source,
-                    installState: $0.installState, digest: $0.digest
+                    reason: "the version left the building state before its disk was recorded; nothing was activated"
                 )
             }
-        )
-        try await registry.setMigrationPhase(id: inputs.migrationID, phase: .switched)
-        try await registry.markTemplateVerified(
-            templateID: request.templateID, version: request.version,
-            digest: contentDigest, diskDigest: storedDigest,
-            logicalBytes: bytes.logicalBytes,
-            allocatedBytes: bytes.allocatedBytes ?? 0,
-            downloadBytes: inputs.downloadBytes,
-            buildMode: inputs.cloneMode.rawValue,
-            packageCount: inputs.packages.count
-        )
-        // Evidence + recovery point: the recipe/outcome snapshot moves out of
-        // the temporary build directory and stays until finalized.
-        try retainEvidence(inputs: inputs, diskDigest: storedDigest, contentDigest: contentDigest)
-        if let buildID = inputs.buildID {
-            try await registry.removeTemplateReference(
+            if let beforeActivation = seams.beforeActivation {
+                await beforeActivation(request.templateID, request.version)
+            }
+            // (4) The single activation commit.
+            let activated = try await registry.activateTemplateVersion(
                 templateID: request.templateID, version: request.version,
-                kind: "build", refID: buildID
+                digest: contentDigest, diskDigest: storedDigest,
+                logicalBytes: bytes.logicalBytes,
+                allocatedBytes: bytes.allocatedBytes ?? 0,
+                downloadBytes: inputs.downloadBytes,
+                buildMode: inputs.cloneMode.rawValue,
+                packages: packageRows,
+                removeBuildReferenceID: inputs.buildID,
+                recoveryReferenceID: inputs.migrationID,
+                catalogReferenceID: request.retainCatalogReference ? Self.catalogReferenceID : nil,
+                migrationID: inputs.migrationID
+            )
+            guard activated else {
+                throw RuntimeV2Error.templateNotVerified(
+                    templateID: request.templateID, version: request.version,
+                    reason: "the version was no longer building when the registration committed; nothing was verified"
+                )
+            }
+        } catch {
+            await abandonRegistration(inputs: inputs, reason: error.localizedDescription)
+            throw error
+        }
+        // (5) Evidence promotion. The version is already verified by the commit
+        // above; a promotion failure is a retryable cleanup state, recorded on
+        // the migration row, never a rollback of the verification.
+        do {
+            try promoteStagedEvidence(migrationID: inputs.migrationID)
+        } catch {
+            try? await registry.setMigrationPhase(
+                id: inputs.migrationID, phase: .cleanupPending,
+                error: "evidence promotion pending: \(error.localizedDescription)"
             )
         }
-        try await registry.addTemplateReference(
-            templateID: request.templateID, version: request.version,
-            kind: "recovery", refID: inputs.migrationID
-        )
-        if request.retainCatalogReference {
-            try await registry.addTemplateReference(
-                templateID: request.templateID, version: request.version,
-                kind: "catalog", refID: Self.catalogReferenceID
-            )
-        }
-        try await registry.setMigrationPhase(id: inputs.migrationID, phase: .cleanupPending)
         // The blob is the immutable template now; the large temporary clone
         // (if any) can go.
         if let staging = inputs.stagingDirectory, fileManager.fileExists(atPath: staging.path) {
@@ -1690,7 +1937,7 @@ public actor RuntimeV2TemplateStore {
             allocatedBytes: bytes.allocatedBytes,
             downloadBytes: inputs.downloadBytes,
             buildMode: inputs.cloneMode,
-            diskDigest: storedDigest,
+            diskDigest: diskDigest.lowercased(),
             referenceCount: try await registry.templateReferences(
                 templateID: request.templateID, version: request.version
             ).count,
@@ -1699,7 +1946,36 @@ public actor RuntimeV2TemplateStore {
         )
     }
 
-    private func retainEvidence(
+    /// Compensating path for a registration that never activated. The registry
+    /// side (`failTemplateVersion`) releases exactly the one reference the
+    /// recorded ingest took, clears the pending digest, deletes the orphaned
+    /// build reference and marks the version failed — one transaction, exactly
+    /// once. The staging clone is quarantined so a failed install stays
+    /// inspectable; it is never silently discarded.
+    private func abandonRegistration(inputs: RegistrationInputs, reason: String) async {
+        var quarantinePath: String?
+        if let staging = inputs.stagingDirectory, fileManager.fileExists(atPath: staging.path) {
+            let quarantine = layout.quarantineDirectory.appendingPathComponent(
+                "template-\(inputs.request.templateID)-v\(inputs.request.version)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            if (try? fileManager.moveItem(at: staging, to: quarantine)) != nil {
+                quarantinePath = quarantine.path
+            }
+        }
+        try? await registry.failTemplateVersion(
+            templateID: inputs.request.templateID, version: inputs.request.version,
+            reason: "registration failed before activation: \(reason)", stagingPath: quarantinePath
+        )
+        try? await registry.setMigrationPhase(
+            id: inputs.migrationID, phase: .failed, error: reason
+        )
+    }
+
+    /// Writes the recipe/outcome snapshot to a `.staging` name next to its
+    /// final path and verifies it reads back with the exact digests. Activation
+    /// never observes an evidence file that was not first verified.
+    private func stageEvidence(
         inputs: RegistrationInputs, diskDigest: String, contentDigest: String
     ) throws {
         let rollback = layout.recoveryMigrationsDirectory.appendingPathComponent(
@@ -1713,7 +1989,7 @@ public actor RuntimeV2TemplateStore {
         let evidence: [String: Any] = [
             "template": "\(inputs.request.templateID)@\(inputs.request.version)",
             "content_digest": contentDigest,
-            "disk_digest": diskDigest,
+            "disk_digest": diskDigest.lowercased(),
             "parent_kind": inputs.request.parent.kind.rawValue,
             "parent_id": inputs.request.parent.id,
             "parent_digest": inputs.request.parent.digest,
@@ -1728,7 +2004,54 @@ public actor RuntimeV2TemplateStore {
         let data = try JSONSerialization.data(
             withJSONObject: evidence, options: [.sortedKeys, .prettyPrinted]
         )
-        try data.write(to: rollback.appendingPathComponent("template-evidence.json"), options: .atomic)
+        let url = rollback.appendingPathComponent(Self.evidenceStagingFileName)
+        if let evidenceWrite = seams.evidenceWrite {
+            try evidenceWrite(data, url)
+        } else {
+            try data.write(to: url, options: .atomic)
+        }
+        guard let readBack = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: readBack) as? [String: Any],
+              object["content_digest"] as? String == contentDigest,
+              (object["disk_digest"] as? String)?.lowercased() == diskDigest.lowercased() else {
+            throw RuntimeV2Error.migrationFailed(
+                id: inputs.migrationID, phase: "verified",
+                reason: "the staged template evidence could not be read back; nothing was activated"
+            )
+        }
+    }
+
+    /// Promotes `.staging` evidence to its final name. Idempotent; returns
+    /// false when there is nothing staged (nothing to promote). An existing
+    /// REGULAR final file wins; anything else occupying the path (a directory,
+    /// a foreign object) is an IO fault the caller must retry — the staged
+    /// evidence is preserved.
+    @discardableResult
+    private func promoteStagedEvidence(migrationID: String) throws -> Bool {
+        let rollback = layout.recoveryMigrationsDirectory.appendingPathComponent(
+            migrationID, isDirectory: true
+        )
+        let staged = rollback.appendingPathComponent(Self.evidenceStagingFileName)
+        let final = rollback.appendingPathComponent(Self.evidenceFileName)
+        guard fileManager.fileExists(atPath: staged.path) else { return false }
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: final.path, isDirectory: &isDirectory) {
+            guard !isDirectory.boolValue else {
+                throw RuntimeV2Error.migrationFailed(
+                    id: migrationID, phase: "cleanupPending",
+                    reason: "the evidence path is occupied by a directory; the staged evidence is retained"
+                )
+            }
+            try? fileManager.removeItem(at: staged)
+            return true
+        }
+        guard rename(staged.path, final.path) == 0 else {
+            throw RuntimeV2Error.migrationFailed(
+                id: migrationID, phase: "cleanupPending",
+                reason: "template evidence promote failed (errno \(errno)); the staged evidence is retained"
+            )
+        }
+        return true
     }
 
     private func failBuild(handle: BuildHandle, request: BuildRequest, reason: String) async throws {

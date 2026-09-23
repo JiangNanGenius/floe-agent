@@ -14,25 +14,93 @@ import Foundation
 import FloeCore
 
 public actor RuntimeV2BlobStore {
-    private let layout: RuntimeV2Layout
-    private let registry: RuntimeV2Registry
-    private var fileManager: FileManager { .default }
+    /// Injectable host seam so the clone-vs-copy outcome is a real observation
+    /// in tests on volumes where clonefile cannot be exercised directly.
+    public struct Seams: Sendable {
+        public var cloneFile: @Sendable (String, String) -> Bool
 
-    public init(layout: RuntimeV2Layout, registry: RuntimeV2Registry) {
-        self.layout = layout
-        self.registry = registry
+        public init(cloneFile: @escaping @Sendable (String, String) -> Bool) {
+            self.cloneFile = cloneFile
+        }
+
+        public static let production = Seams(cloneFile: { source, destination in
+            #if canImport(Darwin)
+            return clonefile(source, destination, 0) == 0
+            #else
+            return false
+            #endif
+        })
     }
 
-    /// Ingests `sourceURL` as the blob for `expectedSHA512`. Returns the
-    /// digest on success. Never mutates an existing blob in place: identical
-    /// content is reused, corrupt existing content is moved to quarantine
-    /// before the staged replacement lands.
+    /// What `materialize` actually did. `mode` is the syscall outcome, never
+    /// inferred from any byte accounting.
+    public struct MaterializeReport: Sendable, Equatable {
+        public enum Mode: String, Sendable {
+            /// APFS copy-on-write clone of the blob (no byte copy).
+            case clone
+            /// Space-checked byte-copy fallback.
+            case copy
+        }
+
+        public var mode: Mode
+        public var logicalBytes: Int64
+        public var allocatedBytes: Int64?
+
+        public init(mode: Mode, logicalBytes: Int64, allocatedBytes: Int64?) {
+            self.mode = mode
+            self.logicalBytes = logicalBytes
+            self.allocatedBytes = allocatedBytes
+        }
+    }
+
+    private let layout: RuntimeV2Layout
+    private let registry: RuntimeV2Registry
+    private let seams: Seams
+    private var fileManager: FileManager { .default }
+
+    public init(layout: RuntimeV2Layout, registry: RuntimeV2Registry, seams: Seams = .production) {
+        self.layout = layout
+        self.registry = registry
+        self.seams = seams
+    }
+
+    /// Ingests `sourceURL` as the blob for `expectedSHA512` AND takes the one
+    /// reference that names this owner. Returns the digest on success. Never
+    /// mutates an existing blob in place: identical content is reused, corrupt
+    /// existing content is moved to quarantine before the staged replacement
+    /// lands.
     @discardableResult
     public func ingest(
         sourceURL: URL,
         expectedSHA512: String,
         expectedBytes: Int64,
         retainFor imageID: String?
+    ) async throws -> String {
+        let digest = try await place(
+            sourceURL: sourceURL, expectedSHA512: expectedSHA512, expectedBytes: expectedBytes
+        )
+        try await registry.adjustBlobRefs(digest: digest, delta: 1)
+        return digest
+    }
+
+    /// Places and fully verifies the blob WITHOUT taking a reference. The
+    /// caller must take the reference in the same transaction that records the
+    /// durable owner (`RuntimeV2Registry.recordTemplateIngest`), so a crash can
+    /// never leave a reference nobody owns. A placed-but-unreferenced blob is
+    /// recorded with refs 0 and is reclaimable by blob GC.
+    @discardableResult
+    public func stageUnreferenced(
+        sourceURL: URL,
+        expectedSHA512: String,
+        expectedBytes: Int64
+    ) async throws -> String {
+        try await place(
+            sourceURL: sourceURL, expectedSHA512: expectedSHA512, expectedBytes: expectedBytes
+        )
+    }
+
+    private func place(
+        sourceURL: URL, expectedSHA512: String, expectedBytes: Int64
     ) async throws -> String {
         let digest = expectedSHA512.lowercased()
         let destination = try layout.blobURL(digest: digest)
@@ -47,7 +115,6 @@ public actor RuntimeV2BlobStore {
                 // Content addressing: an existing blob of the right digest and
                 // size was verified at its own ingest; reuse it.
                 try await registry.recordBlob(digest: digest, bytes: expectedBytes)
-                try await registry.adjustBlobRefs(digest: digest, delta: 1)
                 return digest
             }
             // Size disagreement under the same digest means the store was
@@ -81,7 +148,6 @@ public actor RuntimeV2BlobStore {
             )
         }
         try await registry.recordBlob(digest: digest, bytes: expectedBytes)
-        try await registry.adjustBlobRefs(digest: digest, delta: 1)
         return digest
     }
 
@@ -123,7 +189,12 @@ public actor RuntimeV2BlobStore {
     /// Materializes a blob at `destination` as a copy-on-write clone (APFS
     /// clonefile, byte-copy fallback). The clone is writable only when
     /// `writable` is set — boot artifacts stay read-only like their blob.
-    public func materialize(digest: String, at destination: URL, writable: Bool = false) throws {
+    /// Returns the mode that ACTUALLY ran (the syscall outcome, never inferred
+    /// from sparse-file accounting) plus this file's measured bytes.
+    @discardableResult
+    public func materialize(
+        digest: String, at destination: URL, writable: Bool = false
+    ) throws -> MaterializeReport {
         let blob = try layout.blobURL(digest: digest)
         guard fileManager.fileExists(atPath: blob.path) else {
             throw RuntimeV2Error.blobMissing(digest)
@@ -132,16 +203,20 @@ public actor RuntimeV2BlobStore {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
-        #if canImport(Darwin)
-        if clonefile(blob.path, destination.path, 0) != 0 {
+        let mode: MaterializeReport.Mode
+        if seams.cloneFile(blob.path, destination.path) {
+            mode = .clone
+        } else {
             try fileManager.copyItem(at: blob, to: destination)
+            mode = .copy
         }
-        #else
-        try fileManager.copyItem(at: blob, to: destination)
-        #endif
         try fileManager.setAttributes(
             [.posixPermissions: writable ? 0o644 : 0o444],
             ofItemAtPath: destination.path
+        )
+        let bytes = RuntimeV2FileBytes.measure(fileAt: destination)
+        return MaterializeReport(
+            mode: mode, logicalBytes: bytes.logicalBytes, allocatedBytes: bytes.allocatedBytes
         )
     }
 

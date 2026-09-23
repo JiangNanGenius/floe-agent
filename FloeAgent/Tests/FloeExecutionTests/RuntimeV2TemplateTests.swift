@@ -1247,4 +1247,826 @@ final class RuntimeV2TemplateTests: XCTestCase {
         )
         XCTAssertNotEqual(first, changed)
     }
+
+    // MARK: - boot provenance: durable freeze, stop/salvage against it
+
+    private func registerEnvironment(
+        _ id: String, baseImageID: String, rootfsDigest: String?, state: String = "stopped"
+    ) async throws {
+        let now = Date()
+        try await store.registry.upsertEnvironment(
+            RuntimeV2Registry.EnvironmentRow(
+                id: id, kind: "linuxVM", ownerID: nil, name: id,
+                baseImageID: baseImageID, baseRootfsDigest: rootfsDigest,
+                state: state, dataPath: "environments/\(id)/data", compatHostFHS: false,
+                repairReason: nil, createdAt: now, lastUsedAt: now
+            )
+        )
+    }
+
+    @discardableResult
+    private func buildTemplate(
+        templateID: String = "basic", version: Int = 1, marker: UInt8,
+        packages: [RuntimeV2TemplateStore.InstalledSoftware],
+        parent: RuntimeV2TemplateStore.ParentSource
+    ) async throws -> RuntimeV2TemplateStore.Registration {
+        try await store.templates.build(
+            using: ScriptedInstaller(
+                markerBytes: Data(repeating: marker, count: 4096),
+                packages: packages, downloadBytes: 1
+            ),
+            request: buildRequest(
+                templateID: templateID, version: version,
+                recipe: recipe(
+                    name: templateID,
+                    packages: Dictionary(uniqueKeysWithValues: packages.map { ($0.name, .init()) })
+                ),
+                parent: parent
+            )
+        )
+    }
+
+    private func writeBytes(_ url: URL, at offset: Int64, _ data: Data) throws {
+        let handle = try FileHandle(forUpdating: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+    }
+
+    private func readBytes(_ url: URL, at offset: Int64, count: Int) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        return try handle.read(upToCount: count) ?? Data()
+    }
+
+    private func quarantinedEntries(prefix: String) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix(prefix) }
+    }
+
+    private func bootPinnedEnvironment(
+        environmentID: String, runtimeID: String, markerOffset: Int64, marker: Data
+    ) async throws -> RuntimeV2WorkingDisk {
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "test")
+        let admission = try await integrator.acquireSlot(
+            environmentID: environmentID, runtimeID: runtimeID, requestedMB: 512
+        )
+        XCTAssertGreaterThan(admission.ramMB, 0)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: environmentID, runtimeID: runtimeID, imageID: baseImageID,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBytes(work.diskURL, at: markerOffset, marker)
+        return work
+    }
+
+    /// The boot base (template id/version/digest + the exact disk digest) is
+    /// frozen in the working directory's durable metadata BEFORE any bytes are
+    /// cloned, and a confirmed stop captures against that provenance.
+    func testPinnedBootFreezesProvenanceAndStopCapturesAgainstIt() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let template = try await buildTemplate(
+            marker: 0x51, packages: [package("python3", "3.11.2")],
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+        try await registerEnvironment(
+            "env-boot", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased()
+        )
+        let pin = try await store.templates.pinEnvironment(
+            environmentID: "env-boot", templateID: "basic", version: 1
+        )
+        XCTAssertEqual(pin.digest, template.pin.digest)
+
+        _ = try await bootPinnedEnvironment(
+            environmentID: "env-boot", runtimeID: "rt-boot",
+            markerOffset: 3 << 20, marker: Data(repeating: 0x5A, count: 4096)
+        )
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-boot")
+        let meta = RuntimeV2WorkingDirectory.readMeta(from: directory)
+        XCTAssertEqual(meta?.templateID, "basic")
+        XCTAssertEqual(meta?.templateVersion, 1)
+        XCTAssertEqual(meta?.templateDigest, template.pin.digest)
+        XCTAssertEqual(meta?.bootBaseDiskDigest, template.diskDigest)
+        XCTAssertEqual(meta?.baseImageID, baseImageID)
+
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "test")
+        let outcome = await integrator.completeStopResult(
+            environmentID: "env-boot", runtimeID: "rt-boot", imageID: baseImageID, clean: true
+        )
+        guard case .captured(let generation) = outcome else {
+            XCTFail("a clean stop with intact provenance must capture, got \(outcome)")
+            return
+        }
+        XCTAssertGreaterThan(generation, 0)
+        let delta = try await store.deltas.loadDelta(environmentID: "env-boot")
+        XCTAssertEqual(delta?.header.templateID, "basic")
+        XCTAssertEqual(delta?.header.templateVersion, 1)
+        XCTAssertEqual(delta?.header.templateDigest, template.pin.digest)
+        XCTAssertEqual(delta?.header.baseRootfsSHA512, template.diskDigest)
+        XCTAssertGreaterThan(delta?.presentBlocks ?? 0, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        let lease = try await store.leases.holder(environmentID: "env-boot")
+        XCTAssertNil(lease)
+    }
+
+    /// The corruption window the review found: the pin row moves while the guest
+    /// runs (an out-of-band writer). The stop must NOT capture the v1 disk
+    /// against v2's base — it preserves the complete disk and marks the
+    /// environment repairRequired.
+    func testStopRefusesCaptureWhenThePinMovedAfterBootAndPreservesDisk() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let parent = baseParent(ref, imageID: baseImageID)
+        let v1 = try await buildTemplate(marker: 0x61, packages: [package("python3", "3.11.2")], parent: parent)
+        let v2 = try await buildTemplate(version: 2, marker: 0x62, packages: [package("python3", "3.12.0")], parent: parent)
+        XCTAssertNotEqual(v1.pin.digest, v2.pin.digest)
+        try await registerEnvironment(
+            "env-moved", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased()
+        )
+        _ = try await store.templates.pinEnvironment(
+            environmentID: "env-moved", templateID: "basic", version: 1
+        )
+        _ = try await bootPinnedEnvironment(
+            environmentID: "env-moved", runtimeID: "rt-moved",
+            markerOffset: 3 << 20, marker: Data(repeating: 0x6A, count: 4096)
+        )
+        // The pin row moves under the live disk (bypassing the lease-guarded pin
+        // operation on purpose, exactly like the reported corruption window).
+        let pinned = try await store.registry.environment(id: "env-moved")
+        var moved = try XCTUnwrap(pinned)
+        moved.templateVersion = 2
+        moved.templateDigest = v2.pin.digest
+        try await store.registry.upsertEnvironment(moved)
+
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "test")
+        let outcome = await integrator.completeStopResult(
+            environmentID: "env-moved", runtimeID: "rt-moved", imageID: baseImageID, clean: true
+        )
+        guard case .retainedForRepair(let reason) = outcome else {
+            XCTFail("a moved pin must refuse the capture and retain the disk, got \(outcome)")
+            return
+        }
+        XCTAssertTrue(reason.contains("preserved"))
+        // No delta was written across the two identities.
+        let delta = try await store.deltas.loadDelta(environmentID: "env-moved")
+        XCTAssertNil(delta)
+        // The complete disk (including the private block) is preserved.
+        let quarantined = try quarantinedEntries(prefix: "runtime-vm-rt-moved")
+        XCTAssertEqual(quarantined.count, 1)
+        let preservedDisk = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preservedDisk.path))
+        let privateBlock = try readBytes(preservedDisk, at: 3 << 20, count: 4096)
+        XCTAssertEqual(privateBlock, Data(repeating: 0x6A, count: 4096))
+        let runtimeDir = try layout.runtimeVMDirectory(runtimeID: "rt-moved")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runtimeDir.path))
+        // Durable error state, then the lease is released.
+        let state = try await store.registry.environment(id: "env-moved")?.state
+        XCTAssertEqual(state, "repairRequired")
+        let shutdown = try await store.deltas.lastShutdown(environmentID: "env-moved")
+        XCTAssertEqual(shutdown?.clean, false)
+        XCTAssertTrue(shutdown?.detail?.contains("preserved") == true)
+        let lease = try await store.leases.holder(environmentID: "env-moved")
+        XCTAssertNil(lease)
+    }
+
+    /// A capture that fails for any other reason (here: the boot base blob is
+    /// damaged) must never delete the stopped working disk. It is quarantined,
+    /// the failure is durable, and the environment is repairRequired.
+    func testStopCaptureFailurePreservesDiskAndRecordsRepairState() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let template = try await buildTemplate(
+            marker: 0x71, packages: [package("python3", "3.11.2")],
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+        try await registerEnvironment(
+            "env-fail", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased()
+        )
+        _ = try await store.templates.pinEnvironment(
+            environmentID: "env-fail", templateID: "basic", version: 1
+        )
+        _ = try await bootPinnedEnvironment(
+            environmentID: "env-fail", runtimeID: "rt-fail",
+            markerOffset: 2 << 20, marker: Data(repeating: 0x7B, count: 4096)
+        )
+        // The immutable boot base disappears (external damage / IO failure).
+        let blobURL = try await store.blobs.verifiedBlobURL(digest: template.diskDigest)
+        try FileManager.default.removeItem(at: blobURL)
+
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "test")
+        let outcome = await integrator.completeStopResult(
+            environmentID: "env-fail", runtimeID: "rt-fail", imageID: baseImageID, clean: true
+        )
+        guard case .retainedForRepair = outcome else {
+            XCTFail("a failed capture must retain the disk, got \(outcome)")
+            return
+        }
+        let quarantined = try quarantinedEntries(prefix: "runtime-vm-rt-fail")
+        XCTAssertEqual(quarantined.count, 1)
+        let preservedDisk = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        let privateBlock = try readBytes(preservedDisk, at: 2 << 20, count: 4096)
+        XCTAssertEqual(privateBlock, Data(repeating: 0x7B, count: 4096))
+        let failedDelta = try await store.deltas.loadDelta(environmentID: "env-fail")
+        XCTAssertNil(failedDelta)
+        let state = try await store.registry.environment(id: "env-fail")?.state
+        XCTAssertEqual(state, "repairRequired")
+        let lease = try await store.leases.holder(environmentID: "env-fail")
+        XCTAssertNil(lease)
+        let runtimeDir = try layout.runtimeVMDirectory(runtimeID: "rt-fail")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runtimeDir.path))
+    }
+
+    /// Crash recovery salvages a leftover working disk against the provenance
+    /// frozen at boot — and when that provenance no longer matches the live
+    /// registry, the disk is quarantined and the environment repairRequired
+    /// instead of being captured against different bytes.
+    func testSalvageUsesRecordedProvenanceAndQuarantinesOnMismatch() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let parent = baseParent(ref, imageID: baseImageID)
+        let v1 = try await buildTemplate(marker: 0x81, packages: [package("python3", "3.11.2")], parent: parent)
+        let v2 = try await buildTemplate(version: 2, marker: 0x82, packages: [package("python3", "3.12.0")], parent: parent)
+
+        // Catch A: pin still v1 — salvage through the recorded provenance.
+        try await registerEnvironment("env-salvage", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased())
+        _ = try await store.templates.pinEnvironment(environmentID: "env-salvage", templateID: "basic", version: 1)
+        let directoryA = try layout.runtimeVMDirectory(runtimeID: "rt-salvage")
+        try FileManager.default.createDirectory(at: directoryA, withIntermediateDirectories: true)
+        let diskA = directoryA.appendingPathComponent("disk.img")
+        _ = try await store.blobs.materialize(digest: v1.diskDigest, at: diskA, writable: true)
+        try writeBytes(diskA, at: 2 << 20, Data(repeating: 0x8A, count: 4096))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-salvage", environmentID: "env-salvage",
+                baseImageID: baseImageID, createdAt: Date(),
+                templateID: "basic", templateVersion: 1,
+                templateDigest: v1.pin.digest, bootBaseDiskDigest: v1.diskDigest
+            ),
+            to: directoryA
+        )
+
+        // Catch B: the pin moved to v2 before recovery — the recorded v1 disk
+        // must not be captured as if it were v2.
+        try await registerEnvironment("env-salvage-moved", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased())
+        let pinnedB = try await store.templates.pinEnvironment(
+            environmentID: "env-salvage-moved", templateID: "basic", version: 1
+        )
+        XCTAssertEqual(pinnedB.version, 1)
+        let rowBValue = try await store.registry.environment(id: "env-salvage-moved")
+        let rowB = try XCTUnwrap(rowBValue)
+        var movedB = rowB
+        movedB.templateVersion = 2
+        movedB.templateDigest = v2.pin.digest
+        try await store.registry.upsertEnvironment(movedB)
+        let directoryB = try layout.runtimeVMDirectory(runtimeID: "rt-salvage-moved")
+        try FileManager.default.createDirectory(at: directoryB, withIntermediateDirectories: true)
+        let diskB = directoryB.appendingPathComponent("disk.img")
+        _ = try await store.blobs.materialize(digest: v1.diskDigest, at: diskB, writable: true)
+        try writeBytes(diskB, at: 3 << 20, Data(repeating: 0x8B, count: 4096))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-salvage-moved", environmentID: "env-salvage-moved",
+                baseImageID: baseImageID, createdAt: Date(),
+                templateID: "basic", templateVersion: 1,
+                templateDigest: v1.pin.digest, bootBaseDiskDigest: v1.diskDigest
+            ),
+            to: directoryB
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.salvagedRuntimeDirs.contains("rt-salvage"))
+        XCTAssertTrue(report.quarantinedRuntimeDirs.contains("rt-salvage-moved"))
+
+        // A: captured exactly against the v1 template disk.
+        let deltaA = try await relaunched.deltas.loadDelta(environmentID: "env-salvage")
+        XCTAssertEqual(deltaA?.header.templateID, "basic")
+        XCTAssertEqual(deltaA?.header.templateVersion, 1)
+        XCTAssertEqual(deltaA?.header.baseRootfsSHA512, v1.diskDigest)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directoryA.path))
+
+        // B: no delta, disk preserved, environment repairRequired.
+        let deltaB = try await relaunched.deltas.loadDelta(environmentID: "env-salvage-moved")
+        XCTAssertNil(deltaB)
+        let stateB = try await relaunched.registry.environment(id: "env-salvage-moved")?.state
+        XCTAssertEqual(stateB, "repairRequired")
+        let quarantinedB = try FileManager.default
+            .contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("runtime-vm-rt-salvage-moved") }
+        XCTAssertEqual(quarantinedB.count, 1)
+        let preservedB = layout.quarantineDirectory
+            .appendingPathComponent(quarantinedB[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        let privateBlockB = try readBytes(preservedB, at: 3 << 20, count: 4096)
+        XCTAssertEqual(privateBlockB, Data(repeating: 0x8B, count: 4096))
+    }
+
+    // MARK: - pin lifecycle: no silent re-point, atomic reference replacement
+
+    func testRepinRefusesWhileRunningAndReplacesTheOldReferenceAtomically() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let parent = baseParent(ref, imageID: baseImageID)
+        let v1 = try await buildTemplate(marker: 0x91, packages: [package("python3", "3.11.2")], parent: parent)
+        let v2 = try await buildTemplate(version: 2, marker: 0x92, packages: [package("python3", "3.12.0")], parent: parent)
+        try await registerEnvironment("env-repin", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased())
+        _ = try await store.templates.pinEnvironment(environmentID: "env-repin", templateID: "basic", version: 1)
+        let initiallyPinned = try await store.registry.environment(id: "env-repin")?.templateVersion
+        XCTAssertEqual(initiallyPinned, 1)
+
+        let lease = try await store.leases.acquire(environmentID: "env-repin", runtimeID: "rt-repin")
+        do {
+            _ = try await store.templates.pinEnvironment(
+                environmentID: "env-repin", templateID: "basic", version: 2
+            )
+            XCTFail("a repin under a live lease must be refused")
+        } catch RuntimeV2Error.templateEnvironmentRunning {
+            // expected
+        }
+        do {
+            try await store.templates.unpinEnvironment(environmentID: "env-repin")
+            XCTFail("an unpin under a live lease must be refused")
+        } catch RuntimeV2Error.templateEnvironmentRunning {
+            // expected
+        }
+        let stillV1 = try await store.registry.environment(id: "env-repin")?.templateVersion
+        XCTAssertEqual(stillV1, 1)
+        await lease.release()
+
+        let repinned = try await store.templates.pinEnvironment(
+            environmentID: "env-repin", templateID: "basic", version: 2
+        )
+        XCTAssertEqual(repinned.version, 2)
+        // Exactly one environment reference exists, on the new version: the old
+        // row can never keep the abandoned version alive.
+        let v1Refs = try await store.templates.references(templateID: "basic", version: 1)
+        XCTAssertFalse(v1Refs.contains { $0.refKind == "environment" && $0.refID == "env-repin" })
+        let v2Refs = try await store.templates.references(templateID: "basic", version: 2)
+        XCTAssertEqual(v2Refs.filter { $0.refKind == "environment" && $0.refID == "env-repin" }.count, 1)
+
+        // The abandoned v1 is now collectable; v2 stays protected by the pin
+        // (and the environment reference row the atomic pin transaction wrote).
+        _ = try await store.templates.finalizeBuilds()
+        let report = try await store.templates.collectGarbage(grace: 0)
+        XCTAssertTrue(report.collected.contains("basic@1"))
+        XCTAssertFalse(report.collected.contains("basic@2"))
+        let v2State = try await store.templates.version(templateID: "basic", version: 2)?.state
+        XCTAssertEqual(v2State, .verified)
+        let v1BlobRefs = try await store.registry.blob(digest: v1.diskDigest)?.refs
+        XCTAssertEqual(v1BlobRefs, 0)
+        let v2BlobRefs = try await store.registry.blob(digest: v2.diskDigest)?.refs
+        XCTAssertEqual(v2BlobRefs, 1)
+    }
+
+    // MARK: - GC: atomic revalidation inside the collection transaction
+
+    /// The deterministic TOCTOU race: a pin lands after the GC candidate
+    /// listing and before the collection. The atomic collection transaction
+    /// must see it and skip; the version stays verified and its blob reference
+    /// untouched.
+    func testGCRaceWithPinInsertedAfterListingIsSkippedAtomically() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let template = try await buildTemplate(
+            marker: 0xA1, packages: [package("python3", "3.11.2")],
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+        _ = try await store.templates.finalizeBuilds()
+        let registry = await store.registry
+        var seams = RuntimeV2TemplateStore.Seams.production
+        seams.beforeCollectVersion = { templateID, version in
+            // Runs in the window between the listing and the collection.
+            let now = Date()
+            try? await registry.upsertEnvironment(
+                RuntimeV2Registry.EnvironmentRow(
+                    id: "env-gc-race", kind: "linuxVM", ownerID: nil, name: "race",
+                    baseImageID: "base-image", baseRootfsDigest: nil,
+                    state: "stopped", dataPath: nil, compatHostFHS: false,
+                    repairReason: nil, createdAt: now, lastUsedAt: now
+                )
+            )
+            if let row = try? await registry.template(templateID: templateID, version: version) {
+                _ = try? await registry.pinEnvironmentTemplate(
+                    environmentID: "env-gc-race", templateID: templateID,
+                    version: version, digest: row.digest
+                )
+            }
+        }
+        let raced = RuntimeV2Store(layout: layout, templateSeams: seams)
+        _ = try await raced.prepareAndRecover(build: "test")
+
+        let report = try await raced.templates.collectGarbage(grace: 0)
+        XCTAssertFalse(report.collected.contains("basic@1"))
+        // The pin inserted in the window added its environment reference, which
+        // the collection transaction revalidated inside the same commit.
+        XCTAssertTrue(
+            report.notes.contains { $0.contains("1 template reference(s)") },
+            "expected the late reference to be reported, got \(report.notes)"
+        )
+        let state = try await raced.templates.version(templateID: "basic", version: 1)?.state
+        XCTAssertEqual(state, .verified)
+        let racedBlob = try await raced.registry.blob(digest: template.diskDigest)
+        XCTAssertEqual(racedBlob?.refs, 1)
+    }
+
+    /// The registry transaction itself is authoritative: a reference, a pin or
+    /// a held lease inserted after any outside pre-check still refuses the
+    /// collection, and the successful path releases the blob reference in the
+    /// same commit.
+    func testAtomicCollectionRevalidatesEveryProtection() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let template = try await buildTemplate(
+            marker: 0xB1, packages: [package("python3", "3.11.2")],
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+        _ = try await store.templates.finalizeBuilds()
+        try await store.registry.addTemplateReference(
+            templateID: "basic", version: 1, kind: "build", refID: "late-build"
+        )
+        var outcome = try await store.registry.collectTemplateVersionIfUnreferenced(
+            templateID: "basic", version: 1, grace: 0, now: Date()
+        )
+        guard case .skipped(let referenceReason) = outcome else {
+            XCTFail("a late reference must refuse the collection")
+            return
+        }
+        XCTAssertEqual(referenceReason, "1 template reference(s)")
+        try await store.registry.removeTemplateReference(
+            templateID: "basic", version: 1, kind: "build", refID: "late-build"
+        )
+
+        try await registerEnvironment("env-atomic", baseImageID: baseImageID, rootfsDigest: nil)
+        _ = try await store.registry.pinEnvironmentTemplate(
+            environmentID: "env-atomic", templateID: "basic",
+            version: 1, digest: template.pin.digest
+        )
+        // Belt and braces: even if the environment reference ROW is lost, the
+        // pin itself refuses the collection inside the transaction.
+        try await store.registry.removeTemplateReference(
+            templateID: "basic", version: 1, kind: "environment", refID: "env-atomic"
+        )
+        // A held write lease on the pinned environment refuses even earlier.
+        let lease = try await store.leases.acquire(environmentID: "env-atomic", runtimeID: "rt-atomic")
+        outcome = try await store.registry.collectTemplateVersionIfUnreferenced(
+            templateID: "basic", version: 1, grace: 0, now: Date()
+        )
+        guard case .skipped(let leaseReason) = outcome, leaseReason == "held write lease" else {
+            XCTFail("a held lease must refuse the collection, got \(outcome)")
+            return
+        }
+        await lease.release()
+        // With no lease left, the pin itself (reference row lost) still refuses.
+        outcome = try await store.registry.collectTemplateVersionIfUnreferenced(
+            templateID: "basic", version: 1, grace: 0, now: Date()
+        )
+        guard case .skipped(let pinReason) = outcome, pinReason == "environment pin" else {
+            XCTFail("an environment pin must refuse the collection, got \(outcome)")
+            return
+        }
+        _ = try await store.registry.unpinEnvironmentTemplate(environmentID: "env-atomic")
+        let collected = try await store.registry.collectTemplateVersionIfUnreferenced(
+            templateID: "basic", version: 1, grace: 0, now: Date()
+        )
+        guard case .collected(let digest, let bytes, let remaining) = collected else {
+            XCTFail("an unprotected version must be collected")
+            return
+        }
+        XCTAssertEqual(digest, template.diskDigest)
+        XCTAssertGreaterThan(bytes, 0)
+        XCTAssertEqual(remaining, 0)
+        let state = try await store.templates.version(templateID: "basic", version: 1)?.state
+        XCTAssertEqual(state, .quarantined)
+        let collectedBlob = try await store.registry.blob(digest: template.diskDigest)
+        XCTAssertEqual(collectedBlob?.refs, 0)
+    }
+
+    // MARK: - registration state machine: faults, restart, no orphan refs
+
+    /// A failure while staging the evidence must leave the version failed (never
+    /// verified) and must not have placed or referenced any blob.
+    func testEvidenceStagingFailureNeverActivatesOrLeaksABlobReference() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let before = try await store.registry.blobStats()
+        var seams = RuntimeV2TemplateStore.Seams.production
+        seams.evidenceWrite = { _, _ in throw CocoaError(.fileWriteUnknown) }
+        store = RuntimeV2Store(layout: layout, templateSeams: seams)
+        _ = try await store.prepareAndRecover(build: "test")
+        do {
+            _ = try await store.templates.build(
+                using: ScriptedInstaller(packages: [package("python3", "3.11.2")], downloadBytes: 1),
+                request: buildRequest(
+                    recipe: recipe(packages: ["python3": .init()]),
+                    parent: baseParent(ref, imageID: baseImageID)
+                )
+            )
+            XCTFail("an evidence failure must not register a verified version")
+        } catch {
+            // expected
+        }
+        let row = try await store.templates.version(templateID: "basic", version: 1)
+        XCTAssertEqual(row?.state, .failed)
+        XCTAssertNil(row?.diskDigest)
+        XCTAssertTrue(row?.reason?.contains("registration failed before activation") == true)
+        let after = try await store.registry.blobStats()
+        XCTAssertEqual(after.count, before.count)
+        let evidence = layout.recoveryMigrationsDirectory
+            .appendingPathComponent("template-basic-v1/template-evidence.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: evidence.path))
+    }
+
+    /// A failure after the ingest was recorded but before activation (injected
+    /// by a concurrent failure at the activation boundary) releases exactly the
+    /// one recorded blob reference and marks the version failed.
+    func testActivationInterruptionReleasesTheRecordedIngestReferenceExactlyOnce() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let box = TestDigestBox()
+        var seams = RuntimeV2TemplateStore.Seams.production
+        let registry = await store.registry
+        seams.beforeActivation = { templateID, version in
+            if let row = try? await registry.template(templateID: templateID, version: version),
+               let digest = row.diskDigest {
+                await box.set(digest)
+            }
+            try? await registry.failTemplateVersion(
+                templateID: templateID, version: version, reason: "injected concurrent failure"
+            )
+        }
+        store = RuntimeV2Store(layout: layout, templateSeams: seams)
+        _ = try await store.prepareAndRecover(build: "test")
+        do {
+            _ = try await store.templates.build(
+                using: ScriptedInstaller(packages: [package("python3", "3.11.2")], downloadBytes: 1),
+                request: buildRequest(
+                    recipe: recipe(packages: ["python3": .init()]),
+                    parent: baseParent(ref, imageID: baseImageID)
+                )
+            )
+            XCTFail("an interrupted activation must not register a verified version")
+        } catch {
+            // expected
+        }
+        let digest = await box.get()
+        let recordedDigest = try XCTUnwrap(digest)
+        let row = try await store.templates.version(templateID: "basic", version: 1)
+        XCTAssertEqual(row?.state, .failed)
+        XCTAssertNil(row?.diskDigest)
+        // The blob file exists but no reference is left behind.
+        let blob = try await store.registry.blob(digest: recordedDigest)
+        XCTAssertEqual(blob?.refs, 0)
+        let exists = try await store.blobs.blobExists(digest: recordedDigest)
+        XCTAssertTrue(exists)
+        // A second compensation (late error path) must not release again.
+        try await store.registry.failTemplateVersion(
+            templateID: "basic", version: 1, reason: "late duplicate failure"
+        )
+        let after = try await store.registry.blob(digest: recordedDigest)
+        XCTAssertEqual(after?.refs, 0)
+    }
+
+    /// The crash window between recording the ingest and activation: recovery
+    /// fails the interrupted build and releases the recorded reference exactly
+    /// once, across repeated relaunches.
+    func testInterruptedRegistrationRecoveryReleasesTheIngestReferenceExactlyOnce() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let request = buildRequest(
+            recipe: recipe(packages: ["python3": .init()]),
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+        let installer = ScriptedInstaller(packages: [package("python3", "3.11.2")], downloadBytes: 1)
+        let handle = try await store.templates.stageBuild(request)
+        _ = try await installer.install(build: handle, request: request)
+        let bytes = RuntimeV2FileBytes.measure(fileAt: handle.workingDiskURL)
+        let digest = try FloeDigest.sha512Hex(ofFileAt: handle.workingDiskURL)
+        _ = try await store.blobs.stageUnreferenced(
+            sourceURL: handle.workingDiskURL, expectedSHA512: digest,
+            expectedBytes: bytes.logicalBytes
+        )
+        let recorded = try await store.registry.recordTemplateIngest(
+            templateID: "basic", version: 1, diskDigest: digest, bytes: bytes.logicalBytes
+        )
+        XCTAssertTrue(recorded)
+        let recordedBlob = try await store.registry.blob(digest: digest)
+        XCTAssertEqual(recordedBlob?.refs, 1)
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertGreaterThanOrEqual(report.interruptedTemplateBuilds, 1)
+        let row = try await relaunched.templates.version(templateID: "basic", version: 1)
+        XCTAssertEqual(row?.state, .failed)
+        XCTAssertNil(row?.diskDigest)
+        let recoveredBlob = try await relaunched.registry.blob(digest: digest)
+        XCTAssertEqual(recoveredBlob?.refs, 0)
+        // A second relaunch must not release a second time.
+        let third = RuntimeV2Store(layout: layout)
+        _ = try await third.prepareAndRecover(build: "test")
+        let thirdBlob = try await third.registry.blob(digest: digest)
+        XCTAssertEqual(thirdBlob?.refs, 0)
+    }
+
+    /// Evidence promotion failing after activation must leave the version
+    /// verified, the staged evidence intact and a retryable migration state;
+    /// `finalizeBuilds` promotes it later without ever losing the evidence.
+    func testEvidencePromotionFailureIsRetriedByFinalizeWithoutUnverifying() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        // Occupy the final evidence path with a directory so the atomic rename
+        // cannot land (an IO fault the promotion must survive).
+        let rollback = layout.recoveryMigrationsDirectory
+            .appendingPathComponent("template-basic-v1", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: rollback.appendingPathComponent("template-evidence.json", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let registration = try await store.templates.build(
+            using: ScriptedInstaller(packages: [package("python3", "3.11.2")], downloadBytes: 1),
+            request: buildRequest(
+                recipe: recipe(packages: ["python3": .init()]),
+                parent: baseParent(ref, imageID: baseImageID)
+            )
+        )
+        XCTAssertNotNil(registration.diskDigest)
+        let state = try await store.templates.version(templateID: "basic", version: 1)?.state
+        XCTAssertEqual(state, .verified)
+        let staged = rollback.appendingPathComponent(
+            RuntimeV2TemplateStore.evidenceStagingFileName
+        )
+        let final = rollback.appendingPathComponent(RuntimeV2TemplateStore.evidenceFileName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: final.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+        let migration = try await store.registry.migration(id: "template-basic-v1")
+        XCTAssertEqual(migration?.phase, .cleanupPending)
+        XCTAssertTrue(migration?.error?.contains("evidence promotion pending") == true)
+
+        // The obstruction is cleared; finalize promotes and completes.
+        try FileManager.default.removeItem(at: final)
+        let finalized = try await store.templates.finalizeBuilds()
+        XCTAssertEqual(finalized, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
+        // The promoted evidence moved with its rollback directory into trash
+        // (still preserved, never a hard delete at finalization).
+        let trashed = try FileManager.default.contentsOfDirectory(atPath: layout.trashDirectory.path)
+            .filter { $0.hasPrefix("template-basic-v1") }
+        XCTAssertEqual(trashed.count, 1)
+        let trashedEvidence = layout.trashDirectory
+            .appendingPathComponent(trashed[0], isDirectory: true)
+            .appendingPathComponent(RuntimeV2TemplateStore.evidenceFileName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: trashedEvidence.path))
+        let done = try await store.registry.migration(id: "template-basic-v1")
+        XCTAssertEqual(done?.phase, .done)
+    }
+
+    // MARK: - legacy migration: unknown origin fails closed
+
+    func testLegacyDiskWithoutOriginRecordFailsClosedAndPreservesSource() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let expanded = try await store.images.ensureExpanded(imageID: baseImageID)
+        let baseRootfs = expanded.appendingPathComponent(ref.expandedPath)
+
+        // A disk that was cloned from the verified base but whose origin
+        // sidecar is missing: unknown bytes are never origin proof.
+        let unknownDirectory = root.appendingPathComponent("legacy-unknown/env-unknown", isDirectory: true)
+        try FileManager.default.createDirectory(at: unknownDirectory, withIntermediateDirectories: true)
+        let unknownDisk = unknownDirectory.appendingPathComponent("disk.img")
+        try FileManager.default.copyItem(at: baseRootfs, to: unknownDisk)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: unknownDisk.path)
+        try writeBytes(unknownDisk, at: 1 << 20, Data(repeating: 0xC7, count: 4096))
+        let migrator = RuntimeV2EnvironmentMigrator(store: store)
+        do {
+            _ = try await migrator.migrateLegacyEnvironment(
+                environmentID: "env-unknown", kind: "linuxVM", ownerID: nil, name: nil,
+                baseImageID: baseImageID, legacyDiskDirectory: unknownDirectory,
+                legacyLayerDirectory: nil
+            )
+            XCTFail("a disk with no origin record must not be captured against the base")
+        } catch RuntimeV2Error.diskOriginUnverifiable(let environmentID, let reason) {
+            XCTAssertEqual(environmentID, "env-unknown")
+            XCTAssertTrue(reason.contains("origin"))
+        }
+        let unknownRow = try await store.registry.environment(id: "env-unknown")
+        XCTAssertEqual(unknownRow?.state, "repairRequired")
+        let unknownDelta = try await store.deltas.loadDelta(environmentID: "env-unknown")
+        XCTAssertNil(unknownDelta)
+        // The source is preserved (moved to quarantine, bytes intact).
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unknownDirectory.path))
+        let quarantined = try quarantinedEntries(prefix: "disk-env-unknown")
+        XCTAssertEqual(quarantined.count, 1)
+        let preserved = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        let preservedBytes = try readBytes(preserved, at: 1 << 20, count: 4096)
+        XCTAssertEqual(preservedBytes, Data(repeating: 0xC7, count: 4096))
+
+        // Control: the same disk with a truthful origin record still migrates.
+        let knownDirectory = root.appendingPathComponent("legacy-known/env-known", isDirectory: true)
+        try FileManager.default.createDirectory(at: knownDirectory, withIntermediateDirectories: true)
+        let knownDisk = knownDirectory.appendingPathComponent("disk.img")
+        try FileManager.default.copyItem(at: baseRootfs, to: knownDisk)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: knownDisk.path)
+        let origin = LinuxGuestRuntimeDiskOrigin(
+            imageID: baseImageID, artifactSHA512: ref.sha512, artifactBytes: ref.bytes
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(origin).write(
+            to: knownDirectory.appendingPathComponent("origin.json"), options: .atomic
+        )
+        let report = try await migrator.migrateLegacyEnvironment(
+            environmentID: "env-known", kind: "linuxVM", ownerID: nil, name: nil,
+            baseImageID: baseImageID, legacyDiskDirectory: knownDirectory,
+            legacyLayerDirectory: nil
+        )
+        XCTAssertEqual(report.phase, .cleanupPending)
+        let knownRow = try await store.registry.environment(id: "env-known")
+        XCTAssertEqual(knownRow?.state, "active")
+    }
+
+    // MARK: - clone mode is the materialization outcome, never sparse accounting
+
+    func testPinnedCloneModeReportsTheActualMaterializationOutcome() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try await rootfsRef(manifest)
+        let parent = baseParent(ref, imageID: baseImageID)
+        // Force the byte-copy fallback for BOTH the build clone and the boot
+        // clone, on a disk that is genuinely sparse (logical > allocated): the
+        // sparse-hole accounting the old heuristic used would have labeled the
+        // copy as a clone.
+        var templateSeams = RuntimeV2TemplateStore.Seams.production
+        templateSeams.cloneFile = { _, _ in false }
+        let copyBlobs = RuntimeV2BlobStore.Seams(cloneFile: { _, _ in false })
+        store = RuntimeV2Store(layout: layout, templateSeams: templateSeams, blobSeams: copyBlobs)
+        _ = try await store.prepareAndRecover(build: "test")
+        let template = try await buildTemplate(
+            marker: 0xD1, packages: [package("python3", "3.11.2")],
+            parent: parent
+        )
+        let registrationMode = template.buildMode
+        XCTAssertEqual(registrationMode, .copy)
+        try await registerEnvironment("env-clone-mode", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased())
+        _ = try await store.templates.pinEnvironment(
+            environmentID: "env-clone-mode", templateID: "basic", version: 1
+        )
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-clone-mode")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let disk = directory.appendingPathComponent("disk.img")
+        let clone = try await store.templates.clonePinnedTemplateDisk(
+            environmentID: "env-clone-mode", runtimeID: "rt-clone-mode",
+            imageID: baseImageID, into: disk
+        )
+        XCTAssertEqual(clone?.mode, .copy)
+        XCTAssertNil(clone?.sharedPhysicalBytes)
+        // The copied disk really is sparse: the old sparse-savings heuristic
+        // would have reported `.clone` here.
+        let bytes = RuntimeV2FileBytes.measure(fileAt: disk)
+        XCTAssertNotNil(bytes.allocatedBytes)
+        XCTAssertGreaterThan(bytes.logicalBytes, bytes.allocatedBytes ?? bytes.logicalBytes)
+        XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: disk), template.diskDigest)
+
+        // And on a clone-capable volume/configuration, an actual clonefile
+        // success is recorded as clone.
+        let production = RuntimeV2Store(layout: layout)
+        _ = try await production.prepareAndRecover(build: "test")
+        let secondDirectory = try layout.runtimeVMDirectory(runtimeID: "rt-clone-mode-2")
+        try FileManager.default.createDirectory(at: secondDirectory, withIntermediateDirectories: true)
+        let secondDisk = secondDirectory.appendingPathComponent("disk.img")
+        let cloned = try await production.templates.clonePinnedTemplateDisk(
+            environmentID: "env-clone-mode", runtimeID: "rt-clone-mode-2",
+            imageID: baseImageID, into: secondDisk
+        )
+        XCTAssertEqual(cloned?.mode, volumeSupportsClone() ? .clone : .copy)
+        XCTAssertNil(cloned?.sharedPhysicalBytes)
+    }
+}
+
+/// Small Sendable box for capturing a digest from a seam closure.
+private actor TestDigestBox {
+    private var digest: String?
+    func set(_ value: String?) { digest = value }
+    func get() -> String? { digest }
 }

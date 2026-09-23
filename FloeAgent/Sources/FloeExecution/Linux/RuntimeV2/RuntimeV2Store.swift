@@ -84,11 +84,12 @@ public actor RuntimeV2Store {
         layout: RuntimeV2Layout,
         poolConfiguration: RuntimeVMPool.Configuration = .init(),
         templateSeams: RuntimeV2TemplateStore.Seams = .production,
+        blobSeams: RuntimeV2BlobStore.Seams = .production
     ) {
         self.layout = layout
         let registry = RuntimeV2Registry(layout: layout)
         self.registry = registry
-        self.blobs = RuntimeV2BlobStore(layout: layout, registry: registry)
+        self.blobs = RuntimeV2BlobStore(layout: layout, registry: registry, seams: blobSeams)
         self.images = RuntimeV2ImageStore(layout: layout, registry: registry, blobs: blobs)
         self.deltas = RuntimeV2DeltaStore(layout: layout)
         self.leases = RuntimeV2LeaseStore(layout: layout, registry: registry)
@@ -198,32 +199,24 @@ public actor RuntimeV2Store {
 
     /// Captures the leftover working disk into the environment's delta (the
     /// same verified path as a clean stop) and marks the session interrupted.
+    /// The capture base comes from the provenance frozen in `runtime.json`
+    /// (the template pin + disk digest the guest actually booted), verified
+    /// against the live registry: a pin that moved while the disk was live is
+    /// a provenance mismatch, so the disk is preserved for repair instead of
+    /// being rewritten against different bytes.
     private func salvageWorkingDirectory(
         directory: URL, meta: RuntimeV2WorkingDirectory.Meta
     ) async throws {
         let workingDisk = directory.appendingPathComponent("disk.img")
         guard fileManager.fileExists(atPath: workingDisk.path) else { return }
-        guard let manifest = try await images.manifest(imageID: meta.baseImageID),
-              let rootfsRef = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"] else {
-            throw RuntimeV2Error.imageNotFound(meta.baseImageID)
-        }
-        let expanded = try await images.ensureExpanded(imageID: meta.baseImageID)
-        let baseRootfs = expanded.appendingPathComponent(rootfsRef.expandedPath)
-        // Salvage keeps the environment's exact template binding — the pinned
-        // template disk, or the base image rootfs — so an interrupted
-        // environment is captured with only its private changes and its next
-        // boot accepts the delta.
-        let deltaBase = try await templates.deltaBase(
-            environmentID: meta.environmentID, imageID: meta.baseImageID,
-            baseRootfs: baseRootfs, baseRootfsSHA512: rootfsRef.sha512
-        )
+        let bootBase = try await templates.bootBase(matching: meta)
         let info = try await deltas.capture(
             environmentID: meta.environmentID,
             workingDisk: workingDisk,
-            baseRootfs: deltaBase.diskURL,
+            baseRootfs: bootBase.diskURL,
             baseImageID: meta.baseImageID,
-            baseRootfsSHA512: deltaBase.digest,
-            templatePin: deltaBase.templatePin
+            baseRootfsSHA512: bootBase.digest,
+            templatePin: bootBase.templatePin
         )
         try await deltas.recordShutdown(
             RuntimeV2DeltaStore.ShutdownRecord(
@@ -460,6 +453,12 @@ public actor RuntimeV2Store {
 /// directory at VM start: the only link from a leftover working disk back to
 /// the environment and base image it belongs to. runtime/ is temporary, so
 /// this sidecar exists purely so recovery can salvage or quarantine honestly.
+///
+/// This record also freezes the FULL boot base: the immutable template pin and
+/// the SHA-512 of the exact disk bytes `disk.img` was cloned from. A stop or
+/// crash recovery captures the disk against that recorded identity — never
+/// against the current environment pin, which may have moved while the disk
+/// was live.
 public enum RuntimeV2WorkingDirectory {
     public struct Meta: Codable, Sendable, Equatable {
         public var version: Int
@@ -467,13 +466,29 @@ public enum RuntimeV2WorkingDirectory {
         public var environmentID: String
         public var baseImageID: String
         public var createdAt: Date
+        /// The immutable template version the working disk booted (nil = the
+        /// disk is a clone of the base image rootfs).
+        public var templateID: String?
+        public var templateVersion: Int?
+        public var templateDigest: String?
+        /// SHA-512 of the exact bytes `disk.img` was cloned from: the pinned
+        /// template's disk blob, or the verified base image rootfs.
+        public var bootBaseDiskDigest: String?
 
-        public init(runtimeID: String, environmentID: String, baseImageID: String, createdAt: Date) {
+        public init(
+            runtimeID: String, environmentID: String, baseImageID: String, createdAt: Date,
+            templateID: String? = nil, templateVersion: Int? = nil,
+            templateDigest: String? = nil, bootBaseDiskDigest: String? = nil
+        ) {
             self.version = 1
             self.runtimeID = runtimeID
             self.environmentID = environmentID
             self.baseImageID = baseImageID
             self.createdAt = createdAt
+            self.templateID = templateID
+            self.templateVersion = templateVersion
+            self.templateDigest = templateDigest
+            self.bootBaseDiskDigest = bootBaseDiskDigest
         }
     }
 

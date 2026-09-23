@@ -181,17 +181,36 @@ public actor RuntimeV2EnvironmentMigrator {
 
             // Origin gate: the disk must provably descend from the verified
             // base (exact digest, or a manifest-declared compatible origin).
-            if legacyDisk != nil, let legacyOriginSHA512, legacyOriginSHA512 != baseDigest {
-                let compatible = try legacyManifest(manifest: manifest)
-                    .compatibleOrigins?.contains(where: {
-                        $0.artifactSHA512.lowercased() == legacyOriginSHA512
-                    }) ?? false
-                guard compatible else {
-                    if let legacyDiskDirectory {
-                        let quarantine = store.layout.quarantineDirectory
-                            .appendingPathComponent("disk-\(environmentID)-\(UUID().uuidString)", isDirectory: true)
-                        try? fileManager.moveItem(at: legacyDiskDirectory, to: quarantine)
+            // A disk with NO readable origin record is NOT "unknown but
+            // probably fine": capturing unknown bytes against the base and
+            // activating them would launder foreign content into the
+            // environment's private delta (and a round-trip of unknown bytes
+            // proves transport, never origin). It fails closed: the disk is
+            // quarantined (preserved, never deleted) and the environment is
+            // marked repairRequired.
+            if legacyDisk != nil, let legacyDiskDirectory {
+                let rejection: String?
+                if let legacyOriginSHA512 {
+                    if legacyOriginSHA512 == baseDigest {
+                        rejection = nil
+                    } else {
+                        let compatible = try legacyManifest(manifest: manifest)
+                            .compatibleOrigins?.contains(where: {
+                                $0.artifactSHA512.lowercased() == legacyOriginSHA512
+                            }) ?? false
+                        rejection = compatible
+                            ? nil
+                            : "the environment disk was cloned from \(legacyOriginSHA512.prefix(16))… which is neither "
+                                + "the verified base (\(baseDigest.prefix(16))…) nor a manifest-declared compatible origin"
                     }
+                } else {
+                    rejection = "the environment disk has no readable origin record; without it the disk cannot be "
+                        + "proven to descend from the verified base"
+                }
+                if let rejection {
+                    let quarantine = store.layout.quarantineDirectory
+                        .appendingPathComponent("disk-\(environmentID)-\(UUID().uuidString)", isDirectory: true)
+                    try? fileManager.moveItem(at: legacyDiskDirectory, to: quarantine)
                     // The row may not exist yet (first migration attempt): an
                     // UPDATE would silently affect zero rows and lose the
                     // repair state, so the environment is upserted with the
@@ -204,12 +223,17 @@ public actor RuntimeV2EnvironmentMigrator {
                             state: "repairRequired",
                             dataPath: "environments/\(environmentID)/data",
                             compatHostFHS: false,
-                            repairReason: "the environment disk does not descend from the verified base image; it was quarantined, never overwritten",
+                            repairReason: "\(rejection); the disk was quarantined, never overwritten",
                             createdAt: now, lastUsedAt: now
                         )
                     )
-                    throw RuntimeV2Error.deltaBaseConflict(
-                        environmentID: environmentID, recorded: legacyOriginSHA512, verified: baseDigest
+                    if let legacyOriginSHA512 {
+                        throw RuntimeV2Error.deltaBaseConflict(
+                            environmentID: environmentID, recorded: legacyOriginSHA512, verified: baseDigest
+                        )
+                    }
+                    throw RuntimeV2Error.diskOriginUnverifiable(
+                        environmentID: environmentID, reason: rejection
                     )
                 }
             }

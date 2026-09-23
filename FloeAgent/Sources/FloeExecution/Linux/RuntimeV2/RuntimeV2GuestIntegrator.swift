@@ -59,6 +59,22 @@ public struct RuntimeV2WorkingDisk: Sendable, Equatable {
     }
 }
 
+/// The durable result of a confirmed stop, so the guest registry/UI can say
+/// what actually happened to the working disk instead of assuming success.
+public enum RuntimeV2StopOutcome: Sendable, Equatable {
+    /// There was no working disk to capture (nothing was materialized).
+    case noWorkingDisk
+    /// The guest state is durably in the environment's delta.
+    case captured(generation: UInt64)
+    /// The guest state could NOT be captured; the complete disk was preserved
+    /// (recovery/quarantine) and the environment was marked repairRequired.
+    case retainedForRepair(reason: String)
+    /// The stop did not confirm: the VM may still be running on the disk.
+    case notStopped
+    /// The conformer does not report stop outcomes.
+    case unknown
+}
+
 /// Everything the guest registry delegates to Runtime v2.
 public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// Admits a start (queues when the pool is full). Granted RAM wins over
@@ -124,6 +140,18 @@ public extension LinuxGuestRuntimeV2Integrating {
     /// integrator overrides this with the verified image manifest's own
     /// declaration — never an engine query.
     func imageSMPCapable(imageID: String) async -> Bool { false }
+
+    /// Result-carrying stop for callers (guest registry/UI) that need the
+    /// durable outcome. The default keeps existing conformers source
+    /// compatible: it runs `completeStop` and reports `unknown`.
+    func completeStopResult(
+        environmentID: String, runtimeID: String, imageID: String, clean: Bool
+    ) async -> RuntimeV2StopOutcome {
+        await completeStop(
+            environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
+        )
+        return .unknown
+    }
 }
 
 /// Production integrator backed by a RuntimeV2Store.
@@ -305,63 +333,88 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         )
         heldLeases[runtimeID] = lease
 
-        guard let manifest = try await store.images.manifest(imageID: imageID),
-              let rootfsRef = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"],
-              try await store.images.isImageVerified(imageID: imageID) else {
-            await lease.release()
-            heldLeases[runtimeID] = nil
-            throw RuntimeV2Error.unverifiedImageReferenced(imageID)
-        }
-        let expanded = try await store.images.ensureExpanded(imageID: imageID)
-        let baseRootfs = expanded.appendingPathComponent(rootfsRef.expandedPath)
-
         let directory = try store.layout.runtimeVMDirectory(runtimeID: runtimeID)
-        if fileManager.fileExists(atPath: directory.path) {
-            try fileManager.removeItem(at: directory)
-        }
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try RuntimeV2WorkingDirectory.writeMeta(
-            RuntimeV2WorkingDirectory.Meta(
-                runtimeID: runtimeID, environmentID: environmentID,
-                baseImageID: imageID, createdAt: Date()
-            ),
-            to: directory
-        )
         let diskURL = directory.appendingPathComponent("disk.img")
-        // Deep reuse: an environment pinned to an immutable software template
-        // boots a clone of exactly that template version's complete disk plus
-        // its own private delta. The pin is resolved exactly — never "latest"
-        // — and a pin that no longer resolves fails closed instead of booting
-        // a different base.
-        let pin = try await store.templates.environmentPin(environmentID: environmentID)
         let materializedCapacity: Int64
-        if let pin {
-            _ = try await store.templates.clonePinnedTemplateDisk(
-                environmentID: environmentID, runtimeID: runtimeID,
-                imageID: imageID, into: diskURL
-            )
-            // The delta was captured against (and must be applied onto) the
-            // pinned template's disk, not the base image rootfs.
+        do {
+            guard let manifest = try await store.images.manifest(imageID: imageID),
+                  let rootfsRef = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"],
+                  try await store.images.isImageVerified(imageID: imageID) else {
+                throw RuntimeV2Error.unverifiedImageReferenced(imageID)
+            }
+            let expanded = try await store.images.ensureExpanded(imageID: imageID)
+            let baseRootfs = expanded.appendingPathComponent(rootfsRef.expandedPath)
+
+            // Resolve the exact boot base BEFORE any bytes are written. For a
+            // pinned environment that is the pinned template's immutable disk;
+            // for an unpinned one, the verified base rootfs. The resolution
+            // fails closed when the pin is unavailable — no boot happens on a
+            // different base.
             let deltaBase = try await store.templates.deltaBase(
                 environmentID: environmentID, imageID: imageID,
                 baseRootfs: baseRootfs, baseRootfsSHA512: rootfsRef.sha512
             )
-            materializedCapacity = try await store.deltas.applyDelta(
-                environmentID: environmentID,
-                expectedBaseRootfsSHA512: deltaBase.digest,
-                expectedTemplate: pin,
-                into: diskURL
+            if fileManager.fileExists(atPath: directory.path) {
+                try fileManager.removeItem(at: directory)
+            }
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            // Freeze the FULL boot base durably (template id/version/digest AND
+            // the SHA-512 of the disk bytes) before cloning: a stop or crash
+            // recovery must prove which base the disk was cloned from even if
+            // the pin moves later. Never derived from the current pin at
+            // capture time.
+            try RuntimeV2WorkingDirectory.writeMeta(
+                RuntimeV2WorkingDirectory.Meta(
+                    runtimeID: runtimeID, environmentID: environmentID,
+                    baseImageID: imageID, createdAt: Date(),
+                    templateID: deltaBase.templatePin?.templateID,
+                    templateVersion: deltaBase.templatePin?.version,
+                    templateDigest: deltaBase.templatePin?.digest,
+                    bootBaseDiskDigest: deltaBase.digest
+                ),
+                to: directory
             )
-        } else {
-            // Base-image-only environments keep the previous behavior exactly;
-            // the delta is still bound to the verified base digest, so a base
-            // swap can never silently absorb an old delta.
-            materializedCapacity = try await store.deltas.materializeWorkingDisk(
-                environmentID: environmentID, baseRootfs: baseRootfs,
-                expectedBaseRootfsSHA512: rootfsRef.sha512,
-                expectedTemplate: nil,
-                into: diskURL
-            )
+            if let pin = deltaBase.templatePin {
+                // Deep reuse: the environment boots a clone of exactly the
+                // pinned template version's complete disk plus its private
+                // delta. The clone is validated against the resolved boot base
+                // so an old delta can never land on different bytes.
+                let clone = try await store.templates.clonePinnedTemplateDisk(
+                    environmentID: environmentID, runtimeID: runtimeID,
+                    imageID: imageID, into: diskURL, expecting: deltaBase
+                )
+                guard clone != nil else {
+                    throw RuntimeV2Error.templatePinUnavailable(
+                        environmentID: environmentID, templateID: pin.templateID,
+                        version: pin.version,
+                        reason: "the environment lost its pin between resolution and materialization"
+                    )
+                }
+                materializedCapacity = try await store.deltas.applyDelta(
+                    environmentID: environmentID,
+                    expectedBaseRootfsSHA512: deltaBase.digest,
+                    expectedTemplate: pin,
+                    into: diskURL
+                )
+            } else {
+                // Base-image-only environments keep the previous behavior
+                // exactly; the delta is still bound to the verified base digest,
+                // so a base swap can never silently absorb an old delta.
+                materializedCapacity = try await store.deltas.materializeWorkingDisk(
+                    environmentID: environmentID, baseRootfs: baseRootfs,
+                    expectedBaseRootfsSHA512: deltaBase.digest,
+                    expectedTemplate: nil,
+                    into: diskURL
+                )
+            }
+        } catch {
+            // Nothing was booted: the freshly materialized disk is regenerable
+            // from the untouched delta, so the working directory is removed and
+            // the lease released instead of leaving a half-built runtime.
+            try? fileManager.removeItem(at: directory)
+            await lease.release()
+            heldLeases[runtimeID] = nil
+            throw error
         }
         // Grow-only to the target capacity (sparse): a pristine environment
         // gets the full configured logical disk; an existing delta never shrinks.
@@ -382,7 +435,32 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     /// but the session is being abandoned/quarantined by the caller — the VM
     /// may still be running on the working disk, so the runtime dir and the
     /// lease are kept for recovery instead of capturing over live state.
+    ///
+    /// For a confirmed stop the capture base is the provenance recorded at boot
+    /// (never the current environment pin). If the capture cannot be proven or
+    /// fails, the working disk is NEVER deleted: it is quarantined, a durable
+    /// shutdown error is recorded, the environment is marked repairRequired
+    /// (so no fresh guest can boot over the preserved state) and only then is
+    /// the lease released. The lease is released only when the guest really
+    /// stopped and the failure state is durable.
     public func completeStop(environmentID: String, runtimeID: String, imageID: String, clean: Bool) async {
+        _ = await completeStopReporting(
+            environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
+        )
+    }
+
+    /// Result-carrying variant of `completeStop` (see `RuntimeV2StopOutcome`).
+    public func completeStopResult(
+        environmentID: String, runtimeID: String, imageID: String, clean: Bool
+    ) async -> RuntimeV2StopOutcome {
+        await completeStopReporting(
+            environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
+        )
+    }
+
+    private func completeStopReporting(
+        environmentID: String, runtimeID: String, imageID: String, clean: Bool
+    ) async -> RuntimeV2StopOutcome {
         guard clean else {
             try? await store.deltas.recordShutdown(
                 RuntimeV2DeltaStore.ShutdownRecord(
@@ -392,52 +470,115 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 ),
                 environmentID: environmentID
             )
-            return
+            return .notStopped
         }
         let directory = try? store.layout.runtimeVMDirectory(runtimeID: runtimeID)
         let diskURL = directory?.appendingPathComponent("disk.img")
-        if let diskURL, fileManager.fileExists(atPath: diskURL.path) {
-            // Flush: the engine's fclose already flushed stdio; fsync before
-            // the capture so the delta never records unflushed bytes.
-            if let handle = try? FileHandle(forUpdating: diskURL) {
-                try? handle.synchronize()
-                try? handle.close()
+        guard let directory, let diskURL, fileManager.fileExists(atPath: diskURL.path) else {
+            // No working disk to capture: sweep the (possibly empty) directory
+            // and release the lease.
+            if let directory, fileManager.fileExists(atPath: directory.path) {
+                try? fileManager.removeItem(at: directory)
             }
-            if let manifest = try? await store.images.manifest(imageID: imageID),
-               let rootfsRef = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"],
-               let expanded = try? await store.images.ensureExpanded(imageID: imageID) {
-                let baseRootfs = expanded.appendingPathComponent(rootfsRef.expandedPath)
-                // Capture binds the delta to exactly the base the working disk
-                // was cloned from: the pinned template's immutable disk when
-                // one is pinned, else the verified base image rootfs. A pinned
-                // environment's delta therefore holds only its private
-                // changes, and can never be folded into different bytes.
-                let deltaBase = try? await store.templates.deltaBase(
-                    environmentID: environmentID, imageID: imageID,
-                    baseRootfs: baseRootfs, baseRootfsSHA512: rootfsRef.sha512
-                )
-                if let deltaBase, let info = try? await store.deltas.capture(
+            await releaseLease(environmentID: environmentID, runtimeID: runtimeID)
+            return .noWorkingDisk
+        }
+        // Flush: the engine's fclose already flushed stdio; fsync before
+        // the capture so the delta never records unflushed bytes.
+        if let handle = try? FileHandle(forUpdating: diskURL) {
+            try? handle.synchronize()
+            try? handle.close()
+        }
+        do {
+            guard let meta = RuntimeV2WorkingDirectory.readMeta(from: directory) else {
+                throw RuntimeV2Error.workingDirectoryProvenanceUnavailable(
                     environmentID: environmentID,
-                    workingDisk: diskURL,
-                    baseRootfs: deltaBase.diskURL,
-                    baseImageID: imageID,
-                    baseRootfsSHA512: deltaBase.digest,
-                    templatePin: deltaBase.templatePin
-                ) {
-                    try? await store.deltas.recordShutdown(
-                        RuntimeV2DeltaStore.ShutdownRecord(
-                            environmentID: environmentID, runtimeID: runtimeID,
-                            stoppedAt: Date(), clean: true,
-                            deltaGeneration: info.header.generation
-                        ),
-                        environmentID: environmentID
-                    )
-                }
+                    reason: "the working directory has no ownership record; the disk cannot be attributed"
+                )
             }
-        }
-        if let directory {
+            guard meta.environmentID == environmentID else {
+                throw RuntimeV2Error.workingDirectoryProvenanceUnavailable(
+                    environmentID: environmentID,
+                    reason: "the working directory belongs to \(meta.environmentID), not \(environmentID)"
+                )
+            }
+            // Capture binds the delta to exactly the base the working disk was
+            // cloned from: the pinned template's immutable disk when one was
+            // pinned, else the verified base image rootfs. A pin that moved
+            // while the guest ran is a provenance mismatch and refuses the
+            // capture (the disk is preserved instead of being rewritten).
+            let bootBase = try await store.templates.bootBase(
+                matching: meta, expectedImageID: imageID
+            )
+            let info = try await store.deltas.capture(
+                environmentID: environmentID,
+                workingDisk: diskURL,
+                baseRootfs: bootBase.diskURL,
+                baseImageID: meta.baseImageID,
+                baseRootfsSHA512: bootBase.digest,
+                templatePin: bootBase.templatePin
+            )
+            try await store.deltas.recordShutdown(
+                RuntimeV2DeltaStore.ShutdownRecord(
+                    environmentID: environmentID, runtimeID: runtimeID,
+                    stoppedAt: Date(), clean: true,
+                    deltaGeneration: info.header.generation
+                ),
+                environmentID: environmentID
+            )
             try? fileManager.removeItem(at: directory)
+            await releaseLease(environmentID: environmentID, runtimeID: runtimeID)
+            return .captured(generation: info.header.generation)
+        } catch {
+            let reason = await preserveAfterFailedCapture(
+                environmentID: environmentID, runtimeID: runtimeID,
+                directory: directory, error: error
+            )
+            return .retainedForRepair(reason: reason)
         }
+    }
+
+    /// Failed-capture retention. The complete stopped disk moves into
+    /// recovery/quarantine (never deleted, never left as a bootable live
+    /// duplicate), the durable shutdown record and the repairRequired state are
+    /// written, and only after that durable failure state exists is the lease
+    /// released so the environment cannot silently boot over the preserved
+    /// bytes.
+    @discardableResult
+    private func preserveAfterFailedCapture(
+        environmentID: String, runtimeID: String, directory: URL, error: Error
+    ) async -> String {
+        let quarantine = store.layout.quarantineDirectory.appendingPathComponent(
+            "runtime-vm-\(runtimeID)-\(UUID().uuidString)", isDirectory: true
+        )
+        let detail: String
+        if (try? fileManager.moveItem(at: directory, to: quarantine)) != nil {
+            detail = "the stopped working disk could not be captured into the delta "
+                + "(\(error.localizedDescription)); the complete disk was preserved at "
+                + "recovery/quarantine/\(quarantine.lastPathComponent) and the environment "
+                + "was marked repairRequired"
+        } else {
+            detail = "the stopped working disk could not be captured into the delta "
+                + "(\(error.localizedDescription)) and could not be quarantined; the disk remains "
+                + "at runtime/vm/\(runtimeID) and the environment was marked repairRequired, so no "
+                + "new guest can boot over it"
+        }
+        try? await store.deltas.recordShutdown(
+            RuntimeV2DeltaStore.ShutdownRecord(
+                environmentID: environmentID, runtimeID: runtimeID,
+                stoppedAt: Date(), clean: false, deltaGeneration: nil, detail: detail
+            ),
+            environmentID: environmentID
+        )
+        try? await store.registry.setEnvironmentState(
+            id: environmentID, state: "repairRequired", repairReason: detail
+        )
+        await releaseLease(environmentID: environmentID, runtimeID: runtimeID)
+        await store.logs.log("runtime v2 stop capture failed environment=\(environmentID): \(detail)")
+        return detail
+    }
+
+    private func releaseLease(environmentID: String, runtimeID: String) async {
         if let lease = heldLeases.removeValue(forKey: runtimeID) {
             await lease.release()
         } else {

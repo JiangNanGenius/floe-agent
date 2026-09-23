@@ -75,6 +75,19 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
     case templateEnvironmentRunning(environmentID: String)
     case environmentNotFound(String)
     case deltaTemplateConflict(environmentID: String, recorded: String, verified: String)
+    /// A legacy environment disk exists but cannot be proven to descend from
+    /// the verified base (no readable origin record): it is quarantined and
+    /// the environment marked repairRequired, never captured as if compatible.
+    case diskOriginUnverifiable(environmentID: String, reason: String)
+    /// A leftover working directory does not carry the durable provenance
+    /// (template pin + boot base digest) needed to capture it against the
+    /// exact base it was cloned from.
+    case workingDirectoryProvenanceUnavailable(environmentID: String, reason: String)
+    /// The provenance recorded at boot no longer matches the live registry
+    /// (pin moved, template re-verified to different bytes, base image
+    /// changed). Capturing against the new identity would rewrite shared
+    /// template bytes as private state, so it is refused outright.
+    case bootProvenanceMismatch(environmentID: String, recorded: String, current: String)
 
     public var errorDescription: String? {
         switch self {
@@ -142,6 +155,12 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
             return "no Runtime v2 environment registered as '\(environmentID)'"
         case .deltaTemplateConflict(let environmentID, let recorded, let verified):
             return "system delta for \(environmentID) was captured from \(recorded) but the boot base is \(verified); the delta was not applied (no rebase across template versions)"
+        case .diskOriginUnverifiable(let environmentID, let reason):
+            return "the existing disk for environment \(environmentID) cannot be proven to descend from the verified base: \(reason); it was quarantined, not destroyed, and the environment was marked repairRequired"
+        case .workingDirectoryProvenanceUnavailable(let environmentID, let reason):
+            return "environment \(environmentID) has a leftover working disk whose boot base cannot be proven: \(reason); the disk was preserved and the environment was marked repairRequired"
+        case .bootProvenanceMismatch(let environmentID, let recorded, let current):
+            return "environment \(environmentID) booted \(recorded) but the live base is now \(current); the working disk was preserved and no delta was written across the two identities"
         }
     }
 }
