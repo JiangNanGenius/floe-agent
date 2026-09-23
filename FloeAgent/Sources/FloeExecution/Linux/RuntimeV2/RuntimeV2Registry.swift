@@ -497,7 +497,22 @@ public actor RuntimeV2Registry {
         if let value { Self.bindText(value, to: statement, index: index) } else { sqlite3_bind_null(statement, index) }
     }
 
+    /// Truthful preflight for every statement helper: with a nil handle
+    /// `sqlite3_prepare_v2`/`sqlite3_exec` fail with SQLITE_MISUSE and
+    /// `sqlite3_errmsg(nil)` reports the MISUSE-mapped "out of memory"
+    /// (`sqlite3_extended_errcode(NULL)` is SQLITE_NOMEM) — a false,
+    /// undiagnosable error. Refuse before touching SQLite so a caller that
+    /// skipped `open()` always sees the real contract violation.
+    private func requireOpenHandle() throws {
+        guard db != nil else {
+            throw RuntimeV2Error.registryCorrupt(
+                "runtime registry used before open(); call prepareAndRecover (or registry.open) before any registry access"
+            )
+        }
+    }
+
     private func execute(_ sql: String) throws {
+        try requireOpenHandle()
         var error: UnsafeMutablePointer<CChar>?
         guard sqlite3_exec(db, sql, nil, nil, &error) == SQLITE_OK else {
             let message = error.map { String(cString: $0) } ?? "unknown sqlite error"
@@ -507,6 +522,7 @@ public actor RuntimeV2Registry {
     }
 
     private func run(_ sql: String, bind: (OpaquePointer?) -> Void) throws {
+        try requireOpenHandle()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw RuntimeV2Error.registryCorrupt(String(cString: sqlite3_errmsg(db)))
@@ -520,6 +536,7 @@ public actor RuntimeV2Registry {
     }
 
     private func query<T>(_ sql: String, bind: ((OpaquePointer?) -> Void)? = nil, map: (OpaquePointer?) -> T) throws -> [T] {
+        try requireOpenHandle()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw RuntimeV2Error.registryCorrupt(String(cString: sqlite3_errmsg(db)))

@@ -732,6 +732,15 @@ public actor RuntimeV2Store {
                 reason: "no repair exclusion exists; there is nothing to restore"
             )
         }
+        // The resolution commit below is a durable registry transaction; an
+        // explicit repair may be resolved by ANY store instance, including one
+        // constructed after the exclusion appeared that has not run the
+        // launch-time `prepareAndRecover` pass yet (a fresh process opens its
+        // registry lazily otherwise). `open()` is idempotent, so the normal
+        // prepared path pays nothing. Without this the commit crashed on a nil
+        // sqlite handle and sqlite3_errmsg(nil) misreported it as
+        // "out of memory" (C7 ABA regression).
+        try await registry.open()
         let resolvedHold = await repairHolds.effectiveHold(environmentID: environmentID)
         let observedCorruptMarker = await repairHolds.corruptMarkerObservation(environmentID: environmentID)
         guard let preservedPath = resolvedHold?.preservedPath else {
@@ -860,6 +869,11 @@ public actor RuntimeV2Store {
                 reason: "no repair exclusion exists; there is nothing to discard"
             )
         }
+        // Same lazy-open contract as `restoreRepair`: the durable commit below
+        // touches the registry, and a fresh store instance that never ran
+        // `prepareAndRecover` must still be able to complete an explicit,
+        // human-authorized resolution (idempotent no-op when already open).
+        try await registry.open()
         // The preservedPath is untrusted: an unsupported/escaping path refuses
         // BEFORE anything is moved — a crafted sidecar can never authorize a
         // move, and can never lift the exclusion either.
@@ -979,6 +993,10 @@ public actor RuntimeV2Store {
                 reason: "no repair exclusion exists; there is nothing to clean up"
             )
         }
+        // Same lazy-open contract as `restoreRepair`/`discardRepair`: the
+        // durable commit below touches the registry and must complete on any
+        // store instance, prepared or not (idempotent no-op when already open).
+        try await registry.open()
         let observedCorruptMarker = await repairHolds.corruptMarkerObservation(environmentID: environmentID)
         // Fresh physical scan (never trusting the hold's preservedPath): find
         // the unacknowledged preserved quarantine entries that are either
