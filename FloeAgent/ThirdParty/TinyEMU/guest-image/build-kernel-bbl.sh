@@ -323,6 +323,10 @@ if [ "$rebuild" = 1 ]; then
         # HOSTCC and KCFLAGS get -fcommon: the pinned 4.15 tree has tentative
         # definitions (dtc's yylloc in the host tools, and similar patterns in
         # target code) that GCC 10+ rejects because it defaults to -fno-common.
+        # KCFLAGS also gets -no-pie: Ubuntu's gcc driver links PIE by default
+        # and 4.15's vdso recipe links vdso-dummy.o through the driver, which
+        # then fails 'attempted static link of dynamic object' when ld -r
+        # consumes it (retained failure).
         # Both must be make command-line variables: the kernel's Makefile
         # assigns HOSTCC itself, so an environment value would be discarded
         # (that mistake is retained in the eighth cloud build log).
@@ -335,7 +339,7 @@ if [ "$rebuild" = 1 ]; then
         # instruction set, accepted by modern gas. Do not also override
         # KBUILD_ARCH_A: the base already contains "im".
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
-            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon \
+            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS="-fcommon -no-pie" \
             KBUILD_ARCH_C=c_zicsr_zifencei olddefconfig
         # never hand out a boot pair that claims SMP but was configured
         # single-hart (the whole point of --smp)
@@ -344,7 +348,7 @@ if [ "$rebuild" = 1 ]; then
             grep -q '^CONFIG_NR_CPUS=2$' .config || die "--smp build did not produce CONFIG_NR_CPUS=2"
         fi
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
-            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon \
+            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS="-fcommon -no-pie" \
             KBUILD_ARCH_C=c_zicsr_zifencei -j"$jobs"
     ) >"$out/rebuild-riscv-linux.log" 2>&1 || {
         printf 'build-kernel-bbl: kernel rebuild failed; last lines:\n' >&2
