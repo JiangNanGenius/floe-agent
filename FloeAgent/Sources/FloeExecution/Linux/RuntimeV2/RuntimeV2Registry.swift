@@ -1954,6 +1954,41 @@ public actor RuntimeV2Registry {
         return updated
     }
 
+    /// Removes a NEVER-STARTED environment row and its environment template
+    /// reference. This exists only for the creation rollback of an explicit
+    /// pinned-environment flow whose boot never happened: it refuses while a
+    /// write lease is held and requires the row to still be `stopped`, so a
+    /// live or previously booted environment can never lose its row through
+    /// this path. The caller destroys the environment directory separately.
+    @discardableResult
+    public func removeEnvironmentRow(environmentID: String) throws -> Bool {
+        var removed = false
+        try transaction {
+            let state = try query(
+                "SELECT state FROM environments WHERE id=?",
+                bind: { Self.bindText(environmentID, to: $0, index: 1) }
+            ) { sqlite3_column_text($0, 0).map { String(cString: $0) } }.first ?? nil
+            guard let state, state == "stopped" else { return }
+            let heldLease = try query(
+                "SELECT COUNT(*) FROM leases WHERE environment_id=? AND state='held'",
+                bind: { Self.bindText(environmentID, to: $0, index: 1) }
+            ) { Int(sqlite3_column_int($0, 0)) }.first ?? 0
+            guard heldLease == 0 else {
+                throw RuntimeV2Error.templateEnvironmentRunning(environmentID: environmentID)
+            }
+            try run(
+                "DELETE FROM template_references WHERE ref_kind='environment' AND ref_id=?",
+                bind: { Self.bindText(environmentID, to: $0, index: 1) }
+            )
+            try run(
+                "DELETE FROM environments WHERE id=?",
+                bind: { Self.bindText(environmentID, to: $0, index: 1) }
+            )
+            removed = true
+        }
+        return removed
+    }
+
     /// Clears an environment's template pin. ONE transaction: a held write
     /// lease refuses the change and the environment reference row is removed
     /// with the pin. Returns false when no pin was set.

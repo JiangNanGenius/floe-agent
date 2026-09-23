@@ -39,6 +39,12 @@ final class FloePlatformServices: @unchecked Sendable {
     /// its rollback point, the legacy-only status below would wrongly report
     /// "not installed" and offer a re-download; the v2 store is the truth.
     private var linuxImageRuntimeV2: LinuxGuestRuntimeV2ImageStatus?
+    /// Official software-template distribution/registration service (C5).
+    /// Nil until the Linux backend assembly injects it; the Templates UI then
+    /// reports the dependency honestly instead of offering a download.
+    private var linuxOfficialTemplates: RuntimeV2OfficialTemplateService?
+    /// Runtime v2 hooks for pinning a NEW environment before its first boot.
+    private var linuxOfficialTemplateRuntime: LinuxOfficialTemplateRuntime?
     private var mediaRenderer: Any?
     private var baseSliceURL: URL?
     private var management: EnvironmentManagementService?
@@ -269,6 +275,100 @@ final class FloePlatformServices: @unchecked Sendable {
     /// button never promises an install this build cannot perform.
     func linuxGuestImageStorageAvailable() -> Bool {
         lock.withLock { linuxImages != nil }
+    }
+
+    /// Injected official software-template distribution service (C5). Set by
+    /// the Linux backend assembly together with the v2 store it registers in.
+    func setLinuxOfficialTemplateService(_ service: RuntimeV2OfficialTemplateService?) {
+        lock.withLock { linuxOfficialTemplates = service }
+    }
+
+    /// Injected Runtime v2 pinning hooks for explicit environment creation.
+    func setLinuxOfficialTemplateRuntime(_ runtime: LinuxOfficialTemplateRuntime?) {
+        lock.withLock { linuxOfficialTemplateRuntime = runtime }
+    }
+
+    /// Honest status of the official software templates for the Templates UI.
+    func officialTemplateAvailability() async throws -> [RuntimeV2OfficialTemplateAvailability] {
+        guard let service = lock.withLock({ linuxOfficialTemplates }) else {
+            return RuntimeV2TemplateCatalog.officialTemplateIDs.map {
+                RuntimeV2OfficialTemplateAvailability(
+                    templateID: $0, state: .dependencyMissing,
+                    reason: "官方软件模板服务不可用 / Official software template service unavailable"
+                )
+            }
+        }
+        return try await service.availability()
+    }
+
+    /// Downloads and registers one pinned official template artifact. Returns
+    /// the verified registration (version + content digest + package listing).
+    @discardableResult
+    func prepareOfficialTemplate(
+        templateID: String,
+        onProgress: @escaping @Sendable (RuntimeV2OfficialTemplatePhase) -> Void = { _ in }
+    ) async throws -> RuntimeV2TemplateStore.Registration {
+        guard let service = lock.withLock({ linuxOfficialTemplates }) else {
+            throw FloeError.invalidConfiguration("官方软件模板服务不可用 / Official software template service unavailable")
+        }
+        return try await service.prepare(templateID: templateID, onProgress: onProgress)
+    }
+
+    func cancelPrepareOfficialTemplate(templateID: String) async {
+        guard let service = lock.withLock({ linuxOfficialTemplates }) else { return }
+        await service.cancelPrepare(templateID: templateID)
+    }
+
+    /// Creates a NEW environment pinned to exactly the verified template
+    /// version, then records the durable Runtime v2 row and pin so the first
+    /// boot materializes a clone of that install. An existing environment for
+    /// the same workspace is never modified (no rebase, no mapping move).
+    func createPinnedEnvironment(
+        templateID: String,
+        workspaceRootURL: URL,
+        name: String?
+    ) async throws -> EnvironmentRegistry.PinnedEnvironmentCreation {
+        let registry = lock.withLock { self.registry }
+        let runtime = lock.withLock { linuxOfficialTemplateRuntime }
+        guard let registry, let runtime else {
+            throw FloeError.invalidConfiguration("官方软件模板服务不可用 / Official software template service unavailable")
+        }
+        let template = try await officialTemplateRegistration(templateID: templateID)
+        let root = workspaceRootURL.resolvingSymlinksInPath().standardizedFileURL
+        let workspaceID = FloeDigest.sha256Hex(Data(root.path.utf8))
+        let creation = try await registry.createPinnedEnvironment(
+            workspaceID: workspaceID,
+            workspaceRootPath: root.path,
+            name: name,
+            templateID: template.pin.templateID,
+            templateVersion: template.pin.version,
+            templateDigest: template.pin.digest
+        )
+        do {
+            try await runtime.registerPinnedEnvironment(
+                creation.record.id, name, template.pin.templateID, template.pin.version
+            )
+        } catch {
+            // The environment never booted: destroy the just-created record
+            // and remove the never-started v2 row, so a failed creation does
+            // not publish a usable-looking environment.
+            if let lifecycle = lock.withLock({ self.lifecycle }) {
+                _ = try? await lifecycle.destroy(containerID: creation.record.id)
+            }
+            await runtime.rollbackEnvironment(creation.record.id)
+            throw error
+        }
+        return creation
+    }
+
+    private func officialTemplateRegistration(templateID: String) async throws -> RuntimeV2TemplateStore.Registration {
+        guard let service = lock.withLock({ linuxOfficialTemplates }) else {
+            throw FloeError.invalidConfiguration("官方软件模板服务不可用 / Official software template service unavailable")
+        }
+        guard let registration = try await service.registered(templateID: templateID) else {
+            throw FloeError.validationFailed("尚无已验证的模板版本，请先下载并注册 / No verified template version yet; download and register it first")
+        }
+        return registration
     }
 
     /// Explicit runner-update state for the installed component, read from

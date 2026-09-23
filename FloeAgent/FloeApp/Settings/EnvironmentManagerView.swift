@@ -127,6 +127,15 @@ struct EnvironmentManagerView: View {
             }
             Section {
                 NavigationLink {
+                    EnvironmentTemplatesView()
+                } label: {
+                    Label("软件模板 / Software templates", systemImage: "shippingbox.and.arrow.backward")
+                }
+                Text("查看云端验证的预装软件模板，并用精确版本新建环境。 / Verified preinstalled software templates; create an environment pinned to an exact version.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                NavigationLink {
                     ToolRouteCatalogView(catalog: .bundled())
                 } label: {
                     Label("environment.tools.routes.title", systemImage: "terminal")

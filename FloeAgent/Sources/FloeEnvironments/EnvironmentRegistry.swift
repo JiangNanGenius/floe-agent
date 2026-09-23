@@ -353,10 +353,82 @@ public actor EnvironmentRegistry {
         }
     }
 
+    /// The result of an explicit pinned-environment creation. `record` is the
+    /// new environment; `ownsWorkspaceRoot` is false when the workspace
+    /// already had a project environment that keeps owning its root mapping
+    /// (the new environment is a parallel one and nothing about the existing
+    /// environment changed).
+    public struct PinnedEnvironmentCreation: Sendable {
+        public var record: ContainerRecord
+        public var ownsWorkspaceRoot: Bool
+    }
+
+    /// Creates a NEW environment pinned to an immutable official software
+    /// template version. The template id/version/digest are recorded as given
+    /// (the caller has already verified them against the registered template);
+    /// nothing else about the workspace changes. When the workspace already
+    /// has a project environment, that environment keeps its own base/version
+    /// (the new record is a separate environment), and the workspace root
+    /// mapping is NOT moved away from the existing one so existing
+    /// conversations keep running exactly as before.
+    @discardableResult
+    public func createPinnedEnvironment(
+        workspaceID: String,
+        workspaceRootPath: String,
+        name: String? = nil,
+        templateID: String,
+        templateVersion: Int,
+        templateDigest: String,
+        executionBackend: EnvironmentExecutionBackend = .linuxVM
+    ) throws -> PinnedEnvironmentCreation {
+        try prepare()
+        let trimmedID = templateID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty, trimmedID == templateID else {
+            throw FloeError.validationFailed("A pinned environment needs a non-empty template id")
+        }
+        guard templateVersion >= 1 else {
+            throw FloeError.validationFailed("Template version must be >= 1")
+        }
+        let normalizedDigest = templateDigest.lowercased()
+        guard normalizedDigest.range(of: "^[0-9a-f]{128}$", options: .regularExpression) != nil else {
+            throw FloeError.validationFailed("Template digest must be a SHA-512 hex value")
+        }
+        let record = ContainerRecord(
+            kind: .project,
+            ownerID: workspaceID,
+            name: name ?? URL(fileURLWithPath: workspaceRootPath).lastPathComponent,
+            baseRevision: baseRevision,
+            templateID: templateID,
+            executionBackend: executionBackend,
+            templateVersion: templateVersion,
+            templateDigest: normalizedDigest
+        )
+        do {
+            try materialize(record)
+            try saveRecord(record)
+        } catch {
+            try? fileManager.removeItem(at: roots.layerURL(id: record.id, kind: record.kind))
+            throw error
+        }
+        // Only the first project environment for a workspace may own the
+        // workspace-root mapping; moving it would break the existing
+        // environment's execution resolution.
+        let mappingURL = roots.rootURL.appendingPathComponent("workspace-containers.json")
+        var existingOwner: String?
+        if let data = try? Data(floeContentsOf: mappingURL),
+           let mapping = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            existingOwner = mapping[workspaceID]?["containerID"]
+        }
+        let ownsWorkspaceRoot = existingOwner == nil
+        if ownsWorkspaceRoot {
+            rememberWorkspaceRoot(workspaceID: workspaceID, path: workspaceRootPath, containerID: record.id)
+        }
+        return PinnedEnvironmentCreation(record: record, ownsWorkspaceRoot: ownsWorkspaceRoot)
+    }
+
     // MARK: - official templates (actual images only)
 
-    public static let officialTemplateIDs = ["basic", "dev-document"]
-    /// The template images are produced by this integration owner (K → D
+    public static let officialTemplateIDs = ["basic", "dev-document"]    /// The template images are produced by this integration owner (K → D
     /// contract). Nothing is fabricated while they are missing.
     public static let officialTemplateOwner = "job-6f5ac974858c47c2 (D)"
 

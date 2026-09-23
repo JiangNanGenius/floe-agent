@@ -327,6 +327,86 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         (try? await store.images.smpCapability(imageID: imageID))?.capable ?? false
     }
 
+    /// The environment's immutable template pin, when one is recorded.
+    public func environmentTemplatePin(environmentID: String) async -> RuntimeV2TemplatePin? {
+        try? await store.templates.environmentPin(environmentID: environmentID)
+    }
+
+    /// The image whose kernel/BIOS a pinned environment's working disk boots
+    /// with: the pinned template version's root base image. nil for an
+    /// unpinned environment (the caller keeps its configured default image).
+    public func environmentTemplateBaseImageID(environmentID: String) async -> String? {
+        guard let pin = try? await store.templates.environmentPin(environmentID: environmentID) else {
+            return nil
+        }
+        return try? await store.templates.baseImageID(templateID: pin.templateID, version: pin.version)
+    }
+
+    /// Rollback for a pinned-environment creation whose pin never completed:
+    /// removes the just-created, never-started row (the registry guards on
+    /// state + leases) so a half-created environment is never published.
+    public func rollbackPinnedEnvironment(environmentID: String) async {
+        _ = try? await store.registry.removeEnvironmentRow(environmentID: environmentID)
+    }
+
+    /// Creates (or reuses) the durable Runtime v2 environment row for a NEW
+    /// environment and pins it to exactly one verified template version. The
+    /// row is created with the template's root base image so the boot path
+    /// resolves the template's own kernel/BIOS; an existing row on a different
+    /// base is refused rather than silently re-pointed. The pin itself still
+    /// goes through `RuntimeV2TemplateStore.pinEnvironment` (single registry
+    /// transaction, refuses while a write lease is held).
+    @discardableResult
+    public func registerPinnedEnvironment(
+        environmentID: String,
+        name: String?,
+        templateID: String,
+        version: Int
+    ) async throws -> RuntimeV2TemplatePin {
+        guard let row = try await store.templates.version(templateID: templateID, version: version) else {
+            throw RuntimeV2Error.templateNotFound(templateID: templateID, version: version)
+        }
+        guard row.state == .verified, row.diskDigest != nil else {
+            throw RuntimeV2Error.templateNotVerified(
+                templateID: templateID, version: version, reason: row.reason
+            )
+        }
+        let rootImage = try await store.templates.baseImageID(templateID: templateID, version: version)
+        let diskDigest = (row.diskDigest ?? "").lowercased()
+        let now = Date()
+        if let existing = try await store.registry.environment(id: environmentID) {
+            if let base = existing.baseImageID, base != rootImage {
+                throw RuntimeV2Error.templateBaseImageMismatch(
+                    environmentID: environmentID, templateBaseImage: rootImage,
+                    environmentBaseImage: base
+                )
+            }
+        } else {
+            try await store.registry.upsertEnvironment(RuntimeV2Registry.EnvironmentRow(
+                id: environmentID, kind: "linuxVM", ownerID: nil, name: name,
+                baseImageID: rootImage, baseRootfsDigest: diskDigest.isEmpty ? nil : diskDigest,
+                state: "stopped", dataPath: "environments/\(environmentID)/data",
+                compatHostFHS: false, repairReason: nil, createdAt: now, lastUsedAt: now
+            ))
+            // The repairable sidecar records the same truth so a damaged
+            // registry can be rebuilt from verified files (the registry stays
+            // authoritative; the sidecar is best-effort).
+            let metadata = RuntimeV2EnvironmentMigrator.EnvironmentMetadata(
+                environmentID: environmentID, kind: "linuxVM", ownerID: nil, name: name,
+                baseImageID: rootImage,
+                baseRootfsSHA512: diskDigest.isEmpty ? row.parentDigest : diskDigest,
+                compatHostFHS: false, createdAt: now, migratedAt: nil,
+                templateID: templateID, templateVersion: version, templateDigest: row.digest
+            )
+            try? await RuntimeV2EnvironmentMigrator(store: store).writeMetadata(
+                metadata, environmentID: environmentID
+            )
+        }
+        return try await store.templates.pinEnvironment(
+            environmentID: environmentID, templateID: templateID, version: version
+        )
+    }
+
     /// The image whose manifest must prove the capability for this
     /// environment: the pinned template's root base image when one is pinned
     /// (the template rootfs boots with that image's kernel/BIOS), else the

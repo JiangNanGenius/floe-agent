@@ -30,6 +30,20 @@ import FloeTools
 struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     let registry: EnvironmentRegistry
     let defaultImageID: String
+    /// Resolves the image whose kernel/BIOS a pinned environment boots with
+    /// (its immutable template's root base image). nil/absent keeps the
+    /// configured default image, exactly as before.
+    let pinnedImageID: (@Sendable (String) async -> String?)?
+
+    init(
+        registry: EnvironmentRegistry,
+        defaultImageID: String,
+        pinnedImageID: (@Sendable (String) async -> String?)? = nil
+    ) {
+        self.registry = registry
+        self.defaultImageID = defaultImageID
+        self.pinnedImageID = pinnedImageID
+    }
 
     func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor? {
         guard let record = await registry.record(id: id),
@@ -46,13 +60,14 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             shares.append(LinuxGuestShare(tag: "workspace", hostDirectory: workspace))
         }
 
+        let imageID = await pinnedImageID?(record.id) ?? defaultImageID
         return LinuxGuestEnvironmentDescriptor(
             id: record.id,
             ownerID: record.ownerID,
             taskID: nil,
             writableDirectory: layer,
             shares: Array(shares.prefix(LinuxGuestShare.maximumShares)),
-            imageID: defaultImageID,
+            imageID: imageID,
             ramMB: nil,
             // Linux environments need apt/pip to install python3 and packages.
             // Each admitted guest owns its network instance; the registry
@@ -61,6 +76,21 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             serviceForwards: []
         )
     }
+}
+
+/// Runtime v2 hooks the environment-creation service needs to pin a NEW
+/// environment before its first boot. Closures over the one production
+/// integrator/store; no second store or service.
+struct LinuxOfficialTemplateRuntime: Sendable {
+    /// Creates the durable v2 environment row (if absent) and pins the exact
+    /// verified template version.
+    let registerPinnedEnvironment: @Sendable (_ environmentID: String, _ name: String?, _ templateID: String, _ version: Int) async throws -> RuntimeV2TemplatePin
+    /// The pinned environment's root base image id (the image whose
+    /// kernel/BIOS the working disk boots with).
+    let environmentBaseImageID: @Sendable (_ environmentID: String) async -> String?
+    /// Removes a freshly created environment row after a failed creation
+    /// attempt (rollback; never touches a pre-existing row).
+    let rollbackEnvironment: @Sendable (_ environmentID: String) async -> Void
 }
 
 /// Runtime v2 verified-image truth for install-state composition. Once the
@@ -101,6 +131,7 @@ enum LinuxGuestBackendAssembly {
     static func makeService(registry: EnvironmentRegistry, artifactRoot: URL?) -> TinyEMULinuxCommandService {
         let images: any LinuxGuestImageResolving
         let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
+        var pinnedImageID: (@Sendable (String) async -> String?)?
         if let artifactRoot {
             let legacyRoot = artifactRoot
                 .appendingPathComponent("LinuxGuest", isDirectory: true)
@@ -129,6 +160,36 @@ enum LinuxGuestBackendAssembly {
                         expandedImagesRoot: layout.expandedImagesDirectory
                     )
                 )
+                // C5: a pinned environment boots the immutable template's own
+                // image (its root base image) instead of the default image.
+                pinnedImageID = { environmentID in
+                    await integrator.environmentTemplateBaseImageID(environmentID: environmentID)
+                }
+                // Official template distribution + registration through the
+                // existing verified image store and template store.
+                let imageService = LinuxGuestImageInstallationService(root: artifactRoot, limits: .standard)
+                let officialTemplates = RuntimeV2OfficialTemplateService(
+                    store: store,
+                    importer: LinuxGuestImageTemplateImportAdapter(service: imageService),
+                    downloader: LinuxGuestImageHTTPDownloader()
+                )
+                FloePlatformServices.shared.setLinuxOfficialTemplateService(officialTemplates)
+                FloePlatformServices.shared.setLinuxOfficialTemplateRuntime(
+                    LinuxOfficialTemplateRuntime(
+                        registerPinnedEnvironment: { environmentID, name, templateID, version in
+                            try await integrator.registerPinnedEnvironment(
+                                environmentID: environmentID, name: name,
+                                templateID: templateID, version: version
+                            )
+                        },
+                        environmentBaseImageID: { environmentID in
+                            await integrator.environmentTemplateBaseImageID(environmentID: environmentID)
+                        },
+                        rollbackEnvironment: { environmentID in
+                            await integrator.rollbackPinnedEnvironment(environmentID: environmentID)
+                        }
+                    )
+                )
             } else {
                 runtimeV2 = nil
                 images = legacy
@@ -143,7 +204,8 @@ enum LinuxGuestBackendAssembly {
         let guestRegistry = TinyEMULinuxGuestRegistry(
             environments: AppLinuxGuestEnvironmentProvider(
                 registry: registry,
-                defaultImageID: defaultImageID
+                defaultImageID: defaultImageID,
+                pinnedImageID: pinnedImageID
             ),
             images: images,
             limits: .standard,
