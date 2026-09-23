@@ -203,4 +203,122 @@ struct TaskNotificationOutboxTests {
         let link = BackgroundWorkDeepLink(kind: .linuxSession, environmentID: "env-7")
         #expect(BackgroundWorkDeepLink.parse(link.userInfo)?.environmentID == "env-7")
     }
+
+    // MARK: - Persistent terminal-alert factories (Build 226+)
+
+    @Test("The model-run factory carries the task name and result with a stable route")
+    func modelRunTerminalFactory() {
+        let runID = UUID()
+        let conversationID = UUID()
+        let first = TaskTerminalEvent.modelRunTerminal(
+            runID: runID,
+            conversationID: conversationID,
+            taskName: "整理季度报表",
+            kind: .completed,
+            body: "已完成 · 共处理 42 行"
+        )
+        // The task name is the title; the outcome line is the body; the
+        // identifier and deep link are the stable route.
+        #expect(first.title == "整理季度报表")
+        #expect(first.body == "已完成 · 共处理 42 行")
+        #expect(first.identifier == "run.\(runID.uuidString).terminal")
+        #expect(first.kind == .completed)
+        #expect(first.deepLink.kind == .modelRun)
+        #expect(first.deepLink.conversationID == conversationID)
+        #expect(first.deepLink.runID == runID)
+        // Re-publishing the same terminal state replaces instead of stacking.
+        let second = TaskTerminalEvent.modelRunTerminal(
+            runID: runID,
+            conversationID: conversationID,
+            taskName: "整理季度报表",
+            kind: .completed,
+            body: "已完成 · 共处理 43 行"
+        )
+        #expect(second.identifier == first.identifier)
+        var outbox = TaskNotificationOutbox()
+        _ = outbox.enqueue(first, canPresent: false)
+        #expect(outbox.enqueue(second, canPresent: false) == .replacedQueuedEvent)
+        #expect(outbox.pendingCount == 1)
+        #expect(outbox.pending.first?.body == "已完成 · 共处理 43 行")
+    }
+
+    @Test("The Linux session factory scopes the identifier by launch generation")
+    func linuxSessionTerminalFactoryScopesByGeneration() {
+        let firstBoot = TaskTerminalEvent.linuxSessionTerminal(
+            environmentID: "env-9",
+            environmentTitle: "数据分析 VM",
+            kind: .cancelled,
+            body: "已取消 · 用户关闭了画中画",
+            launchGeneration: 3
+        )
+        #expect(firstBoot.identifier == "linux.session.env-9.g3.terminal")
+        #expect(firstBoot.title == "数据分析 VM")
+        #expect(firstBoot.deepLink.environmentID == "env-9")
+        // The same boot replaces its own alert…
+        let sameBoot = TaskTerminalEvent.linuxSessionTerminal(
+            environmentID: "env-9",
+            environmentTitle: "数据分析 VM",
+            kind: .cancelled,
+            body: "已取消 · 停止完成",
+            launchGeneration: 3
+        )
+        #expect(sameBoot.identifier == firstBoot.identifier)
+        // …while a later restart is a distinct event, not a replacement.
+        let secondBoot = TaskTerminalEvent.linuxSessionTerminal(
+            environmentID: "env-9",
+            environmentTitle: "数据分析 VM",
+            kind: .cancelled,
+            body: "已取消 · 用户关闭了画中画",
+            launchGeneration: 4
+        )
+        #expect(secondBoot.identifier != firstBoot.identifier)
+        // Unknown generation preserves the legacy identifier instead of
+        // inventing one.
+        let unknown = TaskTerminalEvent.linuxSessionTerminal(
+            environmentID: "env-9",
+            environmentTitle: "数据分析 VM",
+            kind: .failed,
+            body: "运行失败 · 服务异常退出"
+        )
+        #expect(unknown.identifier == "linux.session.env-9.terminal")
+    }
+
+    @Test("Content bounds normalize whitespace and cap length")
+    func contentBoundsTruncateAndNormalize() {
+        let longName = String(repeating: "很", count: 200)
+        let event = TaskTerminalEvent.modelRunTerminal(
+            runID: UUID(),
+            conversationID: UUID(),
+            taskName: longName,
+            kind: .failed,
+            body: String(repeating: "x", count: 500)
+        )
+        #expect(event.title.count == TaskNotificationContentBounds.maximumTitleCharacters)
+        #expect(event.body.count == TaskNotificationContentBounds.maximumBodyCharacters)
+        let messy = TaskNotificationContentBounds.truncating("  a\n\n b \t c  ", to: 80)
+        #expect(messy == "a b c")
+    }
+
+    @Test("An alert older than the maximum age is classified expired")
+    func expiredEventClassification() {
+        let now = Date()
+        let fresh = TaskTerminalEvent.modelRunTerminal(
+            runID: UUID(),
+            conversationID: UUID(),
+            taskName: "t",
+            kind: .completed,
+            body: "已完成",
+            createdAt: now.addingTimeInterval(-60)
+        )
+        #expect(!fresh.isExpired(now: now))
+        let aged = TaskTerminalEvent.modelRunTerminal(
+            runID: UUID(),
+            conversationID: UUID(),
+            taskName: "t",
+            kind: .completed,
+            body: "已完成",
+            createdAt: now.addingTimeInterval(-TaskTerminalEvent.defaultMaximumAlertAge - 1)
+        )
+        #expect(aged.isExpired(now: now))
+    }
 }

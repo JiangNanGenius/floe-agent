@@ -78,3 +78,47 @@ public struct TaskNotificationDecision: Sendable, Equatable {
         }
     }
 }
+
+/// Where a notification-driven deep link may go. The pure decision keeps the
+/// coordinator's tap handler honest on cold launches (database, scene and
+/// navigation not ready yet), on duplicate taps, and when the target task or
+/// environment was deleted: route exactly once, never crash into a missing
+/// target.
+public enum TaskDeepLinkRouting: String, Sendable, Equatable {
+    /// Persistence and a foreground scene are ready and the target exists:
+    /// route on the main actor now.
+    case routeNow
+    /// Cold launch (or a pre-ready foreground transition): hold the route and
+    /// retry on the next ready transition instead of navigating into a
+    /// half-built stack.
+    case deferUntilReady
+    /// The same route was performed within the dedup window: drop the repeat
+    /// tap without touching navigation or the outbox.
+    case ignoreDuplicate
+    /// The conversation/environment no longer exists: present the unreachable
+    /// prompt; never route into a deleted target.
+    case promptMissingTarget
+}
+
+extension TaskNotificationDecision {
+    /// Pure routing gate for a parsed notification deep link.
+    /// - Parameters:
+    ///   - persistenceReady: the durable database (and therefore the task /
+    ///     environment records) has finished opening and initial reload.
+    ///   - hasActiveScene: at least one scene has reported an active phase, so
+    ///     a navigation mutation lands in a live SwiftUI stack.
+    ///   - isDuplicate: true when the same route identity was already executed
+    ///     within the coordinator's dedup window.
+    ///   - targetExists: the conversation/environment record still exists.
+    public static func resolveRouting(
+        persistenceReady: Bool,
+        hasActiveScene: Bool,
+        isDuplicate: Bool,
+        targetExists: Bool
+    ) -> TaskDeepLinkRouting {
+        if isDuplicate { return .ignoreDuplicate }
+        guard persistenceReady, hasActiveScene else { return .deferUntilReady }
+        guard targetExists else { return .promptMissingTarget }
+        return .routeNow
+    }
+}

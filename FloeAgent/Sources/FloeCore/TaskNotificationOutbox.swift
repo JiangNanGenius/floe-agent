@@ -31,6 +31,24 @@ public enum TaskTerminalEventKind: String, Sendable, Codable, CaseIterable, Hash
     }
 }
 
+/// User-facing bounds for a persistent alert. System banners truncate
+/// unpredictably; truncating here keeps the task name and the result readable
+/// and makes the behavior testable.
+public enum TaskNotificationContentBounds {
+    public static let maximumTitleCharacters = 80
+    public static let maximumBodyCharacters = 220
+
+    /// Single-line, whitespace-normalized truncation at a character bound.
+    public static func truncating(_ text: String, to limit: Int) -> String {
+        let collapsed = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\r" })
+            .joined(separator: " ")
+        guard collapsed.count > limit else { return collapsed }
+        return String(collapsed.prefix(limit))
+    }
+}
+
 /// One durable notification-worthy event, carrying the same deep-link identity
 /// the work record and the in-app route use.
 public struct TaskTerminalEvent: Sendable, Codable, Hashable, Identifiable {
@@ -46,6 +64,10 @@ public struct TaskTerminalEvent: Sendable, Codable, Hashable, Identifiable {
 
     public var id: String { identifier }
 
+    /// Maximum alert age before a tap is treated as expired: the identity is
+    /// still routed, but the target is re-checked before navigation.
+    public static let defaultMaximumAlertAge: TimeInterval = 24 * 60 * 60
+
     public init(
         identifier: String,
         kind: TaskTerminalEventKind,
@@ -60,6 +82,82 @@ public struct TaskTerminalEvent: Sendable, Codable, Hashable, Identifiable {
         self.body = body
         self.createdAt = createdAt
         self.deepLink = deepLink
+    }
+
+    /// True when the alert is older than the maximum age. Expired alerts still
+    /// carry a stable identity; the router re-validates their target before it
+    /// navigates so a tap on a days-old notification cannot crash into a
+    /// deleted conversation or environment.
+    public func isExpired(
+        now: Date = Date(),
+        maximumAge: TimeInterval = TaskTerminalEvent.defaultMaximumAlertAge
+    ) -> Bool {
+        now.timeIntervalSince(createdAt) > maximumAge
+    }
+
+    /// Persistent terminal alert for one model run. The task name is the
+    /// title, the body is the caller-composed outcome line (the App layer
+    /// owns locale), and `run.<id>.terminal` is the stable identifier and
+    /// route: two publications of the same terminal state replace each other
+    /// instead of stacking duplicate banners.
+    public static func modelRunTerminal(
+        runID: UUID,
+        conversationID: UUID,
+        taskName: String,
+        kind: TaskTerminalEventKind,
+        body: String,
+        createdAt: Date = Date()
+    ) -> TaskTerminalEvent {
+        TaskTerminalEvent(
+            identifier: "run.\(runID.uuidString).terminal",
+            kind: kind,
+            title: TaskNotificationContentBounds.truncating(
+                taskName, to: TaskNotificationContentBounds.maximumTitleCharacters
+            ),
+            body: TaskNotificationContentBounds.truncating(
+                body, to: TaskNotificationContentBounds.maximumBodyCharacters
+            ),
+            createdAt: createdAt,
+            deepLink: BackgroundWorkDeepLink(
+                kind: .modelRun,
+                conversationID: conversationID,
+                runID: runID
+            )
+        )
+    }
+
+    /// Persistent terminal alert for one Linux environment session, scoped to
+    /// one boot via the runtime launch generation. Without the generation a
+    /// later restart would replace the previous boot's alert under the same
+    /// identifier; when the runtime token is unknown the unsuffixed
+    /// identifier is preserved instead of inventing a generation.
+    public static func linuxSessionTerminal(
+        environmentID: String,
+        environmentTitle: String,
+        kind: TaskTerminalEventKind,
+        body: String,
+        launchGeneration: UInt64? = nil,
+        createdAt: Date = Date()
+    ) -> TaskTerminalEvent {
+        let identifier = launchGeneration.map {
+            "linux.session.\(environmentID).g\($0).terminal"
+        } ?? "linux.session.\(environmentID).terminal"
+        return TaskTerminalEvent(
+            identifier: identifier,
+            kind: kind,
+            title: TaskNotificationContentBounds.truncating(
+                environmentTitle,
+                to: TaskNotificationContentBounds.maximumTitleCharacters
+            ),
+            body: TaskNotificationContentBounds.truncating(
+                body, to: TaskNotificationContentBounds.maximumBodyCharacters
+            ),
+            createdAt: createdAt,
+            deepLink: BackgroundWorkDeepLink(
+                kind: .linuxSession,
+                environmentID: environmentID
+            )
+        )
     }
 }
 

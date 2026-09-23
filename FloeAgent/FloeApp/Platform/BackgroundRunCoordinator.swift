@@ -33,11 +33,65 @@ enum MediaRetryBackoff {
     }
 }
 
+extension BackgroundRunCoordinator {
+    /// How long a finished task keeps its name and result on the surface
+    /// before teardown. Ten honest seconds — long enough to read the outcome,
+    /// short enough not to pretend the work is still running.
+    nonisolated static let terminalStateDwell: TimeInterval = 10
+    /// Repeat taps of the same notification within this window route once.
+    nonisolated static let duplicateNotificationRouteWindow: TimeInterval = 2.5
+    /// Freshness window for a published guest metrics sample; older samples
+    /// render "暂无" instead of a stale number.
+    nonisolated static let linuxMetricsSampleValidity: TimeInterval = LinuxGuestMetricsSampler.sampleValidity
+}
+
 struct BackgroundExecutionSurfaceTransition: Sendable, Equatable {
     var stopsPictureInPicture: Bool
     var stopsScreenShare: Bool
     var preparesPictureInPicture: Bool
     var requestsScreenShareAuthorization: Bool
+}
+
+/// Unified per-environment runtime snapshot. Assembled once per refresh so
+/// the PiP pager, the settings surface and notifications read exactly the
+/// same truth: identity (kernel, actual core count, RAM), live counts
+/// (commands, terminals, services, ports), the latest bounded resource
+/// sample with its freshness, and the launch generation that separates this
+/// boot from stale records of a previous one. Every optional value renders
+/// "暂无" when unknown, never an invented zero.
+struct LinuxEnvironmentRuntimeSnapshot: Sendable, Equatable {
+    var environmentID: String
+    var title: String
+    var state: BackgroundWorkState
+    var startedAt: Date?
+    /// `uname -sr` of the running guest kernel. Environment-detail material
+    /// for the settings surface, not the small PiP frame.
+    var kernelVersion: String?
+    /// Actual vCPUs reported by the running guest kernel.
+    var coreCount: Int?
+    /// Freshly measured guest memory (nil when the sample is stale — a stale
+    /// reading must render unknown, never as current usage).
+    var memoryUsedMB: Int?
+    /// Freshly measured guest memory total, nil when stale.
+    var memoryTotalMB: Int?
+    /// Configured RAM allocation from the runtime tier. Allocation fact, not
+    /// a measurement; it stays labelled as allocation on settings surfaces.
+    var ramConfiguredMB: Int?
+    var commandCount: Int?
+    /// Interactive terminal sessions. The runtime exposes no session-count
+    /// interface yet; nil renders "暂无" until it does (reported to B).
+    var terminalCount: Int?
+    var serviceCount: Int?
+    var portCount: Int?
+    var guestCPUFraction: Double?
+    /// Host emulator-thread occupancy, always labelled as the host thread.
+    var hostThreadCPUFraction: Double?
+    var sampledAt: Date?
+    var sampleIsFresh: Bool
+    /// Authoritative runtime identity for this boot; both fields stay unknown
+    /// until the runtime owner exposes the lease token (B2/D contract).
+    var runtimeID: String?
+    var launchGeneration: UInt64?
 }
 
 /// Why a provider/media workload began. Continued-processing requests are
@@ -190,6 +244,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var linuxPortCenter: LinuxPortForwardCenter { .shared }
     private var linuxMetricsSamplers: [String: LinuxGuestMetricsSampler] = [:]
     private var linuxMetricsTasks: [String: Task<Void, Never>] = [:]
+    /// Latest unified runtime sample per environment; the single source the
+    /// PiP pager, the settings surface and notifications read from. The
+    /// sample carries the runtime identity (runtime id + launch generation)
+    /// issued by the runtime lease — never a locally observed increment.
+    private var linuxLastRuntimeSamples: [String: LinuxGuestRuntimeSample] = [:]
+    /// Notification-route bookkeeping: duplicate-tap suppression, the
+    /// cold-launch deferral slot, and the user-handled identifiers that a
+    /// late scheduling error must not resurrect.
+    private var recentNotificationRoutes: [String: Date] = [:]
+    private var userHandledNotificationIdentifiers: [String: Date] = [:]
+    private var pendingNotificationRoute: (key: String, link: BackgroundWorkDeepLink, identifier: String)?
+    /// Monotonic route-request generation. An async target-existence check
+    /// that finishes after a newer tap started must not navigate: the stale
+    /// completion is dropped when its generation is no longer current.
+    private var notificationRouteGeneration: UInt64 = 0
     private var lastSkippedContinuedUpdateAt: Date = .distantPast
     private var continuedEligibility = ContinuedProcessingEligibilityState<UUID>()
     private var surfacedRunID: UUID?
@@ -828,6 +897,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             notifyTerminal(
                 conversationID: conversationID,
                 runID: runID,
+                title: finished.title,
                 outcome: outcome,
                 message: message
             )
@@ -865,13 +935,21 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             } else if activeRuns.isEmpty {
                 dwellCompletedRun = (runID, finished)
                 retainedPausedRun = nil
+                // The terminal state (task name + result) owns the frame for
+                // the whole dwell; a live carousel would overwrite it on its
+                // next tick and make a finished task look still running.
+                pipCarouselTask?.cancel()
+                pipCarouselTask = nil
                 if wasSurfaced {
                     environment.backgroundVideoService.update(
                         title: finished.title,
-                        progress: Self.completedSurfaceText(for: finished)
+                        progress: Self.completedSurfaceText(for: finished, message: message)
                     )
                 }
-                scheduleSuccessSurfaceTeardown(generation: plan.generation, dwell: plan.delay)
+                scheduleSuccessSurfaceTeardown(
+                    generation: plan.generation,
+                    dwell: max(plan.delay, Self.terminalStateDwell)
+                )
             } else {
                 dwellCompletedRun = nil
                 if wasSurfaced {
@@ -886,7 +964,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 // work. Keep the user-owned surface alive with the real
                 // failure reason and the recovery action so reopening the
                 // task offers a path forward instead of a silent
-                // disappearance.
+                // disappearance. The recovery frame is static: no carousel
+                // page may overwrite it.
+                pipCarouselTask?.cancel()
+                pipCarouselTask = nil
                 surfacedRunID = runID
                 retainedPausedRun = (runID, finished)
                 environment.backgroundVideoService.update(
@@ -916,18 +997,27 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
-    /// Honest success caption for the completion dwell: the real outcome and
-    /// the run's measured elapsed time. No invented progress.
-    nonisolated static func completedSurfaceText(for run: (title: String, startedAt: Date), now: Date = Date()) -> String {
+    /// Honest success caption for the completion dwell: the task name, the
+    /// real result message and the measured elapsed time. No invented
+    /// progress. The caption stays on screen for `terminalStateDwell`.
+    nonisolated static func completedSurfaceText(
+        for run: (title: String, startedAt: Date),
+        message: String? = nil,
+        now: Date = Date()
+    ) -> String {
         let elapsed = max(0, Int(now.timeIntervalSince(run.startedAt)))
         let minutes = elapsed / 60
         let seconds = elapsed % 60
         let duration = minutes > 0 ? "\(minutes) 分 \(seconds) 秒" : "\(seconds) 秒"
-        return "\(run.title)\n已完成 · 用时 \(duration)"
+        var lines = ["\(run.title)", "已完成 · 用时 \(duration)"]
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append(String(message.prefix(120)))
+        }
+        return lines.joined(separator: "\n")
     }
 
-    private nonisolated static func completedSurfaceText(for run: ActiveRun) -> String {
-        completedSurfaceText(for: (title: run.title, startedAt: run.startedAt))
+    private nonisolated static func completedSurfaceText(for run: ActiveRun, message: String? = nil) -> String {
+        completedSurfaceText(for: (title: run.title, startedAt: run.startedAt), message: message)
     }
 
     /// Actionable failure caption: the failure reason plus what the user can
@@ -982,7 +1072,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 self.dwellCompletedRun = nil
                 Task { await BackgroundWorkRegistry.shared.remove(id: completed.id) }
             }
-            self.tearDownBackgroundExecutionPreference()
+            if self.linuxBackgroundHold.hasActiveHold {
+                // A held VM kept running (its background services are real
+                // work): hand the surface back to it instead of tearing the
+                // frame down and faking a stop.
+                self.resumeBackgroundSurfaceIfNeeded()
+            } else {
+                self.tearDownBackgroundExecutionPreference()
+            }
         }
     }
 
@@ -1036,7 +1133,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let text: String
         switch outcome {
         case .succeeded:
-            text = Self.completedSurfaceText(for: (title: title, startedAt: startedAt))
+            text = Self.completedSurfaceText(
+                for: (title: title, startedAt: startedAt),
+                message: message
+            )
         case .cancelled:
             text = message ?? "已取消 · 检查点已保留"
         case .failed:
@@ -1133,6 +1233,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         }
         persistNotificationOutbox()
+        // The authorization answer may resolve while a deferred notification
+        // route is waiting for the same readiness.
+        flushPendingNotificationRoute()
     }
 
     /// Durable terminal event. Policy gates creation, authorization gates
@@ -1141,23 +1244,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// Foreground and background both go through UNUserNotificationCenter; in
     /// the foreground `willPresent` shows the system banner.
     func enqueueTerminalNotification(
-        kind: TaskTerminalEventKind,
-        title: String,
-        body: String,
-        identifier: String,
-        deepLink: BackgroundWorkDeepLink,
+        event: TaskTerminalEvent,
         policy: TaskNotificationPolicy? = nil
     ) {
         let gate = Self.eventGate(for: policy)
-        guard gate.allows(kind) else { return }
-        let event = TaskTerminalEvent(
-            identifier: identifier,
-            kind: kind,
-            title: title,
-            body: body,
-            createdAt: Date(),
-            deepLink: deepLink
-        )
+        guard gate.allows(event.kind) else { return }
         let disposition = notificationOutbox.enqueue(
             event,
             canPresent: notificationAuthorization.canPresentAlert
@@ -1167,12 +1258,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             post(event)
         case .queuedForAuthorization, .replacedQueuedEvent:
             notificationOutbox.recordSchedulingFailure(
-                identifier: identifier,
+                identifier: event.identifier,
                 reason: "notification authorization is \(notificationAuthorization.rawValue); event queued",
                 wasAuthorizationBlocked: true
             )
             FloeLogger(category: .app).info(
-                "notificationQueued identifier=\(identifier) authorization=\(self.notificationAuthorization.rawValue) pending=\(self.notificationOutbox.pendingCount)"
+                "notificationQueued identifier=\(event.identifier) authorization=\(self.notificationAuthorization.rawValue) pending=\(self.notificationOutbox.pendingCount)"
             )
         }
         persistNotificationOutbox()
@@ -1195,9 +1286,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                         reason: error.localizedDescription,
                         wasAuthorizationBlocked: false
                     )
-                    // A system-side scheduling error must not lose the event:
-                    // keep it queued for the next flush attempt.
-                    _ = self.notificationOutbox.enqueue(event, canPresent: false)
+                    // A system-side scheduling error must not lose the event —
+                    // unless the user already acted on it (tap → discard), in
+                    // which case resurrecting the queue entry would alert a
+                    // second time.
+                    if self.userHandledNotificationIdentifiers[event.identifier] == nil {
+                        _ = self.notificationOutbox.enqueue(event, canPresent: false)
+                    } else {
+                        FloeLogger(category: .app).info(
+                            "notificationResurrectionSkipped identifier=\(event.identifier) reason=alreadyHandled"
+                        )
+                    }
                     FloeLogger(category: .app).warning(
                         "notificationSchedulingFailed identifier=\(event.identifier) reason=\(error.localizedDescription)"
                     )
@@ -1252,12 +1351,39 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    /// App-layer outcome caption for a terminal event. The core layer stays
+    /// locale-neutral; the wording lives here with the rest of the surface
+    /// copy (a full Localizable.xcstrings migration for these new strings is
+    /// tracked in the release evidence).
+    nonisolated static func terminalEventBody(
+        kind: TaskTerminalEventKind,
+        resultMessage: String?,
+        fallbackBody: String
+    ) -> String {
+        let label: String = switch kind {
+        case .completed: "已完成"
+        case .failed: "运行失败"
+        case .cancelled: "已取消"
+        case .actionRequired: "等待审批"
+        }
+        let detail: String
+        if let trimmed = resultMessage?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            detail = trimmed
+        } else {
+            detail = fallbackBody
+        }
+        return "\(label) · \(detail)"
+    }
+
     /// Terminal notification for a conversation run: the policy is read from
-    /// the durable task record, the deep link identity is shared with the work
+    /// the durable task record, the persistent alert carries the task name and
+    /// the real result, the deep link identity is shared with the work
     /// record, and delivery is queued when authorization is missing.
     private func notifyTerminal(
         conversationID: UUID,
         runID: UUID,
+        title: String,
         outcome: TerminalOutcome,
         message: String?
     ) {
@@ -1284,25 +1410,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             case .failed: .failed
             case .cancelled: .cancelled
             }
-            let title: String = switch outcome {
-            case .succeeded: "本轮已结束"
-            case .failed: "本轮运行失败"
-            case .cancelled: "本轮已取消"
-            }
             let fallbackBody: String = switch outcome {
-            case .succeeded: "打开任务查看本轮结果与待办进度。"
+            case .succeeded: "打开任务查看结果与待办进度。"
             case .failed: "打开任务查看并恢复。"
             case .cancelled: "任务已停止，检查点已保留，可重新开始或继续。"
             }
             self.enqueueTerminalNotification(
-                kind: kind,
-                title: title,
-                body: message ?? fallbackBody,
-                identifier: "run.\(runID.uuidString).terminal",
-                deepLink: BackgroundWorkDeepLink(
-                    kind: .modelRun,
+                event: .modelRunTerminal(
+                    runID: runID,
                     conversationID: conversationID,
-                    runID: runID
+                    taskName: title,
+                    kind: kind,
+                    body: Self.terminalEventBody(
+                        kind: kind,
+                        resultMessage: message,
+                        fallbackBody: fallbackBody
+                    )
                 ),
                 policy: policy?.notificationPolicy
             )
@@ -1477,8 +1600,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             linuxSurfaceEntries[$0]
         })
         linuxSurfacePager.select(environmentID: environmentID)
-        let text = linuxSurfacePager.surfaceText()
+        // The first frame comes from the unified snapshot; the carousel owns
+        // every subsequent frame, so a metric tick can never repage it.
         let title = linuxSurfacePager.current?.title ?? "Linux 环境"
+        let text = linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)
+            .map(Self.linuxSurfacePageText(for:)) ?? "Linux 环境运行中"
         environment.backgroundVideoService.setRunContext(
             title: title,
             progress: text,
@@ -1518,14 +1644,65 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             finishContinuedTasks(success: true)
         }
         enqueueTerminalNotification(
-            kind: .cancelled,
-            title: "Linux 环境已停止",
-            body: "\(reason)。磁盘已保留，可再次启动。",
-            identifier: "linux.session.\(environmentID).terminal",
-            deepLink: BackgroundWorkDeepLink(kind: .linuxSession, environmentID: environmentID)
+            event: .linuxSessionTerminal(
+                environmentID: environmentID,
+                environmentTitle: title,
+                kind: .cancelled,
+                body: Self.terminalEventBody(
+                    kind: .cancelled,
+                    resultMessage: "\(reason)。磁盘已保留，可再次启动。",
+                    fallbackBody: "环境已停止。"
+                ),
+                launchGeneration: linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)?
+                    .launchGeneration
+            )
         )
         FloeLogger(category: .app).info(
             "linuxBackgroundHoldEnded environment=\(environmentID) reason=\(reason)"
+        )
+    }
+
+    /// A managed guest service terminated abnormally. Shares the durable
+    /// terminal-event pipeline with task failures — one vocabulary, one
+    /// queue, one authorization gate — so a service crash is surfaced like a
+    /// task failure instead of vanishing silently.
+    func linuxEnvironmentServiceDidFail(
+        environmentID: String,
+        title: String,
+        serviceName: String,
+        message: String
+    ) {
+        let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
+        let progressText = "\(serviceName) · \(message)"
+        let snapshot = BackgroundWorkSnapshot(
+            id: workID,
+            kind: .linuxSession,
+            title: title,
+            state: .failed,
+            interruption: .checkpointed,
+            progressText: progressText,
+            deepLink: BackgroundWorkDeepLink(
+                kind: .linuxSession,
+                environmentID: environmentID
+            )
+        )
+        Task { await BackgroundWorkRegistry.shared.register(snapshot) }
+        enqueueTerminalNotification(
+            event: .linuxSessionTerminal(
+                environmentID: environmentID,
+                environmentTitle: "\(title) · \(serviceName)",
+                kind: .failed,
+                body: Self.terminalEventBody(
+                    kind: .failed,
+                    resultMessage: message,
+                    fallbackBody: "后台服务异常退出。"
+                ),
+                launchGeneration: linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)?
+                    .launchGeneration
+            )
+        )
+        FloeLogger(category: .app).warning(
+            "linuxEnvironmentServiceFailed environment=\(environmentID) service=\(serviceName)"
         )
     }
 
@@ -1572,6 +1749,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     func refreshLinuxSurfaceEntries(environmentIDs: [String]) async {
         let serviceController = FloePlatformServices.shared.linuxLocalServiceController()
         let runner = FloePlatformServices.shared.linuxCommandRunner()
+        let guestController = FloePlatformServices.shared.linuxGuestController()
         for environmentID in environmentIDs {
             // A VM that started while the app was already running must still
             // restore its persisted forwards; a hold reconcile is the moment
@@ -1583,6 +1761,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             let existing = linuxSurfaceEntries[environmentID]
             let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
             let work = await BackgroundWorkRegistry.shared.snapshot(id: workID)
+            // Configured RAM backs the total when the guest meminfo read has
+            // not succeeded yet; the measured total wins once available.
+            let configuredRAMMB = await guestController?
+                .guestStatus(environmentID: environmentID).ramMB
             var entry = LinuxBackgroundSurfaceEntry(
                 environmentID: environmentID,
                 title: work?.title ?? existing?.title ?? "Linux 环境",
@@ -1590,7 +1772,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 emulatorCPUFraction: work?.metrics?.emulatorCPUFraction ?? existing?.emulatorCPUFraction,
                 guestCPUFraction: work?.metrics?.guestCPUFraction ?? existing?.guestCPUFraction,
                 memoryUsedMB: work?.metrics?.guestMemoryUsedMB ?? existing?.memoryUsedMB,
-                memoryTotalMB: work?.metrics?.guestMemoryTotalMB ?? existing?.memoryTotalMB,
+                memoryTotalMB: work?.metrics?.guestMemoryTotalMB
+                    ?? existing?.memoryTotalMB ?? configuredRAMMB,
                 activeCommandCount: linuxCommandCounts[environmentID] ?? existing?.activeCommandCount,
                 activeServiceCount: existing?.activeServiceCount ?? 0,
                 portForwardCount: linuxPortCounts[environmentID] ?? existing?.portForwardCount,
@@ -1667,10 +1850,104 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         (linuxSurfacePager.entries, linuxSurfacePager)
     }
 
-    /// The PiP page for a held environment, used by the carousel.
-    private func linuxSurfacePage(environmentID: String) -> String? {
-        linuxSurfacePager.select(environmentID: environmentID)
-        return linuxSurfacePager.current == nil ? nil : linuxSurfacePager.surfaceText()
+    /// The unified runtime snapshot for one held environment, when known.
+    /// Freshness is evaluated at call time so every consumer sees the same
+    /// "暂无" decision for an aged sample.
+    func linuxEnvironmentRuntimeSnapshot(
+        environmentID: String,
+        now: Date = Date()
+    ) -> LinuxEnvironmentRuntimeSnapshot? {
+        guard let entry = linuxSurfaceEntries[environmentID] else { return nil }
+        let sample = linuxLastRuntimeSamples[environmentID]
+        let fresh = sample?.isFresh(
+            now: now, validity: Self.linuxMetricsSampleValidity
+        ) == true
+        return LinuxEnvironmentRuntimeSnapshot(
+            environmentID: environmentID,
+            title: entry.title,
+            state: entry.state,
+            startedAt: entry.startedAt,
+            kernelVersion: sample?.kernelVersion,
+            coreCount: sample?.guestCoreCount,
+            memoryUsedMB: fresh ? sample?.guestMemoryUsedMB : nil,
+            memoryTotalMB: fresh ? sample?.guestMemoryTotalMB : nil,
+            ramConfiguredMB: entry.memoryTotalMB,
+            commandCount: entry.activeCommandCount,
+            terminalCount: nil,
+            serviceCount: entry.activeServiceCount,
+            portCount: entry.portForwardCount,
+            guestCPUFraction: fresh ? sample?.guestCPUFraction : nil,
+            hostThreadCPUFraction: fresh ? sample?.emulatorCPUFraction : nil,
+            sampledAt: sample?.sampledAt,
+            sampleIsFresh: fresh,
+            runtimeID: sample?.runtimeIdentity.runtimeID,
+            launchGeneration: sample?.runtimeIdentity.launchGeneration
+        )
+    }
+
+    /// Snapshots for the requested environment ids, in stable id order. The
+    /// default is every environment the coordinator currently tracks (the
+    /// background-held subset). Listing *all running* environments —
+    /// including ones whose background toggle is off — needs an environment
+    /// enumeration the runtime owner does not expose yet; the exact D seam is
+    /// recorded in the integration contract.
+    func linuxEnvironmentRuntimeSnapshots(
+        environmentIDs: [String]? = nil,
+        now: Date = Date()
+    ) -> [LinuxEnvironmentRuntimeSnapshot] {
+        let ids = environmentIDs ?? linuxSurfaceEntries.keys.sorted()
+        return ids.compactMap {
+            linuxEnvironmentRuntimeSnapshot(environmentID: $0, now: now)
+        }
+    }
+
+    /// One Linux page for the floating surface, built from the unified
+    /// snapshot so the PiP, settings and notifications read one truth. The
+    /// small frame stays readable: title, state and a short stable VM
+    /// identity first, then CPU and memory, then the command/service/port
+    /// counts. Kernel version and elapsed time are environment-detail
+    /// material for the settings surface, not the PiP. Guest CPU and
+    /// host-thread occupancy are always separate labelled values; anything
+    /// unknown or stale renders "暂无".
+    nonisolated static func linuxSurfacePageText(
+        for snapshot: LinuxEnvironmentRuntimeSnapshot,
+        now: Date = Date()
+    ) -> String {
+        func countText(_ value: Int?) -> String {
+            value.map(String.init) ?? "暂无"
+        }
+        func percentText(_ value: Double?) -> String {
+            guard let value else { return "暂无" }
+            return String(format: "%.0f%%", value * 100)
+        }
+        // Short, stable VM identity: the runtime token when the lease
+        // exposes one, else the environment id — never a full uuid.
+        let identitySource = snapshot.runtimeID ?? snapshot.environmentID
+        let shortIdentity = identitySource.prefix(6)
+        var lines: [String] = []
+        lines.append(
+            "\(snapshot.title) · \(snapshot.state.surfaceLabel)"
+                + " · VM \(shortIdentity)"
+        )
+        lines.append(
+            "CPU 客户机 \(percentText(snapshot.guestCPUFraction))"
+                + " · 宿主线程 \(percentText(snapshot.hostThreadCPUFraction))"
+                + " · \(snapshot.coreCount.map { "\($0) 核" } ?? "暂无")"
+        )
+        let memory: String
+        if let used = snapshot.memoryUsedMB, let total = snapshot.memoryTotalMB {
+            memory = "\(used)/\(total) MB"
+        } else {
+            memory = "暂无"
+        }
+        lines.append("内存 \(memory)")
+        lines.append(
+            "命令 \(countText(snapshot.commandCount))"
+                + " · 终端 \(countText(snapshot.terminalCount))"
+                + " · 服务 \(countText(snapshot.serviceCount))"
+                + " · 端口 \(countText(snapshot.portCount))"
+        )
+        return lines.joined(separator: "\n")
     }
 
 
@@ -1686,14 +1963,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             commandRunner: service,
             emulatorSampleProvider: { id in
                 await service.emulatorThreadCPUSample(environmentID: id)
-            }
+            },
+            // The runtime lease token (runtime id + launch generation) is a
+            // B2/D contract addition; until the registry exposes it the
+            // identity stays unknown rather than inventing a generation.
+            runtimeIdentityProvider: { _ in LinuxGuestRuntimeIdentity() }
         )
         linuxMetricsSamplers[environmentID] = sampler
         let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
         linuxMetricsTasks[environmentID] = Task { [weak self] in
-            for await metrics in await sampler.metrics() {
+            for await sample in await sampler.runtimeSamples() {
                 guard !Task.isCancelled else { return }
-                await self?.applyLinuxMetrics(metrics, workID: workID)
+                await self?.applyLinuxMetrics(sample, workID: workID)
             }
         }
     }
@@ -1716,28 +1997,39 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
-    private func applyLinuxMetrics(_ metrics: BackgroundWorkMetrics, workID: UUID) async {
+    private func applyLinuxMetrics(_ sample: LinuxGuestRuntimeSample, workID: UUID) async {
         let existing = await BackgroundWorkRegistry.shared.snapshot(id: workID)
         guard var snapshot = existing else { return }
-        snapshot.metrics = metrics
+        snapshot.metrics = sample.metrics
         await BackgroundWorkRegistry.shared.register(snapshot)
         guard let environmentID = existing?.deepLink.environmentID else { return }
+        // The unified sample is the single source of truth; a failed guest
+        // read keeps the last identity values but its freshness gate expires.
+        linuxLastRuntimeSamples[environmentID] = sample
         var entry = linuxSurfaceEntries[environmentID] ?? LinuxBackgroundSurfaceEntry(
             environmentID: environmentID,
             title: existing?.title ?? "Linux 环境",
             startedAt: existing?.startedAt
         )
-        entry.emulatorCPUFraction = metrics.emulatorCPUFraction ?? entry.emulatorCPUFraction
-        entry.guestCPUFraction = metrics.guestCPUFraction ?? entry.guestCPUFraction
-        entry.memoryUsedMB = metrics.guestMemoryUsedMB ?? entry.memoryUsedMB
-        entry.memoryTotalMB = metrics.guestMemoryTotalMB ?? entry.memoryTotalMB
-        entry.updatedAt = Date()
+        if sample.guestReadSucceeded {
+            entry.emulatorCPUFraction = sample.emulatorCPUFraction ?? entry.emulatorCPUFraction
+            entry.guestCPUFraction = sample.guestCPUFraction ?? entry.guestCPUFraction
+            entry.memoryUsedMB = sample.guestMemoryUsedMB ?? entry.memoryUsedMB
+            entry.memoryTotalMB = sample.guestMemoryTotalMB ?? entry.memoryTotalMB
+        }
+        entry.updatedAt = sample.sampledAt
         linuxSurfaceEntries[environmentID] = entry
         publishLinuxSurfacePager()
-        if linuxBackgroundHold.surfacedEnvironmentID == environmentID, isAppInBackground {
-            // Refresh the visible page, but never create a surface from a
-            // metric tick.
-            environment.backgroundVideoService.update(progress: linuxSurfacePager.surfaceText())
+        // Refresh the visible frame only when no carousel owns it and the
+        // currently surfaced page is this environment's. Rendering goes
+        // through the same unified page builder, so a metric tick updates the
+        // numbers without changing which page is shown.
+        if isAppInBackground, surfacedRunID == workID, pipCarouselTask == nil,
+           let snapshot = linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) {
+            environment.backgroundVideoService.update(
+                title: entry.title,
+                progress: Self.linuxSurfacePageText(for: snapshot)
+            )
         }
     }
 
@@ -1920,36 +2212,60 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         }
         for environmentID in linuxBackgroundHold.heldEnvironmentIDs {
-            guard let entry = linuxSurfaceEntries[environmentID] else { continue }
+            guard let snapshot = linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)
+            else { continue }
             items.append(SurfaceCarouselItem(
                 id: BackgroundWorkSnapshot.stableID(for: environmentID),
-                title: entry.title,
-                text: linuxSurfacePage(environmentID: environmentID) ?? entry.caption()
+                title: snapshot.title,
+                text: Self.linuxSurfacePageText(for: snapshot)
             ))
         }
         return items
     }
 
     /// Keep a multi-task/multi-VM PiP useful without cramming several
-    /// unreadable rows into a phone-sized video. Cycle the real active pages
-    /// and show the current index. A single page remains stable.
+    /// unreadable rows into a phone-sized video. Items rotate in stable order
+    /// every four seconds (a single page keeps a one-second heartbeat); the
+    /// cursor follows the item identity so an item set that shrinks or grows
+    /// never jumps the user to an arbitrary page.
     private func startPiPCarousel() {
         guard pipCarouselTask == nil else { return }
         pipCarouselTask = Task { [weak self] in
-            var cursor = 0
+            // Whatever makes the loop exit — foreground return, an empty item
+            // set or external cancellation — the stored handle must be
+            // cleared so a later background transition rebuilds the carousel.
+            // A stale non-nil handle used to freeze the pager on the last
+            // rendered page (device report: "2/2" forever, no rotation).
+            defer {
+                guard let self else { return }
+                self.pipCarouselTask = nil
+            }
+            var currentItemID: UUID? = nil
+            var lastIndex = 0
             while !Task.isCancelled {
                 guard let self, self.isAppInBackground else { return }
                 let candidates = self.surfaceCarouselItems()
                 guard !candidates.isEmpty else { return }
-                let item = candidates[cursor % candidates.count]
+                let index: Int
+                if let currentItemID,
+                   let existing = candidates.firstIndex(where: { $0.id == currentItemID }) {
+                    index = (existing + 1) % candidates.count
+                } else {
+                    // The page we showed has gone (finished run, stopped VM):
+                    // land on the same numeric slot when possible instead of
+                    // restarting from an arbitrary position.
+                    index = min(lastIndex, candidates.count - 1)
+                }
+                let item = candidates[index]
+                currentItemID = item.id
+                lastIndex = index
                 self.surfacedRunID = item.id
                 let prefix = candidates.count > 1
-                    ? "\((cursor % candidates.count) + 1)/\(candidates.count) · " : ""
+                    ? "\(index + 1)/\(candidates.count) · " : ""
                 self.environment.backgroundVideoService.update(
                     title: item.title,
                     progress: "\(prefix)\(item.text)"
                 )
-                cursor += 1
                 try? await Task.sleep(for: .seconds(candidates.count > 1 ? 4 : 1))
             }
         }
@@ -1964,19 +2280,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: "等待你的审批")
         }
+        let taskName = activeRuns[runID]?.title ?? "任务"
         Task { [weak self] in
             guard let self else { return }
             let policy = try? await SQLiteWorkspaceStore(database: self.environment.database)
                 .taskPolicy(conversationID: conversationID)
             self.enqueueTerminalNotification(
-                kind: .actionRequired,
-                title: "任务等待审批",
-                body: "需要确认：\(toolName)",
-                identifier: "approval.\(runID.uuidString).terminal",
-                deepLink: BackgroundWorkDeepLink(
-                    kind: .modelRun,
+                event: .modelRunTerminal(
+                    runID: runID,
                     conversationID: conversationID,
-                    runID: runID
+                    taskName: taskName,
+                    kind: .actionRequired,
+                    body: Self.terminalEventBody(
+                        kind: .actionRequired,
+                        resultMessage: "需要确认：\(toolName)",
+                        fallbackBody: "有一个工具调用等待你的确认。"
+                    )
                 ),
                 policy: policy?.notificationPolicy
             )
@@ -2169,6 +2488,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 // The authorization answer may have arrived while the app was
                 // away: flush anything the first-authorization race queued.
                 await self.refreshNotificationAuthorizationAndFlush()
+                // A notification tap that launched the app routes only now,
+                // once the database and this scene are both ready.
+                self.flushPendingNotificationRoute()
                 await self.reconcileLinuxBackgroundHold()
                 await self.environment.conversationCenter.resumeSafeRunsAfterForeground()
                 await self.reconcilePendingMediaJobs()
@@ -2307,6 +2629,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         await reconcilePendingMediaJobs()
         await runDueSchedules()
         await reconcileLinuxBackgroundSessionsAfterLaunch()
+        // Launch reconciliation runs exactly when persistence became ready:
+        // the moment a notification-launched cold start may route.
+        flushPendingNotificationRoute()
     }
 
     /// A TinyEMU guest cannot outlive the process, so a persisted "running in
@@ -2428,17 +2753,204 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard let link = BackgroundWorkDeepLink.parse(payload) else { return }
         // The parsed identity is `Sendable`; only its string payload crosses to
         // the main actor, never the raw `Any`-valued notification dictionary.
-        // Routing reads exactly these keys, so the rebuilt payload is the same
-        // contract the notification carried.
-        let forwarded = link.userInfo
         let identifier = response.notification.request.identifier
+        let key = Self.notificationRouteKey(identifier: identifier, link: link)
         await MainActor.run { [weak self] in
-            Self.route(deepLink: link, userInfo: forwarded)
+            self?.handleNotificationRoute(key: key, link: link, identifier: identifier)
+        }
+    }
+
+    /// Stable identity for duplicate suppression: the notification identifier
+    /// plus the deep-link payload, so repeat taps of the same alert collapse
+    /// while distinct alerts never do.
+    nonisolated static func notificationRouteKey(
+        identifier: String,
+        link: BackgroundWorkDeepLink
+    ) -> String {
+        let payload = link.userInfo
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: "&")
+        return "\(identifier)|\(payload)"
+    }
+
+    /// Routes one parsed notification deep link behind three gates: duplicate
+    /// suppression, cold-launch readiness (database + active scene) and
+    /// target existence. `isRetry` is true for a deferred route being flushed:
+    /// it skips the dedup window, which the original attempt already consumed.
+    @MainActor
+    private func handleNotificationRoute(
+        key: String,
+        link: BackgroundWorkDeepLink,
+        identifier: String,
+        isRetry: Bool = false
+    ) {
+        let generation: UInt64
+        if isRetry {
+            generation = notificationRouteGeneration
+        } else {
+            notificationRouteGeneration &+= 1
+            generation = notificationRouteGeneration
+        }
+        if !isRetry, let last = recentNotificationRoutes[key],
+           Date().timeIntervalSince(last) < Self.duplicateNotificationRouteWindow {
+            FloeLogger(category: .app).info(
+                "notificationRouteIgnored reason=duplicate key=\(key)"
+            )
+            notificationOutbox.discard(identifier: identifier)
+            persistNotificationOutbox()
+            return
+        }
+        guard environment.persistenceReady, effectiveScenePhase == .active else {
+            // Cold launch (or a transition that has not produced an active
+            // scene yet): hold the single pending slot and retry when the app
+            // is ready. The navigation subscribers mount with the root view,
+            // which exists only once `persistenceReady` flips, so
+            // persistence + active scene is the correct readiness proxy.
+            pendingNotificationRoute = (key: key, link: link, identifier: identifier)
+            FloeLogger(category: .app).info(
+                "notificationRouteDeferred key=\(key) persistenceReady=\(self.environment.persistenceReady) scene=\(String(describing: self.effectiveScenePhase))"
+            )
+            return
+        }
+        recentNotificationRoutes[key] = Date()
+        pruneNotificationRouteBookkeeping()
+        Task { [weak self] in
+            guard let self else { return }
+            // A foreground launch reloads the task list before this check so
+            // a just-restored conversation is not mistaken for a deleted one.
+            await self.environment.conversationCenter.reload()
+            let exists = await self.deepLinkTargetExists(link)
+            await MainActor.run {
+                // A newer tap supersedes this in-flight check: navigating
+                // now would race the newer route.
+                guard self.notificationRouteGeneration == generation else {
+                    FloeLogger(category: .app).info(
+                        "notificationRouteIgnored reason=staleGeneration key=\(key)"
+                    )
+                    return
+                }
+                self.finishNotificationRoute(
+                    key: key,
+                    link: link,
+                    identifier: identifier,
+                    targetExists: exists
+                )
+            }
+        }
+    }
+
+    private func deepLinkTargetExists(_ link: BackgroundWorkDeepLink) async -> Bool {
+        switch link.kind {
+        case .modelRun:
+            guard let conversationID = link.conversationID else { return false }
+            // A deleted conversation must prompt, never route: the workbench
+            // selection would point at a record the UI cannot load.
+            return environment.conversationCenter.conversations
+                .contains { $0.id == conversationID }
+        case .linuxSession, .linuxService:
+            // The guest registry can only speak for guests it is running in
+            // this process; a running guest proves the environment exists.
+            // A stopped one is ambiguous (stopped-but-present vs deleted
+            // needs the D enumeration), so the caller routes to the safe
+            // environment list with the missing-target message instead of
+            // focusing a possibly-dead id.
+            guard let environmentID = link.environmentID else { return true }
+            guard let controller = FloePlatformServices.shared.linuxGuestController()
+            else { return true }
+            let status = await controller.guestStatus(environmentID: environmentID)
+            return status.running
+        }
+    }
+
+    @MainActor
+    private func finishNotificationRoute(
+        key: String,
+        link: BackgroundWorkDeepLink,
+        identifier: String,
+        targetExists: Bool
+    ) {
+        let routing = TaskNotificationDecision.resolveRouting(
+            persistenceReady: environment.persistenceReady,
+            hasActiveScene: effectiveScenePhase == .active,
+            isDuplicate: false,
+            targetExists: targetExists
+        )
+        switch routing {
+        case .routeNow:
+            Self.route(deepLink: link)
             // The user acted on this event: it no longer needs to stay queued
             // (a flushing duplicate would otherwise alert twice).
-            self?.notificationOutbox.discard(identifier: identifier)
-            self?.persistNotificationOutbox()
+            notificationOutbox.discard(identifier: identifier)
+            userHandledNotificationIdentifiers[identifier] = Date()
+            persistNotificationOutbox()
+        case .deferUntilReady:
+            pendingNotificationRoute = (key: key, link: link, identifier: identifier)
+        case .ignoreDuplicate:
+            break
+        case .promptMissingTarget:
+            presentMissingTargetPrompt(link: link, identifier: identifier)
+            notificationOutbox.discard(identifier: identifier)
+            userHandledNotificationIdentifiers[identifier] = Date()
+            persistNotificationOutbox()
         }
+    }
+
+    /// Retries the deferred notification route once the database and an
+    /// active scene are both ready. Call sites: foreground transition,
+    /// authorization refresh and the end of launch reconciliation.
+    @MainActor
+    private func flushPendingNotificationRoute() {
+        guard let pending = pendingNotificationRoute else { return }
+        guard environment.persistenceReady, effectiveScenePhase == .active else { return }
+        pendingNotificationRoute = nil
+        handleNotificationRoute(
+            key: pending.key,
+            link: pending.link,
+            identifier: pending.identifier,
+            isRetry: true
+        )
+    }
+
+    private func pruneNotificationRouteBookkeeping() {
+        let cutoff = Date().addingTimeInterval(-Self.duplicateNotificationRouteWindow)
+        recentNotificationRoutes = recentNotificationRoutes.filter { $0.value > cutoff }
+        userHandledNotificationIdentifiers = userHandledNotificationIdentifiers.filter { $0.value > cutoff }
+    }
+
+    /// A notification pointed at a task or environment that no longer exists.
+    /// Present an in-app message and route to the SAFE surface — the task
+    /// list / environment list — never into the dead target, never another
+    /// system notification (tapping that would only re-enter this same
+    /// missing-target path), and never a crash.
+    @MainActor
+    private func presentMissingTargetPrompt(
+        link: BackgroundWorkDeepLink,
+        identifier: String
+    ) {
+        let title: String
+        let body: String
+        switch link.kind {
+        case .modelRun:
+            title = "无法打开任务"
+            body = "该任务可能已被删除，请从任务列表选择现有任务。"
+        case .linuxSession, .linuxService:
+            title = "无法打开环境"
+            body = "该环境可能已被删除，已为你打开执行环境列表。"
+        }
+        // Family-only deep link: the model-run route no-ops without a
+        // conversation id, the Linux route opens the environment list. Both
+        // are safe by construction.
+        let safeLink = BackgroundWorkDeepLink(kind: link.kind)
+        TaskBannerCenter.shared.present(
+            title: title,
+            body: body,
+            deepLink: safeLink
+        )
+        Self.route(deepLink: safeLink)
+        FloeLogger(category: .app).warning(
+            "notificationRouteMissingTarget identifier=\(identifier) kind=\(link.kind.rawValue)"
+        )
     }
 
     /// Routes a deep link to exactly one destination. The payload identity
