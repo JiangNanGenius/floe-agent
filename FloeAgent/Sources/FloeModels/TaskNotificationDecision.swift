@@ -176,28 +176,97 @@ public extension TaskDeepLinkRouting {
     }
 }
 
-/// Monotonic request generation for notification deep-link routing. The app
-/// begins one request per user tap; an async target check may only complete
-/// while its generation is still current, so a slower earlier tap can never
-/// navigate after a newer tap started. A deferred retry reuses the current
-/// generation (the original attempt already owned it) instead of inventing a
-/// new one.
+/// One deferred notification route: the parsed tap identity plus the
+/// generation of the tap that created it. The deferred slot must remember its
+/// origin: a retry may only replay while that origin is still the current tap
+/// generation, so a stale route can never navigate under a newer tap's
+/// generation.
+public struct TaskDeepLinkPendingRoute: Sendable, Equatable {
+    /// Stable identity used for duplicate suppression.
+    public var key: String
+    /// The parsed deep link to replay.
+    public var link: BackgroundWorkDeepLink
+    /// The durable alert identifier whose event this route consumes.
+    public var identifier: String
+    /// The generation of the tap that deferred this route.
+    public var generation: UInt64
+
+    public init(
+        key: String,
+        link: BackgroundWorkDeepLink,
+        identifier: String,
+        generation: UInt64
+    ) {
+        self.key = key
+        self.link = link
+        self.identifier = identifier
+        self.generation = generation
+    }
+}
+
+/// Monotonic request generation and pending-route ownership for notification
+/// deep-link routing. The app begins one request per genuine user tap; an
+/// async target check may only complete while its generation is still
+/// current, so a slower earlier tap can never navigate after a newer tap
+/// started. The one deferred-route slot belongs to this type: a genuine new
+/// tap supersedes (clears) a route deferred by an older generation, and a
+/// retry carries the originating generation and is rejected once superseded.
 public struct TaskDeepLinkRouteRequest: Sendable, Equatable {
     public private(set) var current: UInt64
+    /// The single deferred-route slot. Owned here so a superseding tap cannot
+    /// leave an older route behind for a later flush to replay.
+    public private(set) var pending: TaskDeepLinkPendingRoute?
 
     public init(current: UInt64 = 0) {
         self.current = current
+        self.pending = nil
     }
 
-    /// Starts a new request and returns its generation.
+    /// Starts a new request and returns its generation. A genuine new tap
+    /// supersedes any deferred route from an older generation: that route is
+    /// dropped here instead of being replayed later under the new generation.
     public mutating func begin() -> UInt64 {
         current &+= 1
+        pending = nil
         return current
     }
 
     /// True while a completion carrying this generation may still act.
     public func accepts(generation: UInt64) -> Bool {
         generation == current
+    }
+
+    /// Records a deferred route owned by `generation`. A stale owner (a newer
+    /// tap already began) is rejected and never overwrites the slot.
+    @discardableResult
+    public mutating func deferRoute(
+        key: String,
+        link: BackgroundWorkDeepLink,
+        identifier: String,
+        generation: UInt64
+    ) -> Bool {
+        guard accepts(generation: generation) else { return false }
+        pending = TaskDeepLinkPendingRoute(
+            key: key,
+            link: link,
+            identifier: identifier,
+            generation: generation
+        )
+        return true
+    }
+
+    /// Flush handoff for a deferred route. A flush while not ready changes
+    /// nothing (the route stays deferred); a ready flush returns the pending
+    /// route only while its originating generation is still current, and
+    /// clears a superseded route without replaying it.
+    public mutating func takePendingForRetry(ready: Bool) -> TaskDeepLinkPendingRoute? {
+        guard ready, let pending else { return nil }
+        guard accepts(generation: pending.generation) else {
+            self.pending = nil
+            return nil
+        }
+        self.pending = nil
+        return pending
     }
 }
 

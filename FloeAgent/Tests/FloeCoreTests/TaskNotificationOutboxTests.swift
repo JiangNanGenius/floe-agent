@@ -497,14 +497,183 @@ struct TaskNotificationDeepLinkRoutingTests {
         #expect(request.current == second)
     }
 
-    @Test("A deferred retry reuses the current generation instead of bumping it")
-    func retryKeepsGeneration() {
+    @Test("A retry carries its originating generation and a newer tap makes it stale")
+    func retryKeepsOriginatingGeneration() {
         var request = TaskDeepLinkRouteRequest()
         let tap = request.begin()
-        // The retry path does not begin a new request: it carries the original
-        // generation so the single durable event is consumed exactly once.
+        // The retry path does not begin a new request: it dispatches under the
+        // generation of the tap that deferred it, so the single durable event
+        // is consumed exactly once.
         #expect(request.accepts(generation: tap))
         #expect(request.current == tap)
-        #expect(!request.accepts(generation: tap &+ 1))
+        // A genuine newer tap supersedes it: the originating generation can no
+        // longer dispatch and a retry must not adopt the newer one.
+        let newer = request.begin()
+        #expect(newer > tap)
+        #expect(!request.accepts(generation: tap))
+        #expect(request.accepts(generation: newer))
+        #expect(request.current == newer)
+    }
+
+    // MARK: - Pending-route ownership (H3)
+    //
+    // The deferred slot must remember which tap created it. These sequences
+    // are the deterministic model of the coordinator's
+    // `handleNotificationRoute` / `flushPendingNotificationRoute`: a genuine
+    // new tap supersedes an older deferred route, a retry dispatches only
+    // under its originating generation, and a not-ready flush changes nothing.
+    // Mutating request calls are bound to locals outside `#expect`, which
+    // cannot evaluate a mutating member on its captured copy.
+
+    private func routeLink(_ environmentID: String) -> BackgroundWorkDeepLink {
+        BackgroundWorkDeepLink(kind: .linuxSession, environmentID: environmentID)
+    }
+
+    @Test("Deferred A cannot replay under ready tap B's generation")
+    func deferredRouteSupersededByNewerReadyTap() {
+        var request = TaskDeepLinkRouteRequest()
+        let aGeneration = request.begin()
+        let deferredA = request.deferRoute(
+            key: "A",
+            link: routeLink("env-a"),
+            identifier: "alert.A",
+            generation: aGeneration
+        )
+        #expect(deferredA)
+        #expect(request.pending?.key == "A")
+        #expect(request.pending?.generation == aGeneration)
+
+        // Tap B arrives while the app is ready: the genuine new tap begins a
+        // newer generation, and the still-deferred A is dropped with it.
+        let bGeneration = request.begin()
+        #expect(bGeneration > aGeneration)
+        #expect(request.pending == nil)
+        // The later readiness flush has no stale A to replay under B.
+        let flushAfterReadyB = request.takePendingForRetry(ready: true)
+        #expect(flushAfterReadyB == nil)
+        #expect(!request.accepts(generation: aGeneration))
+        #expect(request.accepts(generation: bGeneration))
+    }
+
+    @Test("When both taps were deferred, the flush replays only the newest")
+    func deferredRoutesRetryOnlyNewestGeneration() {
+        var request = TaskDeepLinkRouteRequest()
+        let aGeneration = request.begin()
+        let deferredA = request.deferRoute(
+            key: "A",
+            link: routeLink("env-a"),
+            identifier: "alert.A",
+            generation: aGeneration
+        )
+        let bGeneration = request.begin()
+        let deferredB = request.deferRoute(
+            key: "B",
+            link: routeLink("env-b"),
+            identifier: "alert.B",
+            generation: bGeneration
+        )
+        #expect(deferredA)
+        #expect(deferredB)
+        #expect(bGeneration > aGeneration)
+        #expect(request.pending?.key == "B")
+        #expect(!request.accepts(generation: aGeneration))
+
+        let retried = request.takePendingForRetry(ready: true)
+        #expect(retried?.key == "B")
+        #expect(retried?.identifier == "alert.B")
+        #expect(retried?.generation == bGeneration)
+        #expect(request.pending == nil)
+    }
+
+    @Test("An inactive scene keeps a deferred route armed with its original generation")
+    func inactiveSceneRetainsDeferredRoute() {
+        var request = TaskDeepLinkRouteRequest()
+        let tap = request.begin()
+        let deferred = request.deferRoute(
+            key: "B",
+            link: routeLink("env-b"),
+            identifier: "alert.B",
+            generation: tap
+        )
+        #expect(deferred)
+        // The scene is still inactive: a flush attempt must change nothing,
+        // so the route survives for the next ready transition.
+        let inactiveFlush = request.takePendingForRetry(ready: false)
+        #expect(inactiveFlush == nil)
+        #expect(request.pending?.key == "B")
+        #expect(request.pending?.generation == tap)
+        // The scene becomes active: the retry carries the originating
+        // generation, not a freshly invented one.
+        let readyFlush = request.takePendingForRetry(ready: true)
+        #expect(readyFlush?.generation == tap)
+        // If the retry has to defer again (a readiness race), it re-arms under
+        // the same generation and stays retryable.
+        let rearmed = request.deferRoute(
+            key: "B",
+            link: routeLink("env-b"),
+            identifier: "alert.B",
+            generation: tap
+        )
+        #expect(rearmed)
+        #expect(request.pending?.generation == tap)
+        let finalFlush = request.takePendingForRetry(ready: true)
+        #expect(finalFlush?.key == "B")
+    }
+
+    @Test("A retry handoff captured before a newer tap is stale before dispatch")
+    func retryHandoffRejectedAfterNewerTap() {
+        var request = TaskDeepLinkRouteRequest()
+        let aGeneration = request.begin()
+        let deferredA = request.deferRoute(
+            key: "A",
+            link: routeLink("env-a"),
+            identifier: "alert.A",
+            generation: aGeneration
+        )
+        #expect(deferredA)
+        // The ready flush hands A off under its originating generation.
+        let handoff = request.takePendingForRetry(ready: true)
+        #expect(handoff?.generation == aGeneration)
+        // A newer genuine tap runs before the handoff dispatches.
+        let bGeneration = request.begin()
+        // The coordinator's retry guard (`accepts(generation:)`) rejects the
+        // stale handoff before any dedup/readiness/target work...
+        #expect(!request.accepts(generation: aGeneration))
+        // ...and a late defer from the abandoned attempt cannot overwrite the
+        // newer tap's ownership.
+        let lateDefer = request.deferRoute(
+            key: "A",
+            link: routeLink("env-a"),
+            identifier: "alert.A",
+            generation: aGeneration
+        )
+        #expect(!lateDefer)
+        #expect(request.pending == nil)
+        #expect(request.accepts(generation: bGeneration))
+    }
+
+    @Test("A duplicate tap never begins a generation, so it cannot supersede the route")
+    func duplicateTapCannotSupersedeGeneration() {
+        // The coordinator's dedup gate returns `.ignoreDuplicate` before any
+        // request work: the repeat tap neither routes nor consumes the durable
+        // event, so the in-flight request keeps ownership.
+        let duplicate = resolve(isDuplicate: true, target: .exists)
+        #expect(duplicate == .ignoreDuplicate)
+        #expect(!duplicate.consumesDurableEvent)
+        // Because that gate runs before `begin()`, a deferred route keeps its
+        // originating generation and remains retryable.
+        var request = TaskDeepLinkRouteRequest()
+        let tap = request.begin()
+        let deferred = request.deferRoute(
+            key: "A",
+            link: routeLink("env-a"),
+            identifier: "alert.A",
+            generation: tap
+        )
+        #expect(deferred)
+        #expect(request.current == tap)
+        #expect(request.pending?.generation == tap)
+        let retried = request.takePendingForRetry(ready: true)
+        #expect(retried?.generation == tap)
     }
 }

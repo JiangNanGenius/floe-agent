@@ -249,16 +249,19 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// sample carries the runtime identity (runtime id + launch generation)
     /// issued by the runtime lease — never a locally observed increment.
     private var linuxLastRuntimeSamples: [String: LinuxGuestRuntimeSample] = [:]
-    /// Notification-route bookkeeping: duplicate-tap suppression, the
-    /// cold-launch deferral slot, and the user-handled identifiers that a
-    /// late scheduling error must not resurrect.
+    /// Notification-route bookkeeping: duplicate-tap suppression and the
+    /// user-handled identifiers that a late scheduling error must not
+    /// resurrect. The deferred-route slot itself is owned by
+    /// `notificationRouteRequest`, so a superseding tap cannot leave an older
+    /// route behind.
     private var recentNotificationRoutes: [String: Date] = [:]
     private var userHandledNotificationIdentifiers: [String: Date] = [:]
-    private var pendingNotificationRoute: (key: String, link: BackgroundWorkDeepLink, identifier: String)?
-    /// Monotonic route-request generation. An async target-existence check
-    /// that finishes after a newer tap started must not navigate: the stale
-    /// completion is dropped when its generation is no longer current. A
-    /// deferred retry reuses the current generation.
+    /// Monotonic route-request generation and the single deferred-route slot.
+    /// An async target-existence check that finishes after a newer tap started
+    /// must not navigate: the stale completion is dropped when its generation
+    /// is no longer current. A deferred route carries the generation of the
+    /// tap that created it, so its retry is rejected once a newer tap
+    /// superseded it.
     private var notificationRouteRequest = TaskDeepLinkRouteRequest()
     /// Actual "the navigation subscribers are mounted" evidence. Persistence
     /// plus an active scene only prove the hierarchy may exist; the
@@ -2840,14 +2843,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// suppression, cold-launch readiness (database + active scene + mounted
     /// navigation subscribers) and authoritative target existence.
     /// `isRetry` is true for a deferred route being flushed: it skips the
-    /// dedup window, which the original attempt already consumed, and reuses
-    /// the original generation.
+    /// dedup window, which the original attempt already consumed, and must
+    /// carry the generation of the tap that created it. A retry whose
+    /// generation a newer tap superseded is rejected here, before any
+    /// dedup/readiness/target work.
     @MainActor
     private func handleNotificationRoute(
         key: String,
         link: BackgroundWorkDeepLink,
         identifier: String,
-        isRetry: Bool = false
+        isRetry: Bool = false,
+        retryGeneration: UInt64? = nil
     ) {
         if !isRetry, let last = recentNotificationRoutes[key],
            Date().timeIntervalSince(last) < Self.duplicateNotificationRouteWindow {
@@ -2861,8 +2867,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         let generation: UInt64
         if isRetry {
-            generation = notificationRouteRequest.current
+            // A deferred route keeps the generation of the tap that created
+            // it. Once a newer genuine tap began, the stale route must not
+            // navigate under that newer generation.
+            guard let retryGeneration,
+                  notificationRouteRequest.accepts(generation: retryGeneration) else {
+                FloeLogger(category: .app).info(
+                    "notificationRouteIgnored reason=staleDeferredGeneration key=\(key)"
+                )
+                return
+            }
+            generation = retryGeneration
         } else {
+            // A genuine new tap begins a new generation and supersedes any
+            // still-deferred route from an older tap.
             generation = notificationRouteRequest.begin()
         }
         guard environment.persistenceReady, effectiveScenePhase == .active,
@@ -2872,9 +2890,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // when the app is actually ready. Persistence + active scene alone
             // are a proxy; `navigationSubscribersReady` is the real evidence
             // that the root view hosting the deep-link subscribers exists.
-            pendingNotificationRoute = (key: key, link: link, identifier: identifier)
+            notificationRouteRequest.deferRoute(
+                key: key,
+                link: link,
+                identifier: identifier,
+                generation: generation
+            )
             FloeLogger(category: .app).info(
-                "notificationRouteDeferred key=\(key) persistenceReady=\(self.environment.persistenceReady) scene=\(String(describing: self.effectiveScenePhase)) navigationReady=\(self.navigationSubscribersReady)"
+                "notificationRouteDeferred key=\(key) generation=\(generation) persistenceReady=\(self.environment.persistenceReady) scene=\(String(describing: self.effectiveScenePhase)) navigationReady=\(self.navigationSubscribersReady)"
             )
             return
         }
@@ -2899,7 +2922,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     key: key,
                     link: link,
                     identifier: identifier,
-                    target: target
+                    target: target,
+                    generation: generation
                 )
             }
         }
@@ -2981,7 +3005,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         key: String,
         link: BackgroundWorkDeepLink,
         identifier: String,
-        target: TaskDeepLinkTargetState
+        target: TaskDeepLinkTargetState,
+        generation: UInt64
     ) {
         let routing = TaskNotificationDecision.resolveRouting(
             persistenceReady: environment.persistenceReady,
@@ -2994,7 +3019,19 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         case .routeNow:
             Self.route(deepLink: link)
         case .deferUntilReady:
-            pendingNotificationRoute = (key: key, link: link, identifier: identifier)
+            // The route stays owned by the tap that created it, so a newer
+            // tap supersedes it instead of letting it replay later.
+            let stored = notificationRouteRequest.deferRoute(
+                key: key,
+                link: link,
+                identifier: identifier,
+                generation: generation
+            )
+            if !stored {
+                FloeLogger(category: .app).info(
+                    "notificationRouteDeferredRejected reason=staleGeneration key=\(key)"
+                )
+            }
         case .ignoreDuplicate:
             break
         case .promptMissingTarget, .promptStoppedTarget, .promptUnavailableTarget:
@@ -3018,18 +3055,31 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// Retries the deferred notification route once the database, an active
     /// scene and the mounted navigation subscribers are all ready. Call sites:
     /// foreground transition, authorization refresh and the end of launch
-    /// reconciliation.
+    /// reconciliation. A not-ready flush leaves the deferred route untouched;
+    /// a ready flush hands it off only while its originating generation is
+    /// still current, so a route a newer tap superseded can never replay.
     @MainActor
     private func flushPendingNotificationRoute() {
-        guard let pending = pendingNotificationRoute else { return }
-        guard environment.persistenceReady, effectiveScenePhase == .active,
-              navigationSubscribersReady else { return }
-        pendingNotificationRoute = nil
+        let ready = environment.persistenceReady
+            && effectiveScenePhase == .active
+            && navigationSubscribersReady
+        let hadPending = notificationRouteRequest.pending != nil
+        guard let pending = notificationRouteRequest.takePendingForRetry(ready: ready) else {
+            if hadPending, ready {
+                // The deferred route was superseded by a newer tap: it is
+                // dropped rather than replayed under the newer generation.
+                FloeLogger(category: .app).info(
+                    "notificationRouteDropped reason=supersededByNewerTap"
+                )
+            }
+            return
+        }
         handleNotificationRoute(
             key: pending.key,
             link: pending.link,
             identifier: pending.identifier,
-            isRetry: true
+            isRetry: true,
+            retryGeneration: pending.generation
         )
     }
 
