@@ -44,7 +44,7 @@ cc -o <build-dir>/smp_host_test <build-dir>/smp_host_test.o <build-dir>/libfloev
   --disk <img>/root-riscv64.bin --ram 128 --vcpu 2 --script <cmds> \
   --transcript out.txt --stats-file out.jsonl --until MARKER --max-s 120
 # full SMP test (marker/9p checks fail honestly while the dual-hart guest
-# bring-up is broken; the summary JSON records exactly which checks failed)
+# bring-up is unresolved; the summary JSON records exactly which checks failed)
 <build-dir>/smp_host_test --bios <img>/bbl64.bin --kernel <img>/kernel-riscv64.bin \
   --disk <img>/root-riscv64.bin --share floe=<dir> --ram 128 \
   --summary smp.json --transcript smp-transcript.txt
@@ -52,20 +52,36 @@ cc -o <build-dir>/smp_host_test <build-dir>/smp_host_test.o <build-dir>/libfloev
 
 ## FLOE-SMP qualification status (2026-09-23, host: Apple Silicon macOS, interpreter)
 
-Measured with job A's in-flight SMP tree (patch `0010-smp-dual-hart.patch`,
-adapter `vcpu_count`/`FloeVMStats` contract):
+Exact fixture/pins used for these measurements:
+
+- engine: TinyEMU `2019-12-21` (sha256
+  `be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555`) with
+  patches `0001`–`0010` from `ThirdParty/TinyEMU/patches/`; patch `0010-smp-dual-hart.patch`
+  was job A's in-flight (uncommitted) WIP at the time of measurement.
+- guest: the bellard.org demo archive `diskimage-linux-riscv-2018-09-23.tar.gz`
+  (sha256 `808ecc1b32efdd76103172129b77b46002a616dff2270664207c291e4fde9e14`):
+  `bbl64.bin` sha256 `293610cea7af6c75e4a8337e16c0d62834becbf31ffd9cca35e0c211602349db`
+  (53786 bytes), `kernel-riscv64.bin` sha256
+  `293aef345c8e996320de4ca7fc87ff48155a183b3dde00d2f269c8e461b067c5` (3946740 bytes,
+  ident `Linux 4.15.0-00049-ga3b1e7a-dirty`, `CONFIG_SMP` unset), 128 MB RAM,
+  `console=hvc0 root=/dev/vda rw`. This is a UP smoke fixture, not the target
+  userland and never shipped as one.
+
+Results:
 
 - `--vcpu 0/1` keeps the legacy single-hart path: `host_threads=0`, only hart 0
   retires instructions, the demo guest boots to its runtime-assembled marker
   (verified locally; see the stats lines `host_threads:0`).
 - `--vcpu 2` really spawns two host threads and BOTH harts retire instructions
   (local run: ~5.4e9 insns per hart in 90 s, `hart_powered_down` never set).
-  But the **guest produced a 0-byte console transcript in 90 s**: the dual-hart
-  guest bring-up does not reach Linux's console yet. Retained transcripts +
-  `*-stats.jsonl` show this plainly; `run_smp` CI stages gate on the real
-  guest marker, so a dual-hart image/engine is **not** accepted until the
-  guest boots with two harts. Root cause is engine-side (job A scope), not the
-  qualification host.
+  But the **guest produced a 0-byte console transcript in 90 s**. This failure
+  is **unresolved and not localized by K**: with a UP kernel/bbl the second
+  hart is not exercised by Linux at all, so engine SMP bring-up, the 2018
+  bbl firmware's secondary-hart path, and FDT/boot plumbing remain equally
+  plausible causes. What K's evidence does rule out is the host side: the API
+  create/stats/thread contract and the single-hart control both work on the
+  same fixture. Root-cause attribution requires A's Linux SMP boot work plus a
+  cloud re-run; K's gates surface the failure rather than mask it.
 - `smp_host_test` on that same tree: 18 checks, 2 failures — both are the
   dual-hart guest symptom (no marker, no 9p write). Host-side checks pass:
   capability probes, `vcpu_count=3` rejected, continuous concurrent stats
@@ -77,6 +93,10 @@ adapter `vcpu_count`/`FloeVMStats` contract):
   dual-hart bring-up cannot show workload speedup on it; the cloud baseline
   records repeats for both hart counts and explicitly claims no speedup until
   an SMP guest kernel lands (job A guest-image scope).
+- **Release state: production/default dual-core (and any SIX-tier enablement)
+  stays OFF until a real SMP guest kernel image passes the `run_smp` S1–S3
+  gates in cloud.** Nothing in this document enables dual-core, and the cloud
+  gates must not be weakened to change that.
 
 ## Measured status (2026-09-20, host: Apple Silicon macOS, interpreter)
 
