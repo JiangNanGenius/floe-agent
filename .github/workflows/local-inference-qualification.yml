@@ -25,7 +25,7 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 60
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27_beta_6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       DEPENDENCY_PROFILE: ${{ inputs.dependency_profile || 'current' }}
     defaults:
       run:
