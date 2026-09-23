@@ -140,10 +140,12 @@ public actor RuntimeV2EnvironmentMigrator {
                 environmentID: environmentID, reason: existing.repairReason
             )
         }
-        // The durable non-expiring repair hold is honored even when the
-        // registry state write itself failed (the row above is the ordinary
-        // gate; the hold is the fault-surviving one).
-        if let hold = await store.repairHolds.hold(environmentID: environmentID) {
+        // The coherent repair exclusion is honored even when the registry
+        // state write itself failed (the row above is the ordinary gate; the
+        // physical evidence — marker sidecar valid or corrupt, preserved
+        // quarantine bytes, untracked working disk — is the fault-surviving
+        // one).
+        if let hold = await store.leases.effectiveExclusion(environmentID: environmentID) {
             throw RuntimeV2Error.environmentRepairRequired(
                 environmentID: environmentID, reason: hold.reason
             )

@@ -337,17 +337,19 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     ) async throws -> RuntimeV2WorkingDisk {
         // Fail closed BEFORE anything else (including image migration): an
         // environment whose state is repairRequired, or whose durable
-        // non-expiring repair hold is present, must never boot a fresh empty
-        // data/delta over preserved data, on any retry — even when the
-        // registry state write itself was the thing that failed (the hold is
-        // the fault-surviving exclusion).
+        // repair exclusion answers from ANY physical evidence (marker sidecar
+        // — valid or corrupt — preserved quarantine bytes, or an untracked
+        // working disk), must never boot a fresh empty data/delta over
+        // preserved data, on any retry — even when every marker/registry
+        // write was the thing that failed (the physical bytes are the
+        // fault-surviving exclusion).
         if let row = try await store.registry.environment(id: environmentID),
            row.state == "repairRequired" {
             throw RuntimeV2Error.environmentRepairRequired(
                 environmentID: environmentID, reason: row.repairReason
             )
         }
-        if let hold = await store.repairHolds.hold(environmentID: environmentID) {
+        if let hold = await store.leases.effectiveExclusion(environmentID: environmentID) {
             throw RuntimeV2Error.environmentRepairRequired(
                 environmentID: environmentID, reason: hold.reason
             )

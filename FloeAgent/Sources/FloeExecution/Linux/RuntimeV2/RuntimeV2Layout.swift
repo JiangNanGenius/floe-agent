@@ -55,6 +55,10 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
     case deltaCorrupt(environmentID: String, reason: String)
     case deltaBaseConflict(environmentID: String, recorded: String, verified: String)
     case environmentRepairRequired(environmentID: String, reason: String?)
+    /// No repair exclusion exists for the environment, so an explicit
+    /// restore/discard resolution has nothing to resolve: thrown instead of
+    /// silently succeeding, so a UI can never present a no-op as a repair.
+    case repairResolutionUnavailable(environmentID: String, reason: String)
     case leaseHeld(environmentID: String, runtimeID: String)
     case leaseNotHeld(environmentID: String)
     case queueFull(limit: Int)
@@ -115,6 +119,8 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
             return "system delta for \(environmentID) was captured from base \(recorded.prefix(16))… but the verified base is \(verified.prefix(16))…; the delta was not applied or overwritten"
         case .environmentRepairRequired(let environmentID, let reason):
             return "environment \(environmentID) requires repair before it can boot: \(reason ?? "no reason recorded"); the preserved data was not overwritten"
+        case .repairResolutionUnavailable(let environmentID, let reason):
+            return "environment \(environmentID) has no repair exclusion to resolve: \(reason); nothing was changed"
         case .leaseHeld(let environmentID, let runtimeID):
             return "environment \(environmentID) is owned by live runtime \(runtimeID); a second writer is refused"
         case .leaseNotHeld(let environmentID):
@@ -331,6 +337,49 @@ public struct RuntimeV2Layout: Sendable {
     public func runtimeVMDirectory(runtimeID: String) throws -> URL {
         try RuntimeV2Identifier.validate(runtimeID, kind: .runtime)
         return runtimeVMDirectory.appendingPathComponent(runtimeID, isDirectory: true)
+    }
+
+    /// Validates a layout-relative preserved-bytes path — which comes from a
+    /// repair hold sidecar and is therefore UNTRUSTED content — and returns
+    /// its symlink-resolved directory URL. Only the two supported physical
+    /// evidence shapes are accepted, each a single path component deep:
+    ///   - `recovery/quarantine/runtime-vm-<entry>` (a preserved quarantine
+    ///     entry written by a stop/recovery),
+    ///   - `runtime/vm/<runtimeID>` (a preserved in-place working disk).
+    /// Absolute paths, `..`/`.` components, any other prefix, or a path whose
+    /// SYMLINK RESOLUTION lands anywhere other than exactly the resolved
+    /// runtime root + the given relative path (a symlink inside the root
+    /// pointing at a foreign location changes the resolved path) are refused
+    /// with `pathEscapesRoot`. Callers must use this for every path that a
+    /// hold sidecar names before reading, capturing or MOVING anything.
+    public func preservedRuntimeDirectory(_ preservedPath: String) throws -> URL {
+        let prefix: String
+        if preservedPath.hasPrefix("recovery/quarantine/runtime-vm-") {
+            prefix = "recovery/quarantine/runtime-vm-"
+        } else if preservedPath.hasPrefix("runtime/vm/") {
+            prefix = "runtime/vm/"
+        } else {
+            throw RuntimeV2Error.pathEscapesRoot(preservedPath)
+        }
+        let components = preservedPath.split(separator: "/", omittingEmptySubsequences: false)
+        let relative = String(preservedPath.dropFirst(prefix.count))
+        guard !preservedPath.hasPrefix("/"),
+              components.allSatisfy({ $0 != ".." && $0 != "." && !$0.isEmpty }),
+              !relative.isEmpty,
+              !relative.contains("/")
+        else { throw RuntimeV2Error.pathEscapesRoot(preservedPath) }
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let expected = resolvedRoot.appendingPathComponent(preservedPath).standardizedFileURL
+        let resolved = root.appendingPathComponent(preservedPath)
+            .resolvingSymlinksInPath().standardizedFileURL
+        // Exact equality (not prefix containment) both pins the path inside
+        // the root and proves no symlink component redirected it: any
+        // internal symlink or traversal resolves to a different absolute
+        // path and fails here.
+        guard resolved.path == expected.path else {
+            throw RuntimeV2Error.pathEscapesRoot(preservedPath)
+        }
+        return resolved
     }
 
     public func expandedImageDirectory(imageID: String) throws -> URL {

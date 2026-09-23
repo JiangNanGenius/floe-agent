@@ -2592,8 +2592,7 @@ final class RuntimeV2TemplateTests: XCTestCase {
             ),
             expectHoldAtStop: true,
             expectShutdownRecord: false,
-            expectLeaseRetainedAtStop: true,
-            expectLeaseSidecarAfterRecovery: true
+            expectLeaseRetainedAtStop: true
         )
     }
 
@@ -2604,15 +2603,14 @@ final class RuntimeV2TemplateTests: XCTestCase {
             ),
             expectHoldAtStop: true,
             expectShutdownRecord: true,
-            expectLeaseRetainedAtStop: true,
-            expectLeaseSidecarAfterRecovery: true
+            expectLeaseRetainedAtStop: true
         )
     }
 
     /// The hardest window: even the repair-hold marker could not be persisted
     /// (full disk / IO fault), so the ONLY in-process exclusion (the lease)
     /// dies with the process and expires. The quarantined bytes themselves
-    /// are then the durable evidence: startup recovery must re-derive the
+    /// are then the durable evidence: startup recovery re-derives the
     /// hold + repairRequired state from the orphaned quarantine entry, and
     /// the fresh start must still be refused.
     func testFailedCaptureHoldFaultRecoveredFromQuarantineAfterProcessDeath() async throws {
@@ -2625,9 +2623,193 @@ final class RuntimeV2TemplateTests: XCTestCase {
             expectHoldAtStop: false,
             expectShutdownRecord: false,
             expectLeaseRetainedAtStop: true,
-            expectHoldWriteFailureNote: true,
-            expectLeaseSidecarAfterRecovery: false
+            expectHoldWriteFailureNote: true
         )
+    }
+
+    // MARK: - C6: sustained faults can never make preserved evidence reclaimable
+
+    /// The review's central scenario: the stop-time hold write failed, the
+    /// process died and the TTL expired, and the ENOSPC/DB fault CONTINUES
+    /// across the second and third launches. Lease reclamation must consult
+    /// the durable physical evidence BEFORE reclaiming (not re-derive
+    /// afterwards): the stale lease is never reclaimed, no fresh disk/VM/
+    /// lease ever appears, both write failures stay visible in the notes, and
+    /// the preserved bytes never change — until a healthy launch re-derives
+    /// the marker, and even then the lease stays untouched until an explicit
+    /// repair resolution accounts for the bytes.
+    func testFailedCaptureHoldFaultSustainedFaultBlocksReclaimAcrossRepeatedLaunches() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(manifest)
+        let template = try await buildTemplate(
+            marker: 0x7E, packages: [package("python3", "3.11.2")],
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+        try await registerEnvironment(
+            "env-sustained", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased()
+        )
+        _ = try await store.templates.pinEnvironment(
+            environmentID: "env-sustained", templateID: "basic", version: 1
+        )
+        let integrator = RuntimeV2GuestIntegrator(
+            store: store, build: "test",
+            seams: .init(
+                placeRepairHold: { _, _, _, _ in
+                    throw RuntimeV2Error.insufficientSpace(required: 4096, available: 0)
+                }
+            )
+        )
+        let admission = try await integrator.acquireSlot(
+            environmentID: "env-sustained", runtimeID: "rt-sustained", requestedMB: 512
+        )
+        XCTAssertGreaterThan(admission.ramMB, 0)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-sustained", runtimeID: "rt-sustained", imageID: baseImageID,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBytes(work.diskURL, at: 2 << 20, Data(repeating: 0x9E, count: 4096))
+        // The immutable boot base disappears: the capture cannot be proven,
+        // and (with the hold-write fault) the quarantined bytes become the
+        // ONLY durable evidence.
+        let blobURL = try await store.blobs.verifiedBlobURL(digest: template.diskDigest)
+        try FileManager.default.removeItem(at: blobURL)
+        let outcome = await integrator.completeStopResult(
+            environmentID: "env-sustained", runtimeID: "rt-sustained", imageID: baseImageID, clean: true
+        )
+        guard case .retainedForRepair(let reason) = outcome else {
+            XCTFail("a failed capture must retain the disk, got \(outcome)")
+            return
+        }
+        XCTAssertTrue(reason.contains("repair hold could not be persisted"))
+        let quarantined = try quarantinedEntries(prefix: "runtime-vm-rt-sustained")
+        XCTAssertEqual(quarantined.count, 1)
+        let preservedDisk = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        let environmentDir = try layout.environmentDirectory(environmentID: "env-sustained")
+        let leaseURL = environmentDir.appendingPathComponent("lease.json")
+
+        // Process death + TTL expiry.
+        let deadLease = RuntimeV2LeaseStore.Lease(
+            environmentID: "env-sustained", runtimeID: "rt-sustained", incarnation: "dead-incarnation",
+            sessionToken: "dead-token", pid: 4_000_000,
+            acquiredAt: Date(timeIntervalSinceNow: -600), renewedAt: Date(timeIntervalSinceNow: -600),
+            ttlSeconds: 30
+        )
+        try RuntimeV2LeaseStore.encoder.encode(deadLease).write(to: leaseURL, options: .atomic)
+
+        // Sustained fault store: BOTH durable re-derivation writes keep
+        // failing (ENOSPC + DB fault) on every launch.
+        let sustained = {
+            RuntimeV2Store(
+                layout: self.layout,
+                seams: .init(
+                    markRepairRequired: { _, _ in
+                        throw RuntimeV2Error.registryCorrupt("sustained registry fault")
+                    },
+                    placeRepairHold: { _, _, _, _ in
+                        throw RuntimeV2Error.insufficientSpace(required: 4096, available: 0)
+                    }
+                )
+            )
+        }
+
+        // Second AND third launches under the sustained fault: the barrier
+        // holds identically.
+        for launch in ["second", "third"] {
+            let store = sustained()
+            let report = try await store.prepareAndRecover(build: "test")
+            XCTAssertTrue(
+                report.unreclaimableLeases.contains("env-sustained"),
+                "\(launch) launch: the stale lease must stay unreclaimable, got \(report.unreclaimableLeases)"
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: leaseURL.path),
+                "\(launch) launch: the lease sidecar must never be reclaimed while the preserved evidence exists"
+            )
+            XCTAssertTrue(
+                report.notes.contains { $0.contains("env-sustained") && $0.contains("repair hold could not be persisted") },
+                "\(launch) launch: the hold-write failure must stay visible, got \(report.notes)"
+            )
+            XCTAssertTrue(
+                report.notes.contains { $0.contains("env-sustained") && $0.contains("repairRequired state could not be persisted") },
+                "\(launch) launch: the registry-write failure must stay visible, got \(report.notes)"
+            )
+            XCTAssertTrue(
+                report.repairReapplied.isEmpty,
+                "\(launch) launch: a failed re-derivation must not be reported as applied, got \(report.repairReapplied)"
+            )
+            let marker = await store.repairHolds.markerHold(environmentID: "env-sustained")
+            XCTAssertNil(marker, "\(launch) launch: no marker may appear under the sustained fault")
+            // The physical evidence still excludes the environment.
+            let excluded = await store.leases.excludes(environmentID: "env-sustained")
+            XCTAssertTrue(excluded, "\(launch) launch: the preserved bytes must keep excluding the environment")
+            // No fresh disk/VM/lease replacement.
+            let vmEntries = try FileManager.default.contentsOfDirectory(atPath: layout.runtimeVMDirectory.path)
+            XCTAssertTrue(vmEntries.isEmpty, "\(launch) launch: no working disk may appear")
+            XCTAssertEqual(
+                try readBytes(preservedDisk, at: 2 << 20, count: 4096),
+                Data(repeating: 0x9E, count: 4096),
+                "\(launch) launch: the preserved bytes must never change"
+            )
+            // A direct acquire consults the same barrier BEFORE any lease
+            // logic: refused, and the refused acquire never touches the
+            // sidecar.
+            do {
+                _ = try await store.leases.acquire(
+                    environmentID: "env-sustained", runtimeID: "rt-sustained-fresh"
+                )
+                XCTFail("\(launch) launch: no acquire is possible over preserved evidence")
+            } catch RuntimeV2Error.environmentRepairRequired(let held, _) {
+                XCTAssertEqual(held, "env-sustained")
+            }
+            let sidecarAfter = try Data(contentsOf: leaseURL)
+            let sidecarLease = try RuntimeV2LeaseStore.decoder.decode(RuntimeV2LeaseStore.Lease.self, from: sidecarAfter)
+            XCTAssertEqual(sidecarLease.runtimeID, "rt-sustained")
+            XCTAssertEqual(sidecarLease.incarnation, "dead-incarnation")
+        }
+
+        // A healthy launch finally persists the marker + state again — and
+        // the lease is STILL not reclaimed, because the quarantined bytes
+        // remain the unaccounted evidence until an explicit repair resolution.
+        let healthy = RuntimeV2Store(layout: layout)
+        let healthyReport = try await healthy.prepareAndRecover(build: "test")
+        XCTAssertTrue(healthyReport.repairReapplied.contains("env-sustained"))
+        let marker = await healthy.repairHolds.markerHold(environmentID: "env-sustained")
+        XCTAssertNotNil(marker)
+        let healthyState = try await healthy.registry.environment(id: "env-sustained")?.state
+        XCTAssertEqual(healthyState, "repairRequired")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseURL.path))
+        XCTAssertTrue(
+            healthyReport.unreclaimableLeases.contains("env-sustained"),
+            "even after re-derivation the preserved bytes keep the lease unreclaimable"
+        )
+        XCTAssertEqual(
+            try readBytes(preservedDisk, at: 2 << 20, count: 4096),
+            Data(repeating: 0x9E, count: 4096)
+        )
+        let healthyExcluded = await healthy.leases.excludes(environmentID: "env-sustained")
+        XCTAssertTrue(healthyExcluded)
+
+        // Resolving the repair (the template base is still gone, so these
+        // bytes are unprovable → the explicit deliberate discard) accounts
+        // for the bytes: only then does the next launch reclaim the stale
+        // lease normally.
+        _ = try await healthy.discardRepair(
+            environmentID: "env-sustained", reason: "template base destroyed; explicit authorized discard of unprovable bytes"
+        )
+        let afterDiscard = RuntimeV2Store(layout: layout)
+        let discardReport = try await afterDiscard.prepareAndRecover(build: "test")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: leaseURL.path),
+            "after the preserved bytes are accounted for, the proven-stale lease is reclaimed normally"
+        )
+        XCTAssertTrue(discardReport.unreclaimableLeases.isEmpty)
+        let discarded = try FileManager.default.contentsOfDirectory(
+            atPath: layout.recoveryMigrationsDirectory.appendingPathComponent("discarded", isDirectory: true).path
+        ).filter { $0.hasPrefix("runtime-vm-rt-sustained") }
+        XCTAssertEqual(discarded.count, 1)
     }
 
     private func assertFailedCaptureCrossProcessExclusion(
@@ -2636,7 +2818,6 @@ final class RuntimeV2TemplateTests: XCTestCase {
         expectShutdownRecord: Bool,
         expectLeaseRetainedAtStop: Bool,
         expectHoldWriteFailureNote: Bool = false,
-        expectLeaseSidecarAfterRecovery: Bool,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
@@ -2719,38 +2900,33 @@ final class RuntimeV2TemplateTests: XCTestCase {
         let relaunched = RuntimeV2Store(layout: layout)
         let report = try await relaunched.prepareAndRecover(build: "test")
 
-        // The stale-looking lease was never reclaimed while a hold exists; in
-        // the hold-fault variant the quarantine recovery re-derived the whole
-        // exclusion from the preserved bytes.
+        // The stale-looking lease is NEVER reclaimed while the durable
+        // evidence exists: in the hold-fault variant the quarantine recovery
+        // re-derived the whole exclusion from the preserved bytes; in the
+        // other variants the marker itself survived. Either way the coherent
+        // physical-evidence barrier keeps the environment unreclaimable — the
+        // lease sidecar stays untouched as evidence until an explicit repair
+        // resolution accounts for the preserved bytes.
         let hold = await relaunched.repairHolds.hold(environmentID: "env-xproc")
         XCTAssertNotNil(hold, "the repair exclusion must survive process death + TTL expiry", file: file, line: line)
         let state = try await relaunched.registry.environment(id: "env-xproc")?.state
         XCTAssertEqual(state, "repairRequired", file: file, line: line)
-        if expectHoldAtStop {
-            XCTAssertTrue(
-                report.unreclaimableLeases.contains("env-xproc"),
-                "the lease must stay unreclaimable while the hold exists, got \(report.unreclaimableLeases)",
-                file: file, line: line
-            )
-            let sidecar = environmentDir.appendingPathComponent("lease.json")
-            XCTAssertTrue(
-                FileManager.default.fileExists(atPath: sidecar.path),
-                "the lease sidecar must not be reclaimed while the hold exists",
-                file: file, line: line
-            )
-        } else {
-            XCTAssertTrue(
-                report.repairReapplied.contains("env-xproc"),
-                "quarantine recovery must re-derive the repair state, got \(report.repairReapplied)",
-                file: file, line: line
-            )
-            let sidecar = environmentDir.appendingPathComponent("lease.json")
-            XCTAssertFalse(
-                FileManager.default.fileExists(atPath: sidecar.path),
-                "without a hold the proven-stale lease is reclaimed by the new identity",
-                file: file, line: line
-            )
-        }
+        XCTAssertTrue(
+            report.repairReapplied.contains("env-xproc"),
+            "quarantine recovery must (re-)derive the repair state, got \(report.repairReapplied)",
+            file: file, line: line
+        )
+        XCTAssertTrue(
+            report.unreclaimableLeases.contains("env-xproc"),
+            "the lease must stay unreclaimable while the preserved evidence exists, got \(report.unreclaimableLeases)",
+            file: file, line: line
+        )
+        let sidecar = environmentDir.appendingPathComponent("lease.json")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: sidecar.path),
+            "the lease sidecar must not be reclaimed while the preserved evidence exists",
+            file: file, line: line
+        )
 
         // The preserved bytes are exactly where the stop left them.
         XCTAssertEqual(
@@ -2777,16 +2953,11 @@ final class RuntimeV2TemplateTests: XCTestCase {
             "no fresh working disk may exist after the refused start",
             file: file, line: line
         )
-        // The refused start never took a lease: while the hold exists the old
-        // sidecar is left untouched as evidence (not reclaimed, not renewed);
-        // in the hold-fault variant the proven-stale sidecar was reclaimed.
+        // The refused start never took or replaced a lease: the old sidecar is
+        // left untouched as evidence (dead incarnation, original runtime).
         let freshLease = try await relaunched.leases.holder(environmentID: "env-xproc")
-        if expectLeaseSidecarAfterRecovery {
-            XCTAssertEqual(freshLease?.runtimeID, "rt-xproc", file: file, line: line)
-            XCTAssertEqual(freshLease?.incarnation, "dead-incarnation", file: file, line: line)
-        } else {
-            XCTAssertNil(freshLease, "a proven-stale lease is reclaimed once the hold is re-derived", file: file, line: line)
-        }
+        XCTAssertEqual(freshLease?.runtimeID, "rt-xproc", file: file, line: line)
+        XCTAssertEqual(freshLease?.incarnation, "dead-incarnation", file: file, line: line)
         // The preserved bytes survived the refused start untouched.
         XCTAssertEqual(
             try readBytes(preservedDisk, at: 2 << 20, count: 4096),

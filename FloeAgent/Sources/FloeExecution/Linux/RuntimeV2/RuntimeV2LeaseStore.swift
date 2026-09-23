@@ -129,10 +129,14 @@ public actor RuntimeV2LeaseStore {
         try RuntimeV2Identifier.validate(runtimeID, kind: .runtime)
 
         // The durable repair exclusion is consulted BEFORE any lease logic,
-        // including stale-lease reclamation: a repair hold never expires and
+        // including stale-lease reclamation: the exclusion never expires and
         // names preserved bytes a fresh start must never overwrite, so the
-        // TTL-based reclaim below can never clear it.
-        if let hold = await repairHolds.hold(environmentID: environmentID) {
+        // TTL-based reclaim below can never clear it. The consult is the
+        // coherent physical-evidence one (marker sidecar — valid or corrupt —
+        // or the preserved bytes themselves), not the marker alone, so a
+        // sustained full-disk/IO fault that killed the original marker write
+        // can still never make the environment reclaimable.
+        if let hold = await effectiveExclusion(environmentID: environmentID) {
             throw RuntimeV2Error.environmentRepairRequired(
                 environmentID: environmentID, reason: hold.reason
             )
@@ -234,6 +238,77 @@ public actor RuntimeV2LeaseStore {
         return !(lease.isExpired(now: Date()) && Self.processLiveness(lease: lease))
     }
 
+    // MARK: coherent repair-exclusion consult
+    //
+    // One physical-evidence / repair-exclusion protocol, answered the same way
+    // at every decision point (acquire, stale-lease reclamation, salvage,
+    // working-disk preparation, legacy migration). The consult is read-only
+    // and answers from the filesystem alone: it stays true across process
+    // death, TTL expiry and sustained IO/DB faults even when no new marker or
+    // registry write can succeed.
+
+    /// True while ANY durable evidence excludes the environment from fresh
+    /// boots, lease reclamation and salvage: the marker sidecar (valid or
+    /// corrupt), preserved quarantine bytes, or an untracked working disk.
+    /// `ignoringRuntimeEntry` excludes one runtime/vm directory name from the
+    /// working-disk scan: recovery uses it while evaluating that very
+    /// directory, which can never be evidence against itself.
+    public func excludes(
+        environmentID: String, ignoringRuntimeEntry: String? = nil
+    ) async -> Bool {
+        await effectiveExclusion(environmentID: environmentID, ignoringRuntimeEntry: ignoringRuntimeEntry) != nil
+    }
+
+    /// The excluding hold, or nil: the marker sidecar first (a corrupt one
+    /// answers a synthesized unreadable hold and STAYS in place), then the
+    /// durable physical evidence.
+    public func effectiveExclusion(
+        environmentID: String, ignoringRuntimeEntry: String? = nil
+    ) async -> RuntimeV2RepairHoldStore.Hold? {
+        if let hold = await repairHolds.effectiveHold(environmentID: environmentID) { return hold }
+        if await untrackedWorkingDirectoryEvidence(
+            environmentID: environmentID, ignoring: ignoringRuntimeEntry
+        ) {
+            return RuntimeV2RepairHoldStore.Hold(
+                environmentID: environmentID, runtimeID: "",
+                reason: "an untracked working disk for this environment exists under runtime/vm while no live lease accounts for it; the environment stays excluded until repair is explicitly resolved",
+                preservedPath: nil, createdAt: .distantPast, holdID: ""
+            )
+        }
+        return nil
+    }
+
+    /// Physical working-directory evidence: a runtime/vm directory that names
+    /// this environment (through its ownership record, or through a lease
+    /// trace when the record is unreadable) while the environment has no live
+    /// lease is a disk whose latest state recovery could not account for — a
+    /// fresh boot would silently lose its newest writes. Directories owned by
+    /// a live lease (the normal in-flight session) are never evidence.
+    private func untrackedWorkingDirectoryEvidence(
+        environmentID: String, ignoring: String?
+    ) async -> Bool {
+        guard let entries = try? fileManager.contentsOfDirectory(atPath: layout.runtimeVMDirectory.path)
+        else { return false }
+        for entry in entries where !entry.hasPrefix(".") && entry != ignoring {
+            let directory = layout.runtimeVMDirectory.appendingPathComponent(entry, isDirectory: true)
+            let owner: String?
+            if let meta = RuntimeV2WorkingDirectory.readMeta(from: directory) {
+                owner = meta.environmentID
+            } else {
+                // Unreadable ownership record: attribute by directory
+                // runtimeID through the same lease sidecars / registry /
+                // archive trace recovery uses.
+                owner = await lease(forRuntimeID: entry)?.environmentID
+            }
+            guard let owner, owner == environmentID,
+                  (try? RuntimeV2Identifier.validate(owner, kind: .environment)) != nil,
+                  await !hasLiveOwnership(environmentID: environmentID)
+            else { continue }
+            return true
+        }
+        return false
+    }
+
     /// Ownership lookup BY RUNTIME id (the runtime/vm directory name), for
     /// recovery of a working disk whose own runtime.json is missing or
     /// unparseable: the lease sidecars and the registry lease table are the
@@ -316,11 +391,16 @@ public actor RuntimeV2LeaseStore {
             if lease.incarnation == incarnation {
                 continue // our own live lease (re-attach path)
             }
-            // A durable repair hold outranks even a provably stale lease: the
-            // hold names preserved bytes whose owner is NOT proven accounted
-            // for, so the lease sidecar stays as evidence and the environment
-            // is reported unresolved instead of being reclaimed.
-            if await repairHolds.hasHold(environmentID: environmentID) {
+            // The coherent physical-evidence repair exclusion outranks even a
+            // provably stale lease: the exclusion names preserved bytes whose
+            // owner is NOT proven accounted for, so the lease sidecar stays as
+            // evidence and the environment is reported unresolved instead of
+            // being reclaimed. This scan runs at the reclaim decision point,
+            // BEFORE any reclamation, and answers from the filesystem alone —
+            // a sustained IO/DB fault that keeps the marker/registry writes
+            // dead can never make the environment reclaimable while the
+            // preserved bytes (or an untracked working disk) exist.
+            if await excludes(environmentID: environmentID) {
                 unresolved.append(environmentID)
                 continue
             }

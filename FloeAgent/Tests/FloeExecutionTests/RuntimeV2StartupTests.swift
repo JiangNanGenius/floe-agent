@@ -797,19 +797,33 @@ final class RuntimeV2StartupTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: preservedDisk), Data(repeating: 0x5A, count: 8192))
         _ = secondReport
 
-        // Explicit acknowledgement after verifying the recoverable state:
-        // the preserved bytes are reported, the hold lifts, the environment
-        // returns to the ordinary stopped flow and a real boot succeeds.
-        let verification = try await relaunched.acknowledgeRepair(environmentID: "env-salvage-fault")
-        guard case .recoverable(let preservedPath) = verification else {
-            XCTFail("the preserved bytes must be verified before acknowledgement, got \(verification)")
-            return
+        // Explicit resolution. The preserved bytes carry NO boot-base digest,
+        // so a verified restore can never prove them: restoreRepair refuses
+        // and keeps the exclusion. The deliberate, named discard resolves the
+        // repair (bytes moved to the discarded-evidence area, never deleted),
+        // and the ordinary boot path works again afterwards.
+        do {
+            _ = try await relaunched.restoreRepair(environmentID: "env-salvage-fault")
+            XCTFail("unprovable bytes must never be silently restored")
+        } catch RuntimeV2Error.workingDirectoryProvenanceUnavailable {
+            // expected: restore refuses rather than guess
         }
-        XCTAssertTrue(preservedPath.contains("recovery/quarantine/"))
-        let holdAfterAck = await relaunched.repairHolds.hold(environmentID: "env-salvage-fault")
-        XCTAssertNil(holdAfterAck)
-        let stateAfterAck = try await relaunched.registry.environment(id: "env-salvage-fault")?.state
-        XCTAssertEqual(stateAfterAck, "stopped")
+        let holdAfterFailedRestore = await relaunched.repairHolds.hold(environmentID: "env-salvage-fault")
+        XCTAssertNotNil(holdAfterFailedRestore)
+        XCTAssertEqual(try Data(contentsOf: preservedDisk), Data(repeating: 0x5A, count: 8192))
+
+        let resolution = try await relaunched.discardRepair(
+            environmentID: "env-salvage-fault", reason: "the preserved bytes cannot be attributed to any boot base; a human discarded them explicitly"
+        )
+        XCTAssertEqual(resolution.resolution, "discarded")
+        XCTAssertTrue(resolution.preservedPath?.contains("recovery/quarantine/") ?? false)
+        let holdAfterDiscard = await relaunched.repairHolds.hold(environmentID: "env-salvage-fault")
+        XCTAssertNil(holdAfterDiscard)
+        let stateAfterDiscard = try await relaunched.registry.environment(id: "env-salvage-fault")?.state
+        XCTAssertEqual(stateAfterDiscard, "stopped")
+        // The discarded bytes were preserved as evidence, not deleted.
+        let discarded = try FileManager.default.contentsOfDirectory(atPath: layout.recoveryMigrationsDirectory.appendingPathComponent("discarded", isDirectory: true).path)
+        XCTAssertEqual(discarded.filter { $0.hasPrefix("runtime-vm-rt-salvage-fault") }.count, 1)
 
         let admission = try await integrator.acquireSlot(
             environmentID: "env-salvage-fault", runtimeID: "rt-salvage-fault-3", requestedMB: 512
@@ -1013,16 +1027,50 @@ final class RuntimeV2StartupTests: XCTestCase {
         let staleState = try await relaunched.registry.environment(id: "env-nometa-stale")?.state
         XCTAssertEqual(staleState, "repairRequired")
 
-        // Acknowledgement verifies the preserved bytes, then lifts the hold.
-        let verification = try await relaunched.acknowledgeRepair(environmentID: "env-nometa-stale")
-        guard case .recoverable = verification else {
-            XCTFail("the quarantined bytes must be verified, got \(verification)")
-            return
+        // Resolution: the disk has an UNREADABLE ownership record, so its
+        // bytes can never be proven against a boot base — a verified restore
+        // refuses (and keeps the exclusion) rather than guess. The
+        // provenance-gated discardRepair refuses too: unverifiable bytes are
+        // NEVER implicitly authorized by a hold sidecar. Only the separate,
+        // explicitly verified cleanup `discardUnverifiableRepairEvidence`
+        // resolves them: the bytes land in the discarded-evidence area (never
+        // deleted) and the hold sidecar is archived as evidence.
+        do {
+            _ = try await relaunched.restoreRepair(environmentID: "env-nometa-stale")
+            XCTFail("an unreadable ownership record must never be silently restored")
+        } catch RuntimeV2Error.workingDirectoryProvenanceUnavailable {
+            // expected
         }
-        let holdAfterAck = await relaunched.repairHolds.hold(environmentID: "env-nometa-stale")
-        XCTAssertNil(holdAfterAck)
-        let stateAfterAck = try await relaunched.registry.environment(id: "env-nometa-stale")?.state
-        XCTAssertEqual(stateAfterAck, "stopped")
+        let holdAfterFailedRestore2 = await relaunched.repairHolds.hold(environmentID: "env-nometa-stale")
+        XCTAssertNotNil(holdAfterFailedRestore2)
+        do {
+            _ = try await relaunched.discardRepair(
+                environmentID: "env-nometa-stale", reason: "must refuse: no matching provenance"
+            )
+            XCTFail("discardRepair must refuse unproven bytes, never move them on a hold's word alone")
+        } catch RuntimeV2Error.workingDirectoryProvenanceUnavailable {
+            // expected
+        }
+        // Bytes unmoved while the refusals stand.
+        let quarantineEntries = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("runtime-vm-rt-nometa-stale") }
+        XCTAssertEqual(quarantineEntries.count, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: layout.quarantineDirectory.appendingPathComponent(quarantineEntries[0], isDirectory: true).appendingPathComponent("disk.img")),
+            Data(repeating: 0xE5, count: 8192)
+        )
+        let resolution = try await relaunched.discardUnverifiableRepairEvidence(
+            environmentID: "env-nometa-stale", reason: "unattributable bytes; explicit verified human cleanup"
+        )
+        XCTAssertEqual(resolution.resolution, "discarded")
+        let holdAfterResolution = await relaunched.repairHolds.hold(environmentID: "env-nometa-stale")
+        XCTAssertNil(holdAfterResolution)
+        let stateAfterResolution = try await relaunched.registry.environment(id: "env-nometa-stale")?.state
+        XCTAssertEqual(stateAfterResolution, "stopped")
+        let discarded = try FileManager.default.contentsOfDirectory(
+            atPath: layout.recoveryMigrationsDirectory.appendingPathComponent("discarded", isDirectory: true).path
+        ).filter { $0.hasPrefix("runtime-vm-rt-nometa-stale") }
+        XCTAssertEqual(discarded.count, 1)
         // The acknowledged sidecar is archived as evidence, never deleted.
         let archived = try FileManager.default.contentsOfDirectory(
             atPath: layout.recoveryMigrationsDirectory.appendingPathComponent("repair-holds", isDirectory: true).path
@@ -1032,10 +1080,11 @@ final class RuntimeV2StartupTests: XCTestCase {
 
     // MARK: - repair holds never block a normally clean environment
 
-    /// A clean start/stop cycle never places a repair hold, and an
-    /// acknowledgement on such an environment is an explicit no-op that
-    /// leaves every state byte untouched.
-    func testCleanStartStopLeavesNoRepairHoldAndAcknowledgeIsNoop() async throws {
+    /// A clean start/stop cycle never places a repair hold: a relaunch
+    /// salvages nothing and blocks nothing, and every repair-resolution entry
+    /// point refuses cleanly (never a silent no-op a UI could misread as a
+    /// repair) while leaving every state byte untouched.
+    func testCleanStartStopLeavesNoRepairHoldAndResolutionIsUnavailable() async throws {
         _ = try await store.prepareAndRecover(build: "test")
         let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
         let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
@@ -1071,16 +1120,1150 @@ final class RuntimeV2StartupTests: XCTestCase {
         let cleanHold = await relaunched.repairHolds.hold(environmentID: "env-clean")
         XCTAssertNil(cleanHold)
 
-        // Acknowledgement without a hold is an explicit no-op.
-        let verification = try await relaunched.acknowledgeRepair(environmentID: "env-clean")
-        XCTAssertEqual(verification, .nothingToRecover)
+        // Inspection never mutates, and neither resolution path is available:
+        // both throw `repairResolutionUnavailable` and leave the environment
+        // exactly as it was.
+        let recoverable = await relaunched.verifyRecoverable(environmentID: "env-clean")
+        XCTAssertEqual(recoverable, .nothingToRecover)
+        do {
+            _ = try await relaunched.restoreRepair(environmentID: "env-clean")
+            XCTFail("restore without an exclusion must throw, never silently succeed")
+        } catch RuntimeV2Error.repairResolutionUnavailable {
+            // expected
+        }
+        do {
+            _ = try await relaunched.discardRepair(environmentID: "env-clean", reason: "test")
+            XCTFail("discard without an exclusion must throw, never silently succeed")
+        } catch RuntimeV2Error.repairResolutionUnavailable {
+            // expected
+        }
         let state = try await relaunched.registry.environment(id: "env-clean")?.state
         XCTAssertEqual(state, "active")
-        let state2 = try await relaunched.acknowledgeRepair(environmentID: "env-clean")
-        XCTAssertEqual(state2, .nothingToRecover)
+        let archive = layout.recoveryMigrationsDirectory.appendingPathComponent("repair-holds", isDirectory: true)
+        let archiveEntries = FileManager.default.fileExists(atPath: archive.path)
+            ? try FileManager.default.contentsOfDirectory(atPath: archive.path)
+            : []
+        XCTAssertTrue(archiveEntries.isEmpty)
+    }
+
+    // MARK: - C6: corrupt marker sidecar fails closed forever (P0 review #1)
+
+    /// A corrupt repair-hold marker is NEVER moved away: every read — across
+    /// arbitrary repetitions and brand-new store instances — re-detects the
+    /// unreadable file and answers a synthesized hold, and no writable disk is
+    /// needed to retain the exclusion. Combined with preserved quarantine
+    /// bytes, a dead expired lease and SUSTAINED marker+registry write
+    /// faults, no launch can ever make the environment reclaimable or
+    /// bootable, and the preserved bytes never change.
+    func testCorruptRepairHoldSidecarFailsClosedAcrossRepeatedReadsAndLaunches() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-corrupt", baseImageID: "img")
+        // Preserved bytes naming the env (durable physical evidence).
+        let quarantine = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-corrupt-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: quarantine, withIntermediateDirectories: true)
+        try Data(repeating: 0xA1, count: 8192).write(to: quarantine.appendingPathComponent("disk.img"))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-corrupt-1", environmentID: "env-corrupt",
+                baseImageID: "img", createdAt: Date()
+            ),
+            to: quarantine
+        )
+        // The corrupt marker itself.
+        let holdURL = try layout.environmentRepairHoldURL(environmentID: "env-corrupt")
+        try FileManager.default.createDirectory(at: holdURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: holdURL)
+        // A dead pid long past its TTL: reclaimable by TTL rules alone.
+        try writeLease(
+            environmentID: "env-corrupt", runtimeID: "rt-corrupt-1", incarnation: "dead-incarnation",
+            pid: 4_000_000, renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )
+
+        // Repeated reads on independent recreated stores: every single one
+        // fails closed, and the corrupt marker is never moved into quarantine
+        // (the old defect moved it once, and the second read saw nothing).
+        for iteration in 0..<3 {
+            let fresh = RuntimeV2RepairHoldStore(layout: layout)
+            let hold = await fresh.hold(environmentID: "env-corrupt")
+            XCTAssertNotNil(hold, "read \(iteration) must fail closed")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: holdURL.path))
+        let movedMarkers = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("repair-hold-env-corrupt") }
+        XCTAssertTrue(movedMarkers.isEmpty, "the corrupt marker must stay in place, never be moved away")
+
+        // Sustained faults at BOTH durable re-derivation writes (the marker
+        // refresh AND the registry state): every launch keeps the exclusion,
+        // refuses to reclaim the stale lease, reports the failures
+        // truthfully, and never materializes a fresh disk or lease.
+        let faulting = RuntimeV2Store(
+            layout: layout,
+            seams: .init(
+                markRepairRequired: { _, _ in
+                    throw RuntimeV2Error.registryCorrupt("sustained registry fault")
+                },
+                placeRepairHold: { _, _, _, _ in
+                    throw RuntimeV2Error.insufficientSpace(required: 4096, available: 0)
+                }
+            )
+        )
+        for launch in 0..<2 {
+            let report = try await faulting.prepareAndRecover(build: "test")
+            let leaseURL = try layout.environmentLeaseURL(environmentID: "env-corrupt")
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: leaseURL.path),
+                "launch \(launch): the stale lease must never be reclaimed while the evidence exists"
+            )
+            XCTAssertTrue(
+                report.unreclaimableLeases.contains("env-corrupt"),
+                "launch \(launch): the excluded environment must stay unresolved, got \(report.unreclaimableLeases)"
+            )
+            XCTAssertTrue(
+                report.notes.contains { $0.contains("env-corrupt") && $0.contains("could not be persisted") },
+                "launch \(launch): the sustained write failures must stay visible, got \(report.notes)"
+            )
+            let vmEntries = try FileManager.default.contentsOfDirectory(atPath: layout.runtimeVMDirectory.path)
+            XCTAssertTrue(vmEntries.isEmpty, "launch \(launch): no fresh working disk may appear")
+            XCTAssertEqual(
+                try Data(contentsOf: quarantine.appendingPathComponent("disk.img")),
+                Data(repeating: 0xA1, count: 8192),
+                "launch \(launch): the preserved bytes must never change"
+            )
+        }
+
+        // A direct acquire consults the same barrier BEFORE any lease logic:
+        // refused, and the refused acquire never touches the stale sidecar.
+        do {
+            _ = try await faulting.leases.acquire(environmentID: "env-corrupt", runtimeID: "rt-corrupt-2")
+            XCTFail("no boot is possible while the corrupt marker and the preserved bytes exist")
+        } catch RuntimeV2Error.environmentRepairRequired(let environmentID, _) {
+            XCTAssertEqual(environmentID, "env-corrupt")
+        }
+        let leaseURL = try layout.environmentLeaseURL(environmentID: "env-corrupt")
+        let sidecarData = try Data(contentsOf: leaseURL)
+        let sidecarLease = try RuntimeV2LeaseStore.decoder.decode(RuntimeV2LeaseStore.Lease.self, from: sidecarData)
+        XCTAssertEqual(sidecarLease.runtimeID, "rt-corrupt-1")
+        XCTAssertEqual(sidecarLease.incarnation, "dead-incarnation")
+    }
+
+    /// A corrupt marker with NO preserved bytes anywhere still excludes on
+    /// every repeated read and on a fresh boot attempt — and survives until
+    /// an explicit resolution, never by being read.
+    func testCorruptRepairHoldSidecarWithoutPreservedBytesStillExcludes() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-corrupt-empty", baseImageID: "img")
+        let holdURL = try layout.environmentRepairHoldURL(environmentID: "env-corrupt-empty")
+        try FileManager.default.createDirectory(at: holdURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{ not a hold".utf8).write(to: holdURL)
+
+        for _ in 0..<3 {
+            let fresh = RuntimeV2RepairHoldStore(layout: layout)
+            let hold = await fresh.hold(environmentID: "env-corrupt-empty")
+            XCTAssertNotNil(hold)
+            // The marker file is still exactly where it was.
+            XCTAssertTrue(FileManager.default.fileExists(atPath: holdURL.path))
+        }
+        // Inspection never lifts it; only an explicit resolution can.
+        let recoverable = await store.verifyRecoverable(environmentID: "env-corrupt-empty")
+        XCTAssertEqual(recoverable, .nothingToRecover)
+        _ = try await store.discardRepair(
+            environmentID: "env-corrupt-empty", reason: "marker unreadable and nothing to recover; explicit cleanup"
+        )
+        let fresh = RuntimeV2RepairHoldStore(layout: layout)
+        let clearedHold = await fresh.hold(environmentID: "env-corrupt-empty")
+        XCTAssertNil(clearedHold)
+    }
+
+    // MARK: - C6: unknown-owner directory is never moved (P0 review #4)
+
+    /// Damaged runtime.json + NO ownership trace anywhere (no lease sidecar,
+    /// no registry row, no archived lease): the absence of a trace is not
+    /// proof the owner stopped — the directory is preserved byte-for-byte IN
+    /// PLACE, with a simulated live disk handle held open, across repeated
+    /// launches. It blocks nothing globally (a neighbor environment boots
+    /// normally), and the explicit verified cleanup `archiveUnknownRuntimeDirectory`
+    /// is the only way it ever leaves runtime/vm.
+    func testUnknownOwnerDirectoryPreservedInPlaceUntilExplicitVerifiedCleanup() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-ghost-neighbor", baseImageID: "img")
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-ghost")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0xB2, count: 8192).write(to: directory.appendingPathComponent("disk.img"))
+        try Data("not json".utf8).write(to: directory.appendingPathComponent("runtime.json"))
+        // Simulated LIVE handle: the disk stays open across recovery.
+        let handle = try FileHandle(forUpdating: directory.appendingPathComponent("disk.img"))
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-ghost"))
+        XCTAssertFalse(report.quarantinedRuntimeDirs.contains("rt-ghost"))
+        XCTAssertTrue(
+            report.notes.contains { $0.contains("rt-ghost") && $0.contains("no ownership trace") },
+            "expected a truthful no-trace preservation note, got \(report.notes)"
+        )
+        // Byte-for-byte in place: no move, no capture, no mount, no lease.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xB2, count: 8192)
+        )
+        let moved = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("runtime-vm-rt-ghost") }
+        XCTAssertTrue(moved.isEmpty, "a potentially live disk must never be moved without proof")
+        let ghostLease = try await relaunched.leases.lease(forRuntimeID: "rt-ghost")
+        XCTAssertNil(ghostLease)
+
+        // Repeated launches: idempotent preservation, no latching state.
+        let third = RuntimeV2Store(layout: layout)
+        let thirdReport = try await third.prepareAndRecover(build: "test")
+        XCTAssertTrue(thirdReport.preservedRuntimeDirs.contains("rt-ghost"))
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xB2, count: 8192)
+        )
+
+        // No global blocking: a neighbor environment boots and stops normally
+        // while the unknown directory sits preserved.
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await third.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        let integrator = RuntimeV2GuestIntegrator(store: third, legacyImagesRoot: legacyRoot, build: "test")
+        let neighbor = try await integrator.prepareWorkingDisk(
+            environmentID: "env-ghost-neighbor", runtimeID: "rt-neighbor", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: neighbor.diskURL.path))
+        await integrator.completeStop(
+            environmentID: "env-ghost-neighbor", runtimeID: "rt-neighbor", imageID: image.id, clean: true
+        )
+
+        // Explicit verified cleanup is the ONLY exit: it re-proves the
+        // directory is still untraceable and moves it into the quarantine
+        // evidence area (never deletes).
+        try handle.close()
+        try await third.archiveUnknownRuntimeDirectory(runtimeID: "rt-ghost")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        let archived = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("runtime-vm-rt-ghost") }
+        XCTAssertEqual(archived.count, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: layout.quarantineDirectory.appendingPathComponent(archived[0], isDirectory: true).appendingPathComponent("disk.img")),
+            Data(repeating: 0xB2, count: 8192)
+        )
+
+        // Afterwards recovery has nothing to preserve; a second cleanup
+        // attempt refuses (nothing there).
+        let fourth = RuntimeV2Store(layout: layout)
+        let fourthReport = try await fourth.prepareAndRecover(build: "test")
+        XCTAssertFalse(fourthReport.preservedRuntimeDirs.contains("rt-ghost"))
+        do {
+            try await fourth.archiveUnknownRuntimeDirectory(runtimeID: "rt-ghost")
+            XCTFail("a vanished directory must refuse cleanup, never silently succeed")
+        } catch RuntimeV2Error.repairResolutionUnavailable {
+            // expected
+        }
+    }
+
+    /// Cleanup refuses the moment any ownership trace exists: a directory
+    /// with a readable ownership record is owned state and must go through
+    /// the repair flow, never the unknown-directory cleanup.
+    func testUnknownDirectoryCleanupRefusesOwnedState() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-owned", baseImageID: "img")
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-owned")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0xC5, count: 8192).write(to: directory.appendingPathComponent("disk.img"))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-owned", environmentID: "env-owned",
+                baseImageID: "img", createdAt: Date()
+            ),
+            to: directory
+        )
+        do {
+            try await store.archiveUnknownRuntimeDirectory(runtimeID: "rt-owned")
+            XCTFail("owned state must never be cleaned up as unknown")
+        } catch RuntimeV2Error.repairResolutionUnavailable {
+            // expected
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    // MARK: - C6: verified restore returns preserved bytes to the delta (P1 review #3)
+
+    /// Manufacture the exact durable state a failed capture leaves (the
+    /// production preserveAfterFailedCapture outcome), then resolve it with
+    /// the VERIFIED RESTORE: provenance + content checks, capture through the
+    /// verified delta path, durable state commit, and only then the lift.
+    /// The restored writes are visible on the next boot and survive further
+    /// reboots — a mere acknowledgement could never promise that.
+    func testRepairRestoreCapturesPreservedBytesAndSurvivesReboot() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        try await registerEnvironment(id: "env-restore", baseImageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+
+        // First session: write A, clean stop → the delta durably holds A.
+        _ = try await integrator.acquireSlot(environmentID: "env-restore", runtimeID: "rt-restore-1", requestedMB: 512)
+        let first = try await integrator.prepareWorkingDisk(
+            environmentID: "env-restore", runtimeID: "rt-restore-1", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBlock(first.diskURL, offset: 2 << 20, byte: 0x41)
+        await integrator.completeStop(
+            environmentID: "env-restore", runtimeID: "rt-restore-1", imageID: image.id, clean: true
+        )
+
+        // Second session: the delta (A) is applied; write B (the LATEST
+        // state). Then the capture fails and the disk is preserved — the
+        // delta still holds only A.
+        _ = try await integrator.acquireSlot(environmentID: "env-restore", runtimeID: "rt-restore-2", requestedMB: 512)
+        let second = try await integrator.prepareWorkingDisk(
+            environmentID: "env-restore", runtimeID: "rt-restore-2", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        XCTAssertEqual(try readBlock(second.diskURL, offset: 2 << 20), Data(repeating: 0x41, count: 4096))
+        try writeBlock(second.diskURL, offset: 3 << 20, byte: 0x42)
+        // Manufacture the production failed-capture state byte-for-byte:
+        // quarantine the stopped disk, place the durable hold, mark
+        // repairRequired (exactly what preserveAfterFailedCapture persists).
+        let secondDirectory = try layout.runtimeVMDirectory(runtimeID: "rt-restore-2")
+        let quarantine = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-restore-2-test", isDirectory: true)
+        try FileManager.default.moveItem(at: secondDirectory, to: quarantine)
+        try await store.repairHolds.place(
+            environmentID: "env-restore", runtimeID: "rt-restore-2",
+            reason: "injected failed capture", preservedPath: "recovery/quarantine/\(quarantine.lastPathComponent)"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-restore", state: "repairRequired", repairReason: "injected failed capture"
+        )
+        // Process death + TTL expiry state, precisely what a new incarnation
+        // observes.
+        try writeLease(
+            environmentID: "env-restore", runtimeID: "rt-restore-2", incarnation: "dead-incarnation",
+            pid: 4_000_000, renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )
+
+        // A fresh incarnation: the exclusion survives; the stale lease is not
+        // reclaimed; the preserved bytes are untouched.
+        let relaunched = RuntimeV2Store(layout: layout)
+        let recoveryReport = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(recoveryReport.unreclaimableLeases.contains("env-restore"))
+        let preservedDisk = quarantine.appendingPathComponent("disk.img")
+        XCTAssertEqual(try readBlock(preservedDisk, offset: 3 << 20), Data(repeating: 0x42, count: 4096))
+        // Merely discovering the backup cannot unlock: inspection changes
+        // nothing, and the environment stays excluded.
+        let inspection = await relaunched.verifyRecoverable(environmentID: "env-restore")
+        guard case .recoverable(let preservedPath) = inspection else {
+            XCTFail("the preserved bytes must be discoverable, got \(inspection)")
+            return
+        }
+        XCTAssertEqual(preservedPath, "recovery/quarantine/\(quarantine.lastPathComponent)")
+        let statusBeforeRestore = await relaunched.repairHoldStatus(environmentID: "env-restore")
+        XCTAssertNotNil(statusBeforeRestore)
+
+        // The verified restore: provenance + content are proven, the bytes
+        // are captured into the delta through the verified path, the durable
+        // state commits, and only then the exclusion lifts.
+        let resolution = try await relaunched.restoreRepair(environmentID: "env-restore")
+        XCTAssertEqual(resolution.resolution, "restored")
+        XCTAssertEqual(resolution.preservedPath, preservedPath)
+        XCTAssertNotNil(resolution.diskDigestSHA512)
+        XCTAssertEqual(resolution.restoredGeneration, 2)
+        let statusAfterRestore = await relaunched.repairHoldStatus(environmentID: "env-restore")
+        XCTAssertNil(statusAfterRestore)
+        let stateAfterRestore = try await relaunched.registry.environment(id: "env-restore")?.state
+        XCTAssertEqual(stateAfterRestore, "stopped")
+        let shutdown = try await relaunched.deltas.lastShutdown(environmentID: "env-restore")
+        XCTAssertEqual(shutdown?.clean, true)
+        // The resolution is recorded durably: a later recovery pass never
+        // re-derives the exclusion from the preserved evidence.
+        let afterRestore = RuntimeV2Store(layout: layout)
+        let afterReport = try await afterRestore.prepareAndRecover(build: "test")
+        XCTAssertTrue(afterReport.repairReapplied.isEmpty)
+        let statusNextLaunch = await afterRestore.repairHoldStatus(environmentID: "env-restore")
+        XCTAssertNil(statusNextLaunch)
+
+        // The restored writes are visible on the next boot (A AND B), and a
+        // further reboot preserves everything: write C, stop, relaunch, read.
+        let integrator2 = RuntimeV2GuestIntegrator(store: afterRestore, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator2.acquireSlot(environmentID: "env-restore", runtimeID: "rt-restore-3", requestedMB: 512)
+        let third = try await integrator2.prepareWorkingDisk(
+            environmentID: "env-restore", runtimeID: "rt-restore-3", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        XCTAssertEqual(try readBlock(third.diskURL, offset: 2 << 20), Data(repeating: 0x41, count: 4096))
+        XCTAssertEqual(try readBlock(third.diskURL, offset: 3 << 20), Data(repeating: 0x42, count: 4096))
+        // The restored state is now durable: overwrite A with C, stop, and a
+        // further reboot must show C AND the restored B.
+        try writeBlock(third.diskURL, offset: 2 << 20, byte: 0x43)
+        await integrator2.completeStop(
+            environmentID: "env-restore", runtimeID: "rt-restore-3", imageID: image.id, clean: true
+        )
+
+        let rebooted = RuntimeV2Store(layout: layout)
+        _ = try await rebooted.prepareAndRecover(build: "test")
+        let integrator3 = RuntimeV2GuestIntegrator(store: rebooted, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator3.acquireSlot(environmentID: "env-restore", runtimeID: "rt-restore-4", requestedMB: 512)
+        let fourth = try await integrator3.prepareWorkingDisk(
+            environmentID: "env-restore", runtimeID: "rt-restore-4", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        XCTAssertEqual(try readBlock(fourth.diskURL, offset: 2 << 20), Data(repeating: 0x43, count: 4096))
+        XCTAssertEqual(try readBlock(fourth.diskURL, offset: 3 << 20), Data(repeating: 0x42, count: 4096))
+        await integrator3.completeStop(
+            environmentID: "env-restore", runtimeID: "rt-restore-4", imageID: image.id, clean: true
+        )
+    }
+
+    /// An interrupted restore retains the hold: the provenance base is
+    /// missing at restore time, the restore throws, the exclusion AND the
+    /// preserved bytes stay fully in place, and a retry after the fault
+    /// heals succeeds idempotently.
+    func testRepairRestoreInterruptedRetainsHoldAndRetryIsIdempotent() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        try await registerEnvironment(id: "env-restore-fault", baseImageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator.acquireSlot(environmentID: "env-restore-fault", runtimeID: "rt-rf-1", requestedMB: 512)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-restore-fault", runtimeID: "rt-rf-1", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBlock(work.diskURL, offset: 2 << 20, byte: 0x51)
+        // Manufacture the failed-capture durable state with the latest write
+        // ONLY in the preserved bytes.
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-rf-1")
+        let quarantine = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-rf-1-test", isDirectory: true)
+        try FileManager.default.moveItem(at: directory, to: quarantine)
+        try await store.repairHolds.place(
+            environmentID: "env-restore-fault", runtimeID: "rt-rf-1",
+            reason: "injected failed capture", preservedPath: "recovery/quarantine/\(quarantine.lastPathComponent)"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-restore-fault", state: "repairRequired", repairReason: "injected failed capture"
+        )
+
+        // Fault the provenance base away (the v2 image manifest: without it
+        // the boot base can never be proven, and the expanded view alone is
+        // not provenance): the restore cannot verify anything and must
+        // refuse, keeping everything in place.
+        let manifestURL = try layout.imageManifestURL(imageID: image.id)
+        let manifestBytes = try Data(contentsOf: manifestURL)
+        try FileManager.default.removeItem(at: manifestURL)
+
+        do {
+            _ = try await store.restoreRepair(environmentID: "env-restore-fault")
+            XCTFail("a restore without its provenance base must refuse")
+        } catch {
+            // any provenance/content failure: expected
+        }
+        let holdAfterInterrupt = await store.repairHolds.hold(environmentID: "env-restore-fault")
+        XCTAssertNotNil(holdAfterInterrupt)
+        let stateAfterInterrupt = try await store.registry.environment(id: "env-restore-fault")?.state
+        XCTAssertEqual(stateAfterInterrupt, "repairRequired")
+        XCTAssertEqual(
+            try readBlock(quarantine.appendingPathComponent("disk.img"), offset: 2 << 20),
+            Data(repeating: 0x51, count: 4096)
+        )
+        let deltaAfterInterrupt = try await store.deltas.loadDelta(environmentID: "env-restore-fault")
+        XCTAssertNil(deltaAfterInterrupt)
+
+        // Heal the base: the retry succeeds and the latest writes land in the
+        // delta, with the hold lifted only after the durable commit.
+        try manifestBytes.write(to: manifestURL, options: .atomic)
+        let resolution = try await store.restoreRepair(environmentID: "env-restore-fault")
+        XCTAssertEqual(resolution.resolution, "restored")
+        let holdAfterRetry = await store.repairHolds.hold(environmentID: "env-restore-fault")
+        XCTAssertNil(holdAfterRetry)
+        let stateAfterRetry = try await store.registry.environment(id: "env-restore-fault")?.state
+        XCTAssertEqual(stateAfterRetry, "stopped")
+        // The retry's boot happens in a new identity: the original session's
+        // lease must first look exactly as a dead process past its TTL.
+        try writeLease(
+            environmentID: "env-restore-fault", runtimeID: "rt-rf-1", incarnation: "dead-incarnation",
+            pid: 4_000_000, renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )
+        let relaunched = RuntimeV2Store(layout: layout)
+        _ = try await relaunched.prepareAndRecover(build: "test")
+        let integrator2 = RuntimeV2GuestIntegrator(store: relaunched, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator2.acquireSlot(environmentID: "env-restore-fault", runtimeID: "rt-rf-2", requestedMB: 512)
+        let rebooted = try await integrator2.prepareWorkingDisk(
+            environmentID: "env-restore-fault", runtimeID: "rt-rf-2", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        XCTAssertEqual(try readBlock(rebooted.diskURL, offset: 2 << 20), Data(repeating: 0x51, count: 4096))
+        await integrator2.completeStop(
+            environmentID: "env-restore-fault", runtimeID: "rt-rf-2", imageID: image.id, clean: true
+        )
+    }
+
+    /// Crash-safe resolution protocol (review P0): the resolution record
+    /// commits ATOMICALLY FIRST and the live marker is retired only after
+    /// the commit. A sustained ENOSPC on the resolution archive therefore
+    /// leaves the marker fully in place, the state is re-marked
+    /// repairRequired (best effort), and the restore can be retried
+    /// idempotently once the fault heals.
+    func testRepairResolutionRecordFailureKeepsExclusionUntilHealed() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        try await registerEnvironment(id: "env-res-fault", baseImageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator.acquireSlot(environmentID: "env-res-fault", runtimeID: "rt-res-1", requestedMB: 512)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-res-fault", runtimeID: "rt-res-1", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBlock(work.diskURL, offset: 2 << 20, byte: 0x61)
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-res-1")
+        let quarantine = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-res-1-test", isDirectory: true)
+        try FileManager.default.moveItem(at: directory, to: quarantine)
+        try await store.repairHolds.place(
+            environmentID: "env-res-fault", runtimeID: "rt-res-1",
+            reason: "injected failed capture", preservedPath: "recovery/quarantine/\(quarantine.lastPathComponent)"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-res-fault", state: "repairRequired", repairReason: "injected failed capture"
+        )
+
+        // Sustained ENOSPC on the resolution archive: everything up to the
+        // resolution record commits; the lift itself refuses.
+        let archive = layout.recoveryMigrationsDirectory.appendingPathComponent("repair-holds", isDirectory: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: archive.path)
+        do {
+            _ = try await store.restoreRepair(environmentID: "env-res-fault")
+            XCTFail("a resolution that cannot be persisted must not lift the exclusion")
+        } catch {
+            // expected: the resolution record write failed
+        }
+        // The crash-safe invariant: the LIVE MARKER IS STILL THERE (the
+        // retirement only happens after a committed resolution), the durable
+        // state was re-marked repairRequired (best effort, registry healthy),
+        // and NO resolution record was committed — so the next launch still
+        // answers environmentRepairRequired, not a silent lift.
+        let markerURL = try layout.environmentRepairHoldURL(environmentID: "env-res-fault")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: markerURL.path),
+            "a failed resolution must never retire the live marker"
+        )
+        let liveMarker = await store.repairHolds.markerHold(environmentID: "env-res-fault")
+        XCTAssertNotNil(liveMarker)
+        let stateAfterFailedResolution = try await store.registry.environment(id: "env-res-fault")?.state
+        XCTAssertEqual(stateAfterFailedResolution, "repairRequired")
+        let stillExcluded = await store.leases.excludes(environmentID: "env-res-fault")
+        XCTAssertTrue(stillExcluded)
+        // The capture DID commit: the delta now holds the preserved bytes,
+        // and the preserved bytes themselves are untouched.
+        let deltaAfterFailure = try await store.deltas.loadDelta(environmentID: "env-res-fault")
+        XCTAssertNotNil(deltaAfterFailure)
+        let recoverableAfterFailure = await store.verifyRecoverable(environmentID: "env-res-fault")
+        XCTAssertEqual(
+            recoverableAfterFailure,
+            .recoverable(preservedPath: "recovery/quarantine/\(quarantine.lastPathComponent)")
+        )
+        XCTAssertEqual(
+            try readBlock(quarantine.appendingPathComponent("disk.img"), offset: 2 << 20),
+            Data(repeating: 0x61, count: 4096)
+        )
+
+        // Heal the fault: the retry captures the same bytes again (idempotent)
+        // and this time the resolution commits and lifts the exclusion.
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: archive.path)
+        let resolution = try await store.restoreRepair(environmentID: "env-res-fault")
+        XCTAssertEqual(resolution.resolution, "restored")
+        let excludedAfterHealing = await store.leases.excludes(environmentID: "env-res-fault")
+        XCTAssertFalse(excludedAfterHealing)
+        let statusAfterHealed = await store.repairHoldStatus(environmentID: "env-res-fault")
+        XCTAssertNil(statusAfterHealed)
+        let stateAfterHealed = try await store.registry.environment(id: "env-res-fault")?.state
+        XCTAssertEqual(stateAfterHealed, "stopped")
+    }
+
+    /// The reviewer's exact fault sequence: the resolution write fails, the
+    /// process dies, a brand-new store identity + expired TTL observes the
+    /// residue. Because the failed resolution never retired the marker and
+    /// never committed a resolution record, the environment must remain
+    /// environmentRepairRequired — no reclaim, no fresh boot, bytes intact —
+    /// and an explicit resolution is still required.
+    func testRepairResolutionFailureSurvivesProcessDeathAndTTLExpiry() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        try await registerEnvironment(id: "env-res-death", baseImageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator.acquireSlot(environmentID: "env-res-death", runtimeID: "rt-rd-1", requestedMB: 512)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-res-death", runtimeID: "rt-rd-1", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBlock(work.diskURL, offset: 2 << 20, byte: 0x71)
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-rd-1")
+        let quarantine = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-rd-1-test", isDirectory: true)
+        try FileManager.default.moveItem(at: directory, to: quarantine)
+        try await store.repairHolds.place(
+            environmentID: "env-res-death", runtimeID: "rt-rd-1",
+            reason: "injected failed capture", preservedPath: "recovery/quarantine/\(quarantine.lastPathComponent)"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-res-death", state: "repairRequired", repairReason: "injected failed capture"
+        )
+        let preservedDisk = quarantine.appendingPathComponent("disk.img")
+
+        // The resolution write fails (sustained ENOSPC)...
+        let archive = layout.recoveryMigrationsDirectory.appendingPathComponent("repair-holds", isDirectory: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: archive.path)
+        do {
+            _ = try await store.restoreRepair(environmentID: "env-res-death")
+            XCTFail("the failed resolution must throw")
+        } catch {
+            // expected
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: archive.path)
+
+        // ...then PROCESS DEATH + TTL expiry: the residue is exactly what a
+        // brand-new incarnation observes (live marker, no resolution record,
+        // preserved bytes, dead expired lease).
+        try writeLease(
+            environmentID: "env-res-death", runtimeID: "rt-rd-1", incarnation: "dead-incarnation",
+            pid: 4_000_000, renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )
+        let reborn = RuntimeV2Store(layout: layout)
+        let report = try await reborn.prepareAndRecover(build: "test")
+        // The marker survived: the environment stays environmentRepairRequired.
+        let state = try await reborn.registry.environment(id: "env-res-death")?.state
+        XCTAssertEqual(state, "repairRequired", "the environment must remain environmentRepairRequired across the death window")
+        let hold = await reborn.repairHolds.hold(environmentID: "env-res-death")
+        XCTAssertNotNil(hold, "the live marker must still answer after the failed resolution + process death")
+        // No reclaim, no fresh boot, preserved bytes intact.
+        XCTAssertTrue(report.unreclaimableLeases.contains("env-res-death"))
+        let leaseURL = try layout.environmentLeaseURL(environmentID: "env-res-death")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseURL.path))
+        let vmEntries = try FileManager.default.contentsOfDirectory(atPath: layout.runtimeVMDirectory.path)
+        XCTAssertTrue(vmEntries.isEmpty)
+        XCTAssertEqual(try readBlock(preservedDisk, offset: 2 << 20), Data(repeating: 0x71, count: 4096))
+        // And a fresh start is refused with environmentRepairRequired.
+        let freshIntegrator = RuntimeV2GuestIntegrator(store: reborn, legacyImagesRoot: legacyRoot, build: "test")
+        do {
+            _ = try await freshIntegrator.prepareWorkingDisk(
+                environmentID: "env-res-death", runtimeID: "rt-rd-2", imageID: image.id,
+                legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+            )
+            XCTFail("no fresh VM may boot while the failed-resolution residue exists")
+        } catch RuntimeV2Error.environmentRepairRequired(let held, _) {
+            XCTAssertEqual(held, "env-res-death")
+        }
+    }
+
+    // MARK: - C6: hold preservedPath is untrusted — containment + provenance gates
+
+    /// A hold sidecar is untrusted content: every crafted/relative/traversal
+    /// preservedPath is refused by BOTH resolution paths BEFORE anything is
+    /// read or moved, the foreign directory stays byte-identical and unmoved,
+    /// and the exclusion itself remains until an explicit valid resolution.
+    func testRepairResolutionRejectsCraftedPreservedPaths() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-attacker", baseImageID: "img")
+        // A foreign directory the crafted paths aim at.
+        let foreign = try layout.runtimeVMDirectory(runtimeID: "rt-foreign")
+        try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try Data(repeating: 0xF1, count: 8192).write(to: foreign.appendingPathComponent("disk.img"))
+
+        let craftedPaths = [
+            "../vm/rt-foreign",
+            "/absolutely/elsewhere/rt-foreign",
+            "recovery/quarantine/runtime-vm-ok/../../vm/rt-foreign",
+            "recovery/quarantine/other-entry",
+            "runtime/vm/",
+            "runtime/vm/../vm/rt-foreign",
+            "environments/env-attacker",
+        ]
+        let holdURL = try layout.environmentRepairHoldURL(environmentID: "env-attacker")
+        try FileManager.default.createDirectory(at: holdURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        for (index, crafted) in craftedPaths.enumerated() {
+            let hold = RuntimeV2RepairHoldStore.Hold(
+                environmentID: "env-attacker", runtimeID: "rt-foreign",
+                reason: "crafted test hold \(index)", preservedPath: crafted
+            )
+            try RuntimeV2RepairHoldStore.encoder.encode(hold).write(to: holdURL, options: .atomic)
+
+            // Inspection refuses to name anything recoverable...
+            let recoverable = await store.verifyRecoverable(environmentID: "env-attacker")
+            XCTAssertEqual(recoverable, .nothingToRecover, "crafted path \(crafted) must never be recoverable")
+            // ...and both resolution paths refuse outright.
+            do {
+                _ = try await store.restoreRepair(environmentID: "env-attacker")
+                XCTFail("restore must refuse crafted path \(crafted)")
+            } catch {
+                // expected: pathEscapesRoot / repairResolutionUnavailable
+            }
+            do {
+                _ = try await store.discardRepair(environmentID: "env-attacker", reason: "test")
+                XCTFail("discard must refuse crafted path \(crafted)")
+            } catch {
+                // expected
+            }
+            // The foreign directory is byte-identical and unmoved.
+            XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path), "crafted path \(crafted)")
+            XCTAssertEqual(
+                try Data(contentsOf: foreign.appendingPathComponent("disk.img")),
+                Data(repeating: 0xF1, count: 8192),
+                "crafted path \(crafted) must never move foreign bytes"
+            )
+            // Nothing landed in the discarded-evidence area.
+            let discardedDir = layout.recoveryMigrationsDirectory.appendingPathComponent("discarded", isDirectory: true)
+            let discarded = FileManager.default.fileExists(atPath: discardedDir.path)
+                ? try FileManager.default.contentsOfDirectory(atPath: discardedDir.path)
+                : []
+            XCTAssertTrue(discarded.isEmpty, "crafted path \(crafted) must never move anything")
+            // The exclusion itself survives every refusal.
+            let holdAfter = await store.repairHolds.hold(environmentID: "env-attacker")
+            XCTAssertNotNil(holdAfter, "crafted path \(crafted) must not destroy the exclusion")
+        }
+        // A final explicit cleanup with no quarantine evidence to account for
+        // lifts the exclusion (nothing to move), leaving the foreign dir
+        // untouched — the only valid way out.
+        _ = try await store.discardUnverifiableRepairEvidence(
+            environmentID: "env-attacker", reason: "crafted-path test cleanup"
+        )
+        let cleared = await store.repairHolds.hold(environmentID: "env-attacker")
+        XCTAssertNil(cleared)
+        XCTAssertEqual(try Data(contentsOf: foreign.appendingPathComponent("disk.img")), Data(repeating: 0xF1, count: 8192))
+    }
+
+    /// A symlinked quarantine entry that resolves OUTSIDE the runtime root is
+    /// refused: neither inspection nor restore nor the verified cleanup may
+    /// follow it, and the foreign bytes stay byte-identical and unmoved.
+    func testRepairResolutionRejectsSymlinkEscape() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-symlink", baseImageID: "img")
+        // Foreign bytes OUTSIDE the runtime root.
+        let outside = root.deletingLastPathComponent()
+            .appendingPathComponent("foreign-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data(repeating: 0xF2, count: 8192).write(to: outside.appendingPathComponent("disk.img"))
+        // A quarantine entry that is a symlink to the foreign directory.
+        let link = layout.quarantineDirectory.appendingPathComponent("runtime-vm-rt-escape-1", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        let hold = RuntimeV2RepairHoldStore.Hold(
+            environmentID: "env-symlink", runtimeID: "rt-escape-1",
+            reason: "symlink escape test", preservedPath: "recovery/quarantine/runtime-vm-rt-escape-1"
+        )
+        let holdURL = try layout.environmentRepairHoldURL(environmentID: "env-symlink")
+        try FileManager.default.createDirectory(at: holdURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try RuntimeV2RepairHoldStore.encoder.encode(hold).write(to: holdURL, options: .atomic)
+
+        let recoverable = await store.verifyRecoverable(environmentID: "env-symlink")
+        XCTAssertEqual(recoverable, .nothingToRecover, "a symlink escape must never be recoverable")
+        do {
+            _ = try await store.restoreRepair(environmentID: "env-symlink")
+            XCTFail("restore must refuse the symlink escape")
+        } catch RuntimeV2Error.pathEscapesRoot {
+            // expected
+        }
+        do {
+            _ = try await store.discardRepair(environmentID: "env-symlink", reason: "test")
+            XCTFail("discard must refuse the symlink escape")
+        } catch RuntimeV2Error.pathEscapesRoot {
+            // expected
+        }
+        do {
+            _ = try await store.discardUnverifiableRepairEvidence(environmentID: "env-symlink", reason: "test")
+            XCTFail("even the verified cleanup must refuse the symlink escape")
+        } catch RuntimeV2Error.pathEscapesRoot {
+            // expected
+        }
+        // Foreign bytes byte-identical, unmoved; the symlink itself intact.
+        XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("disk.img")), Data(repeating: 0xF2, count: 8192))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.appendingPathComponent("disk.img").path))
+        var isSymlink: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: link.path, isDirectory: &isSymlink))
+        let resolved = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
+        XCTAssertEqual(resolved, outside.path)
+        // The exclusion remains.
+        let liveHold = await store.repairHolds.hold(environmentID: "env-symlink")
+        XCTAssertNotNil(liveHold)
+    }
+
+    /// A hold naming ANOTHER environment's preserved bytes is refused by
+    /// both resolution paths: foreign provenance never authorizes a move, and
+    /// the foreign environment's bytes stay byte-identical and unmoved for
+    /// THEIR repair flow.
+    func testRepairResolutionRefusesForeignEnvironmentProvenance() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-foreign", baseImageID: "img")
+        try await registerEnvironment(id: "env-attacker", baseImageID: "img")
+        // env-foreign's preserved bytes with valid provenance.
+        let entry = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-foreign-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: entry, withIntermediateDirectories: true)
+        try Data(repeating: 0xF3, count: 8192).write(to: entry.appendingPathComponent("disk.img"))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-foreign-1", environmentID: "env-foreign",
+                baseImageID: "img", createdAt: Date()
+            ),
+            to: entry
+        )
+        // env-attacker's hold names env-foreign's bytes.
+        let hold = RuntimeV2RepairHoldStore.Hold(
+            environmentID: "env-attacker", runtimeID: "rt-foreign-1",
+            reason: "foreign provenance test", preservedPath: "recovery/quarantine/runtime-vm-rt-foreign-1"
+        )
+        let holdURL = try layout.environmentRepairHoldURL(environmentID: "env-attacker")
+        try FileManager.default.createDirectory(at: holdURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try RuntimeV2RepairHoldStore.encoder.encode(hold).write(to: holdURL, options: .atomic)
+
+        do {
+            _ = try await store.restoreRepair(environmentID: "env-attacker")
+            XCTFail("restore must refuse another environment's bytes")
+        } catch RuntimeV2Error.workingDirectoryProvenanceUnavailable {
+            // expected
+        }
+        do {
+            _ = try await store.discardRepair(environmentID: "env-attacker", reason: "test")
+            XCTFail("discard must refuse another environment's bytes")
+        } catch RuntimeV2Error.workingDirectoryProvenanceUnavailable {
+            // expected
+        }
+        // The verified cleanup refuses too: the entry belongs to env-foreign.
+        do {
+            _ = try await store.discardUnverifiableRepairEvidence(environmentID: "env-attacker", reason: "test")
+            XCTFail("the cleanup must refuse another environment's evidence")
+        } catch RuntimeV2Error.workingDirectoryProvenanceUnavailable {
+            // expected
+        }
+        // Foreign bytes byte-identical and unmoved.
+        XCTAssertEqual(
+            try Data(contentsOf: entry.appendingPathComponent("disk.img")),
+            Data(repeating: 0xF3, count: 8192)
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: entry.path))
+        // env-foreign's OWN repair flow sees its bytes (physical evidence).
+        let foreignStatus = await store.repairHoldStatus(environmentID: "env-foreign")
+        XCTAssertNotNil(foreignStatus)
+    }
+
+    /// Normal valid recovery still works end to end with the containment
+    /// gates in place: a provenanced discard of THIS environment's preserved
+    /// bytes moves exactly those bytes and nothing else.
+    func testRepairDiscardWithValidProvenanceStillWorks() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-valid", baseImageID: "img")
+        let entry = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-valid-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: entry, withIntermediateDirectories: true)
+        try Data(repeating: 0xF4, count: 8192).write(to: entry.appendingPathComponent("disk.img"))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-valid-1", environmentID: "env-valid",
+                baseImageID: "img", createdAt: Date()
+            ),
+            to: entry
+        )
+        try await store.repairHolds.place(
+            environmentID: "env-valid", runtimeID: "rt-valid-1",
+            reason: "test", preservedPath: "recovery/quarantine/runtime-vm-rt-valid-1"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-valid", state: "repairRequired", repairReason: "test"
+        )
+        // A neighbor directory that must stay untouched.
+        let neighbor = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-rt-neighbor-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: neighbor, withIntermediateDirectories: true)
+        try Data(repeating: 0xF5, count: 8192).write(to: neighbor.appendingPathComponent("disk.img"))
+
+        let resolution = try await store.discardRepair(
+            environmentID: "env-valid", reason: "valid provenance discard"
+        )
+        XCTAssertEqual(resolution.resolution, "discarded")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: entry.path))
+        let discarded = try FileManager.default.contentsOfDirectory(
+            atPath: layout.recoveryMigrationsDirectory.appendingPathComponent("discarded", isDirectory: true).path
+        ).filter { $0.hasPrefix("runtime-vm-rt-valid-1") }
+        XCTAssertEqual(discarded.count, 1)
+        // Neighbor byte-identical and unmoved.
+        XCTAssertEqual(
+            try Data(contentsOf: neighbor.appendingPathComponent("disk.img")),
+            Data(repeating: 0xF5, count: 8192)
+        )
+        let cleared = await store.repairHolds.hold(environmentID: "env-valid")
+        XCTAssertNil(cleared)
+        let state = try await store.registry.environment(id: "env-valid")?.state
+        XCTAssertEqual(state, "stopped")
+    }
+
+    /// The reviewer's exact interleaving: resolver R1 captures hold A, an
+    /// independent store places a NEWER hold B over the sidecar, then R1's
+    /// stale resolution commits. The commit must leave B fully live (valid B
+    /// remains; and a corrupt B is never removed either — the stale resolver
+    /// observed nothing it may erase).
+    func testStaleResolutionCommitNeverErasesANewerLiveMarker() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-race", baseImageID: "img")
+
+        // R1 captures hold A.
+        try await store.repairHolds.place(
+            environmentID: "env-race", runtimeID: "rt-a", reason: "cycle A"
+        )
+        let holdA = await store.repairHolds.markerHold(environmentID: "env-race")
+        let holdAID = try XCTUnwrap(holdA?.holdID)
+
+        // An INDEPENDENT store instance places a newer hold B over the sidecar.
+        let independent = RuntimeV2RepairHoldStore(layout: layout)
+        try await independent.place(
+            environmentID: "env-race", runtimeID: "rt-b", reason: "cycle B"
+        )
+        let holdB = await independent.markerHold(environmentID: "env-race")
+        let holdBID = try XCTUnwrap(holdB?.holdID)
+        XCTAssertNotEqual(holdAID, holdBID)
+
+        // R1's stale resolution for A commits late.
+        try await store.repairHolds.recordResolution(
+            environmentID: "env-race", preservedPath: nil, resolution: "discarded",
+            resolvedHoldID: holdAID
+        )
+
+        // Fresh identities: B is fully live — valid marker answers, excluded.
+        let fresh = RuntimeV2RepairHoldStore(layout: layout)
+        let liveAfter = await fresh.hold(environmentID: "env-race")
+        XCTAssertEqual(liveAfter?.holdID, holdBID, "a stale resolution for A must never erase the newer live marker B")
+        let freshStore = RuntimeV2Store(layout: layout)
+        let excluded = await freshStore.leases.excludes(environmentID: "env-race")
+        XCTAssertTrue(excluded, "B's exclusion must remain in force")
+
+        // Corrupt-B variant: B's bytes are replaced by garbage; a stale
+        // resolution that observed NOTHING commits — the corrupt B file must
+        // stay exactly where it is (fail closed), never removed.
+        let markerURL = try layout.environmentRepairHoldURL(environmentID: "env-race")
+        try Data("garbage-not-a-hold".utf8).write(to: markerURL, options: .atomic)
+        try await store.repairHolds.recordResolution(
+            environmentID: "env-race", preservedPath: nil, resolution: "discarded",
+            resolvedHoldID: holdAID
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: markerURL.path),
+            "a stale resolution must never remove a newer corrupt marker it did not observe"
+        )
+        let corruptAnswers = await fresh.hold(environmentID: "env-race")
+        XCTAssertNotNil(corruptAnswers, "the corrupt marker keeps failing closed")
+        let excludedCorrupt = await freshStore.leases.excludes(environmentID: "env-race")
+        XCTAssertTrue(excludedCorrupt)
+    }
+
+    /// Multi-repair cycles (review P0): resolving repair A binds to A's exact
+    /// hold instance — a LATER, distinct failure B writes a live marker with a
+    /// fresh holdID, and history must never suppress it. After process death +
+    /// TTL expiry the environment is environmentRepairRequired again, B's
+    /// bytes are intact, and no fresh boot is possible — and even a hold C
+    /// reusing A's exact preservedPath is not neutralized by A's resolution.
+    func testRepeatedRepairCyclesAreNotNeutralizedByHistory() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        try await registerEnvironment(id: "env-cycles", baseImageID: image.id)
+
+        // --- Repair cycle A: boot, write A, fail, restore, resolve.
+        let integratorA = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integratorA.acquireSlot(environmentID: "env-cycles", runtimeID: "rt-a", requestedMB: 512)
+        let workA = try await integratorA.prepareWorkingDisk(
+            environmentID: "env-cycles", runtimeID: "rt-a", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBlock(workA.diskURL, offset: 2 << 20, byte: 0xA1)
+        let dirA = try layout.runtimeVMDirectory(runtimeID: "rt-a")
+        let entryA = layout.quarantineDirectory.appendingPathComponent("runtime-vm-rt-a-aaaa", isDirectory: true)
+        try FileManager.default.moveItem(at: dirA, to: entryA)
+        try await store.repairHolds.place(
+            environmentID: "env-cycles", runtimeID: "rt-a",
+            reason: "cycle A", preservedPath: "recovery/quarantine/\(entryA.lastPathComponent)"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-cycles", state: "repairRequired", repairReason: "cycle A"
+        )
+        let holdA = await store.repairHoldStatus(environmentID: "env-cycles")
+        XCTAssertNotNil(holdA)
+        let resolutionA = try await store.restoreRepair(environmentID: "env-cycles")
+        XCTAssertEqual(resolutionA.resolution, "restored")
+        let statusAfterA = await store.repairHoldStatus(environmentID: "env-cycles")
+        XCTAssertNil(statusAfterA, "cycle A resolved: the exclusion lifts")
+        let stateAfterA = try await store.registry.environment(id: "env-cycles")?.state
+        XCTAssertEqual(stateAfterA, "stopped")
+
+        // --- Repair cycle B: a brand-new failure with a NEW marker instance.
+        let integratorB = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integratorB.acquireSlot(environmentID: "env-cycles", runtimeID: "rt-b", requestedMB: 512)
+        let workB = try await integratorB.prepareWorkingDisk(
+            environmentID: "env-cycles", runtimeID: "rt-b", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBlock(workB.diskURL, offset: 3 << 20, byte: 0xB2)
+        let dirB = try layout.runtimeVMDirectory(runtimeID: "rt-b")
+        let entryB = layout.quarantineDirectory.appendingPathComponent("runtime-vm-rt-b-bbbb", isDirectory: true)
+        try FileManager.default.moveItem(at: dirB, to: entryB)
+        try await store.repairHolds.place(
+            environmentID: "env-cycles", runtimeID: "rt-b",
+            reason: "cycle B", preservedPath: "recovery/quarantine/\(entryB.lastPathComponent)"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-cycles", state: "repairRequired", repairReason: "cycle B"
+        )
+        try writeLease(
+            environmentID: "env-cycles", runtimeID: "rt-b", incarnation: "dead-incarnation",
+            pid: 4_000_000, renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )
+
+        // Process death + TTL expiry: cycle B must be fully excluded — the
+        // committed resolution for cycle A binds to A's hold instance only
+        // and can never suppress B's live marker.
+        let reborn = RuntimeV2Store(layout: layout)
+        let report = try await reborn.prepareAndRecover(build: "test")
+        let holdB = await reborn.repairHoldStatus(environmentID: "env-cycles")
+        XCTAssertNotNil(holdB, "cycle B's distinct hold instance must survive A's resolution")
+        XCTAssertNotEqual(holdB?.holdID, holdA?.holdID, "B is a different hold instance")
+        XCTAssertTrue(holdB?.reason.contains("cycle B") ?? false)
+        let stateB = try await reborn.registry.environment(id: "env-cycles")?.state
+        XCTAssertEqual(stateB, "repairRequired")
+        XCTAssertTrue(report.unreclaimableLeases.contains("env-cycles"))
+        XCTAssertEqual(
+            try readBlock(entryB.appendingPathComponent("disk.img"), offset: 3 << 20),
+            Data(repeating: 0xB2, count: 4096)
+        )
+        let freshIntegrator = RuntimeV2GuestIntegrator(store: reborn, legacyImagesRoot: legacyRoot, build: "test")
+        do {
+            _ = try await freshIntegrator.prepareWorkingDisk(
+                environmentID: "env-cycles", runtimeID: "rt-b-2", imageID: image.id,
+                legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+            )
+            XCTFail("cycle B must refuse a fresh boot")
+        } catch RuntimeV2Error.environmentRepairRequired {
+            // expected
+        }
+
+        // Resolving cycle B works normally (and binds to B's instance).
+        let resolutionB = try await reborn.restoreRepair(environmentID: "env-cycles")
+        XCTAssertEqual(resolutionB.resolution, "restored")
+        let statusAfterB = await reborn.repairHoldStatus(environmentID: "env-cycles")
+        XCTAssertNil(statusAfterB)
+
+        // --- Same-path reuse C: a NEW hold instance naming A's EXACT
+        // preservedPath must still fail closed — resolutions never neutralize
+        // a marker they did not bind to.
+        try await store.repairHolds.place(
+            environmentID: "env-cycles", runtimeID: "rt-c",
+            reason: "cycle C reusing A's path",
+            preservedPath: "recovery/quarantine/\(entryA.lastPathComponent)"
+        )
+        let storeC = RuntimeV2Store(layout: layout)
+        let holdC = await storeC.repairHoldStatus(environmentID: "env-cycles")
+        XCTAssertNotNil(holdC, "a fresh hold instance reusing A's path must NOT be neutralized by A's resolution")
+        let excludedC = await storeC.leases.excludes(environmentID: "env-cycles")
+        XCTAssertTrue(excludedC)
+    }
+
+    /// Post-commit cleanup recovery: after A's resolution commits and the
+    /// marker retirement happens (best effort), a lingering STALE marker with
+    /// A's exact holdID stays dead on every read, and a recovery pass never
+    /// re-derives or re-blocks the acknowledged evidence — while any NEW
+    /// marker instance still fails closed (covered by the cycle test).
+    func testPostCommitCleanupRecoverySuppressesOnlyTheMatchingInstance() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        try await registerEnvironment(id: "env-stale", baseImageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator.acquireSlot(environmentID: "env-stale", runtimeID: "rt-stale", requestedMB: 512)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-stale", runtimeID: "rt-stale", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBlock(work.diskURL, offset: 2 << 20, byte: 0x51)
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-stale")
+        let entry = layout.quarantineDirectory.appendingPathComponent("runtime-vm-rt-stale-cccc", isDirectory: true)
+        try FileManager.default.moveItem(at: directory, to: entry)
+        try await store.repairHolds.place(
+            environmentID: "env-stale", runtimeID: "rt-stale",
+            reason: "stale-marker test", preservedPath: "recovery/quarantine/\(entry.lastPathComponent)"
+        )
+        try await store.registry.setEnvironmentState(
+            id: "env-stale", state: "repairRequired", repairReason: "stale-marker test"
+        )
+        let markerA = await store.repairHoldStatus(environmentID: "env-stale")
+        let markerABytes = try RuntimeV2RepairHoldStore.encoder.encode(markerA)
+
+        // Resolve: the resolution commits and binds to marker A's holdID.
+        let resolution = try await store.restoreRepair(environmentID: "env-stale")
+        XCTAssertEqual(resolution.resolution, "restored")
+
+        // Simulate the post-commit cleanup window: the marker retirement was
+        // best-effort and a STALE marker A lingers on disk (same holdID).
+        let markerURL = try layout.environmentRepairHoldURL(environmentID: "env-stale")
+        try markerABytes.write(to: markerURL, options: .atomic)
+        let lingering = RuntimeV2RepairHoldStore(layout: layout)
+        let lingeringHold = await lingering.hold(environmentID: "env-stale")
+        XCTAssertNil(lingeringHold, "a lingering stale marker with the RESOLVED holdID stays dead")
+        let freshStatus = await store.repairHoldStatus(environmentID: "env-stale")
+        XCTAssertNil(freshStatus)
+
+        // The original session's lease must look exactly like a dead process
+        // past its TTL to the new identity.
+        try writeLease(
+            environmentID: "env-stale", runtimeID: "rt-stale", incarnation: "dead-incarnation",
+            pid: 4_000_000, renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )
+        // A recovery pass on a new identity: the acknowledged evidence never
+        // re-blocks the repaired environment, and no state regresses.
+        let reborn = RuntimeV2Store(layout: layout)
+        let report = try await reborn.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.repairReapplied.isEmpty, "the acknowledged entry must never re-derive the exclusion")
+        let state = try await reborn.registry.environment(id: "env-stale")?.state
+        XCTAssertEqual(state, "stopped")
+        // And the environment boots normally again.
+        let integrator2 = RuntimeV2GuestIntegrator(store: reborn, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator2.acquireSlot(environmentID: "env-stale", runtimeID: "rt-stale-2", requestedMB: 512)
+        let rebooted = try await integrator2.prepareWorkingDisk(
+            environmentID: "env-stale", runtimeID: "rt-stale-2", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        XCTAssertEqual(try readBlock(rebooted.diskURL, offset: 2 << 20), Data(repeating: 0x51, count: 4096))
+        await integrator2.completeStop(
+            environmentID: "env-stale", runtimeID: "rt-stale-2", imageID: image.id, clean: true
+        )
     }
 
     // MARK: - fixtures (P0 helpers)
+
+    private func writeBlock(_ url: URL, offset: Int64, byte: UInt8, count: Int = 4096) throws {
+        let handle = try FileHandle(forUpdating: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        try handle.write(contentsOf: Data(repeating: byte, count: count))
+        try handle.synchronize()
+    }
+
+    private func readBlock(_ url: URL, offset: Int64, count: Int = 4096) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        return try handle.read(upToCount: count) ?? Data()
+    }
 
     private func registerEnvironment(
         in store: RuntimeV2Store? = nil, id: String, baseImageID: String, state: String = "stopped"
