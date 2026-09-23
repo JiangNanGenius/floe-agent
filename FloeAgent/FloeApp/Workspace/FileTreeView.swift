@@ -14,6 +14,9 @@ import FloeWorkspace
 /// The workspace directory tree (lazy) with an inline search field.
 struct FileTreeView: View {
     @ObservedObject var viewModel: FileTreeViewModel
+    /// The IDE sidebar owns its own header/refresh chrome; embedding keeps the
+    /// tree's toolbar out of the host navigation bar.
+    var showsToolbar = true
     /// Called when the user taps a file (tree mode) or a hit (search mode).
     let onSelectFile: (String) -> Void
 
@@ -40,16 +43,18 @@ struct FileTreeView: View {
             content
         }
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button(selecting ? "完成选择" : "选择", systemImage: "checklist") {
-                    selecting.toggle(); selection.removeAll()
+            if showsToolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button(selecting ? "完成选择" : "选择", systemImage: "checklist") {
+                        selecting.toggle(); selection.removeAll()
+                    }
+                    if selecting {
+                        Button("全选") { selection = Set(viewModel.visibleNodes.map { $0.node.relativePath }) }
+                        Button("删除 \(selection.count) 项", systemImage: "trash", role: .destructive) { deletingBatch = true }
+                            .disabled(selection.isEmpty)
+                    }
+                    Button("刷新", systemImage: "arrow.clockwise") { Task { await viewModel.loadRoot() } }
                 }
-                if selecting {
-                    Button("全选") { selection = Set(viewModel.visibleNodes.map { $0.node.relativePath }) }
-                    Button("删除 \(selection.count) 项", systemImage: "trash", role: .destructive) { deletingBatch = true }
-                        .disabled(selection.isEmpty)
-                }
-                Button("刷新", systemImage: "arrow.clockwise") { Task { await viewModel.loadRoot() } }
             }
         }
         .disabled(busy)

@@ -2,14 +2,18 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// The IDE is one CodeBlitz workbench. Its internal editor tabs own text/code
-// AND PDF/Office documents (custom document component, native overlay clipped
-// to the reported rectangle) — those never appear in this native strip. The
-// strip only hosts the code container plus typed viewers for the remaining
-// routed kinds (CAD/image/media/Quick Look).
+// The IDE is one workbench with two editor kernels behind the `code` tab: the
+// native Swift/UIKit editor pane (default for verified text/code files) and
+// the Web CodeBlitz workbench (explicit fallback). The Web workbench's
+// internal editor tabs still own text/code AND PDF/Office documents (custom
+// document component, native overlay clipped to the reported rectangle) while
+// it is the visible kernel; the native kernel shows PDF/Office in these typed
+// outer tabs instead, and text/code in its own buffer strip. The strip also
+// hosts the typed viewers for the remaining routed kinds
+// (CAD/image/media/Quick Look).
 //
 // Text routing stays authoritative: an Office/PDF/CAD/image path can never
-// become a code tab, so the web workbench never sees bytes it would decode
+// become a code tab, so neither editor kernel ever sees bytes it would decode
 // and write back as UTF-8.
 
 #if canImport(SwiftUI) && canImport(UIKit)
@@ -129,8 +133,10 @@ final class IDEWorkspaceTabStore: ObservableObject {
         let kind: IDEWorkspaceTabKind
         switch WorkspaceFileRouter.destination(for: relativePath) {
         case .codeEditor:
-            // A text file stays inside the web workbench's own tab strip;
-            // the native code tab is the container for that surface.
+            // A text file stays inside the code tab's editor kernel: the
+            // native pane opens a buffer for it while the native kernel is
+            // selected, and the Web workbench's own tab strip holds it in Web
+            // mode. Either way this outer tab is only the container.
             activeTabID = Self.codeTabID
             return tabs.first { $0.id == Self.codeTabID }
         case .officeEditor:

@@ -46,11 +46,12 @@ import FloeTools
 import FloeWorkspace
 
 extension IDEWorkbenchState {
-    /// True only when every dirty editor model has been written to disk and no
-    /// unresolved conflict remains. The run button refuses to dispatch unless
-    /// this holds, so a run never executes a stale snapshot.
+    /// True only when every dirty editor model (either kernel) has been
+    /// written to disk and no unresolved conflict remains. The run button
+    /// refuses to dispatch unless this holds, so a run never executes a stale
+    /// snapshot.
     var isCleanForDispatch: Bool {
-        ready && !saving && !dirty && conflict == nil
+        ready && !saving && !hasAnyDirty && conflict == nil
     }
 }
 

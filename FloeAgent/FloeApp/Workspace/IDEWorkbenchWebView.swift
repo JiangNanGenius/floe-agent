@@ -21,7 +21,47 @@ import FloeWorkspace
     @Published private(set) var nativeDocuments: [String: IDENativeDocumentRequest] = [:]
     weak var web: WKWebView?
     let files: IDEWorkspaceSession?
-    init(files: WorkspaceFileService?) { self.files = files.map { IDEWorkspaceSession(files: $0) } }
+    /// Native text/code kernel: one buffer per open file, saved through the
+    /// same `WorkspaceFileService` the Web bridge and the run flow use. It is
+    /// created here so save-all and the run controller see it without extra
+    /// wiring, and it outlives kernel switches (buffers are never dropped by
+    /// a switch).
+    let nativeText: IDENativeTextWorkspace
+    /// True while the native pane owns `activePath`. The Web workbench's
+    /// reported active resource must then not overwrite the run route.
+    private var nativeEditorOwnsActivePath = false
+    /// Last active resource reported by the Web workbench, used when the
+    /// user switches back to the Web kernel.
+    private(set) var lastWebActivePath: String?
+
+    init(files: WorkspaceFileService?) {
+        self.files = files.map { IDEWorkspaceSession(files: $0) }
+        self.nativeText = IDENativeTextWorkspace(files: files)
+    }
+
+    /// True when any kernel holds unsaved text.
+    var hasAnyDirty: Bool { dirty || nativeText.hasDirty }
+
+    /// Save-all is offered while the Web workbench is still starting only if
+    /// native buffers are dirty; the Web bridge reports through `ready`.
+    var canSave: Bool { (ready || nativeText.hasDirty) && !saving }
+
+    /// The Web workbench reported its active resource.
+    func applyWebActivePath(_ path: String?) {
+        lastWebActivePath = path
+        if !nativeEditorOwnsActivePath { activePath = path }
+    }
+
+    /// The user switched kernels. The run route follows the active kernel.
+    func setNativeEditorActive(_ active: Bool) {
+        nativeEditorOwnsActivePath = active
+        activePath = active ? nativeText.activePath : lastWebActivePath
+    }
+
+    /// The native pane's active buffer changed.
+    func updateNativeActivePath(_ path: String?) {
+        if nativeEditorOwnsActivePath { activePath = path }
+    }
 
     struct IDENativeDocumentRequest: Equatable {
         let path: String
@@ -107,17 +147,28 @@ import FloeWorkspace
             dirty = result as? Bool ?? true
         } catch { dirty = true; self.error = error.localizedDescription }
     }
+    /// Saves every dirty buffer in both kernels. The native pass runs first so
+    /// a run/close flow always flushes the on-disk source it will read next.
+    /// Returns true only when nothing is left unsaved or conflicted.
     @discardableResult func saveAll() async -> Bool {
-        guard let web, ready, !saving else { return false }
+        var clean = true
+        let nativeReport = await nativeText.saveAll()
+        if !nativeReport.isClean { clean = false }
+        guard let web, ready, !saving else {
+            return clean && !nativeText.hasDirty
+        }
         saving = true
         defer { saving = false }
         do {
             let saved = try await web.callAsyncJavaScript("return await window.floeIDE.saveAll()", arguments: [:], in: nil, contentWorld: .page)
-            guard saved as? Bool == true else { error = String(localized: "ide.save.failed"); return false }
+            guard saved as? Bool == true else {
+                error = String(localized: "ide.save.failed")
+                return false
+            }
             dirty = false
             error = nil
-            return true
-        } catch { self.error = error.localizedDescription; return false }
+        } catch { self.error = error.localizedDescription; clean = false }
+        return clean && !dirty && !nativeText.hasDirty
     }
     /// Native UI-test text entry: XCTest keystrokes never reach Monaco's hidden
     /// textarea, Monaco suppresses the system edit menu, and the simulator
@@ -200,8 +251,8 @@ struct IDEWorkbenchWebView: UIViewRepresentable {
             case "dirty": state.dirty = body["dirty"] as? Bool == true; replyHandler([:], nil)
             case "active":
                 if let path = body["path"] as? String, let relative = try? IDEWorkspaceSession.relativePath(path) {
-                    state.activePath = relative
-                } else { state.activePath = nil }
+                    state.applyWebActivePath(relative)
+                } else { state.applyWebActivePath(nil) }
                 replyHandler([:], nil)
             case "saved": replyHandler([:], nil)
             case "failed": state.error = body["message"] as? String; replyHandler([:], nil)

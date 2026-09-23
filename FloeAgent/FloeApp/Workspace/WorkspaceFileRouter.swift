@@ -14,7 +14,8 @@ import Foundation
 import FloeWorkspace
 
 enum WorkspaceFileDestination: Equatable {
-    /// Monaco/CodeBlitz text workbench.
+    /// Text/code editor surface: the IDE's native editor pane by default, with
+    /// the Monaco/CodeBlitz workbench as the explicit fallback.
     case codeEditor
     /// Native Office engine (preview or fullscreen editing).
     case officeEditor
