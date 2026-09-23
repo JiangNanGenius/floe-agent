@@ -170,36 +170,6 @@ struct WorkspaceIDEView: View {
                     Button { Task { if await saveAllSurfaces() { onSaved() } } } label: {
                         Label("ide.save.all", systemImage: "square.and.arrow.down")
                     }.disabled(!state.canSave).accessibilityIdentifier("workspace.ide.save").keyboardShortcut("s", modifiers: .command)
-                    if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
-                        // Web insert hook (Monaco's hidden textarea cannot be
-                        // reached by XCTest keystrokes). Native mode uses the
-                        // native hook below instead.
-                        Button("IDE-INSERT") {
-                            Task {
-                                guard let path = state.activePath else { return }
-                                _ = await state.insertTextForTesting(path: path, text: "")
-                            }
-                        }.disabled(!state.ready || usesNativeEditor)
-                        .accessibilityIdentifier("workspace.ide.insertTestText")
-                        .accessibilityValue(state.lastInsertResult ?? "")
-                        // Native insert hook: an emulated keystroke path would
-                        // not reach a background test device reliably, so the
-                        // marker is appended to the real native buffer and
-                        // saved through the real save button exactly like
-                        // typed text.
-                        Button("IDE-NATIVE-INSERT") {
-                            guard let buffer = state.nativeText.activeBuffer, buffer.isLoaded else {
-                                nativeInsertResult = "no-buffer"
-                                return
-                            }
-                            let payload = "saved-" + UUID().uuidString.prefix(8)
-                            buffer.text += (buffer.text.hasSuffix("\n") ? "" : "\n") + payload + "\n"
-                            nativeInsertResult = "inserted:\(payload)"
-                        }
-                        .disabled(!usesNativeEditor || !(state.nativeText.activeBuffer?.isLoaded ?? false))
-                        .accessibilityIdentifier("workspace.ide.nativeInsertTestText")
-                        .accessibilityValue(nativeInsertResult ?? "")
-                    }
                     // Kernel switch: the native editor is the default for
                     // verified text/code files, and the Web workbench stays
                     // one tap away for the features it still owns. Both
@@ -239,6 +209,44 @@ struct WorkspaceIDEView: View {
                         toggleTerminal()
                     } label: { Label("ide.terminal", systemImage: "terminal") }
                     .disabled(root == nil || workspaceID == nil).accessibilityIdentifier("workspace.ide.terminal")
+                }
+                // The UI-test edit hooks live in the bottom bar on purpose:
+                // the trailing group overflows on compact widths, and a hook
+                // hidden inside the system overflow menu is not reachable by
+                // the query the tests use. The bottom bar keeps both hooks on
+                // screen for iPad and iPhone; they only exist under
+                // `-ui-testing` and never ship in a normal launch.
+                if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        // Web insert hook (Monaco's hidden textarea cannot be
+                        // reached by XCTest keystrokes). Native mode uses the
+                        // native hook below instead.
+                        Button("IDE-INSERT") {
+                            Task {
+                                guard let path = state.activePath else { return }
+                                _ = await state.insertTextForTesting(path: path, text: "")
+                            }
+                        }.disabled(!state.ready || usesNativeEditor)
+                        .accessibilityIdentifier("workspace.ide.insertTestText")
+                        .accessibilityValue(state.lastInsertResult ?? "")
+                        // Native insert hook: an emulated keystroke path would
+                        // not reach a background test device reliably, so the
+                        // marker is appended to the real native buffer and
+                        // saved through the real save button exactly like
+                        // typed text.
+                        Button("IDE-NATIVE-INSERT") {
+                            guard let buffer = state.nativeText.activeBuffer, buffer.isLoaded else {
+                                nativeInsertResult = "no-buffer"
+                                return
+                            }
+                            let payload = "saved-" + UUID().uuidString.prefix(8)
+                            buffer.text += (buffer.text.hasSuffix("\n") ? "" : "\n") + payload + "\n"
+                            nativeInsertResult = "inserted:\(payload)"
+                        }
+                        .disabled(!usesNativeEditor || !(state.nativeText.activeBuffer?.isLoaded ?? false))
+                        .accessibilityIdentifier("workspace.ide.nativeInsertTestText")
+                        .accessibilityValue(nativeInsertResult ?? "")
+                    }
                 }
             }
         }
