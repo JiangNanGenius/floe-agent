@@ -57,28 +57,76 @@ DEFAULT_RECIPE_DIR = os.path.join("FloeAgent", "LinuxGuest", "image", "templates
 DEPENDENCY_OWNER = "job-6f5ac974858c47c2 (D: preinstall image recipes)"
 
 
-def parse_version(version: str):
-    """Split a Debian version into a comparable tuple.
+def split_debian_version(version: str) -> tuple[int, str, str]:
+    """Return epoch, upstream version and revision per Debian Policy 5.6.12."""
+    if ":" in version:
+        epoch_text, value = version.split(":", 1)
+        if not epoch_text.isdecimal():
+            raise ValueError(f"invalid Debian version epoch: {version!r}")
+        epoch = int(epoch_text)
+    else:
+        epoch, value = 0, version
+    if not value or not value[0].isdigit() or not re.fullmatch(r"[A-Za-z0-9.+~-]+", value):
+        raise ValueError(f"invalid Debian version: {version!r}")
+    if "-" in value:
+        upstream, revision = value.rsplit("-", 1)
+        if not revision:
+            raise ValueError(f"invalid Debian revision: {version!r}")
+    else:
+        upstream, revision = value, "0"
+    return epoch, upstream, revision
 
-    Debian version = [epoch:]upstream[-revision]. Numeric parts compare
-    numerically, everything else lexically; sufficient for the recipe
-    minimum-version checks (the Debian algorithm's full rules are not
-    needed to answer "is >= X" for the versions dpkg reports).
-    """
-    version = version.split(":", 1)[-1] if ":" in version else version
-    version = version.split("+", 1)[0] if "+" in version else version
-    parts = re.split(r"[.\-~]", version)
-    out = []
-    for part in parts:
-        if part.isdigit():
-            out.append((1, int(part), ""))
-        else:
-            out.append((0, 0, part))
-    return out
+
+def compare_debian_part(left: str, right: str) -> int:
+    """Compare one upstream/revision part using dpkg's non-digit/digit rules."""
+    def order(char: str) -> int:
+        if char == "~":
+            return -1
+        if not char:
+            return 0
+        if char.isascii() and char.isalpha():
+            return ord(char)
+        return ord(char) + 256
+
+    i = j = 0
+    while i < len(left) or j < len(right):
+        while (i < len(left) and not left[i].isdigit()) or (j < len(right) and not right[j].isdigit()):
+            a = left[i] if i < len(left) and not left[i].isdigit() else ""
+            b = right[j] if j < len(right) and not right[j].isdigit() else ""
+            if order(a) != order(b):
+                return -1 if order(a) < order(b) else 1
+            i += bool(a)
+            j += bool(b)
+
+        while i < len(left) and left[i] == "0":
+            i += 1
+        while j < len(right) and right[j] == "0":
+            j += 1
+        left_end, right_end = i, j
+        while left_end < len(left) and left[left_end].isdigit():
+            left_end += 1
+        while right_end < len(right) and right[right_end].isdigit():
+            right_end += 1
+        left_digits, right_digits = left[i:left_end], right[j:right_end]
+        if len(left_digits) != len(right_digits):
+            return -1 if len(left_digits) < len(right_digits) else 1
+        if left_digits != right_digits:
+            return -1 if left_digits < right_digits else 1
+        i, j = left_end, right_end
+    return 0
+
+
+def compare_debian_versions(left: str, right: str) -> int:
+    left_epoch, left_upstream, left_revision = split_debian_version(left)
+    right_epoch, right_upstream, right_revision = split_debian_version(right)
+    if left_epoch != right_epoch:
+        return -1 if left_epoch < right_epoch else 1
+    upstream = compare_debian_part(left_upstream, right_upstream)
+    return upstream if upstream else compare_debian_part(left_revision, right_revision)
 
 
 def version_at_least(have: str, minimum: str) -> bool:
-    return parse_version(have) >= parse_version(minimum)
+    return compare_debian_versions(have, minimum) >= 0
 
 
 def read_packages(path: str) -> dict:
@@ -161,10 +209,18 @@ def qualify_recipe(recipe: dict, recipe_path: str, inventory: dict,
             row["source"] = entry["source"]
             row["source_version"] = entry["source_version"]
             minimum = spec.get("min_version") if isinstance(spec, dict) else None
-            if minimum and not version_at_least(entry["version"], minimum):
-                row["reason"] = f"version {entry['version']} < required {minimum}"
-                ok = False
-            elif source_map is not None:
+            if minimum:
+                try:
+                    meets_minimum = version_at_least(entry["version"], minimum)
+                except (TypeError, ValueError):
+                    row["reason"] = "invalid Debian version in inventory or recipe"
+                    ok = False
+                    requirements.append(row)
+                    continue
+                if not meets_minimum:
+                    row["reason"] = f"version {entry['version']} < required {minimum}"
+                    ok = False
+            if "reason" not in row and source_map is not None:
                 if name not in source_map:
                     row["reason"] = "no corresponding-source mapping in the sources bundle"
                     ok = False
@@ -329,6 +385,24 @@ def selftest() -> int:
                 json.dump(recipe, handle)
 
         results = []
+        # Debian Policy 5.6.12, including ordering that the previous
+        # split-and-lexical shortcut got wrong. A min-version check must not
+        # silently discard epochs, pre-release tildes or Debian revisions.
+        version_cases = (
+            ("1:1.0", "99.0", True),
+            ("1.0", "1:0.1", False),
+            ("1.0~rc1", "1.0", False),
+            ("1.0", "1.0~rc1", True),
+            ("1.0+deb13u1", "1.0", True),
+            ("1.0-1+deb13u1", "1.0-1", True),
+            ("1.0-1", "1.0-1+b1", False),
+            ("1.0-1", "1.0-1~b1", True),
+            ("1.00", "1.0", True),
+            ("1.0a", "1.0+", False),
+        )
+        for have, minimum, expected in version_cases:
+            results.append((f"Debian version {have} >= {minimum}",
+                            version_at_least(have, minimum) == expected))
         base = ["--packages", packages, "--source-map", source_map, "--out", out,
                 "--recipe-dir", recipe_dir]
 
@@ -355,6 +429,15 @@ def selftest() -> int:
                                     recipe_dir=recipe_dir, packages=packages,
                                     source_map=None, out=out, selftest=False))
         results.append(("version too old -> 1", rc == EXIT_NOT_QUALIFIED))
+
+        invalid_version = os.path.join(tmp, "invalid-version.tsv")
+        with open(invalid_version, "w", encoding="utf-8") as handle:
+            handle.write("python3\tinvalid-version\triscv64\tpython3\tinvalid-version\n")
+            handle.write("nodejs\t20.19.2+dfsg-1\triscv64\tnodejs\t20.19.2+dfsg-1\n")
+        rc = run(argparse.Namespace(recipe=["basic"], recipe_file=None,
+                                    recipe_dir=recipe_dir, packages=invalid_version,
+                                    source_map=None, out=out, selftest=False))
+        results.append(("malformed installed version fails closed -> 1", rc == EXIT_NOT_QUALIFIED))
 
         rc = run(argparse.Namespace(recipe=["does-not-exist"], recipe_file=None,
                                     recipe_dir=recipe_dir, packages=packages,
