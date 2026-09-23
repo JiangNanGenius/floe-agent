@@ -67,101 +67,107 @@ struct ThreadDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let checklist = viewModel.taskChecklist {
-                checklistStatus(checklist)
-            }
-            if viewModel.latestPlan != nil || viewModel.activeGoal != nil {
-                intelligenceStatus
-            }
-            Divider()
-            if !viewModel.importantFiles.isEmpty {
-                importantFilesStrip
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                if let checklist = viewModel.taskChecklist {
+                    checklistStatus(checklist)
+                }
+                if viewModel.latestPlan != nil || viewModel.activeGoal != nil {
+                    intelligenceStatus
+                }
                 Divider()
-            }
-            threadScroll
-            if let status = viewModel.compactionStatus {
-                HStack {
-                    if viewModel.isCompacting { ProgressView().controlSize(.small) }
-                    Text(status).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
+                if !viewModel.importantFiles.isEmpty {
+                    importantFilesStrip
+                    Divider()
                 }
-                .padding(.horizontal).padding(.vertical, 8)
-                .accessibilityIdentifier("thread.compaction.status")
-                .transition(.opacity)
-            }
-            if let error = viewModel.actionError {
-                errorBanner(error)
-            }
-            if viewModel.canContinue {
-                continuationBar
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
-            }
-            composer
-        }
-        .background(FloeTheme.readingSurface)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
-        .navigationTitle(viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { if !embedded { stateToolbar } }
-        .task {
-            if !embedded { viewModel.selectedRunID = router.selectedRunID }
-            await viewModel.load()
-        }
-        .task(id: composerInput?.id) {
-            guard let input = composerInput, consumedInputID != input.id else { return }
-            viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + input.text
-            let existing = Set(viewModel.attachments.map(\.id))
-            viewModel.attachments.append(contentsOf: input.attachments.filter { !existing.contains($0.id) })
-            consumedInputID = input.id
-            onInputConsumed(input.id)
-        }
-        .onDisappear { viewModel.stopLiveUpdates() }
-        .sheet(item: $structuredExport) { file in
-            TaskExportShareSheet(url: file.url)
-        }
-        .sheet(item: $editingPendingInput) { input in
-            PendingInputEditor(input: input) { text in
-                Task { await viewModel.editPendingInput(input, content: text) }
-            }
-        }
-        .sheet(isPresented: $showingGoalBuilder) {
-            GoalBuilderSheet { objective, criteria, blockers, stops in
-                Task {
-                    await viewModel.createGoal(
-                        objective: objective,
-                        criteria: criteria,
-                        blockingConditions: blockers,
-                        stoppingConditions: stops
-                    )
-                }
-            }
-        }
-        .sheet(isPresented: $showingPermissionsSheet) {
-            NavigationStack {
-                TaskPermissionsInspectorView(
-                    conversationID: viewModel.conversationID,
-                    isLocalModel: viewModel.usesLocalModel
-                )
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("action.done") { showingPermissionsSheet = false }
-                        }
+                threadScroll
+                if let status = viewModel.compactionStatus {
+                    HStack {
+                        if viewModel.isCompacting { ProgressView().controlSize(.small) }
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
                     }
+                    .padding(.horizontal).padding(.vertical, 8)
+                    .accessibilityIdentifier("thread.compaction.status")
+                    .transition(.opacity)
+                }
+                if let error = viewModel.actionError {
+                    errorBanner(error)
+                }
+                if viewModel.canContinue {
+                    continuationBar
+                        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                }
+                composer
             }
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $selectedImportantFile) { file in
-            NavigationStack {
-                FilePreviewView(
-                    relativePath: file.path,
-                    center: environment.workspaceCenter,
-                    conversationID: viewModel.conversationID
-                )
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("完成") { selectedImportantFile = nil }
+            .background(FloeTheme.readingSurface)
+            // The composer input caps at one third of the actually
+            // available height — rotation, split and dynamic-type relayouts
+            // all funnel through this proxy.
+            .environment(\.composerHeightBudget, proxy.size.height)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
+            .navigationTitle(viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { if !embedded { stateToolbar } }
+            .task {
+                if !embedded { viewModel.selectedRunID = router.selectedRunID }
+                await viewModel.load()
+            }
+            .task(id: composerInput?.id) {
+                guard let input = composerInput, consumedInputID != input.id else { return }
+                viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + input.text
+                let existing = Set(viewModel.attachments.map(\.id))
+                viewModel.attachments.append(contentsOf: input.attachments.filter { !existing.contains($0.id) })
+                consumedInputID = input.id
+                onInputConsumed(input.id)
+            }
+            .onDisappear { viewModel.stopLiveUpdates() }
+            .sheet(item: $structuredExport) { file in
+                TaskExportShareSheet(url: file.url)
+            }
+            .sheet(item: $editingPendingInput) { input in
+                PendingInputEditor(input: input) { text in
+                    Task { await viewModel.editPendingInput(input, content: text) }
+                }
+            }
+            .sheet(isPresented: $showingGoalBuilder) {
+                GoalBuilderSheet { objective, criteria, blockers, stops in
+                    Task {
+                        await viewModel.createGoal(
+                            objective: objective,
+                            criteria: criteria,
+                            blockingConditions: blockers,
+                            stoppingConditions: stops
+                        )
+                    }
+                }
+            }
+            .sheet(isPresented: $showingPermissionsSheet) {
+                NavigationStack {
+                    TaskPermissionsInspectorView(
+                        conversationID: viewModel.conversationID,
+                        isLocalModel: viewModel.usesLocalModel
+                    )
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("action.done") { showingPermissionsSheet = false }
+                            }
+                        }
+                }
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $selectedImportantFile) { file in
+                NavigationStack {
+                    FilePreviewView(
+                        relativePath: file.path,
+                        center: environment.workspaceCenter,
+                        conversationID: viewModel.conversationID
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("完成") { selectedImportantFile = nil }
+                        }
                     }
                 }
             }

@@ -1,96 +1,83 @@
-// FloeApp — Shared composer text field with hardware Return handling.
+// FloeApp — Shared composer text field with hardware-key send handling.
 //
 // SPDX-License-Identifier: MPL-2.0
 //
 // Multiline input used by the chat thread composer and the canvas assistant.
-// On a hardware keyboard (Magic Keyboard and other external keyboards):
-// plain Return sends, Shift+Return inserts a newline, and Return never sends
-// while an input method is still composing marked text. The software keyboard
-// keeps its classic multiline behavior (return key inserts a newline); only
-// callers that previously used `.submitLabel(.send)` opt into software-send
-// via `softwareReturnSends`.
+// Text wraps by width (Chinese, English and unbroken long strings alike).
+// The field grows from one line up to a device-aware budget — 6 visible
+// lines on compact widths, 8 on regular widths, and never more than one
+// third of the height available to the hosting page — then switches to
+// internal scrolling with the caret kept visible.
+//
+// Keyboard contract (both keyboards): plain Return inserts a newline.
+// Hardware Cmd+Return sends, and only while sending is allowed and no
+// input method composition is in flight — a half-confirmed IME candidate
+// can never trigger a send. Callers that previously used
+// `.submitLabel(.send)` keep software-send via `softwareReturnSends`.
+//
+// Performance: the natural-height TextKit measurement is memoized per
+// (text generation, width, content-size category) and reuses the view's
+// own layout manager, so a 100k-character draft does not trigger a full
+// re-layout on every keystroke or every layout pass.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
 
-/// UITextView that marks hardware Return/Enter presses so the delegate can
-/// distinguish them from the software keyboard's return key, which never
-/// produces a `UIPress`. Modifier-bearing presses (Shift+Return, …) are not
-/// marked, so they keep their default newline insertion.
+/// UITextView that intercepts hardware Cmd+Return for sending. The press is
+/// consumed only when the handler reports the send actually fired; every
+/// other Return (plain, Shift+, during IME composition) keeps its default
+/// newline behavior.
 final class HardwareReturnTextView: UITextView {
     /// Placeholder shown while the field is empty; a subview so it tracks
     /// the text container's origin and insets.
     let placeholderLabel = UILabel()
 
-    /// True exactly while a hardware Return/Enter press is being translated
-    /// into text input. Reading it via `consumeHardwareReturn()` clears it.
-    private(set) var hardwareReturnIsDelivering = false
+    /// Asks whether a Cmd+Return press may send right now. Returns false
+    /// when sending is disabled or an input method still has marked text.
+    var commandReturnHandler: (() -> Bool)?
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        noteHardwareReturnPress(presses, set: true)
-        super.pressesBegan(presses, with: event)
-    }
-
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        // The legitimate flow already consumed the flag inside the
-        // synchronous text-input delivery in pressesBegan. Anything left
-        // here means the press did not produce text input; drop it so a
-        // later software return key is never mistaken for hardware Return.
-        noteHardwareReturnPress(presses, set: false)
-        super.pressesEnded(presses, with: event)
-    }
-
-    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        noteHardwareReturnPress(presses, set: false)
-        super.pressesCancelled(presses, with: event)
-    }
-
-    /// Reads and clears the hardware-Return flag.
-    func consumeHardwareReturn() -> Bool {
-        let delivering = hardwareReturnIsDelivering
-        hardwareReturnIsDelivering = false
-        return delivering
-    }
-
-    private func noteHardwareReturnPress(_ presses: Set<UIPress>, set: Bool) {
+        var consumed = Set<UIPress>()
         for press in presses {
-            guard let key = press.key else { continue }
-            switch key.keyCode {
-            case .keyboardReturnOrEnter:
-                // Only an unmodified Return may send; Shift+Return and other
-                // modified combinations must keep inserting a newline.
-                let modified = !key.modifierFlags
-                    .intersection([.shift, .control, .alternate, .command])
-                    .isEmpty
-                hardwareReturnIsDelivering = set && !modified
-            default:
-                break
-            }
+            guard let key = press.key, key.keyCode == .keyboardReturnOrEnter else { continue }
+            // Caps Lock (.alphaShift) must not block plain Return; only the
+            // four editing modifiers decide whether this is Cmd+Return.
+            let modifiers = key.modifierFlags
+                .intersection([.shift, .control, .alternate, .command])
+            guard modifiers == .command, commandReturnHandler?() == true else { continue }
+            consumed.insert(press)
         }
+        let remaining = presses.subtracting(consumed)
+        guard !remaining.isEmpty else { return }
+        super.pressesBegan(remaining, with: event)
     }
 }
 
 /// Multiline composer field shared by the chat and canvas assistants.
 ///
-/// Hardware keyboard: unmodified Return invokes `onReturn` (only when
-/// `canSend`); Shift+Return inserts a newline; Return while an input method
-/// composes marked text commits the composition instead of sending. Software
-/// keyboard: the return key keeps inserting newlines unless
+/// Hardware keyboard: Cmd+Return invokes `onReturn` (only when `canSend`
+/// and no marked text is pending); every other Return inserts a newline.
+/// Software keyboard: the return key keeps inserting newlines unless
 /// `softwareReturnSends` is true (the surfaces that previously used
 /// `.submitLabel(.send)`).
 struct ComposerReturnField: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    /// Mirrors the send button's enabled state; when false, hardware Return
-    /// falls back to inserting a newline instead of sending.
+    /// Mirrors the send button's enabled state; when false, hardware
+    /// Cmd+Return falls back to doing nothing instead of sending.
     var canSend: Bool = true
     /// True where the replaced surface used `.submitLabel(.send)`: the
     /// software keyboard's return key then sends as well.
     var softwareReturnSends: Bool = false
     /// Visible line budget; beyond the upper bound the field scrolls, like
-    /// `lineLimit(_:)` on a multiline `TextField`.
+    /// `lineLimit(_:)` on a multiline `TextField`. The upper bound is
+    /// additionally clamped by the device line cap (6 compact / 8 regular)
+    /// and by `maxHeightBudget`.
     var lineLimit: ClosedRange<Int> = 1...5
+    /// Height available to the hosting page; the field never grows beyond
+    /// one third of it. Nil disables the height rule.
+    var maxHeightBudget: CGFloat? = nil
     var onReturn: () -> Void
 
     private let textInsets = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
@@ -107,6 +94,7 @@ struct ComposerReturnField: UIViewRepresentable {
         view.delegate = context.coordinator
         view.backgroundColor = .clear
         view.font = UIFont.preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
         view.textColor = .label
         view.textContainerInset = textInsets
         view.textContainer.lineFragmentPadding = 0
@@ -143,6 +131,14 @@ struct ComposerReturnField: UIViewRepresentable {
         // Never clobber in-flight IME composition or echo the user's own edit.
         if uiView.markedTextRange == nil, uiView.text != text {
             uiView.text = text
+            context.coordinator.noteTextChange()
+        }
+        uiView.commandReturnHandler = { [weak uiView, canSend, onReturn] in
+            guard ComposerSendKeyPolicy.commandReturnSends(
+                canSend: canSend, hasMarkedText: uiView?.markedTextRange != nil
+            ) else { return false }
+            onReturn()
+            return true
         }
         let returnKey: UIReturnKeyType = softwareReturnSends ? .send : .default
         if uiView.returnKeyType != returnKey {
@@ -161,13 +157,38 @@ struct ComposerReturnField: UIViewRepresentable {
         context: Context
     ) -> CGSize? {
         let width = max(proposal.width ?? 320, 1)
-        let natural = measuredHeight(of: text, width: width)
-        let cap = maxHeight(width: width)
+        let sizeClass = UITraitCollection.current.horizontalSizeClass
+        let category = UITraitCollection.current.preferredContentSizeCategory
+        let deviceCap = ComposerFieldMetrics.lineCap(horizontalSizeClass: sizeClass)
+        let upperBound = max(1, min(lineLimit.upperBound, deviceCap))
+
+        let natural = context.coordinator.cachedNaturalHeight(
+            width: width,
+            contentSizeCategory: category
+        ) { [self] in
+            measuredNaturalHeight(of: uiView, width: width)
+        }
+        // Uniform single-line fragments stack exactly: an N-line budget is
+        // N × the memoized one-line height.
+        let lineHeight = context.coordinator.cachedLineHeight(
+            width: width,
+            contentSizeCategory: category
+        ) { [self] in
+            Self.textKitHeight(of: "字", width: contentWidth(width), font: bodyFont)
+        }
+        let insets = textInsets.top + textInsets.bottom
+        let cap = ComposerFieldMetrics.heightCap(
+            lineCapHeight: lineHeight * CGFloat(upperBound) + insets,
+            availableHeight: maxHeightBudget
+        )
+        let floor = max(
+            restingMinHeight,
+            lineHeight * CGFloat(max(1, lineLimit.lowerBound)) + insets
+        )
         let scrolls = natural > cap
         if uiView.isScrollEnabled != scrolls {
             uiView.isScrollEnabled = scrolls
         }
-        let floor = minHeight(width: width)
         return CGSize(width: width, height: min(max(natural, floor), cap))
     }
 
@@ -175,60 +196,105 @@ struct ComposerReturnField: UIViewRepresentable {
 
     private var bodyFont: UIFont { UIFont.preferredFont(forTextStyle: .body) }
 
-    /// TextKit-based height so it stays correct before the view has a laid
-    /// out width; `sizeThatFits` on a UITextView is unreliable pre-layout.
-    private func measuredHeight(of string: String, width: CGFloat) -> CGFloat {
-        let content = string.isEmpty ? " " : string
-        let storage = NSTextStorage(string: content, attributes: [.font: bodyFont])
-        let container = NSTextContainer(size: CGSize(
-            width: max(width - textInsets.left - textInsets.right, 1),
-            height: .greatestFiniteMagnitude
-        ))
+    private func contentWidth(_ width: CGFloat) -> CGFloat {
+        max(width - textInsets.left - textInsets.right, 1)
+    }
+
+    /// Natural content height via the view's own TextKit stack: glyph
+    /// layout is incremental across keystrokes, and because line breaking
+    /// depends on container width (which we hold fixed per measurement),
+    /// the temporary height change never triggers a full re-layout.
+    private func measuredNaturalHeight(of uiView: UITextView, width: CGFloat) -> CGFloat {
+        let container = uiView.textContainer
+        let layoutManager = uiView.layoutManager
+        let textWidth = contentWidth(width)
+        let oldSize = container.size
+        if oldSize.width != textWidth || oldSize.height != .greatestFiniteMagnitude {
+            container.size = CGSize(width: textWidth, height: .greatestFiniteMagnitude)
+        }
+        layoutManager.ensureLayout(for: container)
+        var used = layoutManager.usedRect(for: container).height
+        if uiView.textStorage.string.isEmpty {
+            // An empty field still rests on one line.
+            used = Self.textKitHeight(of: "字", width: textWidth, font: bodyFont)
+        }
+        if container.size != oldSize {
+            container.size = oldSize
+        }
+        return used + textInsets.top + textInsets.bottom
+    }
+
+    private static func textKitHeight(of string: String, width: CGFloat, font: UIFont) -> CGFloat {
+        let storage = NSTextStorage(string: string, attributes: [.font: font])
+        let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         let manager = NSLayoutManager()
         manager.addTextContainer(container)
         storage.addLayoutManager(manager)
         let glyphs = manager.glyphRange(for: container)
         let rect = manager.boundingRect(forGlyphRange: glyphs, in: container)
-        return rect.height + textInsets.top + textInsets.bottom
-    }
-
-    /// Height of exactly `lineLimit.upperBound` lines; beyond this the field
-    /// stops growing and scrolls instead.
-    private func maxHeight(width: CGFloat) -> CGFloat {
-        measuredHeight(
-            of: Self.lineFiller(count: max(1, lineLimit.upperBound)),
-            width: width
-        )
-    }
-
-    /// Resting height of `lineLimit.lowerBound` lines, never below 44pt.
-    private func minHeight(width: CGFloat) -> CGFloat {
-        max(
-            restingMinHeight,
-            measuredHeight(
-                of: Self.lineFiller(count: max(1, lineLimit.lowerBound)),
-                width: width
-            )
-        )
-    }
-
-    private static func lineFiller(count: Int) -> String {
-        Array(repeating: "字", count: count).joined(separator: "\n")
+        return rect.height
     }
 
     // MARK: - Delegate
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var field: ComposerReturnField
+        /// Bumped on every real text mutation; keys the height memo so
+        /// unchanged text never re-measures.
+        private var contentGeneration = 0
+        private var naturalHeightMemo = ComposerFieldMetrics.HeightCache()
+        /// One-line height, keyed by width + content-size category only.
+        private var lineHeightMemo = ComposerFieldMetrics.HeightCache()
 
         init(field: ComposerReturnField) {
             self.field = field
         }
 
+        func noteTextChange() {
+            contentGeneration += 1
+        }
+
+        func cachedNaturalHeight(
+            width: CGFloat,
+            contentSizeCategory: UIContentSizeCategory,
+            compute: () -> CGFloat
+        ) -> CGFloat {
+            naturalHeightMemo.value(
+                generation: contentGeneration,
+                width: width,
+                contentSizeCategory: contentSizeCategory,
+                compute: compute
+            )
+        }
+
+        func cachedLineHeight(
+            width: CGFloat,
+            contentSizeCategory: UIContentSizeCategory,
+            compute: () -> CGFloat
+        ) -> CGFloat {
+            // Constant generation: the one-line height depends only on the
+            // proposed width and the content-size category.
+            lineHeightMemo.value(
+                generation: 0,
+                width: width,
+                contentSizeCategory: contentSizeCategory,
+                compute: compute
+            )
+        }
+
         func textViewDidChange(_ textView: UITextView) {
+            contentGeneration += 1
             field.text = textView.text
             placeholderLabel(of: textView)?.isHidden = !textView.text.isEmpty
+            if textView.isScrollEnabled {
+                textView.scrollRangeToVisible(textView.selectedRange)
+            }
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            // Hardware-arrow navigation past the cap must keep the caret
+            // visible even when the text itself did not change.
             if textView.isScrollEnabled {
                 textView.scrollRangeToVisible(textView.selectedRange)
             }
@@ -239,19 +305,11 @@ struct ComposerReturnField: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
-            // Always consume the hardware-Return flag: a Return that an input
-            // method swallowed (composition commit) or a disabled send must
-            // not turn the next software return key into a send.
-            let hardwareReturn = (textView as? HardwareReturnTextView)?
-                .consumeHardwareReturn() ?? false
             guard text == "\n", textView.markedTextRange == nil else { return true }
-            // Sending is available: hardware Return sends, and the software
-            // return key sends only on the surfaces that opted in. Everything
-            // else (Shift+Return, IME commit, disabled send, software return
-            // on default surfaces) keeps inserting a newline.
-            guard field.canSend, hardwareReturn || field.softwareReturnSends else {
-                return true
-            }
+            // Sending moved to Cmd+Return; the software return key sends
+            // only on the surfaces that opted in. Everything else — plain
+            // Return, Shift+Return, IME commit — inserts a newline.
+            guard field.softwareReturnSends, field.canSend else { return true }
             field.onReturn()
             return false
         }

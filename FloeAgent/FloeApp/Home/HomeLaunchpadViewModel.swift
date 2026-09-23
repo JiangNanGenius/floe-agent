@@ -81,6 +81,12 @@ final class HomeLaunchpadViewModel: ObservableObject {
         self.environment = center.environment
         self.taskStarter = taskStarter
         self.selectedProjectID = selectedProjectID
+        // An unsent Home draft (and staged attachments) survive app restarts
+        // under the stable launchpad identity — not the per-launch staging
+        // UUID, which rotates after each send.
+        let stored = ComposerDraftStore.shared.entry(for: ComposerDraftStore.homeDraftID)
+        _draft = Published(initialValue: stored?.text ?? "")
+        _attachments = Published(initialValue: stored?.attachments ?? [])
         // Default the draft policy to the user's global default agent mode so
         // "自动审批" actually takes effect on new tasks started from Home.
         if environment.settingsCenter.defaultAgentMode == .approvalModel {
@@ -106,7 +112,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
 
     var canSend: Bool {
         center.providerAndModel(modelID: selectedModelID) != nil
-            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && draft.contains(where: { !$0.isWhitespace })
             && !isSending
     }
 
@@ -203,6 +209,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
             draft = ""
             attachments = []
             draftConversationID = UUID()
+            ComposerDraftStore.shared.clear(conversationID: ComposerDraftStore.homeDraftID)
             actionError = nil
             await load()
             return conversationID

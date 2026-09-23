@@ -50,19 +50,22 @@ struct HomeLaunchpadView: View {
                 )
             }
             .scrollDismissesKeyboard(.interactively)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                composer
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    composer
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
+                .background(FloeTheme.readingSurface.opacity(0.98))
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
-            .frame(maxWidth: 720)
-            .frame(maxWidth: .infinity)
-            .background(FloeTheme.readingSurface.opacity(0.98))
+            .background(FloeTheme.readingSurface)
+            // The composer input caps at one third of the actually
+            // available height (rotation, split, dynamic type).
+            .environment(\.composerHeightBudget, proxy.size.height)
         }
-        .background(FloeTheme.readingSurface)
         .navigationTitle("新建任务")
         .navigationBarTitleDisplayMode(.inline)
         .task {

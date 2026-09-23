@@ -152,6 +152,12 @@ final class ThreadDetailViewModel: ObservableObject {
         self.conversationID = conversationID
         self.center = center
         self.taskPolicy = TaskPolicy(conversationID: conversationID)
+        // Restore an unsent draft (and staged attachments) synchronously so
+        // the first layout already shows them; the store was loaded from
+        // disk at shared-init time.
+        let stored = ComposerDraftStore.shared.entry(for: conversationID)
+        _draft = Published(initialValue: stored?.text ?? "")
+        _attachments = Published(initialValue: stored?.attachments ?? [])
         let diagnostics = ThreadStreamingDiagnostics()
         self.animator = StreamingTextAnimator(diagnostics: diagnostics)
         self.reasoningAnimator = StreamingTextAnimator(diagnostics: diagnostics)
@@ -226,10 +232,11 @@ final class ThreadDetailViewModel: ObservableObject {
     }
 
     /// Whether the composer may send, queue or steer the current draft.
+    /// Early-exit whitespace scan (no full trim/copy per keystroke).
     var canSend: Bool {
         !isConversationMissing
             && center.providerAndModel(modelID: selectedModelID) != nil
-            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && draft.contains(where: { !$0.isWhitespace })
     }
 
     var needsProvider: Bool {
@@ -278,7 +285,7 @@ final class ThreadDetailViewModel: ObservableObject {
         let persistedCacheRead = Self.sumReported(records.map(\.cacheReadTokens))
         let persistedCacheWrite = Self.sumReported(records.map(\.cacheWriteTokens))
         let persistedReasoning = Self.sumReported(records.map(\.reasoningTokens))
-        let streamedEstimate = Self.estimatedTokens(in: liveStreamedText)
+        let streamedEstimate = ComposerTokenEstimator.estimatedTokens(in: liveStreamedText)
         let currentOutput = max(liveUsage.outputTokens, streamedEstimate)
         let input = isRunning ? persistedInput + liveUsage.inputTokens : persistedInput
         let output = isRunning
@@ -555,6 +562,10 @@ final class ThreadDetailViewModel: ObservableObject {
         guard !isConversationMissing, !goal.isEmpty,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let stagedAttachments = attachments
+        // The complete original draft is kept so a failure — including a
+        // context-budget rejection — restores every character, never a
+        // trimmed or truncated version.
+        let originalDraft = draft
         actionError = nil
         if isRunning, let expectedRunID = selectedRun?.id {
             do {
@@ -570,6 +581,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 )
                 draft = ""
                 attachments = []
+                ComposerDraftStore.shared.clear(conversationID: conversationID)
                 pendingInputs = try await center.environment.runningInputStore
                     .pending(conversationID: conversationID)
             } catch {
@@ -605,9 +617,21 @@ final class ThreadDetailViewModel: ObservableObject {
                 throw error
             }
             attachments = []
+            ComposerDraftStore.shared.clear(conversationID: conversationID)
             await load()
         } catch {
-            if draft.isEmpty { draft = goal }
+            // Full-text restore: what the user wrote is exactly what comes
+            // back (new text typed while the send was in flight wins).
+            draft = ComposerDraftSafety.draftAfterSendFailure(
+                originalDraft: originalDraft,
+                trimmedGoal: goal,
+                currentDraft: draft
+            )
+            ComposerDraftStore.shared.save(
+                text: draft,
+                attachments: attachments,
+                conversationID: conversationID
+            )
             if attachments.isEmpty { attachments = stagedAttachments }
             actionError = presentableError(error, stage: "startOrCompleteRun")
         }
@@ -1162,15 +1186,6 @@ final class ThreadDetailViewModel: ObservableObject {
         reasoningAnimator.cancel()
         isDraining = false
         isRunning = false
-    }
-
-    private static func estimatedTokens(in text: String) -> Int {
-        guard !text.isEmpty else { return 0 }
-        let scalarCount = text.unicodeScalars.count
-        let cjkCount = text.unicodeScalars.filter {
-            (0x3400...0x9FFF).contains(Int($0.value))
-        }.count
-        return max(1, cjkCount + (scalarCount - cjkCount + 3) / 4)
     }
 }
 

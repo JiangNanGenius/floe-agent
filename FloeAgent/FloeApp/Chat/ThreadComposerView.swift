@@ -119,6 +119,24 @@ extension ComposerProject {
 
 /// Bottom-pinned composer: input row + context row (model / project /
 /// target / mode / attachments).
+///
+/// The hosting page publishes the height available to the composer region
+/// through this key; the growing input field caps at one third of it (and at
+/// the device line budget) so the timeline keeps breathing room on iPhone,
+/// iPad split, rotation and dynamic type.
+private struct ComposerHeightBudgetKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+extension EnvironmentValues {
+    var composerHeightBudget: CGFloat? {
+        get { self[ComposerHeightBudgetKey.self] }
+        set { self[ComposerHeightBudgetKey.self] = newValue }
+    }
+}
+
+/// Bottom-pinned composer: input row + context row (model / project /
+/// target / mode / attachments).
 struct ThreadComposerView: View {
     @Binding var draft: String
     @Binding var selectedModelID: UUID?
@@ -174,10 +192,26 @@ struct ThreadComposerView: View {
     @State private var preparingLocalModelID: String?
     @State private var dictationPrefix = ""
     @State private var slashNotice: String?
+    @State private var isFullEditorPresented = false
+    @State private var editorSelection: NSRange?
+    /// Last revision this composer wrote to the draft store; async merges
+    /// (voice transcript landing) must match it or rebase instead of
+    /// overwriting newer text.
+    @State private var draftRevision: Int?
     @EnvironmentObject private var voiceInput: VoiceInputController
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.composerHeightBudget) private var composerHeightBudget
+
+    /// Persistence identity for the draft: the conversation in a thread, or
+    /// the stable Home launchpad slot (Home's staging UUID rotates per
+    /// launch/send and is only the Notes-picker identity).
+    private var draftKey: UUID {
+        contextID ?? ComposerDraftStore.homeDraftID
+    }
+
+    private var draftStore: ComposerDraftStore { .shared }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -245,6 +279,19 @@ struct ThreadComposerView: View {
             }
             .ignoresSafeArea()
         }
+        .sheet(isPresented: $isFullEditorPresented) {
+            // The full editor binds the same draft as the inline field, so
+            // both surfaces always agree. Done only dismisses — sending
+            // stays the composer's explicit send action.
+            ComposerFullEditorSheet(
+                text: $draft,
+                restoredSelection: editorSelection,
+                onFinalSelection: { range in
+                    editorSelection = range
+                    draftStore.updateSelection(range, conversationID: draftKey)
+                }
+            )
+        }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task { await registerPickedPhoto(item) }
@@ -252,6 +299,41 @@ struct ThreadComposerView: View {
         .onChange(of: attachments.map(\.id)) { _, _ in
             attachmentError = nil
             slashNotice = nil
+        }
+        .onChange(of: draftKey, initial: true) { oldKey, newKey in
+            if let oldKey, oldKey != newKey {
+                // Task switch / Home staging rotation: persist everything
+                // queued, then drop the old entry when its draft was
+                // consumed (sent) rather than abandoned mid-edit.
+                draftStore.flush()
+                if draft.isEmpty { draftStore.clear(conversationID: oldKey) }
+            }
+            let entry = draftStore.entry(for: newKey)
+            draftRevision = entry?.revision
+            // Restore the caret the full editor last captured, also after
+            // an app relaunch.
+            if let location = entry?.selectionLocation,
+               let length = entry?.selectionLength {
+                editorSelection = NSRange(location: location, length: length)
+            }
+        }
+        .onChange(of: draft) { _, newValue in
+            // Debounced inside the store; the revision guard rejects a
+            // stale async merge instead of letting it overwrite typing.
+            draftRevision = draftStore.save(
+                text: newValue,
+                attachments: attachments,
+                conversationID: draftKey,
+                expectedRevision: draftRevision
+            )
+        }
+        .onChange(of: attachments) { _, newValue in
+            draftRevision = draftStore.save(
+                text: draft,
+                attachments: newValue,
+                conversationID: draftKey,
+                expectedRevision: draftRevision
+            )
         }
         .onChange(of: contextID) { _, _ in
             attachmentError = nil
@@ -290,9 +372,36 @@ struct ThreadComposerView: View {
         .onChange(of: voiceInput.transcript) { _, transcript in
             guard voiceInput.isListening || !transcript.isEmpty else { return }
             let separator = dictationPrefix.isEmpty || dictationPrefix.last?.isWhitespace == true ? "" : " "
-            draft = dictationPrefix + separator + transcript
+            let merged = dictationPrefix + separator + transcript
+            // The final transcript can land after the user already resumed
+            // typing. A stale base revision must rebase onto the freshest
+            // stored draft instead of clobbering it.
+            if let revision = draftStore.save(
+                text: merged,
+                attachments: attachments,
+                conversationID: draftKey,
+                expectedRevision: draftRevision
+            ) {
+                draftRevision = revision
+                draft = merged
+            } else {
+                let freshest = draftStore.text(for: draftKey)
+                let separator = freshest.isEmpty || freshest.last?.isWhitespace == true ? "" : " "
+                let rebased = freshest + separator + transcript
+                draftRevision = draftStore.save(
+                    text: rebased,
+                    attachments: attachments,
+                    conversationID: draftKey
+                )
+                draft = rebased
+            }
         }
-        .onDisappear { voiceInput.stop() }
+        .onDisappear {
+            voiceInput.stop()
+            // Switching tasks/pages flushes immediately; rapid typing
+            // earlier was already debounced into the store.
+            draftStore.flush()
+        }
         .confirmationDialog(
             "切换到本地模型？",
             isPresented: Binding(
@@ -583,21 +692,39 @@ struct ThreadComposerView: View {
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("composer.attach")
 
-            // Hardware keyboard: plain Return sends, Shift+Return inserts a
-            // newline, and Return never sends during IME composition. The
-            // software return key keeps inserting newlines (previous
-            // multiline TextField behavior).
+            // Multiline field: Return inserts a newline on both keyboards;
+            // hardware Cmd+Return sends, and never while an input method
+            // still has unconfirmed marked text. Growth is capped by the
+            // device line budget (6 compact / 8 regular) and one third of
+            // the hosting page height; beyond the cap the field scrolls
+            // internally with the caret kept visible.
             ComposerReturnField(
                 text: $draft,
                 placeholder: String(localized: "home.new_task.placeholder"),
                 canSend: canSend && !isAttachmentProcessing,
-                lineLimit: 1...5,
+                lineLimit: 1...8,
+                maxHeightBudget: composerHeightBudget,
                 onReturn: { onSend() }
             )
             .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
             .contentShape(Rectangle())
             .accessibilityLabel("home.new_task.placeholder")
             .accessibilityIdentifier("composer.input")
+
+            // The full editor stays reachable in every send/attachment
+            // state: staging a file, processing a photo or a running turn
+            // never disables the expand entry.
+            Button {
+                isFullEditorPresented = true
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.title3)
+                    .foregroundStyle(FloeTheme.primary)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel("composer.expand_editor")
+            .accessibilityIdentifier("composer.expand")
 
             Button {
                 // Preserve whatever the user already typed; dictation appends

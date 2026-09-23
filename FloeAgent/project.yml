@@ -475,6 +475,7 @@ targets:
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
+      - path: Tests/FloeAppTests/ComposerTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift
