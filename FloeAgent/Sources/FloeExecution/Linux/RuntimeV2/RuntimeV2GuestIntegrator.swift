@@ -276,15 +276,20 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         )
     }
 
-    /// Validates a vCPU/RAM change against the pool quota and the image's SMP
-    /// proof before any disruption. Nothing is stopped if this throws.
+    /// Validates a vCPU/RAM change against the release gate, pool quota and
+    /// the image's SMP proof before any disruption. Nothing is stopped if
+    /// this throws. The loose integer is validated, never clamped: an
+    /// unsupported explicit count (two/six in a single-core release) throws
+    /// an actionable error even when the image manifest claims `smp=true`.
     public func planReshape(
         environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int
     ) async throws {
         try await ensurePrepared()
+        let policy = await store.pool.releasePolicy
+        let resolvedVCPUs = try policy.resolve(requestedVCPUs: vcpus)
         let proven = await provenSMPCapability(environmentID: environmentID)
         let request = GuestResourceRequest(
-            vcpus: GuestVCPUCount.clamping(vcpus),
+            vcpus: resolvedVCPUs,
             memory: GuestMemoryMiB.smallestHolding(max(0, ramMB)) ?? .m2048,
             origin: .environmentPolicy
         )
@@ -293,15 +298,27 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         )
     }
 
-    /// Records the shape a completed stop → flush → restart actually produced.
+    /// Records the shape a completed stop → flush → restart actually made
+    /// true. The reported count goes through the same release gate: a
+    /// restart result this release did not qualify (a second hart) is never
+    /// recorded into pool accounting, so a direct engine start cannot
+    /// widen the lease.
     public func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async {
         guard let slot = await store.pool.slot(environmentID: environmentID) else { return }
-        let shape = GuestResourceRequest(
-            vcpus: GuestVCPUCount.clamping(vcpus),
-            memory: GuestMemoryMiB.smallestHolding(max(0, ramMB)) ?? .m2048,
-            origin: .environmentPolicy
-        )
-        await store.pool.confirmShape(runtimeID: slot.runtimeID, shape: shape)
+        do {
+            let policy = await store.pool.releasePolicy
+            let resolvedVCPUs = try policy.resolve(requestedVCPUs: vcpus)
+            let shape = GuestResourceRequest(
+                vcpus: resolvedVCPUs,
+                memory: GuestMemoryMiB.smallestHolding(max(0, ramMB)) ?? .m2048,
+                origin: .environmentPolicy
+            )
+            await store.pool.confirmShape(runtimeID: slot.runtimeID, shape: shape)
+        } catch {
+            await store.logs.log(
+                "runtime v2 reshape confirmation refused an unqualified vCPU count \(vcpus) for environment=\(environmentID): \(error.localizedDescription); the lease shape was not changed"
+            )
+        }
     }
 
     /// SMP capability proven by the verified image manifest. Absent or false

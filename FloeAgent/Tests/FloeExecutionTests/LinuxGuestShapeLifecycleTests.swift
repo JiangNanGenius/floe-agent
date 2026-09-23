@@ -459,18 +459,30 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         environmentID: String,
         images: [String: LinuxGuestImage],
         factory: any LinuxGuestSessionCreating,
-        runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil
+        runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil,
+        releasePolicy: GuestReleaseShapePolicy = .production,
+        descriptor: LinuxGuestEnvironmentDescriptor? = nil
     ) -> TinyEMULinuxGuestRegistry {
         TinyEMULinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
-                environmentID: shapeDescriptor(id: environmentID, imageID: images.keys.first ?? "shape-image")
+                environmentID: descriptor ?? shapeDescriptor(
+                    id: environmentID, imageID: images.keys.first ?? "shape-image"
+                )
             ]),
             images: FakeImageResolver(images: images),
             limits: .standard,
             factory: factory,
-            runtimeV2: runtimeV2
+            runtimeV2: runtimeV2,
+            releasePolicy: releasePolicy
         )
     }
+
+    /// Explicit internal test policy unlocking dual shapes for the B3
+    /// ownership interleaving tests that drive a stop → two-hart restart;
+    /// the B4 tests below assert the production gate refuses that shape.
+    private static let lifecycleSyntheticDual = GuestReleaseShapePolicy.internalSyntheticTesting(
+        provenance: "LinuxGuestShapeLifecycleTests B3 dual reshape interleaving"
+    )
 
     private func makeLegacyRegistry(
         environmentID: String,
@@ -779,7 +791,8 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
             factory: ShapeSessionFactory(book: book) { _, token in
                 token.hasPrefix("hello-") ? shapeCaps(token) : shapeOKReply(token)
             },
-            runtimeV2: integrator
+            runtimeV2: integrator,
+            releasePolicy: Self.lifecycleSyntheticDual
         )
         _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
         guard let session = book.latest else { return XCTFail("no session was created") }
@@ -891,7 +904,8 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
             factory: ShapeSessionFactory(book: book) { _, token in
                 token.hasPrefix("hello-") ? shapeCaps(token) : shapeOKReply(token)
             },
-            runtimeV2: integrator
+            runtimeV2: integrator,
+            releasePolicy: Self.lifecycleSyntheticDual
         )
         _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
         guard let session = book.latest else { return XCTFail("no session was created") }
@@ -1012,5 +1026,158 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         )
         let reserved = await registry.reservedGuestRAMMB
         XCTAssertEqual(reserved, 0)
+    }
+
+    // MARK: - B4 release gate at the registry boundary
+
+    /// Helper: a production-policy registry backed by the deliberately
+    /// permissive `ShapeV2Integrator` (it grants whatever shape it is asked
+    /// for), so any refusal below is proven to come from the REGISTRY's own
+    /// release gate, not from the pool/integrator.
+    private func makeProductionV2Registry(
+        environmentID: String,
+        descriptor: LinuxGuestEnvironmentDescriptor? = nil
+    ) throws -> (TinyEMULinuxGuestRegistry, ShapeV2Integrator, ShapeSessionBook, LinuxGuestImage) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-b4-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let expanded = root.appendingPathComponent("expanded", isDirectory: true)
+        let image = try shapeV2Image(id: "shape-b4-image", directory: expanded)
+        let integrator = ShapeV2Integrator(expandedRoot: expanded, root: root)
+        let book = ShapeSessionBook()
+        let registry = makeRegistry(
+            environmentID: environmentID,
+            images: [image.id: image],
+            factory: ShapeSessionFactory(book: book) { _, token in
+                token.hasPrefix("hello-") ? shapeCaps(token) : shapeOKReply(token)
+            },
+            runtimeV2: integrator,
+            descriptor: descriptor
+        )
+        return (registry, integrator, book, image)
+    }
+
+    /// A descriptor explicitly requesting two harts fails the production
+    /// release gate at START, even though the scripted integrator and image
+    /// would allow it and even with a manifest-style SMP claim: no VM, no
+    /// pool admission, no disk work.
+    func testStartRejectsExplicitDualBeforeAdmission() async throws {
+        let environmentID = "env-b4-start-dual"
+        let dualDescriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: "owner", imageID: "shape-b4-image", vcpus: 2
+        )
+        let (registry, integrator, book, _) = try makeProductionV2Registry(
+            environmentID: environmentID, descriptor: dualDescriptor
+        )
+        do {
+            _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
+            XCTFail("an explicit dual start must be refused by the release gate")
+        } catch let error as LinuxGuestError {
+            guard case .releaseShapeUnsupported(let requested, let maximum) = error else {
+                return XCTFail("expected releaseShapeUnsupported, got \(error)")
+            }
+            XCTAssertEqual(requested, 2)
+            XCTAssertEqual(maximum, 1)
+        }
+        XCTAssertNil(book.latest, "the refusal must not create any VM session")
+        let events = await integrator.events
+        XCTAssertFalse(events.contains { $0.hasPrefix("acquire") }, "admission must not run for a refused shape")
+        XCTAssertFalse(events.contains { $0.hasPrefix("disk") }, "no disk work may run for a refused shape")
+        let reserved = await registry.reservedGuestRAMMB
+        XCTAssertEqual(reserved, 0)
+    }
+
+    /// A loose six-core request is a malformed configuration at start, not a
+    /// silent clamp to two (or one).
+    func testStartRejectsSixCoreDescriptorAsInvalid() async throws {
+        let environmentID = "env-b4-start-six"
+        let sixDescriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: "owner", imageID: "shape-b4-image", vcpus: 6
+        )
+        let (registry, integrator, book, _) = try makeProductionV2Registry(
+            environmentID: environmentID, descriptor: sixDescriptor
+        )
+        do {
+            _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
+            XCTFail("a six-core start must be refused as invalid, not clamped")
+        } catch let error as LinuxGuestError {
+            guard case .invalidConfiguration = error else {
+                return XCTFail("expected invalidConfiguration, got \(error)")
+            }
+        }
+        XCTAssertNil(book.latest)
+        let events = await integrator.events
+        XCTAssertFalse(events.contains { $0.hasPrefix("acquire") })
+    }
+
+    /// A reshape to two harts is refused BEFORE any disruption on a running
+    /// single-core guest: the guest keeps running at one core, the plan seam
+    /// is never called, and accounting stays at the single VM.
+    func testReshapeToDualRefusedBeforeAnyStopOrPlan() async throws {
+        let environmentID = "env-b4-reshape-dual"
+        let (registry, integrator, book, _) = try makeProductionV2Registry(environmentID: environmentID)
+        _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
+        guard let session = book.latest else { return XCTFail("the single-core guest did not start") }
+        XCTAssertEqual(session.currentVCPUs, 1)
+
+        do {
+            try await registry.setShape(environmentID: environmentID, ramMB: 512, vcpus: 2)
+            XCTFail("a dual reshape must be refused by the release gate")
+        } catch let error as LinuxGuestError {
+            guard case .releaseShapeUnsupported = error else {
+                return XCTFail("expected releaseShapeUnsupported, got \(error)")
+            }
+        }
+        // The guest is untouched: no stop/restart, no plan call, still 1 core.
+        XCTAssertEqual(session.stops, 0, "the refused reshape stopped the running guest")
+        XCTAssertEqual(session.starts, 1, "the refused reshape restarted the guest")
+        XCTAssertEqual(session.currentVCPUs, 1)
+        XCTAssertTrue(session.isRunningFlag)
+        let events = await integrator.events
+        XCTAssertFalse(
+            events.contains { $0.hasPrefix("planReshape") },
+            "the plan seam must not run for a release-gated shape: \(events)"
+        )
+        let status = await registry.status(environmentID: environmentID)
+        XCTAssertTrue(status.running)
+        let reserved = await registry.reservedGuestRAMMB
+        XCTAssertEqual(reserved, 256)
+    }
+
+    /// A six-core reshape is an invalid-configuration refusal before any
+    /// disruption, never a clamp.
+    func testReshapeToSixRefusedAsInvalidBeforeAnyStop() async throws {
+        let environmentID = "env-b4-reshape-six"
+        let (registry, _, book, _) = try makeProductionV2Registry(environmentID: environmentID)
+        _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
+        guard let session = book.latest else { return XCTFail("the single-core guest did not start") }
+
+        do {
+            try await registry.setShape(environmentID: environmentID, ramMB: 512, vcpus: 6)
+            XCTFail("a six-core reshape must be refused as invalid")
+        } catch let error as LinuxGuestError {
+            guard case .invalidConfiguration = error else {
+                return XCTFail("expected invalidConfiguration, got \(error)")
+            }
+        }
+        XCTAssertEqual(session.stops, 0)
+        XCTAssertEqual(session.starts, 1)
+        XCTAssertEqual(session.currentVCPUs, 1)
+    }
+
+    /// Unchanged single-core path: a nil descriptor starts exactly one hart,
+    /// and a same-shape RAM retier still works through the existing path.
+    func testSingleCoreStartUnchanged() async throws {
+        let environmentID = "env-b4-single"
+        let (registry, _, book, _) = try makeProductionV2Registry(environmentID: environmentID)
+        let started = try await registry.start(environmentID: environmentID, taskID: "task-1")
+        XCTAssertTrue(started)
+        guard let session = book.latest else { return XCTFail("no session was created") }
+        XCTAssertEqual(session.currentVCPUs, 1)
+        XCTAssertEqual(session.starts, 1)
+        let status = await registry.status(environmentID: environmentID)
+        XCTAssertTrue(status.running)
+        let states = await registry.runtimeStates()
+        XCTAssertEqual(states.first?.vcpus, 1)
     }
 }

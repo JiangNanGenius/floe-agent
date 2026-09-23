@@ -36,8 +36,11 @@ public struct LinuxGuestSessionHandle: Sendable {
     /// Sets the vCPU count the machine will use on its NEXT start, same
     /// stop → flush → restart boundary as `setRAMMB` (the pinned engine has
     /// no online hotplug). Wired by the TinyEMU session factory; nil on
-    /// sessions that do not model shape changes.
-    public var setVCPUs: (@Sendable (Int) -> Void)?
+    /// sessions that do not model shape changes. Throwing: the machine's
+    /// own release gate (B4) is the last boundary, so an unqualified count
+    /// that reached it despite the pool refusal surfaces as an error and
+    /// the restart rolls back instead of booting a silently different shape.
+    public var setVCPUs: (@Sendable (Int) throws -> Void)?
 
     public init(
         transport: any LinuxGuestConsoleTransport,
@@ -49,7 +52,7 @@ public struct LinuxGuestSessionHandle: Sendable {
         removeForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
         emulatorCPUSample: @escaping @Sendable () -> LinuxGuestEmulatorCPUSample? = { nil },
         setRAMMB: (@Sendable (Int) -> Void)? = nil,
-        setVCPUs: (@Sendable (Int) -> Void)? = nil
+        setVCPUs: (@Sendable (Int) throws -> Void)? = nil
     ) {
         self.transport = transport
         self.start = start
@@ -140,11 +143,12 @@ public struct LinuxGuestRuntimeState: Sendable, Equatable {
 public extension LinuxGuestRuntimeV2Integrating {
     /// Three-axis admission seam. The production Runtime v2 integrator
     /// overrides this with the resource pool's shape-aware `acquire` (real
-    /// granted vCPU/RAM, image SMP gate, strict/authorized downgrade policy).
-    /// The default bridges to the legacy MB-only slot: one vCPU, memory
-    /// downgrades only — fail closed for dual-hart requests until the
-    /// integrator override lands, never silently granting a second hart the
-    /// legacy path cannot account for.
+    /// granted vCPU/RAM, release + image SMP gates, strict/authorized
+    /// downgrade policy). The default bridges to the legacy MB-only slot:
+    /// one vCPU, memory downgrades only — fail closed for any shape THIS
+    /// release does not qualify (B4: one hart, independent of the image
+    /// manifest), never silently granting a second hart the legacy path
+    /// cannot account for.
     func acquireShape(
         environmentID: String,
         runtimeID: String,
@@ -152,15 +156,18 @@ public extension LinuxGuestRuntimeV2Integrating {
         imageSMPCapable: Bool,
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission {
-        if request.vcpus == .two {
-            switch downgrade {
-            case .strict:
-                throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
-            case .authorized(let vcpuFloor, _):
-                guard vcpuFloor == .one else {
-                    throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
-                }
+        // The release gate is independent of the caller's SMP claim.
+        let vcpuDowngraded: Bool
+        switch (request.vcpus, downgrade) {
+        case (.one, _):
+            vcpuDowngraded = false
+        case (_, .strict):
+            throw LinuxGuestError.releaseShapeUnsupported(requested: request.vcpus.count, maximum: 1)
+        case (_, .authorized(let vcpuFloor, _)):
+            guard vcpuFloor == .one else {
+                throw LinuxGuestError.releaseShapeUnsupported(requested: request.vcpus.count, maximum: 1)
             }
+            vcpuDowngraded = true
         }
         let admission = try await acquireSlot(
             environmentID: environmentID, runtimeID: runtimeID, requestedMB: request.memory.mb
@@ -169,10 +176,12 @@ public extension LinuxGuestRuntimeV2Integrating {
             runtimeID: admission.runtimeID,
             ramMB: admission.ramMB,
             vcpus: 1,
-            downgraded: admission.downgraded,
-            downgradeReason: admission.downgraded
-                ? "memory tier lowered by the legacy MB-only admission path"
-                : nil
+            downgraded: admission.downgraded || vcpuDowngraded,
+            vcpusDowngraded: vcpuDowngraded,
+            downgradeReason: vcpuDowngraded
+                ? "this release qualifies one guest core; the caller authorized a single-hart boot"
+                : (admission.downgraded
+                    ? "memory tier lowered by the legacy MB-only admission path" : nil)
         )
     }
 
@@ -180,14 +189,30 @@ public extension LinuxGuestRuntimeV2Integrating {
     /// bridges to the RAM-only retier plan; a vCPU change requires the
     /// integrator's CPU-aware override (the pool must validate the vCPU
     /// quota), so it throws an actionable error instead of skipping that
-    /// validation and drifting the pool accounting.
+    /// validation and drifting the pool accounting. The loose integer goes
+    /// through the production release gate, never a clamp: a request for
+    /// two/six cores in a single-core release fails before any stop runs.
     func planReshape(
         environmentID: String,
         ramMB: Int,
         vcpus: Int,
         currentVCPUs: Int
     ) async throws {
-        guard GuestVCPUCount.clamping(vcpus) == GuestVCPUCount.clamping(currentVCPUs) else {
+        let policy = GuestReleaseShapePolicy.production
+        let requested: GuestVCPUCount
+        do {
+            requested = try policy.resolve(requestedVCPUs: vcpus)
+        } catch GuestReleaseShapeError.invalidVCPUCount {
+            throw LinuxGuestError.invalidConfiguration(
+                "invalid guest core count \(vcpus); this release supports exactly one"
+            )
+        } catch {
+            throw LinuxGuestError.releaseShapeUnsupported(
+                requested: vcpus, maximum: policy.maximumSupportedVCPUs
+            )
+        }
+        let current = (try? policy.resolve(requestedVCPUs: currentVCPUs)) ?? .one
+        guard requested == current else {
             throw LinuxGuestError.invalidConfiguration(
                 "changing guest vCPUs to \(vcpus) requires the Runtime v2 shape planner, which is not connected yet"
             )
@@ -208,6 +233,13 @@ public actor TinyEMULinuxGuestRegistry {
     /// override via `init(targetDiskCapacityBytes:)`; production grows to
     /// the 8 GiB `LinuxGuestDiskLayout` target.
     private let targetDiskCapacityBytes: Int64
+    /// Release gate enforced at the registry's own start/reshape boundaries
+    /// (B4), independent of the image manifest and the v2 substrate.
+    /// Production assemblies use `.production`; focused lifecycle tests that
+    /// exercise the stop → dual-hart restart path pass an explicit
+    /// `.internalSyntheticTesting(provenance:)` policy — never an env var or
+    /// manifest claim, and never assembled by the app.
+    private let releasePolicy: GuestReleaseShapePolicy
     private struct Session {
         var descriptor: LinuxGuestEnvironmentDescriptor
         var image: LinuxGuestImage
@@ -317,7 +349,8 @@ public actor TinyEMULinuxGuestRegistry {
         limits: LinuxGuestLimits = .standard,
         factory: any LinuxGuestSessionCreating = TinyEMUGuestSessionFactory(),
         targetDiskCapacityBytes: Int64 = LinuxGuestDiskLayout.targetLogicalCapacityBytes,
-        runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil
+        runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil,
+        releasePolicy: GuestReleaseShapePolicy = .production
     ) {
         self.environments = environments
         self.images = images
@@ -325,6 +358,7 @@ public actor TinyEMULinuxGuestRegistry {
         self.factory = factory
         self.targetDiskCapacityBytes = targetDiskCapacityBytes
         self.runtimeV2 = runtimeV2
+        self.releasePolicy = releasePolicy
     }
 
     /// True when this service owns the environment as a Linux guest, running
@@ -456,7 +490,9 @@ public actor TinyEMULinuxGuestRegistry {
                     ),
                     running: await session.handle.isRunning(),
                     ramMB: limits.clampedRAMMB(session.descriptor.ramMB),
-                    vcpus: GuestVCPUCount.clamping(session.descriptor.vcpus ?? 1).count,
+                    vcpus: (try? releasePolicy.resolve(
+                        requestedVCPUs: session.descriptor.vcpus
+                    ))?.count ?? 1,
                     startedAt: session.startedAt
                 )
             )
@@ -734,36 +770,53 @@ public actor TinyEMULinuxGuestRegistry {
         // Admission. Runtime v2 (when configured) admits through the pool on
         // all three axes (vCPU/RAM/VM): at most four VMs run and further
         // starts queue — cancellable, with a bounded wait — instead of
-        // failing immediately, and a dual-hart request against an image with
-        // no SMP evidence fails closed with an actionable error under the
-        // strict policy. The legacy path keeps the bounded refusal. Either
-        // way the budget is bound here, before the image is verified and
-        // before any disk work, so a refusal never touches the environment's
-        // persistent disk.
+        // failing immediately. The B4 release gate is applied while the
+        // loose descriptor values become a typed request: an explicit
+        // request for an unqualified shape (two/six cores in this
+        // single-core release) fails with an actionable error BEFORE any
+        // disk work, regardless of the image manifest's `smp` flag, while
+        // an auto plan that explicitly authorized a single-core floor is
+        // admitted at one hart with an honest recorded downgrade. The
+        // legacy path keeps the bounded refusal. Either way the budget is
+        // bound here, before the image is verified and before any disk
+        // work, so a refusal never touches the environment's persistent
+        // disk.
         //
-        // SMP capability is a property of THIS image, proven by its canonical
-        // manifest (never by an engine query and never assumed). The runtime
-        // integrator answers from the verified manifest; an image that does
-        // not prove SMP can never be granted two harts, so a dual request
-        // fails closed with an actionable error instead of booting one hart
-        // and silently losing the second.
+        // SMP engine capability and image-manifest claims are never the
+        // release authority: only the pool's frozen GuestReleaseShapePolicy
+        // is, and this release ships one hart (cloud run 35851127603).
         var admission: RuntimeV2Admission?
         var grantedVCPUs: Int?
         do {
             if let runtimeV2 {
                 let runtimeID = Self.makeRuntimeID(environmentID: environmentID)
-                let request = GuestResourceRequest.from(
-                    requestedVCPUs: descriptor.vcpus,
-                    requestedMB: limits.clampedRAMMB(descriptor.ramMB),
-                    origin: .environmentPolicy
+                let requestedShape = try Self.typedStartShape(
+                    descriptor: descriptor,
+                    clampedRAMMB: limits.clampedRAMMB(descriptor.ramMB),
+                    releasePolicy: releasePolicy
                 )
+                // A descriptor start is either an explicit persisted choice
+                // (strict: an unqualified second core must fail, never boot
+                // one silently) or the nil worker default, which already
+                // resolves to one hart. A genuine advisory plan that asked
+                // for two harts reaches acquireShape as a typed
+                // `.recommendation` request with the caller's OWN
+                // `.authorized(vcpuFloor: .one)` policy; the pool records
+                // that downgrade. It is never invented here from a loose int.
+                let downgrade: GuestShapeDowngradePolicy
+                switch requestedShape.origin {
+                case .recommendation:
+                    downgrade = .authorized(vcpuFloor: .one, memoryFloor: .m256)
+                case .environmentPolicy, .userSpecified, .workerDefault:
+                    downgrade = .strict
+                }
                 let imageSMPCapable = await runtimeV2.imageSMPCapable(imageID: descriptor.imageID)
                 let granted = try await runtimeV2.acquireShape(
                     environmentID: environmentID,
                     runtimeID: runtimeID,
-                    request: request,
+                    request: requestedShape,
                     imageSMPCapable: imageSMPCapable,
-                    downgrade: .strict
+                    downgrade: downgrade
                 )
                 admission = RuntimeV2Admission(
                     runtimeID: granted.runtimeID,
@@ -826,6 +879,48 @@ public actor TinyEMULinuxGuestRegistry {
     /// Runtime v2 working-directory identifier (runtime/vm/<runtimeID>).
     private static func makeRuntimeID(environmentID: String) -> String {
         "rt-\(environmentID)-\(UUID().uuidString.lowercased().prefix(8))"
+    }
+
+    /// Converts a descriptor's loose shape into the typed request under the
+    /// AUTHORITATIVE release gate (B4). The descriptor carries no trustworthy
+    /// auto/explicit provenance, so the distinction is structural:
+    ///  * `vcpus == nil` is the worker/auto default — one hart (origin
+    ///    `.workerDefault`); no downgrade is implied or recorded because no
+    ///    larger shape was ever requested.
+    ///  * `vcpus != nil` is an EXPLICIT persisted choice (environment policy,
+    ///    manifest or user) and is admitted strictly: an unqualified count
+    ///    (two in this release) throws `releaseShapeUnsupported`, and a
+    ///    malformed count (0, six, …) throws an invalid-configuration error —
+    ///    never clamped onto another shape, regardless of the image
+    ///    manifest's `smp` claim.
+    /// A genuine automatic recommendation (GuestResourceAdvisory) that
+    /// planned two harts reaches `acquireShape` as a TYPED
+    /// `GuestResourceRequest(origin: .recommendation)` whose caller chooses
+    /// the authorized single-core floor; that recorded downgrade is granted
+    /// by the pool/integrator, never invented here from a loose integer.
+    private static func typedStartShape(
+        descriptor: LinuxGuestEnvironmentDescriptor,
+        clampedRAMMB: Int,
+        releasePolicy: GuestReleaseShapePolicy
+    ) throws -> GuestResourceRequest {
+        let memory = GuestMemoryMiB.smallestHolding(max(0, clampedRAMMB)) ?? .m2048
+        guard let requestedVCPUs = descriptor.vcpus else {
+            return GuestResourceRequest(vcpus: .one, memory: memory, origin: .workerDefault)
+        }
+        let vcpus: GuestVCPUCount
+        do {
+            vcpus = try releasePolicy.resolve(requestedVCPUs: requestedVCPUs)
+        } catch GuestReleaseShapeError.invalidVCPUCount {
+            throw LinuxGuestError.invalidConfiguration(
+                "the guest descriptor for \(descriptor.id) carries an invalid core count \(requestedVCPUs); no guest was started"
+            )
+        } catch GuestReleaseShapeError.unsupportedReleaseVCPUCount {
+            throw LinuxGuestError.releaseShapeUnsupported(
+                requested: requestedVCPUs,
+                maximum: releasePolicy.maximumSupportedVCPUs
+            )
+        }
+        return GuestResourceRequest(vcpus: vcpus, memory: memory, origin: .environmentPolicy)
     }
 
     /// The body of `start` once admission is granted. Split out so every
@@ -2033,8 +2128,21 @@ public actor TinyEMULinuxGuestRegistry {
         let tier = RuntimeMemoryTier.tier(forRequestedMB: ramMB, minimumMB: limits.minRAMMB)
         let clamped = limits.clampedRAMMB(tier.mb)
         let previous = limits.clampedRAMMB(session.descriptor.ramMB)
-        let previousVCPUs = GuestVCPUCount.clamping(session.descriptor.vcpus ?? 1).count
-        let requestedVCPUs = GuestVCPUCount.clamping(vcpus)
+        let previousVCPUs: Int = {
+            (try? releasePolicy.resolve(requestedVCPUs: session.descriptor.vcpus))?.count ?? 1
+        }()
+        let requestedVCPUs: GuestVCPUCount
+        do {
+            requestedVCPUs = try releasePolicy.resolve(requestedVCPUs: vcpus)
+        } catch GuestReleaseShapeError.invalidVCPUCount {
+            throw LinuxGuestError.invalidConfiguration(
+                "invalid guest core count \(vcpus); this release supports exactly one"
+            )
+        } catch GuestReleaseShapeError.unsupportedReleaseVCPUCount {
+            throw LinuxGuestError.releaseShapeUnsupported(
+                requested: vcpus, maximum: releasePolicy.maximumSupportedVCPUs
+            )
+        }
         if requestedVCPUs.count == previousVCPUs {
             // RAM-only path: pure retier, planned through the RAM-only seam.
             guard clamped != previous else { return }
@@ -2082,7 +2190,7 @@ public actor TinyEMULinuxGuestRegistry {
         previousRAMMB: Int,
         previousVCPUs: Int,
         setRAMMB: @Sendable (Int) -> Void,
-        setVCPUs: (@Sendable (Int) -> Void)?
+        setVCPUs: (@Sendable (Int) throws -> Void)?
     ) async throws {
         // Budget validation BEFORE any disruption: the requested shape must fit
         // next to the other running guests, or the VM stays untouched. Nothing
@@ -2124,7 +2232,20 @@ public actor TinyEMULinuxGuestRegistry {
         }
         try requireShapeChangeOwnership(environmentID: environmentID)
         setRAMMB(ramMB)
-        setVCPUs?(vcpus ?? previousVCPUs)
+        // Last-boundary release gate (B4): setShape and planReshape already
+        // validated this count; a throw here means the machine itself still
+        // refuses the unqualified shape, so roll the previous shape back in
+        // before restarting instead of booting a silently different one.
+        do {
+            try setVCPUs?(vcpus ?? previousVCPUs)
+        } catch {
+            setRAMMB(previousRAMMB)
+            try? setVCPUs?(previousVCPUs)
+            if !teardownsInFlight.contains(environmentID) {
+                try? await session.handle.start()
+            }
+            throw error
+        }
         do {
             try await session.handle.start()
         } catch {
@@ -2134,7 +2255,7 @@ public actor TinyEMULinuxGuestRegistry {
             // registered either way, so a later start/stop can heal a failed
             // rollback.
             setRAMMB(previousRAMMB)
-            setVCPUs?(previousVCPUs)
+            try? setVCPUs?(previousVCPUs)
             if !teardownsInFlight.contains(environmentID) {
                 try? await session.handle.start()
             }

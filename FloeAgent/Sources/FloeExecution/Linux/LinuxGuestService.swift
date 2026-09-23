@@ -57,6 +57,14 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     /// 2 GiB guest on a 512 MiB pool). Distinct from a temporary shortage:
     /// queueing would wait forever, so the caller hears an actionable error.
     case shapeExceedsPoolCapacity(detail: String)
+    /// The requested vCPU count is expressible by the engine but is NOT
+    /// qualified for THIS release (B4 gate; dual harts stall at fork/exec per
+    /// cloud run 35851127603). Independent of the image manifest
+    /// (`smp=true` is not authority), engine SMP capability, device quota or
+    /// environment variables. Explicit requests fail with this actionable
+    /// error instead of booting a different shape silently; only an
+    /// explicitly authorized auto plan may fall back to one hart, recorded.
+    case releaseShapeUnsupported(requested: Int, maximum: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -91,6 +99,8 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
             return "The Linux image for environment \(id) does not support two cores (no SMP capability); choose a single-core guest or use an SMP-capable image."
         case .shapeExceedsPoolCapacity(let detail):
             return "This device cannot run the requested guest shape: \(detail)"
+        case .releaseShapeUnsupported(let requested, let maximum):
+            return "This release supports at most \(maximum) guest core; a \(requested)-core guest is not qualified (dual-core boot stalls at fork/exec, cloud run 35851127603). Choose a single-core guest."
         }
     }
 }

@@ -1099,6 +1099,13 @@ final class RuntimeV2TemplateTests: XCTestCase {
     func testShapeAdmissionGrantsProvenSMPAndRefusesUnprovenClaim() async throws {
         let poolConfiguration = RuntimeVMPool.Configuration(
             quota: GuestResourceQuota(totalVCPUs: 4, totalMemoryMiB: 4096, maxVMs: 4),
+            // Explicit internal test configuration: this test exercises the
+            // IMAGE manifest gate and quota accounting for dual harts; the B4
+            // production release gate (one hart) is pinned separately in
+            // RuntimeVMPoolTests and LinuxGuestShapeLifecycleTests.
+            releasePolicy: GuestReleaseShapePolicy.internalSyntheticTesting(
+                provenance: "RuntimeV2TemplateTests proven-SMP admission"
+            ),
             queueLimit: 4, queueTimeout: 2, hostOverheadMiB: 0, futureReserveMiB: 0
         )
         store = RuntimeV2Store(layout: layout, poolConfiguration: poolConfiguration)

@@ -13,8 +13,116 @@
 // balloon/resize API and exposes at most two harts (`FLOE_VM_MAX_VCPU`).
 // Nothing here claims an online shape change is possible: changes go through
 // the safe stop → flush → restart path (see RuntimeVMPool).
+//
+// RELEASE CAPABILITY (B4): engine capacity, image-manifest claims and device
+// quota are all DISTINCT from what this release is qualified to ship. Real
+// cloud run 35851127603 proved the fresh SMP kernel boots and serves parallel
+// 9P on one hart while two harts stall at the first fork/exec, with no
+// measurable dual speedup (Local/Private/active/next-release/A2-final-evidence.md).
+// The authoritative per-release gate is therefore `GuestReleaseShapePolicy`
+// (single hart only) and is enforced at EVERY production boundary — pool
+// admission, reshape planning/confirmation, the registry and direct runtime
+// construction — independent of the image manifest (`smp=true` is never
+// authority), environment variables or loose integer inputs. Synthetic SMP
+// engine/admission experiments stay possible ONLY through an explicit internal
+// test policy value passed by code (never env vars, never a manifest).
 
 import Foundation
+
+/// Error raised when a request asks for a vCPU shape THIS release cannot
+/// deliver (an unsupported explicit count or a malformed/loose integer).
+/// Distinct from `LinuxGuestError` (which lives in the Linux layer): the
+/// release gate is a ResourcePolicy decision applied by every boundary.
+public enum GuestReleaseShapeError: Error, LocalizedError, Sendable, Equatable {
+    /// The requested vCPU count is supported by the engine ladder but is not
+    /// qualified for this release (e.g. two harts while dual stays unproven).
+    case unsupportedReleaseVCPUCount(requested: Int, releaseMaximum: Int)
+    /// The loose input is not any expressible guest count (0, negative, or
+    /// above the engine ceiling) — it must be rejected, never clamped.
+    case invalidVCPUCount(requested: Int, supportedRange: ClosedRange<Int>)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedReleaseVCPUCount(let requested, let releaseMaximum):
+            return "This release supports at most \(releaseMaximum) guest core; \(requested) cores are not qualified (dual-core boot stalls at fork/exec in cloud run 35851127603); choose a single-core guest."
+        case .invalidVCPUCount(let requested, let range):
+            return "Invalid guest core count \(requested); supported values are \(range.lowerBound)…\(range.upperBound)."
+        }
+    }
+}
+
+/// The AUTHORITATIVE per-release guest-shape qualification gate.
+///
+/// Engine capacity (`FLOE_VM_MAX_VCPU`), the image manifest's `smp` flag and
+/// the device quota can never widen this: it states only what THIS release is
+/// qualified to ship. The frozen `production` policy allows exactly one hart;
+/// dual/six-hart support stays opt-in ONLY through `internalSyntheticTesting`,
+/// an explicit code-supplied value for synthetic engine/admission tests, which
+/// is unreachable from manifests, environment variables or user input and is
+/// never assembled by the app.
+public struct GuestReleaseShapePolicy: Sendable, Equatable {
+    /// Maximum vCPU count one guest may be granted in THIS release.
+    public let maximumSupportedVCPUs: Int
+    /// True only for the explicit internal synthetic-test configuration.
+    public let isInternalSyntheticTesting: Bool
+    /// Free-form provenance for test policies (test/host id); production is nil.
+    public let syntheticProvenance: String?
+
+    private init(maximumSupportedVCPUs: Int, synthetic: Bool, provenance: String?) {
+        self.maximumSupportedVCPUs = max(1, min(GuestVCPUCount.allCases.map(\.rawValue).max() ?? 1, maximumSupportedVCPUs))
+        self.isInternalSyntheticTesting = synthetic
+        self.syntheticProvenance = provenance
+    }
+
+    /// The release policy. Frozen: exactly one hart until a real release
+    /// changes this type with fresh dual-boot/performance qualification.
+    public static let production = GuestReleaseShapePolicy(maximumSupportedVCPUs: 1, synthetic: false, provenance: nil)
+
+    /// Explicit internal test configuration: unlocks the engine ladder for
+    /// SYNTHETIC SMP engine/admission experiments. There is intentionally no
+    /// environment-variable or manifest path to this value; the `provenance`
+    /// string names the test host so misuse is visible in logs/evidence.
+    public static func internalSyntheticTesting(
+        maximumSupportedVCPUs: Int = 2,
+        provenance: String
+    ) -> GuestReleaseShapePolicy {
+        GuestReleaseShapePolicy(
+            maximumSupportedVCPUs: maximumSupportedVCPUs,
+            synthetic: true,
+            provenance: provenance
+        )
+    }
+
+    /// Applies the release gate to an already typed ladder value.
+    public func requireReleased(_ vcpus: GuestVCPUCount) throws -> GuestVCPUCount {
+        guard vcpus.rawValue <= maximumSupportedVCPUs else {
+            throw GuestReleaseShapeError.unsupportedReleaseVCPUCount(
+                requested: vcpus.rawValue, releaseMaximum: maximumSupportedVCPUs
+            )
+        }
+        return vcpus
+    }
+
+    /// True when the typed value is releasable under this policy.
+    public func supports(_ vcpus: GuestVCPUCount) -> Bool {
+        vcpus.rawValue <= maximumSupportedVCPUs
+    }
+
+    /// Parses a loose integer into the typed ladder UNDER THE RELEASE GATE:
+    /// malformed/out-of-engine-range input (0, negative, six, …) throws
+    /// `invalidVCPUCount`, and an engine-supported but release-unqualified
+    /// count throws `unsupportedReleaseVCPUCount` — it is never clamped onto
+    /// another count. nil means "no explicit request" and answers the single
+    /// safe default, which every auto path must still re-check.
+    public func resolve(requestedVCPUs: Int?) throws -> GuestVCPUCount {
+        guard let requested = requestedVCPUs else { return .one }
+        guard let value = GuestVCPUCount(rawValue: requested) else {
+            let supported = GuestVCPUCount.allCases.map(\.rawValue).min()!...GuestVCPUCount.allCases.map(\.rawValue).max()!
+            throw GuestReleaseShapeError.invalidVCPUCount(requested: requested, supportedRange: supported)
+        }
+        return try requireReleased(value)
+    }
+}
 
 /// vCPU count requested for ONE guest VM.
 public enum GuestVCPUCount: Int, Sendable, CaseIterable, Codable, Comparable {
@@ -26,12 +134,6 @@ public enum GuestVCPUCount: Int, Sendable, CaseIterable, Codable, Comparable {
     }
 
     public var count: Int { rawValue }
-
-    /// Maps an arbitrary requested count onto the ladder. Values above the
-    /// ceiling clamp to `.two`; below the floor to `.one`.
-    public static func clamping(_ requested: Int) -> GuestVCPUCount {
-        requested >= 2 ? .two : .one
-    }
 }
 
 /// One step of the guest RAM ladder. Raw values are MiB.
@@ -119,13 +221,17 @@ public struct GuestResourceRequest: Sendable, Equatable, Codable {
         self.origin = origin
     }
 
-    /// Builds a request from loose MB/CPU inputs; memory above the ceiling
-    /// clamps to 2048, below the floor to 256.
-    public static func from(
+    /// Builds a request from loose MB/CPU inputs under the release gate.
+    /// Memory above the ceiling clamps to 2048, below the floor to 256; the
+    /// vCPU count is NEVER clamped — malformed/out-of-range or
+    /// release-unqualified counts throw through the policy so an explicit
+    /// request for two/six cores can never become a silent one/two-core boot.
+    public static func resolved(
         requestedVCPUs: Int?,
         requestedMB: Int?,
-        origin: GuestRequestOrigin = .workerDefault
-    ) -> GuestResourceRequest {
+        origin: GuestRequestOrigin = .workerDefault,
+        releasePolicy: GuestReleaseShapePolicy = .production
+    ) throws -> GuestResourceRequest {
         let memory: GuestMemoryMiB
         if let requestedMB {
             memory = GuestMemoryMiB.smallestHolding(max(0, requestedMB)) ?? .m2048
@@ -133,7 +239,7 @@ public struct GuestResourceRequest: Sendable, Equatable, Codable {
             memory = .m512
         }
         return GuestResourceRequest(
-            vcpus: GuestVCPUCount.clamping(requestedVCPUs ?? 1),
+            vcpus: try releasePolicy.resolve(requestedVCPUs: requestedVCPUs),
             memory: memory,
             origin: origin
         )

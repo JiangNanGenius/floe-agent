@@ -18,11 +18,19 @@
 //     reclaim never terminate an active lease — only the registry stops a
 //     VM, through the safe path.
 //
-// Dual-hart requests additionally require an image-capability gate
-// (`imageSMPCapable`, supplied by the registry from the image manifest):
-// engine capability is not guest compatibility. A strict dual request that
-// cannot be granted two harts QUEUES — it is never silently booted single.
-// lease records it honestly.
+// Dual-hart requests pass TWO independent gates. The B4 release gate
+// (`Configuration.releasePolicy`, default `GuestReleaseShapePolicy.production`)
+// is authoritative for what THIS build is qualified to ship: it answers one
+// hart regardless of image manifests, the engine's SMP query and device quota
+// (cloud run 35851127603 — dual boots but stalls at fork/exec, no measurable
+// speedup). The second gate is `imageSMPCapable` (the registry's verified
+// image manifest): engine capability is not guest compatibility. Under a
+// strict policy an unsupported explicit request throws an actionable error
+// immediately (never queues, never silently boots one hart); under an
+// authorized policy with a one-hart floor, an auto request may fall back to
+// one hart with the downgrade recorded in the lease. Synthetic SMP engine
+// tests opt in ONLY via the explicit internal-synthetic release policy.
+// Several one-hart VMs still share the whole device pool.
 //
 // The pinned TinyEMU engine has no balloon/resize or online vCPU hotplug:
 // guest RAM/harts are fixed at create time. Shape changes therefore go
@@ -48,6 +56,13 @@ public actor RuntimeVMPool {
     public struct Configuration: Sendable, Equatable {
         /// CPU/RAM/VM quota for the whole pool.
         public var quota: GuestResourceQuota
+        /// AUTHORITATIVE release qualification gate (B4). Independent of the
+        /// image manifest, engine query and this quota: production releases
+        /// one hart even on devices whose quota could count more, so several
+        /// single-hart VMs share the pool but no guest is ever granted the
+        /// unqualified dual shape. Synthetic SMP experiments opt in only via
+        /// `GuestReleaseShapePolicy.internalSyntheticTesting`.
+        public var releasePolicy: GuestReleaseShapePolicy
         public var queueLimit: Int
         public var queueTimeout: TimeInterval
         /// Per-VM host overhead (emulator threads, slirp, 9p buffers) in MiB,
@@ -60,6 +75,7 @@ public actor RuntimeVMPool {
 
         public init(
             quota: GuestResourceQuota,
+            releasePolicy: GuestReleaseShapePolicy = .production,
             queueLimit: Int = 32,
             queueTimeout: TimeInterval = 600,
             hostOverheadMiB: Int = 64,
@@ -67,6 +83,7 @@ public actor RuntimeVMPool {
             floorTier: RuntimeMemoryTier = .constrained
         ) {
             self.quota = quota
+            self.releasePolicy = releasePolicy
             self.queueLimit = max(1, min(128, queueLimit))
             self.queueTimeout = max(1, queueTimeout)
             self.hostOverheadMiB = max(0, min(512, hostOverheadMiB))
@@ -89,6 +106,7 @@ public actor RuntimeVMPool {
                     totalMemoryMiB: budget.totalMB,
                     maxVMs: running
                 ),
+                releasePolicy: .production,
                 queueLimit: queueLimit,
                 queueTimeout: queueTimeout,
                 floorTier: floorTier
@@ -224,6 +242,11 @@ public actor RuntimeVMPool {
 
     public func lease(runtimeID: String) -> GuestResourceLease? { leases[runtimeID] }
 
+    /// The release qualification gate this pool enforces (B4). Production
+    /// pools answer one hart; only an explicit internal synthetic-test
+    /// configuration unlocks the engine ladder.
+    public var releasePolicy: GuestReleaseShapePolicy { configuration.releasePolicy }
+
     public func slot(environmentID: String) -> Slot? {
         runtimeByEnvironment[environmentID].flatMap { leases[$0] }.map(Self.projection)
     }
@@ -341,12 +364,14 @@ public actor RuntimeVMPool {
         )
     }
 
-    /// Pure decision plus the image gate and real headroom/pressure gates.
-    /// Returns the admission payload (granted shape + downgrade flags) or nil
-    /// to QUEUE (temporary shortage). Throws when the image/shape mismatch is
-    /// permanent (dual request against an image with no SMP evidence under
-    /// strict admission), so the caller hears an actionable error instead of
-    /// waiting forever.
+    /// Pure decision plus the release gate, image gate and real
+    /// headroom/pressure gates. Returns the admission payload (granted shape
+    /// + downgrade flags) or nil to QUEUE (temporary shortage). Throws when
+    /// the request asks for a shape this release does not qualify
+    /// (`releaseShapeUnsupported`, B4 — independent of manifest/quota) or for
+    /// a permanent image/shape mismatch (dual request against an image with no
+    /// SMP evidence under strict admission), so the caller hears an
+    /// actionable error instead of waiting forever.
     private func admit(
         environmentID: String,
         request: GuestResourceRequest,
@@ -354,13 +379,44 @@ public actor RuntimeVMPool {
         downgrade: GuestShapeDowngradePolicy,
         usage: Usage
     ) throws -> GuestResourceAdmissionDecision? {
-        // Image capability gate: engine SMP support is not guest
-        // compatibility. A dual request with no image evidence either gets
-        // an actionable error (strict) or, when the caller explicitly
-        // authorized it, a single-hart downgrade with an honest reason.
+        // RELEASE gate FIRST (B4): what this release is qualified to ship is
+        // independent of the image manifest, the engine's SMP query and this
+        // device's quota. Production answers one hart, so an explicit dual
+        // request gets an actionable error under strict admission and may
+        // fall back to one hart ONLY when the caller explicitly authorized
+        // that floor (auto policy); the lease records the downgrade honestly.
+        // Malformed loose counts (0, six, …) never reach this typed API:
+        // GuestReleaseShapePolicy.resolve throws before a request exists.
         var effectiveRequest = request
+        var releaseGateDowngrade = false
+        if !configuration.releasePolicy.supports(request.vcpus) {
+            switch downgrade {
+            case .strict:
+                throw LinuxGuestError.releaseShapeUnsupported(
+                    requested: request.vcpus.count,
+                    maximum: configuration.releasePolicy.maximumSupportedVCPUs
+                )
+            case .authorized(let vcpuFloor, _):
+                guard vcpuFloor.rawValue <= configuration.releasePolicy.maximumSupportedVCPUs else {
+                    throw LinuxGuestError.releaseShapeUnsupported(
+                        requested: request.vcpus.count,
+                        maximum: configuration.releasePolicy.maximumSupportedVCPUs
+                    )
+                }
+                effectiveRequest = GuestResourceRequest(
+                    vcpus: .one, memory: request.memory, origin: request.origin
+                )
+                releaseGateDowngrade = true
+            }
+        }
+
+        // Image capability gate (only reachable for multi-hart shapes under
+        // an internal synthetic-test release policy): engine SMP support is
+        // not guest compatibility. A dual request with no image evidence
+        // either gets an actionable error (strict) or, when the caller
+        // explicitly authorized it, a single-hart downgrade with a reason.
         var imageGateDowngrade = false
-        if request.vcpus == .two, !imageSMPCapable {
+        if effectiveRequest.vcpus == .two, !imageSMPCapable {
             switch downgrade {
             case .strict:
                 throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
@@ -421,13 +477,15 @@ public actor RuntimeVMPool {
             guard available >= required else { return nil }
         }
 
+        let releaseGateReason = releaseGateDowngrade
+            ? "this release qualifies only \(configuration.releasePolicy.maximumSupportedVCPUs) guest core; the caller authorized a single-hart boot" : nil
         let imageGateReason = imageGateDowngrade
             ? "the image has no SMP capability evidence; the caller authorized a single-hart boot" : nil
-        let combinedVCPUReason = [vcpuReason, imageGateReason]
+        let combinedVCPUReason = [vcpuReason, releaseGateReason, imageGateReason]
             .compactMap { $0 }.joined(separator: "; ")
         return .admitted(
             shape: shape,
-            vcpusDowngraded: vcpusDowngraded || imageGateDowngrade,
+            vcpusDowngraded: vcpusDowngraded || releaseGateDowngrade || imageGateDowngrade,
             memoryDowngraded: memoryDowngraded,
             vcpusDowngradeReason: combinedVCPUReason.isEmpty ? nil : combinedVCPUReason,
             memoryDowngradeReason: memoryReason
@@ -587,6 +645,15 @@ public actor RuntimeVMPool {
     ) throws {
         guard let current = runtimeByEnvironment[environmentID].flatMap({ leases[$0] }) else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        // Release gate BEFORE quota/image gates (B4): a reshape to the
+        // unqualified dual shape is refused even when the device quota and
+        // an image manifest both claim SMP — this release ships one hart.
+        if !configuration.releasePolicy.supports(request.vcpus) {
+            throw LinuxGuestError.releaseShapeUnsupported(
+                requested: request.vcpus.count,
+                maximum: configuration.releasePolicy.maximumSupportedVCPUs
+            )
         }
         if request.vcpus == .two, !imageSMPCapable {
             throw LinuxGuestError.invalidConfiguration(

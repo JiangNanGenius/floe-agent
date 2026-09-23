@@ -84,9 +84,18 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     /// create time and has no balloon/resize API, so a tier change takes
     /// effect through the safe stop → flush → restart path only.
     private var ramMB: Int
-    /// Guest harts for the NEXT `start()` (1 or 2). The engine has no online
-    /// vCPU hotplug; a hart-count change is also a stop → restart.
+    /// Guest harts for the NEXT `start()` (one in production). The engine has
+    /// no online vCPU hotplug; a hart-count change is also a stop → restart.
+    /// The value is always the result of `releasePolicy` (B4): the machine
+    /// itself is the last boundary, so a direct construction with a loose or
+    /// unqualified count cannot bypass the pool and boot two harts.
     private var vcpuCount: GuestVCPUCount
+    /// AUTHORITATIVE release gate for THIS machine. Production assemblies
+    /// always use `.production` (one hart); synthetic SMP engine/admission
+    /// experiments construct the machine with an explicit
+    /// `.internalSyntheticTesting(provenance:)` policy — never an env var or
+    /// a manifest claim.
+    private let releasePolicy: GuestReleaseShapePolicy
     private let consoleStream: AsyncStream<Data>
     private let sink: TinyEMUConsoleSink
     private let lock = NSLock()
@@ -104,13 +113,18 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     init(
         descriptor: LinuxGuestEnvironmentDescriptor,
         image: LinuxGuestImage,
-        limits: LinuxGuestLimits
+        limits: LinuxGuestLimits,
+        releasePolicy: GuestReleaseShapePolicy = .production
     ) throws {
         self.environmentID = descriptor.id
         self.descriptor = descriptor
         self.image = image
         self.ramMB = limits.clampedRAMMB(descriptor.ramMB)
-        self.vcpuCount = GuestVCPUCount.clamping(descriptor.vcpus ?? 1)
+        self.releasePolicy = releasePolicy
+        // Direct-construction boundary (B4): validate the descriptor's loose
+        // count under the release gate, never clamp — a manifest smp=true or
+        // an explicit 2/6 must fail here even if the pool was bypassed.
+        self.vcpuCount = try releasePolicy.resolve(requestedVCPUs: descriptor.vcpus)
         var continuation: AsyncStream<Data>.Continuation!
         self.consoleStream = AsyncStream(bufferingPolicy: .bufferingNewest(Self.consoleChunkLimit)) {
             continuation = $0
@@ -132,14 +146,17 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         lock.unlock()
     }
 
-    /// Sets the hart count used by the next `start()` (1 or 2). Only
-    /// meaningful between a confirmed stop and the restart; the running VM
-    /// is never mutated and there is no online hotplug. Intended for the
+    /// Sets the hart count used by the next `start()` (one in production).
+    /// Only meaningful between a confirmed stop and the restart; the running
+    /// VM is never mutated and there is no online hotplug. Intended for the
     /// registry's safe stop/restart shape-change path (see RuntimeVMPool
-    /// `validateShapeChange`/`confirmShape`).
-    public func setVCPUs(_ newValue: Int) {
+    /// `validateShapeChange`/`confirmShape`). The loose integer goes through
+    /// the SAME release gate as construction: an unqualified explicit count
+    /// (two/six in this release) throws instead of silently clamping.
+    public func setVCPUs(_ newValue: Int) throws {
+        let resolved = try releasePolicy.resolve(requestedVCPUs: newValue)
         lock.lock()
-        vcpuCount = GuestVCPUCount.clamping(newValue)
+        vcpuCount = resolved
         lock.unlock()
     }
 
@@ -510,14 +527,26 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
 /// Production session factory: creates the machine and hands back the
 /// lifecycle closures the registry uses.
 public struct TinyEMUGuestSessionFactory: Sendable {
-    public init() {}
+    /// Release gate every created machine enforces at its own boundary
+    /// (B4). Production assemblies leave this at `.production`; synthetic
+    /// SMP engine/admission tests pass an explicit
+    /// `.internalSyntheticTesting(provenance:)` policy — there is no
+    /// environment-variable or manifest path to widen it.
+    private let releasePolicy: GuestReleaseShapePolicy
+
+    public init(releasePolicy: GuestReleaseShapePolicy = .production) {
+        self.releasePolicy = releasePolicy
+    }
 
     public func makeSession(
         descriptor: LinuxGuestEnvironmentDescriptor,
         image: LinuxGuestImage,
         limits: LinuxGuestLimits
     ) throws -> LinuxGuestSessionHandle {
-        let machine = try TinyEMUGuestMachine(descriptor: descriptor, image: image, limits: limits)
+        let machine = try TinyEMUGuestMachine(
+            descriptor: descriptor, image: image, limits: limits,
+            releasePolicy: releasePolicy
+        )
         return LinuxGuestSessionHandle(
             transport: machine,
             start: { try machine.start() },
@@ -529,8 +558,9 @@ public struct TinyEMUGuestSessionFactory: Sendable {
             emulatorCPUSample: { machine.emulatorThreadCPUSample() },
             setRAMMB: { machine.setRAMMB($0) },
             // Same stop → restart boundary as RAM: the registry's shape-change
-            // path validates through RuntimeVMPool then applies both.
-            setVCPUs: { machine.setVCPUs($0) }
+            // path validates through RuntimeVMPool then applies both, and the
+            // machine re-checks its OWN release gate before accepting a count.
+            setVCPUs: { try machine.setVCPUs($0) }
         )
     }
 }
@@ -540,7 +570,7 @@ public struct TinyEMUGuestSessionFactory: Sendable {
 /// Platforms without the vendored engine cannot run a guest; ownership and
 /// commands still fail honestly instead of reporting a fake Linux runtime.
 public struct TinyEMUGuestSessionFactory: Sendable {
-    public init() {}
+    public init(releasePolicy: GuestReleaseShapePolicy = .production) {}
 
     public func makeSession(
         descriptor: LinuxGuestEnvironmentDescriptor,
