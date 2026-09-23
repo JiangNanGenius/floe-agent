@@ -183,11 +183,23 @@ if [ "$rebuild" = 1 ]; then
                 riscv64-linux-gnu-readelf; do
         command -v "$tool" >/dev/null 2>&1 || die "--rebuild needs $tool"
     done
+    # The pinned 2018 riscv-pk predates the diagnostics that current GCC
+    # releases promote to errors (implicit function declarations and friends
+    # became errors by default in GCC 14); keep them warnings so the pinned
+    # source builds, and never hide them: the whole log is kept as evidence.
+    bbl_cflags="-O2 -Wno-error=implicit-function-declaration \
+-Wno-error=int-conversion -Wno-error=incompatible-pointer-types \
+-Wno-error=return-mismatch -Wno-error=declaration-missing-parameter-type"
     (
         cd "$out/riscv-pk-src"
-        ./configure --host=riscv64-linux-gnu --with-arch=rv64gc --with-abi=lp64d
+        ./configure --host=riscv64-linux-gnu --with-arch=rv64gc \
+            --with-abi=lp64d CFLAGS="$bbl_cflags"
         make -j"$jobs"
-    ) >"$out/rebuild-riscv-pk.log" 2>&1 || die "riscv-pk rebuild failed (see rebuild-riscv-pk.log)"
+    ) >"$out/rebuild-riscv-pk.log" 2>&1 || {
+        printf 'build-kernel-bbl: riscv-pk rebuild failed; last lines:\n' >&2
+        tail -c 4000 "$out/rebuild-riscv-pk.log" >&2 || true
+        die "riscv-pk rebuild failed (see rebuild-riscv-pk.log)"
+    }
 
     # ------------------------------------------------------------------
     # The pinned boot loader file is a RAW binary, not the ELF the riscv-pk
@@ -250,7 +262,11 @@ if [ "$rebuild" = 1 ]; then
             grep -q '^CONFIG_NR_CPUS=2$' .config || die "--smp build did not produce CONFIG_NR_CPUS=2"
         fi
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$jobs"
-    ) >"$out/rebuild-riscv-linux.log" 2>&1 || die "kernel rebuild failed (see rebuild-riscv-linux.log)"
+    ) >"$out/rebuild-riscv-linux.log" 2>&1 || {
+        printf 'build-kernel-bbl: kernel rebuild failed; last lines:\n' >&2
+        tail -c 4000 "$out/rebuild-riscv-linux.log" >&2 || true
+        die "kernel rebuild failed (see rebuild-riscv-linux.log)"
+    }
     # raw kernel image: TinyEMU loads the -kernel file as-is and bbl jumps
     # to the address the FDT records (riscv,kernel-start); an ELF kernel
     # would be executed from its header

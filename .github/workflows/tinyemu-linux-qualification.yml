@@ -499,6 +499,9 @@ jobs:
             work/smp/boot/
             work/smp/smp-boot-pair.txt
             work/smp/smp-kernel-rebuild.log
+            work/smp-upstream/*.log
+            work/smp-upstream/riscv-pk-src/config.log
+            work/smp-upstream/riscv-linux-src/.config
           if-no-files-found: warn
           retention-days: 30
 
@@ -515,7 +518,7 @@ jobs:
       # engine-only lane); do not read a green S run as covering them.
       # ------------------------------------------------------------------
       - name: Build the SMP host qualification test (links the freshly built engine)
-        if: ${{ inputs.run_smp }}
+        if: ${{ always() && inputs.run_smp }}
         run: |
           set -euo pipefail
           cd FloeAgent/Qualification/TinyEMULinux
@@ -529,7 +532,7 @@ jobs:
           file ../../../work/build/smp_host_test
 
       - name: Stage S1 — host --vcpu 1 vs 2 real boots with per-hart stats
-        if: ${{ inputs.run_smp }}
+        if: ${{ always() && inputs.run_smp }}
         run: |
           set -euo pipefail
           IMG=work/src/diskimage-linux-riscv-2018-09-23
