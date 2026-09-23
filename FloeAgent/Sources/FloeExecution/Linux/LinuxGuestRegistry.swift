@@ -30,9 +30,14 @@ public struct LinuxGuestSessionHandle: Sendable {
     public var emulatorCPUSample: @Sendable () -> LinuxGuestEmulatorCPUSample?
     /// Sets the RAM the machine will use on its NEXT start (the engine
     /// allocates guest RAM at create time and cannot balloon online, so a
-    /// tier change is always a stop → flush → restart). nil on scripted
+    /// tier change is always a stop → flush → restart). nil on scripted/test
     /// sessions that do not model memory tiers.
     public var setRAMMB: (@Sendable (Int) -> Void)?
+    /// Sets the vCPU count the machine will use on its NEXT start, same
+    /// stop → flush → restart boundary as `setRAMMB` (the pinned engine has
+    /// no online hotplug). Wired by the TinyEMU session factory; nil on
+    /// sessions that do not model shape changes.
+    public var setVCPUs: (@Sendable (Int) -> Void)?
 
     public init(
         transport: any LinuxGuestConsoleTransport,
@@ -43,7 +48,8 @@ public struct LinuxGuestSessionHandle: Sendable {
         addForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
         removeForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
         emulatorCPUSample: @escaping @Sendable () -> LinuxGuestEmulatorCPUSample? = { nil },
-        setRAMMB: (@Sendable (Int) -> Void)? = nil
+        setRAMMB: (@Sendable (Int) -> Void)? = nil,
+        setVCPUs: (@Sendable (Int) -> Void)? = nil
     ) {
         self.transport = transport
         self.start = start
@@ -54,6 +60,7 @@ public struct LinuxGuestSessionHandle: Sendable {
         self.removeForward = removeForward
         self.emulatorCPUSample = emulatorCPUSample
         self.setRAMMB = setRAMMB
+        self.setVCPUs = setVCPUs
     }
 }
 
@@ -67,6 +74,132 @@ public protocol LinuxGuestSessionCreating: Sendable {
 }
 
 extension TinyEMUGuestSessionFactory: LinuxGuestSessionCreating {}
+
+/// Shape admission result for one guest start: the granted RAM tier and vCPU
+/// count plus honest downgrade reporting. This is the B2-side seam consumed by
+/// `TinyEMULinuxGuestRegistry.start`; the Runtime v2 integrator overrides
+/// `acquireShape(...)` to reach the pool's three-axis (vCPU/RAM/VM) admission.
+public struct LinuxGuestShapeAdmission: Sendable, Equatable {
+    public var runtimeID: String
+    public var ramMB: Int
+    public var vcpus: Int
+    public var downgraded: Bool
+    public var vcpusDowngraded: Bool
+    public var downgradeReason: String?
+
+    public init(
+        runtimeID: String,
+        ramMB: Int,
+        vcpus: Int,
+        downgraded: Bool,
+        vcpusDowngraded: Bool = false,
+        downgradeReason: String? = nil
+    ) {
+        self.runtimeID = runtimeID
+        self.ramMB = ramMB
+        self.vcpus = vcpus
+        self.downgraded = downgraded
+        self.vcpusDowngraded = vcpusDowngraded
+        self.downgradeReason = downgradeReason
+    }
+}
+
+/// Authoritative per-session runtime truth for UI/metrics surfaces (H):
+/// pairs the environment with the identity type H's sampler consumes
+/// (`LinuxGuestRuntimeIdentity`, runtimeID + launchGeneration) plus the
+/// granted shape and liveness. The identity's `launchGeneration` stays nil
+/// until the Runtime v2 lease carries one — unknown is preserved, never
+/// invented.
+public struct LinuxGuestRuntimeState: Sendable, Equatable {
+    public var environmentID: String
+    public var identity: LinuxGuestRuntimeIdentity
+    public var running: Bool
+    public var ramMB: Int
+    public var vcpus: Int
+    public var startedAt: Date
+
+    public init(
+        environmentID: String,
+        identity: LinuxGuestRuntimeIdentity,
+        running: Bool,
+        ramMB: Int,
+        vcpus: Int,
+        startedAt: Date
+    ) {
+        self.environmentID = environmentID
+        self.identity = identity
+        self.running = running
+        self.ramMB = ramMB
+        self.vcpus = vcpus
+        self.startedAt = startedAt
+    }
+}
+
+public extension LinuxGuestRuntimeV2Integrating {
+    /// Three-axis admission seam. The production Runtime v2 integrator
+    /// overrides this with the resource pool's shape-aware `acquire` (real
+    /// granted vCPU/RAM, image SMP gate, strict/authorized downgrade policy).
+    /// The default bridges to the legacy MB-only slot: one vCPU, memory
+    /// downgrades only — fail closed for dual-hart requests until the
+    /// integrator override lands, never silently granting a second hart the
+    /// legacy path cannot account for.
+    func acquireShape(
+        environmentID: String,
+        runtimeID: String,
+        request: GuestResourceRequest,
+        imageSMPCapable: Bool,
+        downgrade: GuestShapeDowngradePolicy
+    ) async throws -> LinuxGuestShapeAdmission {
+        if request.vcpus == .two {
+            switch downgrade {
+            case .strict:
+                throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
+            case .authorized(let vcpuFloor, _):
+                guard vcpuFloor == .one else {
+                    throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
+                }
+            }
+        }
+        let admission = try await acquireSlot(
+            environmentID: environmentID, runtimeID: runtimeID, requestedMB: request.memory.mb
+        )
+        return LinuxGuestShapeAdmission(
+            runtimeID: admission.runtimeID,
+            ramMB: admission.ramMB,
+            vcpus: 1,
+            downgraded: admission.downgraded,
+            downgradeReason: admission.downgraded
+                ? "memory tier lowered by the legacy MB-only admission path"
+                : nil
+        )
+    }
+
+    /// Validates a requested shape change BEFORE any disruption. Default
+    /// bridges to the RAM-only retier plan; a vCPU change requires the
+    /// integrator's CPU-aware override (the pool must validate the vCPU
+    /// quota), so it throws an actionable error instead of skipping that
+    /// validation and drifting the pool accounting.
+    func planReshape(
+        environmentID: String,
+        ramMB: Int,
+        vcpus: Int,
+        currentVCPUs: Int
+    ) async throws {
+        guard GuestVCPUCount.clamping(vcpus) == GuestVCPUCount.clamping(currentVCPUs) else {
+            throw LinuxGuestError.invalidConfiguration(
+                "changing guest vCPUs to \(vcpus) requires the Runtime v2 shape planner, which is not connected yet"
+            )
+        }
+        try await planRetier(environmentID: environmentID, ramMB: ramMB)
+    }
+
+    /// Confirms a completed shape change. Default records the RAM tier; the
+    /// integrator override records the full shape.
+    func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async {
+        _ = vcpus
+        await confirmTier(environmentID: environmentID, ramMB: ramMB)
+    }
+}
 
 public actor TinyEMULinuxGuestRegistry {
     /// Logical capacity of each environment raw disk. Test registries can
@@ -233,6 +366,58 @@ public actor TinyEMULinuxGuestRegistry {
     /// in flight both count.
     public var activeGuestCount: Int { guestReservations.count }
 
+    /// Environment ids that currently hold guest capacity: running sessions,
+    /// starts in flight (the reservation is published before the VM boots)
+    /// and quarantined survivors of a failed stop (their slot stays owned so
+    /// no new guest ever boots on that disk). This — not `guestIsRunning` —
+    /// is the arbiter's activity truth: a starting or stop-quarantined VM
+    /// has no running vCPU yet still owns real memory and its disk.
+    public var environmentsWithGuestActivity: [String] {
+        guestReservations.keys.sorted()
+    }
+
+    /// Authoritative runtime identity of one environment's session, for the
+    /// metrics sampler's `runtimeIdentityProvider` seam. A fresh `runtimeID`
+    /// is minted per start, so it distinguishes a restart from the previous
+    /// launch even for the same environment; `launchGeneration` stays nil
+    /// until the Runtime v2 lease carries one — unknown is preserved, never
+    /// invented. No session returns an all-nil identity, never an invented
+    /// token.
+    public func runtimeIdentity(environmentID: String) async -> LinuxGuestRuntimeIdentity {
+        guard let session = sessions[environmentID] else {
+            return LinuxGuestRuntimeIdentity()
+        }
+        return LinuxGuestRuntimeIdentity(
+            runtimeID: session.runtimeID,
+            launchGeneration: nil
+        )
+    }
+
+    /// Authoritative state of every session this service owns (running, and
+    /// quarantined survivors of a failed stop): identity, liveness and the
+    /// granted shape. Stopped is not deleted: callers must pair this with
+    /// `owns(environmentID:)` (environment existence) rather than treating a
+    /// missing entry as a deleted environment.
+    public func runtimeStates() async -> [LinuxGuestRuntimeState] {
+        var states: [LinuxGuestRuntimeState] = []
+        for (environmentID, session) in sessions {
+            states.append(
+                LinuxGuestRuntimeState(
+                    environmentID: environmentID,
+                    identity: LinuxGuestRuntimeIdentity(
+                        runtimeID: session.runtimeID,
+                        launchGeneration: nil
+                    ),
+                    running: await session.handle.isRunning(),
+                    ramMB: limits.clampedRAMMB(session.descriptor.ramMB),
+                    vcpus: GuestVCPUCount.clamping(session.descriptor.vcpus ?? 1).count,
+                    startedAt: session.startedAt
+                )
+            )
+        }
+        return states.sorted { $0.environmentID < $1.environmentID }
+    }
+
     /// Guest RAM (MB) reserved by the guests above.
     public var reservedGuestRAMMB: Int { guestReservations.values.reduce(0, +) }
 
@@ -279,11 +464,6 @@ public actor TinyEMULinuxGuestRegistry {
         guard let descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
         }
-        // Linux and the on-device MLX runtime share one heavy-memory budget.
-        // A Linux request waits for the active inference/tool continuation to
-        // finish; the arbiter then unloads the model before any VM admission,
-        // disk preparation or guest RAM reservation begins.
-        try await HeavyRuntimeArbiter.shared.waitForLocalInferenceIdle()
         if teardownsInFlight.contains(environmentID) {
             throw LinuxGuestError.stopFailed(
                 environmentID: environmentID,
@@ -307,51 +487,105 @@ public actor TinyEMULinuxGuestRegistry {
             // never double-counted.
             await teardown(environmentID: environmentID, action: "restart")
         }
+        // Own the environment's start from BEFORE the heavy-runtime wait so a
+        // stop that lands while this start is queued for inference idle (or
+        // for an unverified resident model) reaches it: teardown sees the
+        // in-flight start, records the stop and cancels the queued admission
+        // instead of mistaking it for "nothing to stop" and letting the
+        // guest boot later.
         guard startingEnvironments.insert(environmentID).inserted else {
             throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
         pendingStops.remove(environmentID)
         var sessionRegistered = false
         var quarantinedByFailure = false
+        var admissionOwned = false
         defer {
             startingEnvironments.remove(environmentID)
             pendingStops.remove(environmentID)
-            // A failed start whose VM refused to stop keeps its reservation:
+            // Only a start that actually published an admission reservation
+            // releases one — later failures release exactly this start's
+            // slot, while an early refusal (or a quarantined environment
+            // checked above) never clears another owner's reservation. A
+            // failed start whose VM refused to stop keeps its reservation:
             // the quarantined session still owns the environment's disk.
-            if !sessionRegistered, !quarantinedByFailure {
+            if !sessionRegistered, !quarantinedByFailure, admissionOwned {
                 guestReservations[environmentID] = nil
                 clearReservation(environmentID: environmentID)
             }
         }
+        // Linux and the on-device MLX runtime share one heavy-memory budget:
+        // the arbiter admits this start atomically with its idle check (a
+        // racing local-model probe sees the pending start, never an empty
+        // snapshot), queues it behind an active session or an unverified
+        // resident model, and verifies the model's physical release before
+        // the queue is released. The registration release is installed
+        // before the await, so even a cancelled wait cannot leak a
+        // pending-start registration.
+        defer { HeavyRuntimeArbiter.shared.releaseLinuxStart(environmentID: environmentID) }
+        try await HeavyRuntimeArbiter.shared.waitForLocalInferenceIdle(registeringStart: environmentID)
+        if pendingStops.remove(environmentID) != nil {
+            // The stop landed while this start was queued; nothing was
+            // booted and the defer above releases the admission.
+            throw LinuxGuestError.startFailed("the guest start was stopped before it completed")
+        }
 
-        // Admission. Runtime v2 (when configured) admits through the pool:
-        // at most four VMs run and further starts queue — cancellable, with a
-        // bounded wait — instead of failing immediately. The legacy path
-        // keeps the bounded refusal. Either way the budget is bound here,
-        // before the image is verified and before any disk work, so a refusal
-        // never touches the environment's persistent disk.
+        // Admission. Runtime v2 (when configured) admits through the pool on
+        // all three axes (vCPU/RAM/VM): at most four VMs run and further
+        // starts queue — cancellable, with a bounded wait — instead of
+        // failing immediately, and a dual-hart request against an image with
+        // no SMP evidence fails closed with an actionable error under the
+        // strict policy. The legacy path keeps the bounded refusal. Either
+        // way the budget is bound here, before the image is verified and
+        // before any disk work, so a refusal never touches the environment's
+        // persistent disk.
+        //
+        // SMP capability is a property of THIS image, proven by its canonical
+        // manifest (never by an engine query and never assumed). The runtime
+        // integrator answers from the verified manifest; an image that does
+        // not prove SMP can never be granted two harts, so a dual request
+        // fails closed with an actionable error instead of booting one hart
+        // and silently losing the second.
         var admission: RuntimeV2Admission?
+        var grantedVCPUs: Int?
         do {
             if let runtimeV2 {
-                let granted = try await runtimeV2.acquireSlot(
-                    environmentID: environmentID,
-                    runtimeID: Self.makeRuntimeID(environmentID: environmentID),
-                    requestedMB: limits.clampedRAMMB(descriptor.ramMB)
+                let runtimeID = Self.makeRuntimeID(environmentID: environmentID)
+                let request = GuestResourceRequest.from(
+                    requestedVCPUs: descriptor.vcpus,
+                    requestedMB: limits.clampedRAMMB(descriptor.ramMB),
+                    origin: .environmentPolicy
                 )
-                admission = granted
+                let imageSMPCapable = await runtimeV2.imageSMPCapable(imageID: descriptor.imageID)
+                let granted = try await runtimeV2.acquireShape(
+                    environmentID: environmentID,
+                    runtimeID: runtimeID,
+                    request: request,
+                    imageSMPCapable: imageSMPCapable,
+                    downgrade: .strict
+                )
+                admission = RuntimeV2Admission(
+                    runtimeID: granted.runtimeID,
+                    ramMB: granted.ramMB,
+                    downgraded: granted.downgraded
+                )
+                grantedVCPUs = granted.vcpus
                 guestReservations[environmentID] = granted.ramMB
+                admissionOwned = true
                 publishReservation(environmentID: environmentID, ramMB: granted.ramMB)
             } else {
                 try reserveGuestCapacity(
                     environmentID: environmentID,
                     ramMB: limits.clampedRAMMB(descriptor.ramMB)
                 )
+                admissionOwned = true
             }
             try await performStart(
                 environmentID: environmentID,
                 descriptor: descriptor,
                 taskID: taskID,
                 admission: admission,
+                grantedVCPUs: grantedVCPUs,
                 sessionRegistered: &sessionRegistered,
                 quarantinedByFailure: &quarantinedByFailure
             )
@@ -392,6 +626,7 @@ public actor TinyEMULinuxGuestRegistry {
         descriptor: LinuxGuestEnvironmentDescriptor,
         taskID: String?,
         admission: RuntimeV2Admission?,
+        grantedVCPUs: Int?,
         sessionRegistered: inout Bool,
         quarantinedByFailure: inout Bool
     ) async throws {
@@ -432,6 +667,10 @@ public actor TinyEMULinuxGuestRegistry {
         // cannot verify digests; the app never assembles one.
         var bootDescriptor = descriptor
         if let admission { bootDescriptor.ramMB = admission.ramMB }
+        // The granted shape is what the machine is created with (the engine
+        // reads vcpus/ramMB at create time): an authorized or image-gated
+        // downgrade is reflected in the boot descriptor, never silently.
+        if let grantedVCPUs { bootDescriptor.vcpus = grantedVCPUs }
         let runtimeImage: LinuxGuestImage
         var workingDiskCapacity: Int64?
         if let runtimeV2, let admission, let imageDirectory {
@@ -1212,9 +1451,13 @@ public actor TinyEMULinuxGuestRegistry {
         // A stop request that lands while this environment's start is in
         // flight cannot tear down a session that does not exist yet: the
         // start observes the flag and destroys its own handle instead of
-        // registering a guest the caller already asked to stop.
+        // registering a guest the caller already asked to stop. A start that
+        // is still queued for heavy-runtime admission is cancelled right here
+        // — it must not hold the stop until the model happens to finish —
+        // and its own defer releases the arbiter registration.
         if startingEnvironments.contains(environmentID) {
             pendingStops.insert(environmentID)
+            HeavyRuntimeArbiter.shared.cancelLinuxStart(environmentID: environmentID)
         }
         // One teardown per environment: a second stop call while the first is
         // awaiting close must not race it, and a start must not slip past the
@@ -1306,15 +1549,27 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     /// Changes the running guest's memory tier through the safe
-    /// stop → flush → restart path. Documented boundary: the pinned TinyEMU
-    /// engine allocates guest RAM once at create time and exposes no
-    /// balloon/resize API, so an online memory change is impossible by
-    /// construction — the machine is stopped (its working disk stays exactly
-    /// where it is), recreated with the new tier, and the console stream and
-    /// command channel survive the reboot (the same boundary the in-guest
-    /// runner upgrade already uses). The budget is validated BEFORE anything
-    /// is disrupted, and a failed restart restores the previous tier.
+    /// stop → flush → restart path. Kept for call-site compatibility;
+    /// forwards to `setShape` without changing the vCPU count.
     public func setMemoryTier(environmentID: String, ramMB: Int) async throws {
+        try await setShape(
+            environmentID: environmentID,
+            ramMB: ramMB,
+            vcpus: sessions[environmentID]?.descriptor.vcpus ?? 1
+        )
+    }
+
+    /// Changes the running guest's full shape (RAM tier + vCPU count) through
+    /// the safe stop → flush → restart path. Documented boundary: the pinned
+    /// TinyEMU engine allocates guest RAM and its harts once at create time
+    /// and exposes no balloon/resize or hotplug API, so an online shape
+    /// change is impossible by construction — the machine is stopped (its
+    /// working disk stays exactly where it is), recreated with the new shape,
+    /// and the console stream and command channel survive the reboot (the
+    /// same boundary the in-guest runner upgrade already uses). The budget
+    /// is validated BEFORE anything is disrupted, and a failed restart
+    /// restores the previous shape.
+    public func setShape(environmentID: String, ramMB: Int, vcpus: Int) async throws {
         guard var session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
@@ -1324,9 +1579,82 @@ public actor TinyEMULinuxGuestRegistry {
         let tier = RuntimeMemoryTier.tier(forRequestedMB: ramMB, minimumMB: limits.minRAMMB)
         let clamped = limits.clampedRAMMB(tier.mb)
         let previous = limits.clampedRAMMB(session.descriptor.ramMB)
-        guard clamped != previous else { return }
-        // Budget validation BEFORE any disruption: the new tier must fit next
-        // to the other running guests, or the VM stays untouched.
+        let previousVCPUs = GuestVCPUCount.clamping(session.descriptor.vcpus ?? 1)
+        let requestedVCPUs = GuestVCPUCount.clamping(vcpus)
+        let setVCPUs = session.handle.setVCPUs
+        guard requestedVCPUs != previousVCPUs else {
+            // RAM-only path: pure retier.
+            if clamped == previous { return }
+            try await validateAndApplyRetier(
+                environmentID: environmentID,
+                session: &session,
+                clamped: clamped,
+                previous: previous,
+                setRAMMB: setRAMMB
+            )
+            return
+        }
+        guard let setVCPUs else {
+            throw LinuxGuestError.invalidConfiguration(
+                "this guest session does not support vCPU changes"
+            )
+        }
+        // Budget validation BEFORE any disruption: the new shape must fit
+        // next to the other running guests, or the VM stays untouched.
+        if let runtimeV2 {
+            try await runtimeV2.planReshape(
+                environmentID: environmentID,
+                ramMB: clamped,
+                vcpus: requestedVCPUs.count,
+                currentVCPUs: previousVCPUs.count
+            )
+        } else {
+            let others = reservedGuestRAMMB - previous
+            guard others + clamped <= limits.maxGuestRAMMB else {
+                throw LinuxGuestError.capacityReached(
+                    detail: "moving to the \(clamped) MB tier would reserve \(others + clamped) MB of the \(limits.maxGuestRAMMB) MB device guest RAM budget; \(others) MB is reserved by other guests"
+                )
+            }
+        }
+        await session.handle.stop()
+        guard await session.handle.isRunning() == false else {
+            throw LinuxGuestError.stopFailed(
+                environmentID: environmentID,
+                detail: "the guest did not stop for the shape change; the previous \(previous) MB / \(previousVCPUs.count) vCPU shape stays in effect"
+            )
+        }
+        setRAMMB(clamped)
+        setVCPUs(requestedVCPUs.count)
+        do {
+            try await session.handle.start()
+        } catch {
+            setRAMMB(previous)
+            setVCPUs(previousVCPUs.count)
+            try? await session.handle.start()
+            throw error
+        }
+        session.descriptor.ramMB = clamped
+        session.descriptor.vcpus = requestedVCPUs.count
+        sessions[environmentID] = session
+        guestReservations[environmentID] = clamped
+        publishReservation(environmentID: environmentID, ramMB: clamped)
+        if let runtimeV2 {
+            await runtimeV2.confirmReshape(
+                environmentID: environmentID, ramMB: clamped, vcpus: requestedVCPUs.count
+            )
+        }
+    }
+
+    /// RAM-only retier shared by `setShape` and the legacy tier path:
+    /// validates the budget, stops, applies the tier, restarts (restoring
+    /// the previous tier when the restart fails) and rebooks the reservation.
+    private func validateAndApplyRetier(
+        environmentID: String,
+        session: inout Session,
+        clamped: Int,
+        previous: Int,
+        setRAMMB: @Sendable (Int) -> Void
+    ) async throws {
         if let runtimeV2 {
             try await runtimeV2.planRetier(environmentID: environmentID, ramMB: clamped)
         } else {
@@ -1626,6 +1954,27 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
 
     public func guestIsRunning(environmentID: String) async -> Bool {
         await registry.status(environmentID: environmentID).running
+    }
+
+    /// Lease-based activity truth for the heavy-runtime arbiter's probe:
+    /// every environment holding guest capacity (running, starting,
+    /// stopping, or stop-quarantined). See
+    /// `TinyEMULinuxGuestRegistry.environmentsWithGuestActivity`.
+    public func environmentsWithGuestActivity() async -> [String] {
+        await registry.environmentsWithGuestActivity
+    }
+
+    /// Authoritative runtime identity for one environment (metrics sampler
+    /// provider seam). See `TinyEMULinuxGuestRegistry.runtimeIdentity`.
+    public func runtimeIdentity(environmentID: String) async -> LinuxGuestRuntimeIdentity {
+        await registry.runtimeIdentity(environmentID: environmentID)
+    }
+
+    /// Authoritative per-launch states (identity, liveness, granted shape)
+    /// for metrics/notification surfaces. See
+    /// `TinyEMULinuxGuestRegistry.runtimeStates`.
+    public func runtimeStates() async -> [LinuxGuestRuntimeState] {
+        await registry.runtimeStates()
     }
 
     public func guestStatus(environmentID: String) async -> LinuxGuestStatus {

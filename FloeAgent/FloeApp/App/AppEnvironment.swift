@@ -389,19 +389,21 @@ final class AppEnvironment: ObservableObject {
         //     work instead of overlapping the guest.
         let conflictCenter = HeavyRuntimeConflictCenter()
         self.heavyRuntimeConflictCenter = conflictCenter
-        let arbiterEnvironments = environmentRegistry
         let arbiterGuests = linuxGuests
+        let arbiterLocalRuntime = self.localModelRuntime
         HeavyRuntimeArbiter.shared.configure(
             activityProbe: {
-                var runningGuests: [String] = []
-                for record in await arbiterEnvironments.all()
-                where record.effectiveExecutionBackend == .linuxVM {
-                    if await arbiterGuests.guestIsRunning(environmentID: record.id) {
-                        runningGuests.append(record.id)
-                    }
-                }
+                // Lease-based truth, not guestIsRunning: a guest owns real
+                // capacity from its arbiter registration (pending start)
+                // through its admission reservation (starting, running,
+                // stopping, stop-quarantined). Union both sets so the
+                // conflict offer lists a merely-starting VM exactly like a
+                // running one and never misses a stop in flight.
+                var active = Set(await arbiterGuests.environmentsWithGuestActivity())
+                active.formUnion(HeavyRuntimeArbiter.shared.pendingLinuxStartEnvironmentIDs)
+                let guestIDs = active.sorted()
                 var services: [String] = []
-                for environmentID in runningGuests {
+                for environmentID in guestIDs {
                     let count = await arbiterGuests.activeLocalServiceCount(
                         environmentID: environmentID
                     )
@@ -410,7 +412,7 @@ final class AppEnvironment: ObservableObject {
                     }
                 }
                 return HeavyRuntimeArbiter.LinuxActivity(
-                    guestEnvironmentIDs: runningGuests,
+                    guestEnvironmentIDs: guestIDs,
                     localServices: services
                 )
             },
@@ -421,6 +423,25 @@ final class AppEnvironment: ObservableObject {
             },
             decisionHandler: { activity in
                 await conflictCenter.requestDecision(activity)
+            },
+            idleDrainHandler: {
+                // Linux admission requires a verified release, not just a
+                // decremented session count: physically unmap the resident
+                // model when nothing claims it, and prove the outcome so the
+                // arbiter can keep the queued guest waiting while a durable
+                // task still owns the mapping.
+                if let released = await arbiterLocalRuntime.releaseIdleResidentEngineIfUnclaimed(
+                    reason: "linuxStartWaiting"
+                ) {
+                    return .released(modelID: released)
+                }
+                // Nil means either "nothing was resident" or "a lease/task
+                // claimed it"; the runtime's resident-model truth separates
+                // the two so a claimed model is never treated as released.
+                if await arbiterLocalRuntime.residentModelID() == nil {
+                    return .nothingResident
+                }
+                return .retained
             }
         )
         FloePlatformServices.shared.setLinuxCommandService(linuxGuests)

@@ -35,7 +35,10 @@ final class HeavyRuntimeConflictCenter: ObservableObject {
     var hasPendingDecision: Bool { continuation != nil }
 
     /// Suspends until the user answers. A second concurrent request defers
-    /// immediately instead of replacing the visible alert.
+    /// immediately instead of replacing the visible alert. Cancellation that
+    /// lands before the continuation registers still resolves as "defer" and
+    /// clears the token, so neither the alert nor the decision state can
+    /// dangle.
     func requestDecision(
         _ activity: HeavyRuntimeArbiter.LinuxActivity
     ) async -> HeavyRuntimeArbiter.ConflictDecision {
@@ -45,6 +48,7 @@ final class HeavyRuntimeConflictCenter: ObservableObject {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 if Task.isCancelled {
+                    if decisionToken == token { decisionToken = nil }
                     continuation.resume(returning: .deferLocalModel)
                     return
                 }
