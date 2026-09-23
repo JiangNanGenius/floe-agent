@@ -99,12 +99,18 @@ fi
 # ("Unable to determine file size for fd"), despite working network access.
 # Keep the image's suites, components and Signed-By values, but use Debian's
 # direct HTTPS mirrors for the image build and the installed guest.
-if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+    [ -f "$source_file" ] || continue
     sed -i \
         -e 's|mirror+file:/etc/apt/mirrors/debian.list|https://deb.debian.org/debian|g' \
         -e 's|mirror+file:/etc/apt/mirrors/debian-security.list|https://security.debian.org/debian-security|g' \
-        /etc/apt/sources.list.d/debian.sources
-fi
+        "$source_file"
+    if grep -q 'mirror+file:' "$source_file"; then
+        note "APT mirror-list URI remains in $source_file"
+        mark APT_SOURCE_UNSUPPORTED
+        exit 9
+    fi
+done
 if ping -c1 -W3 10.0.2.2 >>"$LOG" 2>&1; then
     mark PING_OK
 else
