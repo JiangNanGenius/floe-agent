@@ -237,9 +237,7 @@ jobs:
 
       - name: Verify bundled assets and pinned tools
         run: |
-          python3 scripts/check_ide_assets.py
           python3 scripts/check_engineering_viewer_assets.py
-          node --test scripts/tests/ide_filesystem.test.cjs
           python3 -m unittest discover -s scripts/tests -p test_pdfium_linkage.py
           python3 scripts/test_http_workflow.py
 
@@ -496,8 +494,8 @@ jobs:
         # successful build are still reported and never retried into passes.
         if: ${{ !cancelled() && steps.app_regression_build.outcome == 'success' }}
         # Two device legs, each booting its simulator and running the full
-        # four-test WorkspaceIDEUITests class (native save/cold-reopen, Web
-        # fallback, DXF preview, DWG edit). Slow runners have spent almost
+        # four-test WorkspaceIDEUITests class (native save/cold-reopen, native
+        # Explorer/Git, DXF preview, DWG edit). Slow runners have spent almost
         # seven minutes before the first test and over fifteen minutes per
         # leg, so the phase budget covers a worst-case boot plus leg per
         # device; a stalled leg is still bounded by the runner's total cap.

@@ -169,7 +169,7 @@ class LicenseInventoryTests(unittest.TestCase):
         self.assertEqual(self.manifest["documents"][0]["id"], "tinyemu")
         self.assertTrue(self.manifest["documents"][0]["required"])
         ids = {document["id"] for document in self.manifest["documents"]}
-        for required in ("occt", "occt-exception", "whisperkit", "ide-notice", "royalvnc", "pdfium", "libarchive"):
+        for required in ("occt", "occt-exception", "whisperkit", "royalvnc", "pdfium", "libarchive"):
             self.assertIn(required, ids)
 
     def test_pins_keep_the_revision_alongside_a_semver(self):
