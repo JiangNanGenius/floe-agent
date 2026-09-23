@@ -2,14 +2,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// The native kernel of the IDE: multi-file tabs over `IDENativeTextWorkspace`
+// The IDE's text/code editor: multi-file tabs over `IDENativeTextWorkspace`
 // buffers, line-numbered editing with bounded highlighting, find/replace,
-// standard selection/IME/undo behavior, conflict review and an explicit entry
-// back to the Web workbench. Every buffer stays alive while the Web kernel is
-// showing, so switching kernels never loses unsaved text.
+// standard selection/IME/undo behavior and conflict review. It is the only
+// text editor in the IDE (there is no Web/Monaco text kernel); every buffer
+// stays alive for the IDE session, so switching tabs never loses unsaved text.
 //
 // The pane owns no file I/O of its own: load/save/conflict all go through the
-// shared `WorkspaceFileService` used by the Web bridge and the inspector.
+// shared `WorkspaceFileService` the inspector and the run flow read.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI

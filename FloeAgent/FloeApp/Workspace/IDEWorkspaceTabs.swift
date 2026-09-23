@@ -31,11 +31,10 @@ enum IDEWorkspaceTabKind: String, Equatable {
     }
 }
 
-/// Pure decision for closing an Office tab (native strip tab or an internal
-/// CodeBlitz document tab): a clean read-only preview closes immediately;
-/// anything holding user changes hands the save/discard/cancel decision to
-/// the user. Keeping this pure lets focused tests pin the close policy
-/// without an engine or a simulator.
+/// Pure decision for closing an Office tab (typed outer tab): a clean
+/// read-only preview closes immediately; anything holding user changes hands
+/// the save/discard/cancel decision to the user. Keeping this pure lets
+/// focused tests pin the close policy without an engine or a simulator.
 enum IDEOfficeCloseDecision: Equatable {
     /// No changes at stake — close (release the session) right away.
     case closeImmediately

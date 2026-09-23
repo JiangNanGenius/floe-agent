@@ -7,23 +7,16 @@ import FloeWorkspace
 
 /// An IDE pins one workspace for its lifetime, including terminal ownership.
 ///
-/// The code tab hosts two editor kernels and keeps both mounted:
+/// The code tab hosts the native Swift/UIKit text editor
+/// (`IDENativeTextPane`) — the only text editor in the IDE — with its own
+/// multi-file buffer strip, find/replace, conflict review and the guarded save
+/// contract. The chrome is a VS Code-style activity rail, collapsible
+/// sidebar, bottom panel and status bar.
 ///
-/// * the native Swift/UIKit pane (`IDENativeTextPane`), the default for files
-///   the typed router verifies as text/code, with its own multi-file buffer
-///   strip, find/replace, conflict review and the same guarded save contract;
-/// * the Web CodeBlitz workbench, kept as the explicit fallback for the
-///   features it still owns. Its internal editor tabs also own PDF/Office
-///   documents through a custom document component whose rectangle stream the
-///   native surfaces overlay while it is visible.
-///
-/// In the native kernel PDF/Office use typed outer tabs instead (no overlay
-/// floats over a hidden workbench) and the sidebar's file tree/search comes
-/// from the native `FileTreeView`. Other routed documents
-/// (CAD/image/media/Quick Look) keep their typed native tab in the strip.
-/// Every open Office document still gets exactly one `OfficeFileSession`, so a
-/// tab close can always offer save / discard / keep-copy against one working
-/// copy.
+/// PDF/Office and the remaining routed kinds use typed outer tabs; the
+/// sidebar's file tree/search comes from the native `FileTreeView`. Every
+/// open Office document still gets exactly one `OfficeFileSession`, so a tab
+/// close can always offer save / discard / keep-copy against one working copy.
 struct WorkspaceIDEView: View {
     @ObservedObject var center: WorkspaceCenter
     let initialRelativePath: String?
@@ -715,8 +708,7 @@ struct WorkspaceIDEView: View {
     }
 
     /// Saves every surface in the pinned workspace: the native text buffers
-    /// first (the run flow reads the files next), then the Web workbench and
-    /// every Office session.
+    /// first (the run flow reads the files next), then every Office session.
     private func saveAllSurfaces() async -> Bool {
         var saved = await state.saveAll()
         for tab in tabs.tabs {

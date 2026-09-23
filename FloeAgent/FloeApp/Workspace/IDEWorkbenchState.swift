@@ -101,7 +101,6 @@ extension IDEWorkbenchState {
         ready && !saving && !hasAnyDirty && nativeText.pendingConflict() == nil
     }
 }
-}
 
 /// User-facing run outcome. Reasons stay as typed values; the view localizes
 /// them so no English string is baked into dispatch logic.
