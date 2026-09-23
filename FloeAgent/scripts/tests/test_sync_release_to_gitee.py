@@ -597,6 +597,18 @@ class MirrorTestCase(unittest.TestCase):
         self.assertEqual([], self.state.requests)
         self.assertIn("suspicious tag", result.stdout + result.stderr)
 
+    def test_time_budget_defers_work_truthfully(self):
+        self.seed_app_release()
+        _, summary = self.run_mirror(
+            "v1.7.0-beta.82", extra=["--time-budget-minutes", "0.0001"], expect=3
+        )
+        self.assertFalse(summary["ok"])
+        self.assertEqual(3, summary["gates"]["assets"]["deferred"])
+        self.assertEqual(0, summary["gates"]["assets"]["failed"])
+        # Only the stable mirror manifest may be written; no asset bytes move.
+        uploads = [item["name"] for item in self.state.gitee_attach.values()]
+        self.assertEqual(["GITEE-MIRROR-MANIFEST.json"], uploads)
+
     def test_missing_token_file_fails_closed(self):
         self.seed_app_release()
         result, summary = self.run_mirror(
@@ -613,8 +625,12 @@ class MirrorTestCase(unittest.TestCase):
         data = os.urandom(48 * 1024 * 1024)
         self.state.add_github_asset(release_id, "large.bin", data)
         self.state.max_upload = 16 * 1024 * 1024
-        _, summary = self.run_mirror("v1.7.0-beta.82", extra=["--shard-bytes", str(8 * 1024 * 1024)])
+        result, summary = self.run_mirror(
+            "v1.7.0-beta.82",
+            extra=["--shard-bytes", str(8 * 1024 * 1024), "--progress-mib", "8"],
+        )
         self.assertTrue(summary["ok"])
+        self.assertIn("[progress]", result.stdout)
         import resource
         usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         peak = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024

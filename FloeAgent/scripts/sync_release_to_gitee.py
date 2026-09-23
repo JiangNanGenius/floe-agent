@@ -104,6 +104,10 @@ class AssetFailure(Exception):
     """Per-asset failure that does not abort the remaining assets (exit 3)."""
 
 
+class BudgetExceeded(Exception):
+    """The run's time budget ended; remaining work is reported as deferred."""
+
+
 def redact(text, secret):
     if not text:
         return text
@@ -152,9 +156,10 @@ class HttpResult:
 class ConcatReader:
     """File-like view over [bytes, file, bytes] used for streaming multipart."""
 
-    def __init__(self, parts):
+    def __init__(self, parts, on_bytes=None):
         self._parts = []
         self._consumed = 0
+        self._on_bytes = on_bytes
         for kind, payload, length in parts:
             self._parts.append([kind, payload, length])
         self._index = 0
@@ -183,6 +188,8 @@ class ConcatReader:
             if kind == "file":
                 payload.close()
             self._index += 1
+        if self._on_bytes is not None:
+            self._on_bytes(self._consumed)
         return chunk
 
 
@@ -376,12 +383,14 @@ class HttpClient:
 
     # -- streaming download ------------------------------------------------
 
-    def download(self, url, headers, sink_factory, expected_size=None, retries=None, timeout=None):
-        """Streams ``url`` into a fresh sink, returning (HttpResult, sink.result).
+    def download(self, url, headers, sink_factory, expected_size=None, retries=None, timeout=None,
+                 progress=None, progress_interval=0):
+        """Streams ``url`` into a fresh sink, returning the sink's result dict.
 
         Redirects are followed manually; the Authorization header is dropped
         when the redirect changes host (GitHub asset downloads redirect to a
-        pre-signed object host).
+        pre-signed object host). ``progress(received_bytes)`` is called at
+        most every ``progress_interval`` bytes and once at the end.
         """
         timeout = timeout or self.timeout
         retries = self.retries if retries is None else retries
@@ -421,13 +430,25 @@ class HttpClient:
                     raise HttpError("GET", current, response.status, payload.decode("utf-8", "replace"))
                 sink = sink_factory()
                 received = 0
-                while True:
-                    chunk = response.read(CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    sink.write(chunk)
-                    received += len(chunk)
-                connection.close()
+                next_report = progress_interval if progress_interval else 0
+                try:
+                    while True:
+                        chunk = response.read(CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        sink.write(chunk)
+                        received += len(chunk)
+                        if progress is not None and next_report and received >= next_report:
+                            progress(received)
+                            next_report = received + progress_interval
+                finally:
+                    connection.close()
+                    try:
+                        sink.close()
+                    except Exception:
+                        pass
+                if progress is not None:
+                    progress(received)
                 result = sink.close()
                 if expected_size is not None and received != expected_size:
                     raise MirrorError(
@@ -489,10 +510,13 @@ class GitHubClient:
             page += 1
         return assets
 
-    def download_asset(self, asset_id, sink_factory, expected_size=None):
+    def download_asset(self, asset_id, sink_factory, expected_size=None, progress=None, progress_interval=0):
         url = "%s/repos/%s/releases/assets/%s" % (self.api_base, self.repo, asset_id)
         headers = self._headers("application/octet-stream")
-        return self.client.download(url, headers, sink_factory, expected_size=expected_size)
+        return self.client.download(
+            url, headers, sink_factory, expected_size=expected_size,
+            progress=progress, progress_interval=progress_interval,
+        )
 
 
 class GiteeClient:
@@ -575,7 +599,7 @@ class GiteeClient:
             page += 1
         return files
 
-    def upload_attach_file(self, release_id, path, name, timeout=None):
+    def upload_attach_file(self, release_id, path, name, timeout=None, progress=None):
         url = self._url("/releases/%s/attach_files" % release_id)
         size = os.path.getsize(path)
         boundary = "----floe" + secrets.token_hex(16)
@@ -594,7 +618,8 @@ class GiteeClient:
         attempt = 0
         while True:
             reader = ConcatReader(
-                [("bytes", prologue, len(prologue)), ("file", open(path, "rb"), size), ("bytes", epilogue, len(epilogue))]
+                [("bytes", prologue, len(prologue)), ("file", open(path, "rb"), size), ("bytes", epilogue, len(epilogue))],
+                on_bytes=progress,
             )
             try:
                 result = self.client.request(
@@ -745,6 +770,31 @@ class MirrorRunner:
 
     # -- helpers -----------------------------------------------------------
 
+    def _progress(self, label, total):
+        """Throttled progress reporter: at most one line per --progress-mib."""
+        interval = max(int(self.args.progress_mib * 1024 * 1024), 1)
+        start = time.monotonic()
+        reported = {"value": -1}
+
+        def report(received):
+            if received < total and received - reported["value"] < interval:
+                return
+            if received == reported["value"]:
+                return
+            self._check_budget()
+            reported["value"] = received
+            elapsed = max(time.monotonic() - start, 0.001)
+            self.log.emit(
+                "[progress] %s %s/%s (%.2f MiB/s, %.0fs)"
+                % (label, human_bytes(received), human_bytes(total), received / 1048576.0 / elapsed, elapsed)
+            )
+
+        return report
+
+    def _check_budget(self):
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            raise BudgetExceeded("time budget of %.0f minutes reached" % self.args.time_budget_minutes)
+
     def _attach_index(self, release_id):
         """name -> [attach file dicts] preserving Gitee's page order."""
         index = {}
@@ -821,7 +871,17 @@ class MirrorRunner:
             os.makedirs(local, exist_ok=True)
             target = os.path.join(local, os.path.basename(name))
             sink = FileSink(target, algorithms=algos)
-            result = self.github.download_asset(asset["id"], lambda: sink, expected_size=size)
+            self.log.emit("[download] %s (%s) from GitHub" % (name, human_bytes(size)))
+            download_started = time.monotonic()
+            result = self.github.download_asset(
+                asset["id"], lambda: sink, expected_size=size,
+                progress=self._progress("download " + name, size),
+                progress_interval=max(int(self.args.progress_mib * 1024 * 1024), 1),
+            )
+            self.log.emit(
+                "[download] %s done in %.0fs (%.2f MiB/s)"
+                % (name, time.monotonic() - download_started, size / 1048576.0 / max(time.monotonic() - download_started, 0.001))
+            )
             computed = result["digests"]
             if github_digest and computed.get("sha256") != github_digest:
                 raise AssetFailure(
@@ -831,7 +891,10 @@ class MirrorRunner:
             for item in index.get(name, []):
                 self.log.emit("[replace] %s: removing unverified Gitee copy id=%s" % (name, item["id"]))
                 self.gitee.delete_attach_file(release_id, item["id"])
-            uploaded = self.gitee.upload_attach_file(release_id, target, name)
+            self._check_budget()
+            uploaded = self.gitee.upload_attach_file(
+                release_id, target, name, progress=self._progress("upload " + name, size)
+            )
             authoritative = self._attach_item_by_id(release_id, uploaded.get("id")) or uploaded
             expected = {"sha256": github_digest} if github_digest else {"sha256": computed.get("sha256")}
             verdict = self._verify_gitee_file(release_id, authoritative, size, expected, algos)
@@ -873,7 +936,16 @@ class MirrorRunner:
             local_parts = [os.path.join(self.work_dir, "parts", part) for part in part_names]
             os.makedirs(os.path.dirname(local_parts[0]), exist_ok=True)
             sink = ShardSink(local_parts, self.args.shard_bytes, algorithms=algos)
-            result = self.github.download_asset(asset["id"], lambda: sink, expected_size=size)
+            download_started = time.monotonic()
+            result = self.github.download_asset(
+                asset["id"], lambda: sink, expected_size=size,
+                progress=self._progress("download " + name, size),
+                progress_interval=max(int(self.args.progress_mib * 1024 * 1024), 1),
+            )
+            self.log.emit(
+                "[download] %s done in %.0fs (%.2f MiB/s)"
+                % (name, time.monotonic() - download_started, size / 1048576.0 / max(time.monotonic() - download_started, 0.001))
+            )
             whole = result["digests"]
             if github_digest and whole.get("sha256") != github_digest:
                 raise AssetFailure(
@@ -913,11 +985,27 @@ class MirrorRunner:
                 self.gitee.delete_attach_file(release_id, item["id"])
                 item = None
             if item is None:
+                self._check_budget()
                 local_path = os.path.join(self.work_dir, "parts", part_name)
-                uploaded = self.gitee.upload_attach_file(release_id, local_path, part_name)
+                upload_started = time.monotonic()
+                uploaded = self.gitee.upload_attach_file(
+                    release_id, local_path, part_name,
+                    progress=self._progress("upload " + part_name, part["bytes"]),
+                )
                 item = self._attach_item_by_id(release_id, uploaded.get("id")) or uploaded
                 part["status"] = "uploaded"
                 part["attachId"] = uploaded.get("id")
+                self.log.emit(
+                    "[part] %s %s -> attach %s in %.0fs (%.2f MiB/s)"
+                    % (
+                        part_name,
+                        human_bytes(part["bytes"]),
+                        uploaded.get("id"),
+                        time.monotonic() - upload_started,
+                        part["bytes"] / 1048576.0 / max(time.monotonic() - upload_started, 0.001),
+                    )
+                )
+            self._check_budget()
             expected = {key: value for key, value in part["digests"].items() if key in algos}
             verdict = self._verify_gitee_file(release_id, item, part["bytes"], expected, algos)
             if not verdict["ok"]:
@@ -1201,6 +1289,7 @@ class MirrorRunner:
                     "uploaded": 0,
                     "skipped": 0,
                     "failed": 0,
+                    "deferred": 0,
                 },
             },
             "limits": {
@@ -1210,6 +1299,11 @@ class MirrorRunner:
             },
             "assets": [],
         }
+
+        self.deadline = None
+        if args.time_budget_minutes and args.time_budget_minutes > 0:
+            self.deadline = time.monotonic() + args.time_budget_minutes * 60.0
+            self.log.emit("[budget] deferring new transfers after %.0f minutes" % args.time_budget_minutes)
 
         self.work_dir = tempfile.mkdtemp(prefix="gitee-mirror-", dir=args.work_root)
         try:
@@ -1228,9 +1322,12 @@ class MirrorRunner:
 
             index = self._attach_index(release_id)
             failures = 0
+            deferred = 0
             for entry in entries:
                 name = entry["asset"]["name"]
                 try:
+                    if self.deadline is not None and time.monotonic() > self.deadline:
+                        raise BudgetExceeded("time budget reached before starting %s" % name)
                     if args.dry_run:
                         state = "present" if self._entry_present(entry, index) else "missing"
                         self.summary["assets"].append(self._asset_summary(entry, "planned-" + state, None))
@@ -1244,6 +1341,11 @@ class MirrorRunner:
                         self.summary["gates"]["assets"]["skipped"] += 1
                     self.summary["gates"]["assets"]["verified"] += 1
                     index = self._attach_index(release_id)
+                except BudgetExceeded as error:
+                    deferred += 1
+                    self.summary["gates"]["assets"]["deferred"] += 1
+                    self.summary["assets"].append(self._asset_summary(entry, "deferred", str(error)))
+                    self.log.emit("[deferred] %s: %s (re-run resumes)" % (name, error))
                 except (AssetFailure, MirrorError) as error:
                     failures += 1
                     self.summary["gates"]["assets"]["failed"] += 1
@@ -1259,8 +1361,7 @@ class MirrorRunner:
             if args.prune_unknown:
                 self._prune_unknown(release_id, index, wanted)
 
-            self.summary["ok"] = failures == 0
-            return self._finish(ok=failures == 0)
+            return self._finish(ok=failures == 0 and deferred == 0)
         finally:
             if not args.keep_work and self.work_dir:
                 shutil.rmtree(self.work_dir, ignore_errors=True)
@@ -1351,11 +1452,19 @@ class MirrorRunner:
 
     def _finish(self, ok):
         gates = self.summary["gates"]["assets"]
-        final_ok = bool(ok) and gates["failed"] == 0
+        final_ok = bool(ok) and gates["failed"] == 0 and gates.get("deferred", 0) == 0
         self.summary["ok"] = final_ok
         self.log.emit(
-            "[done] %s verified=%d uploaded=%d skipped=%d failed=%d exit=%d"
-            % (self.args.tag, gates["verified"], gates["uploaded"], gates["skipped"], gates["failed"], 0 if final_ok else 3)
+            "[done] %s verified=%d uploaded=%d skipped=%d failed=%d deferred=%d exit=%d"
+            % (
+                self.args.tag,
+                gates["verified"],
+                gates["uploaded"],
+                gates["skipped"],
+                gates["failed"],
+                gates.get("deferred", 0),
+                0 if final_ok else 3,
+            )
         )
         if self.args.summary_json:
             with open(self.args.summary_json, "w", encoding="utf-8") as handle:
@@ -1407,6 +1516,11 @@ def parse_args(argv):
     parser.add_argument("--min-free-mib", type=int, default=2048)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--progress-mib", type=float, default=64.0,
+                        help="emit one progress line per N MiB transferred (default 64)")
+    parser.add_argument("--time-budget-minutes", type=float, default=0.0,
+                        help="stop starting new transfers after N minutes and report deferred work "
+                             "(0 = no budget; a re-run resumes)")
     parser.add_argument("--ref-sha", default=None, help="commit SHA the mirrored tag must point at (ref gate)")
     parser.add_argument("--ref-verified", default="", help="set by the workflow after git ls-remote confirmed the ref")
     parser.add_argument("--summary-json", default=None)

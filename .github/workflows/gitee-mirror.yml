@@ -351,6 +351,11 @@ jobs:
             --shard-mib "$SHARD_MIB"
             --summary-json "${RUNNER_TEMP}/gitee-release-mirror-summary.json"
             --min-free-mib 2048
+            --progress-mib 64
+            # Keep the step bounded well inside the job timeout so a slow
+            # cross-border transfer ends with a truthful partial summary that
+            # the next run resumes instead of an opaque timeout.
+            --time-budget-minutes 300
           )
           if [ -n "$INCLUDE_ASSETS" ]; then FLAGS+=(--include-assets "$INCLUDE_ASSETS"); fi
           if [ "$DRY_RUN" = "true" ]; then FLAGS+=(--dry-run); fi
@@ -382,9 +387,9 @@ jobs:
                       summary.get("gates", {}).get("refs", {}).get("tag"),
                       summary.get("gates", {}).get("refs", {}).get("refVerifiedBeforeRun")),
                   "| release metadata | %s |" % release.get("status"),
-                  "| assets | verified %s / uploaded %s / skipped %s / failed %s (of %s) |" % (
+                  "| assets | verified %s / uploaded %s / skipped %s / failed %s / deferred %s (of %s) |" % (
                       gates.get("verified"), gates.get("uploaded"), gates.get("skipped"),
-                      gates.get("failed"), gates.get("total")),
+                      gates.get("failed"), gates.get("deferred"), gates.get("total")),
                   "| shard size | %s MiB |" % limits.get("shardMiB"),
                   "| dry run | %s |" % summary.get("dryRun"),
                   "| result | ok=%s |" % summary.get("ok"),
