@@ -295,8 +295,24 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(item.exists && item.isEnabled, "\(identifier) must stay enabled", file: file, line: line)
         capture("ide-web-fallback-overflow-\(identifier)")
         // Dismiss the menu through its own dismissal layer; the tap must not
-        // reach the editor.
+        // reach the editor. The dismissal assertion is scoped to the presented
+        // menu itself: `app.buttons[overflowLabel]` can also match a toolbar
+        // button that survives the probe (and a slow snapshot must not fail
+        // the reachability assertion above).
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
-        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: item)], timeout: 5)
+        XCTAssertTrue(overflowMenuClosed(app, timeout: 10), "the overflow menu must close", file: file, line: line)
+    }
+
+    /// True once the presented overflow menu is gone. Scoped to the menu
+    /// container's `menuItems` so a toolbar button that happens to share the
+    /// item's localized label can never keep this check open.
+    private func overflowMenuClosed(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let menu = app.menuItems.firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !menu.exists { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        return !menu.exists
     }
 }

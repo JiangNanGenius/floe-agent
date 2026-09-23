@@ -1220,6 +1220,12 @@ final class AppEnvironment: ObservableObject {
                 if !FileManager.default.fileExists(atPath: file.path) {
                     try Data("Floe IDE durable workspace\n".utf8).write(to: file, options: .atomic)
                 }
+                // The editor-kernel choice is a persisted user preference; seed
+                // the native default the IDE tests expect on every fixture
+                // launch, so a retry after a Web-kernel switch cannot start in
+                // the wrong kernel. A launch argument cannot do this: the
+                // argument domain outranks the value the switch itself writes.
+                UserDefaults.standard.set(true, forKey: "workspace.ide.nativeTextEditor")
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-engineering-fixture") {
