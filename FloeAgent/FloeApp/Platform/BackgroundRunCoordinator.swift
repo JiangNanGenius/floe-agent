@@ -1655,7 +1655,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // every subsequent frame, so a metric tick can never repage it.
         let title = linuxSurfacePager.current?.title ?? "Linux 环境"
         let text = linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)
-            .map(Self.linuxSurfacePageText(for:)) ?? String(localized: "background.linux.surface_running")
+            .map { Self.linuxSurfacePageText(for: $0) } ?? String(localized: "background.linux.surface_running")
         environment.backgroundVideoService.setRunContext(
             title: title,
             progress: text,
@@ -2497,8 +2497,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // A stale non-nil handle used to freeze the pager on the last
             // rendered page (device report: "2/2" forever, no rotation).
             defer {
-                guard let self else { return }
-                self.pipCarouselTask = nil
+                self?.pipCarouselTask = nil
             }
             var currentItemID: UUID? = nil
             var lastIndex = 0
