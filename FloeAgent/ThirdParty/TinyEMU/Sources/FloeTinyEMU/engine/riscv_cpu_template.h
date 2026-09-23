@@ -272,7 +272,11 @@ static void no_inline glue(riscv_cpu_interp_x, XLEN)(RISCVCPUState *s,
             if (unlikely(code_ptr >= code_end)) {
                 /* instruction is potentially half way between two
                    pages ? */
-                insn = *(uint16_t *)code_ptr;
+                /* FLOE-SMP: atomic half-word fetch, matching the atomic
+                   code stores (a bare read here was a C11 data race with
+                   another hart's code write: the compiler may widen,
+                   cache or tear it). */
+                insn = FLOE_RAM_LOAD((uint16_t *)code_ptr);
                 if ((insn & 3) == 3) {
                     /* instruction is half way between two pages */
                     if (unlikely(target_read_insn_u16(s, &insn_high, addr + 2)))

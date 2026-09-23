@@ -925,6 +925,11 @@ int floe_vm_get_stats(FloeVM *vm, FloeVMStats *out)
                     riscv_cpu_get_power_down(cpu) ? 1 : 0;
             }
         }
+        /* FLOE-SMP diagnostics: a machine without the hook (or a
+           single-hart VM) reports zeros via the wrapper. */
+        virt_machine_get_smp_diag(vm->m, &out->lock_order_violations,
+                                  &out->pte_ad_updates,
+                                  &out->pte_ad_conflicts);
     }
     pthread_mutex_unlock(&vm->api_lock);
     return 0;

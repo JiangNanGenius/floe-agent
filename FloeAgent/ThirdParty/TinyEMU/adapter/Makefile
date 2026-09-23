@@ -30,7 +30,8 @@ HOST_DIR ?=
 BUILD ?= out
 
 CC ?= cc
-CFLAGS := -O2 -Wall -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE \
+CFLAGS := -O2 -Wall -Werror=implicit-function-declaration \
+          -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE \
           -D_GNU_SOURCE -DCONFIG_VERSION=\"2019-12-21\" \
           -DCONFIG_SLIRP -DCONFIG_RISCV_MAX_XLEN=64 \
           -I$(TINYEMU_SRC)

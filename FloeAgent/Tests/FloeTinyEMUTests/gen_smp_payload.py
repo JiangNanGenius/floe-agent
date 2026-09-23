@@ -75,6 +75,10 @@ class Asm:
 
     # ---- layout helpers -------------------------------------------------
     def label(self, name):
+        # two definitions silently kept the last offset once (a phase
+        # function emitted per hart reused its jump labels and hart 0
+        # jumped into hart 1's copy); fail loudly instead.
+        assert name not in self.labels, f"duplicate label {name}"
         self.labels[name] = len(self.code) * 4
 
     def dlabel(self, name):
@@ -97,6 +101,10 @@ class Asm:
         self.fix.append((idx, target, "la", rd))
 
     def call(self, target):
+        # NOTE: `jal ra` clobbers ra. A routine that is itself CALLED must
+        # save/restore ra around any nested call (otherwise its own return
+        # ends up looping on the nested call's continuation -- exactly the
+        # bug the phase routines hit). Leaf routines do not need a frame.
         self.jal("ra", target)
 
     def j(self, target):
@@ -153,6 +161,14 @@ class Asm:
         self.addi(rd, rs, 0)
 
     def li(self, rd, val):
+        # Small negative values must sign-extend (addi from zero); the
+        # zero-extend path below is for 32-bit constants with bit 31 set
+        # (e.g. 0x80020000 MMIO addresses). Emitting -1 through the
+        # zero-extend path produced 0x00000000FFFFFFFF, which broke a
+        # 64-bit sentinel comparison in the epoch handshake.
+        if -2048 <= val <= 2047:
+            self.addi(rd, "zero", val)
+            return
         val &= 0xFFFFFFFFFFFFFFFF
         if val <= 0x7FFFFFFF:
             if val <= 2047:
@@ -330,6 +346,18 @@ AMOS_RES = FLAGS + 0x164      # u32: AMO+store serialization value
 ALIAS_RES = FLAGS + 0x168     # u32: alias SC status (expect 1=fail)
 PRINT_LOCK = FLAGS + 0x16C    # u32: guest console spinlock
 
+# audit-regression phase flags
+MMIO_RDY = FLAGS + 0x180      # 2 x u32: both harts ready to hammer MMIO
+MMIO_DONE = FLAGS + 0x188     # 2 x u32: MMIO AMO loop finished
+MMIO_LR_VAL = FLAGS + 0x190   # u32: value the MMIO LR read
+AD_READY = FLAGS + 0x194      # u32: hart1 epoch published (0xffffffff = end)
+AD_VALUE = FLAGS + 0x198      # u32: expected leaf target (0 = PAGE_A, 1 = PAGE_B)
+AD_ACK = FLAGS + 0x19C        # u32: hart0 acked the epoch
+AD_BAD = FLAGS + 0x1A0        # u32: mapping regressions detected
+AD_DONE = FLAGS + 0x1A4       # u32: producer finished all epochs
+FAIL_WHERE = FLAGS + 0x1A8    # u32: fail-site code for SMP-FAIL diagnostics
+SOLO_BAD = FLAGS + 0x1AC      # u32: mmio_solo SC-status anomalies
+
 PAGE_TEST = 0x80050000        # physical page used by the VA-alias test
 PT_ROOT = 0x80060000
 PT_L1 = 0x80061000
@@ -340,9 +368,19 @@ VA1 = 0x10000000              # alias 1 -> PAGE_TEST
 VA2 = 0x20000000              # alias 2 -> PAGE_TEST
 
 HTIF = 0x40008000
+CLINT_MSIP0 = 0x02000000      # MSIP for hart 0 (MMIO, one device word)
 CLINT_MSIP1 = 0x02000004
+CLINT_TCMP0 = 0x02004000      # mtimecmp[0] low word: plain RW device word
 FDT_ADDR = 0x1040             # riscv_build_fdt writes the dtb here
 TIMEOUT = 50000000
+
+# audit-regression phase parameters
+MMIO_AMO_N = 4000             # AMOADDs per hart on the shared device word
+PTE_AD_EPOCHS = 20000         # leaf replacements / walker iterations
+PAGE_A = 0x80051000           # leaf targets flipped by the PTE A/D phase
+PAGE_B = 0x80052000
+LEAF_A = ((PAGE_A >> 12) << 10) | 0x0F   # V|R|W|X, A/D clear on purpose
+LEAF_B = ((PAGE_B >> 12) << 10) | 0x0F
 
 # per-hart stacks (the reset state has sp == 0; every hart gets its own)
 STACK_TOP = 0x80031000
@@ -430,6 +468,16 @@ def common_routines(a):
     a.addi("sp", "sp", 16)
     a.ret()
 
+    # fail_at: a0 = fail-site code -> record it, then count the failure
+    a.label("fail_at")
+    a.addi("sp", "sp", -16)
+    a.sd("ra", "sp", 0)
+    a.li("t0", FAIL_WHERE)
+    a.sw("a0", "t0", 0)
+    a.ld("ra", "sp", 0)
+    a.addi("sp", "sp", 16)
+    a.j("fail")
+
     # puthex8: a0 = value -> 8 hex digits (putc-safe: only s0/s1/s2/a0, ra)
     a.label("puthex8")
     a.addi("sp", "sp", -32)
@@ -485,6 +533,241 @@ def common_routines(a):
     a.ret()
 
 
+def mmio_atomic_phase(a, is_h0):
+    """Audit regression: MMIO LR/SC and MMIO AMO.
+
+    Contract asserted here:
+      - LR to an MMIO (non-RAM) address performs the read with the device
+        lock only (never while holding the atomic lock: that order
+        deadlocks against virtio DMA, device -> atomic) and establishes
+        no reservation, so the following SC fails with status 1.
+      - Two harts AMOADDing one device word must be ordered: the whole
+        read-modify-write runs in ONE device critical section, so the
+        final value is exactly 2 * MMIO_AMO_N. The old per-access device
+        locks let both harts read the old value (lost updates).
+
+    Both harts run the same code; hart 0 is the one that checks the sum.
+    The lock-order invariant itself is counted by the engine
+    (FloeVMStats.lock_order_violations) and asserted by the host test.
+    """
+    hart = 0 if is_h0 else 1
+    pfx = "h0" if is_h0 else "h1"
+    a.label(f"{pfx}_mmio")
+    a.addi("sp", "sp", -16)          # called routine: preserve ra
+    a.sd("ra", "sp", 0)
+    # rendezvous so both harts hammer the device at the same time
+    a.li("t0", MMIO_RDY)
+    a.slli("t1", "s0", 2)
+    a.add("t0", "t0", "t1")
+    a.li("t2", 1)
+    a.sw("t2", "t0", 0)
+    a.li("s1", TIMEOUT)
+    a.label(f"{pfx}_mmio_rdy")
+    a.li("t0", MMIO_RDY)
+    a.lw("t1", "t0", 0)
+    a.bne("t1", "zero", f"{pfx}_mmio_rdy2")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", f"{pfx}_mmio_rdy")
+    a.li("a0", 1)
+    a.call("fail_at")
+    a.j(f"{pfx}_mmio_rdy2")
+    a.label(f"{pfx}_mmio_rdy2")
+    a.li("t0", MMIO_RDY)
+    a.lw("t1", "t0", 4)
+    a.bne("t1", "zero", f"{pfx}_mmio_lr")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", f"{pfx}_mmio_rdy2")
+    a.li("a0", 2)
+    a.call("fail_at")
+    # --- MMIO LR/SC: read only, no reservation, SC must fail ---
+    a.label(f"{pfx}_mmio_lr")
+    aa = "t0"
+    a.li(aa, CLINT_MSIP0)
+    a.li("t1", 1)
+    a.sw("t1", aa, 0)              # plain MMIO store: msip[0] = 1
+    a.lr_w("t1", aa)               # MMIO LR: device lock only, no reservation
+    a.li("t2", MMIO_LR_VAL)
+    a.sw("t1", "t2", 0)            # record what the LR read
+    a.li("t2", 1)
+    a.bne("t1", "t2", f"{pfx}_mmio_lr_bad")
+    a.li("t2", 55)
+    a.sc_w("t3", "t2", aa)         # must fail (status 1): no reservation
+    a.li("t4", 1)
+    a.beq("t3", "t4", f"{pfx}_mmio_lr_ok")
+    a.li("a0", 3)
+    a.call("fail_at")
+    a.j(f"{pfx}_mmio_lr_ok")
+    a.label(f"{pfx}_mmio_lr_bad")
+    a.li("a0", 4)
+    a.call("fail_at")
+    a.label(f"{pfx}_mmio_lr_ok")
+    # NOTE: msip[0] is deliberately NOT cleared here. Both harts write 1 to
+    # the same device word, so the LR always observes 1; clearing it here
+    # let hart 1 clear between hart 0's store and LR, which looked like an
+    # LR/SC contract failure but was a race in this payload. Hart 0 clears
+    # it after both harts finished the phase (see mmio_ok).
+    # --- MMIO AMOADD serialization on one shared device word ---
+    a.li("s2", CLINT_TCMP0)
+    a.li("s3", 1)
+    a.li("s1", MMIO_AMO_N)
+    a.label(f"{pfx}_mmio_amo_loop")
+    a.amoadd_w("t3", "s3", "s2")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", f"{pfx}_mmio_amo_loop")
+    a.li("t0", MMIO_DONE)
+    a.slli("t1", "s0", 2)
+    a.add("t0", "t0", "t1")
+    a.li("t2", 1)
+    a.sw("t2", "t0", 0)
+    if not is_h0:
+        a.ld("ra", "sp", 0)
+        a.addi("sp", "sp", 16)
+        a.ret()
+        return                  # do not emit hart 0's block for hart 1
+    # hart 0: wait for hart 1, then the shared word must hold 2 * N
+    a.li("s1", TIMEOUT)
+    a.label(f"{pfx}_mmio_wait")
+    a.li("t0", MMIO_DONE)
+    a.lw("t1", "t0", 4)
+    a.bne("t1", "zero", f"{pfx}_mmio_check")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", f"{pfx}_mmio_wait")
+    a.li("a0", 5)
+    a.call("fail_at")
+    a.j(f"{pfx}_mmio_done")
+    a.label(f"{pfx}_mmio_check")
+    a.li("t0", CLINT_TCMP0)
+    a.lw("t1", "t0", 0)
+    a.li("t2", 2 * MMIO_AMO_N)
+    a.beq("t1", "t2", f"{pfx}_mmio_ok")
+    a.li("a0", 6)
+    a.call("fail_at")
+    a.j(f"{pfx}_mmio_done")
+    a.label(f"{pfx}_mmio_ok")
+    a.li("t0", CLINT_MSIP0)        # hart 1 finished its LR part (DONE flag)
+    a.sw("zero", "t0", 0)          # -> safe to clear msip[0] again
+    a.la("a0", "str_mmio_ok")
+    a.call("puts")
+    a.label(f"{pfx}_mmio_done")
+    a.ld("ra", "sp", 0)
+    a.addi("sp", "sp", 16)
+    a.ret()
+
+
+def pte_ad_phase(a, is_h0):
+    """Audit regression: page-walk A/D update vs concurrent PTE replacement.
+
+    hart 1 flips one leaf PTE (A/D clear) between two physical pages each
+    epoch and publishes the expected target; hart 0 forces a walk (sfence
+    + access through the alias) and then checks the entry still points
+    where hart 1 published it. A load+store A/D update (not an atomic
+    RMW) overwrites the newer entry with the stale one whenever the
+    replacement lands inside the walk, which this check detects. The
+    engine counts locked updates and skipped conflicts
+    (FloeVMStats.pte_ad_updates / pte_ad_conflicts) so the host test can
+    show the window was exercised.
+    """
+    a.label("h0_pte_ad" if is_h0 else "h1_pte_ad")
+    a.addi("sp", "sp", -16)          # called routine: preserve ra
+    a.sd("ra", "sp", 0)
+    if not is_h0:
+        # producer: alternate the leaf, publish, wait for the ack
+        a.li("s1", PTE_AD_EPOCHS)
+        a.li("s2", 0)
+        a.label("h1_ad_loop")
+        a.addi("s2", "s2", 1)
+        a.andi("t0", "s2", 1)          # 0 -> PAGE_A, 1 -> PAGE_B
+        a.li("t1", LEAF_A)
+        a.li("t2", LEAF_B)
+        a.beq("t0", "zero", "h1_ad_pick")
+        a.mv("t1", "t2")
+        a.label("h1_ad_pick")
+        a.li("t2", PT_L2A)
+        a.sd("t1", "t2", 0)            # physical leaf store (A/D clear)
+        a.sfence_vma("zero", "zero")
+        a.li("t0", AD_VALUE)
+        a.andi("t3", "s2", 1)          # even epoch -> PAGE_A, odd -> PAGE_B
+        a.sw("t3", "t0", 0)            # expected target (0/1)
+        a.li("t0", AD_READY)
+        a.sw("s2", "t0", 0)            # publish the epoch
+        a.li("s3", TIMEOUT)
+        a.label("h1_ad_wait")
+        a.li("t0", AD_ACK)
+        a.lw("t1", "t0", 0)
+        a.beq("t1", "s2", "h1_ad_acked")
+        a.addi("s3", "s3", -1)
+        a.bne("s3", "zero", "h1_ad_wait")
+        a.li("a0", 7)
+        a.call("fail_at")
+        a.j("h1_ad_end")
+        a.label("h1_ad_acked")
+        a.addi("s1", "s1", -1)
+        a.bne("s1", "zero", "h1_ad_loop")
+        a.label("h1_ad_end")
+        a.li("t0", AD_DONE)
+        a.li("t1", 1)
+        a.sw("t1", "t0", 0)            # explicit end flag, no sentinel
+        a.ld("ra", "sp", 0)
+        a.addi("sp", "sp", 16)
+        a.ret()
+        return                  # do not emit the consumer for hart 1
+    # consumer: walk the alias twice (A then A|D) and verify the target
+    a.call("alias_enable")
+    a.li("s6", 0)                      # last epoch seen
+    a.label("h0_ad_loop")
+    a.li("s1", TIMEOUT)
+    a.label("h0_ad_wait")
+    a.li("t0", AD_DONE)
+    a.lw("t2", "t0", 0)
+    a.bne("t2", "zero", "h0_ad_done")
+    a.li("t0", AD_READY)
+    a.lw("t1", "t0", 0)
+    a.bne("t1", "s6", "h0_ad_go")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "h0_ad_wait")
+    a.li("a0", 8)
+    a.call("fail_at")
+    a.j("h0_ad_done")
+    a.label("h0_ad_go")
+    a.mv("s6", "t1")                   # s6 = epoch
+    a.li("t0", AD_VALUE)
+    a.lw("s7", "t0", 0)                # s7 = expected target (0/1)
+    a.sfence_vma("zero", "zero")
+    a.li("t3", VA1)
+    a.ld("t4", "t3", 0)                # walk 1: must set A
+    a.sfence_vma("zero", "zero")
+    a.sd("zero", "t3", 0)              # walk 2: must set A|D
+    # verify the leaf still targets the published page
+    a.li("t0", PT_L2A)
+    a.ld("t1", "t0", 0)
+    a.srli("t1", "t1", 10)             # PPN
+    a.li("t2", PAGE_A >> 12)
+    a.beq("s7", "zero", "h0_ad_cmp")
+    a.li("t2", PAGE_B >> 12)
+    a.label("h0_ad_cmp")
+    a.beq("t1", "t2", "h0_ad_ok")
+    a.li("t0", AD_BAD)
+    a.li("t1", 1)
+    a.amoadd_w("t2", "t1", "t0")
+    a.li("a0", 9)
+    a.call("fail_at")
+    a.label("h0_ad_ok")
+    a.li("t0", AD_ACK)
+    a.sw("s6", "t0", 0)                # ack the epoch
+    a.j("h0_ad_loop")
+    a.label("h0_ad_done")
+    a.call("alias_disable")
+    a.li("t0", AD_BAD)
+    a.lw("t1", "t0", 0)
+    a.bne("t1", "zero", "h0_ad_ret")
+    a.la("a0", "str_ad_ok")
+    a.call("puts")
+    a.label("h0_ad_ret")
+    a.ld("ra", "sp", 0)
+    a.addi("sp", "sp", 16)
+    a.ret()
+
+
 def fdt_dump(a):
     """Hex-dump the generated device tree (FDT_ADDR) over HTIF.
 
@@ -533,8 +816,12 @@ def fdt_dump(a):
 
 
 def trap_handler(a):
-    # M-mode trap handler: IPI (msip) -> count+ack; anything else -> report
+    # M-mode trap handler: IPI (msip) -> count+ack; anything else is a hard
+    # failure: clear MPRV first (the HTIF MMIO address is only mapped when
+    # the alias window is active), print hart/cause/epc and power off, so a
+    # guest bug can never turn into a silent trap loop.
     a.label("trap_handler")
+    a.csrr("s5", 0x341)          # mepc
     a.csrr("t0", 0x342)          # mcause
     a.srli("t1", "t0", 31)
     a.beq("t1", "zero", "trap_bad")
@@ -553,11 +840,26 @@ def trap_handler(a):
     a.sw("t1", "t0", 0)
     a.mret()
     a.label("trap_bad")
+    a.li("t0", (1 << 17))        # mstatus.MPRV = 0 (and MPP = M)
+    a.csrrc("zero", 0x300, "t0")
+    a.li("t0", (3 << 11))
+    a.csrrc("zero", 0x300, "t0")
+    a.sfence_vma("zero", "zero")
     a.la("a0", "str_trap")
     a.call("puts")
-    a.label("trap_park")
-    a.wfi()
-    a.j("trap_park")
+    a.mv("a0", "s0")             # hartid
+    a.call("puthex4")
+    a.li("a0", 32)
+    a.call("putc")
+    a.csrr("a0", 0x342)          # mcause
+    a.call("puthex8")
+    a.li("a0", 32)
+    a.call("putc")
+    a.mv("a0", "s5")             # mepc
+    a.call("puthex8")
+    a.li("a0", 10)
+    a.call("putc")
+    a.j("poweroff")
 
 
 def build_smp_test():
@@ -834,6 +1136,12 @@ def build_smp_test():
     a.sd("t1", "t0", 0)                # root[0] -> PT_L1
     a.li("t1", ((PT_L1B >> 12) << 10) | 1)
     a.sd("t1", "t0", 16)               # root[2] -> PT_L1B
+    # root[1] = 1GB identity leaf for the MMIO window (0x40000000-0x7fffffff)
+    # so HTIF/CLINT/PLIC stay reachable while MPRV is set (a real kernel
+    # maps its device window too; the alias VAs are unaffected)
+    a.li("t0", PT_ROOT)
+    a.li("t1", ((0x40000000 >> 12) << 10) | 0xCF)
+    a.sd("t1", "t0", 8)
     a.li("t0", PT_L1)
     a.li("t1", ((PT_L2A >> 12) << 10) | 1)
     a.sd("t1", "t0", 0x400)            # l1[0x80] -> PT_L2A
@@ -898,6 +1206,10 @@ def build_smp_test():
     a.la("a0", "str_adv_ok")
     a.call("puts")
 
+    # ---- audit regressions: MMIO atomics/lock order, PTE A/D vs replacement
+    a.call("h0_mmio")
+    a.call("h0_pte_ad")
+
     a.label("h0_fdt")
     a.call("fdt_dump")
 
@@ -927,6 +1239,11 @@ def build_smp_test():
     a.la("a0", "str_at")
     a.call("puts")
     a.li("t0", FAILCODE)
+    a.lw("a0", "t0", 0)
+    a.call("puthex8")
+    a.la("a0", "str_at2")
+    a.call("puts")
+    a.li("t0", FAIL_WHERE)
     a.lw("a0", "t0", 0)
     a.call("puthex8")
     a.la("a0", "str_nl")
@@ -1045,6 +1362,10 @@ def build_smp_test():
     a.label("h1_alias_dis")
     a.call("alias_disable")
 
+    # ---- audit regressions (hart 1 side)
+    a.call("h1_mmio")
+    a.call("h1_pte_ad")
+
     a.label("h1_final")
     a.fence_rw()
     a.li("t0", FINAL)
@@ -1090,6 +1411,10 @@ def build_smp_test():
     a.j("poweroff")
 
     fdt_dump(a)
+    mmio_atomic_phase(a, True)
+    mmio_atomic_phase(a, False)
+    pte_ad_phase(a, True)
+    pte_ad_phase(a, False)
     trap_handler(a)
     common_routines(a)
 
@@ -1114,6 +1439,12 @@ def build_smp_test():
     a.asciz("SMP-FAIL ")
     a.dlabel("str_nl")
     a.asciz("\n")
+    a.dlabel("str_at2")
+    a.asciz(" site=")
+    a.dlabel("str_mmio_ok")
+    a.asciz("AMOMMIO-OK\n")
+    a.dlabel("str_ad_ok")
+    a.asciz("PTEAD-OK\n")
     a.dlabel("str_up_ok")
     a.asciz("UP-OK\n")
     a.dlabel("str_up_bad")
@@ -1169,9 +1500,62 @@ def build_perf(dual):
     return a.blob(), a
 
 
+def build_mmio_solo():
+    """Minimal MMIO-LR payload: hart 0 performs LR/SC on a device word and
+    powers off; hart 1 parks immediately. No other hart competes for the
+    device lock, so the pre-fix code (LR taking the atomic lock across the
+    MMIO read) cannot deadlock here -- it only records the forbidden
+    lock order, which gives the host test a fast deterministic signal for
+    exactly that regression. The concurrent case (and its deadlock) is
+    covered by smp_test.bin's MMIO phase."""
+    a = Asm()
+    a.label("_start")
+    setup_stack(a)
+    a.csrr("s0", 0xF14)
+    a.la("t0", "trap_handler")
+    a.csrw(0x305, "t0")
+    a.bne("s0", "zero", "solo_park")
+    a.li("s1", 2000)
+    a.li("s2", CLINT_MSIP0)
+    a.li("s3", 0)                  # SC-status anomaly count
+    a.label("solo_loop")
+    a.li("t0", 1)
+    a.sw("t0", "s2", 0)            # MMIO store
+    a.lr_w("t1", "s2")             # MMIO LR: device lock only (invariant)
+    a.li("t2", 1)
+    a.sc_w("t3", "t2", "s2")       # no reservation on MMIO -> status 1
+    a.li("t4", 1)
+    a.beq("t3", "t4", "solo_ok")
+    a.addi("s3", "s3", 1)          # count an SC that did not fail
+    a.label("solo_ok")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "solo_loop")
+    a.sw("zero", "s2", 0)
+    a.li("t0", SOLO_BAD)
+    a.sw("s3", "t0", 0)
+    a.la("a0", "str_solo")
+    a.call("puts")
+    a.mv("a0", "s3")
+    a.call("puthex8")
+    a.li("a0", 10)
+    a.call("putc")
+    a.j("poweroff")
+    a.label("solo_park")
+    a.wfi()
+    a.j("solo_park")
+    trap_handler(a)
+    common_routines(a)
+    a.dlabel("str_trap")
+    a.asciz("TRAP ")
+    a.dlabel("str_solo")
+    a.asciz("SOLO-BAD=")
+    return a.blob(), a
+
+
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else "."
     for name, (blob, asm) in [("smp_test.bin", build_smp_test()),
+                              ("mmio_solo.bin", build_mmio_solo()),
                               ("perf_dual.bin", build_perf(True)),
                               ("perf_single.bin", build_perf(False))]:
         with open(f"{outdir}/{name}", "wb") as f:

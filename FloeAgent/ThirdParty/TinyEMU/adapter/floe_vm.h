@@ -148,6 +148,16 @@ typedef struct {
     int host_threads;                  /* hart worker threads spawned (0 in UP mode) */
     uint64_t hart_insns[FLOE_VM_MAX_VCPU];   /* retired insns per hart */
     int hart_powered_down[FLOE_VM_MAX_VCPU]; /* hart in WFI power-down */
+    /* FLOE-SMP invariants/diagnostics (0 on a single-hart VM):
+     * lock_order_violations must stay 0 (a device-lock acquisition while
+     * holding the atomic lock deadlocks against virtio DMA, which takes
+     * device -> atomic); pte_ad_updates counts page-walk A/D updates
+     * applied, pte_ad_conflicts the times a walk skipped its update
+     * because the PTE changed under it (a walk must never clobber a
+     * concurrent replacement). */
+    uint64_t lock_order_violations;
+    uint64_t pte_ad_updates;
+    uint64_t pte_ad_conflicts;
 } FloeVMStats;
 
 /* FLOE-SMP: link-time capability query of this adapter/engine pair.

@@ -234,6 +234,7 @@ static int extract_fdt(const char *out, uint8_t *dtb, size_t dtb_cap)
 
 static const char *SMP_BIN = "smp_test.bin";
 static const char *PERF_DUAL_BIN = "perf_dual.bin";
+static const char *MMIO_SOLO_BIN = "mmio_solo.bin";
 static const char *PERF_SINGLE_BIN = "perf_single.bin";
 
 static void test_capability(void)
@@ -260,21 +261,48 @@ static void test_smp_functional(void)
     CHECK(strstr(out, "CODE-OK\n") != NULL, "CODE-OK missing (cross-hart code)");
     CHECK(strstr(out, "ADV-OK\n") != NULL,
           "ADV-OK missing (ordinary-store/AMO+store/VA-alias adversarial)");
+    CHECK(strstr(out, "AMOMMIO-OK\n") != NULL,
+          "AMOMMIO-OK missing (MMIO AMO must be one device critical section)");
+    CHECK(strstr(out, "PTEAD-OK\n") != NULL,
+          "PTEAD-OK missing (page-walk A/D vs concurrent PTE replacement)");
     CHECK(strstr(out, "TRAP") == NULL, "guest trap: %.80s", out);
     CHECK(strstr(out, "SMP-OK\n") != NULL, "SMP-OK missing (failcnt path)");
     CHECK(strstr(out, "SMP-FAIL") == NULL, "SMP-FAIL in output");
+
+    /* Audit invariants (see riscv_cpu_priv.h / floe_vm.h):
+       - lock_order_violations counts device-lock acquisitions made while
+         the hart already holds the atomic lock. Virtio DMA takes
+         device -> atomic, so that order deadlocks; the payload drives
+         MMIO LR/SC/AMO through the device layer, so a regression in the
+         LR/MMIO split would show up here deterministically.
+       - pte_ad_updates counts page-walk A/D updates applied under the
+         atomic lock; the PTE phase forces them (A/D-clear leaves). A walk
+         that went back to a plain load+store would either stop counting
+         or clobber a replacement (which the payload detects as a mapping
+         regression and the guest would report as a failure). */
+    CHECK(r.stats.lock_order_violations == 0,
+          "lock order violations=%" PRIu64 " (atomic -> device)",
+          r.stats.lock_order_violations);
+    CHECK(r.stats.pte_ad_updates > 0, "pte_ad_updates=%" PRIu64,
+          r.stats.pte_ad_updates);
+    printf("smp: lock_order_violations=%" PRIu64 " pte_ad_updates=%" PRIu64
+           " pte_ad_conflicts=%" PRIu64 "\n",
+           r.stats.lock_order_violations, r.stats.pte_ad_updates,
+           r.stats.pte_ad_conflicts);
 
     /* per-hart stats: both harts retired instructions */
     CHECK(r.stats.vcpu_count == 2, "stats.vcpu_count=%d", r.stats.vcpu_count);
     CHECK(r.stats.host_threads == 2, "stats.host_threads=%d",
           r.stats.host_threads);
-    /* Spin-wait iterations (and therefore the exact counts) depend on
-       host scheduling, so only require that both harts retired real
-       guest work: hart1 runs >=200 AMO + 100 LR/SC iterations plus the
-       IPI/code/adversarial phases before parking. */
+    /* Spin-wait iterations (and therefore the exact counts) depend on how
+       the two host threads interleave; measured over 10 dual runs: hart0
+       618K-635K, hart1 3.7K-38K. Both bounds stay well below the minimum
+       while still failing a hart that parked early: hart1 must at least
+       run its 200 AMO + 100 LR/SC iterations and the phase protocol
+       (>=1.1K instructions), hart0 must run its waits/report path. */
     CHECK(r.stats.hart_insns[0] > 200000, "hart0 insns=%" PRIu64,
           r.stats.hart_insns[0]);
-    CHECK(r.stats.hart_insns[1] > 8000, "hart1 insns=%" PRIu64,
+    CHECK(r.stats.hart_insns[1] > 2000, "hart1 insns=%" PRIu64,
           r.stats.hart_insns[1]);
 
     /* FDT: 2 cpu nodes, clint/plic interrupt maps widened to 2 harts */
@@ -295,6 +323,27 @@ static void test_smp_functional(void)
         CHECK(info.plic_irq_cells == 8, "plic cells=%d (want 8 = 2 harts)",
               info.plic_irq_cells);
     }
+    free(r.sink.buf);
+}
+
+/* Deterministic invariant test for the audit findings: MMIO LR and MMIO
+ * AMO must not be performed while holding the machine atomic lock, and the
+ * walk's A/D update must be a locked read-modify-write. The payload runs
+ * one hart only on the MMIO path (the other parks), so a regression cannot
+ * deadlock here: it just records the forbidden order, which fails fast. */
+static void test_smp_invariants(void)
+{
+    RunResult r;
+    memset(&r, 0, sizeof(r));
+    r.bios_path = MMIO_SOLO_BIN;
+    r.vcpu_count = 2;
+    r.max_slices = 20000;
+    run_vm(&r);
+    CHECK(r.rc == 1, "mmio solo rc=%d (want poweroff=1)", r.rc);
+    CHECK(r.stats.lock_order_violations == 0,
+          "mmio solo: lock order violations=%" PRIu64
+          " (device lock taken while holding the atomic lock)",
+          r.stats.lock_order_violations);
     free(r.sink.buf);
 }
 
@@ -501,6 +550,7 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
     test_capability();
+    test_smp_invariants();
     test_smp_functional();
     test_up_compat();
     test_stop_cancel();

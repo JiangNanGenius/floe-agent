@@ -18,7 +18,8 @@ TINYEMU_SRC ?= $(TINYEMU_DIR)/../../../Local/Private/tinyemu-vendor/src/tinyemu-
 BUILD ?= ../../../Local/Scratch/floetinyemu-smp-tests/build
 MACOS ?= 1
 
-PAYLOADS := $(BUILD)/smp_test.bin $(BUILD)/perf_dual.bin $(BUILD)/perf_single.bin
+PAYLOADS := $(BUILD)/smp_test.bin $(BUILD)/perf_dual.bin $(BUILD)/perf_single.bin \
+            $(BUILD)/mmio_solo.bin
 
 .PHONY: all test clean payloads lib
 all: $(BUILD)/smp_host_test payloads

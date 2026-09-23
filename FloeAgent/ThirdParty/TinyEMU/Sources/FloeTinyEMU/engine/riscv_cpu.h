@@ -63,6 +63,20 @@ typedef struct RISCVSMPCpuArray {
     RISCVCPUState *cpus[RISCV_SMP_MAX_HARTS];
     void *atomic_lock;
     void *device_lock;
+    /* FLOE-SMP diagnostics (host tests assert these):
+     * lock_order_violations counts device-lock acquisitions made while
+     * the hart already holds the atomic lock. That order (atomic ->
+     * device) is the documented forbidden one: virtio DMA takes
+     * device -> atomic, so the two orders together deadlock. The count
+     * must stay 0.
+     * pte_ad_updates counts locked A/D read-modify-writes done by the
+     * page walker; pte_ad_conflicts counts the times a concurrent PTE
+     * replacement was detected and the walker skipped its update instead
+     * of clobbering the newer value (the load+store it replaced was not
+     * an atomic RMW). */
+    uint64_t lock_order_violations;
+    uint64_t pte_ad_updates;
+    uint64_t pte_ad_conflicts;
 } RISCVSMPCpuArray;
 
 typedef struct {

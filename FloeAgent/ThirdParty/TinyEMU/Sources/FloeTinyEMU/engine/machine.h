@@ -151,6 +151,13 @@ struct VirtMachineClass {
                                                   int cpu_idx);
     void (*virt_machine_interp_cpu)(VirtMachine *s, int cpu_idx,
                                     int max_exec_cycle);
+    /* FLOE-SMP diagnostics (NULL on machines without SMP): counts the
+     * forbidden device-lock-under-atomic-lock order and the page-walk A/D
+     * read-modify-write results. See RISCVSMPCpuArray. */
+    void (*virt_machine_get_smp_diag)(VirtMachine *s,
+                                      uint64_t *lock_order_violations,
+                                      uint64_t *pte_ad_updates,
+                                      uint64_t *pte_ad_conflicts);
 };
 
 extern const VirtMachineClass riscv_machine_class;
@@ -192,6 +199,19 @@ static inline struct RISCVCPUState *virt_machine_get_cpu(VirtMachine *s,
         return NULL;
     return s->vmc->virt_machine_get_cpu(s, cpu_idx);
 }
+static inline void virt_machine_get_smp_diag(VirtMachine *s,
+                                             uint64_t *lock_order_violations,
+                                             uint64_t *pte_ad_updates,
+                                             uint64_t *pte_ad_conflicts)
+{
+    *lock_order_violations = 0;
+    *pte_ad_updates = 0;
+    *pte_ad_conflicts = 0;
+    if (s->vmc->virt_machine_get_smp_diag)
+        s->vmc->virt_machine_get_smp_diag(s, lock_order_violations,
+                                          pte_ad_updates, pte_ad_conflicts);
+}
+
 static inline void virt_machine_interp_cpu(VirtMachine *s, int cpu_idx,
                                            int max_exec_cycle)
 {

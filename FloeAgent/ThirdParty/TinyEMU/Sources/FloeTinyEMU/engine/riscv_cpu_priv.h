@@ -293,6 +293,22 @@ static int riscv_smp_amo(RISCVCPUState *s, target_ulong addr,
                          uint64_t *pval, uint64_t val2, int size_log2,
                          uint32_t op27);
 
+/* FLOE-SMP: lock-order invariant check. Declared here (not only defined
+ * in riscv_cpu.c) because the MMIO slow paths call it before its
+ * definition; the Swift package wrapper compiles riscv_cpu.c with
+ * implicit function declarations as errors. */
+static inline void smp_note_device_lock(RISCVCPUState *s);
+
+/* FLOE-SMP: page-walk A/D update. Sets the A (and D for a write) bits on
+ * the PTE this walk loaded with a locked read-modify-write that skips the
+ * store when the entry changed under us, and runs under the atomic lock
+ * when the walk itself is not already inside it (a plain load + store can
+ * lose another hart's D bit and can clobber a concurrent kernel mapping
+ * replacement with the stale entry). */
+static void riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
+                                     target_ulong expect, target_ulong bits,
+                                     int pte_size_log2);
+
 /* FLOE-SMP: guest RAM words are shared between the hart host threads, so
  * every RAM access must be a C11 atomic operation to keep the formally
  * defined memory model (plain concurrent accesses would be data races).
