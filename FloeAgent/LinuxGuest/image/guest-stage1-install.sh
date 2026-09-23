@@ -93,6 +93,18 @@ ip route add default via 10.0.2.2 >>"$LOG" 2>&1 || true
 if [ ! -s /etc/resolv.conf ]; then
     printf 'nameserver 10.0.2.3\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/etc/resolv.conf
 fi
+
+# The official Debian container rootfs may use mirror+file URIs that ask APT
+# to fstat a local mirror-list fd. That method fails on this guest kernel
+# ("Unable to determine file size for fd"), despite working network access.
+# Keep the image's suites, components and Signed-By values, but use Debian's
+# direct HTTPS mirrors for the image build and the installed guest.
+if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+    sed -i \
+        -e 's|mirror+file:/etc/apt/mirrors/debian.list|https://deb.debian.org/debian|g' \
+        -e 's|mirror+file:/etc/apt/mirrors/debian-security.list|https://security.debian.org/debian-security|g' \
+        /etc/apt/sources.list.d/debian.sources
+fi
 if ping -c1 -W3 10.0.2.2 >>"$LOG" 2>&1; then
     mark PING_OK
 else
