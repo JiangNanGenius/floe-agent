@@ -270,6 +270,12 @@ jobs:
             --image-evidence "${{ runner.temp }}/floe-image-evidence" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/$IMAGE_RUN" \
             $EXTRA 2>&1 | tee "${{ runner.temp }}/floe-sources.log"
+          # The collector ran under sudo and leaves its output tree root-owned;
+          # the boot-association/staging/upload-preparation steps below run as
+          # the invoking user and must write into it (run 35923812691 failed
+          # here with EACCES). Hand the tree back, exactly like the image job
+          # does for its evidence bundle.
+          sudo chown -R "$(id -u):$(id -g)" "${{ runner.temp }}/floe-sources" 2>/dev/null || true
 
       - name: Boot-file association — pinned image bytes vs any freshly rebuilt kernel+bbl
         if: always()

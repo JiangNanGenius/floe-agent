@@ -49,8 +49,10 @@
 #                         (default: basic). The recipe is validated before
 #                         any heavy work; a missing/invalid recipe aborts the
 #                         build with the exact path (owner job-6f5ac974858c47c2
-#                         D). Non-basic templates get a "-NAME" image id
-#                         suffix so the artifacts cannot be confused.
+#                         D). The manifest id is always unique and versioned:
+#                         floe-debian13-riscv64-<daily>-<template>-r<recipe
+#                         content hash>; it never reuses the published
+#                         plain-id of the pre-template image.
 #   --image-id ID         manifest id (default: derived from the Debian build)
 #   --run-url URL         qualification run URL recorded in the manifest
 #   --source-ref REF      git commit recorded in the provenance source URLs
@@ -204,12 +206,31 @@ daily_build="$(pin 'p["debian_image"]["daily_build"]')"
 patch_marker="$(pin 'p["engine"]["required_patch_marker"]')"
 cmdline="console=hvc0 root=/dev/vda rw loglevel=4"
 if [ -z "$image_id" ]; then
-    image_id="floe-debian13-riscv64-$(printf '%s' "$daily_build" | tr -d '-')"
-    # Only the non-default templates get a suffix; basic keeps the historical
-    # id so existing artifacts and evidence stay unambiguous.
-    if [ "$template" != "basic" ]; then
-        image_id="$image_id-$template"
-    fi
+    # Template images are NEW versioned artifacts: they must never reuse the
+    # published plain id `floe-debian13-riscv64-<daily>` (run 35923812691
+    # showed the collision breaks C5 prepare and user upgrades — same id,
+    # different disk digest). Both basic and named templates therefore carry
+    # the template name plus a stable content version derived from the
+    # recipe's semantic fields (name/packages/pypi): a recipe edit that
+    # changes what is installed re-versions the id, while description-only
+    # edits keep it stable.
+    template_rev="$(python3 - "$recipe_path" <<'PY'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    recipe = json.load(handle)
+semantic = {
+    "name": recipe.get("name"),
+    "packages": recipe.get("packages") or {},
+    "pypi": recipe.get("pypi") or {},
+}
+canonical = json.dumps(semantic, sort_keys=True, separators=(",", ":"))
+print(hashlib.sha512(canonical.encode("utf-8")).hexdigest()[:12])
+PY
+)"
+    image_id="floe-debian13-riscv64-$(printf '%s' "$daily_build" | tr -d '-')-${template}-r${template_rev}"
 fi
 runner_src="$repo/FloeAgent/LinuxGuest/runner/floe_exec.c"
 [ -f "$runner_src" ] || die "runner source not found: $runner_src"
