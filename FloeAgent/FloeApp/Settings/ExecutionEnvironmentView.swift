@@ -192,20 +192,13 @@ struct ExecutionEnvironmentView: View {
         )
     }
 
-    /// Only measured values are shown; a missing sample renders "—", and the
-    /// guest GPU is reported unavailable because TinyEMU has no GPU
-    /// passthrough (graphics run through native Apple frameworks instead).
+    /// Only measured Linux runtime values are shown; a missing sample renders "—".
     @ViewBuilder
     private func metricsRows(_ metrics: BackgroundWorkMetrics?) -> some View {
         LabeledContent("模拟器 CPU", value: percentText(metrics?.emulatorCPUFraction))
         LabeledContent("客户机 CPU", value: percentText(metrics?.guestCPUFraction))
         LabeledContent("客户机内存", value: memoryText(metrics))
         LabeledContent("网络流量", value: networkText(metrics))
-        LabeledContent("GPU") {
-            Text("不可用（TinyEMU 无 GPU 直通；图形使用原生框架）")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
     }
 
     private func percentText(_ fraction: Double?) -> String {
