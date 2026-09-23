@@ -14,6 +14,11 @@
 // Shared policy (identical across formats, so a tool caller cannot get a
 // weaker bound through one extension):
 //   * entry cap and total-uncompressed cap from `ArchiveLimits`
+//   * the compressed decoders enforce that cap *while decoding* (before a
+//     produced chunk is appended) and poll cancellation on the same path, so
+//     an expansion bomb fails with bounded memory instead of being buffered
+//     and rejected afterwards; bzip2 decompression is refused entirely
+//     because its one-shot decoder cannot be bounded before allocation
 //   * sanitized entry names; absolute paths, `..`, control characters and
 //     backslash smuggling are skipped and counted
 //   * existing outputs are never overwritten; writes are staged beside the
@@ -76,9 +81,10 @@ public struct ArchiveLimits: Sendable, Equatable {
     public var maxEntries: Int
     public var maxTotalBytes: Int64
     public var maxListedEntries: Int
-    /// bzip2 is one-shot (SWCompression) and multi-member gzip files cannot
-    /// be streamed by the raw DEFLATE decoder; those buffered paths are
-    /// capped, and the summary states the buffered path was used.
+    /// One-shot buffering cap for the bzip2 *creation* paths (SWCompression
+    /// compresses in memory). bzip2 decompression is refused entirely: its
+    /// one-shot decoder cannot be bounded before it allocates, and a
+    /// compressed-size cap would not bound the expansion.
     public var oneShotBufferLimit: Int
 
     public init(
@@ -290,15 +296,17 @@ public enum ArchiveEngine {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
 
         let summary: ArchiveOperationSummary
-        switch format {
-        case "zip":
-            summary = try extractZip(source: source, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
-        case "tar":
-            summary = try extractTar(format: format, source: source, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
-        default:
-            summary = try extractTar(format: format, source: source, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
+        do {
+            switch format {
+            case "zip":
+                summary = try extractZip(source: source, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
+            default:
+                summary = try extractTar(format: format, source: source, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
+            }
+            try commit(staging: staging, to: destinationURL)
+        } catch {
+            throw Self.mappedArchivalError(error)
         }
-        try commit(staging: staging, to: destinationURL)
         return summary
     }
 
@@ -311,24 +319,28 @@ public enum ArchiveEngine {
         cancellation: CancellationToken
     ) throws -> ArchiveListing {
         try cancellation.throwIfCancelled()
-        switch format {
-        case "zip":
-            return try listZip(source: source, limits: limits, cancellation: cancellation)
-        case "tar", "tgz", "tbz2", "txz":
-            return try listTar(format: format, source: source, limits: limits, cancellation: cancellation)
-        case "gz", "bz2", "xz":
-            // A single-file format has exactly one logical entry: the
-            // decompressed payload. The name strips the compression suffix.
-            return ArchiveListing(
-                entries: [ArchiveListedEntry(
-                    path: Self.decompressedName(for: source.lastPathComponent, format: format),
-                    isDirectory: false,
-                    size: 0
-                )],
-                truncated: false
-            )
-        default:
-            throw ArchiveEngineError.unsupportedFormat(format)
+        do {
+            switch format {
+            case "zip":
+                return try listZip(source: source, limits: limits, cancellation: cancellation)
+            case "tar", "tgz", "tbz2", "txz":
+                return try listTar(format: format, source: source, limits: limits, cancellation: cancellation)
+            case "gz", "bz2", "xz":
+                // A single-file format has exactly one logical entry: the
+                // decompressed payload. The name strips the compression suffix.
+                return ArchiveListing(
+                    entries: [ArchiveListedEntry(
+                        path: Self.decompressedName(for: source.lastPathComponent, format: format),
+                        isDirectory: false,
+                        size: 0
+                    )],
+                    truncated: false
+                )
+            default:
+                throw ArchiveEngineError.unsupportedFormat(format)
+            }
+        } catch {
+            throw Self.mappedArchivalError(error)
         }
     }
 
@@ -361,7 +373,10 @@ public enum ArchiveEngine {
             at: destinationURL.deletingLastPathComponent(),
             cancelling: cancellation
         )
-        var notes: [String] = []
+        // The decoder enforces this budget *before* it hands a produced chunk
+        // over, so a compressed bomb is refused with bounded memory instead of
+        // being materialized and rejected afterwards.
+        let budget = ArchiveDecodeBudget(maxOutputBytes: limits.maxTotalBytes, cancellation: cancellation)
 
         func emit(_ data: Data) throws {
             written += Int64(data.count)
@@ -375,27 +390,21 @@ public enum ArchiveEngine {
             progress?(ArchiveProgress(phase: .reading, completedBytes: written, totalBytes: nil, completedEntries: 1))
         }
 
-        let reader = try FileByteSource(url: source)
-        switch format {
-        case "gz":
-            switch try Self.openGzip(url: source, limits: limits, notes: &notes) {
-            case .streaming(let source):
-                try pipe(source: source, emit: emit, cancellation: cancellation)
-            case .buffered(let raw):
-                try emit(raw)
+        do {
+            switch format {
+            case "gz":
+                let decoded = try GzipDecodingSource(url: source, budget: budget)
+                try pipe(source: decoded, emit: emit, cancellation: cancellation)
+            case "xz":
+                let verified = try VerifiedXZSource(source: FileByteSource(url: source), budget: budget)
+                try pipe(source: verified, emit: emit, cancellation: cancellation)
+            default:
+                throw ArchiveEngineError.resourceBound(Bzip2Codec.decompressionUnsupported)
             }
-            _ = reader
-        case "xz":
-            let verified = try VerifiedXZSource(source: reader)
-            try pipe(source: verified, emit: emit, cancellation: cancellation)
-        default:
-            // bzip2 is one-shot: buffer both directions under the explicit cap.
-            let compressed = try readAll(source: source, limit: limits.oneShotBufferLimit)
-            let raw = try Bzip2Codec.decompress(compressed, limit: limits.oneShotBufferLimit)
-            try emit(raw)
-            notes.append("bzip2Buffered")
+            try sink.close()
+        } catch {
+            throw Self.mappedArchivalError(error)
         }
-        try sink.close()
         try commit(staging: staging, to: destinationURL)
         return ArchiveOperationSummary(
             action: "decompress",
@@ -404,7 +413,7 @@ public enum ArchiveEngine {
             skipped: 0,
             uncompressedBytes: written,
             metadataNotices: [],
-            notes: notes
+            notes: []
         )
     }
 
@@ -963,26 +972,24 @@ public enum ArchiveEngine {
         progress: ProgressHandler?,
         cancellation: CancellationToken
     ) throws -> ArchiveOperationSummary {
-        var notes: [String] = []
+        let budget = ArchiveDecodeBudget(maxOutputBytes: tarStreamBudget(limits), cancellation: cancellation)
         let reader: TarStreamReader
+        let checkCancellation: () throws -> Void = { try cancellation.throwIfCancelled() }
         switch format {
         case "tgz":
-            switch try Self.openGzip(url: source, limits: limits, notes: &notes) {
-            case .streaming(let decoded):
-                reader = try TarStreamReader(source: decoded)
-            case .buffered(let raw):
-                reader = try TarStreamReader(source: DataByteSource(raw))
-            }
+            reader = try TarStreamReader(
+                source: try GzipDecodingSource(url: source, budget: budget),
+                checkCancellation: checkCancellation
+            )
         case "txz":
-            reader = try TarStreamReader(source: VerifiedXZSource(source: FileByteSource(url: source)))
+            reader = try TarStreamReader(
+                source: try VerifiedXZSource(source: FileByteSource(url: source), budget: budget),
+                checkCancellation: checkCancellation
+            )
         case "tbz2":
-            // bzip2 is one-shot in SWCompression: buffer under the explicit cap.
-            let compressed = try readAll(source: source, limit: limits.oneShotBufferLimit)
-            let raw = try Bzip2Codec.decompress(compressed, limit: limits.oneShotBufferLimit)
-            reader = try TarStreamReader(source: DataByteSource(raw))
-            notes.append("bzip2Buffered")
+            throw ArchiveEngineError.resourceBound(Bzip2Codec.decompressionUnsupported)
         default:
-            reader = try TarStreamReader(source: FileByteSource(url: source))
+            reader = try TarStreamReader(source: FileByteSource(url: source), checkCancellation: checkCancellation)
         }
         var entries = 0
         var skipped = 0
@@ -1087,10 +1094,13 @@ public enum ArchiveEngine {
                     try reader.skipPayload()
                     continue
                 }
-                total += header.size
-                guard total <= limits.maxTotalBytes else {
+                // A crafted header can declare a size near Int64.max; add with
+                // overflow detection so a malformed archive cannot trap.
+                let (newTotal, overflowed) = total.addingReportingOverflow(header.size)
+                guard !overflowed, newTotal <= limits.maxTotalBytes else {
                     throw ArchiveEngineError.limitExceeded("expanded output exceeds \(limits.maxTotalBytes) bytes")
                 }
+                total = newTotal
                 if let available, total > available {
                     throw ArchiveEngineError.insufficientSpace(required: total, available: available)
                 }
@@ -1138,7 +1148,6 @@ public enum ArchiveEngine {
         var notices = ["tarCarriesModeMtimeSymlinks", "uidGidNotPreserved"]
         if unsupportedEntries > 0 { notices.append("unsupportedTarEntrySkipped") }
         if reader.sawGlobalPaxHeader { notices.append("globalPaxHeaderRecordsIgnored") }
-        if !reader.sawEndMarker { notices.append("tarEndMarkerMissing") }
         return ArchiveOperationSummary(
             action: "extract",
             format: format,
@@ -1148,7 +1157,7 @@ public enum ArchiveEngine {
             linksPreserved: links,
             linksSkipped: linksSkipped,
             metadataNotices: notices,
-            notes: notes
+            notes: []
         )
     }
 
@@ -1158,24 +1167,24 @@ public enum ArchiveEngine {
         limits: ArchiveLimits,
         cancellation: CancellationToken
     ) throws -> ArchiveListing {
-        var ignoredNotes: [String] = []
+        let budget = ArchiveDecodeBudget(maxOutputBytes: tarStreamBudget(limits), cancellation: cancellation)
+        let checkCancellation: () throws -> Void = { try cancellation.throwIfCancelled() }
         let reader: TarStreamReader
         switch format {
         case "tgz":
-            switch try Self.openGzip(url: source, limits: limits, notes: &ignoredNotes) {
-            case .streaming(let decoded):
-                reader = try TarStreamReader(source: decoded)
-            case .buffered(let raw):
-                reader = try TarStreamReader(source: DataByteSource(raw))
-            }
+            reader = try TarStreamReader(
+                source: try GzipDecodingSource(url: source, budget: budget),
+                checkCancellation: checkCancellation
+            )
         case "txz":
-            reader = try TarStreamReader(source: VerifiedXZSource(source: FileByteSource(url: source)))
+            reader = try TarStreamReader(
+                source: try VerifiedXZSource(source: FileByteSource(url: source), budget: budget),
+                checkCancellation: checkCancellation
+            )
         case "tbz2":
-            let compressed = try readAll(source: source, limit: limits.oneShotBufferLimit)
-            let raw = try Bzip2Codec.decompress(compressed, limit: limits.oneShotBufferLimit)
-            reader = try TarStreamReader(source: DataByteSource(raw))
+            throw ArchiveEngineError.resourceBound(Bzip2Codec.decompressionUnsupported)
         default:
-            reader = try TarStreamReader(source: FileByteSource(url: source))
+            reader = try TarStreamReader(source: FileByteSource(url: source), checkCancellation: checkCancellation)
         }
         var entries: [ArchiveListedEntry] = []
         var truncated = false
@@ -1213,41 +1222,44 @@ public enum ArchiveEngine {
         }
     }
 
-    /// Opens a gzip file. Single-member files stream through the DEFLATE
-    /// decoder with trailer verification; concatenated members fall back to
-    /// the bounded one-shot path (reported as `gzipBuffered`).
-    private enum GzipInput {
-        case streaming(ArchiveByteSource)
-        case buffered(Data)
+    /// The decode budget for a tar *container* stream. The tar framing
+    /// (512-byte headers, padding, pax records, end marker) sits on top of the
+    /// file payloads, so the decompressed-stream cap gets a fixed allowance;
+    /// the file payload bytes themselves stay capped by `maxTotalBytes` inside
+    /// the extraction loop.
+    static func tarStreamBudget(_ limits: ArchiveLimits) -> Int64 {
+        // Saturating arithmetic: `ArchiveLimits` is caller-supplied, so the
+        // budget computation must not be able to overflow or trap.
+        let entries = Int64(min(max(limits.maxEntries, 0), 1_000_000))
+        let base = min(max(limits.maxTotalBytes, 0), Int64.max - 2 * 1_024 * 1_024 * 1_024)
+        return base + entries * 1_024 + 1_024 * 1_024
     }
 
-    private static func openGzip(url: URL, limits: ArchiveLimits, notes: inout [String]) throws -> GzipInput {
-        let file = try FileByteSource(url: url)
-        switch try GzipFraming.inspect(file) {
-        case .single(let framing):
-            return .streaming(try GzipDecodingSource(url: url, framing: framing))
-        case .multiMember:
-            let compressed = try readAll(source: url, limit: limits.oneShotBufferLimit)
-            do {
-                let raw = try GzipArchive.unarchive(archive: compressed)
-                notes.append("gzipBuffered")
-                return .buffered(raw)
-            } catch {
-                throw ArchiveEngineError.corrupt("gzip data is invalid or truncated")
+    /// Maps codec/tar layer failures onto the engine's public error surface.
+    /// Engine errors and cancellation pass through unchanged.
+    static func mappedArchivalError(_ error: Error) -> Error {
+        if error is ArchiveEngineError || error is FloeError { return error }
+        if let codec = error as? ArchiveCodecError {
+            switch codec {
+            case .limitExceeded(let detail):
+                return ArchiveEngineError.limitExceeded(detail)
+            case .corrupt(let detail):
+                return ArchiveEngineError.corrupt(detail)
+            case .unsupported(let detail), .codecUnavailable(let detail):
+                return ArchiveEngineError.resourceBound(detail)
             }
         }
-    }
-
-    static func readAll(source: URL, limit: Int) throws -> Data {
-        let reader = try FileByteSource(url: source)
-        var data = Data()
-        while let chunk = try reader.read(max: 64 * 1024) {
-            data.append(chunk)
-            guard data.count <= limit else {
-                throw ArchiveEngineError.limitExceeded("input exceeds the \(limit)-byte buffered limit")
+        if let tar = error as? TarStreamError {
+            switch tar {
+            case .malformed(let detail), .truncated(let detail):
+                return ArchiveEngineError.corrupt(detail)
+            case .nameTooLong(let name):
+                return ArchiveEngineError.corrupt("tar entry name is too long: \(name)")
+            case .checksumMismatch:
+                return ArchiveEngineError.corrupt("tar header checksum mismatch")
             }
         }
-        return data
+        return error
     }
 
     /// `project/a.txt` for the enumerator item under `project`, robust to

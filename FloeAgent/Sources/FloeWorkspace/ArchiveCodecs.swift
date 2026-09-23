@@ -6,21 +6,26 @@
 // These codecs implement the same formats on the host:
 //
 //   * gzip  — gzip member framing around raw DEFLATE (system Compression
-//             framework), CRC32/ISIZE verified on read.
-//   * bzip2 — SWCompression (already a FloeWorkspace dependency). Its API is
-//             one-shot; the engine bounds the buffered size and says so.
+//             framework), CRC32/ISIZE verified on read. Members are located
+//             by decoding, never by scanning compressed bytes for a magic.
+//   * bzip2 — SWCompression (already a FloeWorkspace dependency) compresses;
+//             its decompressor is one-shot and cannot be bounded before it
+//             allocates, so decompression is refused explicitly.
 //   * xz    — the system Compression framework's LZMA codec emits/consumes a
 //             complete `.xz` stream (liblzma-compatible), so tar.xz and .xz
 //             stay native without a new dependency.
 //
 // Everything is pull/push streaming: callers feed input in bounded chunks and
-// receive output chunks, so peak memory does not grow with file size. All
-// codecs are synchronous; cancellation and progress live in the engine.
+// receive output chunks, so peak memory does not grow with file size. Decoders
+// enforce an `ArchiveDecodeBudget` *before* appending a produced chunk, and
+// poll cancellation on the same path, so an expansion bomb fails while memory
+// is still bounded by the codec's fixed buffers. All codecs are synchronous.
 
 import Foundation
 import Compression
 import SWCompression
 import FloeCore
+import FloeTools
 
 /// Failures shared by the codecs. The engine maps these onto its public error
 /// surface; they are never swallowed.
@@ -34,6 +39,44 @@ enum ArchiveCodecError: Error, Equatable {
     case limitExceeded(String)
     /// Format honestly not implemented on the host.
     case unsupported(String)
+}
+
+// MARK: - Decode budget
+
+/// Decode-side resource guard shared by every decompression path.
+///
+/// A budget is consulted *before* a produced chunk is handed to a sink, so an
+/// expansion bomb is refused while memory is still bounded by the codec's
+/// fixed buffers — it is never detected "after the fact" by inspecting a
+/// materialized `Data`. Cancellation is polled on the same path at chunk (and,
+/// for gzip boundary location, byte) granularity, which makes a long decode
+/// promptly interruptible.
+final class ArchiveDecodeBudget {
+    let maxOutputBytes: Int64
+    let cancellation: CancellationToken?
+    private(set) var producedBytes: Int64 = 0
+
+    init(maxOutputBytes: Int64, cancellation: CancellationToken?) {
+        self.maxOutputBytes = maxOutputBytes
+        self.cancellation = cancellation
+    }
+
+    /// Throws `FloeError.cancelled` when cancellation was requested.
+    func poll() throws {
+        try cancellation?.throwIfCancelled()
+    }
+
+    /// Throws before the caller can append `count` bytes of decoded output.
+    func reserve(_ count: Int) throws {
+        try poll()
+        guard Int64(count) <= maxOutputBytes - producedBytes else {
+            throw ArchiveCodecError.limitExceeded("decompressed output exceeds the \(maxOutputBytes)-byte budget")
+        }
+    }
+
+    func didProduce(_ count: Int) {
+        producedBytes += Int64(count)
+    }
 }
 
 // MARK: - CRC32
@@ -67,18 +110,37 @@ enum ArchiveCRC32 {
 ///
 /// `process` may be called repeatedly with input chunks; output is delivered
 /// to `sink` as it is produced. `pendingInputBytes` exposes how much of the
-/// last fed chunk the codec did not consume, which is what lets the gzip
-/// reader find the trailer that follows a DEFLATE stream.
+/// last fed chunk the codec did not consume, which is what lets a reader find
+/// the trailer/member that follows a DEFLATE or LZMA stream.
+///
+/// Decoders set `maxOutputPerCall` so one `process` call yields back to its
+/// caller after a bounded amount of output: no caller can grow a buffer past
+/// its own working set plus one fixed chunk. When a budget is supplied it is
+/// checked before every sink call, so the append itself is bounded.
 final class CompressionStreamCodec {
+    /// One decoder `process` call returns after producing at most this much,
+    /// leaving the rest of the input as `pendingInputBytes` for the next call.
+    static let decoderCallOutputLimit = 256 * 1024
+
     private var stream: compression_stream
     private let isEncoder: Bool
     private var outBuffer: [UInt8]
+    private let maxOutputPerCall: Int?
     private(set) var finished = false
+    /// True when the last `process` call returned early only because it hit
+    /// `maxOutputPerCall` (i.e. progress was made and the caller must feed the
+    /// unconsumed tail or call again to drain).
+    private(set) var yieldedForOutputLimit = false
 
     /// Bytes of the most recently fed chunk that the codec did not consume.
     private(set) var pendingInputBytes = 0
 
-    init?(algorithm: compression_algorithm, operation: compression_stream_operation, bufferSize: Int = 64 * 1024) {
+    init?(
+        algorithm: compression_algorithm,
+        operation: compression_stream_operation,
+        bufferSize: Int = 64 * 1024,
+        maxOutputPerCall: Int? = nil
+    ) {
         var stream = compression_stream(
             dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!,
             dst_size: 0,
@@ -92,6 +154,7 @@ final class CompressionStreamCodec {
         self.stream = stream
         self.isEncoder = operation == COMPRESSION_STREAM_ENCODE
         self.outBuffer = [UInt8](repeating: 0, count: bufferSize)
+        self.maxOutputPerCall = maxOutputPerCall
     }
 
     deinit {
@@ -101,23 +164,36 @@ final class CompressionStreamCodec {
     /// Feeds `input` (empty is allowed) and calls `sink` for every produced
     /// chunk. Pass `finalize: true` on the last call. Returns true when the
     /// stream reached its end marker.
+    ///
+    /// With `maxOutputPerCall` set, a false return does not mean the stream is
+    /// incomplete: the unconsumed tail of `input` is reported through
+    /// `pendingInputBytes` and must be fed again.
     @discardableResult
-    func process(_ input: Data, finalize: Bool, sink: (Data) throws -> Void) throws -> Bool {
+    func process(
+        _ input: Data,
+        finalize: Bool,
+        budget: ArchiveDecodeBudget? = nil,
+        sink: (Data) throws -> Void
+    ) throws -> Bool {
         if finished {
             if !input.isEmpty {
                 // Trailing bytes after a complete gzip/xz member: the caller
                 // decides whether that is a second member or garbage.
                 pendingInputBytes = input.count
             }
+            yieldedForOutputLimit = false
             return true
         }
+        yieldedForOutputLimit = false
         var reachedEnd = false
         try input.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
             stream.src_ptr = base ?? UnsafePointer<UInt8>(bitPattern: 1)!
             stream.src_size = input.count
             let flags = finalize ? Int32(COMPRESSION_STREAM_FINALIZE.rawValue) : 0
+            var producedThisCall = 0
             while true {
+                try budget?.poll()
                 var status: compression_status = COMPRESSION_STATUS_OK
                 let produced = outBuffer.withUnsafeMutableBufferPointer { buffer -> Int in
                     stream.dst_ptr = buffer.baseAddress!
@@ -129,12 +205,23 @@ final class CompressionStreamCodec {
                     throw ArchiveCodecError.corrupt("compressed stream is invalid or truncated")
                 }
                 if produced > 0 {
+                    // The budget check happens before the append: an
+                    // expansion bomb never reaches the caller's buffer.
+                    try budget?.reserve(produced)
                     try sink(Data(outBuffer[0..<produced]))
+                    budget?.didProduce(produced)
+                    producedThisCall += produced
                 }
                 let pending = stream.src_size
                 if status == COMPRESSION_STATUS_END {
                     reachedEnd = true
                     pendingInputBytes = pending
+                    break
+                }
+                if let limit = maxOutputPerCall, producedThisCall >= limit {
+                    // Yield to the caller; it re-feeds the unconsumed tail.
+                    pendingInputBytes = pending
+                    yieldedForOutputLimit = true
                     break
                 }
                 // Keep going while the codec consumed input or the output
@@ -219,32 +306,6 @@ final class DataByteSource: ArchiveByteSource {
         offset = end
         position += Int64(slice.count)
         return slice
-    }
-}
-
-/// Caps a source at `limit` total bytes. Used to stop a codec exactly at a
-/// gzip member's payload boundary so the trailer stays readable.
-final class LimitedByteSource: ArchiveByteSource {
-    private let inner: ArchiveByteSource
-    private let limit: Int64
-    private var consumed: Int64 = 0
-    private(set) var position: Int64 = 0
-
-    init(source: ArchiveByteSource, limit: Int64) {
-        self.inner = source
-        self.limit = max(0, limit)
-    }
-
-    var totalSize: Int64? { limit }
-
-    func read(max: Int) throws -> Data? {
-        let remaining = limit - consumed
-        guard remaining > 0 else { return nil }
-        let want = Int(min(Int64(max), remaining))
-        guard let chunk = try inner.read(max: want), !chunk.isEmpty else { return nil }
-        consumed += Int64(chunk.count)
-        position += Int64(chunk.count)
-        return chunk
     }
 }
 
@@ -347,175 +408,162 @@ final class XZArchiveWriter {
 
 // MARK: - BZip2
 
-/// bzip2 is the one format the system codecs do not cover. SWCompression's
-/// implementation is one-shot, so the engine buffers the payload and enforces
-/// an explicit in-memory bound (reported in the operation summary). Both
-/// directions interoperate with `bzip2`/`bunzip2`/`tar -xj`.
+/// bzip2 is the one format the system codecs do not cover. SWCompression
+/// implements it one-shot in both directions.
+///
+/// * Creation stays supported: the input is the locally scanned plan, already
+///   capped by `ArchiveLimits.maxTotalBytes`, and the engine reports the
+///   buffered path in the summary.
+/// * Decompression is refused: the decoder materializes the whole expanded
+///   payload before it returns, so the only cap possible would be on the
+///   *compressed* size — which does not bound expansion (a few KiB of bzip2
+///   can expand to hundreds of MiB). A bound that cannot be enforced before
+///   allocation is not offered at all.
 enum Bzip2Codec {
+    /// Why the decode direction is refused (see above).
+    static let decompressionUnsupported =
+        "bzip2 decompression cannot be bounded before allocation; use gzip (tar.gz) or xz (tar.xz)"
+
     static func compress(_ data: Data, limit: Int) throws -> Data {
         guard data.count <= limit else {
             throw ArchiveCodecError.limitExceeded("bzip2 buffers the whole payload (\(data.count) bytes > \(limit))")
         }
         return BZip2.compress(data: data)
     }
-
-    static func decompress(_ data: Data, limit: Int) throws -> Data {
-        guard data.count <= limit else {
-            throw ArchiveCodecError.limitExceeded("bzip2 buffers the whole payload (\(data.count) bytes > \(limit))")
-        }
-        do {
-            return try BZip2.decompress(data: data)
-        } catch {
-            throw ArchiveCodecError.corrupt("bzip2 data is invalid or truncated")
-        }
-    }
 }
 
 // MARK: - Verified decoding sources
 
-/// Framing facts about a gzip file: where the (single) member's DEFLATE
-/// payload ends and what trailer values are expected. Multi-member files
-/// return nil and are handled by the bounded one-shot path, because the raw
-/// DEFLATE decoder cannot report where one member ends.
-struct GzipFraming {
+/// Facts about one gzip member header.
+///
+/// Only the fixed header and its bounded optional fields are read here: member
+/// boundaries are found by decoding the DEFLATE payload, never by scanning
+/// compressed bytes for the gzip magic (a payload may contain `1f 8b 08`).
+struct GzipMemberHeader {
     var payloadStart: Int64
-    var payloadEnd: Int64
-    var expectedCRC: UInt32
-    var expectedISize: UInt32
-    var totalSize: Int64
 
-    enum Inspection {
-        case single(GzipFraming)
-        case multiMember
-    }
-
-    /// Inspects `source` (sequential, restored afterwards).
-    static func inspect(_ source: FileByteSource) throws -> Inspection {
-        guard let total = source.totalSize, total >= 18 else {
-            throw ArchiveCodecError.corrupt("gzip input is truncated")
+    /// Parses the member header at `offset`. `end` is the file size; the
+    /// trailer of the last member still has to fit after the payload.
+    static func parse(file: FileByteSource, offset: Int64, end: Int64) throws -> GzipMemberHeader {
+        let header = try file.readAt(offset: offset, count: 10)
+        let start = header.startIndex
+        guard header.count == 10,
+              header[start] == 0x1F,
+              header[start + 1] == 0x8B,
+              header[start + 2] == 8 else {
+            throw ArchiveCodecError.corrupt("not a gzip stream (bad magic or method)")
         }
-        let header = try source.readAt(offset: 0, count: 10)
-        guard header[header.startIndex] == 0x1F, header[header.startIndex + 1] == 0x8B,
-              header[header.startIndex + 2] == 8 else {
-            throw ArchiveCodecError.corrupt("not a gzip stream (bad magic)")
+        let flags = header[start + 3]
+        guard flags & 0xE0 == 0 else {
+            throw ArchiveCodecError.corrupt("gzip header uses reserved flag bits")
         }
-        let flags = header[header.startIndex + 3]
-        var cursor: Int64 = 10
-        if flags & 0x04 != 0 {
-            let lengthBytes = try source.readAt(offset: cursor, count: 2)
-            let length = Int64(Int(lengthBytes[lengthBytes.startIndex]) | (Int(lengthBytes[lengthBytes.startIndex + 1]) << 8))
-            cursor += 2 + length
-        }
-        if flags & 0x08 != 0 { cursor = try skipZeroTerminated(source, from: cursor) }
-        if flags & 0x10 != 0 { cursor = try skipZeroTerminated(source, from: cursor) }
-        if flags & 0x02 != 0 { cursor += 2 }
-        guard cursor <= total - 8 else { throw ArchiveCodecError.corrupt("gzip header is truncated") }
-
-        let trailer = try source.readAt(offset: total - 8, count: 8)
-        let start = trailer.startIndex
-        let expectedCRC = UInt32(trailer[start])
-            | (UInt32(trailer[start + 1]) << 8)
-            | (UInt32(trailer[start + 2]) << 16)
-            | (UInt32(trailer[start + 3]) << 24)
-        let expectedISize = UInt32(trailer[start + 4])
-            | (UInt32(trailer[start + 5]) << 8)
-            | (UInt32(trailer[start + 6]) << 16)
-            | (UInt32(trailer[start + 7]) << 24)
-
-        // A second member would start with the gzip magic inside the input.
-        // The scan only reads; a false positive merely selects the buffered
-        // one-shot path, which stays correct.
-        if try hasSecondMember(source, payloadStart: cursor, payloadEnd: total - 8) {
-            return .multiMember
-        }
-        return .single(GzipFraming(
-            payloadStart: cursor,
-            payloadEnd: total - 8,
-            expectedCRC: expectedCRC,
-            expectedISize: expectedISize,
-            totalSize: total
-        ))
-    }
-
-    private static func skipZeroTerminated(_ source: FileByteSource, from offset: Int64) throws -> Int64 {
-        var cursor = offset
-        var scratch = Data()
-        while true {
-            let chunk = try source.readAt(offset: cursor, count: 512)
-            guard !chunk.isEmpty else {
+        var cursor = offset + 10
+        if flags & 0x04 != 0 { // FEXTRA
+            let lengthBytes = try file.readAt(offset: cursor, count: 2)
+            guard lengthBytes.count == 2 else {
                 throw ArchiveCodecError.corrupt("gzip header is truncated")
             }
-            for byte in chunk {
-                if byte == 0 { return cursor + Int64(scratch.count) + 1 }
-                scratch.append(byte)
-                if scratch.count > 4096 {
-                    throw ArchiveCodecError.corrupt("gzip header field is not terminated")
-                }
-            }
-            cursor += Int64(chunk.count)
+            let extraStart = lengthBytes.startIndex
+            let length = Int(lengthBytes[extraStart]) | (Int(lengthBytes[extraStart + 1]) << 8)
+            cursor += 2 + Int64(length)
         }
+        if flags & 0x08 != 0 { // FNAME
+            cursor = try skipZeroTerminated(file: file, from: cursor, end: end, field: "name")
+        }
+        if flags & 0x10 != 0 { // FCOMMENT
+            cursor = try skipZeroTerminated(file: file, from: cursor, end: end, field: "comment")
+        }
+        if flags & 0x02 != 0 { cursor += 2 } // FHCRC (not verified)
+        guard cursor + 8 <= end else {
+            throw ArchiveCodecError.corrupt("gzip header is truncated")
+        }
+        return GzipMemberHeader(payloadStart: cursor)
     }
 
-    private static func hasSecondMember(_ source: FileByteSource, payloadStart: Int64, payloadEnd: Int64) throws -> Bool {
-        var cursor = payloadStart
-        var previous: UInt8?
-        var previous2: UInt8?
-        while cursor < payloadEnd {
-            let count = Int(min(64 * 1024, payloadEnd - cursor))
-            let chunk = try source.readAt(offset: cursor, count: count)
-            for byte in chunk {
-                if previous2 == 0x1F, previous == 0x8B, byte == 0x08 {
-                    return true
+    private static func skipZeroTerminated(
+        file: FileByteSource,
+        from offset: Int64,
+        end: Int64,
+        field: String
+    ) throws -> Int64 {
+        var cursor = offset
+        var scanned = 0
+        while cursor < end {
+            let chunk = try file.readAt(offset: cursor, count: 512)
+            guard !chunk.isEmpty else { break }
+            for (index, byte) in chunk.enumerated() {
+                scanned += 1
+                if byte == 0 { return cursor + Int64(index) + 1 }
+                if scanned > 4_096 {
+                    throw ArchiveCodecError.corrupt("gzip header \(field) field is not terminated")
                 }
-                previous2 = previous
-                previous = byte
             }
             cursor += Int64(chunk.count)
         }
-        return false
+        throw ArchiveCodecError.corrupt("gzip header \(field) field is truncated")
     }
 }
 
-/// Streams the decompressed bytes of a single-member gzip file, verifying the
-/// trailer's CRC32 and ISIZE before the caller trusts the output. The payload
-/// is fed to the DEFLATE decoder exactly up to `payloadEnd`, so the trailer is
-/// never mistaken for payload even though the system decoder does not report
-/// the end of a raw DEFLATE stream.
+/// Streams the decompressed bytes of a gzip file — one member or many
+/// concatenated members.
+///
+/// The system raw-DEFLATE decoder reports the end marker but swallows any
+/// trailing bytes of the buffer it was given, so it cannot say where the
+/// deflate stream ended. This reader therefore feeds the payload in bounded
+/// chunks and, when the end marker arrives, pins the exact boundary by
+/// re-decoding at most one `chunkSize` window (output discarded); the 8-byte
+/// trailer is then read from its real position and CRC32/ISIZE are verified.
+/// The last `byteWiseTail` bytes before the final trailer are fed one byte at
+/// a time, so an ordinary single-member file never pays for the second pass.
+///
+/// Memory stays bounded (fixed codec buffers plus one bounded window) and the
+/// decode budget is consulted before any produced chunk is appended, so an
+/// expansion bomb fails while memory is still small.
 final class GzipDecodingSource: ArchiveByteSource {
-    private let buffered: BufferedSource
-    private let trailer: (crc: UInt32, isize: UInt32)
-    private var codec: CompressionStreamCodec
+    /// Input chunk size; a boundary window is never larger than this.
+    static let chunkSize = 16 * 1024
+    /// The tail of the file is fed byte by byte so single-member files resolve
+    /// their boundary in one pass.
+    static let byteWiseTail = 16 * 1024
+
+    private let file: FileByteSource
+    private let fileSize: Int64
+    private let lastTrailerStart: Int64
+    private let budget: ArchiveDecodeBudget
+
     private var out = Data()
     private var outOffset = 0
+    private(set) var position: Int64 = 0
+    private(set) var finished = false
+    /// Diagnostics: verified members and boundary re-decode passes (the latter
+    /// is 0 for an ordinary single-member file).
+    private(set) var membersDecoded = 0
+    private(set) var boundaryRelocations = 0
+    /// Offset of the next member header.
+    private var cursor: Int64 = 0
+    private var codec: CompressionStreamCodec?
+    private var payloadStart: Int64 = 0
+    private var feedOffset: Int64 = 0
     private var crc: UInt32 = 0
     private var isize: UInt32 = 0
-    private var verified = false
-    private var finished = false
-    private(set) var position: Int64 = 0
-    var totalSize: Int64? { nil }
+    /// Window of the last fed chunk in which the DEFLATE end marker arrived.
+    private var boundaryWindow: (start: Int64, length: Int)?
 
-    init(url: URL, framing: GzipFraming) throws {
-        let file = try FileByteSource(url: url)
-        _ = try file.read(max: Int(framing.payloadStart))
-        let limited = LimitedByteSource(source: file, limit: framing.payloadEnd - framing.payloadStart)
-        self.buffered = try BufferedSource(source: limited)
-        self.trailer = (framing.expectedCRC, framing.expectedISize)
-        guard let codec = CompressionStreamCodec(algorithm: COMPRESSION_ZLIB, operation: COMPRESSION_STREAM_DECODE) else {
-            throw ArchiveCodecError.codecUnavailable("gzip (DEFLATE)")
+    init(url: URL, budget: ArchiveDecodeBudget) throws {
+        self.file = try FileByteSource(url: url)
+        guard let total = file.totalSize, total >= 18 else {
+            throw ArchiveCodecError.corrupt("gzip input is truncated")
         }
-        self.codec = codec
+        self.fileSize = total
+        self.lastTrailerStart = total - 8
+        self.budget = budget
     }
+
+    var totalSize: Int64? { nil }
 
     func read(max: Int) throws -> Data? {
         while out.count - outOffset < max && !finished {
-            if let chunk = try buffered.nextInputChunk(limit: 64 * 1024) {
-                _ = try codec.process(chunk, finalize: false) { try absorb($0) }
-                buffered.rewind(codec.pendingInputBytes)
-            } else {
-                _ = try codec.process(Data(), finalize: true) { try absorb($0) }
-                try verify()
-                finished = true
-            }
+            try pump()
         }
         guard outOffset < out.count else {
             out.removeAll(keepingCapacity: true)
@@ -533,26 +581,174 @@ final class GzipDecodingSource: ArchiveByteSource {
         return slice
     }
 
+    private func pump() throws {
+        try budget.poll()
+        if codec == nil && !finished {
+            try startMember()
+        }
+        guard let codec, !finished else { return }
+        if let window = boundaryWindow {
+            boundaryRelocations += 1
+            let deflateEnd = try locateDeflateEnd(windowStart: window.start, windowLength: window.length)
+            try finishMember(deflateEnd: deflateEnd)
+            return
+        }
+        let remaining = lastTrailerStart - feedOffset
+        guard remaining > 0 else {
+            throw ArchiveCodecError.corrupt("gzip member does not end before its trailer area")
+        }
+        if remaining <= Int64(Self.byteWiseTail) {
+            // Terminal zone: one byte per call pins the deflate boundary exactly.
+            let byte = try file.readAt(offset: feedOffset, count: 1)
+            guard byte.count == 1 else {
+                throw ArchiveCodecError.corrupt("gzip member payload is truncated")
+            }
+            let ended = try codec.process(byte, finalize: false, budget: budget) { try absorb($0) }
+            // A not-fully-consumed byte stays in place and is re-fed, so no
+            // input can be lost when a yielded call returns early.
+            feedOffset += Int64(byte.count - codec.pendingInputBytes)
+            if ended { try finishMember(deflateEnd: feedOffset) }
+        } else {
+            let want = Int(min(Int64(Self.chunkSize), remaining - Int64(Self.byteWiseTail)))
+            let chunk = try file.readAt(offset: feedOffset, count: want)
+            guard !chunk.isEmpty else {
+                throw ArchiveCodecError.corrupt("gzip member payload is truncated")
+            }
+            let chunkStart = feedOffset
+            let ended = try codec.process(chunk, finalize: false, budget: budget) { try absorb($0) }
+            feedOffset += Int64(chunk.count - codec.pendingInputBytes)
+            if ended {
+                boundaryWindow = (chunkStart, chunk.count)
+            }
+        }
+    }
+
+    private func startMember() throws {
+        let header = try GzipMemberHeader.parse(file: file, offset: cursor, end: fileSize)
+        payloadStart = header.payloadStart
+        feedOffset = header.payloadStart
+        crc = 0
+        isize = 0
+        boundaryWindow = nil
+        guard header.payloadStart < lastTrailerStart else {
+            throw ArchiveCodecError.corrupt("gzip member has no deflate payload")
+        }
+        guard let codec = CompressionStreamCodec(
+            algorithm: COMPRESSION_ZLIB,
+            operation: COMPRESSION_STREAM_DECODE,
+            maxOutputPerCall: CompressionStreamCodec.decoderCallOutputLimit
+        ) else {
+            throw ArchiveCodecError.codecUnavailable("gzip (DEFLATE)")
+        }
+        self.codec = codec
+    }
+
+    /// Re-decodes `[payloadStart, windowStart)` (output discarded) and then
+    /// feeds the window byte by byte until the codec reports the end marker,
+    /// which pins the exclusive end of the DEFLATE stream. Bounded by one
+    /// chunk window plus one extra pass over the member; cancellation is
+    /// polled per chunk and per byte.
+    private func locateDeflateEnd(windowStart: Int64, windowLength: Int) throws -> Int64 {
+        guard let probe = CompressionStreamCodec(
+            algorithm: COMPRESSION_ZLIB,
+            operation: COMPRESSION_STREAM_DECODE,
+            maxOutputPerCall: CompressionStreamCodec.decoderCallOutputLimit
+        ) else {
+            throw ArchiveCodecError.codecUnavailable("gzip (DEFLATE)")
+        }
+        // The probe must not consume the caller's output budget: its output is
+        // discarded. It still polls cancellation and yields per chunk.
+        let probeBudget = ArchiveDecodeBudget(maxOutputBytes: .max, cancellation: budget.cancellation)
+        var offset = payloadStart
+        while offset < windowStart {
+            try budget.poll()
+            let want = Int(min(Int64(Self.chunkSize), windowStart - offset))
+            let chunk = try file.readAt(offset: offset, count: want)
+            guard !chunk.isEmpty else {
+                throw ArchiveCodecError.corrupt("gzip member payload is truncated")
+            }
+            let ended = try probe.process(chunk, finalize: false, budget: probeBudget) { _ in }
+            offset += Int64(chunk.count - probe.pendingInputBytes)
+            if ended {
+                // The stream ended exactly on a chunk boundary: the first pass
+                // must have seen the end marker on that same chunk.
+                guard offset == windowStart else {
+                    throw ArchiveCodecError.corrupt("gzip member boundary is inconsistent")
+                }
+                return offset
+            }
+        }
+        var cursor = windowStart
+        let windowEnd = windowStart + Int64(windowLength)
+        while cursor < windowEnd {
+            try budget.poll()
+            let byte = try file.readAt(offset: cursor, count: 1)
+            guard byte.count == 1 else {
+                throw ArchiveCodecError.corrupt("gzip member payload is truncated")
+            }
+            let ended = try probe.process(byte, finalize: false, budget: probeBudget) { _ in }
+            if ended { return cursor + 1 }
+            // Advance only by what the probe consumed; an early-yielded byte is
+            // re-fed rather than skipped.
+            cursor += Int64(byte.count - probe.pendingInputBytes)
+        }
+        throw ArchiveCodecError.corrupt("gzip member deflate stream has no end marker")
+    }
+
+    private func finishMember(deflateEnd: Int64) throws {
+        guard deflateEnd >= payloadStart, deflateEnd + 8 <= fileSize else {
+            throw ArchiveCodecError.corrupt("gzip trailer is truncated")
+        }
+        let trailer = try file.readAt(offset: deflateEnd, count: 8)
+        guard trailer.count == 8 else {
+            throw ArchiveCodecError.corrupt("gzip trailer is truncated")
+        }
+        let start = trailer.startIndex
+        let expectedCRC = UInt32(trailer[start])
+            | (UInt32(trailer[start + 1]) << 8)
+            | (UInt32(trailer[start + 2]) << 16)
+            | (UInt32(trailer[start + 3]) << 24)
+        let expectedISize = UInt32(trailer[start + 4])
+            | (UInt32(trailer[start + 5]) << 8)
+            | (UInt32(trailer[start + 6]) << 16)
+            | (UInt32(trailer[start + 7]) << 24)
+        guard crc == expectedCRC else { throw ArchiveCodecError.corrupt("gzip CRC32 mismatch") }
+        guard isize == expectedISize else { throw ArchiveCodecError.corrupt("gzip size mismatch") }
+
+        membersDecoded += 1
+        cursor = deflateEnd + 8
+        codec = nil
+        boundaryWindow = nil
+        if cursor == fileSize {
+            finished = true
+            return
+        }
+        // Concatenated members are supported; anything else is a hard error
+        // instead of silently ignoring trailing bytes.
+        let magic = try file.readAt(offset: cursor, count: 2)
+        guard magic.count == 2,
+              magic[magic.startIndex] == 0x1F,
+              magic[magic.startIndex + 1] == 0x8B else {
+            throw ArchiveCodecError.corrupt("gzip file has trailing data after its last member")
+        }
+    }
+
     private func absorb(_ data: Data) throws {
         crc = ArchiveCRC32.checksum(data, seed: crc)
         isize = isize &+ UInt32(truncatingIfNeeded: data.count)
         out.append(data)
     }
-
-    private func verify() throws {
-        guard !verified else { return }
-        verified = true
-        guard crc == trailer.crc else { throw ArchiveCodecError.corrupt("gzip CRC32 mismatch") }
-        guard isize == trailer.isize else { throw ArchiveCodecError.corrupt("gzip size mismatch") }
-    }
 }
 
 /// Presents the decompressed bytes of a `.xz` stream. The system decoder
 /// validates the stream's own integrity check; concatenated streams are
-/// decoded in sequence like `xz -dc`.
+/// decoded in sequence like `xz -dc`. Every produced chunk passes the
+/// `ArchiveDecodeBudget` before it is appended, and each decoder yields after
+/// a bounded amount of output.
 final class VerifiedXZSource: ArchiveByteSource {
     private let buffered: BufferedSource
     private var codec: CompressionStreamCodec
+    private let budget: ArchiveDecodeBudget
     private var out = Data()
     private var outOffset = 0
     private var memberOpen = true
@@ -560,28 +756,43 @@ final class VerifiedXZSource: ArchiveByteSource {
     private(set) var position: Int64 = 0
     var totalSize: Int64? { nil }
 
-    init(source: ArchiveByteSource) throws {
+    init(source: ArchiveByteSource, budget: ArchiveDecodeBudget) throws {
         self.buffered = try BufferedSource(source: source)
-        guard let codec = CompressionStreamCodec(algorithm: COMPRESSION_LZMA, operation: COMPRESSION_STREAM_DECODE) else {
+        self.budget = budget
+        guard let codec = Self.makeCodec() else {
             throw ArchiveCodecError.codecUnavailable("xz (LZMA)")
         }
         self.codec = codec
     }
 
+    private static func makeCodec() -> CompressionStreamCodec? {
+        CompressionStreamCodec(
+            algorithm: COMPRESSION_LZMA,
+            operation: COMPRESSION_STREAM_DECODE,
+            maxOutputPerCall: CompressionStreamCodec.decoderCallOutputLimit
+        )
+    }
+
     func read(max: Int) throws -> Data? {
         while out.count - outOffset < max && !finished {
+            try budget.poll()
             if memberOpen {
                 if let chunk = try buffered.nextInputChunk(limit: 64 * 1024) {
-                    let ended = try codec.process(chunk, finalize: false) { out.append($0) }
+                    let ended = try codec.process(chunk, finalize: false, budget: budget) { out.append($0) }
                     buffered.rewind(codec.pendingInputBytes)
                     if ended { memberOpen = false }
                 } else {
-                    let ended = try codec.process(Data(), finalize: true) { out.append($0) }
-                    guard ended else { throw ArchiveCodecError.corrupt("xz stream is truncated") }
-                    memberOpen = false
+                    let ended = try codec.process(Data(), finalize: true, budget: budget) { out.append($0) }
+                    if ended {
+                        memberOpen = false
+                    } else if !codec.yieldedForOutputLimit {
+                        // No end marker and no further output: the stream is
+                        // truncated (not merely yielding for the caller).
+                        throw ArchiveCodecError.corrupt("xz stream is truncated")
+                    }
                 }
             } else if let peek = try buffered.peek(1), !peek.isEmpty {
-                guard let next = CompressionStreamCodec(algorithm: COMPRESSION_LZMA, operation: COMPRESSION_STREAM_DECODE) else {
+                guard let next = Self.makeCodec() else {
                     throw ArchiveCodecError.codecUnavailable("xz (LZMA)")
                 }
                 codec = next
@@ -646,31 +857,6 @@ final class BufferedSource {
         guard offset < buffer.count else { return nil }
         let end = min(offset + count, buffer.count)
         return buffer.subdata(in: offset..<end)
-    }
-
-    /// Consumes exactly `count` bytes; throws when the source ends early.
-    func consume(exactly count: Int) throws -> Data {
-        try fill(count)
-        guard buffer.count - offset >= count else {
-            throw ArchiveCodecError.corrupt("compressed input is truncated")
-        }
-        let result = buffer.subdata(in: offset..<(offset + count))
-        offset += count
-        compact()
-        return result
-    }
-
-    func consumeZeroTerminatedString() throws -> String {
-        var result = Data()
-        while true {
-            let byte = try consume(exactly: 1)
-            if byte[byte.startIndex] == 0 { break }
-            result.append(byte)
-            if result.count > 4096 {
-                throw ArchiveCodecError.corrupt("gzip header field is not terminated")
-            }
-        }
-        return String(decoding: result, as: UTF8.self)
     }
 
     /// Ensures `count` bytes are buffered ahead of the cursor.

@@ -290,7 +290,8 @@ struct ArchiveToolTests {
         try f.write("bundle/deep/b.txt", "beta")
         let tool = WorkspaceArchiveTool(environment: f.environment)
 
-        for (format, name) in [("tgz", "pack.tar.gz"), ("tbz2", "pack.tar.bz2"), ("txz", "pack.tar.xz")] {
+        // tar.gz / tar.xz: create, list and extract all stay native/bounded.
+        for (format, name) in [("tgz", "pack.tar.gz"), ("txz", "pack.tar.xz")] {
             let created = try await tool.execute(
                 .init(action: "create", source: "bundle", destinationFile: name, format: format),
                 context: f.context
@@ -311,10 +312,40 @@ struct ArchiveToolTests {
             #expect(try f.read("\(destination)/bundle/deep/b.txt") == "beta")
         }
 
-        // Single-file gzip/bzip2/xz: create + decompress through the tool.
+        // tar.bz2 creation stays native, but decoding it is refused explicitly:
+        // the one-shot bzip2 decoder cannot honor a bounded memory budget, so
+        // no decode path is offered (see ArchiveBrowserService.decodeUnsupportedFormats).
+        let tbz2Created = try await tool.execute(
+            .init(action: "create", source: "bundle", destinationFile: "pack.tar.bz2", format: "tbz2"),
+            context: f.context
+        )
+        #expect(tbz2Created.summary.contains("entries=2"), "tbz2 create was: \(tbz2Created.summary)")
+        #expect(tbz2Created.summary.contains("format=tbz2"))
+        #expect(tbz2Created.summary.contains("note=bzip2Buffered"))
+        for action in ["list", "extract"] {
+            do {
+                if action == "list" {
+                    _ = try await tool.execute(.init(action: "list", source: "pack.tar.bz2"), context: f.context)
+                } else {
+                    _ = try await tool.execute(
+                        .init(action: "extract", source: "pack.tar.bz2", destinationDir: "out-tbz2"),
+                        context: f.context
+                    )
+                }
+                Issue.record("tbz2 \(action) must be refused, not decoded")
+            } catch let error as ArchiveEngineError {
+                guard case .resourceBound = error else {
+                    Issue.record("unexpected tbz2 \(action) error \(error)")
+                    return
+                }
+            }
+        }
+        #expect(!f.exists("out-tbz2"))
+
+        // Single-file gzip/xz: create + decompress through the tool.
         let payload = String(repeating: "single file payload ", count: 64)
         try f.write("note.txt", payload)
-        for (format, name) in [("gz", "note.txt.gz"), ("bz2", "note.txt.bz2"), ("xz", "note.txt.xz")] {
+        for (format, name) in [("gz", "note.txt.gz"), ("xz", "note.txt.xz")] {
             let created = try await tool.execute(
                 .init(action: "create", source: "note.txt", destinationFile: name),
                 context: f.context
@@ -332,5 +363,25 @@ struct ArchiveToolTests {
                 _ = try await tool.execute(.init(action: "list", source: name), context: f.context)
             }
         }
+
+        // bzip2: creation stays native; decompression is refused with no output.
+        let bz2Created = try await tool.execute(
+            .init(action: "create", source: "note.txt", destinationFile: "note.txt.bz2"),
+            context: f.context
+        )
+        #expect(bz2Created.summary.contains("entries=1"), "bz2 create was: \(bz2Created.summary)")
+        do {
+            _ = try await tool.execute(
+                .init(action: "extract", source: "note.txt.bz2", destinationFile: "restored-bz2.txt"),
+                context: f.context
+            )
+            Issue.record("bz2 decompression must be refused, not decoded")
+        } catch let error as ArchiveEngineError {
+            guard case .resourceBound = error else {
+                Issue.record("unexpected bz2 error \(error)")
+                return
+            }
+        }
+        #expect(!f.exists("restored-bz2.txt"))
     }
 }

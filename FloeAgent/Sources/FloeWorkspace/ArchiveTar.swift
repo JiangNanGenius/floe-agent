@@ -165,6 +165,12 @@ struct TarStreamWriter {
 /// Incremental tar parser. `next()` positions the reader at an entry's
 /// payload; callers then stream it with `readPayload`/`skipPayload` and must
 /// terminate each entry with `finishPayload`.
+///
+/// The reader is deliberately strict: a header block that is not exactly 512
+/// bytes, a missing end-of-archive marker, a malformed/overflowing numeric
+/// field or a truncated payload is an error, never a silently successful
+/// (partial) extraction. Zero padding after the end-of-archive marker stays
+/// compatible; non-zero trailing bytes are refused.
 final class TarStreamReader {
     enum Kind {
         case file
@@ -190,6 +196,7 @@ final class TarStreamReader {
     }
 
     private let source: ArchiveByteSource
+    private let checkCancellation: (() throws -> Void)?
     private var remainingPayload: Int64 = 0
     private var payloadPadding = 0
     private var payloadActive = false
@@ -201,27 +208,27 @@ final class TarStreamReader {
     /// record set could not be applied (never a silent drop).
     private(set) var sawGlobalPaxHeader = false
     private var finished = false
-    /// True when the archive ended with the canonical two zero blocks.
-    private(set) var sawEndMarker = false
 
-    init(source: ArchiveByteSource) throws {
+    init(source: ArchiveByteSource, checkCancellation: (() throws -> Void)? = nil) throws {
         self.source = source
+        self.checkCancellation = checkCancellation
     }
 
     func next() throws -> Header? {
         if finished { return nil }
         while true {
             try finishPayload()
-            let block = try readBlock(lenient: true)
-            guard let block else {
-                // End of input without the zero-block marker.
-                finished = true
-                return nil
+            guard let block = try readBlock() else {
+                // End of input where the end-of-archive marker should be: a
+                // truncated archive must not be reported as a clean end.
+                throw TarStreamError.truncated("tar end-of-archive marker is missing")
             }
             if block.allSatisfy({ $0 == 0 }) {
-                // The canonical end is two zero blocks; one is enough to stop.
+                // One or more zero blocks terminate the archive (the canonical
+                // form is two). The remainder must be zero padding; any other
+                // trailing data is refused instead of being ignored.
                 finished = true
-                sawEndMarker = true
+                try drainTrailingPadding()
                 return nil
             }
             var header = try parse(block: block)
@@ -231,14 +238,35 @@ final class TarStreamReader {
                 startPayload(size: header.size)
                 let payload = try readPayloadData()
                 try finishPayload()
-                let records = Self.parsePax(payload)
+                let records = try Self.parsePax(payload)
                 if header.rawTypeflag == UInt8(ascii: "g") {
                     sawGlobalPaxHeader = true
                 } else {
-                    pendingName = records["path"]
-                    pendingLink = records["linkpath"]
-                    if let size = records["size"] { pendingSize = Int64(size) }
-                    if let mtime = records["mtime"], let seconds = Double(mtime) { pendingMtime = Int(seconds) }
+                    if let path = records["path"] {
+                        guard path.utf8.count <= 4_096 else {
+                            throw TarStreamError.nameTooLong("pax path over 4096 bytes")
+                        }
+                        pendingName = path
+                    }
+                    if let linkpath = records["linkpath"] {
+                        guard linkpath.utf8.count <= 4_096 else {
+                            throw TarStreamError.nameTooLong("pax linkpath over 4096 bytes")
+                        }
+                        pendingLink = linkpath
+                    }
+                    if let rawSize = records["size"] {
+                        guard let value = Int64(rawSize), value >= 0 else {
+                            throw TarStreamError.malformed("pax size record is not a valid non-negative number")
+                        }
+                        pendingSize = value
+                    }
+                    if let rawMtime = records["mtime"] {
+                        guard let seconds = Double(rawMtime), seconds.isFinite,
+                              seconds >= -62_135_596_800, seconds <= 253_402_300_799 else {
+                            throw TarStreamError.malformed("pax mtime record is not a valid timestamp")
+                        }
+                        pendingMtime = Int(seconds.rounded())
+                    }
                 }
                 continue
             case .gnuLongName, .gnuLongLink:
@@ -246,6 +274,9 @@ final class TarStreamReader {
                 let payload = try readPayloadData()
                 try finishPayload()
                 let value = String(decoding: payload.prefix { $0 != 0 }, as: UTF8.self)
+                guard value.utf8.count <= 4_096 else {
+                    throw TarStreamError.nameTooLong("GNU long name over 4096 bytes")
+                }
                 if header.kind == .gnuLongName { pendingName = value } else { pendingLink = value }
                 continue
             default:
@@ -265,6 +296,7 @@ final class TarStreamReader {
 
     func readPayload(max: Int) throws -> Data {
         guard payloadActive, remainingPayload > 0 else { return Data() }
+        try checkCancellation?()
         let want = Int(min(remainingPayload, Int64(max)))
         guard let chunk = try source.read(max: want), !chunk.isEmpty else {
             throw TarStreamError.truncated("tar entry payload is truncated")
@@ -281,13 +313,17 @@ final class TarStreamReader {
     func finishPayload() throws {
         guard payloadActive else { return }
         while remainingPayload > 0 {
+            try checkCancellation?()
             let chunk = try readPayload(max: 256 * 1_024)
             if chunk.isEmpty { throw TarStreamError.truncated("tar entry payload is truncated") }
         }
-        if payloadPadding > 0 {
-            guard let skipped = try source.read(max: payloadPadding), skipped.count == payloadPadding else {
+        var remainingPadding = payloadPadding
+        while remainingPadding > 0 {
+            try checkCancellation?()
+            guard let skipped = try source.read(max: remainingPadding), !skipped.isEmpty else {
                 throw TarStreamError.truncated("tar padding is truncated")
             }
+            remainingPadding -= skipped.count
         }
         payloadActive = false
         payloadPadding = 0
@@ -307,6 +343,7 @@ final class TarStreamReader {
         }
         var data = Data()
         while remainingPayload > 0 {
+            try checkCancellation?()
             let chunk = try readPayload(max: 256 * 1_024)
             if chunk.isEmpty { throw TarStreamError.truncated("extended tar header is truncated") }
             data.append(chunk)
@@ -314,26 +351,86 @@ final class TarStreamReader {
         return data
     }
 
-    private func readBlock(lenient: Bool) throws -> Data? {
-        guard let block = try source.read(max: 512) else { return nil }
-        if block.count < 512 {
-            if lenient { return nil }
-            throw TarStreamError.truncated("tar header is truncated")
+    /// Reads whatever follows the end-of-archive marker and requires it to be
+    /// zero padding (blocking-factor padding written by `tar`). Non-zero bytes
+    /// — including a partial header — are trailing garbage: the archive is
+    /// refused rather than reported as a partial extraction.
+    private func drainTrailingPadding() throws {
+        while true {
+            try checkCancellation?()
+            guard let chunk = try source.read(max: 64 * 1024), !chunk.isEmpty else { return }
+            guard chunk.allSatisfy({ $0 == 0 }) else {
+                throw TarStreamError.malformed("tar has trailing garbage after its end-of-archive marker")
+            }
+        }
+    }
+
+    /// Reads exactly one 512-byte header block. `nil` means the source ended
+    /// at a block boundary (the caller treats that as a missing end marker);
+    /// a short block is corruption.
+    private func readBlock() throws -> Data? {
+        guard var block = try source.read(max: 512) else { return nil }
+        while block.count < 512 {
+            guard let next = try source.read(max: 512 - block.count), !next.isEmpty else {
+                throw TarStreamError.truncated("tar header is truncated")
+            }
+            block.append(next)
         }
         return block
     }
 
     private func parse(block: Data) throws -> Header {
-        func field(_ offset: Int, _ length: Int) -> String {
+        func bytes(_ offset: Int, _ length: Int) -> [UInt8] {
             let start = block.startIndex + offset
-            let slice = block[start..<(start + length)]
+            return Array(block[start..<(start + length)])
+        }
+        func field(_ offset: Int, _ length: Int) -> String {
+            let slice = bytes(offset, length)
             let trimmed = slice.prefix { $0 != 0 }
             return String(decoding: trimmed, as: UTF8.self)
         }
-        func octal(_ offset: Int, _ length: Int) -> Int64? {
-            let text = field(offset, length).trimmingCharacters(in: CharacterSet(charactersIn: " \0"))
-            if text.isEmpty { return 0 }
-            return Int64(text, radix: 8)
+        /// Strict numeric field: POSIX octal or GNU base-256. A present but
+        /// invalid / overflowing / negative value is corruption. `fallback`
+        /// applies only to an empty field (nil = the field is required).
+        /// Base-256 is accepted only in its canonical positive form (`0x80`
+        /// prefix); unknown prefixes (e.g. negative two's complement) are
+        /// rejected rather than misread.
+        func numeric(_ offset: Int, _ length: Int, _ name: String, fallback: Int64?) throws -> Int64 {
+            let raw = bytes(offset, length)
+            if let first = raw.first, first & 0x80 != 0 {
+                guard first == 0x80 else {
+                    throw TarStreamError.malformed("tar \(name) field uses an unsupported base-256 encoding")
+                }
+                var value: Int64 = 0
+                for byte in raw.dropFirst() {
+                    guard value <= (Int64.max >> 8) else {
+                        throw TarStreamError.malformed("tar \(name) field overflows")
+                    }
+                    value = (value << 8) | Int64(byte)
+                }
+                return value
+            }
+            var digits: [UInt8] = []
+            for byte in raw {
+                if byte == 0 || byte == 0x20 {
+                    if digits.isEmpty { continue }
+                    break
+                }
+                guard byte >= 0x30, byte <= 0x37 else {
+                    throw TarStreamError.malformed("tar \(name) field is not a valid octal number")
+                }
+                digits.append(byte)
+            }
+            if digits.isEmpty {
+                guard let fallback else {
+                    throw TarStreamError.malformed("tar \(name) field is empty")
+                }
+                return fallback
+            }
+            guard let value = Int64(String(decoding: digits, as: UTF8.self), radix: 8) else {
+                throw TarStreamError.malformed("tar \(name) field overflows")
+            }
+            return value
         }
         // Checksum first: a mismatch means we are not looking at a tar header
         // (or the archive is damaged).
@@ -348,9 +445,9 @@ final class TarStreamReader {
         let prefix = field(345, 155)
         let fullName = prefix.isEmpty ? name : prefix + "/" + name
         let typeflag = block[block.startIndex + 156]
-        let size = octal(124, 12) ?? 0
-        let mode = Int(octal(100, 8) ?? 0o644)
-        let mtime = Int(octal(136, 12) ?? 0)
+        let size = try numeric(124, 12, "size", fallback: nil)
+        let mode = try numeric(100, 8, "mode", fallback: 0o644)
+        let mtime = try numeric(136, 12, "mtime", fallback: 0)
         let link = field(157, 100)
         let kind: Kind
         switch typeflag {
@@ -374,22 +471,27 @@ final class TarStreamReader {
         return Header(
             name: fullName,
             kind: kind,
-            mode: mode,
-            size: max(0, size),
-            mtime: mtime,
+            mode: Int(truncatingIfNeeded: mode),
+            size: size,
+            mtime: Int(truncatingIfNeeded: mtime),
             linkTarget: link.isEmpty ? nil : link,
             rawTypeflag: typeflag
         )
     }
 
-    static func parsePax(_ payload: Data) -> [String: String] {
+    /// Parses pax records. A record that does not parse is corruption: the
+    /// caller must not silently fall back to the ustar name/size.
+    static func parsePax(_ payload: Data) throws -> [String: String] {
         var result: [String: String] = [:]
         var cursor = payload.startIndex
         while cursor < payload.endIndex {
             guard let space = payload[cursor...].firstIndex(of: 0x20),
                   let length = Int(String(decoding: payload[cursor..<space], as: UTF8.self)),
                   length > 0,
-                  cursor + length <= payload.endIndex else { break }
+                  cursor + length <= payload.endIndex,
+                  length > payload.distance(from: cursor, to: space) + 1 else {
+                throw TarStreamError.malformed("pax record is malformed")
+            }
             let record = payload[(space + 1)..<(cursor + length - 1)]
             if let equals = record.firstIndex(of: 0x3D) {
                 let key = String(decoding: record[..<equals], as: UTF8.self)
