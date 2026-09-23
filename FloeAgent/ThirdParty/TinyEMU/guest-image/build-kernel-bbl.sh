@@ -242,7 +242,11 @@ if [ "$rebuild" = 1 ]; then
         # cross libc: riscv-pk is bare-metal and links with -nostdlib anyway.
         ../configure --host=riscv64-linux-gnu --with-arch=rv64gc \
             $extra_configure LDFLAGS="-nostdlib"
-        make -j"$jobs" CFLAGS="$bbl_cflags"
+        # CFLAGS must come from the environment, not the make command line:
+        # a command-line CFLAGS would override the makefile's own assignment
+        # and with it -DBBL_LOGO_FILE/-DBBL_PAYLOAD/-march, which made
+        # raw_logo.S assemble without its logo string (retained failure).
+        CFLAGS="$bbl_cflags" make -j"$jobs"
     ) >"$out/rebuild-riscv-pk.log" 2>&1 || {
         printf 'build-kernel-bbl: riscv-pk rebuild failed; last lines:\n' >&2
         tail -c 4000 "$out/rebuild-riscv-pk.log" >&2 || true
