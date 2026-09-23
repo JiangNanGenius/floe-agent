@@ -80,13 +80,10 @@ targets:
       - path: FloeApp/Resources/EngineeringViewers
         type: folder
         buildPhase: resources
-      # Resources/IDE now carries only the CodeBlitz/Monaco attribution and
-      # vendor license files (the 28MB web-workbench payload was removed when
-      # IDE text editing became native-only). The license inventory requires
-      # these notices to stay bundled.
-      - path: FloeApp/Resources/IDE
-        type: folder
-        buildPhase: resources
+      # Resources/IDE is intentionally NOT packaged: the CodeBlitz/Monaco web
+      # workbench was retired when IDE text editing became native-only. The
+      # NOTICE and vendor license files stay in the tree as attribution only
+      # and must not ship as installed-package licenses.
       - path: ThirdParty/RoyalVNCKit/LICENSE
         buildPhase: resources
     info:
