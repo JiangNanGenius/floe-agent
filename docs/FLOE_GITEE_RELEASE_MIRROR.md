@@ -118,11 +118,19 @@ gh workflow run gitee-mirror.yml --ref main \
 
 ## 剩余的中国大陆加速集成 / Remaining China acceleration integration
 
-1. **App IPA（> 64 MiB）没有可直接安装的 Gitee URL**：Gitee 只能托管分片。中国大陆用户要获得加速安装，需要一个「下载分片 → 校验 → 重组 → 再安装」的消费方；Feather/AltStore 均不支持，因此当前 App 安装路径仍以 GitHub 为主源。
-2. **上传带宽**：GitHub-hosted runner 到 Gitee 的上传实测约 29 KB/s（单连接），大型资产的镜像需要更长时间或更多并行连接；从中国大陆网络发起上传会快得多。云端 `--upload-workers` 已实现，实际聚合速率以每次运行的汇总工件为准。
-3. Linux 客户机镜像的 Gitee 回退已由 App 实现并验证（`shard-manifest.json` v1）；新的组件发行版仍需把镜像 URL 固定进 App 目录（`LinuxGuestImageStore` 的 catalog），这是版本发布流程的一部分，不是本工作流自动完成的。
-4. 每个新 Release 的镜像结果（`gitee-release-mirror-<tag>-<run_id>` 工件）应在发布记录中引用；refs 门禁与资产门禁分别记录。
+1. **仓库附件配额（当前主要阻塞）**：镜像仓库 1 GiB 附件配额已用 995.1 MiB（其中约 448 MiB 是 `floe-linux-guest-20260922.2` 发行版的重复分片）。在此之前需要：删除重复分片回收空间、或改用配额更大的 Gitee 账号/仓库；即使回收重复，712 MiB IPA 仍放不下。
+2. **App IPA（> 64 MiB）没有可直接安装的 Gitee URL**：Gitee 只能托管分片，而当前配额连分片也放不下。中国大陆用户要获得加速安装，需要一个「下载分片 → 校验 → 重组 → 再安装」的消费方；Feather/AltStore 均不支持，因此当前 App 安装路径仍以 GitHub 为主源。
+3. **上传带宽**：GitHub-hosted runner 到 Gitee 的上传实测约 29 KB/s（单连接，4 连接聚合约 0.1 MB/s）；从中国大陆网络发起上传会快得多。云端 `--upload-workers` 已实现。
+4. Linux 客户机镜像的 Gitee 回退已由 App 实现并验证（`shard-manifest.json` v1）；新的组件发行版仍需把镜像 URL 固定进 App 目录（`LinuxGuestImageStore` 的 catalog），这是版本发布流程的一部分，不是本工作流自动完成的。
+5. 每个新 Release 的镜像结果（`gitee-release-mirror-<tag>-<run_id>` 工件）应在发布记录中引用；refs 门禁与资产门禁分别记录。
 
-## 状态 / Status
+## 状态 / Status（2026-09-23 实测）
 
-以每次运行上传的 `gitee-release-mirror-<tag>-<run_id>` 汇总工件为准；本文件不预设成功。已发布镜像：`https://gitee.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.82`（元数据与可直下资产已校验；分片状态见对应运行的汇总工件）。
+载体：分支 `codex/gitee-release-asset-mirror`，最终修订 `46d9fa10`；成功运行 [35844170219](https://github.com/JiangNanGenius/floe-agent/actions/runs/35844170219)。
+
+- Gitee Release [v1.7.0-beta.82](https://gitee.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.82)（id 1162007）：名称与 GitHub 一致，`prerelease=true`，`target_commitish=fe0852b4…`（GitHub 标签 SHA），正文附双语镜像说明（含「分片不是可安装包」警告）。
+- 6 个可直下资产：`state=verified`、`complete=true`，每个计划文件名只对应一个已验证附件 id，逐文件 SHA-256 与 GitHub 摘要一致；URL 形如 `https://gitee.com/JiangNanGenius/floe-agent/releases/download/v1.7.0-beta.82/<name>`。
+- 712 MiB 未签名 IPA：`state=not-selected`、`complete=false`，未托管（仓库附件配额 1 GiB，已用 995.1 MiB，剩余 28.9 MiB）。安装仍以 GitHub 主源为准；分片能力由 mock/契约测试（26 项）与真实上传/配额探测覆盖，但本仓库配额下无法完成托管。
+- `GITEE-MIRROR-MANIFEST.json` 的顶层 `complete=false`，逐资产 `state`/`giteeFiles`（名称、字节、摘要、唯一附件 id、校验级别）构成可审计的镜像状态；未选中的兄弟资产只能通过「先前已验证的附件 id 仍原样存在」继承 complete，不会被同名杂物提升为 complete。
+
+The published manifest is the audit surface: per-asset `state`, unique verified `giteeFiles` (name, bytes, digests, attach id, verification level) and a top-level `complete`; an asset is never promoted to complete by the mere presence of a same-name attachment.
