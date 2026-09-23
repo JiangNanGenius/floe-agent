@@ -10595,13 +10595,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The bundled TinyEMU license text could not be read from this build."
+            "value": "A bundled license text could not be read from this build."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法从此构建读取随 App 打包的 TinyEMU 许可文本。"
+            "value": "无法从此构建读取相应随包许可文本。"
           }
         }
       }
@@ -16798,6 +16798,1009 @@
           "stringUnit": {
             "state": "translated",
             "value": "网卡未配置成功"
+          }
+        }
+      }
+    },
+    "settings.licenses.bundled.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every notice here is a file copied into this build. A file missing from the build is shown as unavailable instead of being hidden."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此处每一条都是复制进本构建的文件；构建中缺失的文件会显示为不可用，而不是被隐藏。"
+          }
+        }
+      }
+    },
+    "settings.licenses.bundled.header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bundled license notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随包许可全文"
+          }
+        }
+      }
+    },
+    "settings.licenses.count": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d components"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d 个构件"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.cad.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe CAD engine"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe CAD 引擎"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.codeblitz_bundle.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CodeBlitz bundle notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CodeBlitz 随包声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.codicons.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft Codicons"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft Codicons"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.conversion_fonts.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conversion document fonts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文档转换字体"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.conversion_third_party.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline document conversion"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离线文档转换"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.dxf.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dxf.js bundle notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dxf.js 随包声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.font": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Font: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "字体：%@"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.gerber.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gerber-to-svg bundle notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gerber-to-svg 随包声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.ide.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CodeBlitz IDE"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CodeBlitz IDE"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.ide_vendor.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CodeBlitz bundled dependencies"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CodeBlitz 随包依赖"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.libarchive.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libarchive"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libarchive"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.libgit2.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libgit2"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libgit2"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.mesh.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mesh.js bundle notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mesh.js 随包声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.monaco.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenSumi Monaco"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenSumi Monaco"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.occt.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open CASCADE Technology (OCCT)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open CASCADE Technology（OCCT）"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.occt_exception.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OCCT LGPL exception"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OCCT LGPL 例外条款"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.occt_import_js.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "occt-import-js"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "occt-import-js"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.oniguruma.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "vscode-oniguruma"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "vscode-oniguruma"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.pdfium.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PDFium"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PDFium"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.royalvnc.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RoyalVNCKit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RoyalVNCKit"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.tinyemu.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TinyEMU 2019-12-21 and slirp"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TinyEMU 2019-12-21 与 slirp"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.viewers.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Engineering viewers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工程查看器"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.whisper_model.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper model and tokenizer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper 模型与分词器"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.whisper_tokenizer.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper tokenizer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisper 分词器"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.whisperkit.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "WhisperKit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "WhisperKit"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.zlimageeditor.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ZLImageEditor"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ZLImageEditor"
+          }
+        }
+      }
+    },
+    "settings.licenses.inventory.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Versions, licenses and sources come from the generated inventory that ships in this build; full texts are the bundled files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版本、许可与源码来自本构建随包的生成清单；全文来自随包文件。"
+          }
+        }
+      }
+    },
+    "settings.licenses.inventory.header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Complete component inventory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完整构件清单"
+          }
+        }
+      }
+    },
+    "settings.licenses.inventory.link": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the component inventory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开构件清单"
+          }
+        }
+      }
+    },
+    "settings.licenses.inventory.search": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search components"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索构件"
+          }
+        }
+      }
+    },
+    "settings.licenses.inventory.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Component inventory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "构件清单"
+          }
+        }
+      }
+    },
+    "settings.licenses.kind.full_text": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "full text"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完整文本"
+          }
+        }
+      }
+    },
+    "settings.licenses.kind.grant": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "font grant"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "字体授权"
+          }
+        }
+      }
+    },
+    "settings.licenses.kind.notices": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "bundled dependency notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随包依赖声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.kind.provenance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "origin and terms"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源与条款"
+          }
+        }
+      }
+    },
+    "settings.licenses.manifest_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build has no generated license inventory. Run scripts/license_inventory.sh and rebuild."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此构建缺少生成的许可清单。请运行 scripts/license_inventory.sh 后重新构建。"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.guest_image": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Linux guest is a separately distributed downloadable image built from Debian 13 riscv64 packages plus a pinned kernel, bbl and static glibc. Its source and license texts are recorded in the pinned image manifest; they are not linked into the app binary."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux 客体是从 Debian 13 riscv64 软件包加固定内核、bbl 与静态 glibc 构建、单独分发的可下载镜像，其源码与许可文本记录在固定的镜像清单中，不链接进 App 二进制。"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.libgit2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libgit2 is licensed under GPL-2.0 with a linking exception that explicitly permits linking it into this application. The complete GPL-2.0 text ships in this app as Licenses/libgit2-COPYING.txt, and libgit2's source is the pinned repository in the component list."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libgit2 采用 GPL-2.0 并附带链接例外，明确允许将其链接进本应用。完整的 GPL-2.0 文本随本应用打包为 Licenses/libgit2-COPYING.txt，libgit2 源码为构件清单中的固定仓库。"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.occt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open CASCADE Technology and occt-import-js are LGPL-2.1 with the OCCT exception; their complete texts and the exception ship in the app bundle."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open CASCADE Technology 与 occt-import-js 采用 LGPL-2.1 及 OCCT 例外；完整文本与例外条款随 App 打包。"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.office": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The native Office engine is Collabora Online (LibreOffice-based) at the pinned commit, MPL-2.0. The qualified engine bundle retains its upstream third-party license files; the complete engine notice inventory remains a separate office qualification gate."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原生 Office 引擎为固定提交的 Collabora Online（基于 LibreOffice），采用 MPL-2.0。合格引擎包中保留了上游第三方许可文件；完整的引擎声明清单仍是独立的 Office 资格门禁。"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.verification": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every Swift package license was read from the resolved checkout license file. scripts/license-evidence.json records the exact file and sha256, and the generator re-verifies them when a checkout is present."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每个 Swift 软件包的许可证均读取自解析后的 checkout 许可文件。scripts/license-evidence.json 记录了具体文件与 sha256，生成器会在 checkout 存在时重新校验。"
+          }
+        }
+      }
+    },
+    "settings.licenses.notes.header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "License notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "许可说明"
+          }
+        }
+      }
+    },
+    "settings.licenses.repository_license": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repository license (MPL-2.0)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仓库许可证（MPL-2.0）"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.conversion": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Document conversion"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文档转换"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.documents": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Documents and archives"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文档与归档"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.engineering": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Engineering viewers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工程查看器"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.engines": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Engines and runners"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "引擎与运行器"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.fonts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bundled fonts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随包字体"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.ide": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline IDE"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离线 IDE"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.media": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image and media"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图像与媒体"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.office": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Office engine"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Office 引擎"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.python": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Python runtimes and packages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Python 运行时与数据包"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.speech": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speech"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.swift": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swift packages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swift 软件包"
+          }
+        }
+      }
+    },
+    "settings.licenses.section.web": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bundled web and data scripts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随包 Web 与数据脚本"
+          }
+        }
+      }
+    },
+    "settings.licenses.this_app": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本应用"
           }
         }
       }

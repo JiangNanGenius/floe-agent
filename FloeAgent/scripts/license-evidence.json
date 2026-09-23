@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "scripts/license_inventory.sh",
+  "note": "Recorded license detection evidence for the resolved Swift packages. sha256 binds the exact upstream license file the license was read from; --check re-verifies it whenever the checkout is present.",
+  "licenses": [
+    {
+      "identity": "bigint",
+      "license": "MIT",
+      "evidence": ".build/checkouts/bigint/LICENSE.md",
+      "sha256": "c3dfd0dca467f6d198bf365a954d4be6cb6b0e3d848ec724f86e5f579ca38d9e"
+    },
+    {
+      "identity": "bitbytedata",
+      "license": "MIT",
+      "evidence": ".build/checkouts/bitbytedata/LICENSE",
+      "sha256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084"
+    },
+    {
+      "identity": "citadel",
+      "license": "MIT",
+      "evidence": ".build/checkouts/citadel/LICENSE",
+      "sha256": "580a39b7c09cba3cd18a5b1e0d4376e9d1ac200d241bda87e95ed74917bc3b31"
+    },
+    {
+      "identity": "cryptoswift",
+      "license": "Zlib",
+      "evidence": ".build/checkouts/cryptoswift/LICENSE",
+      "sha256": "e4ea9188602dd4217309aec044481b0a7d2f9d539b1d1673b9a1809709c804e0"
+    },
+    {
+      "identity": "eventsource",
+      "license": "MIT",
+      "evidence": ".build/checkouts/eventsource/LICENSE.md",
+      "sha256": "2f9b695627d569a3ce452b2c03fdd34310df78c8ea94edfafd9ce38381e5b502"
+    },
+    {
+      "identity": "grdb.swift",
+      "license": "MIT",
+      "evidence": ".build/checkouts/grdb.swift/LICENSE",
+      "sha256": "9853f9dce81365fcc1d9b46004633354450164b8d17904e92e80c444545f7e87"
+    },
+    {
+      "identity": "h",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/h/LICENSE",
+      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4"
+    },
+    {
+      "identity": "libgit2",
+      "license": "GPL-2.0 WITH libgit2 linking exception",
+      "evidence": ".build/checkouts/libgit2/COPYING",
+      "sha256": "330f7f86a0f7fa88f7763b6ef0aba06dec33bf5b1ea8c304b76e883d73471f95"
+    },
+    {
+      "identity": "mlx-swift",
+      "license": "MIT",
+      "evidence": ".build/checkouts/mlx-swift/LICENSE",
+      "sha256": "44326a4ea062241ae6fc26ee2ec90bdc81af7eb7b9d3966181b733fa69d42057"
+    },
+    {
+      "identity": "mlx-swift-lm",
+      "license": "MIT",
+      "evidence": ".build/checkouts/mlx-swift-lm/LICENSE",
+      "sha256": "7b1d86acac816ce8192209d7e01141c129b4d48d474c15cc5fb4af62f497c323"
+    },
+    {
+      "identity": "smbclient",
+      "license": "MIT",
+      "evidence": ".build/checkouts/smbclient/LICENSE",
+      "sha256": "92b9785672f66ae9c75550d328a00ff06ee6728f7d1b8874355b5dbeaf23c753"
+    },
+    {
+      "identity": "swcompression",
+      "license": "MIT",
+      "evidence": ".build/checkouts/swcompression/LICENSE",
+      "sha256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084"
+    },
+    {
+      "identity": "swift-argument-parser",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-argument-parser/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+    },
+    {
+      "identity": "swift-asn1",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-asn1/LICENSE.txt",
+      "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"
+    },
+    {
+      "identity": "swift-atomics",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-atomics/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+    },
+    {
+      "identity": "swift-collections",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-collections/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+    },
+    {
+      "identity": "swift-crypto",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-crypto/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "identity": "swift-huggingface",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-huggingface/LICENSE",
+      "sha256": "4d6ad72952a8329063a71de28329b493de96cf57459e2ac217110d1a6a5f84ae"
+    },
+    {
+      "identity": "swift-jinja",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-jinja/LICENSE",
+      "sha256": "648b81e6c6f9975c3b6cf6d630229b6c8d6f1ddaef55f5770f576adda19f3495"
+    },
+    {
+      "identity": "swift-jpeg",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-jpeg/LICENSE",
+      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4"
+    },
+    {
+      "identity": "swift-log",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-log/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "identity": "swift-nio",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-nio/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "identity": "swift-nio-ssh",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-nio-ssh/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "identity": "swift-numerics",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-numerics/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+    },
+    {
+      "identity": "swift-png",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-png/LICENSE",
+      "sha256": "f8ab497929c6f0ccbd6d2c368c17866ec055b1588a32f268473730d59b2fcfa4"
+    },
+    {
+      "identity": "swift-syntax",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-syntax/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+    },
+    {
+      "identity": "swift-system",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-system/LICENSE.txt",
+      "sha256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3"
+    },
+    {
+      "identity": "swift-transformers",
+      "license": "Apache-2.0",
+      "evidence": ".build/checkouts/swift-transformers/LICENSE",
+      "sha256": "648b81e6c6f9975c3b6cf6d630229b6c8d6f1ddaef55f5770f576adda19f3495"
+    },
+    {
+      "identity": "swiftgitx",
+      "license": "MIT",
+      "evidence": ".build/checkouts/swiftgitx/LICENSE",
+      "sha256": "9de5d708c401c993b7a82fbbc4ad5df67958e3c53ac98ed3872026d6a4277f79"
+    },
+    {
+      "identity": "swiftterm",
+      "license": "MIT",
+      "evidence": ".build/checkouts/swiftterm/LICENSE",
+      "sha256": "1b17fa27394e89b3dc62d60c81ebe7e5554639b2382e4b057b4277ed202bfd77"
+    },
+    {
+      "identity": "whisperkit",
+      "license": "MIT",
+      "evidence": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
+      "sha256": "b8673adf319f1d6905c5c38cf69513f8857930fb3445566fa9839c6948bb85c4"
+    },
+    {
+      "identity": "yyjson",
+      "license": "MIT",
+      "evidence": ".build/checkouts/yyjson/LICENSE",
+      "sha256": "45e384d3d52c73cba3a64d6e6c25d47cd738cd8a55c30629e3201046eda62947"
+    },
+    {
+      "identity": "zipfoundation",
+      "license": "MIT",
+      "evidence": ".build/checkouts/zipfoundation/LICENSE",
+      "sha256": "93a5b6f4c4fcfbca71aaf17f5758d249cf205d5d1c237becc37f14e43af09f6b"
+    }
+  ]
+}

@@ -52,9 +52,13 @@ targets:
           - Resources/Fonts/Bundled
           - Resources/IDE
           - Resources/EngineeringViewers
+          - Resources/Licenses
           - Resources/MindElixir
           - Resources/Whisper
       - path: FloeApp/Resources/Capabilities
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/Licenses
         type: folder
         buildPhase: resources
       - path: FloeApp/Resources/PDFiumLicenses

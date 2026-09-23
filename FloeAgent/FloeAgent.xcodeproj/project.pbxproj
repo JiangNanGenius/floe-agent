@@ -365,6 +365,7 @@
 		F97E858A6A5915882FA5E428 /* RemoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */; };
 		F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */; };
 		FB6996DA07A08B986A011ED7 /* VoiceInputLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58FD2460881B6EAAD9966732 /* VoiceInputLive.swift */; };
+		FB8488F3E0E117198916DA0E /* Licenses in Resources */ = {isa = PBXBuildFile; fileRef = FEEC384AFA8C2D5903495BDD /* Licenses */; };
 		FBA76463B171719B586A0436 /* FloeShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A8E32A62F993F42084705E /* FloeShortcuts.swift */; };
 		FBF28B8E8847F0265F9E7C47 /* SetupGuideLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */; };
 		FC96C3B20BEFAC8E513A2A43 /* NotesWorkspaceImportUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */; };
@@ -784,6 +785,7 @@
 		FC237C9A630761F0880A780A /* NotesExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesExport.swift; sourceTree = "<group>"; };
 		FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceControlCenter.swift; sourceTree = "<group>"; };
 		FE6C8028BD08725BB2E7F7A4 /* CapabilityExecutionRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityExecutionRouterTests.swift; sourceTree = "<group>"; };
+		FEEC384AFA8C2D5903495BDD /* Licenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Licenses; path = FloeApp/Resources/Licenses; sourceTree = SOURCE_ROOT; };
 		FF07847A2353D846B363915C /* ThreadTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadTimelineTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -1551,6 +1553,7 @@
 				916ACA33CDE6532714E49272 /* Info.plist */,
 				2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */,
 				213BDC1E4C8F7172D210CA91 /* LibArchiveLicenses */,
+				FEEC384AFA8C2D5903495BDD /* Licenses */,
 				A6797B7DAA890D6378153058 /* Localizable.xcstrings */,
 				A837399A8DE937C9827D4EFA /* PDFiumLicenses */,
 				A6F5C96BCCB2084068B87229 /* TinyEMU-LICENSES.txt */,
@@ -1854,6 +1857,7 @@
 				F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */,
 				5C92C52F4F767AD2C1E010F7 /* LICENSE in Resources */,
 				8E7756561D6378946EAEB05B /* LibArchiveLicenses in Resources */,
+				FB8488F3E0E117198916DA0E /* Licenses in Resources */,
 				EB441D3ACD8061BE27D87111 /* Localizable.xcstrings in Resources */,
 				82A6523A97E32F6261F639AA /* PDFiumLicenses in Resources */,
 				217DCF6650FFED12E80CAD40 /* TinyEMU-LICENSES.txt in Resources */,

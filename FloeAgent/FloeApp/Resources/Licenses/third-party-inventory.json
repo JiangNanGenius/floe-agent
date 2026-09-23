@@ -1,0 +1,2608 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "scripts/license_inventory.sh",
+  "appLicense": "MPL-2.0",
+  "repository": "https://github.com/JiangNanGenius/floe-agent",
+  "inventoryPath": "FloeAgent/LICENSES-THIRD-PARTY.md",
+  "sections": [
+    {
+      "id": "engines",
+      "titleKey": "settings.licenses.section.engines",
+      "fallback": "Engines and runners"
+    },
+    {
+      "id": "office",
+      "titleKey": "settings.licenses.section.office",
+      "fallback": "Office engine"
+    },
+    {
+      "id": "swift",
+      "titleKey": "settings.licenses.section.swift",
+      "fallback": "Swift packages"
+    },
+    {
+      "id": "python",
+      "titleKey": "settings.licenses.section.python",
+      "fallback": "Python runtimes and packages"
+    },
+    {
+      "id": "conversion",
+      "titleKey": "settings.licenses.section.conversion",
+      "fallback": "Document conversion"
+    },
+    {
+      "id": "web",
+      "titleKey": "settings.licenses.section.web",
+      "fallback": "Bundled web and data scripts"
+    },
+    {
+      "id": "documents",
+      "titleKey": "settings.licenses.section.documents",
+      "fallback": "Documents and archives"
+    },
+    {
+      "id": "engineering",
+      "titleKey": "settings.licenses.section.engineering",
+      "fallback": "Engineering viewers"
+    },
+    {
+      "id": "speech",
+      "titleKey": "settings.licenses.section.speech",
+      "fallback": "Speech"
+    },
+    {
+      "id": "ide",
+      "titleKey": "settings.licenses.section.ide",
+      "fallback": "Offline IDE"
+    },
+    {
+      "id": "media",
+      "titleKey": "settings.licenses.section.media",
+      "fallback": "Image and media"
+    },
+    {
+      "id": "fonts",
+      "titleKey": "settings.licenses.section.fonts",
+      "fallback": "Bundled fonts"
+    }
+  ],
+  "documents": [
+    {
+      "id": "tinyemu",
+      "repositoryPath": "FloeApp/Resources/TinyEMU-LICENSES.txt",
+      "bundlePath": "TinyEMU-LICENSES.txt",
+      "titleKey": "settings.licenses.document.tinyemu.title",
+      "titleFallback": "TinyEMU 2019-12-21 and slirp",
+      "titleArgument": null,
+      "license": "MIT / BSD-2-Clause / BSD-3-Clause",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": "settings.diagnostics.tinyemu_licenses.footer"
+    },
+    {
+      "id": "libgit2",
+      "repositoryPath": "FloeApp/Resources/Licenses/libgit2-COPYING.txt",
+      "bundlePath": "Licenses/libgit2-COPYING.txt",
+      "titleKey": "settings.licenses.document.libgit2.title",
+      "titleFallback": "libgit2",
+      "titleArgument": null,
+      "license": "GPL-2.0 with linking exception",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "pdfium",
+      "repositoryPath": "FloeApp/Resources/PDFiumLicenses/LICENSE",
+      "bundlePath": "PDFiumLicenses/LICENSE",
+      "titleKey": "settings.licenses.document.pdfium.title",
+      "titleFallback": "PDFium",
+      "titleArgument": null,
+      "license": "BSD-3-Clause",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "documents",
+      "noteKey": null
+    },
+    {
+      "id": "libarchive",
+      "repositoryPath": "FloeApp/Resources/LibArchiveLicenses/COPYING",
+      "bundlePath": "LibArchiveLicenses/COPYING",
+      "titleKey": "settings.licenses.document.libarchive.title",
+      "titleFallback": "libarchive",
+      "titleArgument": null,
+      "license": "BSD-2-Clause",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "documents",
+      "noteKey": null
+    },
+    {
+      "id": "conversion-notices",
+      "repositoryPath": "FloeApp/Resources/DocumentConversion/THIRD-PARTY-NOTICES.txt",
+      "bundlePath": "DocumentConversion/THIRD-PARTY-NOTICES.txt",
+      "titleKey": "settings.licenses.document.conversion_third_party.title",
+      "titleFallback": "Offline document conversion",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "conversion",
+      "noteKey": null
+    },
+    {
+      "id": "conversion-fonts",
+      "repositoryPath": "FloeApp/Resources/DocumentConversion/FONT-LICENSE.txt",
+      "bundlePath": "DocumentConversion/FONT-LICENSE.txt",
+      "titleKey": "settings.licenses.document.conversion_fonts.title",
+      "titleFallback": "Conversion document fonts",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "conversion",
+      "noteKey": null
+    },
+    {
+      "id": "viewers-notices",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt",
+      "bundlePath": "EngineeringViewers/THIRD_PARTY_NOTICES.txt",
+      "titleKey": "settings.licenses.document.viewers.title",
+      "titleFallback": "Engineering viewers",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "cad-notices",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/CAD_NOTICES.txt",
+      "bundlePath": "EngineeringViewers/CAD_NOTICES.txt",
+      "titleKey": "settings.licenses.document.cad.title",
+      "titleFallback": "Floe CAD engine",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "occt",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/license.occt.txt",
+      "bundlePath": "EngineeringViewers/license.occt.txt",
+      "titleKey": "settings.licenses.document.occt.title",
+      "titleFallback": "Open CASCADE Technology (OCCT)",
+      "titleArgument": null,
+      "license": "LGPL-2.1",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "occt-import-js",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt",
+      "bundlePath": "EngineeringViewers/license.occt-import-js.txt",
+      "titleKey": "settings.licenses.document.occt_import_js.title",
+      "titleFallback": "occt-import-js",
+      "titleArgument": null,
+      "license": "LGPL-2.1",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "occt-exception",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/OCCT_LGPL_EXCEPTION.txt",
+      "bundlePath": "EngineeringViewers/OCCT_LGPL_EXCEPTION.txt",
+      "titleKey": "settings.licenses.document.occt_exception.title",
+      "titleFallback": "OCCT LGPL exception",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "gerber-notices",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/gerber-to-svg.min.js.LICENSE.txt",
+      "bundlePath": "EngineeringViewers/gerber-to-svg.min.js.LICENSE.txt",
+      "titleKey": "settings.licenses.document.gerber.title",
+      "titleFallback": "gerber-to-svg bundle notices",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "dxf-notices",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/dxf.js.LEGAL.txt",
+      "bundlePath": "EngineeringViewers/dxf.js.LEGAL.txt",
+      "titleKey": "settings.licenses.document.dxf.title",
+      "titleFallback": "dxf.js bundle notices",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "mesh-notices",
+      "repositoryPath": "FloeApp/Resources/EngineeringViewers/mesh.js.LEGAL.txt",
+      "bundlePath": "EngineeringViewers/mesh.js.LEGAL.txt",
+      "titleKey": "settings.licenses.document.mesh.title",
+      "titleFallback": "mesh.js bundle notices",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "whisper-model",
+      "repositoryPath": "FloeApp/Resources/Whisper/NOTICE.txt",
+      "bundlePath": "Whisper/NOTICE.txt",
+      "titleKey": "settings.licenses.document.whisper_model.title",
+      "titleFallback": "Whisper model and tokenizer",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.provenance",
+      "required": false,
+      "section": "speech",
+      "noteKey": null
+    },
+    {
+      "id": "whisperkit",
+      "repositoryPath": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
+      "bundlePath": "Whisper/WhisperKit-LICENSE.txt",
+      "titleKey": "settings.licenses.document.whisperkit.title",
+      "titleFallback": "WhisperKit",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "speech",
+      "noteKey": null
+    },
+    {
+      "id": "whisper-tokenizer",
+      "repositoryPath": "FloeApp/Resources/Whisper/Tokenizer-LICENSE.txt",
+      "bundlePath": "Whisper/Tokenizer-LICENSE.txt",
+      "titleKey": "settings.licenses.document.whisper_tokenizer.title",
+      "titleFallback": "Whisper tokenizer",
+      "titleArgument": null,
+      "license": "Apache-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "speech",
+      "noteKey": null
+    },
+    {
+      "id": "ide-notice",
+      "repositoryPath": "FloeApp/Resources/IDE/NOTICE.md",
+      "bundlePath": "IDE/NOTICE.md",
+      "titleKey": "settings.licenses.document.ide.title",
+      "titleFallback": "CodeBlitz IDE",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "ide",
+      "noteKey": null
+    },
+    {
+      "id": "ide-vendor",
+      "repositoryPath": "FloeApp/Resources/IDE/vendor/LICENSE",
+      "bundlePath": "IDE/vendor/LICENSE",
+      "titleKey": "settings.licenses.document.ide_vendor.title",
+      "titleFallback": "CodeBlitz bundled dependencies",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "ide",
+      "noteKey": null
+    },
+    {
+      "id": "monaco",
+      "repositoryPath": "FloeApp/Resources/IDE/vendor/MONACO-LICENSE",
+      "bundlePath": "IDE/vendor/MONACO-LICENSE",
+      "titleKey": "settings.licenses.document.monaco.title",
+      "titleFallback": "OpenSumi Monaco",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "ide",
+      "noteKey": null
+    },
+    {
+      "id": "oniguruma",
+      "repositoryPath": "FloeApp/Resources/IDE/vendor/ONIGURUMA-LICENSE",
+      "bundlePath": "IDE/vendor/ONIGURUMA-LICENSE",
+      "titleKey": "settings.licenses.document.oniguruma.title",
+      "titleFallback": "vscode-oniguruma",
+      "titleArgument": null,
+      "license": "MIT and Oniguruma notices",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "ide",
+      "noteKey": null
+    },
+    {
+      "id": "codicons",
+      "repositoryPath": "FloeApp/Resources/IDE/vendor/CODICONS-LICENSE",
+      "bundlePath": "IDE/vendor/CODICONS-LICENSE",
+      "titleKey": "settings.licenses.document.codicons.title",
+      "titleFallback": "Microsoft Codicons",
+      "titleArgument": null,
+      "license": "CC-BY-4.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "ide",
+      "noteKey": null
+    },
+    {
+      "id": "codeblitz-bundle",
+      "repositoryPath": "FloeApp/Resources/IDE/vendor/codeblitz.global-with-react.min.js.LICENSE.txt",
+      "bundlePath": "IDE/vendor/codeblitz.global-with-react.min.js.LICENSE.txt",
+      "titleKey": "settings.licenses.document.codeblitz_bundle.title",
+      "titleFallback": "CodeBlitz bundle notices",
+      "titleArgument": null,
+      "license": null,
+      "kindKey": "settings.licenses.kind.notices",
+      "required": false,
+      "section": "ide",
+      "noteKey": null
+    },
+    {
+      "id": "zlimageeditor",
+      "repositoryPath": "FloeApp/Resources/ZLImageEditor-LICENSE.txt",
+      "bundlePath": "ZLImageEditor-LICENSE.txt",
+      "titleKey": "settings.licenses.document.zlimageeditor.title",
+      "titleFallback": "ZLImageEditor",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "media",
+      "noteKey": null
+    },
+    {
+      "id": "royalvnc",
+      "repositoryPath": "ThirdParty/RoyalVNCKit/LICENSE",
+      "bundlePath": "LICENSE",
+      "titleKey": "settings.licenses.document.royalvnc.title",
+      "titleFallback": "RoyalVNCKit",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": false,
+      "section": "media",
+      "noteKey": null
+    },
+    {
+      "id": "font-alibaba-puhuiti-3",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/alibaba-puhuiti-3/LICENSE.txt",
+      "bundlePath": "Bundled/alibaba-puhuiti-3/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: 阿里巴巴普惠体 3.0",
+      "titleArgument": "阿里巴巴普惠体 3.0",
+      "license": "阿里巴巴普惠体授权协议（全球永久免费商用）",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-harmonyos-sans",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/harmonyos-sans/LICENSE.txt",
+      "bundlePath": "Bundled/harmonyos-sans/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: HarmonyOS Sans（鸿蒙）",
+      "titleArgument": "HarmonyOS Sans（鸿蒙）",
+      "license": "HarmonyOS Sans 字体许可（免费可商用）",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-lxgw-wenkai",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/lxgw-wenkai/LICENSE.txt",
+      "bundlePath": "Bundled/lxgw-wenkai/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: 霞鹜文楷",
+      "titleArgument": "霞鹜文楷",
+      "license": "OFL-1.1",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-misans",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/misans/LICENSE.txt",
+      "bundlePath": "Bundled/misans/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: MiSans（小米）",
+      "titleArgument": "MiSans（小米）",
+      "license": "MiSans 字体许可（全社会免费商用）",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-sarasa-mono-sc",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/sarasa-mono-sc/LICENSE.txt",
+      "bundlePath": "Bundled/sarasa-mono-sc/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: 更纱黑体等宽 简体",
+      "titleArgument": "更纱黑体等宽 简体",
+      "license": "OFL-1.1",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-source-han-sans-sc",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/source-han-sans-sc/LICENSE.txt",
+      "bundlePath": "Bundled/source-han-sans-sc/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: 思源黑体 简体",
+      "titleArgument": "思源黑体 简体",
+      "license": "OFL-1.1",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-source-han-sans-tc",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/source-han-sans-tc/LICENSE.txt",
+      "bundlePath": "Bundled/source-han-sans-tc/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: 思源黑體 繁體",
+      "titleArgument": "思源黑體 繁體",
+      "license": "OFL-1.1",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-source-han-serif-sc",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/source-han-serif-sc/LICENSE.txt",
+      "bundlePath": "Bundled/source-han-serif-sc/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: 思源宋体 简体",
+      "titleArgument": "思源宋体 简体",
+      "license": "OFL-1.1",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    },
+    {
+      "id": "font-source-han-serif-tc",
+      "repositoryPath": "FloeApp/Resources/Fonts/Bundled/source-han-serif-tc/LICENSE.txt",
+      "bundlePath": "Bundled/source-han-serif-tc/LICENSE.txt",
+      "titleKey": "settings.licenses.document.font",
+      "titleFallback": "Font: 思源宋體 繁體",
+      "titleArgument": "思源宋體 繁體",
+      "license": "OFL-1.1",
+      "kindKey": "settings.licenses.kind.grant",
+      "required": false,
+      "section": "fonts"
+    }
+  ],
+  "components": [
+    {
+      "name": "bigint",
+      "version": "5.7.0",
+      "license": "MIT",
+      "source": "https://github.com/attaswift/BigInt.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/bigint/LICENSE.md"
+    },
+    {
+      "name": "bitbytedata",
+      "version": "2.1.0",
+      "license": "MIT",
+      "source": "https://github.com/tsolomko/BitByteData",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/bitbytedata/LICENSE"
+    },
+    {
+      "name": "citadel",
+      "version": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
+      "license": "MIT",
+      "source": "https://github.com/orlandos-nl/Citadel.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/citadel/LICENSE"
+    },
+    {
+      "name": "cryptoswift",
+      "version": "a59b4d91ebb22011656c830f874fe7152e183a57",
+      "license": "Zlib",
+      "source": "https://github.com/royalapplications/CryptoSwift.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/cryptoswift/LICENSE"
+    },
+    {
+      "name": "eventsource",
+      "version": "1.5.1",
+      "license": "MIT",
+      "source": "https://github.com/mattt/EventSource.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/eventsource/LICENSE.md"
+    },
+    {
+      "name": "grdb.swift",
+      "version": "7.8.0",
+      "license": "MIT",
+      "source": "https://github.com/groue/GRDB.swift.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/grdb.swift/LICENSE"
+    },
+    {
+      "name": "h",
+      "version": "1.0.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/rarestype/h",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/h/LICENSE"
+    },
+    {
+      "name": "libgit2",
+      "version": "1.9.2",
+      "license": "GPL-2.0 WITH libgit2 linking exception",
+      "source": "https://github.com/ibrahimcetin/libgit2.git",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.libgit2",
+      "evidence": ".build/checkouts/libgit2/COPYING"
+    },
+    {
+      "name": "mlx-swift",
+      "version": "ab924c82ead3b970caaa1c0ac11171de23f0305a",
+      "license": "MIT",
+      "source": "https://github.com/ml-explore/mlx-swift.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/mlx-swift/LICENSE"
+    },
+    {
+      "name": "mlx-swift-lm",
+      "version": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
+      "license": "MIT",
+      "source": "https://github.com/ml-explore/mlx-swift-lm.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/mlx-swift-lm/LICENSE"
+    },
+    {
+      "name": "smbclient",
+      "version": "0.2.1",
+      "license": "MIT",
+      "source": "https://github.com/kishikawakatsumi/SMBClient.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/smbclient/LICENSE"
+    },
+    {
+      "name": "swcompression",
+      "version": "4.9.1",
+      "license": "MIT",
+      "source": "https://github.com/tsolomko/SWCompression.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swcompression/LICENSE"
+    },
+    {
+      "name": "swift-argument-parser",
+      "version": "1.8.2",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-argument-parser",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-argument-parser/LICENSE.txt"
+    },
+    {
+      "name": "swift-asn1",
+      "version": "1.7.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-asn1.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-asn1/LICENSE.txt"
+    },
+    {
+      "name": "swift-atomics",
+      "version": "1.3.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-atomics.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-atomics/LICENSE.txt"
+    },
+    {
+      "name": "swift-collections",
+      "version": "1.6.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-collections.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-collections/LICENSE.txt"
+    },
+    {
+      "name": "swift-crypto",
+      "version": "3.15.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-crypto.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-crypto/LICENSE.txt"
+    },
+    {
+      "name": "swift-huggingface",
+      "version": "0.9.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/huggingface/swift-huggingface.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-huggingface/LICENSE"
+    },
+    {
+      "name": "swift-jinja",
+      "version": "2.4.2",
+      "license": "Apache-2.0",
+      "source": "https://github.com/huggingface/swift-jinja.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-jinja/LICENSE"
+    },
+    {
+      "name": "swift-jpeg",
+      "version": "2.1.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/tayloraswift/swift-jpeg",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-jpeg/LICENSE"
+    },
+    {
+      "name": "swift-log",
+      "version": "1.15.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-log.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-log/LICENSE.txt"
+    },
+    {
+      "name": "swift-nio",
+      "version": "2.88.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-nio.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-nio/LICENSE.txt"
+    },
+    {
+      "name": "swift-nio-ssh",
+      "version": "0.3.6",
+      "license": "Apache-2.0",
+      "source": "https://github.com/Wellz26/swift-nio-ssh.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-nio-ssh/LICENSE.txt"
+    },
+    {
+      "name": "swift-numerics",
+      "version": "1.1.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-numerics",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-numerics/LICENSE.txt"
+    },
+    {
+      "name": "swift-png",
+      "version": "4.5.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/tayloraswift/swift-png",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-png/LICENSE"
+    },
+    {
+      "name": "swift-syntax",
+      "version": "603.0.2",
+      "license": "Apache-2.0",
+      "source": "https://github.com/swiftlang/swift-syntax.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-syntax/LICENSE.txt"
+    },
+    {
+      "name": "swift-system",
+      "version": "1.8.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/apple/swift-system.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-system/LICENSE.txt"
+    },
+    {
+      "name": "swift-transformers",
+      "version": "1.3.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/huggingface/swift-transformers.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swift-transformers/LICENSE"
+    },
+    {
+      "name": "swiftgitx",
+      "version": "0.4.0",
+      "license": "MIT",
+      "source": "https://github.com/ibrahimcetin/SwiftGitX.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swiftgitx/LICENSE"
+    },
+    {
+      "name": "swiftterm",
+      "version": "1.10.0",
+      "license": "MIT",
+      "source": "https://github.com/migueldeicaza/SwiftTerm.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/swiftterm/LICENSE"
+    },
+    {
+      "name": "whisperkit",
+      "version": "1e2a163736dfa5a198e637ae44c114e1c6d5cc2d",
+      "license": "MIT",
+      "source": "https://github.com/argmaxinc/WhisperKit.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt"
+    },
+    {
+      "name": "yyjson",
+      "version": "0.12.0",
+      "license": "MIT",
+      "source": "https://github.com/ibireme/yyjson.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/yyjson/LICENSE"
+    },
+    {
+      "name": "zipfoundation",
+      "version": "0.9.20",
+      "license": "MIT",
+      "source": "https://github.com/weichsel/ZIPFoundation.git",
+      "section": "swift",
+      "noteKey": null,
+      "evidence": ".build/checkouts/zipfoundation/LICENSE"
+    },
+    {
+      "name": "TinyEMU / FloeTinyEMU engine",
+      "version": "2019-12-21 + Floe patches",
+      "license": "MIT",
+      "source": "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md (per-file inventory of the pinned tarball)"
+    },
+    {
+      "name": "TinyEMU slirp (compiled subset)",
+      "version": "2019-12-21",
+      "license": "BSD-2-Clause (Gasparovski files) and BSD-3-Clause (UC Regents files)",
+      "source": "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md and the restored slirp COPYRIGHT text"
+    },
+    {
+      "name": "Floe Linux guest component (Debian 13 riscv64 userland, kernel, bbl, static glibc)",
+      "version": "pinned catalog image",
+      "license": "Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1",
+      "section": "engines",
+      "noteKey": "settings.licenses.note.guest_image",
+      "evidence": null
+    },
+    {
+      "name": "VideoEditorKit",
+      "version": "c917b1e99ddc631b754a43704c05dfe3836e8183",
+      "license": "MIT",
+      "source": "https://github.com/didisouzacosta/VideoEditorKit",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/VideoEditorKit/FLOE_PROVENANCE.md pinned commit"
+    },
+    {
+      "name": "FloeShellEngine (BSD shell core)",
+      "version": "upstream + Floe patch",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/holzschu/ios_system",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/FloeShellEngine sources and ThirdParty/DashIOS/COPYING"
+    },
+    {
+      "name": "ios_system command bus and BSD commands",
+      "version": "v3.0.4 manifest / v3.0.2 binaries",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/holzschu/ios_system",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/FloeShellEngine manifest"
+    },
+    {
+      "name": "dash iOS",
+      "version": "0.5.11.5 + iOS port",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/holzschu/dash_iOS",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/DashIOS/COPYING"
+    },
+    {
+      "name": "ios_system libssh2",
+      "version": "1.11.0",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/holzschu/libssh2-apple",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "ios_system OpenSSL",
+      "version": "1.1.1w",
+      "license": "OpenSSL",
+      "source": "https://github.com/holzschu/openssl-apple",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "curl_ios",
+      "version": "v3.0.2 binary",
+      "license": "curl license (MIT/X derivative)",
+      "source": "https://github.com/holzschu/ios_system/tree/v3.0.4/curl_ios",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "FreeRDP bridge",
+      "version": "3.31.1",
+      "license": "Apache-2.0",
+      "source": "https://github.com/FreeRDP/FreeRDP",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/FreeRDP/runtime.lock.json license"
+    },
+    {
+      "name": "WasmKit runtime",
+      "version": "0.2.2 + Floe budget patch",
+      "license": "MIT",
+      "source": "https://github.com/swiftwasm/WasmKit/tree/0.2.2",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/WasmKit/LICENSE"
+    },
+    {
+      "name": "WasmKit SystemExtras",
+      "version": "0.2.2",
+      "license": "Apache-2.0 WITH Swift-exception",
+      "source": "https://github.com/swiftwasm/WasmKit/tree/0.2.2/Sources/SystemExtras",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/WasmKit/LICENSE"
+    },
+    {
+      "name": "PHP WASI runtime",
+      "version": "8.2.33",
+      "license": "PHP-3.01",
+      "source": "https://www.php.net/distributions/php-8.2.33.tar.gz",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/PHPWASI/runtime.lock.json source.license"
+    },
+    {
+      "name": "Lua WASI runtime",
+      "version": "5.4.8",
+      "license": "MIT",
+      "source": "https://www.lua.org/ftp/lua-5.4.8.tar.gz",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/LuaWASI/runtime.lock.json license"
+    },
+    {
+      "name": "Ruby WASI runtime",
+      "version": "3.4.1 (ruby.wasm 2.10.1)",
+      "license": "MIT (ruby.wasm tooling) and Ruby license (BSD-2-Clause dual)",
+      "source": "https://github.com/ruby/ruby.wasm",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/RubyWASI/runtime.lock.json runtime.license"
+    },
+    {
+      "name": "RoyalVNCKit (Floe synchronized queue)",
+      "version": "92d4427c73817d8f849bb289ff190aa4b40c44ea + Floe patch",
+      "license": "MIT",
+      "source": "https://github.com/JiangNanGenius/floe-agent/tree/main/FloeAgent/ThirdParty/RoyalVNCKit",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "ThirdParty/RoyalVNCKit/FLOE_PATCHES.md and Package.swift pin"
+    },
+    {
+      "name": "llama.cpp",
+      "version": "b10581",
+      "license": "MIT",
+      "source": "https://github.com/ggml-org/llama.cpp",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "FloeAgent/Package.swift LlamaFramework binary target pin"
+    },
+    {
+      "name": "llama-ios-xcframework",
+      "version": "1.0.0 (upstream b9754 simulator slice)",
+      "license": "MIT",
+      "source": "https://github.com/saitawngpha/llama-ios",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "FloeAgent/Package.swift LlamaFramework binary target comment"
+    },
+    {
+      "name": "PDFium",
+      "version": "chromium/8035",
+      "license": "BSD-3-Clause and bundled third-party notices",
+      "source": "https://pdfium.googlesource.com/pdfium/",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "scripts/bootstrap_pdfium.py pinned bblanchon/pdfium-binaries chromium/8035"
+    },
+    {
+      "name": "pdfium-binaries",
+      "version": "chromium/8035",
+      "license": "MIT",
+      "source": "https://github.com/bblanchon/pdfium-binaries",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "scripts/bootstrap_pdfium.py release URL"
+    },
+    {
+      "name": "libarchive",
+      "version": "3.8.9",
+      "license": "BSD-2-Clause and COPYING exceptions",
+      "source": "https://github.com/libarchive/libarchive",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "scripts/bootstrap_libarchive.py VERSION/SHA pin"
+    },
+    {
+      "name": "Collabora Online native Office engine (LibreOffice-based)",
+      "version": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "license": "MPL-2.0",
+      "source": "https://github.com/CollaboraOnline/online.mirror",
+      "section": "office",
+      "noteKey": "settings.licenses.note.office",
+      "evidence": "ThirdParty/Collabora/engine.lock.json pin; upstream COPYING at the pinned commit (MPL-2.0)"
+    },
+    {
+      "name": "mdds (Office chart filter headers)",
+      "version": "3.1.0",
+      "license": "MIT",
+      "source": "https://gitlab.com/mdds/mdds/-/tree/3.1.0",
+      "section": "office",
+      "noteKey": null,
+      "evidence": "upstream LICENSE at tag 3.1.0 (MIT)"
+    },
+    {
+      "name": "frozen (Office JSON headers)",
+      "version": "1.2.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/serge-sans-paille/frozen",
+      "section": "office",
+      "noteKey": null,
+      "evidence": "upstream LICENSE at tag 1.2.0 (Apache-2.0)"
+    },
+    {
+      "name": "CPython / Python-Apple-support",
+      "version": "3.13-b10",
+      "license": "PSF-2.0 and bundled notices",
+      "source": "https://github.com/beeware/Python-Apple-support",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "NumPy iOS",
+      "version": "2.5.2.post1",
+      "license": "BSD-3-Clause",
+      "source": "https://anaconda.org/beeware/numpy",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Pillow iOS",
+      "version": "11.0.0",
+      "license": "HPND and bundled notices",
+      "source": "https://anaconda.org/beeware/Pillow",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "pandas iOS",
+      "version": "3.0.5",
+      "license": "BSD-3-Clause and bundled notices",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-pandas-3.0.5-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lxml iOS",
+      "version": "6.1.3",
+      "license": "BSD-3-Clause, PSF-2.0 and bundled notices",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-lxml-6.1.3-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "libxml2 (lxml static dependency)",
+      "version": "2.14.6",
+      "license": "MIT and bundled notices",
+      "source": "https://gitlab.gnome.org/GNOME/libxml2",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "libxslt/libexslt (lxml static dependency)",
+      "version": "1.1.45",
+      "license": "MIT and bundled notices",
+      "source": "https://gitlab.gnome.org/GNOME/libxslt",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "python-docx",
+      "version": "1.2.0",
+      "license": "MIT",
+      "source": "https://pypi.org/project/python-docx/1.2.0/",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "python-pptx",
+      "version": "1.0.2",
+      "license": "MIT",
+      "source": "https://pypi.org/project/python-pptx/1.0.2/",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "regex iOS",
+      "version": "2026.9.10",
+      "license": "Apache-2.0",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-regex-2026.9.10-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "PyYAML iOS",
+      "version": "6.0.3",
+      "license": "MIT",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-pyyaml-6.0.3-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "MarkupSafe iOS",
+      "version": "3.0.3",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-markupsafe-3.0.3-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "zstandard iOS",
+      "version": "0.25.0",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-zstandard-0.25.0-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Brotli iOS",
+      "version": "1.2.0",
+      "license": "MIT",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-brotli-1.2.0-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "greenlet iOS",
+      "version": "3.5.5",
+      "license": "MIT AND PSF-2.0",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-greenlet-3.5.5-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "frozenlist iOS",
+      "version": "1.8.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-frozenlist-1.8.0-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "multidict iOS",
+      "version": "6.8.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/runtime-multidict-6.8.0-cp313",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "source": "https://pypi.org/project/python-dateutil/2.9.0.post0/",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "license": "MIT",
+      "source": "https://pypi.org/project/six/1.17.0/",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "tzdata",
+      "version": "2026.3",
+      "license": "Apache-2.0",
+      "source": "https://pypi.org/project/tzdata/2026.3/",
+      "section": "python",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lodash (JavaScriptCore package)",
+      "version": "bundled UMD build",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/lodash",
+      "section": "web",
+      "noteKey": null,
+      "evidence": "bundled UMD banner (MIT)"
+    },
+    {
+      "name": "dayjs (JavaScriptCore package)",
+      "version": "bundled UMD build",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/dayjs",
+      "section": "web",
+      "noteKey": null,
+      "evidence": "upstream repository LICENSE (MIT); bundled build carries no banner"
+    },
+    {
+      "name": "marked (JavaScriptCore package)",
+      "version": "12.0.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/marked",
+      "section": "web",
+      "noteKey": null,
+      "evidence": "bundled UMD banner (MIT, v12.0.0)"
+    },
+    {
+      "name": "uuid (JavaScriptCore package)",
+      "version": "8.3.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/uuid",
+      "section": "web",
+      "noteKey": null,
+      "evidence": "bundled UMD banner (MIT, 8.3.2)"
+    },
+    {
+      "name": "zod (JavaScriptCore package)",
+      "version": "bundled UMD build",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/zod",
+      "section": "web",
+      "noteKey": null,
+      "evidence": "upstream repository LICENSE (MIT); bundled build carries no banner"
+    },
+    {
+      "name": "pdf-lib (JavaScriptCore package)",
+      "version": "1.17.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/pdf-lib",
+      "section": "web",
+      "noteKey": null,
+      "evidence": "bundled UMD banner (MIT; TypeScript helper notices Apache-2.0)"
+    },
+    {
+      "name": "@simonwep/pickr",
+      "version": "1.9.0",
+      "license": "MIT",
+      "source": "https://github.com/simonwep/pickr",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt"
+    },
+    {
+      "name": "dxf-viewer",
+      "version": "1.0.48",
+      "license": "MPL-2.0",
+      "source": "https://github.com/vagran/dxf-viewer",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt"
+    },
+    {
+      "name": "gerber-to-svg",
+      "version": "4.2.8",
+      "license": "MIT",
+      "source": "https://github.com/tracespace/tracespace",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/EngineeringViewers/gerber-to-svg.min.js.LICENSE.txt"
+    },
+    {
+      "name": "Open CASCADE Technology (OCCT)",
+      "version": "pinned by EngineeringViewers",
+      "license": "LGPL-2.1 with OCCT exception",
+      "source": "https://github.com/Open-Cascade-SAS/OCCT",
+      "section": "engineering",
+      "noteKey": "settings.licenses.note.occt",
+      "evidence": "FloeApp/Resources/EngineeringViewers/license.occt.txt"
+    },
+    {
+      "name": "occt-import-js",
+      "version": "pinned by EngineeringViewers",
+      "license": "LGPL-2.1 with OCCT exception",
+      "source": "https://github.com/kovacsv/occt-import-js",
+      "section": "engineering",
+      "noteKey": "settings.licenses.note.occt",
+      "evidence": "FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt"
+    },
+    {
+      "name": "OpenSumi CodeBlitz",
+      "version": "2.4.6",
+      "license": "MIT",
+      "source": "https://github.com/opensumi/codeblitz",
+      "section": "ide",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/IDE/vendor/LICENSE and manifest.json"
+    },
+    {
+      "name": "OpenSumi Monaco",
+      "version": "3.6.5-next-1766394426.0",
+      "license": "MIT",
+      "source": "https://github.com/opensumi/monaco-editor",
+      "section": "ide",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/IDE/vendor/MONACO-LICENSE"
+    },
+    {
+      "name": "vscode-oniguruma",
+      "version": "1.5.1",
+      "license": "MIT and Oniguruma notices",
+      "source": "https://github.com/microsoft/vscode-oniguruma",
+      "section": "ide",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/IDE/vendor/ONIGURUMA-LICENSE"
+    },
+    {
+      "name": "Microsoft Codicons",
+      "version": "0.0.35",
+      "license": "CC-BY-4.0",
+      "source": "https://github.com/microsoft/vscode-codicons",
+      "section": "ide",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/IDE/vendor/CODICONS-LICENSE"
+    },
+    {
+      "name": "ZLImageEditor",
+      "version": "upstream + Floe integration",
+      "license": "MIT",
+      "source": "https://github.com/longitachi/ZLPhotoBrowser",
+      "section": "media",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/ZLImageEditor-LICENSE.txt"
+    },
+    {
+      "name": "FloeDocumentSans (modified Noto Sans SC)",
+      "version": "2.004",
+      "license": "OFL-1.1",
+      "source": "https://github.com/notofonts/noto-cjk/tree/523d033d6cb47f4a80c58a35753646f5c3608a78",
+      "section": "media",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/DocumentConversion/FONT-LICENSE.txt"
+    },
+    {
+      "name": "Font: 阿里巴巴普惠体 3.0 (alibaba-puhuiti-3)",
+      "version": "3.0",
+      "license": "阿里巴巴普惠体授权协议（全球永久免费商用）",
+      "source": "https://fonts.alibabagroup.com/",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: HarmonyOS Sans（鸿蒙） (harmonyos-sans)",
+      "version": "2022-11",
+      "license": "HarmonyOS Sans 字体许可（免费可商用）",
+      "source": "https://developer.harmonyos.com/cn/docs/design/des-guides/font-0000001157868583",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 江西拙楷 (jiangxi-zhuokai)",
+      "version": "2.0",
+      "license": "免费商用授权声明（黄煜臣）",
+      "source": "https://www.zcool.com.cn/work/ZMjE4MjUwNDQ=.html",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 钟齐流江毛草 (liu-jian-mao-cao)",
+      "version": "1.0",
+      "license": "OFL-1.1",
+      "source": "https://fonts.google.com/specimen/Liu+Jian+Mao+Cao",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 龙藏体 (long-cang)",
+      "version": "1.0",
+      "license": "OFL-1.1",
+      "source": "https://fonts.google.com/specimen/Long+Cang",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 霞鹜文楷 (lxgw-wenkai)",
+      "version": "1.522",
+      "license": "OFL-1.1",
+      "source": "https://github.com/lxgw/LxgwWenKai",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 霞鹜文楷等宽 (lxgw-wenkai-mono)",
+      "version": "1.522",
+      "license": "OFL-1.1",
+      "source": "https://github.com/lxgw/LxgwWenKai",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 霞鹜文楷等寬 繁體 (lxgw-wenkai-mono-tc)",
+      "version": "1.522",
+      "license": "OFL-1.1",
+      "source": "https://github.com/lxgw/LxgwWenkaiTC",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 霞鹜文楷 繁體 (lxgw-wenkai-tc)",
+      "version": "1.522",
+      "license": "OFL-1.1",
+      "source": "https://github.com/lxgw/LxgwWenkaiTC",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 马善政毛笔 (ma-shan-zheng)",
+      "version": "1.0",
+      "license": "OFL-1.1",
+      "source": "https://fonts.google.com/specimen/Ma+Shan+Zheng",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: MiSans（小米） (misans)",
+      "version": "2021-12",
+      "license": "MiSans 字体许可（全社会免费商用）",
+      "source": "https://hyperos.mi.com/font",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 沐瑶软笔手写体 (muyao-softbrush)",
+      "version": "1.0",
+      "license": "免费商用授权声明（春颜秋色）",
+      "source": "https://www.zcool.com.cn/work/ZMzI5MjY3MjA=.html",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 庞门正道标题体 (pangmenzhengdao)",
+      "version": "1.0",
+      "license": "免费商用授权声明（庞门正道）",
+      "source": "https://github.com/jaywcjlove/free-font",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 锐字真言体 (ruizi-zhenyan)",
+      "version": "1.0",
+      "license": "免费商用授权声明（锐字潮牌）",
+      "source": "https://github.com/jaywcjlove/free-font",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 更纱黑体等宽 简体 (sarasa-mono-sc)",
+      "version": "1.0.41",
+      "license": "OFL-1.1",
+      "source": "https://github.com/be5invis/Sarasa-Gothic",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 得意黑 (smiley-sans)",
+      "version": "2.0.1",
+      "license": "OFL-1.1",
+      "source": "https://github.com/atelier-anchor/smiley-sans",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 思源黑体 简体 (source-han-sans-sc)",
+      "version": "2.005R",
+      "license": "OFL-1.1",
+      "source": "https://github.com/adobe-fonts/source-han-sans",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 思源黑體 繁體 (source-han-sans-tc)",
+      "version": "2.005R",
+      "license": "OFL-1.1",
+      "source": "https://github.com/adobe-fonts/source-han-sans",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 思源宋体 简体 (source-han-serif-sc)",
+      "version": "2.003R",
+      "license": "OFL-1.1",
+      "source": "https://github.com/adobe-fonts/source-han-serif",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 思源宋體 繁體 (source-han-serif-tc)",
+      "version": "2.003R",
+      "license": "OFL-1.1",
+      "source": "https://github.com/adobe-fonts/source-han-serif",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 小赖字体 (xiaolai)",
+      "version": "3.126",
+      "license": "OFL-1.1",
+      "source": "https://github.com/lxgw/kose-font",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 优设标题黑 (youshe-biaohtihei)",
+      "version": "1.0",
+      "license": "免费商用授权声明（优设×字由）",
+      "source": "https://www.uisdc.com/uisdc-first-free-font",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 悠哉字体 (yozai)",
+      "version": "0.868",
+      "license": "OFL-1.1",
+      "source": "https://github.com/lxgw/yozai-font",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 站酷快乐体 (zcool-kuaile)",
+      "version": "1.0",
+      "license": "OFL-1.1",
+      "source": "https://fonts.google.com/specimen/ZCOOL+KuaiLe",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 站酷庆科黄油体 (zcool-qingke-huangyou)",
+      "version": "1.0",
+      "license": "OFL-1.1",
+      "source": "https://fonts.google.com/specimen/ZCOOL+QingKe+HuangYou",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 站酷小薇体 (zcool-xiaowei)",
+      "version": "1.0",
+      "license": "OFL-1.1",
+      "source": "https://fonts.google.com/specimen/ZCOOL+XiaoWei",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 钟齐志莽行书 (zhi-mang-xing)",
+      "version": "1.0",
+      "license": "OFL-1.1",
+      "source": "https://fonts.google.com/specimen/Zhi+Mang+Xing",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Font: 朱雀仿宋 (zhuque-fangsong)",
+      "version": "0.212",
+      "license": "OFL-1.1",
+      "source": "https://github.com/TrionesType/zhuque",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@jridgewell/gen-mapping",
+      "version": "0.3.13",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@jridgewell/gen-mapping",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@jridgewell/resolve-uri",
+      "version": "3.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@jridgewell/resolve-uri",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@jridgewell/source-map",
+      "version": "0.3.11",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@jridgewell/source-map",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@jridgewell/sourcemap-codec",
+      "version": "1.6.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@jridgewell/sourcemap-codec",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@jridgewell/trace-mapping",
+      "version": "0.3.31",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@jridgewell/trace-mapping",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@mixmark-io/domino",
+      "version": "2.2.0",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/@mixmark-io/domino",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@oozcitak/dom",
+      "version": "1.15.5",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@oozcitak/dom",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@oozcitak/infra",
+      "version": "1.0.3",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@oozcitak/infra",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@oozcitak/url",
+      "version": "1.0.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@oozcitak/url",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@oozcitak/util",
+      "version": "8.3.3",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@oozcitak/util",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@turbodocx/html-to-docx",
+      "version": "1.22.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@turbodocx/html-to-docx",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@types/trusted-types",
+      "version": "2.0.7",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@types/trusted-types",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "@xmldom/xmldom",
+      "version": "0.8.15",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@xmldom/xmldom",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "acorn",
+      "version": "8.18.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/acorn",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "agent-base",
+      "version": "6.0.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/agent-base",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "argparse",
+      "version": "1.0.10",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/argparse",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "asynckit",
+      "version": "0.4.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/asynckit",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "axios",
+      "version": "1.20.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/axios",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "base64-js",
+      "version": "1.5.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/base64-js",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "bluebird",
+      "version": "3.4.7",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/bluebird",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "buffer",
+      "version": "6.0.3",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/buffer",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "buffer-from",
+      "version": "1.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/buffer-from",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "call-bind-apply-helpers",
+      "version": "1.0.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/call-bind-apply-helpers",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "camel-case",
+      "version": "4.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/camel-case",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "clean-css",
+      "version": "5.3.3",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/clean-css",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "color-name",
+      "version": "1.1.4",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/color-name",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "combined-stream",
+      "version": "1.0.8",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/combined-stream",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "commander",
+      "version": "2.20.3",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/commander",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "core-util-is",
+      "version": "1.0.3",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/core-util-is",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "debug",
+      "version": "2.6.9",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/debug",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "delayed-stream",
+      "version": "1.0.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/delayed-stream",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "dingbat-to-unicode",
+      "version": "1.0.1",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/dingbat-to-unicode",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "dom-serializer",
+      "version": "2.0.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/dom-serializer",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "domelementtype",
+      "version": "2.3.0",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/domelementtype",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "domhandler",
+      "version": "5.0.3",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/domhandler",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "dompurify",
+      "version": "3.4.15",
+      "license": "(MPL-2.0 OR Apache-2.0)",
+      "source": "https://www.npmjs.com/package/dompurify",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "domutils",
+      "version": "3.2.2",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/domutils",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "dot-case",
+      "version": "3.0.4",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/dot-case",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "duck",
+      "version": "0.1.12",
+      "license": "BSD",
+      "source": "https://www.npmjs.com/package/duck",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "dunder-proto",
+      "version": "1.0.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/dunder-proto",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "entities",
+      "version": "7.0.1",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/entities",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "es-define-property",
+      "version": "1.0.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/es-define-property",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "es-errors",
+      "version": "1.3.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/es-errors",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "es-object-atoms",
+      "version": "1.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/es-object-atoms",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "es-set-tostringtag",
+      "version": "2.1.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/es-set-tostringtag",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "follow-redirects",
+      "version": "1.16.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/follow-redirects",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "form-data",
+      "version": "4.0.6",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/form-data",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "function-bind",
+      "version": "1.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/function-bind",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "get-intrinsic",
+      "version": "1.3.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/get-intrinsic",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "get-proto",
+      "version": "1.0.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/get-proto",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "gopd",
+      "version": "1.2.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/gopd",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "has-symbols",
+      "version": "1.1.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/has-symbols",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "has-tostringtag",
+      "version": "1.0.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/has-tostringtag",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "hasown",
+      "version": "2.0.4",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/hasown",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "html-entities",
+      "version": "2.6.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/html-entities",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "html-minifier-terser",
+      "version": "7.2.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/html-minifier-terser",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "htmlparser2",
+      "version": "10.1.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/htmlparser2",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "https-proxy-agent",
+      "version": "5.0.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/https-proxy-agent",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "iconv-lite",
+      "version": "0.4.24",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/iconv-lite",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "ieee754",
+      "version": "1.2.1",
+      "license": "BSD-3-Clause",
+      "source": "https://www.npmjs.com/package/ieee754",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "immediate",
+      "version": "3.0.6",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/immediate",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "inherits",
+      "version": "2.0.4",
+      "license": "ISC",
+      "source": "https://www.npmjs.com/package/inherits",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "isarray",
+      "version": "1.0.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/isarray",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "jszip",
+      "version": "3.10.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/jszip",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lie",
+      "version": "3.3.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/lie",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lodash",
+      "version": "4.18.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/lodash",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lodash.merge",
+      "version": "4.6.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/lodash.merge",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lop",
+      "version": "0.4.2",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/lop",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lower-case",
+      "version": "2.0.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/lower-case",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "lru-cache",
+      "version": "10.4.3",
+      "license": "ISC",
+      "source": "https://www.npmjs.com/package/lru-cache",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "mammoth",
+      "version": "1.12.2",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/mammoth",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "marked",
+      "version": "18.0.12",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/marked",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "math-intrinsics",
+      "version": "1.1.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/math-intrinsics",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "mime-db",
+      "version": "1.52.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/mime-db",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "mime-types",
+      "version": "2.1.35",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/mime-types",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "ms",
+      "version": "2.0.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/ms",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "nanoid",
+      "version": "3.3.18",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/nanoid",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "needle",
+      "version": "2.9.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/needle",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "no-case",
+      "version": "3.0.4",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/no-case",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "option",
+      "version": "0.2.4",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/option",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "pako",
+      "version": "1.0.11",
+      "license": "(MIT AND Zlib)",
+      "source": "https://www.npmjs.com/package/pako",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "param-case",
+      "version": "3.0.4",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/param-case",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "pascal-case",
+      "version": "3.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/pascal-case",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "path-is-absolute",
+      "version": "1.0.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/path-is-absolute",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "probe-image-size",
+      "version": "7.4.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/probe-image-size",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "process-nextick-args",
+      "version": "2.0.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/process-nextick-args",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "proxy-from-env",
+      "version": "2.1.0",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/proxy-from-env",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "readable-stream",
+      "version": "2.3.8",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/readable-stream",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "relateurl",
+      "version": "0.2.7",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/relateurl",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "safe-buffer",
+      "version": "5.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/safe-buffer",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "safer-buffer",
+      "version": "2.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/safer-buffer",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "sax",
+      "version": "1.6.1",
+      "license": "BlueOak-1.0.0",
+      "source": "https://www.npmjs.com/package/sax",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "setimmediate",
+      "version": "1.0.5",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/setimmediate",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "source-map",
+      "version": "0.6.1",
+      "license": "BSD-3-Clause",
+      "source": "https://www.npmjs.com/package/source-map",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "source-map-support",
+      "version": "0.5.21",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/source-map-support",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "sprintf-js",
+      "version": "1.0.3",
+      "license": "BSD-3-Clause",
+      "source": "https://www.npmjs.com/package/sprintf-js",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "stream-parser",
+      "version": "0.3.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/stream-parser",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "string_decoder",
+      "version": "1.1.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/string_decoder",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "terser",
+      "version": "5.51.2",
+      "license": "BSD-2-Clause",
+      "source": "https://www.npmjs.com/package/terser",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "source": "https://www.npmjs.com/package/tslib",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "turndown",
+      "version": "7.2.4",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/turndown",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "turndown-plugin-gfm",
+      "version": "1.0.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/turndown-plugin-gfm",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "underscore",
+      "version": "1.13.8",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/underscore",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "util-deprecate",
+      "version": "1.0.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/util-deprecate",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "xmlbuilder",
+      "version": "10.1.1",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/xmlbuilder",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "xmlbuilder2",
+      "version": "2.1.2",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/xmlbuilder2",
+      "section": "conversion",
+      "noteKey": null,
+      "evidence": null
+    },
+    {
+      "name": "Bundled CJK/utility fonts (staged core set)",
+      "version": "9 families staged / 28 licensed families",
+      "license": "OFL-1.1 or vendor font grants (full texts bundled per family)",
+      "source": "https://github.com/JiangNanGenius/floe-agent/tree/main/FloeAgent/FloeApp/Resources/Fonts/Bundled",
+      "section": "fonts",
+      "noteKey": null,
+      "evidence": null
+    }
+  ],
+  "notes": [
+    {
+      "id": "libgit2",
+      "textKey": "settings.licenses.note.libgit2",
+      "fallback": "libgit2 is licensed under GPL-2.0 with a linking exception that explicitly permits linking it into this application. The complete GPL-2.0 text ships in this app as Licenses/libgit2-COPYING.txt, and libgit2's source is the pinned repository in the component list."
+    },
+    {
+      "id": "occt",
+      "textKey": "settings.licenses.note.occt",
+      "fallback": "Open CASCADE Technology and occt-import-js are LGPL-2.1 with the OCCT exception; their complete texts and the exception ship in the app bundle."
+    },
+    {
+      "id": "guest_image",
+      "textKey": "settings.licenses.note.guest_image",
+      "fallback": "The Linux guest is a separately distributed downloadable image built from Debian 13 riscv64 packages plus a pinned kernel, bbl and static glibc. Its source and license texts are recorded in the pinned image manifest; they are not linked into the app binary."
+    },
+    {
+      "id": "office",
+      "textKey": "settings.licenses.note.office",
+      "fallback": "The native Office engine is Collabora Online (LibreOffice-based) at the pinned commit, MPL-2.0. The qualified engine bundle retains its upstream third-party license files; the complete engine notice inventory remains a separate office qualification gate."
+    },
+    {
+      "id": "verification",
+      "textKey": "settings.licenses.note.verification",
+      "fallback": "Every Swift package license was read from the resolved checkout license file. scripts/license-evidence.json records the exact file and sha256, and this generator re-verifies them when a checkout is present."
+    }
+  ],
+  "counts": {
+    "components": 230,
+    "documents": 34,
+    "pins": 33
+  }
+}
