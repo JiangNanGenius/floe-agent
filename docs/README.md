@@ -34,6 +34,7 @@
 |---|---|
 | [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md) | 当前发布候选：Build 224 候选修复面 + 验收 SDK 类型化抛错编译修复（Linux 镜像下载器）；仅有源码/契约证据，云端与真机状态待核实 |
 | [Build 225 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_225.json) | 当前候选的中英文 TestFlight 测试重点 |
+| [下一版实施状态与验证边界](FLOE_1_7_NEXT_RELEASE_STATUS.md) | 整合轮的已实现/已验证项（统一许可入口、原生优先路由）、其他工作包的明确设计与未验收边界、待最终刷新章节与已知阻塞；不预留构建号 |
 | [Build 224 版本说明](RELEASE_NOTES_1.7.0_BUILD_224.md) | 未编译成功的候选：`v1.7.0-beta.81`（`c36b7b24`）在 run 35767875337 因 LinuxGuestImageDownloader.swift:101 类型化抛错失败，记录保留，修复即 Build 225 |
 | [Build 224 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_224.json) | 失败候选的中英文 TestFlight 测试重点（保留） |
 | [TinyEMU Runtime v2](TINYEMU_RUNTIME_V2.md) | 目录归属、CoW、迁移、租约、VM 池、内存与恢复约束 |

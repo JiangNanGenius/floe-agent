@@ -179,6 +179,7 @@
 		70480066DC808EE0970F5AFB /* MediaPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016090136CEFD3AB919A9B56 /* MediaPlayerView.swift */; };
 		70520C3ACCCC3D82B68A7023 /* NotesLinkedMindMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */; };
 		708D1DBA44A699E58A9D4653 /* FloeShellCoreUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9075F54CA5B24D6571AFA532 /* FloeShellCoreUtilities.swift */; };
+		70AC642C190F2AF2E2DD3892 /* TinyEMULicensesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99FA210DA5A6EFEB7B543461 /* TinyEMULicensesView.swift */; };
 		70B0244D522DFFA14861A337 /* FloeScreenShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E388FA201B460E867D612C38 /* FloeScreenShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		72F687318496A3451661FD31 /* dayjs.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 5A836CC647019173A92D3490 /* dayjs.min.js */; };
 		75B75F5F8C25D5B60B5E4541 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 37BB930D0175C1FF7EE714EE /* Assets.xcassets */; };
@@ -649,6 +650,7 @@
 		98C3AC8AABB6B8DA28928707 /* LinuxComponentUpdatePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxComponentUpdatePolicy.swift; sourceTree = "<group>"; };
 		98ED36DE4E8282455107F56F /* LinuxImageInstallCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxImageInstallCard.swift; sourceTree = "<group>"; };
 		98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RARArchiveService.swift; sourceTree = "<group>"; };
+		99FA210DA5A6EFEB7B543461 /* TinyEMULicensesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TinyEMULicensesView.swift; sourceTree = "<group>"; };
 		9B8826D4AB351DBF9CFF40AD /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		9C41B8992C84C7B27CF73906 /* ComposerReturnField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerReturnField.swift; sourceTree = "<group>"; };
 		9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorViewModel.swift; sourceTree = "<group>"; };
@@ -1177,6 +1179,7 @@
 				B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */,
 				50BA473C0A70CA3815EF338B /* SettingsRootView.swift */,
 				38EF13B22EE01FC77116294D /* SyncSettingsView.swift */,
+				99FA210DA5A6EFEB7B543461 /* TinyEMULicensesView.swift */,
 				97B9B3602FD264F0C21CE627 /* UsageStatisticsView.swift */,
 				3F4735140291FC5F3FC031CE /* WebSearchSettingsCenter.swift */,
 			);
@@ -2152,6 +2155,7 @@
 				EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */,
 				671CC44587B45BA2A401FD33 /* ThreadEventView.swift in Sources */,
 				E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */,
+				70AC642C190F2AF2E2DD3892 /* TinyEMULicensesView.swift in Sources */,
 				330DA84EDC7F8F28C0127FE1 /* ToolCallCardView.swift in Sources */,
 				1AF3FEAB736D464A0AE0957B /* UsageStatisticsView.swift in Sources */,
 				99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */,

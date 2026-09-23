@@ -2,10 +2,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// See docs/ARCHITECTURE_SETTINGS.md §5 row 9: app version/build, database
-// schema version, capability summary (providers / models / catalog tools),
-// the in-memory log ring buffer (redacted on write), redacted diagnostics
-// export, and the third-party license / privacy notes.
+// App version/build, database schema version, capability summary (providers /
+// models / catalog tools), the in-memory log ring buffer (redacted on write),
+// redacted diagnostics export, and the single legal entry point. That entry is
+// the unified third-party license browser in TinyEMULicensesView.swift, which
+// carries the complete TinyEMU/slirp notices plus every other bundled notice;
+// see docs/FLOE_1_7_NEXT_RELEASE_STATUS.md.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -152,24 +154,23 @@ struct DiagnosticsAboutView: View {
             }
 
             Section {
-                Link(destination: licenseURL) {
+                // One legal entry only. The unified browser carries the complete
+                // TinyEMU/slirp notices plus every other bundled dependency
+                // notice, so no declaration is lost or split across rows.
+                NavigationLink {
+                    ThirdPartyLicensesView()
+                } label: {
                     Label("settings.diagnostics.licenses", systemImage: "doc.text")
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
-                NavigationLink {
-                    TinyEMULicensesView()
-                } label: {
-                    Label("settings.diagnostics.tinyemu_licenses", systemImage: "cpu")
-                }
-                .frame(minHeight: FloeTheme.minimumTarget)
-                .accessibilityIdentifier("diagnostics.tinyemu_licenses")
+                .accessibilityIdentifier("diagnostics.licenses")
                 Label("settings.diagnostics.privacy.note", systemImage: "hand.raised")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             } header: {
                 Text("settings.diagnostics.legal")
             } footer: {
-                Text("settings.diagnostics.tinyemu_licenses.footer")
+                Text(verbatim: "一个入口列出随包全部第三方声明，包含 TinyEMU/slirp 完整许可与其他依赖。 / One entry lists every bundled third-party notice, including the complete TinyEMU/slirp notices and the other dependencies.")
             }
 
             if let errorMessage {
@@ -236,20 +237,6 @@ struct DiagnosticsAboutView: View {
         return "\(device.model) (\(device.systemName) \(device.systemVersion))"
     }
 
-    /// The third-party license document shipped in the repository. Linked
-    /// rather than embedded so the file stays the single source of truth.
-    private var licenseURL: URL {
-        // Bundle resource when packaged; repository path during development.
-        if let bundled = Bundle.main.url(forResource: "LICENSES-THIRD-PARTY", withExtension: "md") {
-            return bundled
-        }
-        return URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // Settings/
-            .deletingLastPathComponent() // FloeApp/
-            .deletingLastPathComponent() // FloeAgent/
-            .appendingPathComponent("LICENSES-THIRD-PARTY.md")
-    }
-
     private func export() async {
         isExporting = true
         defer { isExporting = false }
@@ -267,39 +254,6 @@ struct DiagnosticsAboutView: View {
 /// bundled with the app. A plain scrollable, selectable Text keeps the
 /// notices readable and copyable in place; no external file viewer or Safari
 /// hand-off is involved.
-private struct TinyEMULicensesView: View {
-    /// The bundled notice is small and never changes at runtime.
-    private static let bundledText: String = {
-        guard let url = Bundle.main.url(forResource: "TinyEMU-LICENSES", withExtension: "txt"),
-              let text = try? String(contentsOf: url, encoding: .utf8) else {
-            return String(localized: "settings.diagnostics.tinyemu_licenses.unavailable")
-        }
-        return text
-    }()
-
-    var body: some View {
-        ScrollView {
-            Text(Self.bundledText)
-                .font(FloeTheme.Typography.evidence)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-        }
-        .navigationTitle("settings.diagnostics.tinyemu_licenses")
-        .navigationBarTitleDisplayMode(.inline)
-        .accessibilityIdentifier("diagnostics.tinyemu_licenses.text")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    UIPasteboard.general.string = Self.bundledText
-                } label: {
-                    Label("action.copy", systemImage: "doc.on.doc")
-                }
-            }
-        }
-    }
-}
-
 /// UIKit's text system virtualizes very large logs and always wraps them to
 /// the available width. A two-axis SwiftUI ScrollView around one huge Text can
 /// resolve to an unbounded size and render an entirely blank page on iPad.

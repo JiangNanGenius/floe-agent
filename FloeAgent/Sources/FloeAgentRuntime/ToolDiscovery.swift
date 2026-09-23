@@ -86,6 +86,11 @@ enum ToolDiscovery {
     static func matches(query: String, descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
+        // Native-first arbitration over the tools this run actually offers.
+        // Media intent selects native media tools; it never expands into the
+        // Linux interpreter unless the user asked for a script or no native
+        // capability covers the task.
+        let routing = ToolRoutingPolicy.decision(forTask: query, offeredToolNames: descriptors.map(\.name))
         let synonyms = ToolAliasTable.synonyms
         var groups = Set(synonyms.compactMap { group, terms in
             terms.contains(where: query.contains) ? group : nil
@@ -110,6 +115,14 @@ enum ToolDiscovery {
         // A remote desktop chain needs its connection/configuration tools too.
         if groups.contains("vnc") { groups.formUnion(["executor", "hosts"]) }
         if groups.contains("executor") || groups.contains("terminal") { groups.insert("hosts") }
+        // A matched native capability keeps the emulated interpreter out of the
+        // automatic expansion; this suppresses only this expansion, so explicit
+        // names, loaded schemas and tools.search by exact name are unchanged.
+        // The gate is operation-aware: an offered native tool that does not
+        // match the requested operation never triggers it.
+        if routing.prefersNativeTools {
+            groups.subtract(ToolRoutingPolicy.interpreterGroups(among: descriptors.map(\.name)))
+        }
         if groups.isEmpty {
             // A word in one description does not justify loading every tool
             // in that namespace. Rank individual matches, deterministically.
@@ -119,10 +132,46 @@ enum ToolDiscovery {
                 let score = tokens.filter { $0.count > 2 && description.contains($0) }.count
                 if score > 0 { ranked.append((descriptor, score)) }
             }
-            ranked.sort { $0.score == $1.score ? $0.descriptor.name < $1.descriptor.name : $0.score > $1.score }
-            return ranked.prefix(8).map { $0.descriptor }
+            ranked.sort { left, right in
+                // For a media task the native tools lead the ranked matches;
+                // score and name keep the order deterministic.
+                if routing.intent == .nativeMedia {
+                    let leftNative = ToolRoutingPolicy.isNativeMediaTool(left.descriptor.name)
+                    let rightNative = ToolRoutingPolicy.isNativeMediaTool(right.descriptor.name)
+                    if leftNative != rightNative { return leftNative }
+                }
+                return left.score == right.score
+                    ? left.descriptor.name < right.descriptor.name
+                    : left.score > right.score
+            }
+            return capabilityGapFallback(ranked.prefix(8).map { $0.descriptor }, routing: routing, descriptors: descriptors)
         }
-        return descriptors.filter { groups.contains(group($0.name)) }
+        let selected = descriptors.filter { groups.contains(group($0.name)) }
+        guard routing.prefersNativeTools else {
+            return capabilityGapFallback(selected, routing: routing, descriptors: descriptors)
+        }
+        // Native media tools lead the curated set for a media task; other
+        // matched groups (office, workspace, http, …) stay available.
+        return selected.filter { ToolRoutingPolicy.isNativeMediaTool($0.name) }
+            + selected.filter { !ToolRoutingPolicy.isNativeMediaTool($0.name) }
+    }
+
+    /// Primary guest entry points, used only for a media task no offered native
+    /// tool matches. The fallback is appended after any native candidates, is
+    /// derived strictly from the offered descriptors, and never invents a
+    /// disabled tool. When a native capability does match the operation this
+    /// returns `base` unchanged: the guest is then not part of the automatic
+    /// expansion at all.
+    private static func capabilityGapFallback(
+        _ base: [ToolCatalog.Descriptor],
+        routing: ToolRoutingPolicy.Decision,
+        descriptors: [ToolCatalog.Descriptor]
+    ) -> [ToolCatalog.Descriptor] {
+        guard routing.intent == .nativeMedia, !routing.prefersNativeTools else { return base }
+        let fallbackNames: Set<String> = ["exec.shell", "shell.open", "exec.localPython", "exec.localService"]
+        let existing = Set(base.map(\.name))
+        let fallback = descriptors.filter { fallbackNames.contains($0.name) && !existing.contains($0.name) }
+        return base + fallback
     }
 
     static func index(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {
@@ -151,6 +200,34 @@ enum ToolDiscovery {
         }
         if names.contains("exec.localPython") {
             lines.append("Local Python execution is \(n("exec.localPython")); it is a different environment from SSH Executor or interactive Terminal.")
+        }
+        // Native-first routing guidance is emitted only for capabilities this
+        // run actually offers. It never names a disabled or unconfigured tool.
+        let descriptorNames = descriptors.map(\.name)
+        let nativeMediaNames = descriptorNames.filter(ToolRoutingPolicy.isNativeMediaTool).sorted()
+        let interpreterNames = descriptorNames
+            .filter { ToolRoutingPolicy.isInterpreterTool($0) && $0 != "environment.prepareLinux" }
+            .sorted()
+        if !nativeMediaNames.isEmpty {
+            let examples = nativeMediaNames.prefix(6).map(n).joined(separator: ", ")
+            // Name only the interpreter entries that are actually offered.
+            let explicitInterpreters = ["exec.shell", "shell.open", "exec.localPython"]
+                .filter { names.contains($0) }
+                .map(n)
+            let interpreterMentions = explicitInterpreters.isEmpty
+                ? interpreterNames.prefix(2).map(n)
+                : explicitInterpreters
+            let avoid = interpreterMentions.isEmpty
+                ? "a general-purpose script"
+                : interpreterMentions.joined(separator: " or ")
+            var line = "Native-first routing: \(examples) are app-native tools. They run on-device through Apple frameworks or through the app's configured model route — never through the emulated guest — and the guest has no GPU passthrough. Prefer them over re-implementing the operation with \(avoid); a video/image/audio/PDF task is not owned by the Linux interpreter just because it is installed. Use the guest interpreter for media only when no offered native tool covers the requested operation or the user explicitly asked for a script or command-line tool."
+            if names.contains("media.capabilities") {
+                line += " Before promising a media operation, read \(n("media.capabilities")) to confirm the offered tool's operation is actually configured: a native tool name alone does not prove the requested operation is available."
+            }
+            lines.append(line)
+        } else if !interpreterNames.isEmpty {
+            let offered = interpreterNames.prefix(3).map(n).joined(separator: ", ")
+            lines.append("Media rule: no native image/video/audio/PDF/OCR tool is offered, so media work uses the guest interpreter (\(offered)) only within its real capability and must be reported as not configured when the user expects a native one.")
         }
         if names.contains("video.generate") {
             lines.append("Video generation can use any configured cloud video route: call \(n("video.models")) first to read the public candidate names (`model`/`modelName`) and their parameter limits, choose the candidate that fits the request yourself, then pass its public `model` value to \(n("video.generate")). Never ask the user for an internal UUID, and never resubmit a running job.")
