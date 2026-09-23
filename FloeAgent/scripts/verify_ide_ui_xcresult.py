@@ -8,8 +8,12 @@ from verify_app_regression_xcresult import nodes, xcresult_json
 
 def verify(summary, tree):
     cases = [n for n in nodes(tree) if n.get("nodeType") == "Test Case"]
+    # The native kernel added its own save/reopen test and the Web fallback
+    # kept an explicit test of its own; both must pass, so the expected set is
+    # the whole WorkspaceIDEUITests class and the count checks stay exact.
     expected = {
-        "WorkspaceIDEUITests/testNativeWorkbenchSaveAndColdReopen",
+        "WorkspaceIDEUITests/testNativeEditorSaveAndColdReopen",
+        "WorkspaceIDEUITests/testWebFallbackEditorRemainsAvailable",
         "WorkspaceIDEUITests/testEngineeringDrawingInlineAndFullScreen",
         "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen",
     }
@@ -19,8 +23,8 @@ def verify(summary, tree):
             or summary.get("skippedTests") != 0 or summary.get("expectedFailures") != 0
             or len(cases) != len(expected) or found != expected
             or any(case.get("result") != "Passed" for case in cases)):
-        raise ValueError("Native IDE save/reopen and engineering preview did not both pass")
-    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-and-engineering-preview"}
+        raise ValueError("Native IDE save/reopen, Web fallback and engineering preview did not all pass")
+    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-web-fallback-and-engineering-preview"}
 
 
 
