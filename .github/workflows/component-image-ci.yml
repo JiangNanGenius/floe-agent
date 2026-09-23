@@ -113,11 +113,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install host dependencies (mount/convert/zip tooling + riscv64 cross compiler)
+      - name: Install host dependencies (mount/convert/zip tooling + riscv64 cross compiler + qemu-user)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-utils parted e2fsprogs gcc-riscv64-linux-gnu \
-            zip unzip curl python3 >/dev/null
+            qemu-user-static zip unzip curl python3 >/dev/null
 
       - name: Lint the component scripts (no heavy build yet)
         run: |
@@ -503,11 +503,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install host dependencies (cross compiler + mount/convert/zip tooling)
+      - name: Install host dependencies (cross compiler + mount/convert/zip tooling + qemu-user)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-utils parted e2fsprogs gcc-riscv64-linux-gnu \
-            zip unzip curl python3 >/dev/null
+            qemu-user-static zip unzip curl python3 >/dev/null
 
       - name: Build the dual-hart kernel + raw boot loader from the pinned source
         run: |

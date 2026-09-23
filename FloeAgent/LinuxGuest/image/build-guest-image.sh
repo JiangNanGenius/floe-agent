@@ -15,10 +15,15 @@
 #      extract the rootfs partition into a partitionless whole-disk image;
 #   5. cross-build the static riscv64 Floe runner (and its relink object);
 #   6. inject /usr/local/bin/floe-exec;
-#   7. boot A: the runner is PID 1, consumes `floe.epoch=`, installs the
-#      packages of the selected template recipe over signed HTTPS APT,
-#      installs its pinned PyPI wheels, exports the package inventory and the
-#      real template-install facts;
+#   7. provision A (default --provision host): the image is mounted on the
+#      cloud host and the template recipe's packages are installed through a
+#      qemu-user riscv64 chroot (host-provision-image.sh) — signed HTTPS APT
+#      with the image's own keyring, real dpkg maintainer scripts against the
+#      real ext4 rootfs/database, pinned PyPI wheels sha256-verified and pip
+#      installed, then boot A re-checks clock/network/signed apt and the
+#      recipe coherence against the LIVE dpkg database inside the real guest.
+#      `--provision guest` keeps the historical all-in-Guest install path
+#      (slow; it cannot finish the dev-document recipe under TinyEMU);
 #   8. boot B: fresh `floe.epoch=`, re-checks the clock, signed HTTPS APT,
 #      Python HTTPS with default CA verification, runs the 13 user-facing
 #      commands the feedback report listed (ps setsid nohup bash zsh zip unzip
@@ -51,6 +56,9 @@
 #   --source-ref REF      git commit recorded in the provenance source URLs
 #   --skip-fetch          reuse already-downloaded sources/images
 #   --skip-engine         reuse an existing engine build in <work>/build
+#   --provision MODE      host (default) = qemu-user chroot provisioning on the
+#                         cloud host + in-Guest coherence boot; guest = install
+#                         everything inside the TinyEMU guest (legacy)
 #   --boot-dir DIR        use bbl64.bin + kernel-riscv64.bin from DIR instead
 #                         of the pinned 2018 demo pair (for a freshly built
 #                         kernel/bbl: SMP qualification). Their real hashes are
@@ -81,6 +89,7 @@ run_url=""
 source_ref=""
 skip_fetch=0
 skip_engine=0
+provision="host"
 boot_dir=""
 boot_max_s=2700
 ram_mb=1024
@@ -98,6 +107,7 @@ while [ $# -gt 0 ]; do
         --source-ref) source_ref="${2:-}"; shift 2 ;;
         --skip-fetch) skip_fetch=1; shift ;;
         --skip-engine) skip_engine=1; shift ;;
+        --provision) provision="${2:-}"; shift 2 ;;
         --boot-dir) boot_dir="${2:-}"; shift 2 ;;
         --boot-max-s) boot_max_s="${2:-}"; shift 2 ;;
         --ram) ram_mb="${2:-}"; shift 2 ;;
@@ -111,8 +121,18 @@ done
 [ -n "$work" ] || die "--work is required"
 [ "$(uname -s)" = "Linux" ] || die "this script needs Linux loop mounts"
 [ "$(id -u)" = "0" ] || die "run as root (losetup/mount are required)"
+case "$provision" in
+    host|guest) ;;
+    *) die "invalid --provision mode: '$provision' (allowed: host, guest)" ;;
+esac
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$provision" = "host" ]; then
+    # The accelerated path is cloud-only tooling; it must never be required
+    # on a developer machine, so its absence is an explicit early error.
+    [ -f "$script_dir/host-provision-image.sh" ] \
+        || die "host provisioning script missing: $script_dir/host-provision-image.sh"
+fi
 repo="${repo:-$(cd "$script_dir/../../.." && pwd)}"
 pins="${pins:-$repo/FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json}"
 image_dir="$work/image"
@@ -362,9 +382,10 @@ bash "$repo/FloeAgent/LinuxGuest/image/install-into-image.sh" \
 grep -q 'installed' "$evidence_dir/runner-injection.log" || die "runner injection did not report success"
 
 # ---------------------------------------------------------------------------
-step "7/9 boot A — install the capability packages through the runner"
+step "7/9 provision A — install the recipe, then boot A checks it in-Guest"
 # ---------------------------------------------------------------------------
 cp "$repo/FloeAgent/LinuxGuest/image/guest-stage1-install.sh" "$share_dir/"
+cp "$repo/FloeAgent/LinuxGuest/image/guest-stage1-coherence.sh" "$share_dir/"
 cp "$repo/FloeAgent/LinuxGuest/image/guest-stage2-verify.sh" "$share_dir/"
 cp "$repo/FloeAgent/LinuxGuest/image/guest-https-check.py" "$share_dir/"
 cp "$repo/FloeAgent/LinuxGuest/image/guest-instruction-probe.py" "$share_dir/"
@@ -431,23 +452,75 @@ assert_markers() { # assert_markers <transcript> <token> <markers...>
     return 0
 }
 
-boot_guest stage1 guest-stage1-install.sh bootA "$boot_max_s" || {
-    # A slow package install can time out before the runner sends its END
-    # frame. Preserve the guest's APT log on this path too; otherwise the
-    # transcript stops at the last progress marker and hides the cause.
+if [ "$provision" = "host" ]; then
+    # Cloud-host acceleration (job-d56b526d441c4faa D3): the recipe install
+    # runs in a qemu-user riscv64 chroot against this exact disk. Signed APT,
+    # real dpkg scripts and the real package database are preserved; the
+    # in-Guest boots below are the verification, never skipped.
+    step "provision A: qemu-user chroot install of recipe '$template'"
+    bash "$script_dir/host-provision-image.sh" \
+        --image "$disk_img" \
+        --recipe "$recipe_path" \
+        --share "$share_dir" \
+        --evidence "$evidence_dir" 2>&1 | tee "$evidence_dir/provision.log"
+    # Hard gate on the real install facts before anything else may run.
+    python3 - "$evidence_dir/template-install.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+apt = data.get("apt") or {}
+pypi = data.get("pypi") or {}
+problems = []
+if apt.get("install_rc") != 0:
+    problems.append("apt install_rc=%s" % apt.get("install_rc"))
+if apt.get("missing"):
+    problems.append("apt missing=%s" % apt.get("missing"))
+if pypi.get("failures"):
+    problems.append("pypi failures=%s" % pypi.get("failures"))
+if problems:
+    print("PROVISION GATE: " + "; ".join(problems))
+    sys.exit(1)
+print("PROVISION GATE: ok (apt install_rc=0, no missing packages, no pypi failures)")
+PY
     cp "$share_dir/stage1-install.log" "$evidence_dir/" 2>/dev/null || true
-    echo "boot A did not reach its marker (rc above); keeping transcript" >&2
-    exit 1
-}
-# Preserve the guest's APT diagnostics even when the stage-1 assertion below
-# fails. The final evidence collection is unreachable on that path.
-cp "$share_dir/stage1-install.log" "$evidence_dir/" 2>/dev/null || true
-grep -aq 'clock set from floe.epoch=' "$evidence_dir/boot-stage1-transcript.txt" \
-    || die "runner never reported setting the clock from floe.epoch="
-assert_markers "$evidence_dir/boot-stage1-transcript.txt" bootA \
-    FLOE_STAGE1_CLOCK_OK FLOE_STAGE1_APT_UPDATE_RC_0 FLOE_STAGE1_APT_INSTALL_RC_0 FLOE_STAGE1_DONE \
-    || die "stage 1 assertions failed"
-e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-after-stage1.log" 2>&1 || true
+    e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-after-provision.log" 2>&1 || true
+
+    # Boot A (light): the provisioned image must boot under the real kernel and
+    # present the installed state to the guest's own tools (dpkg + imports).
+    boot_guest stage1 guest-stage1-coherence.sh bootA "$boot_max_s" || {
+        cp "$share_dir/stage1-coherence.log" "$evidence_dir/" 2>/dev/null || true
+        echo "boot A (coherence) did not reach its marker (rc above); keeping transcript" >&2
+        exit 1
+    }
+    cp "$share_dir/stage1-coherence.log" "$evidence_dir/" 2>/dev/null || true
+    cp "$share_dir/template-coherence.json" "$evidence_dir/" 2>/dev/null || true
+    grep -aq 'clock set from floe.epoch=' "$evidence_dir/boot-stage1-transcript.txt" \
+        || die "runner never reported setting the clock from floe.epoch="
+    assert_markers "$evidence_dir/boot-stage1-transcript.txt" bootA \
+        FLOE_STAGE1_CLOCK_OK FLOE_STAGE1_APT_UPDATE_RC_0 FLOE_STAGE1_TEMPLATE_COHERENT FLOE_STAGE1_DONE \
+        || die "stage 1 (coherence) assertions failed"
+    e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-after-stage1.log" 2>&1 || true
+else
+    boot_guest stage1 guest-stage1-install.sh bootA "$boot_max_s" || {
+        # A slow package install can time out before the runner sends its END
+        # frame. Preserve the guest's APT log on this path too; otherwise the
+        # transcript stops at the last progress marker and hides the cause.
+        cp "$share_dir/stage1-install.log" "$evidence_dir/" 2>/dev/null || true
+        echo "boot A did not reach its marker (rc above); keeping transcript" >&2
+        exit 1
+    }
+    # Preserve the guest's APT diagnostics even when the stage-1 assertion below
+    # fails. The final evidence collection is unreachable on that path.
+    cp "$share_dir/stage1-install.log" "$evidence_dir/" 2>/dev/null || true
+    grep -aq 'clock set from floe.epoch=' "$evidence_dir/boot-stage1-transcript.txt" \
+        || die "runner never reported setting the clock from floe.epoch="
+    assert_markers "$evidence_dir/boot-stage1-transcript.txt" bootA \
+        FLOE_STAGE1_CLOCK_OK FLOE_STAGE1_APT_UPDATE_RC_0 FLOE_STAGE1_APT_INSTALL_RC_0 FLOE_STAGE1_DONE \
+        || die "stage 1 assertions failed"
+    e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-after-stage1.log" 2>&1 || true
+fi
 
 # ---------------------------------------------------------------------------
 step "8/9 boot B — verify clock, HTTPS APT, HTTPS and the 13 commands"
@@ -483,6 +556,8 @@ cp "$share_dir/stage2-package-versions.txt" "$evidence_dir/" 2>/dev/null || true
 cp "$share_dir/stage2-insns.out" "$evidence_dir/" 2>/dev/null || true
 cp "$share_dir/template-install.json" "$evidence_dir/" 2>/dev/null || true
 cp "$share_dir/template-verify.json" "$evidence_dir/" 2>/dev/null || true
+cp "$share_dir/template-coherence.json" "$evidence_dir/" 2>/dev/null || true
+cp "$share_dir/stage1-coherence.log" "$evidence_dir/" 2>/dev/null || true
 cp "$recipe_path" "$evidence_dir/template-recipe.json" 2>/dev/null || true
 
 mount -o ro,loop "$disk_img" "$mnt_dir"
@@ -505,6 +580,9 @@ if [ "$claim_qualified" = 1 ]; then
     qualified_flag=(--qualified)
 fi
 evidence_text="component-image-ci boot A+B: runner PID1 clock from floe.epoch, signed HTTPS apt update/install, Python HTTPS 200, 13 user commands executed."
+if [ "$provision" = "host" ]; then
+    evidence_text="$evidence_text APT/PyPI provisioning ran on the cloud host in a qemu-user riscv64 chroot against the shipped ext4 (signed verification, real dpkg scripts/database; evidence provision-*.txt); boot A re-verified the provisioned state in-Guest (dpkg live + pinned imports), boot B is the full verification."
+fi
 if [ -n "$boot_dir" ]; then
     evidence_text="$evidence_text Unpinned boot pair from --boot-dir (locally built kernel/bbl); the 2018-pair capability run and its runtime claim do not apply to this image."
 else
