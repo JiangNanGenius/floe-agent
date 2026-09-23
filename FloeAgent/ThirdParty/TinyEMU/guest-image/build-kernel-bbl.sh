@@ -357,9 +357,18 @@ if [ "$rebuild" = 1 ]; then
     }
     # raw kernel image: TinyEMU loads the -kernel file as-is and bbl jumps
     # to the address the FDT records (riscv,kernel-start); an ELF kernel
-    # would be executed from its header
+    # would be executed from its header. The pinned tree has no
+    # arch/riscv/boot/ directory, and the demo archive's own readme.txt says
+    # how the shipped kernel was made: "TinyEMU only supports raw boot
+    # loader and kernel images, so after building ... you must convert the
+    # ELF image to a raw image with: objcopy -O binary vmlinux kernel.bin".
     linux_img="$out/riscv-linux-src/arch/riscv/boot/Image"
-    [ -f "$linux_img" ] || die "kernel build produced no arch/riscv/boot/Image"
+    if [ ! -f "$linux_img" ]; then
+        [ -f "$out/riscv-linux-src/vmlinux" ] || die "kernel build produced neither arch/riscv/boot/Image nor vmlinux"
+        riscv64-linux-gnu-objcopy -O binary "$out/riscv-linux-src/vmlinux" "$out/boot/Image"
+        linux_img="$out/boot/Image"
+        log "no arch/riscv/boot/Image in this tree; converted vmlinux with objcopy -O binary (demo readme.txt recipe)"
+    fi
     if [ "$(dd if="$linux_img" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
         die "arch/riscv/boot/Image is an ELF file, not the raw kernel image"
     fi
