@@ -80,8 +80,11 @@ fi
 ip link set eth0 up >>"$LOG" 2>&1 || true
 ip addr add 10.0.2.15/24 dev eth0 >>"$LOG" 2>&1 || true
 ip route add default via 10.0.2.2 >>"$LOG" 2>&1 || true
-rm -f /etc/resolv.conf
-printf 'nameserver 10.0.2.3\n' >/etc/resolv.conf
+# The runner configures the resolver list before accepting commands. Retain
+# its public fallbacks; only older runners need this emergency fallback.
+if [ ! -s /etc/resolv.conf ]; then
+    printf 'nameserver 10.0.2.3\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/etc/resolv.conf
+fi
 if ping -c1 -W3 10.0.2.2 >>"$LOG" 2>&1; then
     mark PING_OK
 else

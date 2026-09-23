@@ -417,6 +417,9 @@ boot_guest stage1 guest-stage1-install.sh bootA "$boot_max_s" || {
     echo "boot A did not reach its marker (rc above); keeping transcript" >&2
     exit 1
 }
+# Preserve the guest's APT diagnostics even when the stage-1 assertion below
+# fails. The final evidence collection is unreachable on that path.
+cp "$share_dir/stage1-install.log" "$evidence_dir/" 2>/dev/null || true
 grep -aq 'clock set from floe.epoch=' "$evidence_dir/boot-stage1-transcript.txt" \
     || die "runner never reported setting the clock from floe.epoch="
 assert_markers "$evidence_dir/boot-stage1-transcript.txt" bootA \
