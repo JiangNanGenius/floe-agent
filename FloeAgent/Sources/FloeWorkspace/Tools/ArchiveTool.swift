@@ -1,30 +1,31 @@
 // FloeWorkspace — workspace.archive agent tool.
 //
-// First-class zip capability: create, extract and list archives inside the
-// task workspace. Extraction is bounded (entry count, total bytes, entry-name
-// sanitization) so a hostile archive cannot escape the workspace or fill the
-// device.
+// The tool is the single entry point for archives inside the task workspace.
+// Container and compression work is native (see `ArchiveEngine`): zip, tar,
+// tar.gz, tar.bz2 and tar.xz are created, listed and extracted on the host,
+// and single-file gzip/bzip2/xz are compressed and decompressed there too.
+// 7z and RAR are read-only, using SWCompression and the app's signed native
+// decoder respectively. No archive operation starts or requires the Linux
+// guest; the optional guest bridge is a separate, explicitly negotiated path.
 
 import Foundation
-import ZIPFoundation
 import SWCompression
 import FloeCore
 import FloeTools
 
-/// One compressed-format archive request handled by the app-supplied bridge
-/// (the task environment's Linux guest Python: tarfile/gzip/bz2/lzma),
-/// keeping workspace.archive the single entry point for every common format.
-/// `environmentID` routes the bridge to the task's own environment.
+/// One read-only RAR request handled by the app-supplied signed decoder.
+/// Kept as a narrow seam: the app target owns the CArchive framework, while
+/// every other format is implemented in `FloeWorkspace` itself.
 public struct ArchiveCompressedRequest: Sendable {
     public var action: String
-    /// tgz, tbz2, txz, gz, bz2 or xz.
+    /// rar.
     public var format: String
     public var source: String
     public var destination: String?
     public var workspaceRoot: URL
     public var cancellation: CancellationToken
-    /// Task environment that owns the guest the bridge runs in; nil only in
-    /// tests without an environment.
+    /// Task environment that owns the request; nil only in tests without an
+    /// environment.
     public var environmentID: String?
 
     public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL, cancellation: CancellationToken = CancellationToken(), environmentID: String? = nil) {
@@ -40,8 +41,7 @@ public struct ArchiveCompressedRequest: Sendable {
 
 public typealias ArchiveCompressedHandler = @Sendable (ArchiveCompressedRequest) async throws -> String
 
-/// Creates, extracts and lists zip/tar archives inside the workspace, with
-/// compressed variants routed through the app-supplied bridge.
+/// Creates, extracts and lists archives inside the workspace.
 public struct WorkspaceArchiveTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var action: String
@@ -50,7 +50,8 @@ public struct WorkspaceArchiveTool: AgentTool {
         public var destinationFile: String?
         /// Internal resolved path; not a model parameter or legacy alias.
         fileprivate var destination: String? { destinationDir ?? destinationFile }
-        /// zip or tar; defaults to the destination/source extension.
+        /// Archive format; inferred from the source/destination extension when
+        /// it is absent.
         public var format: String?
         /// Present when the call is routed to a host scope; always rejected.
         public var scope: String?
@@ -67,15 +68,15 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public static let name = "workspace.archive"
     public static let toolDescription =
-        "Archive operations inside the workspace. create writes a new archive to destinationFile. extract writes zip/tar/7z/rar/tar.* entries into a new destinationDir, or decompresses gz/bz2/xz into destinationFile. Pass exactly the matching field; list accepts neither. ZIP/TAR/7z are native; RAR/RAR5 list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Compressed TAR and single-file compression run in the task environment's Linux guest Python. Entry/size limits apply, existing outputs are never overwritten. Old destination calls must be replanned, not replayed."
+        "Archive operations inside the workspace. create writes a new archive to destinationFile (zip/tar/tar.gz/tar.bz2/tar.xz from one file or directory, or gzip/bzip2/xz for a single file). extract writes zip/tar/tar.gz/tar.bz2/tar.xz/7z/rar entries into a new destinationDir, or decompresses gzip/bzip2/xz into destinationFile. Pass exactly the matching field; list accepts neither. Everything is native and bounded; existing outputs are never overwritten, traversal/symlink escapes and self-inclusion are refused, and the summary reports skipped entries plus metadata the format cannot carry. RAR list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Old destination calls must be replanned, not replayed."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "action": {"type": "string", "enum": ["create", "extract", "list"]},
         "source": {"type": "string", "description": "Workspace-relative source: file/directory to pack (create) or archive to read (extract/list)"},
-        "destinationDir": {"type": "string", "description": "New output directory, only for extracting zip/tar/7z/tar.* containers"},
-        "destinationFile": {"type": "string", "description": "New output file, for create or extracting single-file gz/bz2/xz"},
+        "destinationDir": {"type": "string", "description": "New output directory, only for extracting zip/tar/7z/rar/tar.gz/tar.bz2/tar.xz containers"},
+        "destinationFile": {"type": "string", "description": "New output file, for create or extracting single-file gzip/bzip2/xz"},
         "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z", "rar"], "description": "Archive format; defaults to the destination/source extension"}
       },
       "required": ["action", "source"],
@@ -86,16 +87,22 @@ public struct WorkspaceArchiveTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
 
-    private static let maxEntries = 5_000
-    private static let maxTotalUncompressedBytes = 256 * 1_024 * 1_024
-    private static let maxListedEntries = 500
+    static let limits = ArchiveLimits()
 
     private let environment: WorkspaceToolEnvironment
     private let compressedHandler: ArchiveCompressedHandler?
+    /// Optional byte/entry progress sink for app surfaces; the agent runtime
+    /// leaves it nil.
+    private let progress: ArchiveEngine.ProgressHandler?
 
-    public init(environment: WorkspaceToolEnvironment, compressedHandler: ArchiveCompressedHandler? = nil) {
+    public init(
+        environment: WorkspaceToolEnvironment,
+        compressedHandler: ArchiveCompressedHandler? = nil,
+        progress: ArchiveEngine.ProgressHandler? = nil
+    ) {
         self.environment = environment
         self.compressedHandler = compressedHandler
+        self.progress = progress
     }
 
     public func validate(_ args: Arguments) throws {
@@ -195,203 +202,86 @@ public struct WorkspaceArchiveTool: AgentTool {
                 environmentID: context.environment?.id))
             return WorkspaceToolSupport.output(summary)
         }
-        if ["tgz", "tbz2", "txz", "gz", "bz2", "xz"].contains(resolvedFormat) {
-            guard let compressedHandler else {
-                throw FloeError.invalidConfiguration(
-                    "Compressed archive formats require the app-bundled Python bridge, which is unavailable in this context"
-                )
-            }
-            if resolvedFormat == "gz" || resolvedFormat == "bz2" || resolvedFormat == "xz",
-               args.action == "list" {
-                throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/7z/tar.gz/tar.bz2/tar.xz")
-            }
-            let destination = args.destination
-            let summary = try await compressedHandler(ArchiveCompressedRequest(
-                action: args.action,
-                format: resolvedFormat,
-                source: args.source,
-                destination: destination,
-                workspaceRoot: guarder.rootURL,
-                cancellation: context.cancellation,
-                environmentID: context.environment?.id
-            ))
-            return WorkspaceToolSupport.output(summary)
+        if ["gz", "bz2", "xz"].contains(resolvedFormat), args.action == "list" {
+            throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/7z/tar.gz/tar.bz2/tar.xz")
         }
-        switch (args.action, resolvedFormat) {
-        case ("create", "tar"):
-            return try createTar(args, context: context, guarder: guarder, sourceURL: sourceURL)
-        case ("extract", "tar"):
-            return try extractTar(args, context: context, guarder: guarder, sourceURL: sourceURL)
-        case ("list", "tar"):
-            return try listTar(args, sourceURL: sourceURL)
-        case ("create", _):
-            return try create(args, context: context, guarder: guarder, sourceURL: sourceURL)
-        case ("extract", _):
-            return try extract(args, context: context, guarder: guarder, sourceURL: sourceURL)
+        return try runNative(
+            args,
+            format: resolvedFormat,
+            context: context,
+            guarder: guarder,
+            sourceURL: sourceURL
+        )
+    }
+
+    // MARK: - native engine dispatch
+
+    private func runNative(
+        _ args: Arguments,
+        format: String,
+        context: ToolContext,
+        guarder: WorkspacePathGuard,
+        sourceURL: URL
+    ) throws -> ToolExecutionOutput {
+        switch args.action {
+        case "list":
+            let listing = try ArchiveEngine.list(
+                format: format,
+                source: sourceURL,
+                limits: Self.limits,
+                cancellation: context.cancellation
+            )
+            return WorkspaceToolSupport.output(Self.listingText(listing, format: format, source: args.source))
+        case "create":
+            let destination = args.destination!
+            let destinationURL = try guarder.resolve(destination)
+            try guarder.assertWritable(destinationURL)
+            let summary = try ArchiveEngine.create(
+                format: format,
+                sources: [sourceURL],
+                destination: destinationURL,
+                limits: Self.limits,
+                progress: progress,
+                cancellation: context.cancellation
+            )
+            return WorkspaceToolSupport.output(summary.line(source: args.source, destination: destination))
         default:
-            return try list(args, sourceURL: sourceURL)
-        }
-    }
-
-    // MARK: - create
-
-    private func create(
-        _ args: Arguments,
-        context: ToolContext,
-        guarder: WorkspacePathGuard,
-        sourceURL: URL
-    ) throws -> ToolExecutionOutput {
-        let destination = args.destination!
-        try context.authorizeWorkspacePath(destination)
-        let destinationURL = try guarder.resolve(destination)
-        try guarder.assertWritable(destinationURL)
-        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-            throw WorkspaceToolError.alreadyExists(destination)
-        }
-        try FileManager.default.createDirectory(
-            at: destinationURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        var isDirectory: ObjCBool = false
-        FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
-        let temporary = destinationURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(UUID().uuidString).zip")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        guard let archive = Archive(url: temporary, accessMode: .create) else {
-            throw FloeError.internalError("Could not create the archive")
-        }
-        var entryCount = 0
-        var totalBytes: Int64 = 0
-        if isDirectory.boolValue {
-            let base = sourceURL.deletingLastPathComponent()
-            let basePath = base.path
-            let sourceName = sourceURL.lastPathComponent
-            func relativePath(for item: URL) -> String {
-                let itemPath = item.path
-                if itemPath.hasPrefix(basePath + "/") {
-                    return String(itemPath.dropFirst(basePath.count + 1))
-                }
-                // macOS temp roots differ by symlink resolution (/var vs
-                // /private/var). Re-anchor on the source directory name so
-                // entry names always stay workspace-relative.
-                let marker = "/" + sourceName + "/"
-                if let range = itemPath.range(of: marker, options: .backwards) {
-                    return sourceName + "/" + itemPath[range.upperBound...]
-                }
-                return item.lastPathComponent
-            }
-            guard let enumerator = FileManager.default.enumerator(
-                at: sourceURL,
-                includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            ) else { throw WorkspaceToolError.notFound(args.source) }
-            for case let item as URL in enumerator {
-                try context.cancellation.throwIfCancelled()
-                let values = try item.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-                let relative = relativePath(for: item)
-                if values.isDirectory == true {
-                    try archive.addEntry(
-                        with: relative + "/",
-                        fileURL: item,
-                        compressionMethod: .none
-                    )
-                    continue
-                }
-                guard values.isRegularFile == true else { continue }
-                guard entryCount < Self.maxEntries else {
-                    throw WorkspaceToolError.tooLarge(limit: Self.maxEntries)
-                }
-                let size = Int64((try item.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
-                totalBytes += size
-                guard totalBytes <= Int64(Self.maxTotalUncompressedBytes) else {
-                    throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
-                }
-                try archive.addEntry(
-                    with: relative,
-                    fileURL: item,
-                    compressionMethod: .deflate
+            let destination = args.destination!
+            let destinationURL = try guarder.resolve(destination)
+            try guarder.assertWritable(destinationURL)
+            if ArchiveEngine.singleFileFormats.contains(format) {
+                let summary = try ArchiveEngine.decompress(
+                    format: format,
+                    source: sourceURL,
+                    destination: destinationURL,
+                    limits: Self.limits,
+                    progress: progress,
+                    cancellation: context.cancellation
                 )
-                entryCount += 1
+                return WorkspaceToolSupport.output(summary.line(source: args.source, destination: destination))
             }
-        } else {
-            let size = Int64((try sourceURL.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
-            guard size <= Int64(Self.maxTotalUncompressedBytes) else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
-            }
-            try archive.addEntry(
-                with: sourceURL.lastPathComponent,
-                fileURL: sourceURL,
-                compressionMethod: .deflate
+            let summary = try ArchiveEngine.extract(
+                format: format,
+                source: sourceURL,
+                destination: destinationURL,
+                limits: Self.limits,
+                progress: progress,
+                cancellation: context.cancellation
             )
-            entryCount = 1
-            totalBytes = size
+            return WorkspaceToolSupport.output(summary.line(source: args.source, destination: destination))
         }
-        try FileManager.default.moveItem(at: temporary, to: destinationURL)
-        return WorkspaceToolSupport.output(
-            "status=ok action=create source=\(args.source) destination=\(destination) entries=\(entryCount) uncompressedBytes=\(totalBytes)"
-        )
     }
 
-    // MARK: - extract
-
-    private func extract(
-        _ args: Arguments,
-        context: ToolContext,
-        guarder: WorkspacePathGuard,
-        sourceURL: URL
-    ) throws -> ToolExecutionOutput {
-        let destination = args.destination!
-        try context.authorizeWorkspacePath(destination)
-        let destinationURL = try guarder.resolve(destination)
-        try guarder.assertWritable(destinationURL)
-        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-            throw WorkspaceToolError.alreadyExists(destination)
+    /// The bounded listing text the browser and the agent both consume:
+    /// `status=ok action=list format=… source=… entries=N truncated=B` then
+    /// `kind\tsize\tpath` rows.
+    static func listingText(_ listing: ArchiveListing, format: String, source: String) -> String {
+        var lines = ["status=ok action=list format=\(format) source=\(source) entries=\(listing.entries.count) truncated=\(listing.truncated)"]
+        for entry in listing.entries {
+            lines.append("\(entry.isDirectory ? "dir" : "file")\t\(entry.size)\t\(entry.path)")
         }
-        guard let archive = Archive(url: sourceURL, accessMode: .read) else {
-            throw WorkspaceToolError.invalidArguments("source is not a readable zip archive")
-        }
-        var extracted = 0
-        var skipped = 0
-        var totalBytes: UInt64 = 0
-        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
-        for entry in archive {
-            try context.cancellation.throwIfCancelled()
-            // Directory entries are structural: file extraction recreates the
-            // tree, and only files count toward the reported total.
-            guard entry.type == .file else { continue }
-            guard extracted < Self.maxEntries else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxEntries)
-            }
-            // Never let an entry escape the destination or touch absolute paths.
-            let name = entry.path
-            let components = name.split(separator: "/", omittingEmptySubsequences: true)
-            guard !name.hasPrefix("/"), !name.hasPrefix("~"),
-                  !components.contains(".."), !components.isEmpty else {
-                skipped += 1
-                continue
-            }
-            totalBytes += entry.uncompressedSize
-            guard totalBytes <= UInt64(Self.maxTotalUncompressedBytes) else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
-            }
-            let target = destinationURL.appendingPathComponent(name)
-            guard target.path.hasPrefix(destinationURL.path + "/") else {
-                skipped += 1
-                continue
-            }
-            try FileManager.default.createDirectory(
-                at: target.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            _ = try archive.extract(entry, to: target)
-            extracted += 1
-        }
-        return WorkspaceToolSupport.output(
-            "status=ok action=extract source=\(args.source) destination=\(destination) entries=\(extracted) skipped=\(skipped) uncompressedBytes=\(totalBytes)"
-        )
+        return lines.joined(separator: "\n")
     }
-
-    // MARK: - list
 
     // MARK: - 7z extract / list (SWCompression, read-only)
 
@@ -421,8 +311,8 @@ public struct WorkspaceArchiveTool: AgentTool {
         try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
         for entry in entries where entry.info.type == .regular {
             try context.cancellation.throwIfCancelled()
-            guard extracted < Self.maxEntries else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxEntries)
+            guard extracted < Self.limits.maxEntries else {
+                throw WorkspaceToolError.tooLarge(limit: Self.limits.maxEntries)
             }
             let name = entry.info.name
             let components = name.split(separator: "/", omittingEmptySubsequences: true)
@@ -436,8 +326,8 @@ public struct WorkspaceArchiveTool: AgentTool {
                 continue
             }
             totalBytes += UInt64(entry.info.size ?? 0)
-            guard totalBytes <= UInt64(Self.maxTotalUncompressedBytes) else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
+            guard totalBytes <= UInt64(Self.limits.maxTotalBytes) else {
+                throw WorkspaceToolError.tooLarge(limit: Int(Self.limits.maxTotalBytes))
             }
             let target = destinationURL.appendingPathComponent(name)
             guard target.path.hasPrefix(destinationURL.path + "/") else {
@@ -468,365 +358,18 @@ public struct WorkspaceArchiveTool: AgentTool {
         } catch {
             throw WorkspaceToolError.invalidArguments("source is not a readable 7z archive")
         }
-        var lines = ["status=ok action=list format=7z source=\(args.source)"]
-        var count = 0
-        var truncated = false
+        var listing = ArchiveListing(entries: [], truncated: false)
         for entry in entries {
-            if count >= Self.maxListedEntries { truncated = true; break }
-            lines.append("\(entry.info.type == .directory ? "dir" : "file")\t\(entry.info.size ?? 0)\t\(entry.info.name)")
-            count += 1
-        }
-        lines[0] += " entries=\(count) truncated=\(truncated)"
-        return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
-    }
-
-    // MARK: - zip list
-
-    private func list(_ args: Arguments, sourceURL: URL) throws -> ToolExecutionOutput {
-        guard let archive = Archive(url: sourceURL, accessMode: .read) else {
-            throw WorkspaceToolError.invalidArguments("source is not a readable zip archive")
-        }
-        var lines = ["status=ok action=list source=\(args.source)"]
-        var count = 0
-        var truncated = false
-        for entry in archive {
-            if count >= Self.maxListedEntries { truncated = true; break }
-            lines.append("\(entry.type == .directory ? "dir" : "file")\t\(entry.uncompressedSize)\t\(entry.path)")
-            count += 1
-        }
-        lines[0] += " entries=\(count) truncated=\(truncated)"
-        return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
-    }
-
-    // MARK: - tar create / extract / list
-
-    private func createTar(
-        _ args: Arguments,
-        context: ToolContext,
-        guarder: WorkspacePathGuard,
-        sourceURL: URL
-    ) throws -> ToolExecutionOutput {
-        let destination = args.destination!
-        try context.authorizeWorkspacePath(destination)
-        let destinationURL = try guarder.resolve(destination)
-        try guarder.assertWritable(destinationURL)
-        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-            throw WorkspaceToolError.alreadyExists(destination)
-        }
-        var isDirectory: ObjCBool = false
-        FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
-        var writer = TarArchiveWriter()
-        var entryCount = 0
-        var totalBytes: Int64 = 0
-        if isDirectory.boolValue {
-            let base = sourceURL.deletingLastPathComponent()
-            let basePath = base.path
-            let sourceName = sourceURL.lastPathComponent
-            guard let enumerator = FileManager.default.enumerator(
-                at: sourceURL,
-                includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            ) else { throw WorkspaceToolError.notFound(args.source) }
-            for case let item as URL in enumerator {
-                try context.cancellation.throwIfCancelled()
-                let values = try item.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-                let relative = Self.relativeName(
-                    of: item.path, basePath: basePath, sourceName: sourceName
-                )
-                if values.isDirectory == true {
-                    try writer.addDirectory(name: relative)
-                    continue
-                }
-                guard values.isRegularFile == true else { continue }
-                guard entryCount < Self.maxEntries else {
-                    throw WorkspaceToolError.tooLarge(limit: Self.maxEntries)
-                }
-                let size = Int64((try item.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
-                totalBytes += size
-                guard totalBytes <= Int64(Self.maxTotalUncompressedBytes) else {
-                    throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
-                }
-                let contents = try Data(contentsOf: item, options: [.mappedIfSafe])
-                try writer.addFile(name: relative, contents: contents)
-                entryCount += 1
-            }
-        } else {
-            let size = Int64((try sourceURL.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
-            guard size <= Int64(Self.maxTotalUncompressedBytes) else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
-            }
-            let contents = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
-            try writer.addFile(name: sourceURL.lastPathComponent, contents: contents)
-            entryCount = 1
-            totalBytes = size
-        }
-        let tarData = writer.finish()
-        try FileManager.default.createDirectory(
-            at: destinationURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try tarData.write(to: destinationURL, options: [.atomic])
-        return WorkspaceToolSupport.output(
-            "status=ok action=create format=tar source=\(args.source) destination=\(destination) entries=\(entryCount) uncompressedBytes=\(totalBytes)"
-        )
-    }
-
-    private func extractTar(
-        _ args: Arguments,
-        context: ToolContext,
-        guarder: WorkspacePathGuard,
-        sourceURL: URL
-    ) throws -> ToolExecutionOutput {
-        let destination = args.destination!
-        try context.authorizeWorkspacePath(destination)
-        let destinationURL = try guarder.resolve(destination)
-        try guarder.assertWritable(destinationURL)
-        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-            throw WorkspaceToolError.alreadyExists(destination)
-        }
-        let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
-        guard data.count <= Int(Self.maxTotalUncompressedBytes) + 1_048_576 else {
-            throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
-        }
-        let entries = try TarArchiveReader.entries(in: data)
-        var extracted = 0
-        var skipped = 0
-        var totalBytes: UInt64 = 0
-        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
-        for entry in entries where !entry.isDirectory {
-            try context.cancellation.throwIfCancelled()
-            guard extracted < Self.maxEntries else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxEntries)
-            }
-            let name = entry.name
-            let components = name.split(separator: "/", omittingEmptySubsequences: true)
-            // macOS AppleDouble metadata (._name) is noise, not content.
-            if let baseName = components.last, baseName.hasPrefix("._") {
-                continue
-            }
-            guard !name.hasPrefix("/"), !name.hasPrefix("~"),
-                  !components.contains(".."), !components.isEmpty else {
-                skipped += 1
-                continue
-            }
-            totalBytes += UInt64(entry.size)
-            guard totalBytes <= UInt64(Self.maxTotalUncompressedBytes) else {
-                throw WorkspaceToolError.tooLarge(limit: Self.maxTotalUncompressedBytes)
-            }
-            let target = destinationURL.appendingPathComponent(name)
-            guard target.path.hasPrefix(destinationURL.path + "/") else {
-                skipped += 1
-                continue
-            }
-            try FileManager.default.createDirectory(
-                at: target.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try entry.contents.write(to: target, options: [.atomic])
-            extracted += 1
-        }
-        return WorkspaceToolSupport.output(
-            "status=ok action=extract format=tar source=\(args.source) destination=\(destination) entries=\(extracted) skipped=\(skipped) uncompressedBytes=\(totalBytes)"
-        )
-    }
-
-    private func listTar(_ args: Arguments, sourceURL: URL) throws -> ToolExecutionOutput {
-        let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
-        let entries = try TarArchiveReader.entries(in: data)
-        var lines = ["status=ok action=list format=tar source=\(args.source)"]
-        var count = 0
-        var truncated = false
-        for entry in entries {
-            if count >= Self.maxListedEntries { truncated = true; break }
-            lines.append("\(entry.isDirectory ? "dir" : "file")\t\(entry.size)\t\(entry.name)")
-            count += 1
-        }
-        lines[0] += " entries=\(count) truncated=\(truncated)"
-        return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
-    }
-
-    private static func relativeName(of itemPath: String, basePath: String, sourceName: String) -> String {
-        if itemPath.hasPrefix(basePath + "/") {
-            return String(itemPath.dropFirst(basePath.count + 1))
-        }
-        let marker = "/" + sourceName + "/"
-        if let range = itemPath.range(of: marker, options: .backwards) {
-            return sourceName + "/" + itemPath[range.upperBound...]
-        }
-        return URL(fileURLWithPath: itemPath).lastPathComponent
-    }
-}
-
-// MARK: - Minimal ustar reader/writer (no external dependency)
-
-enum TarArchiveError: Error {
-    case nameTooLong
-    case malformedArchive
-    case checksumMismatch
-}
-
-/// Writes POSIX ustar archives: 512-byte header blocks, file data padded to
-/// 512, two zero blocks at the end.
-struct TarArchiveWriter {
-    private(set) var data = Data()
-
-    mutating func addDirectory(name: String) throws {
-        let normalized = name.hasSuffix("/") ? name : name + "/"
-        data.append(try Self.header(name: normalized, size: 0, typeflag: "5"))
-    }
-
-    mutating func addFile(name: String, contents: Data) throws {
-        data.append(try Self.header(name: name, size: contents.count, typeflag: "0"))
-        data.append(contents)
-        let padding = (512 - contents.count % 512) % 512
-        if padding > 0 { data.append(Data(count: padding)) }
-    }
-
-    func finish() -> Data {
-        data + Data(count: 1_024)
-    }
-
-    private static func header(name: String, size: Int, typeflag: Character) throws -> Data {
-        var block = [UInt8](repeating: 0, count: 512)
-        func write(_ string: String, at offset: Int, maxLength: Int) {
-            let bytes = Array(string.utf8.prefix(maxLength))
-            block.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
-        }
-        func octal(_ value: Int, at offset: Int, length: Int) {
-            let text = String(value, radix: 8)
-            let padded = String(repeating: "0", count: max(0, length - 1 - text.count)) + text
-            write(padded, at: offset, maxLength: length - 1)
-        }
-
-        var nameField = name
-        var prefixField = ""
-        if name.utf8.count > 100 {
-            // ustar long-name split: prefix (155) + "/" + name (100).
-            var splitOffset: String.Index? = nil
-            var cursor = name.startIndex
-            while let slash = name[cursor...].firstIndex(of: "/") {
-                let candidatePrefix = String(name[..<slash])
-                let candidateName = String(name[name.index(after: slash)...])
-                if candidatePrefix.utf8.count <= 155, candidateName.utf8.count <= 100 {
-                    splitOffset = slash
-                }
-                cursor = name.index(after: slash)
-            }
-            guard let slash = splitOffset else { throw TarArchiveError.nameTooLong }
-            prefixField = String(name[..<slash])
-            nameField = String(name[name.index(after: slash)...])
-        }
-        guard nameField.utf8.count <= 100 else { throw TarArchiveError.nameTooLong }
-
-        write(nameField, at: 0, maxLength: 100)
-        write(typeflag == "5" ? "0000755" : "0000644", at: 100, maxLength: 7)
-        write("0000000", at: 108, maxLength: 7)
-        write("0000000", at: 116, maxLength: 7)
-        octal(size, at: 124, length: 12)
-        octal(Int(Date().timeIntervalSince1970), at: 136, length: 12)
-        block[156] = typeflag.asciiValue ?? 0x30
-        write("ustar", at: 257, maxLength: 6)
-        write("00", at: 263, maxLength: 2)
-        write("floe", at: 265, maxLength: 32)
-        write("floe", at: 297, maxLength: 32)
-        write(prefixField, at: 345, maxLength: 155)
-        // Checksum: field treated as eight spaces.
-        for index in 148..<156 { block[index] = 0x20 }
-        let checksum = block.reduce(0) { $0 + Int($1) }
-        let checksumText = String(checksum, radix: 8)
-        let padded = String(repeating: "0", count: max(0, 6 - checksumText.count)) + checksumText
-        write(padded, at: 148, maxLength: 6)
-        block[154] = 0
-        block[155] = 0x20
-        return Data(block)
-    }
-}
-
-/// Reads POSIX ustar archives produced by common tools (GNU/BSD tar).
-struct TarArchiveReader {
-    struct Entry {
-        let name: String
-        let isDirectory: Bool
-        let size: Int
-        let contents: Data
-    }
-
-    static func entries(in data: Data) throws -> [Entry] {
-        var entries: [Entry] = []
-        var offset = 0
-        var pendingLongName: String? = nil
-        while offset + 512 <= data.count {
-            let header = data[offset..<(offset + 512)]
-            if header.allSatisfy({ $0 == 0 }) { break }
-            func field(_ start: Int, _ length: Int) -> String {
-                let bytes = header[(header.startIndex + start)..<(header.startIndex + start + length)]
-                let trimmed = bytes.prefix { $0 != 0 }
-                return String(decoding: trimmed, as: UTF8.self)
-            }
-            let name = field(0, 100)
-            let prefix = field(345, 155)
-            let fullName = prefix.isEmpty ? name : prefix + "/" + name
-            guard let size = Int(field(124, 12).trimmingCharacters(in: .whitespaces), radix: 8) else {
-                throw TarArchiveError.malformedArchive
-            }
-            let typeflag = header[header.startIndex + 156]
-            // Verify the header checksum before trusting any field.
-            var checksumBlock = [UInt8](header)
-            for index in 148..<156 { checksumBlock[index] = 0x20 }
-            let expected = checksumBlock.reduce(0) { $0 + Int($1) }
-            let recordedText = field(148, 8).trimmingCharacters(in: CharacterSet(charactersIn: " \0"))
-            guard let recorded = Int(recordedText, radix: 8), recorded == expected else {
-                throw TarArchiveError.checksumMismatch
-            }
-            let dataStart = offset + 512
-            guard dataStart + size <= data.count else {
-                throw TarArchiveError.malformedArchive
-            }
-            let payload = Data(data[dataStart..<(dataStart + size)])
-            offset = dataStart + ((size + 511) / 512) * 512
-
-            switch typeflag {
-            case Character("x").asciiValue, Character("g").asciiValue:
-                // pax extended/global header: harvest path= for the next entry.
-                pendingLongName = paxValue(forKey: "path", in: payload) ?? pendingLongName
-                continue
-            case Character("L").asciiValue:
-                // GNU long name: payload is the null-terminated name itself.
-                pendingLongName = String(decoding: payload.prefix { $0 != 0 }, as: UTF8.self)
-                continue
-            case Character("K").asciiValue:
-                continue // GNU long link name; irrelevant for extraction.
-            default:
+            if listing.entries.count >= Self.limits.maxListedEntries {
+                listing.truncated = true
                 break
             }
-            let isDirectory = typeflag == Character("5").asciiValue
-            let isFile = typeflag == Character("0").asciiValue || typeflag == 0
-            guard isDirectory || isFile else { continue }
-            let finalName = pendingLongName ?? fullName
-            pendingLongName = nil
-            guard !finalName.isEmpty else { continue }
-            let contents = isDirectory ? Data() : payload
-            entries.append(Entry(name: finalName, isDirectory: isDirectory, size: size, contents: contents))
+            listing.entries.append(ArchiveListedEntry(
+                path: entry.info.name,
+                isDirectory: entry.info.type == .directory,
+                size: Int64(entry.info.size ?? 0)
+            ))
         }
-        return entries
-    }
-
-    /// Extracts `key=value` from pax extended-header records (`len key=value\n`).
-    private static func paxValue(forKey key: String, in payload: Data) -> String? {
-        var cursor = payload.startIndex
-        while cursor < payload.endIndex {
-            guard let spaceIndex = payload[cursor...].firstIndex(of: 0x20),
-                  let length = Int(String(decoding: payload[cursor..<spaceIndex], as: UTF8.self)),
-                  length > 0, cursor + length <= payload.endIndex else { break }
-            let record = payload[(spaceIndex + 1)..<(cursor + length - 1)]
-            if let equals = record.firstIndex(of: 0x3D) {
-                let recordKey = String(decoding: record[..<equals], as: UTF8.self)
-                if recordKey == key {
-                    return String(decoding: record[(equals + 1)...], as: UTF8.self)
-                }
-            }
-            cursor += length
-        }
-        return nil
+        return WorkspaceToolSupport.output(Self.listingText(listing, format: "7z", source: args.source))
     }
 }

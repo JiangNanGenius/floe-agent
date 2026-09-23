@@ -79,11 +79,16 @@ struct ArchiveToolTests {
             context: f.context
         )
         #expect(first.summary.contains("entries=1"))
-        await #expect(throws: WorkspaceToolError.self) {
+        do {
             _ = try await tool.execute(
                 .init(action: "create", source: "note.txt", destinationFile: "note.zip"),
                 context: f.context
             )
+            Issue.record("an existing destination must never be overwritten")
+        } catch {
+            // The engine reports a structured conflict; the message keeps the
+            // old actionable wording.
+            #expect("\(error)".contains("already exists"), "error was: \(error)")
         }
     }
 
@@ -260,10 +265,12 @@ struct ArchiveToolTests {
     @Test("tar extraction skips traversal entries")
     func tarTraversalSafety() async throws {
         let f = try Fixture()
-        var writer = TarArchiveWriter()
-        try writer.addFile(name: "ok/good.txt", contents: Data("good".utf8))
-        try writer.addFile(name: "../evil.txt", contents: Data("evil".utf8))
-        try writer.finish().write(to: f.root.appendingPathComponent("evil.tar"))
+        let buffer = DataByteSink()
+        var writer = TarStreamWriter(sink: buffer)
+        try writer.addFile(name: "ok/good.txt", size: 4, mode: 0o644, mtime: Date()) { _ in } from: { DataByteSource(Data("good".utf8)) }
+        try writer.addFile(name: "../evil.txt", size: 4, mode: 0o644, mtime: Date()) { _ in } from: { DataByteSource(Data("evil".utf8)) }
+        try writer.finish()
+        try buffer.data.write(to: f.root.appendingPathComponent("evil.tar"))
 
         let tool = WorkspaceArchiveTool(environment: f.environment)
         let output = try await tool.execute(
@@ -274,5 +281,56 @@ struct ArchiveToolTests {
         #expect(output.summary.contains("skipped=1"))
         #expect(try f.read("safe/ok/good.txt") == "good")
         #expect(!f.exists("evil.txt"))
+    }
+
+    @Test("Compressed formats are handled natively without an app handler")
+    func compressedFormatsAreNative() async throws {
+        let f = try Fixture()
+        try f.write("bundle/a.txt", "alpha")
+        try f.write("bundle/deep/b.txt", "beta")
+        let tool = WorkspaceArchiveTool(environment: f.environment)
+
+        for (format, name) in [("tgz", "pack.tar.gz"), ("tbz2", "pack.tar.bz2"), ("txz", "pack.tar.xz")] {
+            let created = try await tool.execute(
+                .init(action: "create", source: "bundle", destinationFile: name, format: format),
+                context: f.context
+            )
+            #expect(created.summary.contains("entries=2"), "\(format) create was: \(created.summary)")
+            #expect(created.summary.contains("format=\(format)"))
+
+            let listed = try await tool.execute(.init(action: "list", source: name), context: f.context)
+            #expect(listed.summary.contains("format=\(format)"))
+            #expect(listed.summary.contains("bundle/a.txt"), "\(format) list was: \(listed.summary)")
+
+            let destination = "out-\(format)"
+            let extracted = try await tool.execute(
+                .init(action: "extract", source: name, destinationDir: destination),
+                context: f.context
+            )
+            #expect(extracted.summary.contains("entries=2"))
+            #expect(try f.read("\(destination)/bundle/deep/b.txt") == "beta")
+        }
+
+        // Single-file gzip/bzip2/xz: create + decompress through the tool.
+        let payload = String(repeating: "single file payload ", count: 64)
+        try f.write("note.txt", payload)
+        for (format, name) in [("gz", "note.txt.gz"), ("bz2", "note.txt.bz2"), ("xz", "note.txt.xz")] {
+            let created = try await tool.execute(
+                .init(action: "create", source: "note.txt", destinationFile: name),
+                context: f.context
+            )
+            #expect(created.summary.contains("entries=1"), "\(format) create was: \(created.summary)")
+            let restored = "restored-\(format).txt"
+            let decompressed = try await tool.execute(
+                .init(action: "extract", source: name, destinationFile: restored),
+                context: f.context
+            )
+            #expect(decompressed.summary.contains("entries=1"))
+            #expect(try f.read(restored) == payload)
+            // list is honestly rejected for single-file formats.
+            await #expect(throws: WorkspaceToolError.self) {
+                _ = try await tool.execute(.init(action: "list", source: name), context: f.context)
+            }
+        }
     }
 }

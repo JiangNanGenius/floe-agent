@@ -23,8 +23,9 @@ HOST_BIN := floe-exec
 RISCV_BIN := floe-exec-riscv64
 CLOCK_CHECK_BIN := clock-arg-check
 NET_CHECK_BIN := net-plan-check
+HOST_ARCHIVE_CHECK_BIN := host-archive-check
 
-.PHONY: all host riscv64 check check-clock check-net clean
+.PHONY: all host riscv64 check check-clock check-net check-host-archive clean
 
 all: host
 
@@ -58,8 +59,17 @@ check-net: $(NET_CHECK_BIN)
 $(NET_CHECK_BIN): floe_net.h ../tests/net_plan_check.c
 	$(CC) $(CFLAGS) -I. -o $@ ../tests/net_plan_check.c
 
+# Native check for the optional floe-host archive bridge (capability
+# negotiation, request parsing, bounded payload encoding, reply decoding).
+# Pure functions: no console, no filesystem writes.
+check-host-archive: $(HOST_ARCHIVE_CHECK_BIN)
+	./$(HOST_ARCHIVE_CHECK_BIN)
+
+$(HOST_ARCHIVE_CHECK_BIN): floe_host_archive.h host_archive_check.c
+	$(CC) $(CFLAGS) -I. -o $@ host_archive_check.c
+
 $(CLOCK_CHECK_BIN): floe_clock.h ../tests/clock_arg_check.c
 	$(CC) $(CFLAGS) -I. -o $@ ../tests/clock_arg_check.c
 
 clean:
-	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN) $(NET_CHECK_BIN)
+	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN) $(NET_CHECK_BIN) $(HOST_ARCHIVE_CHECK_BIN)

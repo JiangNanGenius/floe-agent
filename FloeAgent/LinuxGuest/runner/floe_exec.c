@@ -120,6 +120,7 @@
 
 #include "floe_clock.h"
 #include "floe_net.h"
+#include "floe_host_archive.h"
 
 #ifdef __linux__
 #include <sys/mount.h>
@@ -298,6 +299,14 @@ static int emit_marker(const char *name, const char *token) {
 static char g_section_token[MAX_TOKEN];
 static int g_section_kind; // 0 = none, 1 = stdout (OUT), 2 = stderr (ERR)
 
+// Optional floe-host archive bridge: the host advertises the action set it
+// will serve in HELLO; an empty set keeps the command disabled.
+static floe_host_caps g_host_caps;
+
+// A guest command waiting for a host archive reply must not hang forever even
+// if the console dies; the host's own command timeout still applies.
+#define HOST_ARCHIVE_TIMEOUT_MS 300000
+
 static void section_mark(const char *token, int kind) {
     snprintf(g_section_token, sizeof g_section_token, "%s", token);
     g_section_kind = kind;
@@ -339,10 +348,11 @@ static int emit_failed(const char *token, const char *reason) {
 static int emit_caps(const char *token) {
     char buf[MAX_TOKEN + 128];
     int n = snprintf(buf, sizeof buf,
-                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d net=%s\x1e",
+                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d net=%s hostArchive=%s\x1e",
                      token, FLOE_RUNNER_VERSION, FLOE_PROTOCOL_VERSION,
                      MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_SESSIONS,
-                     floe_net_status_text(g_net_status));
+                     floe_net_status_text(g_net_status),
+                     g_host_caps.value[0] ? g_host_caps.value : "none");
     if (n <= 0 || (size_t)n >= sizeof buf) return -1;
     if (write_all(STDOUT_FILENO, buf, (size_t)n) != 0) return -1;
     return emit_end(token, 0);
@@ -751,6 +761,10 @@ typedef struct {
     int64_t last_data;
     int exited;
     int exit_code;
+    // Set for a command that is waiting for a FLOE-HOSTREPLY instead of a
+    // child process; it owns no pid and is never signalled.
+    int host_wait;
+    int64_t host_deadline;
     char token[MAX_TOKEN];
 } command_state;
 
@@ -1894,6 +1908,83 @@ static void start_command(command_state *c, const char *token, exec_request *req
     }
 }
 
+// Optional guest → host archive bridge. The command validates the request
+// against the negotiated capability set, emits a bounded control message and
+// waits for FLOE-HOSTREPLY; the host does the work on the shared directory.
+static void start_host_archive_command(command_state *c, const char *token, exec_request *req) {
+    floe_host_request hreq;
+    int parsed = floe_host_request_parse(req->argc, req->argv, &hreq);
+    if (parsed != 0) {
+        exec_request_free(req);
+        emit_failure(token, 1, 126,
+                     "floe-host: usage: floe-host archive create|extract|list|decompress "
+                     "[--format FMT] --source PATH [--destination PATH]");
+        return;
+    }
+    if (!floe_host_caps_allows(&g_host_caps, hreq.action)) {
+        exec_request_free(req);
+        emit_failure(token, 1, 126,
+                     "floe-host: host archive bridge is not negotiated for this action "
+                     "(the host must advertise it in FLOE-HELLO archive=...)");
+        return;
+    }
+    char payload[FLOE_HOST_PAYLOAD_MAX];
+    int payload_len = floe_host_request_encode(&hreq, token, payload, sizeof payload);
+    if (payload_len <= 0) {
+        exec_request_free(req);
+        emit_failure(token, 1, 126, "floe-host: request could not be encoded");
+        return;
+    }
+    size_t encoded_cap = ((size_t)payload_len + 2) / 3 * 4 + 1;
+    char *encoded = malloc(encoded_cap);
+    if (!encoded) {
+        exec_request_free(req);
+        emit_failure(token, 1, 125, "floe-host: cannot allocate the control message");
+        return;
+    }
+    if (floe_host_b64_encode((const unsigned char *)payload, (size_t)payload_len, encoded, encoded_cap) <= 0) {
+        free(encoded);
+        exec_request_free(req);
+        emit_failure(token, 1, 125, "floe-host: cannot encode the control message");
+        return;
+    }
+
+    memset(c, 0, sizeof *c);
+    c->in_fd = c->out_fd = c->err_fd = -1;
+    c->active = 1;
+    c->host_wait = 1;
+    c->host_deadline = now_ms() + HOST_ARCHIVE_TIMEOUT_MS;
+    snprintf(c->token, sizeof c->token, "%s", token);
+    exec_request_free(req);
+
+    if (emit_marker("BEGIN", c->token) != 0) {
+        free(encoded);
+        clear_command(c);
+        return;
+    }
+    section_mark(c->token, 1);
+    char frame[MAX_TOKEN + FLOE_HOST_PAYLOAD_MAX * 2 + 64];
+    int n = snprintf(frame, sizeof frame, "\x1e" "FLOE-HOSTREQ %s %s\x1e", c->token, encoded);
+    free(encoded);
+    if (n <= 0 || (size_t)n >= sizeof frame || write_all(STDOUT_FILENO, frame, (size_t)n) != 0) {
+        ensure_section(c->token, 2);
+        emit_message("floe-host: cannot send the control message\n");
+        emit_end(c->token, 125);
+        section_release(c->token);
+        clear_command(c);
+    }
+}
+
+static void finish_host_wait(command_state *c, int code, const char *message) {
+    if (message && message[0] != '\0') {
+        ensure_section(c->token, 2);
+        emit_message(message);
+    }
+    emit_end(c->token, code);
+    section_release(c->token);
+    clear_command(c);
+}
+
 static int command_drain_done(const command_state *c) {
     if (!c->exited) return 0;
     if (!c->out_open && !c->err_open) return 1;
@@ -2157,6 +2248,12 @@ static int start_exec_payload(const char *token, const unsigned char *payload, s
         emit_failure(token, 1, 125, "floe-exec: command table full");
         return -1;
     }
+    // The optional floe-host archive bridge is a runner built-in: it never
+    // forks, it forwards a bounded request to the host and relays the reply.
+    if (req.argc >= 1 && req.argv[0] && strcmp(req.argv[0], "floe-host") == 0) {
+        start_host_archive_command(slot, token, &req);
+        return 0;
+    }
     start_command(slot, token, &req);
     return 0;
 }
@@ -2203,6 +2300,9 @@ static void handle_frame(const unsigned char *body, size_t len) {
     size_t args_len = token_end ? rest_len - token_len - 1 : 0;
 
     if (name_len == 5 && memcmp(body, "HELLO", 5) == 0) {
+        // The host may advertise optional capabilities as key=value fields;
+        // unknown keys are ignored and an absent key disables the bridge.
+        (void)floe_host_caps_parse((const char *)args, args_len, &g_host_caps);
         (void)emit_caps(token);
         return;
     }
@@ -2236,6 +2336,37 @@ static void handle_frame(const unsigned char *body, size_t len) {
         uint32_t chunks = 0;
         if (parse_two_decimals(args, args_len, &payload_bytes, &chunks) != 0) return;
         (void)asm_begin(ASM_OPEN, token, payload_bytes, chunks);
+        return;
+    }
+
+    if (name_len == 9 && memcmp(body, "HOSTREPLY", 9) == 0) {
+        command_state *slot = command_find(token);
+        if (!slot || !slot->host_wait) return; // unknown or late reply: ignore
+        size_t cap = args_len / 4 * 3 + 4;
+        unsigned char *decoded = malloc(cap);
+        if (!decoded) {
+            finish_host_wait(slot, 125, "floe-host: cannot allocate the reply buffer\n");
+            return;
+        }
+        long decoded_len = b64_decode(args, args_len, decoded, cap);
+        if (decoded_len <= 0 || (size_t)decoded_len >= FLOE_HOST_REPLY_MAX) {
+            free(decoded);
+            finish_host_wait(slot, 125, "floe-host: malformed host reply\n");
+            return;
+        }
+        decoded[decoded_len] = '\0';
+        floe_host_reply reply;
+        if (floe_host_reply_parse((const char *)decoded, &reply) != 0) {
+            free(decoded);
+            finish_host_wait(slot, 125, "floe-host: unreadable host reply\n");
+            return;
+        }
+        char text[FLOE_HOST_REPLY_MAX + 64];
+        (void)floe_host_reply_text((const char *)decoded, text, sizeof text);
+        free(decoded);
+        (void)ensure_section(token, 1);
+        emit_message(text);
+        finish_host_wait(slot, reply.exit_code, NULL);
         return;
     }
 
@@ -2618,7 +2749,13 @@ int main(void) {
                         // gets TERM escalation; sessions keep their own
                         // CLOSE/SIGNAL semantics.
                         for (int c = 0; c < MAX_CONCURRENT_COMMANDS; c++) {
-                            if (g_commands[c].active) request_cancel(&g_commands[c], SIGINT);
+                            if (!g_commands[c].active) continue;
+                            if (g_commands[c].host_wait) {
+                                g_commands[c].cancel_requested = 1;
+                                g_commands[c].cancel_signal = SIGINT;
+                                continue;
+                            }
+                            request_cancel(&g_commands[c], SIGINT);
                         }
                         continue;
                     }
@@ -2689,6 +2826,17 @@ int main(void) {
         for (int c = 0; c < MAX_CONCURRENT_COMMANDS; c++) {
             command_state *cmd = &g_commands[c];
             if (!cmd->active) continue;
+            if (cmd->host_wait) {
+                // No child process: either the host answered (handled in
+                // handle_frame), the host cancelled the command, or the
+                // reply deadline passed.
+                if (cmd->cancel_requested) {
+                    finish_host_wait(cmd, 130, "floe-host: command cancelled\n");
+                } else if (now_ms() >= cmd->host_deadline) {
+                    finish_host_wait(cmd, 124, "floe-host: timed out waiting for the host reply\n");
+                }
+                continue;
+            }
             enforce_cancel(cmd);
             if (cmd->cancel_requested && cmd->abandon_deadline_set &&
                 !cmd->exited && now_ms() >= cmd->abandon_deadline) {

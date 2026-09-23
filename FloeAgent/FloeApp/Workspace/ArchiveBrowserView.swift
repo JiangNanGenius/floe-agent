@@ -4,10 +4,11 @@
 //
 // Reuses the shared archive service (`ArchiveBrowserService` →
 // `WorkspaceArchiveTool`) so bounds, traversal/symlink rejection and
-// no-overwrite rules are enforced in one place. Zip/TAR/7z are read natively;
-// formats that need the environment's Linux runtime report that truthfully
-// instead of silently starting a guest. Extraction is bounded and staged into
-// a hidden workspace directory that is removed when the browser closes.
+// no-overwrite rules are enforced in one place. Zip, tar, tar.gz, tar.bz2,
+// tar.xz, single-file gzip/bzip2/xz and 7z are read natively on the host; RAR
+// reports that it needs the app's signed decoder instead of silently starting
+// a guest. Extraction is bounded, cancellable and staged into a hidden
+// workspace directory that is removed when the browser closes.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -35,6 +36,10 @@ struct ArchiveBrowserView: View {
     @State private var extractMessage: String?
     @State private var extracting = false
     @State private var confirmingExtract = false
+    /// Cancels the in-flight extraction/decompression; progress text is
+    /// polled from the engine's byte/entry callbacks.
+    @State private var cancelToken: CancellationToken?
+    @State private var progressText: String?
     /// iPhone/compact presentation: the selected entry opens in a sheet
     /// instead of a side-by-side pane.
     @State private var compactPreview: ArchiveBrowseEntry?
@@ -48,6 +53,15 @@ struct ArchiveBrowserView: View {
         VStack(spacing: 0) {
             if let extractMessage {
                 banner(extractMessage, isError: false)
+            }
+            if let progressText {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(progressText).font(.caption)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.bar)
             }
             if let listingError {
                 ContentUnavailableView {
@@ -93,7 +107,12 @@ struct ArchiveBrowserView: View {
                 .disabled(listing == nil || extracting || !canExtract)
                 .accessibilityIdentifier("archive.extract")
             }
-            if showsClose {
+            if extracting {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(IDELanguageRunText.t("取消", "Cancel")) { cancelToken?.cancel() }
+                        .accessibilityIdentifier("archive.cancel")
+                }
+            } else if showsClose {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(IDELanguageRunText.t("关闭", "Close")) { dismiss() }
                 }
@@ -210,11 +229,25 @@ struct ArchiveBrowserView: View {
     private var canExtract: Bool {
         guard let format = listing?.format else { return false }
         return ArchiveBrowserService.nativeFormats.contains(format)
+            || ArchiveBrowserService.singleFileFormats.contains(format)
+    }
+
+    private var isSingleFileArchive: Bool {
+        guard let format = listing?.format else { return false }
+        return ArchiveBrowserService.singleFileFormats.contains(format)
     }
 
     private var extractDestination: String {
         let name = ((relativePath as NSString).lastPathComponent as NSString).deletingPathExtension
         return "\(name.isEmpty ? "archive" : name)-unpacked"
+    }
+
+    /// Single-file archives decompress to one derived file name.
+    private var extractFileName: String {
+        let format = listing?.format ?? ""
+        let name = (relativePath as NSString).lastPathComponent
+        let derived = ArchiveEngine.decompressedName(for: name, format: format)
+        return derived == name ? name + ".unpacked" : derived
     }
 
     private func load() async {
@@ -278,17 +311,27 @@ struct ArchiveBrowserView: View {
         }
     }
 
-    /// Reuses one extraction for the whole browser session.
+    /// Reuses one extraction for the whole browser session. Single-file
+    /// archives decompress their one payload into the same preview folder.
     private func ensureExtracted(rootURL: URL) async throws -> String {
         if let extractedDirectory { return extractedDirectory }
         let directory = ".floe-archive-preview/\(UUID().uuidString)"
         let service = ArchiveBrowserService(rootProvider: { rootURL })
-        _ = try await service.extract(
-            relativePath: relativePath,
-            destinationDir: directory,
-            rootURL: rootURL,
-            cancellation: CancellationToken()
-        )
+        if isSingleFileArchive {
+            _ = try await service.decompress(
+                relativePath: relativePath,
+                destinationFile: directory + "/" + extractFileName,
+                rootURL: rootURL,
+                cancellation: cancelToken ?? CancellationToken()
+            )
+        } else {
+            _ = try await service.extract(
+                relativePath: relativePath,
+                destinationDir: directory,
+                rootURL: rootURL,
+                cancellation: cancelToken ?? CancellationToken()
+            )
+        }
         extractedDirectory = directory
         return directory
     }
@@ -296,16 +339,43 @@ struct ArchiveBrowserView: View {
     private func extract() async {
         guard let rootURL else { return }
         extracting = true
-        defer { extracting = false }
+        let token = CancellationToken()
+        cancelToken = token
+        let box = ArchiveProgressBox()
+        let progress: ArchiveEngine.ProgressHandler = { update in box.update(update) }
+        let poller = Task { @MainActor in
+            while !Task.isCancelled {
+                progressText = box.text
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+        defer {
+            poller.cancel()
+            extracting = false
+            cancelToken = nil
+            progressText = nil
+        }
         let service = ArchiveBrowserService(rootProvider: { rootURL })
         do {
-            _ = try await service.extract(
-                relativePath: relativePath,
-                destinationDir: extractDestination,
-                rootURL: rootURL,
-                cancellation: CancellationToken()
-            )
-            extractMessage = String(format: IDELanguageRunText.t("已解压到“%@”。", "Extracted to “%@”."), extractDestination)
+            if isSingleFileArchive {
+                _ = try await service.decompress(
+                    relativePath: relativePath,
+                    destinationFile: extractFileName,
+                    rootURL: rootURL,
+                    cancellation: token,
+                    progress: progress
+                )
+                extractMessage = String(format: IDELanguageRunText.t("已解压到“%@”。", "Decompressed to “%@”."), extractFileName)
+            } else {
+                _ = try await service.extract(
+                    relativePath: relativePath,
+                    destinationDir: extractDestination,
+                    rootURL: rootURL,
+                    cancellation: token,
+                    progress: progress
+                )
+                extractMessage = String(format: IDELanguageRunText.t("已解压到“%@”。", "Extracted to “%@”."), extractDestination)
+            }
         } catch {
             extractMessage = error.localizedDescription
         }
@@ -341,6 +411,30 @@ struct ArchiveBrowserView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(.bar)
+    }
+}
+
+/// Thread-safe progress snapshot polled by the extraction banner.
+private final class ArchiveProgressBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: ArchiveProgress?
+
+    func update(_ progress: ArchiveProgress) {
+        lock.lock()
+        latest = progress
+        lock.unlock()
+    }
+
+    var text: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let latest else { return nil }
+        let done = ByteCountFormatter.string(fromByteCount: latest.completedBytes, countStyle: .file)
+        if let total = latest.totalBytes {
+            let all = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+            return "\(done) / \(all)"
+        }
+        return done
     }
 }
 

@@ -79,11 +79,33 @@ struct ArchiveBrowserServiceTests {
         #expect(listing.entries.contains { $0.path == "nested/data.csv" })
     }
 
-    @Test("Only native formats browse; compressed tar and RAR report why")
+    @Test("Compressed containers browse natively; only RAR and unknown formats report why")
     func unsupportedFormatsAreTruthful() async throws {
         let f = try Fixture()
         try f.write("notes.txt", "x")
-        for (name, format) in [("bundle.tgz", "tgz"), ("bundle.tar.gz", "tgz"), ("raw.gz", "gz"), ("legacy.rar", "rar")] {
+        // Build a real tar.gz with the engine, then browse it.
+        _ = try ArchiveEngine.create(
+            format: "tgz",
+            sources: [f.root.appendingPathComponent("notes.txt")],
+            destination: f.root.appendingPathComponent("bundle.tar.gz"),
+            cancellation: f.cancel
+        )
+        let listing = try await f.service.listing(relativePath: "bundle.tar.gz", rootURL: f.root, cancellation: f.cancel)
+        #expect(listing.format == "tgz")
+        #expect(listing.entries.contains { $0.path.hasSuffix("notes.txt") })
+
+        // A single-file archive lists its one logical payload.
+        let single = try ArchiveEngine.create(
+            format: "gz",
+            sources: [f.root.appendingPathComponent("notes.txt")],
+            destination: f.root.appendingPathComponent("raw.gz"),
+            cancellation: f.cancel
+        )
+        #expect(single.entries == 1)
+        let singleListing = try await f.service.listing(relativePath: "raw.gz", rootURL: f.root, cancellation: f.cancel)
+        #expect(singleListing.entries.map(\.path) == ["raw"] || singleListing.entries.count == 1)
+
+        for (name, format) in [("legacy.rar", "rar"), ("mystery", "unknown")] {
             do {
                 _ = try await f.service.listing(relativePath: name, rootURL: f.root, cancellation: f.cancel)
                 Issue.record("\(name) must not browse")
@@ -96,11 +118,58 @@ struct ArchiveBrowserServiceTests {
                 #expect(!reason.isEmpty)
                 if format == "rar" {
                     #expect(reason.contains("signed decoder"), "reason was: \(reason)")
-                } else {
-                    #expect(reason.contains("Linux runtime"), "reason was: \(reason)")
                 }
             }
         }
+    }
+
+    @Test("Compressed archives extract and decompress through the shared service")
+    func compressedExtraction() async throws {
+        let f = try Fixture()
+        try f.write("src/one.txt", "one")
+        try f.write("src/two.txt", "two")
+        _ = try ArchiveEngine.create(
+            format: "txz",
+            sources: [f.root.appendingPathComponent("src")],
+            destination: f.root.appendingPathComponent("bundle.tar.xz"),
+            cancellation: f.cancel
+        )
+        let summary = try await f.service.extract(
+            relativePath: "bundle.tar.xz", destinationDir: "unpacked", rootURL: f.root, cancellation: f.cancel
+        )
+        #expect(summary.contains("entries=2"))
+        #expect(try String(contentsOf: f.root.appendingPathComponent("unpacked/src/two.txt"), encoding: .utf8) == "two")
+
+        // Single-file decompression writes one new file and never overwrites.
+        _ = try ArchiveEngine.create(
+            format: "gz",
+            sources: [f.root.appendingPathComponent("src/one.txt")],
+            destination: f.root.appendingPathComponent("one.txt.gz"),
+            cancellation: f.cancel
+        )
+        let decompressed = try await f.service.decompress(
+            relativePath: "one.txt.gz", destinationFile: "one-restored.txt", rootURL: f.root, cancellation: f.cancel
+        )
+        #expect(decompressed.contains("entries=1"))
+        #expect(try String(contentsOf: f.root.appendingPathComponent("one-restored.txt"), encoding: .utf8) == "one")
+    }
+
+    @Test("Multi-select compression defaults to zip through the service")
+    func multiSelectCompression() async throws {
+        let f = try Fixture()
+        try f.write("one/a.txt", "a")
+        try f.write("two/b.txt", "b")
+        let summary = try await f.service.createArchive(
+            sources: ["one", "two"],
+            destinationFile: "bundle.zip",
+            rootURL: f.root,
+            cancellation: f.cancel
+        )
+        #expect(summary.contains("entries=2"))
+        let listing = try await f.service.listing(relativePath: "bundle.zip", rootURL: f.root, cancellation: f.cancel)
+        let paths = Set(listing.entries.map(\.path))
+        #expect(paths.contains("one/a.txt"))
+        #expect(paths.contains("two/b.txt"))
     }
 
     @Test("Extraction is bounded, refuses overwrites and stays inside the workspace")
@@ -182,6 +251,7 @@ struct ArchiveBrowserServiceTests {
         #expect(ArchiveBrowserService.format(for: "A.TAR.GZ") == "tgz")
         #expect(ArchiveBrowserService.format(for: "a.tbz2") == "tbz2")
         #expect(ArchiveBrowserService.format(for: "a.txz") == "txz")
-        #expect(ArchiveBrowserService.nativeFormats == ["zip", "tar", "7z"])
+        #expect(ArchiveBrowserService.nativeFormats == ["zip", "tar", "tgz", "tbz2", "txz", "7z"])
+        #expect(ArchiveBrowserService.singleFileFormats == ["gz", "bz2", "xz"])
     }
 }

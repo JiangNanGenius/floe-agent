@@ -3,10 +3,10 @@
 // The browser reuses the same `WorkspaceArchiveTool` execution path the agent
 // uses, so every bound and protection stays in one place: entry/size limits,
 // path-traversal and symlink rejection, no overwrites, and workspace-relative
-// path validation. Nothing here depends on the Linux guest: zip, tar and 7z
-// are read natively. Formats that do need the local runtime (compressed tar,
-// single-file gzip/bzip2/xz, RAR) report that truthfully instead of failing
-// with a generic error or silently routing run inside the guest.
+// path validation. Zip, tar, tar.gz, tar.bz2, tar.xz, single-file gzip/bzip2/
+// xz and 7z are read natively on the host. RAR needs the app's signed decoder
+// and reports that truthfully instead of failing with a generic error or
+// silently starting a Linux guest.
 
 import Foundation
 import FloeCore
@@ -61,10 +61,10 @@ public enum ArchiveBrowseError: Error, LocalizedError, Equatable {
 
 /// Reads archive structure and extracts one archive for preview.
 public struct ArchiveBrowserService: Sendable {
-    /// Container formats this surface reads natively (no Linux runtime).
-    public static let nativeFormats: Set<String> = ["zip", "tar", "7z"]
-    /// Formats that need the task environment's Linux guest Python bridge.
-    public static let compressedFormats: Set<String> = ["tgz", "tbz2", "txz", "gz", "bz2", "xz"]
+    /// Container formats this surface reads and writes natively (no runtime).
+    public static let nativeFormats: Set<String> = ["zip", "tar", "tgz", "tbz2", "txz", "7z"]
+    /// Single-file compression formats (one logical payload).
+    public static let singleFileFormats: Set<String> = ["gz", "bz2", "xz"]
     /// RAR needs the app's signed decoder handler and is list/extract only.
     public static let rarFormats: Set<String> = ["rar"]
 
@@ -93,8 +93,29 @@ public struct ArchiveBrowserService: Sendable {
                 reason: "the file name has no archive extension this app recognises"
             )
         }
-        guard Self.nativeFormats.contains(format) else {
+        guard Self.nativeFormats.contains(format) || Self.singleFileFormats.contains(format) else {
             throw Self.unsupported(format: format)
+        }
+        if Self.singleFileFormats.contains(format) {
+            // One logical payload; the engine synthesizes the entry name and
+            // the tool honestly rejects `list` for single-file formats.
+            let guarder = WorkspacePathGuard(rootURL: rootURL.standardizedFileURL)
+            let source = try guarder.resolve(relativePath)
+            guard FileManager.default.fileExists(atPath: source.path) else {
+                throw ArchiveBrowseError.notFound(relativePath)
+            }
+            let listing = try ArchiveEngine.list(
+                format: format,
+                source: source,
+                limits: WorkspaceArchiveTool.limits,
+                cancellation: cancellation
+            )
+            return ArchiveBrowseListing(
+                format: format,
+                entries: listing.entries.map { ArchiveBrowseEntry(path: $0.path, isDirectory: $0.isDirectory, size: $0.size) },
+                truncated: listing.truncated,
+                summary: "status=ok action=list format=\(format) source=\(relativePath) entries=\(listing.entries.count) truncated=\(listing.truncated)"
+            )
         }
         let output = try await run(
             arguments: .init(action: "list", source: relativePath),
@@ -104,14 +125,15 @@ public struct ArchiveBrowserService: Sendable {
         return Self.parseListing(output.summary, format: format)
     }
 
-    /// Extracts a native archive into a new directory inside the workspace.
+    /// Extracts a container archive into a new directory inside the workspace.
     /// The tool refuses to overwrite an existing destination, rejects
     /// traversal/symlink entries and enforces its entry/size limits.
     public func extract(
         relativePath: String,
         destinationDir: String,
         rootURL: URL,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        progress: ArchiveEngine.ProgressHandler? = nil
     ) async throws -> String {
         guard let format = Self.format(for: relativePath) else {
             throw ArchiveBrowseError.unsupportedFormat(
@@ -120,24 +142,96 @@ public struct ArchiveBrowserService: Sendable {
             )
         }
         guard Self.nativeFormats.contains(format) else {
+            if Self.singleFileFormats.contains(format) {
+                throw ArchiveBrowseError.unsupportedFormat(
+                    format: format,
+                    reason: "this is a single-file compression format; decompress it to a file instead of a folder"
+                )
+            }
             throw Self.unsupported(format: format)
         }
         let output = try await run(
             arguments: .init(action: "extract", source: relativePath, destinationDir: destinationDir),
             rootURL: rootURL,
-            cancellation: cancellation
+            cancellation: cancellation,
+            progress: progress
         )
         return output.summary
     }
 
+    /// Decompresses one gzip/bzip2/xz file to a new file in the workspace.
+    public func decompress(
+        relativePath: String,
+        destinationFile: String,
+        rootURL: URL,
+        cancellation: CancellationToken,
+        progress: ArchiveEngine.ProgressHandler? = nil
+    ) async throws -> String {
+        guard let format = Self.format(for: relativePath), Self.singleFileFormats.contains(format) else {
+            throw Self.unsupported(format: Self.format(for: relativePath) ?? "unknown")
+        }
+        let output = try await run(
+            arguments: .init(action: "extract", source: relativePath, destinationFile: destinationFile),
+            rootURL: rootURL,
+            cancellation: cancellation,
+            progress: progress
+        )
+        return output.summary
+    }
+
+    /// Compresses one or more workspace items into a new archive. The
+    /// workspace multi-select surface defaults to zip; the engine also
+    /// supports tar and the compressed tar variants.
+    public func createArchive(
+        sources: [String],
+        destinationFile: String,
+        format: String = "zip",
+        rootURL: URL,
+        cancellation: CancellationToken
+    ) async throws -> String {
+        guard !sources.isEmpty else {
+            throw ArchiveBrowseError.failed("Select at least one item to compress.")
+        }
+        let root = rootURL.standardizedFileURL
+        let guarder = WorkspacePathGuard(rootURL: root)
+        let destination = try guarder.resolve(destinationFile)
+        try guarder.assertWritable(destination)
+        var urls: [URL] = []
+        for relative in sources {
+            let url = try guarder.resolve(relative)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw ArchiveBrowseError.notFound(relative)
+            }
+            urls.append(url)
+        }
+        do {
+            let summary = try ArchiveEngine.create(
+                format: format,
+                sources: urls,
+                destination: destination,
+                limits: WorkspaceArchiveTool.limits,
+                cancellation: cancellation
+            )
+            return summary.line(source: sources.joined(separator: ","), destination: destinationFile)
+        } catch let error as ArchiveEngineError {
+            switch error {
+            case .conflict, .insufficientSpace, .outputInsideSource:
+                throw ArchiveBrowseError.failed(error.localizedDescription)
+            default:
+                throw ArchiveBrowseError.failed(error.localizedDescription)
+            }
+        } catch let error as WorkspaceToolError {
+            switch error {
+            case .notFound:
+                throw ArchiveBrowseError.notFound(destinationFile)
+            default:
+                throw ArchiveBrowseError.failed(error.localizedDescription)
+            }
+        }
+    }
+
     /// Truthful reason for a format this surface deliberately does not open.
     static func unsupported(format: String) -> ArchiveBrowseError {
-        if Self.compressedFormats.contains(format) {
-            return .unsupportedFormat(
-                format: format,
-                reason: "compressed archives are handled by the environment's Linux runtime, which this read-only browser does not start"
-            )
-        }
         if Self.rarFormats.contains(format) {
             return .unsupportedFormat(format: format, reason: "RAR archives require the app's signed decoder")
         }
@@ -149,9 +243,10 @@ public struct ArchiveBrowserService: Sendable {
     private func run(
         arguments: WorkspaceArchiveTool.Arguments,
         rootURL: URL,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        progress: ArchiveEngine.ProgressHandler? = nil
     ) async throws -> ToolExecutionOutput {
-        let tool = WorkspaceArchiveTool(environment: environment)
+        let tool = WorkspaceArchiveTool(environment: environment, progress: progress)
         let context = ToolContext(
             runID: UUID(),
             scope: .local,
