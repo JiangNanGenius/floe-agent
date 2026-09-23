@@ -194,12 +194,18 @@ struct RoutingLocalShellBackend: LocalShellBackend {
 
     /// Activates the guest; when the failure is an unqualified image and a
     /// preparation handler exists, prepares Linux once and retries.
+    ///
+    /// `taskID` is the executing logical run (`ShellRunRequest.runID`). A cold
+    /// start records it as the guest's owner so a later local-model
+    /// continuation of the SAME run can release its own transient guest
+    /// without asking the user to stop a VM it just used.
     private func activateWithPreparation(
         environmentID: String,
+        taskID: String?,
         cancellation: CancellationToken?
     ) async throws {
         do {
-            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID, taskID: taskID)
         } catch let error as LinuxGuestError {
             guard case .imageNotQualified = error else { throw error }
             guard let prepareLinux else { throw error }
@@ -207,7 +213,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
             _ = try await prepareLinux(
                 LinuxPreparationRequest(environmentID: environmentID, cancellation: token)
             )
-            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID)
+            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID, taskID: taskID)
         }
     }
 
@@ -217,7 +223,11 @@ struct RoutingLocalShellBackend: LocalShellBackend {
             return await native.run(request, cancellation: cancellation)
         }
         do {
-            try await activateWithPreparation(environmentID: environmentID, cancellation: cancellation)
+            try await activateWithPreparation(
+                environmentID: environmentID,
+                taskID: request.runID?.uuidString,
+                cancellation: cancellation
+            )
         } catch {
             return .failed(message: error.localizedDescription)
         }
@@ -229,7 +239,12 @@ struct RoutingLocalShellBackend: LocalShellBackend {
               await guests.ownsLinuxEnvironment(environmentID: environmentID) else {
             return try await native.openSession(request, cancellation: cancellation)
         }
-        try await activateWithPreparation(environmentID: environmentID, cancellation: cancellation)
+        // An interactive terminal is user-driven work: it never claims the
+        // run-owned transient status (and an open terminal protects the guest
+        // from scoped release anyway).
+        try await activateWithPreparation(
+            environmentID: environmentID, taskID: nil, cancellation: cancellation
+        )
         let result = try await guestBackend.openSession(request, cancellation: cancellation)
         guestSessions.insert(request.sessionID)
         return result

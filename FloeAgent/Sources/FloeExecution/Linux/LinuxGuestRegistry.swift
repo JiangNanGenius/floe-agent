@@ -260,6 +260,15 @@ public actor TinyEMULinuxGuestRegistry {
     /// the close awaits, so a concurrent start must not see a removed session
     /// and boot a second VM on the same environment disk.
     private var teardownsInFlight: Set<String> = []
+    /// In-flight guest commands per environment (one-shot runs and service
+    /// SPAWN/OPEN exchanges). A guest with an active command is never a
+    /// transient-release candidate: the release waits for the run's own
+    /// command to finish (bounded) instead of interrupting it.
+    private var activeCommands: [String: Int] = [:]
+    /// Guest pids spawned as managed background services and not yet killed.
+    /// A guest with a live managed service is persistent work, not a
+    /// disposable tool guest.
+    private var spawnedServices: [String: Set<Int32>] = [:]
     /// Environments whose VM survived a stop (the engine run loop did not exit
     /// inside its budget). The session and its admission reservation are kept,
     /// no new guest may boot on that environment's disk, and a later stop can
@@ -1570,6 +1579,10 @@ public actor TinyEMULinuxGuestRegistry {
         guard let session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
+        // The command is real activity on this guest: a scoped transient
+        // release must wait for it instead of tearing the guest down under it.
+        beginActiveCommand(environmentID: environmentID)
+        defer { endActiveCommand(environmentID: environmentID) }
         do {
             return try await session.channel.run(
                 argv: argv,
@@ -1588,6 +1601,21 @@ public actor TinyEMULinuxGuestRegistry {
                 await stop(environmentID: environmentID)
             }
             throw error
+        }
+    }
+
+    /// Marks one in-flight command on an environment (synchronous, actor
+    /// isolated, so a release that checks inside the actor observes it).
+    private func beginActiveCommand(environmentID: String) {
+        activeCommands[environmentID, default: 0] += 1
+    }
+
+    private func endActiveCommand(environmentID: String) {
+        guard let count = activeCommands[environmentID] else { return }
+        if count <= 1 {
+            activeCommands[environmentID] = nil
+        } else {
+            activeCommands[environmentID] = count - 1
         }
     }
 
@@ -1688,7 +1716,7 @@ public actor TinyEMULinuxGuestRegistry {
             terminalSessions.removeValue(forKey: sessionID)
             await terminal.handle.close()
         }
-        guard var session = sessions.removeValue(forKey: environmentID) else {
+        guard let session = sessions.removeValue(forKey: environmentID) else {
             // No session: still release a reservation left by an in-flight
             // start that will not register one.
             if !startingEnvironments.contains(environmentID) {
@@ -1698,6 +1726,21 @@ public actor TinyEMULinuxGuestRegistry {
             }
             return
         }
+        await performTeardownBody(environmentID: environmentID, action: action, session: session)
+    }
+
+    /// The destructive teardown body shared by `teardown` (user stop/reset)
+    /// and `releaseTransientGuest` (scoped own-transient release). The caller
+    /// owns the lifecycle lock and the `teardownsInFlight` marker and has
+    /// already removed the session from `sessions`. Returns true when the VM
+    /// survived the stop and is now quarantined.
+    @discardableResult
+    private func performTeardownBody(
+        environmentID: String,
+        action: String,
+        session: Session
+    ) async -> Bool {
+        var session = session
         await session.channel.close()
         await session.handle.close()
         // Truthful stop: the engine may have refused to destroy a VM whose
@@ -1732,11 +1775,16 @@ public actor TinyEMULinuxGuestRegistry {
             FloeLogger(category: .tools).error(
                 "Linux guest \(action) environment=\(environmentID) still running after the stop budget; quarantined"
             )
-            return
+            return true
         }
         quarantinedEnvironments.remove(environmentID)
         guestReservations[environmentID] = nil
         clearReservation(environmentID: environmentID)
+        // The guest is gone: its managed services died with it and can no
+        // longer make a later scoped release refuse. In-flight command
+        // counters are deliberately left to their balanced increment/decrement
+        // pairs, so a stale defer can never hide a future command.
+        spawnedServices[environmentID] = nil
         var stopSavedCleanly = true
         if let runtimeV2, let runtimeID = session.runtimeID {
             // Confirmed stop: flush + capture the delta, record the shutdown,
@@ -1764,6 +1812,7 @@ public actor TinyEMULinuxGuestRegistry {
         FloeLogger(category: .tools).info(
             "Linux guest \(action) environment=\(environmentID) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB) stopSavedCleanly=\(stopSavedCleanly)"
         )
+        return false
     }
 
     /// Stops guests started by this task id (task ownership teardown).
@@ -1783,6 +1832,149 @@ public actor TinyEMULinuxGuestRegistry {
         for id in Array(sessions.keys) {
             await stop(environmentID: id)
         }
+    }
+
+    // MARK: logical-run ownership / scoped transient release
+
+    /// Verified activity and ownership facts for every environment holding
+    /// guest capacity (running, starting, stopping or stop-quarantined). The
+    /// heavy-runtime arbiter consumes these to tell a logical run's own
+    /// disposable tool guest from work that needs an explicit user decision;
+    /// every field is a real registry measurement, never an inference.
+    public func guestActivityDetails() async -> [LinuxGuestActivityDetail] {
+        var details: [LinuxGuestActivityDetail] = []
+        for environmentID in guestReservations.keys.sorted() {
+            let terminalCount = terminalSessions.values.lazy
+                .filter { $0.environmentID == environmentID }.count
+            let serviceCount = spawnedServices[environmentID]?.count ?? 0
+            let commandCount = activeCommands[environmentID] ?? 0
+            if let session = sessions[environmentID] {
+                details.append(LinuxGuestActivityDetail(
+                    environmentID: environmentID,
+                    ownerRunID: session.taskID,
+                    running: await session.handle.isRunning(),
+                    starting: startingEnvironments.contains(environmentID),
+                    quarantined: quarantinedEnvironments.contains(environmentID),
+                    activeCommandCount: commandCount,
+                    activeTerminalCount: terminalCount,
+                    activeServiceCount: serviceCount,
+                    requestedForwardCount: session.forwards.count
+                ))
+            } else {
+                // A reservation without a session is a start in flight or a
+                // quarantined placeholder: never transient, never auto-released.
+                details.append(LinuxGuestActivityDetail(
+                    environmentID: environmentID,
+                    ownerRunID: nil,
+                    running: false,
+                    starting: startingEnvironments.contains(environmentID),
+                    quarantined: quarantinedEnvironments.contains(environmentID),
+                    activeCommandCount: commandCount,
+                    activeTerminalCount: terminalCount,
+                    activeServiceCount: serviceCount,
+                    requestedForwardCount: 0
+                ))
+            }
+        }
+        return details
+    }
+
+    /// Scoped release of a logical run's OWN transient tool guest, used by the
+    /// heavy-runtime arbiter for that run's continuation. Deliberately
+    /// narrower than `stop`:
+    ///
+    ///  * The guest must still be owned by `expectedOwnerRunID` — the run
+    ///    whose tool started it on demand — and must still be verified
+    ///    transient: no in-flight command (the run's own commands are waited
+    ///    for, bounded), no interactive terminal, no managed service, no
+    ///    requested forward and no quarantined stop.
+    ///  * A guest that stopped being transient is REFUSED, never destroyed:
+    ///    the caller falls back to the explicit conflict decision.
+    ///  * A successful release runs the same teardown body as a user stop, so
+    ///    Runtime v2 flushes/captures the working disk and releases the lease
+    ///    and pool slot before the caller may map model weights.
+    ///
+    /// Never touches another environment and never clears a quarantine.
+    public func releaseTransientGuest(
+        environmentID: String,
+        expectedOwnerRunID: String,
+        commandDrainTimeout: Duration = .seconds(2)
+    ) async -> LinuxGuestTransientReleaseOutcome {
+        guard let snapshot = sessions[environmentID] else {
+            return .refused(reason: "no guest session is owned for this environment")
+        }
+        guard LinuxGuestActivityDetail.runIDsMatch(snapshot.taskID, expectedOwnerRunID) else {
+            return .refused(reason: "the guest is not owned by this logical run")
+        }
+        // The run's own in-flight commands finish first (bounded): a release
+        // must never interrupt the command whose result the run is about to
+        // use.
+        let clock = ContinuousClock()
+        let deadline = clock.now + commandDrainTimeout
+        while (activeCommands[environmentID] ?? 0) > 0 {
+            if clock.now >= deadline {
+                return .refused(reason: "a command started by this run is still running in the guest")
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        if startingEnvironments.contains(environmentID) {
+            return .refused(reason: "the guest is still starting")
+        }
+        if isShapeChangeInFlight(environmentID: environmentID) {
+            return .refused(reason: "a shape change owns this environment's lifecycle")
+        }
+        guard teardownsInFlight.insert(environmentID).inserted else {
+            return .refused(reason: "a stop is already in progress for this environment")
+        }
+        let lifecycleToken = nextLifecycleOperationToken()
+        await acquireLifecycle(
+            environmentID: environmentID, token: lifecycleToken, isShapeChange: false
+        )
+        defer {
+            teardownsInFlight.remove(environmentID)
+            releaseLifecycle(environmentID: environmentID, token: lifecycleToken)
+        }
+        guard let current = sessions[environmentID],
+              current.generation == snapshot.generation else {
+            return .refused(reason: "the guest session was replaced while this release waited")
+        }
+        guard await current.handle.isRunning() else {
+            return .refused(reason: "the guest is no longer running")
+        }
+        // Revalidate after the last await. From here through the session
+        // removal the actor runs synchronously, so nothing can start a
+        // command or service in between and then find its console closed.
+        guard LinuxGuestActivityDetail.runIDsMatch(current.taskID, expectedOwnerRunID) else {
+            return .refused(reason: "the guest is not owned by this logical run")
+        }
+        guard (activeCommands[environmentID] ?? 0) == 0 else {
+            return .refused(reason: "a command started by this run is still running in the guest")
+        }
+        if terminalSessions.values.contains(where: { $0.environmentID == environmentID }) {
+            return .refused(reason: "an interactive terminal session is open in this guest")
+        }
+        if let services = spawnedServices[environmentID], !services.isEmpty {
+            return .refused(reason: "a managed service is running in this guest")
+        }
+        guard current.forwards.isEmpty else {
+            return .refused(reason: "the guest has requested host port forwards")
+        }
+        guard !quarantinedEnvironments.contains(environmentID) else {
+            return .refused(reason: "the guest is quarantined after a failed stop")
+        }
+        sessions[environmentID] = nil
+        FloeLogger(category: .tools).info(
+            "Linux guest transientRelease environment=\(environmentID) owner=\(expectedOwnerRunID)"
+        )
+        let stillRunning = await performTeardownBody(
+            environmentID: environmentID, action: "transientRelease", session: current
+        )
+        if stillRunning {
+            return .stopFailedQuarantined(
+                detail: "the guest did not stop within the engine's budget; it is quarantined and a later stop can recover it"
+            )
+        }
+        return .released
     }
 
     /// Changes the running guest's memory tier through the safe
@@ -2132,14 +2324,22 @@ public actor TinyEMULinuxGuestRegistry {
         guard let session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
+        // An in-flight spawn is activity: a scoped transient release must wait
+        // for it instead of closing the console under the SPAWN exchange.
+        beginActiveCommand(environmentID: environmentID)
+        defer { endActiveCommand(environmentID: environmentID) }
         do {
-            return try await session.channel.spawnService(
+            let pid = try await session.channel.spawnService(
                 argv: argv,
                 workingDirectory: workingDirectory,
                 logPath: logPath,
                 timeout: timeout,
                 cancellation: cancellation
             )
+            // The spawned service is persistent guest work: owning it keeps
+            // the guest non-transient until the service is explicitly killed.
+            spawnedServices[environmentID, default: []].insert(pid)
+            return pid
         } catch {
             lastErrors[environmentID] = error.localizedDescription
             if await session.channel.isPoisoned {
@@ -2160,7 +2360,14 @@ public actor TinyEMULinuxGuestRegistry {
         guard let session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
-        return try await session.channel.killService(pid: pid, timeout: timeout)
+        let killed = try await session.channel.killService(pid: pid, timeout: timeout)
+        if killed {
+            spawnedServices[environmentID]?.remove(pid)
+            if spawnedServices[environmentID]?.isEmpty == true {
+                spawnedServices[environmentID] = nil
+            }
+        }
+        return killed
     }
 
     public func guestEnsureForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
@@ -2267,6 +2474,39 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     /// `TinyEMULinuxGuestRegistry.environmentsWithGuestActivity`.
     public func environmentsWithGuestActivity() async -> [String] {
         await registry.environmentsWithGuestActivity
+    }
+
+    /// Verified ownership/activity facts feeding the arbiter's own-transient
+    /// auto-release decision. See `TinyEMULinuxGuestRegistry.guestActivityDetails`.
+    public func guestActivityDetails() async -> [LinuxGuestActivityDetail] {
+        await registry.guestActivityDetails()
+    }
+
+    /// Scoped release of a logical run's OWN transient tool guest, used by the
+    /// arbiter for that run's continuation. The supervisor's service table is
+    /// checked first: a guest with a live managed service is persistent work
+    /// and is refused here, never stopped silently. The registry then
+    /// revalidates ownership/transience itself (including services it spawned)
+    /// before running the same teardown body as a user stop.
+    public func releaseTransientGuest(
+        environmentID: String,
+        expectedOwnerRunID: String
+    ) async -> LinuxGuestTransientReleaseOutcome {
+        if await localServices.activeLocalServiceCount(environmentID: environmentID) > 0 {
+            return .refused(reason: "a managed service is running in this guest")
+        }
+        let outcome = await registry.releaseTransientGuest(
+            environmentID: environmentID,
+            expectedOwnerRunID: expectedOwnerRunID
+        )
+        if outcome.isReleased {
+            // Same cache hygiene as stopGuest: a later start re-probes the
+            // (persistent) venv/Node environment instead of trusting paths
+            // resolved before the guest was released.
+            await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+            await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
+        }
+        return outcome
     }
 
     /// Authoritative runtime identity for one environment (metrics sampler

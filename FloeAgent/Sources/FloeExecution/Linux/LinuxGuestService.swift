@@ -793,6 +793,24 @@ public protocol LinuxGuestControlling: Sendable {
     func guestStatus(environmentID: String) async -> LinuxGuestStatus
     /// Stops guests started by this task id (task ownership teardown).
     func stopGuests(taskID: String) async
+    /// Environment ids currently holding guest capacity: running sessions,
+    /// starts in flight and stop-quarantined survivors. The heavy-runtime
+    /// arbiter's activity probe consumes this (not `guestIsRunning`), because
+    /// a starting or quarantined VM has no running vCPU yet still owns real
+    /// memory and its disk.
+    func environmentsWithGuestActivity() async -> [String]
+    /// Verified activity/ownership facts for every environment holding guest
+    /// capacity. The arbiter uses these to tell a logical run's own
+    /// disposable tool guest from work that needs an explicit user decision.
+    func guestActivityDetails() async -> [LinuxGuestActivityDetail]
+    /// Scoped release of a logical run's OWN transient tool guest for that
+    /// run's continuation. Revalidates ownership and transience inside the
+    /// registry and refuses (never destroys) anything that stopped being
+    /// transient; see `TinyEMULinuxGuestRegistry.releaseTransientGuest`.
+    func releaseTransientGuest(
+        environmentID: String,
+        expectedOwnerRunID: String
+    ) async -> LinuxGuestTransientReleaseOutcome
     /// Host→guest port forwarding for a running guest.
     func forwardService(environmentID: String, forward: LinuxGuestServiceForward) async throws
     func removeServiceForward(environmentID: String, forward: LinuxGuestServiceForward) async
@@ -821,6 +839,27 @@ public protocol LinuxGuestControlling: Sendable {
     func resizeSession(sessionID: String, columns: Int, rows: Int) async
     func closeSession(sessionID: String) async
     func sessionInfo(sessionID: String) async -> LinuxGuestSessionInfo?
+}
+
+public extension LinuxGuestControlling {
+    /// Default: a controller that does not model capacity reports none. The
+    /// production TinyEMU service overrides this with the registry's real
+    /// reservation set.
+    func environmentsWithGuestActivity() async -> [String] { [] }
+
+    /// Default: no ownership facts. The arbiter then treats every reported
+    /// guest as conflicting work — the safe direction.
+    func guestActivityDetails() async -> [LinuxGuestActivityDetail] { [] }
+
+    /// Default: scoped transient release is not supported, so the caller
+    /// falls back to the explicit conflict decision. The production service
+    /// overrides this.
+    func releaseTransientGuest(
+        environmentID: String,
+        expectedOwnerRunID: String
+    ) async -> LinuxGuestTransientReleaseOutcome {
+        .refused(reason: "this Linux guest service does not support scoped transient release")
+    }
 }
 
 /// First-boot network state the runner reports in its capability answer

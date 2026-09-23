@@ -804,4 +804,214 @@ struct HeavyRuntimeArbiterTests {
             #expect(arbiter.pendingLinuxStartEnvironmentIDs.isEmpty)
         }
     }
+
+    // MARK: logical-run ownership: own transient guest vs real conflict
+
+    @Test("A run's own transient tool guest is released without a user decision")
+    func ownTransientGuestIsAutoReleased() async throws {
+        let arbiter = HeavyRuntimeArbiter()
+        let log = OrderLog()
+        let released = Flag()
+        let runID = UUID()
+        arbiter.configure(
+            activityProbe: {
+                released.isSet
+                    ? HeavyRuntimeArbiter.LinuxActivity()
+                    : HeavyRuntimeArbiter.LinuxActivity(
+                        guestEnvironmentIDs: ["env-own"],
+                        guests: [HeavyRuntimeArbiter.LinuxGuestActivity(
+                            environmentID: "env-own",
+                            ownerRunID: runID.uuidString,
+                            isTransientToolGuest: true
+                        )]
+                    )
+            },
+            guestStopper: { _ in log.append("confirmedStop") },
+            decisionHandler: { _ in
+                log.append("decide")
+                return .deferLocalModel
+            },
+            transientGuestReleaser: { activity in
+                log.append("release:\(activity.guestEnvironmentIDs.joined(separator: ","))")
+                released.set()
+            },
+            settleInterval: .milliseconds(1),
+            settleTimeout: .milliseconds(200)
+        )
+
+        let activity = try await arbiter.beginLocalInferenceSession(requestingRunID: runID)
+        #expect(activity.guestEnvironmentIDs == ["env-own"])
+        // Only the scoped release ran: no user decision, no confirmed stop.
+        #expect(log.recorded == ["release:env-own"])
+        #expect(arbiter.autoReleaseAttemptCount == 1)
+        #expect(arbiter.autoReleasedGuestCount == 1)
+        #expect(arbiter.conflictCount == 0)
+        #expect(arbiter.stoppedGuestCount == 0)
+        #expect(arbiter.isLocalInferenceActive)
+        arbiter.endLocalInferenceSession()
+    }
+
+    @Test("A foreign run's transient guest is never auto-released")
+    func foreignRunTransientGuestIsNeverAutoReleased() async throws {
+        let arbiter = HeavyRuntimeArbiter()
+        let log = OrderLog()
+        let released = Flag()
+        let requestingRun = UUID()
+        let otherRun = UUID()
+        arbiter.configure(
+            activityProbe: {
+                released.isSet
+                    ? HeavyRuntimeArbiter.LinuxActivity()
+                    : HeavyRuntimeArbiter.LinuxActivity(
+                        guestEnvironmentIDs: ["env-other"],
+                        guests: [HeavyRuntimeArbiter.LinuxGuestActivity(
+                            environmentID: "env-other",
+                            ownerRunID: otherRun.uuidString,
+                            isTransientToolGuest: true
+                        )]
+                    )
+            },
+            guestStopper: { _ in
+                log.append("stop")
+                released.set()
+            },
+            decisionHandler: { _ in
+                log.append("decide")
+                return .stopGuestsAndProceed
+            },
+            transientGuestReleaser: { _ in log.append("release") },
+            settleInterval: .milliseconds(1),
+            settleTimeout: .milliseconds(200)
+        )
+
+        _ = try await arbiter.beginLocalInferenceSession(requestingRunID: requestingRun)
+        #expect(log.recorded == ["decide", "stop"])
+        #expect(arbiter.autoReleaseAttemptCount == 0)
+        #expect(arbiter.autoReleasedGuestCount == 0)
+        #expect(arbiter.stoppedGuestCount == 1)
+        arbiter.endLocalInferenceSession()
+    }
+
+    @Test("A live service keeps the explicit decision even for the run's own guest")
+    func ownGuestWithServiceStillRequiresConfirmation() async throws {
+        let arbiter = HeavyRuntimeArbiter()
+        let log = OrderLog()
+        let released = Flag()
+        let runID = UUID()
+        arbiter.configure(
+            activityProbe: {
+                released.isSet
+                    ? HeavyRuntimeArbiter.LinuxActivity()
+                    : HeavyRuntimeArbiter.LinuxActivity(
+                        guestEnvironmentIDs: ["env-own"],
+                        localServices: ["env-own:1"],
+                        guests: [HeavyRuntimeArbiter.LinuxGuestActivity(
+                            environmentID: "env-own",
+                            ownerRunID: runID.uuidString,
+                            isTransientToolGuest: true
+                        )]
+                    )
+            },
+            guestStopper: { _ in
+                log.append("stop")
+                released.set()
+            },
+            decisionHandler: { _ in
+                log.append("decide")
+                return .stopGuestsAndProceed
+            },
+            transientGuestReleaser: { _ in log.append("release") },
+            settleInterval: .milliseconds(1),
+            settleTimeout: .milliseconds(200)
+        )
+
+        _ = try await arbiter.beginLocalInferenceSession(requestingRunID: runID)
+        #expect(log.recorded == ["decide", "stop"])
+        #expect(arbiter.autoReleaseAttemptCount == 0)
+        #expect(arbiter.autoReleasedGuestCount == 0)
+        #expect(arbiter.stoppedGuestCount == 1)
+        arbiter.endLocalInferenceSession()
+    }
+
+    @Test("A refused scoped release falls back to the explicit decision, never to overlap")
+    func refusedAutoReleaseFallsBackToConfirmation() async throws {
+        let arbiter = HeavyRuntimeArbiter()
+        let log = OrderLog()
+        let stopped = Flag()
+        let runID = UUID()
+        arbiter.configure(
+            activityProbe: {
+                stopped.isSet
+                    ? HeavyRuntimeArbiter.LinuxActivity()
+                    : HeavyRuntimeArbiter.LinuxActivity(
+                        guestEnvironmentIDs: ["env-own"],
+                        guests: [HeavyRuntimeArbiter.LinuxGuestActivity(
+                            environmentID: "env-own",
+                            ownerRunID: runID.uuidString,
+                            isTransientToolGuest: true
+                        )]
+                    )
+            },
+            guestStopper: { _ in
+                log.append("stop")
+                stopped.set()
+            },
+            decisionHandler: { _ in
+                log.append("decide")
+                return .stopGuestsAndProceed
+            },
+            // Refuses: the guest stays reported, so the arbiter must not
+            // admit the model behind it.
+            transientGuestReleaser: { _ in log.append("release") },
+            settleInterval: .milliseconds(1),
+            settleTimeout: .milliseconds(40),
+            autoReleaseSettleTimeout: .milliseconds(40)
+        )
+
+        _ = try await arbiter.beginLocalInferenceSession(requestingRunID: runID)
+        #expect(log.recorded == ["release", "decide", "stop"])
+        #expect(arbiter.autoReleaseAttemptCount == 1)
+        #expect(arbiter.autoReleasedGuestCount == 0)
+        #expect(arbiter.stoppedGuestCount == 1)
+        #expect(arbiter.conflictCount == 1)
+        arbiter.endLocalInferenceSession()
+    }
+
+    @Test("Without a requesting run id the confirmation path is unchanged")
+    func missingRequestingRunKeepsConfirmation() async throws {
+        let arbiter = HeavyRuntimeArbiter()
+        let log = OrderLog()
+        let released = Flag()
+        arbiter.configure(
+            activityProbe: {
+                released.isSet
+                    ? HeavyRuntimeArbiter.LinuxActivity()
+                    : HeavyRuntimeArbiter.LinuxActivity(
+                        guestEnvironmentIDs: ["env-own"],
+                        guests: [HeavyRuntimeArbiter.LinuxGuestActivity(
+                            environmentID: "env-own",
+                            ownerRunID: UUID().uuidString,
+                            isTransientToolGuest: true
+                        )]
+                    )
+            },
+            guestStopper: { _ in
+                log.append("stop")
+                released.set()
+            },
+            decisionHandler: { _ in
+                log.append("decide")
+                return .stopGuestsAndProceed
+            },
+            transientGuestReleaser: { _ in log.append("release") },
+            settleInterval: .milliseconds(1),
+            settleTimeout: .milliseconds(200)
+        )
+
+        // Legacy callers that cannot name their run keep the explicit path.
+        _ = try await arbiter.beginLocalInferenceSession()
+        #expect(log.recorded == ["decide", "stop"])
+        #expect(arbiter.autoReleasedGuestCount == 0)
+        arbiter.endLocalInferenceSession()
+    }
 }

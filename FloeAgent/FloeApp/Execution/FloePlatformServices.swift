@@ -550,19 +550,60 @@ final class FloePlatformServices: @unchecked Sendable {
     /// services and package commands: start when owned-but-stopped, seed
     /// legacy packages after a cold start, surface the honest reason
     /// otherwise.
-    func activateLinuxGuest(id: String) async throws {
+    ///
+    /// `taskID` is the logical run that caused this activation, when the
+    /// caller has one (a tool execution's `ToolContext.runID`). A COLD start
+    /// records it on the guest session, so the heavy-runtime arbiter can tell
+    /// that run's own transient tool guest from work that needs an explicit
+    /// user decision. An already-running guest is never re-owned here: a
+    /// user-started or other-run guest stays protected.
+    func activateLinuxGuest(id: String, taskID: String? = nil) async throws {
         guard let service = currentLinuxCommandService() else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
-        try await LinuxGuestActivator.ensureRunning(
-            environmentID: id,
-            guests: service,
-            controller: service as? any LinuxGuestControlling,
-            onColdStart: { environmentID in
-                await LegacyPythonPackageMigration.seedIfNeeded(environmentID: environmentID, runner: service)
-            }
-        )
+        if let taskID {
+            try await ensureRunningOwnedByRun(
+                environmentID: id,
+                ownerRunID: taskID,
+                service: service
+            )
+        } else {
+            try await LinuxGuestActivator.ensureRunning(
+                environmentID: id,
+                guests: service,
+                controller: service as? any LinuxGuestControlling,
+                onColdStart: { environmentID in
+                    await LegacyPythonPackageMigration.seedIfNeeded(environmentID: environmentID, runner: service)
+                }
+            )
+        }
         await LinuxPortForwardCenter.shared.applyRules(environmentID: id)
+    }
+
+    /// Tool-owned cold start: same contract as `LinuxGuestActivator` (honest
+    /// errors, legacy package seeding after a real cold start) plus the
+    /// logical-run ownership the guest session records for the arbiter's
+    /// scoped transient release.
+    private func ensureRunningOwnedByRun(
+        environmentID: String,
+        ownerRunID: String,
+        service: any LinuxCommandRunning
+    ) async throws {
+        guard await service.ownsLinuxEnvironment(environmentID: environmentID) else {
+            throw LinuxGuestError.notOwned(environmentID: environmentID)
+        }
+        // An already-running guest keeps its existing ownership: activating
+        // for a tool never silently re-owns a guest someone else (or the
+        // user) started.
+        if await service.supports(environmentID: environmentID) { return }
+        guard let controller = service as? any LinuxGuestControlling else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        let started = try await controller.startGuest(environmentID: environmentID, taskID: ownerRunID)
+        guard started else {
+            throw LinuxGuestError.notOwned(environmentID: environmentID)
+        }
+        await LegacyPythonPackageMigration.seedIfNeeded(environmentID: environmentID, runner: service)
     }
 
     /// Every Linux-required entry point (shell, guest Python, local services,

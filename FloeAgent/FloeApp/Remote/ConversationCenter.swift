@@ -443,11 +443,17 @@ final class ConversationCenter: ObservableObject {
         })
     }
 
-    func providerAdapter(for provider: ProviderProfile) -> any ProviderAdapter {
+    /// The local-model adapter for one logical run: binding the run id lets the
+    /// heavy-runtime arbiter release that run's own verified transient Linux
+    /// tool guest for its continuation without a user decision. Callers that
+    /// have no run identity (skills, memory flows, standalone probes) keep the
+    /// conservative explicit-confirmation path.
+    func providerAdapter(for provider: ProviderProfile, ownerRunID: UUID? = nil) -> any ProviderAdapter {
         if provider.kind == .local {
             return LocalProviderAdapter(
                 runtime: environment.localModelRuntime,
-                store: environment.localModelStore
+                store: environment.localModelStore,
+                ownerRunID: ownerRunID
             )        }
         return adapterFactory.adapter(for: provider)
     }
@@ -1027,7 +1033,7 @@ final class ConversationCenter: ObservableObject {
             SubagentRunner(
                 provider: provider,
                 model: model,
-                adapter: providerAdapter(for: provider),
+                adapter: providerAdapter(for: provider, ownerRunID: runID),
                 credentials: credentials,
                 executor: catalogExecutor
             ),
@@ -1042,7 +1048,7 @@ final class ConversationCenter: ObservableObject {
         }
         return ConversationRunService(
             configuration: configuration,
-            adapter: providerAdapter(for: provider),
+            adapter: providerAdapter(for: provider, ownerRunID: runID),
             policy: await approvalPolicy(
                 for: taskPolicy,
                 primaryModel: model,

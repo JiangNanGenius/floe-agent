@@ -370,7 +370,9 @@ public actor LocalModelRuntime {
     public func preload(modelID: String, includesVisionProjector: Bool = false) async throws {
         // A preload is local-model use: it reports active Linux guests through
         // the arbiter and keeps Linux starts waiting while weights are mapped.
-        try await beginHeavyRuntimeAdmission(modelID: modelID)
+        // It carries no logical run id: a conflict here can never be this
+        // run's own tool guest (the run has not run a tool yet).
+        try await beginHeavyRuntimeAdmission(modelID: modelID, ownerRunID: nil)
         defer { arbiter.endLocalInferenceSession() }
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
@@ -411,7 +413,8 @@ public actor LocalModelRuntime {
         prompt: String,
         images: [Data],
         tools: [ToolSchemaDescriptor],
-        maxTokens: Int
+        maxTokens: Int,
+        ownerRunID: UUID? = nil
     ) async throws -> LocalRuntimeCompletion {
         // Heavy-runtime arbitration (Build 222): begin a local inference
         // session before mapping weights or measuring headroom. Active Linux
@@ -419,7 +422,14 @@ public actor LocalModelRuntime {
         // and are only stopped after the caller confirms; a declined or
         // unconfirmable conflict fails the request before any model work.
         // The session also makes a concurrent guest start wait cancellably.
-        try await beginHeavyRuntimeAdmission(modelID: modelID)
+        //
+        // `ownerRunID` is the durable logical run this generation belongs to.
+        // It lets the arbiter release that run's OWN transient tool guest (the
+        // Linux environment its exec.shell just used, verified transient by
+        // the registry) for the continuation — no user decision for the run's
+        // own tool result, while another run's/user-started guest keeps the
+        // explicit confirmation path.
+        try await beginHeavyRuntimeAdmission(modelID: modelID, ownerRunID: ownerRunID)
         defer { arbiter.endLocalInferenceSession() }
         return try await performCompleteMeasured(
             modelID: modelID,
@@ -1256,10 +1266,14 @@ public actor LocalModelRuntime {
     /// onto the runtime's normal user-visible failure surface. Linux guest
     /// starts wait on this session; a reported conflict is only resolved by
     /// the app-facing decision interface, and a declined/unsigned conflict
-    /// never stops a guest.
-    private func beginHeavyRuntimeAdmission(modelID: String) async throws {
+    /// never stops a guest. The requesting logical run id (when known) lets
+    /// the arbiter release that run's own verified transient tool guest for
+    /// its continuation without a user decision.
+    private func beginHeavyRuntimeAdmission(modelID: String, ownerRunID: UUID?) async throws {
         do {
-            let activity = try await arbiter.beginLocalInferenceSession()
+            let activity = try await arbiter.beginLocalInferenceSession(
+                requestingRunID: ownerRunID
+            )
             if !activity.isEmpty {
                 FloeLogger(category: .providers).info(
                     "localInferenceHeavyRuntimeCleared model=\(modelID) \(activity.summary)"
@@ -1267,7 +1281,7 @@ public actor LocalModelRuntime {
             }
         } catch let error as HeavyRuntimeArbiter.ArbiterError {
             FloeLogger(category: .providers).warning(
-                "localInferenceHeavyRuntimeConflict model=\(modelID) reason=\(error)"
+                "localInferenceHeavyRuntimeConflict model=\(modelID) run=\(ownerRunID?.uuidString ?? "unknown") reason=\(error)"
             )
             throw FloeError.validationFailed(error.localizedDescription)
         }
@@ -1295,10 +1309,17 @@ public struct LocalProviderAdapter: ProviderAdapter {
     public let protocolKind: ModelProtocol = .openAIChatCompletions
     private let runtime: LocalModelRuntime
     private let store: LocalModelStore
+    /// Durable logical run this adapter generates for, when the caller binds
+    /// one (the app's conversation run service does). It lets the heavy-runtime
+    /// arbiter release this run's own transient Linux tool guest for its
+    /// continuation without a user decision; `nil` keeps the conservative
+    /// explicit-confirmation path (subagents, skills, memory flows).
+    private let ownerRunID: UUID?
 
-    public init(runtime: LocalModelRuntime, store: LocalModelStore) {
+    public init(runtime: LocalModelRuntime, store: LocalModelStore, ownerRunID: UUID? = nil) {
         self.runtime = runtime
         self.store = store
+        self.ownerRunID = ownerRunID
     }
 
     public func stream(
@@ -1424,7 +1445,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             // them safely); the bounded JSON envelope in the
                             // system instructions is their tool channel.
                             tools: promptBuild.nativeToolSchemas,
-                            maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096)
+                            maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 1024), 4096),
+                            ownerRunID: ownerRunID
                         )
                     }
                     if let deferred = completion.deferredToolCall {
@@ -1473,7 +1495,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             prompt: repairPrompt,
                             images: [],
                             tools: promptBuild.nativeToolSchemas,
-                            maxTokens: 256
+                            maxTokens: 256,
+                            ownerRunID: ownerRunID
                         )
                         let mainRate = completion.tokensPerSecond
                         let mainOutputTokens = completion.outputTokens

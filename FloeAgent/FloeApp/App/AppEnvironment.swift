@@ -386,44 +386,33 @@ final class AppEnvironment: ObservableObject {
         //     local services and presents the conflict here,
         //   * guests are stopped only after the user confirms; a declined or
         //     cancelled confirmation fails the local request before any model
-        //     work instead of overlapping the guest.
+        //     work instead of overlapping the guest,
+        //   * the ONE exception is a logical run's own verified transient tool
+        //     guest (the Linux environment its exec.shell just used, owned by
+        //     that run, with no command/terminal/service/forward/quarantine):
+        //     the built-in releaser stops exactly that guest so the run can
+        //     continue its own tool result — still only after the release
+        //     settles, never while model pages are mapped, and never for
+        //     user-started, other-run or persistent work.
+        // The probe/releaser are the shared FloeExecution bridge, so the app
+        // and the integration tests consume identical registry facts.
         let conflictCenter = HeavyRuntimeConflictCenter()
         self.heavyRuntimeConflictCenter = conflictCenter
-        let arbiterGuests = linuxGuests
         let arbiterLocalRuntime = self.localModelRuntime
         HeavyRuntimeArbiter.shared.configure(
-            activityProbe: {
-                // Lease-based truth, not guestIsRunning: a guest owns real
-                // capacity from its arbiter registration (pending start)
-                // through its admission reservation (starting, running,
-                // stopping, stop-quarantined). Union both sets so the
-                // conflict offer lists a merely-starting VM exactly like a
-                // running one and never misses a stop in flight.
-                var active = Set(await arbiterGuests.environmentsWithGuestActivity())
-                active.formUnion(HeavyRuntimeArbiter.shared.pendingLinuxStartEnvironmentIDs)
-                let guestIDs = active.sorted()
-                var services: [String] = []
-                for environmentID in guestIDs {
-                    let count = await arbiterGuests.activeLocalServiceCount(
-                        environmentID: environmentID
-                    )
-                    if count > 0 {
-                        services.append("\(environmentID):\(count)")
-                    }
-                }
-                return HeavyRuntimeArbiter.LinuxActivity(
-                    guestEnvironmentIDs: guestIDs,
-                    localServices: services
-                )
-            },
-            guestStopper: { activity in
-                for environmentID in activity.guestEnvironmentIDs {
-                    await arbiterGuests.stopGuest(environmentID: environmentID)
-                }
-            },
+            activityProbe: LinuxGuestRuntimeArbiterBridge.activityProbe(service: linuxGuests),
+            guestStopper: LinuxGuestRuntimeArbiterBridge.guestStopper(service: linuxGuests),
             decisionHandler: { activity in
                 await conflictCenter.requestDecision(activity)
             },
+            transientGuestReleaser: LinuxGuestRuntimeArbiterBridge.transientGuestReleaser(
+                service: linuxGuests,
+                onReleased: { environmentID in
+                    // The engine dropped this guest's forwards with it; clear
+                    // the applied view but keep the durable rules.
+                    await LinuxPortForwardCenter.shared.guestStopped(environmentID: environmentID)
+                }
+            ),
             idleDrainHandler: {
                 // A retained task may be waiting for its own Linux tool.
                 // Preserve its logical context while yielding only an idle

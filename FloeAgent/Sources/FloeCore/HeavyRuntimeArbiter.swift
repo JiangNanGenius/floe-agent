@@ -46,6 +46,17 @@
 //    like a running one. Guests are only stopped after the handler returns
 //    `.stopGuestsAndProceed`; `.deferLocalModel` or a missing handler aborts
 //    the local request with a truthful error and never touches the guest.
+//  * **A run's own transient tool guest is not a conflict.** The logical run
+//    that just ran a Linux tool needs the heavy runtime for its continuation.
+//    When the requesting run id is known and EVERY active guest is that run's
+//    own verified transient tool guest (started on demand by its tool, with
+//    no command, terminal, service, forward, quarantine or other owner), the
+//    arbiter releases them through the scoped releaser WITHOUT a user
+//    decision — and still only proceeds after the release settles. Anything
+//    else (another run's guest, a user-started/pinned guest, a service, a
+//    terminal, a quarantine) keeps the explicit confirmation path; a refused
+//    or incomplete scoped release falls back to it rather than destroying
+//    work silently.
 //
 // The type is deliberately a plain `Sendable` final class with a
 // `Synchronization.Mutex` rather than an actor: `configure(...)` must be
@@ -61,6 +72,35 @@ import Synchronization
 public final class HeavyRuntimeArbiter: Sendable {
     public static let shared = HeavyRuntimeArbiter()
 
+    /// One active Linux guest with the ownership facts the arbiter needs to
+    /// decide whether it is the requesting logical run's OWN disposable tool
+    /// guest (released automatically for that run's own continuation) or
+    /// work that still requires an explicit user decision.
+    ///
+    /// Every field is reported by the registry that owns the guest — never
+    /// inferred by the arbiter. `ownerRunID` is the durable task UUID string
+    /// whose tool started the guest on demand (case-insensitive match against
+    /// the requesting run); `nil` means user-started or otherwise unowned and
+    /// is never auto-released. `isTransientToolGuest` is true only when the
+    /// registry verifies there is no other active owner: no running command,
+    /// no interactive terminal, no managed service, no requested forward and
+    /// no quarantined stop.
+    public struct LinuxGuestActivity: Sendable, Equatable {
+        public var environmentID: String
+        public var ownerRunID: String?
+        public var isTransientToolGuest: Bool
+
+        public init(
+            environmentID: String,
+            ownerRunID: String? = nil,
+            isTransientToolGuest: Bool = false
+        ) {
+            self.environmentID = environmentID
+            self.ownerRunID = ownerRunID
+            self.isTransientToolGuest = isTransientToolGuest
+        }
+    }
+
     /// One observation of Linux-side work inside this process. Environment
     /// IDs are opaque Floe environment identifiers (UUID strings), never
     /// filesystem paths or credentials.
@@ -69,10 +109,19 @@ public final class HeavyRuntimeArbiter: Sendable {
         /// Human-readable local-service labels ("python", "node", …), already
         /// bounded by the reporter.
         public var localServices: [String]
+        /// Per-guest ownership facts for the guests above. A guest listed in
+        /// `guestEnvironmentIDs` without an entry here is treated as
+        /// conflicting work (safe default for legacy callers).
+        public var guests: [LinuxGuestActivity]
 
-        public init(guestEnvironmentIDs: [String] = [], localServices: [String] = []) {
+        public init(
+            guestEnvironmentIDs: [String] = [],
+            localServices: [String] = [],
+            guests: [LinuxGuestActivity] = []
+        ) {
             self.guestEnvironmentIDs = guestEnvironmentIDs
             self.localServices = localServices
+            self.guests = guests
         }
 
         public var isEmpty: Bool {
@@ -81,6 +130,18 @@ public final class HeavyRuntimeArbiter: Sendable {
 
         public var summary: String {
             "guests=\(guestEnvironmentIDs.count) services=\(localServices.count)"
+        }
+
+        /// Every reported guest, pairing the id list with the ownership facts.
+        /// Ids without facts become non-transient, unowned entries so they can
+        /// never be auto-released by accident.
+        public var allGuests: [LinuxGuestActivity] {
+            var result = guests
+            let known = Set(guests.map(\.environmentID))
+            for id in guestEnvironmentIDs where !known.contains(id) {
+                result.append(LinuxGuestActivity(environmentID: id))
+            }
+            return result.sorted { $0.environmentID < $1.environmentID }
         }
     }
 
@@ -148,6 +209,15 @@ public final class HeavyRuntimeArbiter: Sendable {
     public typealias ActivityProbe = @Sendable () async -> LinuxActivity
     public typealias GuestStopper = @Sendable (LinuxActivity) async -> Void
     public typealias DecisionHandler = @Sendable (LinuxActivity) async -> ConflictDecision
+    /// Releases the request-scoped OWN transient guests reported in the
+    /// activity. Called only when every reported guest is owned by the
+    /// requesting logical run and verified transient (and no local service is
+    /// active); the implementation must revalidate inside the registry and
+    /// refuse rather than destroy anything that stopped being transient (a
+    /// service, a command, a terminal, a user-started/pinned guest). A
+    /// refusal is safe: the arbiter falls back to the explicit decision path
+    /// and never proceeds while the probe still reports work.
+    public typealias TransientGuestReleaser = @Sendable (LinuxActivity) async -> Void
     /// Runs before Linux admission (and after the last session ends while
     /// starts are queued). Must verify the process's model residency: release
     /// the mapped engine when unclaimed, or report `.retained` so the guest
@@ -190,6 +260,7 @@ public final class HeavyRuntimeArbiter: Sendable {
         var activityProbe: ActivityProbe?
         var guestStopper: GuestStopper?
         var decisionHandler: DecisionHandler?
+        var transientGuestReleaser: TransientGuestReleaser?
         var idleDrainHandler: IdleDrainHandler?
         var drainRetryInterval: Duration = .seconds(2)
         /// How long the queue may wait on a `.retained` verdict before Linux
@@ -200,8 +271,18 @@ public final class HeavyRuntimeArbiter: Sendable {
         var drainRetainTimeout: Duration = .seconds(120)
         var settleInterval: Duration = .milliseconds(50)
         var settleTimeout: Duration = .seconds(20)
+        /// Verification budget for the scoped own-transient release. It only
+        /// has to confirm the registry's own teardown (which already completed
+        /// when the releaser returned), so it stays short: a guest that is
+        /// still there falls back to the explicit decision instead of stalling
+        /// the local request for the confirmation-path settle window.
+        var autoReleaseSettleTimeout: Duration = .seconds(2)
         var conflictCount = 0
         var stoppedGuestCount = 0
+        /// Diagnostics: scoped own-transient release attempts and the number
+        /// of guests actually released without a user decision.
+        var autoReleaseAttemptCount = 0
+        var autoReleasedGuestCount = 0
     }
 
     private let state = Mutex(State())
@@ -215,21 +296,25 @@ public final class HeavyRuntimeArbiter: Sendable {
         activityProbe: @escaping ActivityProbe,
         guestStopper: @escaping GuestStopper,
         decisionHandler: DecisionHandler? = nil,
+        transientGuestReleaser: TransientGuestReleaser? = nil,
         idleDrainHandler: IdleDrainHandler? = nil,
         drainRetryInterval: Duration = .seconds(2),
         drainRetainTimeout: Duration = .seconds(120),
         settleInterval: Duration = .milliseconds(50),
-        settleTimeout: Duration = .seconds(20)
+        settleTimeout: Duration = .seconds(20),
+        autoReleaseSettleTimeout: Duration = .seconds(2)
     ) {
         state.withLock { state in
             state.activityProbe = activityProbe
             state.guestStopper = guestStopper
             state.decisionHandler = decisionHandler
+            state.transientGuestReleaser = transientGuestReleaser
             state.idleDrainHandler = idleDrainHandler
             state.drainRetryInterval = drainRetryInterval
             state.drainRetainTimeout = drainRetainTimeout
             state.settleInterval = settleInterval
             state.settleTimeout = settleTimeout
+            state.autoReleaseSettleTimeout = autoReleaseSettleTimeout
         }
     }
 
@@ -269,6 +354,17 @@ public final class HeavyRuntimeArbiter: Sendable {
     /// Number of guests the arbiter stopped after a caller confirmation.
     public var stoppedGuestCount: Int {
         state.withLock { $0.stoppedGuestCount }
+    }
+
+    /// Number of logical-run-owned transient guests the arbiter released
+    /// without a user decision (its own tool continuation).
+    public var autoReleasedGuestCount: Int {
+        state.withLock { $0.autoReleasedGuestCount }
+    }
+
+    /// Number of scoped own-transient release attempts (diagnostics/tests).
+    public var autoReleaseAttemptCount: Int {
+        state.withLock { $0.autoReleaseAttemptCount }
     }
 
     /// Environment ids whose Linux start has been admitted and not yet
@@ -396,8 +492,18 @@ public final class HeavyRuntimeArbiter: Sendable {
     /// stops guests only after `.stopGuestsAndProceed`. Throws (after
     /// releasing the session) when the caller defers, no handler exists, or a
     /// confirmed stop does not settle.
+    ///
+    /// `requestingRunID` is the logical durable run this generation belongs
+    /// to. When it is provided and EVERY reported guest is that run's own
+    /// verified transient tool guest (no command, terminal, service, forward
+    /// or quarantine — no other owner), the arbiter releases them through the
+    /// scoped `transientGuestReleaser` without a user decision: this is the
+    /// run's own tool continuation, not a conflict. Physical mutual exclusion
+    /// is unchanged — the release must settle (probe empty) before the model
+    /// proceeds, and a refusal or incomplete release falls back to the
+    /// explicit decision path instead of overlapping anything.
     @discardableResult
-    public func beginLocalInferenceSession() async throws -> LinuxActivity {
+    public func beginLocalInferenceSession(requestingRunID: UUID? = nil) async throws -> LinuxActivity {
         let probe = state.withLock { state -> ActivityProbe? in
             state.sessions += 1
             // A model may now become mapped: Linux admission must verify a
@@ -412,6 +518,53 @@ public final class HeavyRuntimeArbiter: Sendable {
 
         let activity = await probe()
         guard !activity.isEmpty else { return activity }
+
+        if let requestingRunID, !activity.guests.isEmpty,
+           let releaser = state.withLock({ $0.transientGuestReleaser }) {
+            let own = activity.allGuests.filter {
+                $0.isTransientToolGuest && Self.matches(ownerRunID: $0.ownerRunID, runID: requestingRunID)
+            }
+            let ownIDs = Set(own.map(\.environmentID))
+            let foreignGuests = activity.allGuests.filter { !ownIDs.contains($0.environmentID) }
+            if !own.isEmpty, foreignGuests.isEmpty, activity.localServices.isEmpty {
+                state.withLock { $0.autoReleaseAttemptCount += 1 }
+                let scoped = LinuxActivity(
+                    guestEnvironmentIDs: own.map(\.environmentID),
+                    localServices: [],
+                    guests: own
+                )
+                FloeLogger(category: .providers).info(
+                    "heavyRuntimeArbiterOwnTransientLinuxRelease run=\(requestingRunID.uuidString) guests=\(own.count)"
+                )
+                await releaser(scoped)
+                // The releaser only returns after the registry's own teardown
+                // (close + Runtime v2 flush/slot release) or a refusal, so the
+                // verification is a confirmation of the registry's live state,
+                // not a wait for a remote process. A guest that is still there
+                // (refused release, quarantine, or a racing new start) falls
+                // back to the explicit decision below — it never proceeds.
+                let autoReleaseTiming = state.withLock {
+                    ($0.settleInterval, $0.autoReleaseSettleTimeout)
+                }
+                if await settleLinuxStop(probe: probe,
+                                         settleInterval: autoReleaseTiming.0,
+                                         settleTimeout: autoReleaseTiming.1) {
+                    state.withLock { $0.autoReleasedGuestCount += own.count }
+                    FloeLogger(category: .providers).info(
+                        "heavyRuntimeArbiterOwnTransientLinuxReleased run=\(requestingRunID.uuidString) guests=\(own.count)"
+                    )
+                    return activity
+                }
+                // The scoped release could not prove the guests gone (a
+                // service/command appeared, a stop was quarantined, or the
+                // release refused). Nothing is destroyed silently: fall
+                // through to the explicit decision so the user sees exactly
+                // what is still running.
+                FloeLogger(category: .providers).error(
+                    "heavyRuntimeArbiterOwnTransientLinuxReleaseIncomplete run=\(requestingRunID.uuidString) guests=\(own.count)"
+                )
+            }
+        }
 
         state.withLock { $0.conflictCount += 1 }
         guard let handler = state.withLock({ $0.decisionHandler }) else {
@@ -445,6 +598,15 @@ public final class HeavyRuntimeArbiter: Sendable {
             )
         }
         return activity
+    }
+
+    /// A guest's recorded owner matches the requesting run. Both sides use the
+    /// durable run UUID string; parsing normalizes case so a differently
+    /// formatted id can never silently mismatch.
+    private static func matches(ownerRunID: String?, runID: UUID) -> Bool {
+        guard let ownerRunID else { return false }
+        if let owner = UUID(uuidString: ownerRunID) { return owner == runID }
+        return ownerRunID.caseInsensitiveCompare(runID.uuidString) == .orderedSame
     }
 
     private enum SessionEndAction {
