@@ -17,7 +17,12 @@
 # recorded as its own evidence.
 #
 # Usage:
-#   bash build-kernel-bbl.sh --out DIR [--repo DIR] [--pins FILE] [--rebuild] [--jobs N]
+#   bash build-kernel-bbl.sh --out DIR [--repo DIR] [--pins FILE] [--rebuild] [--jobs N] [--smp]
+#
+# --smp merges config_linux_riscv64_smp.fragment before olddefconfig and
+# requires --rebuild: it produces the dual-hart qualification boot pair
+# (SMP=y, NR_CPUS=2) consumed by build-guest-image.sh --boot-dir. It is a
+# separate artifact, never a replacement for the pinned 2018 pair.
 set -euo pipefail
 
 die() {
@@ -31,6 +36,7 @@ out=""
 repo=""
 pins=""
 rebuild=0
+smp=0
 jobs="$(nproc 2>/dev/null || echo 4)"
 
 while [ $# -gt 0 ]; do
@@ -39,12 +45,14 @@ while [ $# -gt 0 ]; do
         --repo) repo="${2:-}"; shift 2 ;;
         --pins) pins="${2:-}"; shift 2 ;;
         --rebuild) rebuild=1; shift ;;
+        --smp) smp=1; shift ;;
         --jobs) jobs="${2:-}"; shift 2 ;;
         -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
 [ -n "$out" ] || die "--out is required"
+[ "$smp" = 1 ] && [ "$rebuild" = 0 ] && die "--smp requires --rebuild (it produces a boot pair)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="${repo:-$(cd "$script_dir/../../.." && pwd)}"
 pins="${pins:-$script_dir/pinned-inputs.json}"
@@ -180,7 +188,19 @@ if [ "$rebuild" = 1 ]; then
     (
         cd "$out/riscv-linux-src"
         cp config_linux_riscv64 .config
+        if [ "$smp" = 1 ]; then
+            frag="$script_dir/config_linux_riscv64_smp.fragment"
+            [ -f "$frag" ] || die "--smp fragment missing: $frag"
+            # append, then let olddefconfig resolve dependencies/ordering
+            cat "$frag" >> .config
+        fi
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig
+        # never hand out a boot pair that claims SMP but was configured
+        # single-hart (the whole point of --smp)
+        if [ "$smp" = 1 ]; then
+            grep -q '^CONFIG_SMP=y$' .config || die "--smp build did not produce CONFIG_SMP=y"
+            grep -q '^CONFIG_NR_CPUS=2$' .config || die "--smp build did not produce CONFIG_NR_CPUS=2"
+        fi
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$jobs"
     ) >"$out/rebuild-riscv-linux.log" 2>&1 || die "kernel rebuild failed (see rebuild-riscv-linux.log)"
     {
@@ -188,6 +208,22 @@ if [ "$rebuild" = 1 ]; then
         sha256sum "$out/riscv-pk-src/bbl/bbl" 2>/dev/null || true
         sha256sum "$out/riscv-linux-src/arch/riscv/boot/Image" 2>/dev/null || true
     } >>"$manifest"
+    if [ "$smp" = 1 ]; then
+        # the pair build-guest-image.sh --boot-dir expects, plus the
+        # provenance a reviewer needs: config lines, firmware multi-hart
+        # basis (rv64gc defines __riscv_atomic -> MAX_HARTS 8) and usage
+        {
+            printf '\n## Dual-hart (SMP) boot pair\n\n'
+            printf 'kernel config: SMP=y NR_CPUS=2 (fragment config_linux_riscv64_smp.fragment)\n'
+            printf 'firmware: riscv-pk --with-arch=rv64gc => __riscv_atomic => MAX_HARTS 8, mentry.S multi-hart IPI path\n'
+            printf 'guest serial cross-check: this pair was produced by a cloud build; stdout is not evidence of a two-hart boot\n\n'
+            grep -E '^CONFIG_(SMP|NR_CPUS|RISCV_INTC|RISCV_PLIC|RISCV_TIMER)=' \
+                "$out/riscv-linux-src/.config" || true
+            printf '\ninstall into a --boot-dir as: bbl64.bin (from bbl/bbl), kernel-riscv64.bin (from arch/riscv/boot/Image)\n'
+            sha256sum "$out/riscv-pk-src/bbl/bbl" "$out/riscv-linux-src/arch/riscv/boot/Image" 2>/dev/null || true
+        } >"$out/SMP-BUILD.txt"
+        log "wrote $out/SMP-BUILD.txt (dual-hart boot pair; use build-guest-image.sh --boot-dir)"
+    fi
 fi
 
 sha512sum "$manifest" >"$manifest.sha512"

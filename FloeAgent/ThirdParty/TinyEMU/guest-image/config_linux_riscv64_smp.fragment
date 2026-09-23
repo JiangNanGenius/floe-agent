@@ -1,0 +1,21 @@
+# SMP overlay for config_linux_riscv64 (floe dual-hart qualification).
+#
+# The pinned single-hart config leaves SMP off, so a dual-hart TinyEMU run
+# can only ever boot one CPU. This fragment is merged before `olddefconfig`
+# by `build-kernel-bbl.sh --smp`; the resulting boot pair is a separate,
+# clearly-labelled artifact (never a replacement for the pinned pair).
+#
+# Firmware side: the pinned riscv-pk build uses --with-arch=rv64gc, which
+# defines __riscv_atomic, so machine/mtrap.h selects MAX_HARTS 8 and
+# machine/mentry.S compiles the multi-hart IPI path (secondary harts wait
+# for msip, then init_other_hart -> S-mode). Secondary startup therefore
+# only needs the kernel side enabled here.
+CONFIG_SMP=y
+CONFIG_NR_CPUS=2
+
+# Keep the console/timer/interrupt plumbing that per-hart bring-up needs
+# (already on in the base config; listed so an SMP build cannot silently
+# inherit a config that dropped them).
+CONFIG_RISCV_INTC=y
+CONFIG_RISCV_PLIC=y
+CONFIG_RISCV_TIMER=y
