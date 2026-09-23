@@ -72,9 +72,20 @@ permissions:
 jobs:
   qualify:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    # 150 min covered engine + demo stages; the opt-in SMP lane also builds a
+    # full 4.15 riscv kernel from the pinned source (Stage S0), which is the
+    # heavy part.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install the SMP build dependencies (riscv64 cross compiler)
+        if: ${{ inputs.run_smp }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu >/dev/null
+          riscv64-linux-gnu-gcc --version | head -1
+          riscv64-linux-gnu-objcopy --version | head -1
 
       - name: Fetch + verify pinned TinyEMU source and demo image
         run: |
@@ -438,6 +449,60 @@ jobs:
           grep -a FLOE_PERSIST work/stageE2-transcript.txt || true
 
       # ------------------------------------------------------------------
+      # Stage S0 (opt-in, run_smp): build the dual-hart guest boot pair from
+      # the pinned riscv-pk / riscv-linux revisions in the cloud. This is
+      # the only place a real CONFIG_SMP=y, NR_CPUS=2 kernel is produced;
+      # the kernel source build never runs on the local Mac. The raw
+      # bbl64.bin (objcopy -O binary, ELF entry/lowest LOAD verified
+      # 0x80000000) and the raw kernel Image are uploaded immediately,
+      # before any boot stage can fail.
+      # ------------------------------------------------------------------
+      - name: Stage S0 — build the dual-hart SMP kernel + raw boot loader (pinned source)
+        if: ${{ inputs.run_smp }}
+        run: |
+          set -euo pipefail
+          mkdir -p work/smp work/smp-upstream
+          bash FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh \
+            --out work/smp-upstream --rebuild --smp --jobs "$(nproc)" \
+            2>&1 | tee work/smp/smp-kernel-rebuild.log
+          U=work/smp-upstream
+          test -f "$U/boot/bbl64.bin" || { echo "raw bbl missing"; exit 1; }
+          test -f "$U/boot/kernel-riscv64.bin" || { echo "raw kernel missing"; exit 1; }
+          for f in bbl64.bin kernel-riscv64.bin; do
+            magic=$(dd if="$U/boot/$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+            if [ "$magic" = "7f454c46" ]; then
+              echo "$f is an ELF file; TinyEMU cannot load it as a boot file"
+              exit 1
+            fi
+          done
+          grep -q '^CONFIG_SMP=y$' "$U/riscv-linux-src/.config" || { echo "CONFIG_SMP=y missing"; exit 1; }
+          grep -q '^CONFIG_NR_CPUS=2$' "$U/riscv-linux-src/.config" || { echo "CONFIG_NR_CPUS=2 missing"; exit 1; }
+          grep -q 'multi-hart IPI path present' "$U/SMP-BUILD.txt" || { echo "firmware multi-hart evidence missing"; exit 1; }
+          mkdir -p work/smp/boot
+          cp "$U/boot/bbl64.bin" "$U/boot/kernel-riscv64.bin" "$U/boot/boot-files.json" work/smp/boot/
+          cp "$U/SMP-BUILD.txt" "$U/boot/BOOT-PAIR.txt" work/smp/boot/
+          {
+            printf 'STAGE_S0_SHA256\n'
+            sha256sum work/smp/boot/bbl64.bin work/smp/boot/kernel-riscv64.bin
+            printf 'kernel config sha256=%s\n' "$(sha256sum "$U/riscv-linux-src/.config" | cut -d' ' -f1)"
+            grep -E '^CONFIG_(SMP|NR_CPUS)=' "$U/riscv-linux-src/.config"
+            printf 'kernel version ident: %s\n' "$(strings -a work/smp/boot/kernel-riscv64.bin | grep -m1 '^Linux version' || true)"
+          } | tee work/smp/smp-boot-pair.txt
+          bash -c 'grep -q . work/smp/smp-boot-pair.txt'
+
+      - name: Upload the Stage S0 SMP boot pair (immediate, before any boot test)
+        if: ${{ always() && inputs.run_smp }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-boot-pair-${{ github.run_id }}
+          path: |
+            work/smp/boot/
+            work/smp/smp-boot-pair.txt
+            work/smp/smp-kernel-rebuild.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ------------------------------------------------------------------
       # Stage S (opt-in, run_smp): FLOE-SMP qualification.
       # A failure in any S stage is a real result and is kept in the
       # per-step artifacts (transcripts + stats); nothing here is skipped
@@ -696,6 +761,271 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # ------------------------------------------------------------------
+      # Stage S4 (opt-in, run_smp): boot the freshly built SMP kernel/bbl
+      # pair (Stage S0) with the pinned demo rootfs. The vcpu=2 run must
+      # show guest-visible two-CPU evidence (/proc/cpuinfo count produced
+      # by the guest itself), the exact kernel version ident of the boot
+      # pair, real per-hart execution and parallel 9p I/O; vcpu=1 is the
+      # control. A failure here is a retained result: transcripts, stats
+      # and the boot-pair hashes are uploaded.
+      # ------------------------------------------------------------------
+      - name: Stage S4 — real dual-hart Linux boot on the fresh SMP pair (vcpu 1 vs 2)
+        if: ${{ always() && inputs.run_smp }}
+        run: |
+          set -euo pipefail
+          IMG=work/src/diskimage-linux-riscv-2018-09-23
+          BOOT=work/smp/boot
+          test -s "$BOOT/bbl64.bin" || { echo "Stage S0 produced no boot pair; S4 cannot run"; exit 1; }
+          test -s "$BOOT/kernel-riscv64.bin" || { echo "Stage S0 produced no boot pair; S4 cannot run"; exit 1; }
+          test -s "$BOOT/BOOT-PAIR.txt" || { echo "Stage S0 boot-pair provenance missing"; exit 1; }
+          mkdir -p work/smp/share
+          cat > work/smp/smpboot-script.txt <<'EOF'
+          @20 mkdir -p /mnt
+          @22 mount -t 9p -o trans=virtio,version=9p2000.L /dev/root /mnt 2>/dev/null || true
+          @26 cat /proc/cpuinfo | grep -c processor > /mnt/smp-cpu-count.txt
+          @28 printf 'FLOE_SMP_CPUS_%s\n' "$(cat /mnt/smp-cpu-count.txt)"
+          @32 uname -a > /mnt/smp-uname.txt; printf 'FLOE_SMP_%s\n' UNAME
+          @38 sh -c 'dd if=/dev/zero of=/mnt/smp-io0.bin bs=64k count=192 2>/dev/null & dd if=/dev/zero of=/mnt/smp-io1.bin bs=64k count=192 2>/dev/null & wait' && printf 'FLOE_SMP_PARI%s\n' O_OK
+          @46 sh -c 'sync; md5sum /mnt/smp-io0.bin /mnt/smp-io1.bin > /mnt/smp-io-md5.txt 2>&1'; printf 'FLOE_SMP_SY%s\n' NC_OK
+          @54 printf 'FLOE_SMP_BOOT_%s\n' DONE
+          EOF
+          sed -i 's/^ *//' work/smp/smpboot-script.txt
+          for v in 1 2; do
+            set +e
+            /usr/bin/time -v work/build/floe_vm_host \
+              --bios "$BOOT/bbl64.bin" --kernel "$BOOT/kernel-riscv64.bin" \
+              --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu "$v" \
+              --share /dev/root=work/smp/share \
+              --script work/smp/smpboot-script.txt \
+              --transcript "work/smp/smpboot-vcpu$v-transcript.txt" \
+              --stats-file "work/smp/smpboot-vcpu$v-stats.jsonl" --stats-interval 2 \
+              --until FLOE_SMP_BOOT_DONE --max-s 240 \
+              > "work/smp/smpboot-vcpu$v-stdout.txt" 2> "work/smp/smpboot-vcpu$v-time.txt"
+            echo "smpboot_vcpu${v}_rc=$?" | tee -a "work/smp/smpboot-vcpu$v-rc.txt"
+            set -e
+          done
+          python3 - <<'PY'
+          import json, os, re, sys
+
+          problems = []
+          pair = {}
+          with open("work/smp/boot/BOOT-PAIR.txt", "r", errors="replace") as handle:
+              for line in handle:
+                  if line.startswith("kernel version ident:"):
+                      pair["kernel_ident"] = line.split(":", 1)[1].strip()
+                  if line.startswith("bbl64.bin "):
+                      pair["bbl_sha256"] = line.split("sha256=")[1].strip()
+                  if line.startswith("kernel-riscv64.bin "):
+                      pair["kernel_sha256"] = line.split("sha256=")[1].strip()
+          print("boot pair:", json.dumps(pair))
+          if not pair.get("kernel_ident"):
+              problems.append("the boot pair records no kernel version ident")
+
+          for v in ("1", "2"):
+              base = f"work/smp/smpboot-vcpu{v}"
+              samples = []
+              with open(base + "-stats.jsonl", "r", errors="replace") as handle:
+                  for line in handle:
+                      line = line.strip()
+                      if line:
+                          samples.append(json.loads(line))
+              with open(base + "-transcript.txt", "r", errors="replace") as handle:
+                  transcript = handle.read()
+              host_threads = max(s.get("host_threads", 0) for s in samples)
+              hart0 = max((s.get("hart_insns") or [0, 0])[0] for s in samples)
+              hart1 = max((s.get("hart_insns") or [0, 0])[1] for s in samples)
+              final = [s for s in samples if s.get("event") in ("marker", "poweroff", "timeout")]
+              last = final[-1] if final else samples[-1]
+              print(f"vcpu={v}: host_threads={host_threads} hart0={hart0} hart1={hart1} "
+                    f"last_event={last.get('event')} t={last.get('t')}")
+              if "FLOE_SMP_BOOT_DONE" not in transcript:
+                  problems.append(f"vcpu={v}: guest never reached its DONE marker")
+              if "FLOE_SMP_PARIO_OK" not in transcript:
+                  problems.append(f"vcpu={v}: parallel 9p I/O marker missing")
+              if pair.get("kernel_ident") and pair["kernel_ident"] not in transcript:
+                  problems.append(f"vcpu={v}: transcript does not show the boot pair's kernel ident "
+                                  f"({pair['kernel_ident'][:60]})")
+              if v == "2":
+                  if "FLOE_SMP_CPUS_2" not in transcript:
+                      problems.append("vcpu=2: the guest kernel did not report 2 CPUs")
+                  if host_threads != 2:
+                      problems.append(f"vcpu=2: host_threads={host_threads}, expected 2")
+                  if hart0 < 100000 or hart1 < 100000:
+                      problems.append(f"vcpu=2: hart instructions too low (hart0={hart0} hart1={hart1})")
+              else:
+                  if "FLOE_SMP_CPUS_1" not in transcript:
+                      problems.append("vcpu=1 control: the guest did not report exactly 1 CPU")
+                  if host_threads != 0:
+                      problems.append(f"vcpu=1 control: host_threads={host_threads}, expected 0")
+                  if hart1 != 0:
+                      problems.append(f"vcpu=1 control: hart1 retired {hart1} instructions")
+          # the guest wrote both files through the 9p share from two processes
+          expected = 192 * 64 * 1024
+          for name in ("smp-io0.bin", "smp-io1.bin"):
+              path = os.path.join("work/smp/share", name)
+              if not os.path.isfile(path):
+                  problems.append(f"9p share file missing: {name}")
+              elif os.path.getsize(path) != expected:
+                  problems.append(f"{name}: {os.path.getsize(path)} bytes != {expected}")
+          md5 = os.path.join("work/smp/share", "smp-io-md5.txt")
+          print("guest md5sum report:", open(md5, errors="replace").read().strip() if os.path.isfile(md5) else "missing")
+          if problems:
+              for item in problems:
+                  print("S4 SMP BOOT GATE FAILED:", item)
+              raise SystemExit(1)
+          print("S4 gate: vcpu=2 booted the fresh SMP pair with guest-visible 2 CPUs, "
+                "two harts executing and parallel 9p I/O; vcpu=1 is the control")
+          PY
+
+      - name: Upload Stage S4 evidence (per-step, immediate)
+        if: ${{ always() && inputs.run_smp }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-real-boot-${{ github.run_id }}
+          path: |
+            work/smp/smpboot-*
+            work/smp/share/
+            work/smp/boot/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ------------------------------------------------------------------
+      # Stage S5 (opt-in, run_smp): repeated equal-work workload on the real
+      # SMP kernel (1 vs 2 harts) plus a stopped run. Dual-hart use is
+      # asserted from guest-visible CPU count, per-hart retired
+      # instructions and the wall time of the same workload, never from
+      # host nproc.
+      # ------------------------------------------------------------------
+      - name: Stage S5 — repeated equal-work SMP workload + stopped-run save check
+        if: ${{ always() && inputs.run_smp }}
+        run: |
+          set -euo pipefail
+          IMG=work/src/diskimage-linux-riscv-2018-09-23
+          BOOT=work/smp/boot
+          test -s "$BOOT/bbl64.bin" || { echo "Stage S0 produced no boot pair; S5 cannot run"; exit 1; }
+          mkdir -p work/smp2
+          cat > work/smp2/workload.txt <<'EOF'
+          @20 sh -c 'dd if=/dev/zero of=/dev/null bs=64k count=6000 & dd if=/dev/zero of=/dev/null bs=64k count=6000 & wait'
+          @50 printf 'FLOE_SMP2PERF_%s\n' DONE
+          EOF
+          sed -i 's/^ *//' work/smp2/workload.txt
+          for v in 1 2; do
+            for r in 1 2 3; do
+              set +e
+              work/build/floe_vm_host \
+                --bios "$BOOT/bbl64.bin" --kernel "$BOOT/kernel-riscv64.bin" \
+                --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu "$v" \
+                --script work/smp2/workload.txt \
+                --transcript "work/smp2/wl-vcpu$v-r$r-transcript.txt" \
+                --stats-file "work/smp2/wl-vcpu$v-r$r-stats.jsonl" --stats-interval 1 \
+                --until FLOE_SMP2PERF_DONE --max-s 180 \
+                > "work/smp2/wl-vcpu$v-r$r-stdout.txt" 2>&1
+              echo "wl_vcpu${v}_r${r}_rc=$?" >> "work/smp2/wl-vcpu$v-r$r-rc.txt"
+              set -e
+            done
+          done
+          # a stopped run must keep its evidence and the boot pair must be intact
+          set +e
+          work/build/floe_vm_host \
+            --bios "$BOOT/bbl64.bin" --kernel "$BOOT/kernel-riscv64.bin" \
+            --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu 2 \
+            --script work/smp2/workload.txt \
+            --transcript work/smp2/stop-transcript.txt \
+            --stats-file work/smp2/stop-stats.jsonl --stats-interval 1 \
+            --until FLOE_NEVER_REACHED --max-s 8 \
+            > work/smp2/stop-stdout.txt 2>&1
+          echo "stop_run_rc=$?" | tee work/smp2/stop-rc.txt
+          set -e
+          sha256sum "$BOOT/bbl64.bin" "$BOOT/kernel-riscv64.bin" > work/smp2/boot-pair-sha256.txt
+          python3 - <<'PY'
+          import hashlib, json, os, statistics, sys
+
+          runs, problems = [], []
+          for v in (1, 2):
+              for r in (1, 2, 3):
+                  base = f"work/smp2/wl-vcpu{v}-r{r}"
+                  samples = []
+                  with open(base + "-stats.jsonl", "r", errors="replace") as handle:
+                      for line in handle:
+                          line = line.strip()
+                          if line:
+                              samples.append(json.loads(line))
+                  with open(base + "-transcript.txt", "r", errors="replace") as handle:
+                      transcript = handle.read()
+                  final = [s for s in samples if s.get("event") in ("marker", "poweroff", "timeout")]
+                  last = final[-1] if final else samples[-1]
+                  host_threads = max(s.get("host_threads", 0) for s in samples)
+                  hart0 = max((s.get("hart_insns") or [0, 0])[0] for s in samples)
+                  hart1 = max((s.get("hart_insns") or [0, 0])[1] for s in samples)
+                  booted = "FLOE_SMP2PERF_DONE" in transcript
+                  runs.append({"vcpu": v, "repeat": r, "booted": booted,
+                               "wall_s": last.get("t"), "final_event": last.get("event"),
+                               "host_threads": host_threads, "hart0": hart0, "hart1": hart1})
+                  if not booted:
+                      problems.append(f"vcpu={v} r{r}: workload marker missing")
+                  if v == 2:
+                      if host_threads != 2:
+                          problems.append(f"vcpu=2 r{r}: host_threads={host_threads}")
+                      if hart1 < 100000:
+                          problems.append(f"vcpu=2 r{r}: hart1 retired {hart1} instructions")
+          booted = {v: [r for r in runs if r["vcpu"] == v and r["booted"]] for v in (1, 2)}
+          med = {v: statistics.median([r["wall_s"] for r in booted[v]]) for v in (1, 2) if booted[v]}
+          work = {v: statistics.median([r["hart0"] + r["hart1"] for r in booted[v]]) for v in (1, 2) if booted[v]}
+          ratio = (med[1] / med[2]) if 1 in med and 2 in med and med[2] else None
+          best = max((med[1] / r["wall_s"]) for r in booted[2]) if 1 in med and booted[2] else None
+          report = {
+              "tool": "floe_vm_host --vcpu + FloeVMStats, fresh CONFIG_SMP kernel",
+              "runs": runs,
+              "median_wall_s": med,
+              "median_total_hart_insns": work,
+              "wall_ratio_1hart_over_2hart": ratio,
+              "best_ratio": best,
+              "note": ("Equal guest workload repeated 3x per hart count on the freshly "
+                       "built CONFIG_SMP=y NR_CPUS=2 kernel. Dual-hart use is proven by "
+                       "guest /proc/cpuinfo (== 2), per-hart retired instructions and "
+                       "the wall time, never by host nproc."),
+          }
+          with open("work/smp2/smp-perf.json", "w", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2)
+              handle.write("\n")
+          print(json.dumps(report, indent=2))
+          if len(booted[1]) < 3 or len(booted[2]) < 3:
+              problems.append("fewer than 3 booted runs per hart count")
+          elif work[2] < 1.5 * work[1]:
+              problems.append(f"2-hart run retired {work[2]} insns vs {work[1]} for 1 hart: "
+                            "the second CPU did not carry work")
+          elif not best or best < 1.05:
+              problems.append(f"no parallel speedup: best ratio {best}")
+          # a stopped run keeps evidence and cannot corrupt the boot pair
+          stop_rc = open("work/smp2/stop-rc.txt").read().strip().split("=")[-1]
+          stop_bytes = os.path.getsize("work/smp2/stop-transcript.txt")
+          print(f"stopped run: rc={stop_rc} transcript_bytes={stop_bytes}")
+          if stop_rc != "2" or stop_bytes == 0:
+              problems.append(f"stopped run did not keep evidence (rc={stop_rc}, {stop_bytes} bytes)")
+          if os.path.getsize("work/smp2/stop-stats.jsonl") == 0:
+              problems.append("stopped run wrote no stats sample")
+          for line in open("work/smp2/boot-pair-sha256.txt"):
+              pass
+          if problems:
+              for item in problems:
+                  print("S5 SMP WORKLOAD GATE FAILED:", item)
+              raise SystemExit(1)
+          print("S5 gate: every 2-hart run executed both CPUs, the same workload "
+                "scale and a stopped run kept its evidence")
+          PY
+          python3 -m json.tool work/smp2/smp-perf.json >/dev/null && echo "smp-perf.json valid"
+
+      - name: Upload Stage S5 evidence (per-step, immediate)
+        if: ${{ always() && inputs.run_smp }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-workload-${{ github.run_id }}
+          path: |
+            work/smp2/
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Summarize results
         if: always()
         run: |
@@ -739,14 +1069,26 @@ jobs:
 
           smp = {
               "run_smp": os.environ.get("INPUT_RUN_SMP", ""),
+              "stage_s0_boot_pair": slurp("work/smp/smp-boot-pair.txt"),
               "stage_s1_vcpu1_rc": rc("work/smp/host-vcpu1-rc.txt"),
               "stage_s1_vcpu2_rc": rc("work/smp/host-vcpu2-rc.txt"),
               "stage_s2_host_test_rc": rc("work/smp/smp-test-rc.txt"),
               "stage_s2_host_test": maybe_json("work/smp/smp-test-summary.json"),
               "stage_s3_perf_baseline": maybe_json("work/smp/smp-perf-baseline.json"),
+              "stage_s4_real_smp_boot_vcpu1_rc": rc("work/smp/smpboot-vcpu1-rc.txt"),
+              "stage_s4_real_smp_boot_vcpu2_rc": rc("work/smp/smpboot-vcpu2-rc.txt"),
+              "stage_s4_guest_cpu_count": slurp("work/smp/share/smp-cpu-count.txt"),
+              "stage_s4_guest_uname": slurp("work/smp/share/smp-uname.txt"),
+              "stage_s4_guest_io_md5": slurp("work/smp/share/smp-io-md5.txt"),
+              "stage_s5_workload": maybe_json("work/smp2/smp-perf.json"),
+              "stage_s5_stopped_run": slurp("work/smp2/stop-rc.txt"),
               "note": ("stage_s2/s3 summaries carry host_threads and per-hart retired "
                        "instructions; dual-hart success is asserted from those, never "
-                       "from host nproc"),
+                       "from host nproc. stage_s0 builds the CONFIG_SMP kernel from the "
+                       "pinned source in the cloud; stage_s4 boots it and asserts the "
+                       "guest's own /proc/cpuinfo count, the boot pair's kernel ident "
+                       "and both harts executing; stage_s5 repeats the equal-work "
+                       "workload 3x per hart count and keeps a stopped run's evidence."),
           }
           summary = {
               "engine_sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
@@ -806,4 +1148,11 @@ jobs:
             work/smp/*.txt
             work/smp/*-transcript.txt
             work/smp/*-rc.txt
+            work/smp/boot/
+            work/smp/share/
+            work/smp2/*.json
+            work/smp2/*.jsonl
+            work/smp2/*.txt
+            work/smp2/*-transcript.txt
+            work/smp2/*-rc.txt
           retention-days: 30

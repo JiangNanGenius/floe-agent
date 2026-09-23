@@ -173,7 +173,20 @@ if [ -n "$boot_dir" ]; then
     [ -d "$boot_dir" ] || die "--boot-dir is not a directory: $boot_dir"
     for f in bbl64.bin kernel-riscv64.bin; do
         [ -s "$boot_dir/$f" ] || die "--boot-dir is missing $f: $boot_dir"
+        # TinyEMU's copy_bios() memcpy()s the BIOS at 0x80000000 and the
+        # -kernel file is located through the FDT's riscv,kernel-start; both
+        # must be raw images (an ELF bbl would execute its header instead of
+        # the reset vector, which is exactly what build-kernel-bbl.sh's
+        # objcopy step exists to prevent).
+        magic="$(dd if="$boot_dir/$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+        [ "$magic" != "7f454c46" ] || die "--boot-dir/$f is an ELF file, not a raw boot image"
     done
+    if [ -f "$boot_dir/SMP-BUILD.txt" ]; then
+        cp "$boot_dir/SMP-BUILD.txt" "$evidence_dir/boot-pair-SMP-BUILD.txt"
+        cp "$boot_dir/BOOT-PAIR.txt" "$evidence_dir/boot-pair-BOOT-PAIR.txt" 2>/dev/null || true
+        grep -q 'multi-hart IPI path present' "$boot_dir/SMP-BUILD.txt" \
+            || die "--boot-dir SMP-BUILD.txt has no firmware multi-hart evidence"
+    fi
     cp "$boot_dir/bbl64.bin" "$image_dir/bbl64.bin"
     cp "$boot_dir/kernel-riscv64.bin" "$image_dir/kernel-riscv64.bin"
     printf 'boot pair source=--boot-dir %s (locally built, NOT the pinned 2018 pair)\n' "$boot_dir" \

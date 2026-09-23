@@ -501,30 +501,69 @@ jobs:
           sudo apt-get install -y -qq qemu-utils parted e2fsprogs gcc-riscv64-linux-gnu \
             zip unzip curl python3 >/dev/null
 
-      - name: Build kernel + bbl from the pinned source (real rebuild)
+      - name: Build the dual-hart kernel + raw boot loader from the pinned source
         run: |
           set -euo pipefail
           mkdir -p "${{ runner.temp }}/floe-smp/upstream"
+          # --smp merges config_linux_riscv64_smp.fragment (CONFIG_SMP=y,
+          # NR_CPUS=2) and hard-asserts the result; the script also produces
+          # the RAW bbl (objcopy -O binary of bbl/bbl, entry/lowest-LOAD
+          # 0x80000000 verified) because TinyEMU's copy_bios() memcpy()s the
+          # BIOS and cannot load an ELF.
           bash FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh \
-            --out "${{ runner.temp }}/floe-smp/upstream" --rebuild \
+            --out "${{ runner.temp }}/floe-smp/upstream" --rebuild --smp \
             --jobs "$(nproc)" 2>&1 | tee "${{ runner.temp }}/floe-smp/kernel-bbl-rebuild.log"
 
-      - name: Record the fresh boot-file hashes (this run's build)
+      - name: Record the SMP config + raw boot-file hashes (this run's build)
         run: |
           set -euo pipefail
           U="${{ runner.temp }}/floe-smp/upstream"
-          test -f "$U/riscv-pk-src/bbl/bbl" || { echo "bbl was not built"; exit 1; }
-          test -f "$U/riscv-linux-src/arch/riscv/boot/Image" || { echo "kernel Image was not built"; exit 1; }
+          B="${{ runner.temp }}/floe-smp/boot"
+          mkdir -p "$B"
+          test -f "$U/boot/bbl64.bin" || { echo "raw bbl was not produced"; exit 1; }
+          test -f "$U/boot/kernel-riscv64.bin" || { echo "raw kernel was not produced"; exit 1; }
+          test -f "$U/SMP-BUILD.txt" || { echo "SMP-BUILD.txt missing"; exit 1; }
+          # no ELF may be presented as a boot file (the raw/ELF mix-up that
+          # made an earlier candidate unbootable)
+          for f in bbl64.bin kernel-riscv64.bin; do
+            magic=$(dd if="$U/boot/$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+            if [ "$magic" = "7f454c46" ]; then
+              echo "$f is an ELF file; refusing to treat it as a boot file"
+              exit 1
+            fi
+          done
+          # the config the boot pair was built with is part of the artifact
+          grep -q '^CONFIG_SMP=y$' "$U/riscv-linux-src/.config" || { echo "CONFIG_SMP=y missing"; exit 1; }
+          grep -q '^CONFIG_NR_CPUS=2$' "$U/riscv-linux-src/.config" || { echo "CONFIG_NR_CPUS=2 missing"; exit 1; }
+          grep -q 'multi-hart IPI path present' "$U/SMP-BUILD.txt" || { echo "firmware multi-hart evidence missing"; exit 1; }
           {
-            printf 'fresh rebuild of the pinned riscv-pk / riscv-linux revisions\n'
-            sha256sum "$U/riscv-pk-src/bbl/bbl" \
-                      "$U/riscv-linux-src/arch/riscv/boot/Image"
+            printf 'dual-hart (SMP) rebuild of the pinned riscv-pk / riscv-linux revisions\n'
+            printf 'firmware: raw objcopy -O binary bbl (ELF entry/lowest LOAD verified 0x80000000)\n'
+            printf 'kernel config sha256=%s\n' "$(sha256sum "$U/riscv-linux-src/.config" | cut -d' ' -f1)"
+            grep -E '^CONFIG_(SMP|NR_CPUS|RISCV_INTC|RISCV_PLIC|RISCV_TIMER)=' "$U/riscv-linux-src/.config"
+            sha256sum "$U/boot/bbl64.bin" "$U/boot/kernel-riscv64.bin"
             printf 'source revisions in upstream/SOURCE-MANIFEST.md (pins)\n'
             grep -E 'riscv-pk|riscv-linux' "$U/SOURCE-MANIFEST.md" | head -4 || true
           } | tee "${{ runner.temp }}/floe-smp/fresh-boot-files.txt"
-          mkdir -p "${{ runner.temp }}/floe-smp/boot"
-          cp "$U/riscv-pk-src/bbl/bbl" "${{ runner.temp }}/floe-smp/boot/bbl64.bin"
-          cp "$U/riscv-linux-src/arch/riscv/boot/Image" "${{ runner.temp }}/floe-smp/boot/kernel-riscv64.bin"
+          cp "$U/boot/bbl64.bin" "$B/bbl64.bin"
+          cp "$U/boot/kernel-riscv64.bin" "$B/kernel-riscv64.bin"
+          cp "$U/boot/boot-files.json" "$B/boot-files.json"
+          cp "$U/SMP-BUILD.txt" "$B/SMP-BUILD.txt"
+          # the image must contain exactly these raw bytes
+          python3 - "$U/boot" "$B" <<'PY'
+          import hashlib, json, os, sys
+          upstream, boot = sys.argv[1], sys.argv[2]
+          record = json.load(open(os.path.join(upstream, "boot-files.json")))
+          for name in ("bbl64.bin", "kernel-riscv64.bin"):
+              with open(os.path.join(boot, name), "rb") as handle:
+                  data = handle.read()
+              entry = record["files"][name]
+              if hashlib.sha256(data).hexdigest() != entry["sha256"]:
+                  raise SystemExit(f"{name} hash changed while copying")
+              if data[:4] == b"\x7fELF":
+                  raise SystemExit(f"{name} is an ELF file")
+          print(json.dumps(record, indent=2))
+          PY
 
       - name: Probe the image assembly hook (A-side contract)
         id: probe
@@ -560,28 +599,52 @@ jobs:
             --source-ref "${{ github.sha }}" \
             2>&1 | tee "${{ runner.temp }}/floe-smp/assemble.log"
           python3 - "${{ runner.temp }}/floe-smp" "${{ github.sha }}" <<'PY'
-          import json, os, sys
+          import hashlib, json, os, sys
           root, source_ref = sys.argv[1], sys.argv[2]
           fresh = os.path.join(root, "fresh-boot-files.txt")
           image = os.path.join(root, "work", "image")
+          boot = os.path.join(root, "boot")
           record = {
-              "boot_files_origin": "fresh-rebuild",
+              "boot_files_origin": "fresh-smp-rebuild",
               "source_ref": source_ref,
-              "note": ("This image candidate was assembled with kernel+bbl rebuilt from "
-                       "the pinned source revisions in this run; the manifest digests "
-                       "must match fresh-boot-files.txt."),
+              "note": ("This image candidate was assembled with a CONFIG_SMP kernel and "
+                       "the RAW bbl rebuilt from the pinned source revisions in this "
+                       "run; the manifest digests must match fresh-boot-files.txt and "
+                       "the boot/ raw pair."),
           }
           if os.path.isfile(fresh):
               with open(fresh, "r", encoding="utf-8", errors="replace") as handle:
                   record["fresh_boot_files"] = handle.read().strip().splitlines()
-          manifest = os.path.join(image, "manifest.json")
-          if os.path.isfile(manifest):
-              with open(manifest, "r", encoding="utf-8") as handle:
+          # the assembled image must contain the raw pair byte for byte
+          problems = []
+          for role, name in (("bios", "bbl64.bin"), ("kernel", "kernel-riscv64.bin")):
+              src = os.path.join(boot, name)
+              dst = os.path.join(image, name)
+              if not (os.path.isfile(src) and os.path.isfile(dst)):
+                  problems.append(f"{name}: missing (src={os.path.isfile(src)} dst={os.path.isfile(dst)})")
+                  continue
+              with open(src, "rb") as handle:
+                  want = hashlib.sha512(handle.read()).hexdigest()
+              with open(dst, "rb") as handle:
+                  got = hashlib.sha512(handle.read()).hexdigest()
+              record[f"image_{role}_sha512"] = got
+              if want != got:
+                  problems.append(f"{name}: image bytes differ from the fresh raw file")
+          manifest_path = os.path.join(image, "manifest.json")
+          if os.path.isfile(manifest_path):
+              with open(manifest_path, "r", encoding="utf-8") as handle:
                   record["manifest"] = json.load(handle)
+          record["image_matches_fresh_boot_pair"] = not problems
+          if problems:
+              record["problems"] = problems
           with open(os.path.join(root, "boot-association.json"), "w", encoding="utf-8") as handle:
               json.dump(record, handle, indent=2)
               handle.write("\n")
           print(json.dumps(record, indent=2))
+          if problems:
+              for item in problems:
+                  print("SMP IMAGE ASSOCIATION FAILED:", item)
+              raise SystemExit(1)
           PY
 
       - name: Show the SMP image result (or the dependency failure)

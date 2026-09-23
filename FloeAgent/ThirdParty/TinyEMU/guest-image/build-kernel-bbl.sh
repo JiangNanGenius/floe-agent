@@ -179,12 +179,60 @@ done
 
 if [ "$rebuild" = 1 ]; then
     log "rebuilding boot loader and kernel (this is heavy and not required for a source bundle)"
-    command -v riscv64-linux-gnu-gcc >/dev/null 2>&1 || die "--rebuild needs gcc-riscv64-linux-gnu"
+    for tool in riscv64-linux-gnu-gcc riscv64-linux-gnu-objcopy \
+                riscv64-linux-gnu-readelf; do
+        command -v "$tool" >/dev/null 2>&1 || die "--rebuild needs $tool"
+    done
     (
         cd "$out/riscv-pk-src"
         ./configure --host=riscv64-linux-gnu --with-arch=rv64gc --with-abi=lp64d
         make -j"$jobs"
     ) >"$out/rebuild-riscv-pk.log" 2>&1 || die "riscv-pk rebuild failed (see rebuild-riscv-pk.log)"
+
+    # ------------------------------------------------------------------
+    # The pinned boot loader file is a RAW binary, not the ELF the riscv-pk
+    # link step leaves in bbl/bbl: TinyEMU's copy_bios() memcpy()s the BIOS
+    # at 0x80000000 and has no ELF loader, so handing it bbl/bbl would
+    # execute the ELF header instead of the reset vector. Produce and
+    # verify the raw image here, once, and let consumers copy
+    # $out/boot/bbl64.bin (never bbl/bbl).
+    # ------------------------------------------------------------------
+    rpk="$out/riscv-pk-src"
+    bbl_elf="$rpk/bbl/bbl"
+    bbl_raw="$out/boot/bbl64.bin"
+    kernel_raw="$out/boot/kernel-riscv64.bin"
+    mkdir -p "$out/boot"
+    [ -f "$bbl_elf" ] || die "riscv-pk did not produce bbl/bbl"
+    if [ "$(dd if="$bbl_elf" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+        die "bbl/bbl is not an ELF file; refusing to guess its layout"
+    fi
+    bbl_entry="$(riscv64-linux-gnu-readelf -h "$bbl_elf" | awk '/Entry point address/{print $NF}')"
+    # lowest LOAD segment address = where a raw copy must be loaded
+    bbl_load="$(riscv64-linux-gnu-readelf -l "$bbl_elf" | awk '$1=="LOAD"{print $3}' | sort | head -1)"
+    [ "$bbl_entry" = "0x80000000" ] || die "bbl entry $bbl_entry != 0x80000000 (reset address)"
+    [ "$bbl_load" = "0x80000000" ] || die "bbl lowest LOAD addr $bbl_load != 0x80000000"
+    riscv64-linux-gnu-objcopy -O binary "$bbl_elf" "$bbl_raw"
+    if [ "$(dd if="$bbl_raw" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
+        die "objcopy produced an ELF file"
+    fi
+    bbl_raw_bytes="$(stat -c %s "$bbl_raw")"
+    [ "$bbl_raw_bytes" -gt 4096 ] || die "raw bbl is suspiciously small: $bbl_raw_bytes bytes"
+    [ "$bbl_raw_bytes" -lt $((16 * 1024 * 1024)) ] || die "raw bbl is too big: $bbl_raw_bytes bytes"
+    # firmware multi-hart evidence: the MAX_HARTS > 1 branch of
+    # machine/mentry.S is the only thing that references disabled_hart_mask
+    # from mentry.o, so its relocation proves the multi-hart IPI startup
+    # path was compiled in (--with-arch=rv64gc => __riscv_atomic => MAX_HARTS 8)
+    if riscv64-linux-gnu-readelf -r "$rpk/machine/mentry.o" 2>/dev/null | grep -q disabled_hart_mask; then
+        fw_multi_hart="mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)"
+    else
+        fw_multi_hart="MISSING: mentry.o has no disabled_hart_mask relocation (MAX_HARTS==1)"
+    fi
+    if riscv64-linux-gnu-readelf -A "$rpk/machine/mentry.o" 2>/dev/null | grep -qi "atomic"; then
+        fw_atomic="riscv-pk built with the A extension (__riscv_atomic)"
+    else
+        fw_atomic="riscv-pk A-extension attribute not reported"
+    fi
+    log "raw boot loader: $bbl_raw ($bbl_raw_bytes bytes, entry $bbl_entry); $fw_multi_hart"
     (
         cd "$out/riscv-linux-src"
         cp config_linux_riscv64 .config
@@ -203,11 +251,57 @@ if [ "$rebuild" = 1 ]; then
         fi
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$jobs"
     ) >"$out/rebuild-riscv-linux.log" 2>&1 || die "kernel rebuild failed (see rebuild-riscv-linux.log)"
+    # raw kernel image: TinyEMU loads the -kernel file as-is and bbl jumps
+    # to the address the FDT records (riscv,kernel-start); an ELF kernel
+    # would be executed from its header
+    linux_img="$out/riscv-linux-src/arch/riscv/boot/Image"
+    [ -f "$linux_img" ] || die "kernel build produced no arch/riscv/boot/Image"
+    if [ "$(dd if="$linux_img" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
+        die "arch/riscv/boot/Image is an ELF file, not the raw kernel image"
+    fi
+    cp "$linux_img" "$kernel_raw"
+    kernel_bytes="$(stat -c %s "$kernel_raw")"
+    kernel_ident="$(strings -a "$kernel_raw" | grep -m1 '^Linux version' || true)"
     {
         printf '\n## Rebuild outputs (this run)\n\n'
-        sha256sum "$out/riscv-pk-src/bbl/bbl" 2>/dev/null || true
-        sha256sum "$out/riscv-linux-src/arch/riscv/boot/Image" 2>/dev/null || true
+        printf 'bbl ELF (link output, NOT a boot file):\n'
+        sha256sum "$bbl_elf" 2>/dev/null || true
+        printf 'bbl RAW boot file (copy this one):\n'
+        sha256sum "$bbl_raw" 2>/dev/null || true
+        printf 'kernel raw Image (copy this one):\n'
+        sha256sum "$kernel_raw" 2>/dev/null || true
+        printf 'bbl ELF entry=%s lowest_load=%s\n' "$bbl_entry" "$bbl_load"
+        printf 'firmware multi-hart: %s\nfirmware ABI/arch: %s\n' "$fw_multi_hart" "$fw_atomic"
+        printf 'kernel version ident: %s\n' "$kernel_ident"
     } >>"$manifest"
+    {
+        printf 'boot pair built from pinned sources this run\n'
+        printf 'bbl64.bin bytes=%s sha256=%s\n' "$bbl_raw_bytes" "$(sha256sum "$bbl_raw" | cut -d' ' -f1)"
+        printf 'kernel-riscv64.bin bytes=%s sha256=%s\n' "$kernel_bytes" "$(sha256sum "$kernel_raw" | cut -d' ' -f1)"
+        printf 'bbl ELF entry=%s lowest_load=%s\n' "$bbl_entry" "$bbl_load"
+        printf 'firmware multi-hart: %s\nfirmware arch: %s\n' "$fw_multi_hart" "$fw_atomic"
+        printf 'kernel version ident: %s\n' "$kernel_ident"
+        printf 'kernel config sha256=%s\n' "$(sha256sum "$out/riscv-linux-src/.config" | cut -d' ' -f1)"
+        grep -E '^CONFIG_(SMP|NR_CPUS|RISCV_INTC|RISCV_PLIC|RISCV_TIMER)=' \
+            "$out/riscv-linux-src/.config" || true
+    } >"$out/boot/BOOT-PAIR.txt"
+    python3 - "$out/boot" "$bbl_entry" "$bbl_load" "$fw_multi_hart" \
+              "$kernel_ident" <<'PY'
+import hashlib, json, os, sys
+root, entry, load, fw, ident = sys.argv[1:6]
+def digest(path):
+    with open(path, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
+files = {}
+for name in ("bbl64.bin", "kernel-riscv64.bin"):
+    path = os.path.join(root, name)
+    files[name] = {"bytes": os.path.getsize(path), "sha256": digest(path),
+                   "raw_not_elf": open(path, "rb").read(4) != b"\x7fELF"}
+json.dump({"files": files, "bbl_elf_entry": entry, "bbl_lowest_load": load,
+           "firmware_multi_hart": fw, "kernel_version_ident": ident},
+          open(os.path.join(root, "boot-files.json"), "w"), indent=2)
+print(json.dumps({"files": files}, indent=2))
+PY
     if [ "$smp" = 1 ]; then
         # the pair build-guest-image.sh --boot-dir expects, plus the
         # provenance a reviewer needs: config lines, firmware multi-hart
@@ -216,13 +310,17 @@ if [ "$rebuild" = 1 ]; then
             printf '\n## Dual-hart (SMP) boot pair\n\n'
             printf 'kernel config: SMP=y NR_CPUS=2 (fragment config_linux_riscv64_smp.fragment)\n'
             printf 'firmware: riscv-pk --with-arch=rv64gc => __riscv_atomic => MAX_HARTS 8, mentry.S multi-hart IPI path\n'
-            printf 'guest serial cross-check: this pair was produced by a cloud build; stdout is not evidence of a two-hart boot\n\n'
+            printf 'guest serial cross-check: this pair was produced by a cloud build; stdout is not evidence of a two-hart boot\n'
+            printf 'multi-hart evidence: %s\n' "$fw_multi_hart"
+            case "$fw_multi_hart" in
+                MISSING*) die "--smp built a single-hart boot loader ($fw_multi_hart)" ;;
+            esac
             grep -E '^CONFIG_(SMP|NR_CPUS|RISCV_INTC|RISCV_PLIC|RISCV_TIMER)=' \
                 "$out/riscv-linux-src/.config" || true
-            printf '\ninstall into a --boot-dir as: bbl64.bin (from bbl/bbl), kernel-riscv64.bin (from arch/riscv/boot/Image)\n'
-            sha256sum "$out/riscv-pk-src/bbl/bbl" "$out/riscv-linux-src/arch/riscv/boot/Image" 2>/dev/null || true
+            printf '\ninstall into a --boot-dir as: bbl64.bin and kernel-riscv64.bin from %s/boot\n' "$out"
+            sha256sum "$bbl_raw" "$kernel_raw" 2>/dev/null || true
         } >"$out/SMP-BUILD.txt"
-        log "wrote $out/SMP-BUILD.txt (dual-hart boot pair; use build-guest-image.sh --boot-dir)"
+        log "wrote $out/SMP-BUILD.txt (dual-hart boot pair; use build-guest-image.sh --boot-dir $out/boot)"
     fi
 fi
 
