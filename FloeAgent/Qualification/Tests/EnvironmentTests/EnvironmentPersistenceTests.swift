@@ -208,6 +208,68 @@ extension EnvironmentPersistenceTests {
 }
 
 extension EnvironmentPersistenceTests {
+    @Test func pinnedEnvironmentCreationPinsExactVersionWithoutMovingTheExistingEnvironment() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root)
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        // A workspace that already has its implicit project environment.
+        let existing = try await registry.ensureProjectContainer(workspaceID: "ws", workspaceRootPath: "/ws")
+        let pinDigest = String(repeating: "a", count: 128)
+        let created = try await registry.createPinnedEnvironment(
+            workspaceID: "ws", workspaceRootPath: "/ws", name: "pinned",
+            templateID: "dev-document", templateVersion: 3, templateDigest: pinDigest
+        )
+        // The new environment records the exact immutable pin.
+        #expect(created.record.id != existing.id)
+        #expect(created.record.templateID == "dev-document")
+        #expect(created.record.templateVersion == 3)
+        #expect(created.record.templateDigest == pinDigest)
+        #expect(created.record.executionBackend == .linuxVM)
+        // The existing environment keeps its own identity and the workspace
+        // root mapping still resolves to it (no silent mutation, no rebase).
+        #expect(created.ownsWorkspaceRoot == false)
+        // The workspace-root mapping still points at the existing environment;
+        // creating the pinned environment did not move it and did not rebase
+        // the existing record.
+        let mappingURL = roots.rootURL.appendingPathComponent("workspace-containers.json")
+        let mapping = try JSONDecoder().decode(
+            [String: [String: String]].self, from: try Data(contentsOf: mappingURL)
+        )
+        #expect(mapping["ws"]?["containerID"] == existing.id)
+        let reloaded = EnvironmentRegistry(roots: roots, baseRevision: "one")
+        try await reloaded.prepare()
+        #expect(await reloaded.record(id: created.record.id)?.templateVersion == 3)
+        #expect(await reloaded.record(id: existing.id)?.templateID == nil)
+        // A new workspace gets the mapping on the pinned environment.
+        let fresh = try await registry.createPinnedEnvironment(
+            workspaceID: "fresh", workspaceRootPath: "/fresh", name: nil,
+            templateID: "basic", templateVersion: 1, templateDigest: pinDigest
+        )
+        #expect(fresh.ownsWorkspaceRoot == true)
+        let freshMapping = try JSONDecoder().decode(
+            [String: [String: String]].self, from: try Data(contentsOf: mappingURL)
+        )
+        #expect(freshMapping["fresh"]?["containerID"] == fresh.record.id)
+        // A malformed digest or version is refused without creating anything.
+        let before = await registry.all().count
+        await #expect(throws: (any Error).self) {
+            _ = try await registry.createPinnedEnvironment(
+                workspaceID: "bad", workspaceRootPath: "/bad", name: nil,
+                templateID: "basic", templateVersion: 0, templateDigest: pinDigest
+            )
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await registry.createPinnedEnvironment(
+                workspaceID: "bad", workspaceRootPath: "/bad", name: nil,
+                templateID: "basic", templateVersion: 1, templateDigest: "not-a-digest"
+            )
+        }
+        #expect(await registry.all().count == before)
+    }
+}
+
+extension EnvironmentPersistenceTests {
     @Test func projectDeletionPreservesDependentSessionAndFiles() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
