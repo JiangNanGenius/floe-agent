@@ -18,6 +18,11 @@ public actor RuntimeV2Store {
         public var unreclaimableLeases: [String]
         public var salvagedRuntimeDirs: [String]
         public var quarantinedRuntimeDirs: [String]
+        /// Leftover runtime dirs whose owner could NOT be proven stopped (a
+        /// live or unexpired lease, an inconsistent ownership record, or an
+        /// unknown environment): preserved byte-for-byte, never captured,
+        /// moved or deleted.
+        public var preservedRuntimeDirs: [String]
         public var repairedImages: [String]
         public var rebuiltExpandedViews: [String]
         public var sweptStagingEntries: Int
@@ -30,6 +35,7 @@ public actor RuntimeV2Store {
             self.unreclaimableLeases = []
             self.salvagedRuntimeDirs = []
             self.quarantinedRuntimeDirs = []
+            self.preservedRuntimeDirs = []
             self.repairedImages = []
             self.rebuiltExpandedViews = []
             self.sweptStagingEntries = 0
@@ -135,6 +141,12 @@ public actor RuntimeV2Store {
         //    everything ends up captured, quarantined or swept.
         report = await recoverRuntimeDirectories(report: report)
 
+        // 3b. Staged blob ownership claims are process-lifetime: a restart
+        //     means no stage/ingest is in flight any more, so leftover claims
+        //     must not leak permanent GC protection (registration recovery
+        //     re-takes references from the recorded owner).
+        try? await registry.resetBlobStagingClaims()
+
         // 4. Stale staging: cache/staging past the in-flight window, expanded
         //    .staging-* and per-environment system .staging-* leftovers.
         report.sweptStagingEntries = sweepStaging()
@@ -179,6 +191,18 @@ public actor RuntimeV2Store {
                 report.quarantinedRuntimeDirs.append(entry)
                 continue
             }
+            // P0: never capture, move or delete a working disk until its owner
+            // is proven stopped and every identity check is certain. An
+            // unresolved lease (live pid or unexpired TTL — another app
+            // instance or a session of this one), an inconsistent ownership
+            // record, or an environment the registry does not know all mean
+            // the state is uncertain; the fail-closed action is to preserve
+            // the directory byte-for-byte and report it.
+            if let preservation = await preservationReason(entry: entry, meta: meta) {
+                report.preservedRuntimeDirs.append(entry)
+                report.notes.append(preservation)
+                continue
+            }
             do {
                 try await salvageWorkingDirectory(directory: directory, meta: meta)
                 try? fileManager.removeItem(at: directory)
@@ -195,6 +219,30 @@ public actor RuntimeV2Store {
             }
         }
         return report
+    }
+
+    /// Why this working directory must be preserved untouched, or nil when
+    /// salvage may proceed. Identity checks run before the lease check so a
+    /// tampered record is never used to attribute a disk to an environment.
+    private func preservationReason(
+        entry: String, meta: RuntimeV2WorkingDirectory.Meta
+    ) async -> String? {
+        guard (try? RuntimeV2Identifier.validate(meta.environmentID, kind: .environment)) != nil else {
+            return "runtime/vm/\(entry) preserved: the ownership record names an invalid environment; the disk was not touched"
+        }
+        guard meta.runtimeID == entry else {
+            return "runtime/vm/\(entry) preserved: the ownership record belongs to runtime \(meta.runtimeID), not \(entry); the disk was not touched"
+        }
+        guard let environment = try? await registry.environment(id: meta.environmentID) else {
+            return "runtime/vm/\(entry) preserved: environment \(meta.environmentID) is not known to the registry; the disk was not touched"
+        }
+        guard environment.state != "deleting" else {
+            return "runtime/vm/\(entry) preserved: environment \(meta.environmentID) is being deleted; the disk was not touched"
+        }
+        guard await !leases.hasLiveOwnership(environmentID: meta.environmentID) else {
+            return "runtime/vm/\(entry) preserved: environment \(meta.environmentID) still has a live or unexpired write lease; the owner was not proven stopped, so the disk was not captured, moved or deleted"
+        }
+        return nil
     }
 
     /// Captures the leftover working disk into the environment's delta (the

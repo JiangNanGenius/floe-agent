@@ -203,31 +203,6 @@ public extension LinuxGuestRuntimeV2Integrating {
     }
 }
 
-/// Result-carrying stop, reachable through the existential.
-///
-/// `LinuxGuestRuntimeV2Integrating.completeStopResult` (C2 68ca2ce9) is declared
-/// ONLY as a protocol-extension default, so a call through `any
-/// LinuxGuestRuntimeV2Integrating` is statically dispatched to that default and
-/// the concrete integrator's real implementation
-/// (`RuntimeV2GuestIntegrator.completeStopResult`) is unreachable — every
-/// refusal would read back as `.unknown`. The registry must see the real
-/// outcome (a refused capture is never reported as a clean save), so the same
-/// method is declared here as a requirement and the production integrator and
-/// scripted test conformers answer it. A conformer that only implements the
-/// legacy `completeStop` keeps the truth-conservative `.unknown` path.
-///
-/// Scope note: this lives with the registry because the shared protocol file is
-/// owned by the Runtime v2 module; folding the requirement (with the identical
-/// default) into `LinuxGuestRuntimeV2Integrating` is a mechanical follow-up
-/// that would let this adapter be deleted.
-protocol LinuxGuestRuntimeV2StopOutcomeReporting: Sendable {
-    func completeStopResult(
-        environmentID: String, runtimeID: String, imageID: String, clean: Bool
-    ) async -> RuntimeV2StopOutcome
-}
-
-extension RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2StopOutcomeReporting {}
-
 public actor TinyEMULinuxGuestRegistry {
     /// Logical capacity of each environment raw disk. Test registries can
     /// override via `init(targetDiskCapacityBytes:)`; production grows to
@@ -610,9 +585,14 @@ public actor TinyEMULinuxGuestRegistry {
         )
     }
 
-    /// Runs C2's result-carrying stop when the substrate answers it (see
-    /// `LinuxGuestRuntimeV2StopOutcomeReporting`); otherwise the legacy void
-    /// stop runs and the outcome is honestly unknown.
+    /// Runs the result-carrying stop through the existential. Since C3,
+    /// `completeStopResult` is a REQUIREMENT of
+    /// `LinuxGuestRuntimeV2Integrating` (with a compatible default for legacy
+    /// conformers), so the concrete integrator's real outcome — including
+    /// `retainedForRepair` — is always reached here; the former
+    /// `LinuxGuestRuntimeV2StopOutcomeReporting` adapter is folded into the
+    /// protocol and deleted. Conformers that only implement the legacy void
+    /// `completeStop` keep the truth-conservative `.unknown` default.
     private func runtimeV2StopOutcome(
         _ runtimeV2: any LinuxGuestRuntimeV2Integrating,
         environmentID: String,
@@ -620,15 +600,9 @@ public actor TinyEMULinuxGuestRegistry {
         imageID: String,
         clean: Bool
     ) async -> RuntimeV2StopOutcome {
-        if let reporter = runtimeV2 as? any LinuxGuestRuntimeV2StopOutcomeReporting {
-            return await reporter.completeStopResult(
-                environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
-            )
-        }
-        await runtimeV2.completeStop(
+        await runtimeV2.completeStopResult(
             environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
         )
-        return .unknown
     }
 
     /// Consumes Runtime v2's result-carrying stop (C2 `completeStopResult`). A

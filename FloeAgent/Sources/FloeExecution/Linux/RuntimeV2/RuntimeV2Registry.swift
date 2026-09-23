@@ -37,6 +37,10 @@ public actor RuntimeV2Registry {
         public var digest: String
         public var bytes: Int64
         public var refs: Int
+        /// Durable in-flight stage/ingest claims. GC refuses rows with a
+        /// non-zero claim count, so staged bytes can never be collected
+        /// between placement and their real reference.
+        public var staged: Int
         public var createdAt: Date
     }
 
@@ -415,6 +419,16 @@ public actor RuntimeV2Registry {
         ALTER TABLE environments ADD COLUMN template_id TEXT;
         ALTER TABLE environments ADD COLUMN template_version INTEGER;
         ALTER TABLE environments ADD COLUMN template_digest TEXT;
+        """),
+        // v3: durable staged-ownership claims on blobs. A claim is taken
+        // BEFORE staged bytes become visible to GC and is converted into the
+        // real reference by the same transaction that records the durable
+        // owner, so blob GC can never collect bytes an in-flight ingest is
+        // about to reference. Claims are process-lifetime: startup recovery
+        // resets them, because a claim can never survive the process that
+        // took it.
+        (3, "blob-staging-claims", """
+        ALTER TABLE blobs ADD COLUMN staged INTEGER NOT NULL DEFAULT 0;
         """)
     ]
 
@@ -668,38 +682,121 @@ public actor RuntimeV2Registry {
         }
     }
 
+    // MARK: staged blob ownership (claims)
+
+    /// Takes one durable staged-ownership claim BEFORE staged bytes become
+    /// visible to GC. The claim is the linearization point that protects an
+    /// in-flight stage/ingest: GC only deletes rows with `staged = 0`, and
+    /// the claim survives every await until it is converted (into the real
+    /// reference) or explicitly released. Claims are counted so concurrent
+    /// stages of identical content are each protected.
+    public func takeBlobStagingClaim(digest: String, bytes: Int64) throws {
+        try transaction {
+            try run(
+                """
+                INSERT INTO blobs (digest, bytes, refs, staged, created_at) VALUES (?, ?, 0, 1, ?)
+                ON CONFLICT(digest) DO UPDATE SET staged = staged + 1
+                """,
+                bind: { statement in
+                    Self.bindText(digest, to: statement, index: 1)
+                    sqlite3_bind_int64(statement, 2, bytes)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 3)
+                }
+            )
+        }
+    }
+
+    /// Releases one staged-ownership claim without touching references.
+    /// Idempotent-safe (clamped at zero); used on the compensating path when a
+    /// stage/ingest failed before its reference was taken.
+    public func releaseBlobStagingClaim(digest: String) throws {
+        try transaction {
+            try run(
+                "UPDATE blobs SET staged = MAX(0, staged - 1) WHERE digest=?",
+                bind: { Self.bindText(digest, to: $0, index: 1) }
+            )
+        }
+    }
+
+    /// Startup recovery: claims are process-lifetime. A restart means no
+    /// stage/ingest is in flight any more (registration recovery re-takes
+    /// references from the recorded owner, and `recoverInterruptedBuilds`
+    /// fails interrupted builds), so every leftover claim is stale and must
+    /// not leak permanent GC protection.
+    public func resetBlobStagingClaims() throws {
+        try transaction {
+            try run("UPDATE blobs SET staged = 0", bind: { _ in })
+        }
+    }
+
+    /// Converts one staged-ownership claim into the real reference in the
+    /// SAME transaction — the only ingest path: the reference and the release
+    /// of the staging protection commit together, so there is no window where
+    /// the bytes are referenced but unprotected, or protected but referenced.
+    /// The insert branch also repairs a row GC reclaimed and a racing stage
+    /// re-created before its claim landed.
+    public func claimBlobReference(digest: String, bytes: Int64) throws {
+        try transaction {
+            try run(
+                """
+                INSERT INTO blobs (digest, bytes, refs, staged, created_at) VALUES (?, ?, 1, 0, ?)
+                ON CONFLICT(digest) DO UPDATE SET refs = refs + 1, staged = MAX(0, staged - 1)
+                """,
+                bind: { statement in
+                    Self.bindText(digest, to: statement, index: 1)
+                    sqlite3_bind_int64(statement, 2, bytes)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 3)
+                }
+            )
+        }
+    }
+
     public func blob(digest: String) throws -> BlobRow? {
-        try query("SELECT digest, bytes, refs, created_at FROM blobs WHERE digest=?", bind: { statement in
+        try query("SELECT digest, bytes, refs, staged, created_at FROM blobs WHERE digest=?", bind: { statement in
             Self.bindText(digest, to: statement, index: 1)
         }) { statement in
             BlobRow(
                 digest: text(statement, 0) ?? "",
                 bytes: sqlite3_column_int64(statement, 1),
                 refs: Int(sqlite3_column_int(statement, 2)),
-                createdAt: Self.date(text(statement, 3)) ?? Date.distantPast
+                staged: Int(sqlite3_column_int(statement, 3)),
+                createdAt: Self.date(text(statement, 4)) ?? Date.distantPast
             )
         }.first
     }
 
+    /// GC candidate listing. A blob is collectable only when nothing
+    /// references it AND no in-flight stage/ingest holds a durable claim AND
+    /// it is past the grace window. The listing is only a candidate set: the
+    /// authoritative re-check is `collectBlobIfUnreferenced`.
     public func unreferencedBlobs(olderThan cutoff: Date) throws -> [BlobRow] {
-        try query("SELECT digest, bytes, refs, created_at FROM blobs WHERE refs=0 AND created_at < ?", bind: { statement in
+        try query("SELECT digest, bytes, refs, staged, created_at FROM blobs WHERE refs=0 AND staged=0 AND created_at < ?", bind: { statement in
             Self.bindText(Self.iso(cutoff), to: statement, index: 1)
         }) { statement in
             BlobRow(
                 digest: text(statement, 0) ?? "",
                 bytes: sqlite3_column_int64(statement, 1),
                 refs: Int(sqlite3_column_int(statement, 2)),
-                createdAt: Self.date(text(statement, 3)) ?? Date.distantPast
+                staged: Int(sqlite3_column_int(statement, 3)),
+                createdAt: Self.date(text(statement, 4)) ?? Date.distantPast
             )
         }
     }
 
-    public func removeBlobRecord(digest: String) throws {
+    /// The ONE linearized GC claim: deletes the blob row only when it is
+    /// STILL unreferenced and unstaged inside this transaction. A reference or
+    /// staging claim that landed after any outside pre-check refuses the
+    /// delete here, and the caller must then leave the physical bytes
+    /// untouched. Returns true exactly when the row was deleted.
+    public func collectBlobIfUnreferenced(digest: String) throws -> Bool {
+        var collected = false
         try transaction {
-            try run("DELETE FROM blobs WHERE digest=? AND refs=0", bind: { statement in
+            try run("DELETE FROM blobs WHERE digest=? AND refs=0 AND staged=0", bind: { statement in
                 Self.bindText(digest, to: statement, index: 1)
             })
+            collected = sqlite3_changes(db) > 0
         }
+        return collected
     }
 
     public func blobStats() throws -> (count: Int, bytes: Int64, referencedBytes: Int64) {
@@ -1369,10 +1466,14 @@ public actor RuntimeV2Registry {
             )
             recorded = sqlite3_changes(db) > 0
             guard recorded else { return }
+            // The ingest reference and the conversion of the stage claim
+            // commit together: the staged bytes become referenced and
+            // un-staged atomically, so GC can never observe referenced bytes
+            // without protection nor protected bytes without an owner.
             try run(
                 """
-                INSERT INTO blobs (digest, bytes, refs, created_at) VALUES (?, ?, 1, ?)
-                ON CONFLICT(digest) DO UPDATE SET refs = refs + 1
+                INSERT INTO blobs (digest, bytes, refs, staged, created_at) VALUES (?, ?, 1, 0, ?)
+                ON CONFLICT(digest) DO UPDATE SET refs = refs + 1, staged = MAX(0, staged - 1)
                 """,
                 bind: { statement in
                     Self.bindText(diskDigest, to: statement, index: 1)

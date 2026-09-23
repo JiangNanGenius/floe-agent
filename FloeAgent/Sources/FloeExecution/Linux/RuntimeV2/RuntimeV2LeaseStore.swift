@@ -78,20 +78,36 @@ public actor RuntimeV2LeaseStore {
 
     private let layout: RuntimeV2Layout
     private let registry: RuntimeV2Registry
+    private let seams: Seams
     private var fileManager: FileManager { .default }
     /// This process's boot token; leases from other incarnations are
     /// reclaimable only with stale proof.
     public let incarnation: String
     public var defaultTTL: Int64 = 30
 
+    /// Injectable fault seams for the durability-critical paths.
+    public struct Seams: Sendable {
+        /// Replaces the durable registry release (throw to inject a
+        /// full-disk / IO / DB fault at exactly that stage). nil = normal.
+        public var releaseInRegistry: (@Sendable (String, String) async throws -> Void)?
+
+        public init(releaseInRegistry: (@Sendable (String, String) async throws -> Void)? = nil) {
+            self.releaseInRegistry = releaseInRegistry
+        }
+
+        public static let production = Seams()
+    }
+
     public init(
         layout: RuntimeV2Layout,
         registry: RuntimeV2Registry,
         incarnation: String = UUID().uuidString,
+        seams: Seams = .production
     ) {
         self.layout = layout
         self.registry = registry
         self.incarnation = incarnation
+        self.seams = seams
     }
 
     // MARK: acquire / renew / release
@@ -164,10 +180,25 @@ public actor RuntimeV2LeaseStore {
         try await persist(touch(lease))
     }
 
+    /// Durable-first release: the sidecar is the surviving exclusion record,
+    /// so it is removed ONLY after the registry release commits. When the
+    /// durable release fails (full disk / IO / DB fault), the sidecar stays:
+    /// a failed or partial release can never clear the sole exclusion that
+    /// keeps a new start from overwriting preserved state. The registry row
+    /// keeps naming this runtime as its holder, and a later launch re-proves
+    /// staleness before any reclaim.
     public func release(environmentID: String, runtimeID: String) async {
         guard let lease = try? loadLease(environmentID: environmentID),
               lease.runtimeID == runtimeID else { return }
-        try? await registry.releaseLease(environmentID: environmentID, runtimeID: runtimeID)
+        do {
+            if let releaseInRegistry = seams.releaseInRegistry {
+                try await releaseInRegistry(environmentID, runtimeID)
+            } else {
+                try await registry.releaseLease(environmentID: environmentID, runtimeID: runtimeID)
+            }
+        } catch {
+            return
+        }
         if let url = try? layout.environmentLeaseURL(environmentID: environmentID) {
             try? fileManager.removeItem(at: url)
         }
@@ -176,6 +207,18 @@ public actor RuntimeV2LeaseStore {
     /// Current holder, if any.
     public func holder(environmentID: String) throws -> Lease? {
         try loadLease(environmentID: environmentID)
+    }
+
+    /// True while the environment's lease cannot be proven stale: a lease
+    /// sidecar exists whose recorded pid is still alive OR whose TTL has not
+    /// expired. Recovery MUST NOT capture, move or delete that environment's
+    /// working disk while this is true — the owner is a live process (another
+    /// app instance, or a session of this one), and the only safe action is
+    /// to leave every byte untouched. A dead pid past TTL is provably stale
+    /// and answers false.
+    public func hasLiveOwnership(environmentID: String) async -> Bool {
+        guard let lease = try? loadLease(environmentID: environmentID) else { return false }
+        return !(lease.isExpired(now: Date()) && Self.processLiveness(lease: lease))
     }
 
     // MARK: startup recovery

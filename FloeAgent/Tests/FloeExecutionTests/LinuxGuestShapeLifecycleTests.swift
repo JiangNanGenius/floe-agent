@@ -285,7 +285,10 @@ private struct ShapeSessionFactory: LinuxGuestSessionCreating {
 
 /// Records the exact Runtime v2 calls the registry makes and lets the test park
 /// the budget plan (`planReshape`/`planRetier`) inside the lifecycle lock.
-private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating, LinuxGuestRuntimeV2StopOutcomeReporting {
+/// `completeStopResult` is a requirement of `LinuxGuestRuntimeV2Integrating`
+/// since C3 (the former `LinuxGuestRuntimeV2StopOutcomeReporting` adapter was
+/// folded into the protocol), so this conformer answers it directly.
+private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
     private let expandedRoot: URL
     private let root: URL
     private let planGate: LifecycleGate?

@@ -2062,6 +2062,513 @@ final class RuntimeV2TemplateTests: XCTestCase {
         XCTAssertEqual(cloned?.mode, volumeSupportsClone() ? .clone : .copy)
         XCTAssertNil(cloned?.sharedPhysicalBytes)
     }
+
+    // MARK: - P0: recovery never touches a disk whose owner is not proven stopped
+
+    /// Deterministic lease-injection fixture: a leftover runtime/vm working
+    /// directory with real bytes and a durable ownership record, plus an
+    /// optional lease sidecar describing the (possibly live) owner.
+    @discardableResult
+    private func makeLeftoverWorkingDisk(
+        runtimeID: String,
+        environmentID: String,
+        marker: UInt8 = 0x6A,
+        metaRuntimeID: String? = nil,
+        lease: RuntimeV2LeaseStore.Lease? = nil
+    ) throws -> URL {
+        let directory = try layout.runtimeVMDirectory(runtimeID: runtimeID)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let disk = directory.appendingPathComponent("disk.img")
+        try Data(repeating: marker, count: 8192).write(to: disk)
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: metaRuntimeID ?? runtimeID,
+                environmentID: environmentID,
+                baseImageID: baseImageID,
+                createdAt: Date()
+            ),
+            to: directory
+        )
+        if let lease {
+            let environmentDir = try layout.environmentDirectory(environmentID: environmentID)
+            try FileManager.default.createDirectory(at: environmentDir, withIntermediateDirectories: true)
+            try RuntimeV2LeaseStore.encoder.encode(lease).write(
+                to: environmentDir.appendingPathComponent("lease.json"), options: .atomic
+            )
+        }
+        return directory
+    }
+
+    private func liveLease(
+        environmentID: String, runtimeID: String,
+        incarnation: String, pid: Int64,
+        renewedAt: Date = Date(), ttlSeconds: Int64 = 30
+    ) -> RuntimeV2LeaseStore.Lease {
+        RuntimeV2LeaseStore.Lease(
+            environmentID: environmentID, runtimeID: runtimeID, incarnation: incarnation,
+            sessionToken: "token", pid: pid,
+            acquiredAt: renewedAt, renewedAt: renewedAt, ttlSeconds: ttlSeconds
+        )
+    }
+
+    /// A lease held by a LIVE pid (another app instance, or a session of this
+    /// one) makes the owner unprovable: recovery must preserve the working
+    /// disk byte-for-byte — no capture into the delta, no quarantine move, no
+    /// delete — and report it as preserved.
+    func testRecoveryPreservesWorkingDiskUnderLivePidLease() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment("env-live", baseImageID: baseImageID, rootfsDigest: nil)
+        let directory = try makeLeftoverWorkingDisk(
+            runtimeID: "rt-live", environmentID: "env-live",
+            lease: liveLease(
+                environmentID: "env-live", runtimeID: "rt-live",
+                incarnation: "other-incarnation",
+                pid: Int64(ProcessInfo.processInfo.processIdentifier)
+            )
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-live"))
+        XCTAssertFalse(report.salvagedRuntimeDirs.contains("rt-live"))
+        XCTAssertFalse(report.quarantinedRuntimeDirs.contains("rt-live"))
+        // Every byte is exactly where it was.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        let disk = directory.appendingPathComponent("disk.img")
+        XCTAssertEqual(try Data(contentsOf: disk), Data(repeating: 0x6A, count: 8192))
+        // Nothing was captured into the environment's delta.
+        let delta = try await relaunched.deltas.loadDelta(environmentID: "env-live")
+        XCTAssertNil(delta)
+        // The unresolved lease still marks the environment interrupted, but no
+        // repair/quarantine state was invented for a disk we did not touch.
+        XCTAssertTrue(
+            report.notes.contains { $0.contains("rt-live") && $0.contains("lease") },
+            "expected a preservation note, got \(report.notes)"
+        )
+    }
+
+    /// A dead pid is NOT proof when the TTL has not expired: the owning
+    /// thread may still hold an open disk handle. Fail closed: preserve.
+    func testRecoveryPreservesWorkingDiskUnderUnexpiredDeadPidLease() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment("env-ttl", baseImageID: baseImageID, rootfsDigest: nil)
+        let directory = try makeLeftoverWorkingDisk(
+            runtimeID: "rt-ttl", environmentID: "env-ttl",
+            lease: liveLease(
+                environmentID: "env-ttl", runtimeID: "rt-ttl",
+                incarnation: "other-incarnation",
+                pid: 4_000_000, // provably dead pid…
+                renewedAt: Date(), ttlSeconds: 30 // …but the lease is still inside its TTL
+            )
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-ttl"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0x6A, count: 8192)
+        )
+        let ttlDelta = try await relaunched.deltas.loadDelta(environmentID: "env-ttl")
+        XCTAssertNil(ttlDelta)
+    }
+
+    /// Reentrant recovery (a second prepareAndRecover in the SAME process,
+    /// e.g. a status read racing app start) must preserve the disk of a VM
+    /// whose live session holds this incarnation's lease.
+    func testRecoveryPreservesWorkingDiskUnderOwnIncarnationLiveLease() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment("env-own", baseImageID: baseImageID, rootfsDigest: nil)
+        // A live session of this very store holds the lease.
+        let held = try await store.leases.acquire(environmentID: "env-own", runtimeID: "rt-own")
+        let directory = try makeLeftoverWorkingDisk(runtimeID: "rt-own", environmentID: "env-own")
+
+        // Reentrant recovery in the same process must not salvage "our" disk.
+        let report = try await store.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-own"))
+        XCTAssertFalse(report.salvagedRuntimeDirs.contains("rt-own"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0x6A, count: 8192)
+        )
+        _ = held
+        await held.release()
+    }
+
+    /// The positive control: a dead pid past TTL is provably stale, so the
+    /// ordinary verified salvage path runs and the directory is removed.
+    func testRecoverySalvagesWorkingDiskWhenLeaseProvenStale() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(manifest)
+        try await registerEnvironment(
+            "env-stale", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased()
+        )
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-stale")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let disk = directory.appendingPathComponent("disk.img")
+        _ = try await store.blobs.materialize(
+            digest: ref.sha512.lowercased(), at: disk, writable: true
+        )
+        try writeBytes(disk, at: 2 << 20, Data(repeating: 0x6B, count: 4096))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-stale", environmentID: "env-stale",
+                baseImageID: baseImageID, createdAt: Date(),
+                bootBaseDiskDigest: ref.sha512.lowercased()
+            ),
+            to: directory
+        )
+        let environmentDir = try layout.environmentDirectory(environmentID: "env-stale")
+        try FileManager.default.createDirectory(at: environmentDir, withIntermediateDirectories: true)
+        try RuntimeV2LeaseStore.encoder.encode(liveLease(
+            environmentID: "env-stale", runtimeID: "rt-stale",
+            incarnation: "other-incarnation", pid: 4_000_000,
+            renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )).write(to: environmentDir.appendingPathComponent("lease.json"), options: .atomic)
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.salvagedRuntimeDirs.contains("rt-stale"))
+        XCTAssertFalse(report.preservedRuntimeDirs.contains("rt-stale"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        let delta = try await relaunched.deltas.loadDelta(environmentID: "env-stale")
+        XCTAssertGreaterThan(delta?.presentBlocks ?? 0, 0)
+    }
+
+    /// An ownership record that names a different runtime than the directory
+    /// it sits in is inconsistent: attribution is uncertain, so the disk is
+    /// preserved untouched (never captured against the wrong environment).
+    func testRecoveryPreservesWorkingDiskWithInconsistentOwnershipRecord() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment("env-mismatch", baseImageID: baseImageID, rootfsDigest: nil)
+        let directory = try makeLeftoverWorkingDisk(
+            runtimeID: "rt-mismatch", environmentID: "env-mismatch",
+            metaRuntimeID: "somebody-else"
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-mismatch"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        let mismatchDelta = try await relaunched.deltas.loadDelta(environmentID: "env-mismatch")
+        XCTAssertNil(mismatchDelta)
+    }
+
+    /// A working disk whose environment the registry does not know is not
+    /// adoptable: preserved for inspection, never captured.
+    func testRecoveryPreservesWorkingDiskOfUnknownEnvironment() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let directory = try makeLeftoverWorkingDisk(
+            runtimeID: "rt-orphan", environmentID: "env-never-registered"
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-orphan"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    // MARK: - P0: blob GC is linearized against stage/ingest via durable claims
+
+    /// The deterministic registration/GC interleaving: blob GC runs in the
+    /// window AFTER the disk bytes were staged and BEFORE the ingest
+    /// transaction records the owner (injected on the seam). The durable
+    /// staging claim — not a post-await refs re-check — must refuse the
+    /// collection: the physical bytes stay at the canonical path, and the
+    /// registration completes with the bytes present and referenced.
+    func testBlobGCSkipsStagedDiskBetweenStageAndRegistration() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(manifest)
+        // Same layout, same database: driving the interleaved GC through the
+        // original store's actors exercises exactly the files and rows the
+        // raced build is staging.
+        let blobs = await store.blobs
+        let registry = await store.registry
+
+        var racedSeams = RuntimeV2TemplateStore.Seams.production
+        let claimBox = TestDigestBox()
+        let canonicalBox = TestDigestBox()
+        let reclaimedBox = TestDigestBox()
+        racedSeams.beforeRecordIngest = { _, _, digest in
+            // 1. The staging claim is durable BEFORE the ingest: GC must see it.
+            let claimed = try? await registry.blob(digest: digest)
+            await claimBox.set(claimed.map { "\($0.staged)" })
+            // 2. Run the "concurrent" collection deterministically inside the
+            //    window, with a grace of zero and a future clock so the fresh
+            //    row passes the age filter: only the claim may refuse it.
+            let reclaimed = (try? await blobs.collectGarbage(
+                grace: 0, now: Date().addingTimeInterval(30)
+            )) ?? -1
+            await reclaimedBox.set("\(reclaimed)")
+            // 3. The physical bytes must still be at the canonical path — GC
+            //    neither deleted them nor moved them to quarantine.
+            let canonical = try? await blobs.verifiedBlobURL(digest: digest)
+            await canonicalBox.set(canonical?.path)
+        }
+        store = RuntimeV2Store(layout: layout, templateSeams: racedSeams)
+        _ = try await store.prepareAndRecover(build: "test")
+        let template = try await buildTemplate(
+            marker: 0xE1, packages: [package("python3", "3.11.2")],
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+
+        // The claim was observed during the window; the interleaved GC
+        // reclaimed NOTHING (the claim refused the collection); the bytes
+        // survived at the canonical path; the registration completed and
+        // referenced them.
+        let observedClaim = await claimBox.get()
+        XCTAssertEqual(observedClaim, "1")
+        let observedReclaimed = await reclaimedBox.get()
+        XCTAssertEqual(observedReclaimed, "0")
+        let observedPath = await canonicalBox.get()
+        let canonicalPath = try XCTUnwrap(observedPath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canonicalPath))
+        let row = try await store.registry.blob(digest: template.diskDigest)
+        XCTAssertEqual(row?.refs, 1)
+        XCTAssertEqual(row?.staged, 0)
+        let state = try await store.templates.version(templateID: "basic", version: 1)?.state
+        XCTAssertEqual(state, .verified)
+        XCTAssertEqual(
+            try FloeDigest.sha512Hex(ofFileAt: URL(fileURLWithPath: canonicalPath)),
+            template.diskDigest
+        )
+    }
+
+    /// The registry claim is authoritative even when the reference lands
+    /// after the candidate listing: the collection transaction itself refuses
+    /// the delete, and the physical bytes stay untouched.
+    func testBlobGCClaimRefusesDeleteAfterReferenceLands() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(manifest)
+        let digest = ref.sha512.lowercased()
+        // Release the base image's reference: an aged, unreferenced row.
+        try await store.blobs.release(digest: digest)
+        let candidates = try await store.registry.unreferencedBlobs(
+            olderThan: Date().addingTimeInterval(30)
+        )
+        XCTAssertTrue(candidates.contains { $0.digest == digest })
+
+        // The reference lands inside the window (any order the transaction
+        // serializes, the claim must refuse the stale view).
+        try await store.registry.claimBlobReference(digest: digest, bytes: ref.bytes)
+        let collected = try await store.registry.collectBlobIfUnreferenced(digest: digest)
+        XCTAssertFalse(collected, "a referenced row must refuse the GC claim")
+        let row = try await store.registry.blob(digest: digest)
+        XCTAssertEqual(row?.refs, 1)
+        let canonical = try await store.blobs.verifiedBlobURL(digest: digest)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canonical.path))
+    }
+
+    /// A collected blob's bytes are never hard-deleted: GC moves them to the
+    /// deterministic quarantine slot, and the first verified read restores
+    /// them to the canonical path — no verified reference can ever observe
+    /// missing bytes.
+    func testBlobGCQuarantinesBytesAndVerifiedReadRestoresThem() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(manifest)
+        let digest = ref.sha512.lowercased()
+        try await store.blobs.release(digest: digest)
+        let canonical = try await store.blobs.verifiedBlobURL(digest: digest)
+
+        let reclaimed = try await store.blobs.collectGarbage(
+            grace: 0, now: Date().addingTimeInterval(30)
+        )
+        XCTAssertGreaterThan(reclaimed, 0)
+        let goneRow = try await store.registry.blob(digest: digest)
+        XCTAssertNil(goneRow)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: canonical.path))
+        let quarantine = try layout.blobQuarantineURL(digest: digest)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: quarantine.path))
+
+        // The first verified reader restores the exact bytes.
+        let restored = try await store.blobs.verifiedBlobURL(digest: digest)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: restored.path))
+        XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: restored), digest)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: quarantine.path))
+
+        // Full re-verification also self-heals a reclaimed blob.
+        try await store.blobs.release(digest: digest)
+        _ = try await store.blobs.collectGarbage(grace: 0, now: Date().addingTimeInterval(30))
+        try await store.blobs.verify(digest: digest)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canonical.path))
+    }
+
+    /// An ingest that fails before its reference conversion releases its
+    /// staging claim, and a process restart resets any claim the dead process
+    /// left behind — staged bytes never leak permanent GC protection.
+    func testStagingClaimsAreReleasedOnFailureAndResetOnRecovery() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let source = root.appendingPathComponent("claim-source.bin")
+        try Data(repeating: 0xC1, count: 4096).write(to: source)
+        let digest = try FloeDigest.sha512Hex(ofFileAt: source)
+
+        // A stage that never reaches registration (simulated by failing the
+        // placement: size disagreement) must not leave a claim behind.
+        do {
+            _ = try await store.blobs.stageUnreferenced(
+                sourceURL: source, expectedSHA512: digest, expectedBytes: 8192
+            )
+            XCTFail("a size disagreement must refuse the stage")
+        } catch {
+            // expected
+        }
+        var row = try await store.registry.blob(digest: digest)
+        XCTAssertTrue(row == nil || row?.staged == 0)
+
+        // A claim taken by a dying process is reset by startup recovery, so
+        // the bytes become collectable again instead of leaking protection.
+        try await store.registry.takeBlobStagingClaim(digest: digest, bytes: 4096)
+        row = try await store.registry.blob(digest: digest)
+        XCTAssertEqual(row?.staged, 1)
+        let relaunched = RuntimeV2Store(layout: layout)
+        _ = try await relaunched.prepareAndRecover(build: "test")
+        row = try await relaunched.registry.blob(digest: digest)
+        XCTAssertEqual(row?.staged, 0)
+    }
+
+    // MARK: - P0: failed-capture persistence is durable before the lease release
+
+    /// Fault at the shutdown-record stage: the disk is quarantined (physical
+    /// preservation is independent of persistence), but the lease is KEPT,
+    /// the outcome truthfully says the marker could not be persisted, and a
+    /// restart of the environment is refused — no `try?` converts the
+    /// preservation failure into a releasable success.
+    func testFailedCaptureShutdownRecordFaultRetainsLeaseAndRefusesRestart() async throws {
+        try await assertFailedCapturePersistenceFault(
+            seams: RuntimeV2GuestIntegrator.Seams(
+                recordShutdown: { _, _ in throw CocoaError(.fileWriteUnknown) }
+            ),
+            expectShutdownRecord: false
+        )
+    }
+
+    /// Fault at the repair-marker stage (the shutdown record DID persist):
+    /// the lease is still kept — the durable exclusion must exist before the
+    /// release, and half-persisted failure state is not success.
+    func testFailedCaptureRepairMarkerFaultRetainsLeaseAndRefusesRestart() async throws {
+        try await assertFailedCapturePersistenceFault(
+            seams: RuntimeV2GuestIntegrator.Seams(
+                markRepairRequired: { _, _ in throw RuntimeV2Error.registryCorrupt("injected") }
+            ),
+            expectShutdownRecord: true
+        )
+    }
+
+    private func assertFailedCapturePersistenceFault(
+        seams: RuntimeV2GuestIntegrator.Seams,
+        expectShutdownRecord: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(manifest)
+        let template = try await buildTemplate(
+            marker: 0x7E, packages: [package("python3", "3.11.2")],
+            parent: baseParent(ref, imageID: baseImageID)
+        )
+        try await registerEnvironment(
+            "env-fault", baseImageID: baseImageID, rootfsDigest: ref.sha512.lowercased()
+        )
+        _ = try await store.templates.pinEnvironment(
+            environmentID: "env-fault", templateID: "basic", version: 1
+        )
+        // The production shape: ONE integrator boots the environment and later
+        // stops it, so the retained lease after a persistence fault is this
+        // very integrator's held lease (the surviving exclusion).
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "test", seams: seams)
+        let admission = try await integrator.acquireSlot(
+            environmentID: "env-fault", runtimeID: "rt-fault", requestedMB: 512
+        )
+        XCTAssertGreaterThan(admission.ramMB, 0, file: file, line: line)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-fault", runtimeID: "rt-fault", imageID: baseImageID,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        try writeBytes(work.diskURL, at: 2 << 20, Data(repeating: 0x7F, count: 4096))
+        // The immutable boot base disappears: the capture cannot be proven.
+        let blobURL = try await store.blobs.verifiedBlobURL(digest: template.diskDigest)
+        try FileManager.default.removeItem(at: blobURL)
+        let outcome = await integrator.completeStopResult(
+            environmentID: "env-fault", runtimeID: "rt-fault", imageID: baseImageID, clean: true
+        )
+        guard case .retainedForRepair(let reason) = outcome else {
+            XCTFail("a failed capture must retain the disk, got \(outcome)", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(reason.contains("could not be persisted"), file: file, line: line)
+        XCTAssertTrue(reason.contains("lease was retained"), file: file, line: line)
+
+        // Physical preservation happened regardless of the persistence fault.
+        let quarantined = try quarantinedEntries(prefix: "runtime-vm-rt-fault")
+        XCTAssertEqual(quarantined.count, 1, file: file, line: line)
+        let preservedDisk = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        XCTAssertEqual(
+            try readBytes(preservedDisk, at: 2 << 20, count: 4096),
+            Data(repeating: 0x7F, count: 4096),
+            file: file, line: line
+        )
+
+        // The shutdown record exists only when that stage's write succeeded.
+        let shutdown = try await store.deltas.lastShutdown(environmentID: "env-fault")
+        if expectShutdownRecord {
+            XCTAssertNotNil(shutdown, file: file, line: line)
+        } else {
+            XCTAssertNil(shutdown, file: file, line: line)
+        }
+
+        // The lease was NOT released: the sole exclusion survived, the
+        // environment was not marked repairRequired by a failed write, and a
+        // restart is refused while the preserved bytes exist.
+        let holder = try await store.leases.holder(environmentID: "env-fault")
+        XCTAssertEqual(holder?.runtimeID, "rt-fault", file: file, line: line)
+        let state = try await store.registry.environment(id: "env-fault")?.state
+        XCTAssertNotEqual(state, "repairRequired", file: file, line: line)
+        do {
+            _ = try await integrator.prepareWorkingDisk(
+                environmentID: "env-fault", runtimeID: "rt-fault-2", imageID: baseImageID,
+                legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+            )
+            XCTFail("a restart over preserved bytes must be refused while the lease is retained", file: file, line: line)
+        } catch RuntimeV2Error.leaseHeld {
+            // expected
+        }
+    }
+
+    /// A failed/partial lease release can never clear the sole exclusion
+    /// sidecar: when the durable registry release fails (the injected
+    /// full-disk/IO/DB fault), the sidecar stays and the holder is still
+    /// observed — the exclusion survives for the next launch to re-prove.
+    func testLeaseReleaseKeepsSidecarWhenDurableReleaseFails() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let registry = await store.registry
+        let faulting = RuntimeV2LeaseStore(
+            layout: layout,
+            registry: registry,
+            incarnation: "fault-incarnation",
+            seams: .init(releaseInRegistry: { _, _ in
+                throw RuntimeV2Error.registryCorrupt("injected durable-release fault")
+            })
+        )
+        let held = try await faulting.acquire(
+            environmentID: "env-keep", runtimeID: "rt-keep"
+        )
+        await held.release()
+
+        // The sidecar — the surviving exclusion record — was NOT removed.
+        let sidecar = try layout.environmentLeaseURL(environmentID: "env-keep")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
+        let holder = try await faulting.holder(environmentID: "env-keep")
+        XCTAssertEqual(holder?.runtimeID, "rt-keep")
+    }
 }
 
 /// Small Sendable box for capturing a digest from a seam closure.

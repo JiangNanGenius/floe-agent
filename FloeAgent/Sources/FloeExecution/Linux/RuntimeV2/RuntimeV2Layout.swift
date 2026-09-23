@@ -345,6 +345,20 @@ public struct RuntimeV2Layout: Sendable {
             .appendingPathComponent(normalized)
     }
 
+    /// Deterministic quarantine slot for a reclaimed blob's physical bytes.
+    /// Content-addressed bytes have exactly one quarantine slot per digest, so
+    /// a consumer that finds the canonical path empty can restore the exact
+    /// bytes back (and racing re-placements of identical content are
+    /// indistinguishable anyway). GC never hard-deletes blob bytes; it moves
+    /// them here so a racing stage/ingest can always recover.
+    public func blobQuarantineURL(digest: String) throws -> URL {
+        let normalized = digest.lowercased()
+        guard normalized.count == 128, normalized.allSatisfy({ $0.isHexDigit }) else {
+            throw RuntimeV2Error.invalidIdentifier(kind: "blob-digest", value: String(digest.prefix(24)))
+        }
+        return quarantineDirectory.appendingPathComponent("blob-\(normalized)")
+    }
+
     // MARK: containment
 
     /// Resolves `url` and proves it stays under the runtime root without

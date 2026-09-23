@@ -132,6 +132,16 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     func planRetier(environmentID: String, ramMB: Int) async throws
     /// Confirms a tier change after the stop/flush/restart path completed.
     func confirmTier(environmentID: String, ramMB: Int) async
+    /// Result-carrying stop for callers (guest registry/UI) that need the
+    /// durable outcome. A REQUIREMENT (not only an extension method) so the
+    /// real implementation is reached through the existential `any
+    /// LinuxGuestRuntimeV2Integrating`: a refused capture is never reported
+    /// as `.unknown`, and `retainedForRepair` keeps its truthful reason.
+    /// Conformers that only implement the legacy `completeStop` keep the
+    /// compatible default below, which reports `.unknown` honestly.
+    func completeStopResult(
+        environmentID: String, runtimeID: String, imageID: String, clean: Bool
+    ) async -> RuntimeV2StopOutcome
 }
 
 public extension LinuxGuestRuntimeV2Integrating {
@@ -141,9 +151,8 @@ public extension LinuxGuestRuntimeV2Integrating {
     /// declaration — never an engine query.
     func imageSMPCapable(imageID: String) async -> Bool { false }
 
-    /// Result-carrying stop for callers (guest registry/UI) that need the
-    /// durable outcome. The default keeps existing conformers source
-    /// compatible: it runs `completeStop` and reports `unknown`.
+    /// Compatible default for conformers that predate the result-carrying
+    /// stop: runs the legacy `completeStop` and reports `unknown` honestly.
     func completeStopResult(
         environmentID: String, runtimeID: String, imageID: String, clean: Bool
     ) async -> RuntimeV2StopOutcome {
@@ -156,17 +165,48 @@ public extension LinuxGuestRuntimeV2Integrating {
 
 /// Production integrator backed by a RuntimeV2Store.
 public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
+    /// Injectable persistence seams so the failed-capture retention path can
+    /// be driven with a fault at EACH individual durable stage (shutdown
+    /// record vs repair marker) and prove the lease is kept either way.
+    public struct Seams: Sendable {
+        /// Replaces the durable shutdown-record write after a failed capture
+        /// (throw to inject an IO fault at exactly that stage). nil = normal.
+        public var recordShutdown: (@Sendable (RuntimeV2DeltaStore.ShutdownRecord, String) async throws -> Void)?
+        /// Replaces the durable repairRequired transition (throw to inject a
+        /// registry fault at exactly that stage). nil = normal.
+        public var markRepairRequired: (@Sendable (String, String) async throws -> Void)?
+
+        public init(
+            recordShutdown: (@Sendable (RuntimeV2DeltaStore.ShutdownRecord, String) async throws -> Void)? = nil,
+            markRepairRequired: (@Sendable (String, String) async throws -> Void)? = nil
+        ) {
+            self.recordShutdown = recordShutdown
+            self.markRepairRequired = markRepairRequired
+        }
+
+        public static let production = Seams()
+    }
+
     private let store: RuntimeV2Store
     private let legacyImagesRoot: URL?
     private let build: String
+    private let seams: Seams
     private var fileManager: FileManager { .default }
     private var prepared = false
-    /// Held leases by runtimeID so completeStop releases exactly its own.
+    /// Held leases by runtimeID so completeStop releases exactly its own. A
+    /// lease kept here after a persistence failure is the surviving exclusion:
+    /// it is NOT treated as stale by a later acquire in this process.
     private var heldLeases: [String: RuntimeV2LeaseStore.HeldLease] = [:]
 
-    public init(store: RuntimeV2Store, legacyImagesRoot: URL? = nil, build: String? = nil) {
+    public init(
+        store: RuntimeV2Store,
+        legacyImagesRoot: URL? = nil,
+        build: String? = nil,
+        seams: Seams = .production
+    ) {
         self.store = store
         self.legacyImagesRoot = legacyImagesRoot
+        self.seams = seams
         self.build = build
             ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
             ?? "unknown"
@@ -321,11 +361,18 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         // only reaches here when no session exists, no teardown is in flight
         // and the environment is not quarantined, so no live VM/thread/disk
         // handle references it. A lease from THIS process incarnation is
-        // therefore provably stale here; any other incarnation falls back to
-        // the store's cross-process proof (recorded pid dead + TTL expired).
+        // therefore provably stale here — EXCEPT a lease this integrator still
+        // holds: that is the surviving exclusion of a failed capture whose
+        // repair marker could not be persisted, and treating it as stale
+        // would let a fresh start overwrite preserved state. Any other
+        // incarnation falls back to the store's cross-process proof (recorded
+        // pid dead + TTL expired).
         let ownIncarnation = await store.leases.incarnation
-        let staleProof: RuntimeV2LeaseStore.StaleProof = { lease in
-            if lease.incarnation == ownIncarnation { return true }
+        let staleProof: RuntimeV2LeaseStore.StaleProof = { [weak self] lease in
+            if lease.incarnation == ownIncarnation {
+                guard let self else { return false }
+                return await self.heldLeases[lease.runtimeID] == nil
+            }
             return RuntimeV2LeaseStore.processLiveness(lease: lease)
         }
         let lease = try await store.leases.acquire(
@@ -540,10 +587,15 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
 
     /// Failed-capture retention. The complete stopped disk moves into
     /// recovery/quarantine (never deleted, never left as a bootable live
-    /// duplicate), the durable shutdown record and the repairRequired state are
-    /// written, and only after that durable failure state exists is the lease
-    /// released so the environment cannot silently boot over the preserved
-    /// bytes.
+    /// duplicate) — that physical preservation is independent of persistence
+    /// success. THEN the durable failure state (shutdown record +
+    /// repairRequired marker) is written, and only after BOTH durable writes
+    /// committed is the lease released. If either durable write fails (full
+    /// disk / IO / DB fault), the preservation is NOT converted into success:
+    /// the lease stays held — the sole exclusion that keeps a new start from
+    /// overwriting the preserved bytes — and the returned outcome says so
+    /// truthfully (the guest registry surfaces it as repair-required and
+    /// refuses a normal restart).
     @discardableResult
     private func preserveAfterFailedCapture(
         environmentID: String, runtimeID: String, directory: URL, error: Error
@@ -551,28 +603,44 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         let quarantine = store.layout.quarantineDirectory.appendingPathComponent(
             "runtime-vm-\(runtimeID)-\(UUID().uuidString)", isDirectory: true
         )
-        let detail: String
+        let preserved: String
         if (try? fileManager.moveItem(at: directory, to: quarantine)) != nil {
-            detail = "the stopped working disk could not be captured into the delta "
+            preserved = "the stopped working disk could not be captured into the delta "
                 + "(\(error.localizedDescription)); the complete disk was preserved at "
-                + "recovery/quarantine/\(quarantine.lastPathComponent) and the environment "
-                + "was marked repairRequired"
+                + "recovery/quarantine/\(quarantine.lastPathComponent)"
         } else {
-            detail = "the stopped working disk could not be captured into the delta "
+            preserved = "the stopped working disk could not be captured into the delta "
                 + "(\(error.localizedDescription)) and could not be quarantined; the disk remains "
-                + "at runtime/vm/\(runtimeID) and the environment was marked repairRequired, so no "
-                + "new guest can boot over it"
+                + "at runtime/vm/\(runtimeID)"
         }
-        try? await store.deltas.recordShutdown(
-            RuntimeV2DeltaStore.ShutdownRecord(
-                environmentID: environmentID, runtimeID: runtimeID,
-                stoppedAt: Date(), clean: false, deltaGeneration: nil, detail: detail
-            ),
-            environmentID: environmentID
+        let detail = preserved + " and the environment was marked repairRequired"
+        let record = RuntimeV2DeltaStore.ShutdownRecord(
+            environmentID: environmentID, runtimeID: runtimeID,
+            stoppedAt: Date(), clean: false, deltaGeneration: nil, detail: detail
         )
-        try? await store.registry.setEnvironmentState(
-            id: environmentID, state: "repairRequired", repairReason: detail
-        )
+        do {
+            if let recordShutdown = seams.recordShutdown {
+                try await recordShutdown(record, environmentID)
+            } else {
+                try await store.deltas.recordShutdown(record, environmentID: environmentID)
+            }
+            if let markRepairRequired = seams.markRepairRequired {
+                try await markRepairRequired(environmentID, detail)
+            } else {
+                try await store.registry.setEnvironmentState(
+                    id: environmentID, state: "repairRequired", repairReason: detail
+                )
+            }
+        } catch {
+            // Durable failure state could not be written: keep the lease and
+            // say so. No `try?` here converts preservation failure into
+            // success, and releaseLease is deliberately NOT called.
+            let retained = detail + "; additionally the repair marker could not be "
+                + "persisted (\(error.localizedDescription)), so the write lease was "
+                + "retained and the environment cannot be restarted until repair"
+            await store.logs.log("runtime v2 stop capture failed environment=\(environmentID): \(retained)")
+            return retained
+        }
         await releaseLease(environmentID: environmentID, runtimeID: runtimeID)
         await store.logs.log("runtime v2 stop capture failed environment=\(environmentID): \(detail)")
         return detail

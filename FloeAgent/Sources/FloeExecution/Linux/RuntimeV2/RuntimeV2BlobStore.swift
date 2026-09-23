@@ -69,6 +69,15 @@ public actor RuntimeV2BlobStore {
     /// mutates an existing blob in place: identical content is reused, corrupt
     /// existing content is moved to quarantine before the staged replacement
     /// lands.
+    ///
+    /// The ingest is claim-protected end to end: a durable staged-ownership
+    /// claim is taken BEFORE the bytes become visible, and the reference
+    /// conversion (`claimBlobReference`) commits in ONE transaction — so blob
+    /// GC can never reclaim the bytes between placement and reference, even
+    /// when the blob row pre-existed (an old released row is immediately
+    /// collectable again). After the reference commits, the bytes are proven
+    /// present at the canonical path (restoring from quarantine or re-copying
+    /// from `sourceURL` when a racing GC claimed the row first).
     @discardableResult
     public func ingest(
         sourceURL: URL,
@@ -76,27 +85,103 @@ public actor RuntimeV2BlobStore {
         expectedBytes: Int64,
         retainFor imageID: String?
     ) async throws -> String {
-        let digest = try await place(
-            sourceURL: sourceURL, expectedSHA512: expectedSHA512, expectedBytes: expectedBytes
-        )
-        try await registry.adjustBlobRefs(digest: digest, delta: 1)
-        return digest
+        let digest = expectedSHA512.lowercased()
+        try await registry.takeBlobStagingClaim(digest: digest, bytes: expectedBytes)
+        do {
+            let placed = try await place(
+                sourceURL: sourceURL, expectedSHA512: expectedSHA512, expectedBytes: expectedBytes
+            )
+            try await registry.claimBlobReference(digest: placed, bytes: expectedBytes)
+            try await ensureBlobPresent(digest: placed, sourceURL: sourceURL)
+            return placed
+        } catch {
+            try? await registry.releaseBlobStagingClaim(digest: digest)
+            throw error
+        }
     }
 
     /// Places and fully verifies the blob WITHOUT taking a reference. The
     /// caller must take the reference in the same transaction that records the
     /// durable owner (`RuntimeV2Registry.recordTemplateIngest`), so a crash can
-    /// never leave a reference nobody owns. A placed-but-unreferenced blob is
-    /// recorded with refs 0 and is reclaimable by blob GC.
+    /// never leave a reference nobody owns.
+    ///
+    /// The stage is claim-protected: a durable staged-ownership claim is taken
+    /// BEFORE the bytes are placed, so a concurrent `collectGarbage` can never
+    /// delete the physical bytes or the row between placement and the
+    /// registration transaction — the claim (not a re-check after an await) is
+    /// what refuses the GC claim inside its own transaction. The caller
+    /// converts the claim via `recordTemplateIngest` (or releases it with
+    /// `releaseStagingClaim` on the compensating path).
     @discardableResult
     public func stageUnreferenced(
         sourceURL: URL,
         expectedSHA512: String,
         expectedBytes: Int64
     ) async throws -> String {
-        try await place(
-            sourceURL: sourceURL, expectedSHA512: expectedSHA512, expectedBytes: expectedBytes
-        )
+        let digest = expectedSHA512.lowercased()
+        try await registry.takeBlobStagingClaim(digest: digest, bytes: expectedBytes)
+        do {
+            return try await place(
+                sourceURL: sourceURL, expectedSHA512: expectedSHA512, expectedBytes: expectedBytes
+            )
+        } catch {
+            try? await registry.releaseBlobStagingClaim(digest: digest)
+            throw error
+        }
+    }
+
+    /// Compensating path for a stage that never reached its reference: releases
+    /// exactly the one claim `stageUnreferenced` took (clamped, idempotent).
+    public func releaseStagingClaim(digest: String) async {
+        try? await registry.releaseBlobStagingClaim(digest: digest.lowercased())
+    }
+
+    /// Proves the referenced bytes exist at the canonical path after the
+    /// reference committed. A racing GC can have reclaimed the row and moved
+    /// the bytes to quarantine in the tiny window before the reference
+    /// committed; content addressing makes every copy identical, so the bytes
+    /// are first restored from the deterministic quarantine slot and only
+    /// re-copied from the caller's `sourceURL` when no quarantine copy exists.
+    /// Throws `blobMissing` only when neither source has the bytes.
+    public func ensureBlobPresent(digest: String, sourceURL: URL) async throws {
+        let normalized = digest.lowercased()
+        let canonical = try layout.blobURL(digest: normalized)
+        if fileManager.fileExists(atPath: canonical.path) { return }
+        restoreBlobFromQuarantine(digest: normalized, canonical: canonical)
+        if fileManager.fileExists(atPath: canonical.path) { return }
+        // No quarantine copy: re-place from the caller's own verified source.
+        try fileManager.createDirectory(at: canonical.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileManager.copyItem(at: sourceURL, to: canonical)
+        let actual = try FloeDigest.sha512Hex(ofFileAt: canonical)
+        guard actual == normalized else {
+            try? fileManager.removeItem(at: canonical)
+            throw RuntimeV2Error.blobDigestMismatch(expected: normalized, actual: actual)
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o444], ofItemAtPath: canonical.path)
+    }
+
+    /// Restores a reclaimed blob's bytes from the deterministic quarantine
+    /// slot when the canonical path is empty. Content addressing makes the
+    /// quarantine copy exactly the referenced bytes. Best effort: any failure
+    /// leaves the quarantine copy untouched for a later retry.
+    private func restoreBlobFromQuarantine(digest: String, canonical: URL) {
+        guard let quarantine = try? layout.blobQuarantineURL(digest: digest),
+              fileManager.fileExists(atPath: quarantine.path) else { return }
+        try? fileManager.createDirectory(at: canonical.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: canonical.path) {
+            // A racing stage already re-placed identical bytes; drop ours.
+            try? fileManager.removeItem(at: quarantine)
+            return
+        }
+        if rename(quarantine.path, canonical.path) != 0 {
+            do {
+                try fileManager.copyItem(at: quarantine, to: canonical)
+                try fileManager.removeItem(at: quarantine)
+            } catch {
+                return
+            }
+        }
+        try? fileManager.setAttributes([.posixPermissions: 0o444], ofItemAtPath: canonical.path)
     }
 
     private func place(
@@ -166,7 +251,13 @@ public actor RuntimeV2BlobStore {
     /// without a second materialization) still get a missing-blob error
     /// instead of a silent empty file.
     public func verifiedBlobURL(digest: String) throws -> URL {
-        let url = try layout.blobURL(digest: digest)
+        let normalized = digest.lowercased()
+        let url = try layout.blobURL(digest: normalized)
+        if !fileManager.fileExists(atPath: url.path) {
+            // The bytes may have been reclaimed into the deterministic
+            // quarantine slot between verified references; restore them.
+            restoreBlobFromQuarantine(digest: normalized, canonical: url)
+        }
         guard fileManager.fileExists(atPath: url.path) else {
             throw RuntimeV2Error.blobMissing(digest)
         }
@@ -175,7 +266,11 @@ public actor RuntimeV2BlobStore {
 
     /// Full re-verification of a blob (used by recovery scans and expansion).
     public func verify(digest: String) async throws {
-        let url = try layout.blobURL(digest: digest)
+        let normalized = digest.lowercased()
+        let url = try layout.blobURL(digest: normalized)
+        if !fileManager.fileExists(atPath: url.path) {
+            restoreBlobFromQuarantine(digest: normalized, canonical: url)
+        }
         guard fileManager.fileExists(atPath: url.path) else {
             throw RuntimeV2Error.blobMissing(digest)
         }
@@ -195,7 +290,11 @@ public actor RuntimeV2BlobStore {
     public func materialize(
         digest: String, at destination: URL, writable: Bool = false
     ) throws -> MaterializeReport {
-        let blob = try layout.blobURL(digest: digest)
+        let normalized = digest.lowercased()
+        let blob = try layout.blobURL(digest: normalized)
+        if !fileManager.fileExists(atPath: blob.path) {
+            restoreBlobFromQuarantine(digest: normalized, canonical: blob)
+        }
         guard fileManager.fileExists(atPath: blob.path) else {
             throw RuntimeV2Error.blobMissing(digest)
         }
@@ -220,8 +319,19 @@ public actor RuntimeV2BlobStore {
         )
     }
 
-    /// Deletes unreferenced blobs older than `grace`. Referenced blobs are
-    /// never collected; per-blob failures are skipped, not fatal.
+    /// Deletes unreferenced blobs older than `grace`. Referenced or staged
+    /// blobs are never collected; per-blob failures are skipped, not fatal.
+    ///
+    /// Collection is linearized against acquire (stage/ingest) through ONE
+    /// registry transaction per blob: `collectBlobIfUnreferenced` deletes the
+    /// row only when it is STILL `refs = 0 AND staged = 0` inside the
+    /// transaction, so a reference or staging claim that lands after the
+    /// candidate listing refuses the delete and the physical bytes are left
+    /// untouched. When the row delete commits, the physical bytes are MOVED to
+    /// the deterministic per-digest quarantine slot (never hard-deleted): a
+    /// racing stage that already re-created the row from identical content
+    /// loses nothing, because the bytes stay recoverable until a verified
+    /// reader restores or re-places them.
     @discardableResult
     public func collectGarbage(grace: TimeInterval = 7 * 24 * 3600, now: Date = Date()) async throws -> Int64 {
         let cutoff = now.addingTimeInterval(-grace)
@@ -229,15 +339,24 @@ public actor RuntimeV2BlobStore {
         var reclaimed: Int64 = 0
         for blob in candidates {
             guard let url = try? layout.blobURL(digest: blob.digest) else { continue }
-            // Refuse collection the moment anything still references the row.
-            guard let current = try await registry.blob(digest: blob.digest), current.refs == 0 else { continue }
+            guard try await registry.collectBlobIfUnreferenced(digest: blob.digest) else { continue }
+            reclaimed += blob.bytes
+            guard fileManager.fileExists(atPath: url.path) else { continue }
+            let quarantine = (try? layout.blobQuarantineURL(digest: blob.digest)) ?? layout.quarantineDirectory
+                .appendingPathComponent("blob-\(blob.digest)-\(UUID().uuidString)")
+            try? fileManager.createDirectory(at: quarantine.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: quarantine.path) {
+                // A stale quarantine copy of the same content-addressed bytes:
+                // identical content, so it can be replaced.
+                try? fileManager.removeItem(at: quarantine)
+            }
+            // chmod back to writable so the move succeeds, then quarantine.
+            try? fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
             do {
-                // chmod back to writable so the delete succeeds.
-                try? fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
-                try fileManager.removeItem(at: url)
-                try await registry.removeBlobRecord(digest: blob.digest)
-                reclaimed += blob.bytes
+                try fileManager.moveItem(at: url, to: quarantine)
             } catch {
+                // The row is gone but the bytes stay at the canonical path:
+                // harmless (a later stage reuses them) and still recoverable.
                 continue
             }
         }

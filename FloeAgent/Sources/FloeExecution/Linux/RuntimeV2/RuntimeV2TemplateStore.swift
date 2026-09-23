@@ -620,6 +620,12 @@ public actor RuntimeV2TemplateStore {
         /// Runs after the GC candidate listing and before the atomic
         /// collection transaction — the exact TOCTOU window.
         public var beforeCollectVersion: (@Sendable (String, Int) async -> Void)?
+        /// Runs after the disk bytes were staged (a durable staging claim
+        /// protects them) and before the ingest is recorded — the exact
+        /// window in which blob GC must refuse the staged bytes. Receives the
+        /// staged disk digest (the template row does not name it until the
+        /// ingest records it).
+        public var beforeRecordIngest: (@Sendable (String, Int, String) async -> Void)?
         /// Runs after the ingest was recorded and before the activation
         /// transaction.
         public var beforeActivation: (@Sendable (String, Int) async -> Void)?
@@ -629,12 +635,14 @@ public actor RuntimeV2TemplateStore {
             availableBytes: @escaping @Sendable (URL) -> Int64?,
             evidenceWrite: (@Sendable (Data, URL) throws -> Void)? = nil,
             beforeCollectVersion: (@Sendable (String, Int) async -> Void)? = nil,
+            beforeRecordIngest: (@Sendable (String, Int, String) async -> Void)? = nil,
             beforeActivation: (@Sendable (String, Int) async -> Void)? = nil
         ) {
             self.cloneFile = cloneFile
             self.availableBytes = availableBytes
             self.evidenceWrite = evidenceWrite
             self.beforeCollectVersion = beforeCollectVersion
+            self.beforeRecordIngest = beforeRecordIngest
             self.beforeActivation = beforeActivation
         }
 
@@ -1865,31 +1873,48 @@ public actor RuntimeV2TemplateStore {
                 installState: $0.installState, digest: $0.digest
             )
         }
+        var stagedDigest: String?
+        var stagingClaimPending = false
         do {
             // (1) Evidence staged and read back BEFORE anything can activate.
             try stageEvidence(inputs: inputs, diskDigest: diskDigest, contentDigest: contentDigest)
-            // (2) Content-addressed placement; identical content is reused.
-            let storedDigest = try await blobs.stageUnreferenced(
+            // (2) Content-addressed placement under a durable staging claim;
+            //    identical content is reused. The claim — not a post-await
+            //    re-check — is what makes blob GC refuse these bytes until
+            //    the ingest reference exists.
+            let stored = try await blobs.stageUnreferenced(
                 sourceURL: inputs.diskURL, expectedSHA512: diskDigest,
                 expectedBytes: bytes.logicalBytes
             )
-            // (3) The reference and the pending owner commit together.
+            stagedDigest = stored
+            stagingClaimPending = true
+            if let beforeRecordIngest = seams.beforeRecordIngest {
+                await beforeRecordIngest(request.templateID, request.version, diskDigest)
+            }
+            // (3) The reference and the pending owner commit together; the
+            //    staging claim is converted in the SAME transaction.
             guard try await registry.recordTemplateIngest(
                 templateID: request.templateID, version: request.version,
-                diskDigest: storedDigest, bytes: bytes.logicalBytes
+                diskDigest: stored, bytes: bytes.logicalBytes
             ) else {
                 throw RuntimeV2Error.templateNotVerified(
                     templateID: request.templateID, version: request.version,
                     reason: "the version left the building state before its disk was recorded; nothing was activated"
                 )
             }
+            stagingClaimPending = false
+            // A racing GC that claimed the row a heartbeat before the ingest
+            // committed moved the bytes to quarantine; the reference now
+            // exists, so the bytes must exist too (restored, or re-copied
+            // from the verified staging disk).
+            try await blobs.ensureBlobPresent(digest: stored, sourceURL: inputs.diskURL)
             if let beforeActivation = seams.beforeActivation {
                 await beforeActivation(request.templateID, request.version)
             }
             // (4) The single activation commit.
             let activated = try await registry.activateTemplateVersion(
                 templateID: request.templateID, version: request.version,
-                digest: contentDigest, diskDigest: storedDigest,
+                digest: contentDigest, diskDigest: stored,
                 logicalBytes: bytes.logicalBytes,
                 allocatedBytes: bytes.allocatedBytes ?? 0,
                 downloadBytes: inputs.downloadBytes,
@@ -1907,6 +1932,12 @@ public actor RuntimeV2TemplateStore {
                 )
             }
         } catch {
+            // The stage claim was converted only when the ingest committed;
+            // a failure before that must release exactly the one claim taken,
+            // or the bytes would leak permanent GC protection.
+            if stagingClaimPending, let stagedDigest {
+                await blobs.releaseStagingClaim(digest: stagedDigest)
+            }
             await abandonRegistration(inputs: inputs, reason: error.localizedDescription)
             throw error
         }
