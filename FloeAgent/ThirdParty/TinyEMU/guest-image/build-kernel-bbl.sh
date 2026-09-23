@@ -161,8 +161,11 @@ done
 {
     printf '\n## Build recipe (not run by default; `--rebuild` runs it)\n\n'
     printf 'Boot loader (riscv-pk):\n\n```sh\n'
-    printf 'cd riscv-pk-src\n./configure --host=riscv64-linux-gnu --with-arch=rv64gc --with-abi=lp64d\nmake\n'
-    printf '# -> bbl/bbl (the pinned bbl64.bin is the RAW bbl binary; record its sha256)\n```\n\n'
+    printf 'cd riscv-pk-src\nmkdir -p build && cd build\n../configure --host=riscv64-linux-gnu --with-arch=rv64gc\nmake\n'
+    printf '# (out-of-tree: the source tree already contains a pk/ directory, so\n'
+    printf '#  an in-tree link cannot create the pk program output)\n'
+    printf '# -> build/bbl (ELF link output; the pinned bbl64.bin is its RAW\n'
+    printf '#    objcopy -O binary image, produced below and in $out/boot/bbl64.bin)\n```\n\n'
     printf 'Kernel (riscv-linux):\n\n```sh\n'
     printf 'cd riscv-linux-src\ncp config_linux_riscv64 .config\nmake ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig\n'
     printf 'make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$(nproc)"\n'
@@ -216,10 +219,17 @@ if [ "$rebuild" = 1 ]; then
         extra_configure="--with-abi=lp64d"
     fi
     (
-        cd "$out/riscv-pk-src"
+        # Out-of-tree build (upstream's documented way): an in-tree build
+        # cannot link the `pk` program because the source directory already
+        # contains `pk/`, and the linker refuses to write a file named like
+        # an existing directory. The build directory has no such collision,
+        # so both `pk` and `bbl` link.
+        rm -rf "$out/riscv-pk-src/build"
+        mkdir -p "$out/riscv-pk-src/build"
+        cd "$out/riscv-pk-src/build"
         # LDFLAGS=-nostdlib keeps configure's compiler check from needing the
         # cross libc: riscv-pk is bare-metal and links with -nostdlib anyway.
-        ./configure --host=riscv64-linux-gnu --with-arch=rv64gc \
+        ../configure --host=riscv64-linux-gnu --with-arch=rv64gc \
             $extra_configure CFLAGS="$bbl_cflags" LDFLAGS="-nostdlib"
         make -j"$jobs"
     ) >"$out/rebuild-riscv-pk.log" 2>&1 || {
@@ -237,14 +247,21 @@ if [ "$rebuild" = 1 ]; then
     # $out/boot/bbl64.bin (never bbl/bbl).
     # ------------------------------------------------------------------
     rpk="$out/riscv-pk-src"
-    bbl_elf="$rpk/bbl/bbl"
     bbl_raw="$out/boot/bbl64.bin"
     kernel_raw="$out/boot/kernel-riscv64.bin"
     mkdir -p "$out/boot"
-    [ -f "$bbl_elf" ] || die "riscv-pk did not produce bbl/bbl"
-    if [ "$(dd if="$bbl_elf" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
-        die "bbl/bbl is not an ELF file; refusing to guess its layout"
-    fi
+    # the boot loader ELF: out-of-tree builds put it in build/, older/in-tree
+    # layouts in bbl/; accept only a file that really is an ELF
+    bbl_elf=""
+    for cand in "$rpk/build/bbl" "$rpk/bbl/bbl"; do
+        if [ -f "$cand" ] && \
+           [ "$(dd if="$cand" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
+            bbl_elf="$cand"
+            break
+        fi
+    done
+    [ -n "$bbl_elf" ] || die "riscv-pk produced no ELF boot loader (looked in build/bbl and bbl/bbl)"
+    log "boot loader ELF: $bbl_elf"
     bbl_entry="$(riscv64-linux-gnu-readelf -h "$bbl_elf" | awk '/Entry point address/{print $NF}')"
     # lowest LOAD segment address = where a raw copy must be loaded
     bbl_load="$(riscv64-linux-gnu-readelf -l "$bbl_elf" | awk '$1=="LOAD"{print $3}' | sort | head -1)"
@@ -261,12 +278,15 @@ if [ "$rebuild" = 1 ]; then
     # machine/mentry.S is the only thing that references disabled_hart_mask
     # from mentry.o, so its relocation proves the multi-hart IPI startup
     # path was compiled in (--with-arch=rv64gc => __riscv_atomic => MAX_HARTS 8)
-    if riscv64-linux-gnu-readelf -r "$rpk/machine/mentry.o" 2>/dev/null | grep -q disabled_hart_mask; then
+    mentry_obj="$(find "$rpk" -name mentry.o -not -path '*/.git/*' 2>/dev/null | head -1)"
+    if [ -n "$mentry_obj" ] && \
+       riscv64-linux-gnu-readelf -r "$mentry_obj" 2>/dev/null | grep -q disabled_hart_mask; then
         fw_multi_hart="mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)"
     else
-        fw_multi_hart="MISSING: mentry.o has no disabled_hart_mask relocation (MAX_HARTS==1)"
+        fw_multi_hart="MISSING: no mentry.o disabled_hart_mask relocation (MAX_HARTS==1)"
     fi
-    if riscv64-linux-gnu-readelf -A "$rpk/machine/mentry.o" 2>/dev/null | grep -qi "atomic"; then
+    if [ -n "$mentry_obj" ] && \
+       riscv64-linux-gnu-readelf -A "$mentry_obj" 2>/dev/null | grep -qi "atomic"; then
         fw_atomic="riscv-pk built with the A extension (__riscv_atomic)"
     else
         fw_atomic="riscv-pk A-extension attribute not reported"
