@@ -11,6 +11,10 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
+        // The kernel choice is a persisted user preference. Never pin it with
+        // a `-workspace.ide.nativeTextEditor` launch argument: the argument
+        // domain outranks the value the app writes when the kernel switches,
+        // so the switch would appear to apply while the toolbar stays native.
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
@@ -57,6 +61,7 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
+        // This leg starts native (the app default) and switches to Web itself.
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
@@ -83,32 +88,15 @@ final class WorkspaceIDEUITests: XCTestCase {
         save.tap()
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: save)], timeout: 20)
         capture("ide-web-fallback-saved")
-        // Compact widths collapse the trailing toolbar items into the system
-        // overflow menu; assert the same two actions through whichever
-        // surface actually renders them instead of weakening the check.
-        let richEditor = app.buttons["workspace.ide.richEditor"]
-        let terminal = app.buttons["workspace.ide.terminal"]
-        if richEditor.waitForExistence(timeout: 5) {
-            XCTAssertTrue(richEditor.isEnabled)
-            XCTAssertTrue(terminal.isEnabled)
-        } else {
-            let overflow = app.buttons["OverflowBarButtonItem"]
-            XCTAssertTrue(overflow.waitForExistence(timeout: 5))
-            overflow.tap()
-            // The app is forced to zh-Hans above; overflow menu items carry
-            // only their localized labels, not the button identifiers.
-            let richItem = overflowedAction(app, label: "用专用编辑器打开")
-            let terminalItem = overflowedAction(app, label: "终端")
-            XCTAssertTrue(richItem.exists)
-            XCTAssertTrue(terminalItem.exists)
-            XCTAssertTrue(richItem.isEnabled)
-            XCTAssertTrue(terminalItem.isEnabled)
-            capture("ide-web-fallback-overflow")
-            // Dismiss the menu through its own dismissal layer before the
-            // close step below; the tap must not reach the editor.
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
-            wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: richItem)], timeout: 5)
-        }
+        // Compact widths collapse trailing toolbar items into the system
+        // overflow menu, and different items may collapse independently, so
+        // assert each action through whichever surface actually renders it
+        // instead of weakening the check.
+        assertToolbarAction(app, identifier: "workspace.ide.richEditor", overflowLabel: "用专用编辑器打开")
+        // Terminal moved out of the top toolbar into the persistent left
+        // activity rail; verify the rail control and the bottom panel it
+        // opens (and collapses) on both idioms.
+        assertTerminalRailAndPanel(app)
         app.buttons["workspace.ide.close"].tap()
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
@@ -280,5 +268,86 @@ final class WorkspaceIDEUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         return item
+    }
+
+    /// Asserts one toolbar action is reachable and enabled through either the
+    /// bar itself or the compact overflow menu, and leaves the menu dismissed
+    /// so the next probe starts from the normal workbench.
+    private func assertToolbarAction(
+        _ app: XCUIApplication,
+        identifier: String,
+        overflowLabel: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let direct = app.buttons[identifier]
+        if direct.waitForExistence(timeout: 5), direct.isHittable {
+            XCTAssertTrue(direct.isEnabled, "\(identifier) must stay enabled", file: file, line: line)
+            return
+        }
+        let overflow = app.buttons["OverflowBarButtonItem"]
+        XCTAssertTrue(
+            overflow.waitForExistence(timeout: 5),
+            "neither the toolbar nor the overflow menu renders \(identifier)",
+            file: file, line: line
+        )
+        overflow.tap()
+        // The app is forced to zh-Hans above; overflow menu items carry only
+        // their localized labels, not the button identifiers.
+        let item = overflowedAction(app, label: overflowLabel, timeout: 10)
+        XCTAssertTrue(item.exists && item.isEnabled, "\(identifier) must stay enabled", file: file, line: line)
+        capture("ide-web-fallback-overflow-\(identifier)")
+        // Dismiss the menu through its own dismissal layer; the tap must not
+        // reach the editor. The dismissal assertion is scoped to the presented
+        // menu itself: `app.buttons[overflowLabel]` can also match a toolbar
+        // button that survives the probe (and a slow snapshot must not fail
+        // the reachability assertion above).
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
+        XCTAssertTrue(overflowMenuClosed(app, timeout: 10), "the overflow menu must close", file: file, line: line)
+    }
+
+    /// True once the presented overflow menu is gone. Scoped to the menu
+    /// container's `menuItems` so a toolbar button that happens to share the
+    /// item's localized label can never keep this check open.
+    private func overflowMenuClosed(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let menu = app.menuItems.firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !menu.exists { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        return !menu.exists
+    }
+
+    /// Verifies the terminal lives in the persistent left activity rail and
+    /// drives the collapsible bottom panel: the rail control is enabled,
+    /// tapping it reveals the panel, and the panel's collapse button hides
+    /// it without recreating the session. Runs on iPad and iPhone.
+    private func assertTerminalRailAndPanel(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let rail = app.buttons["workspace.ide.terminal"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 10), "the activity rail must expose a terminal control", file: file, line: line)
+        XCTAssertTrue(rail.isEnabled, "the terminal rail control must stay enabled", file: file, line: line)
+        let panel = app.otherElements["workspace.ide.terminalPanel"]
+        if !panel.exists { rail.tap() }
+        XCTAssertTrue(panel.waitForExistence(timeout: 10), "tapping the rail must open the terminal panel", file: file, line: line)
+        capture("ide-terminal-panel")
+        let collapse = app.buttons["workspace.ide.panel.close"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5), "the panel must offer a collapse control", file: file, line: line)
+        collapse.tap()
+        XCTAssertTrue(
+            elementGone(panel, timeout: 10),
+            "the panel collapse control must hide the panel", file: file, line: line
+        )
+    }
+
+    /// Polls until the element leaves the hierarchy (the panel collapse
+    /// animation makes a plain expectation racy).
+    private func elementGone(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !element.exists { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        return !element.exists
     }
 }
