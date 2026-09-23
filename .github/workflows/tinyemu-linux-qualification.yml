@@ -820,6 +820,7 @@ jobs:
               > "work/smp/smpboot-vcpu$v-stdout.txt" 2> "work/smp/smpboot-vcpu$v-time.txt"
             echo "smpboot_vcpu${v}_rc=$?" | tee -a "work/smp/smpboot-vcpu$v-rc.txt"
             set -e
+            cp work/smp/share/smp-uname.txt "work/smp/smpboot-vcpu$v-uname.txt" 2>/dev/null || true
           done
           python3 - <<'PY'
           import json, os, re, sys
@@ -863,9 +864,19 @@ jobs:
                   problems.append(f"vcpu={v}: guest never reached its DONE marker")
               if "FLOE_SMP_PARIO_OK" not in transcript:
                   problems.append(f"vcpu={v}: parallel 9p I/O marker missing")
-              if pair.get("kernel_ident") and pair["kernel_ident"] not in transcript:
-                  problems.append(f"vcpu={v}: transcript does not show the boot pair's kernel ident "
-                                  f"({pair['kernel_ident'][:60]})")
+              ident_token = ""
+              if pair.get("kernel_ident"):
+                  parts = pair["kernel_ident"].split()
+                  if len(parts) >= 3:
+                      ident_token = parts[2]   # e.g. 4.15.0-ga3b1e7acc-dirty
+              uname_path = f"work/smp/smpboot-vcpu{v}-uname.txt"
+              guest_uname = ""
+              if os.path.isfile(uname_path):
+                  guest_uname = open(uname_path, "r", errors="replace").read().strip()
+              print(f"vcpu={v}: guest uname: {guest_uname[:100] or '(missing)'}")
+              if ident_token and ident_token not in guest_uname:
+                  problems.append(f"vcpu={v}: the guest's own uname does not name the boot pair's "
+                                  f"kernel ({ident_token})")
               if v == "2":
                   # the probe sequence localizes a dual-hart stall: a builtin
                   # and a redirection (write syscall) need no fork, while
