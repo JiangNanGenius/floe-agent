@@ -202,7 +202,13 @@ if [ "$rebuild" = 1 ]; then
     # bare metal and links -nostdlib, so those references (__stack_chk_fail,
     # __stack_chk_guard, __*_chk) have no implementation. Ubuntu already broke
     # the link this way once; disable them explicitly for this build only.
-    bbl_cflags="-O2 -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
+    # riscv-pk's configure.ac overwrites CFLAGS with its own set, so these
+    # flags must go through make (the Makefile appends $(CFLAGS) after its
+    # own -Werror). -fno-stack-protector / -D_FORTIFY_SOURCE=0 are needed
+    # because Ubuntu's cross toolchain compiles with -fstack-protector-strong
+    # and -D_FORTIFY_SOURCE=3 by default while the firmware links -nostdlib
+    # (the third cloud run failed on __stack_chk_guard/__stack_chk_fail).
+    bbl_cflags="-fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
     for flag in -Wno-error=implicit-function-declaration \
                 -Wno-error=int-conversion \
                 -Wno-error=incompatible-pointer-types \
@@ -235,8 +241,8 @@ if [ "$rebuild" = 1 ]; then
         # LDFLAGS=-nostdlib keeps configure's compiler check from needing the
         # cross libc: riscv-pk is bare-metal and links with -nostdlib anyway.
         ../configure --host=riscv64-linux-gnu --with-arch=rv64gc \
-            $extra_configure CFLAGS="$bbl_cflags" LDFLAGS="-nostdlib"
-        make -j"$jobs"
+            $extra_configure LDFLAGS="-nostdlib"
+        make -j"$jobs" CFLAGS="$bbl_cflags"
     ) >"$out/rebuild-riscv-pk.log" 2>&1 || {
         printf 'build-kernel-bbl: riscv-pk rebuild failed; last lines:\n' >&2
         tail -c 4000 "$out/rebuild-riscv-pk.log" >&2 || true
