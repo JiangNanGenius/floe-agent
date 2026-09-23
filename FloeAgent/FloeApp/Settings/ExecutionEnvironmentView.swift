@@ -38,6 +38,11 @@ struct ExecutionEnvironmentView: View {
     /// shows the same numbers as notifications and the status surface.
     @State private var linuxBackgroundWork: BackgroundWorkSnapshot?
     @State private var activeServiceCount: Int?
+    /// Live identity probed from the running guest itself (never the host
+    /// kernel): kernel release and Python/Node versions. Hidden while stopped
+    /// or when a probe fails, so an unknown value never renders as a fact.
+    @State private var guestKernel: String?
+    @State private var guestRuntimes: [String: String] = [:]
 
     var body: some View {
         Form {
@@ -276,6 +281,15 @@ struct ExecutionEnvironmentView: View {
                 if let network = status.networkStatus {
                     LabeledContent("environment.backend.network", value: networkLabel(network))
                 }
+                if let kernel = guestKernel {
+                    LabeledContent("内核", value: kernel)
+                }
+                if let python = guestRuntimes["Python"] {
+                    LabeledContent("Python", value: python)
+                }
+                if let node = guestRuntimes["Node"] {
+                    LabeledContent("Node", value: node)
+                }
                 if let resize = status.diskResizeFailure {
                     Label(resize, systemImage: "wrench.and.screwdriver")
                         .font(.caption2)
@@ -336,7 +350,36 @@ struct ExecutionEnvironmentView: View {
             linuxEnvironmentTitle = name
         }
         linuxGuestStatus = await FloePlatformServices.shared.linuxGuestStatus(id: linux?.id)
+        await refreshGuestIdentity(environmentID: linux?.id)
         await linuxImageModel?.refresh(environmentIDHint: linux?.id)
+    }
+
+    /// Probes kernel + runtime versions from the running guest itself. A
+    /// stopped guest or a failed probe leaves the values nil (rows hidden),
+    /// never a host-side or image-side guess.
+    @MainActor private func refreshGuestIdentity(environmentID: String?) async {
+        guard let environmentID, linuxGuestStatus?.running == true else {
+            guestKernel = nil
+            guestRuntimes = [:]
+            return
+        }
+        if let uname = try? await FloePlatformServices.shared.runLinuxCommand(
+            id: environmentID, argv: ["uname", "-sr"], timeout: 15
+        ), uname.exitCode == 0 {
+            let kernel = uname.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guestKernel = kernel.isEmpty ? nil : kernel
+        } else {
+            guestKernel = nil
+        }
+        var versions: [String: String] = [:]
+        for (name, argv) in [("Python", ["python3", "--version"]), ("Node", ["node", "--version"])] {
+            guard let result = try? await FloePlatformServices.shared.runLinuxCommand(
+                id: environmentID, argv: argv, timeout: 20
+            ), result.exitCode == 0 else { continue }
+            let line = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty { versions[name] = line }
+        }
+        guestRuntimes = versions
     }
 
     private func startLinuxEnvironment() async {

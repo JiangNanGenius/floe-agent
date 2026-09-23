@@ -76,6 +76,23 @@ public enum GuestPythonRuntime {
         } catch {
             return .jsException(message: error.localizedDescription, stdout: "")
         }
+        // Resolve the cwd mapping before provisioning the shared venv: this
+        // query has no guest side effects, and an unmappable working
+        // directory must be rejected without touching the guest at all.
+        let pathMap = await (guests as? any LinuxGuestPathMapping)?.linuxGuestPathMap(environmentID: environmentID)
+        let workingDirectory: String?
+        if let hostCwd = request.pythonContext?.workingDirectory, !hostCwd.isEmpty {
+            guard let mapped = pathMap?.guestPath(forHostPath: hostCwd) else {
+                return .jsException(
+                    message: "The working directory is outside this environment's shared folders; run from the task workspace",
+                    stdout: ""
+                )
+            }
+            workingDirectory = mapped
+        } else {
+            workingDirectory = nil
+        }
+
         let python: LinuxGuestPythonEnvironment
         do {
             python = try await LinuxGuestPythonProvisioner.shared.ensure(
@@ -89,7 +106,6 @@ public enum GuestPythonRuntime {
             return .jsException(message: error.localizedDescription, stdout: "")
         }
         if cancellation?.isCancelled == true { return .cancelled }
-        let pathMap = await (guests as? any LinuxGuestPathMapping)?.linuxGuestPathMap(environmentID: environmentID)
 
         var script = Self.prelude
         if let inputJSON = request.inputJSON {
@@ -110,19 +126,6 @@ public enum GuestPythonRuntime {
         argv.append(contentsOf: LinuxGuestEnvironmentEncoding.argv(variables) ?? [])
         argv.append(contentsOf: [python.pythonPath, "-c", script])
         argv.append(contentsOf: request.pythonContext?.arguments ?? [])
-
-        let workingDirectory: String?
-        if let hostCwd = request.pythonContext?.workingDirectory, !hostCwd.isEmpty {
-            guard let mapped = pathMap?.guestPath(forHostPath: hostCwd) else {
-                return .jsException(
-                    message: "The working directory is outside this environment's shared folders; run from the task workspace",
-                    stdout: ""
-                )
-            }
-            workingDirectory = mapped
-        } else {
-            workingDirectory = nil
-        }
 
         let started = Date()
         do {
@@ -213,7 +216,10 @@ public enum GuestPythonRuntime {
     }
 
     /// Extracts the last printJSON sentinel; sentinel lines never reach the
-    /// visible stdout.
+    /// visible stdout. A stdout that ends with a newline splits into a phantom
+    /// final empty element; that is the line terminator, not visible output, so
+    /// at most one trailing empty element is dropped (a real blank final line
+    /// still survives as one empty element).
     static func splitResultMarkers(from stdout: String) -> (stdout: String, resultJSON: String?) {
         guard stdout.contains(resultMarker) else { return (stdout, nil) }
         var visible: [String] = []
@@ -224,6 +230,9 @@ public enum GuestPythonRuntime {
             } else {
                 visible.append(String(line))
             }
+        }
+        if visible.last == "" && stdout.hasSuffix("\n") {
+            visible.removeLast()
         }
         return (visible.joined(separator: "\n"), result)
     }

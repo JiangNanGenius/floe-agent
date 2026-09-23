@@ -15,6 +15,10 @@ struct EnvironmentLanguagePackagesView: View {
     @State private var query = ""
     @State private var loading = false
     @State private var error: String?
+    /// When the live guest list was last read; nil until the guest answered.
+    /// A stopped guest keeps the previous rows, labelled with this time.
+    @State private var collectedAt: Date?
+    @State private var guestRunning: Bool?
     @State private var pendingRemoval: EnvironmentLanguagePackageService.Package?
     @ObservedObject private var jobs = EnvironmentPackageJobs.shared
     private var running: Bool { jobs.running.contains(environmentID) }
@@ -34,7 +38,9 @@ struct EnvironmentLanguagePackagesView: View {
                 }.disabled(running || loading)
                 Text(language == .python ? sources.pythonIndex : sources.nodeRegistry)
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                Text(language == .python ? "安装纯 Python 软件包及兼容的依赖。需要原生扩展的包须使用已验证的预构建版本。" : "安装 JavaScript 模块及其依赖。安装脚本、原生二进制和符号链接暂不支持；检测失败会保留原有依赖。")
+                Text(language == .python
+                     ? "安装到此环境私有的受管 venv（/floe/env/python/venv）：此环境的 shell、Python 工具与本页共用同一套包，不同环境彼此隔离。优先安装 riscv64 预构建 wheel；无预构建的源码包需要 guest 内有编译工具链（dev-document 模板已含 build-essential）。镜像系统层的包只在“继承的依赖”中只读展示。"
+                     : "安装到此环境私有的 node_modules（/floe/env/usr/lib/node_modules），不同环境彼此隔离。真实 npm/pnpm 会执行安装脚本、安装原生二进制并创建 CLI 符号链接；失败时保留原有依赖。App 自带运行时不在此卸载。")
                     .font(.subheadline).foregroundStyle(.secondary)
                 Text("这里只展示环境中安装的依赖；App 自带运行时不在此卸载。").font(.caption).foregroundStyle(.secondary)
             }
@@ -78,8 +84,19 @@ struct EnvironmentLanguagePackagesView: View {
                     Button("重新读取") { Task { await reload() } }.disabled(running || loading)
                 }
             }
-            packageSection("本层安装", writable: true)
-            packageSection("继承的依赖", writable: false)
+            Section {
+                HStack(spacing: 6) {
+                    Image(systemName: guestRunning == true ? "dot.radiowaves.left.and.right" : "pause.circle")
+                        .font(.caption2)
+                        .foregroundStyle(guestRunning == true ? FloeTheme.success : .secondary)
+                    Text(freshnessLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .textSelection(.enabled)
+            }
+            packageSection(writableTitle, writable: true)
+            packageSection(inheritedTitle, writable: false)
         }
         .navigationTitle(language.title)
         .searchable(text: $query, prompt: "搜索已安装的依赖")
@@ -115,6 +132,31 @@ struct EnvironmentLanguagePackagesView: View {
                 Button("取消", role: .cancel) { pendingRemoval = nil }
             }
         } message: { Text("依赖此包的脚本可能无法运行；父环境中的版本会继续保留。") }
+    }
+
+    private var writableTitle: String {
+        language == .python
+            ? String(localized: "此环境 venv 内（Guest 实时查询）")
+            : String(localized: "此环境 node_modules（Guest 实时查询）")
+    }
+    private var inheritedTitle: String {
+        language == .python
+            ? String(localized: "镜像/父层继承（只读）")
+            : String(localized: "镜像/父层继承（只读）")
+    }
+    /// Honest provenance + freshness line. The Linux guest answers live only
+    /// while running; a stopped screen keeps the previous rows but says when
+    /// they were last read instead of presenting them as current.
+    private var freshnessLine: String {
+        let time = collectedAt.map { DateFormatter.listTime.string(from: $0) } ?? "—"
+        switch guestRunning {
+        case true:
+            return String(localized: "正在运行 · Guest 实时清单 · 更新于 \(time)")
+        case false:
+            return String(localized: "已停止 · 显示上次 Guest 清单 · 更新于 \(time)")
+        default:
+            return String(localized: "等待 Guest 状态 · 更新于 \(time)")
+        }
     }
 
     private func packageSection(_ title: String, writable: Bool) -> some View {
@@ -176,9 +218,26 @@ struct EnvironmentLanguagePackagesView: View {
             let service = try FloePlatformServices.shared.languagePackageService()
             sources = try await service.sources(environmentID: environmentID)
             if language == .node { nodeSelection = try await service.nodeManagerSelection(environmentID: environmentID) }
+            // Real Guest identity/state via the same ownership seams the
+            // environment manager uses; never inferred from the package rows.
+            let owned = await FloePlatformServices.shared.linuxEnvironmentOwned(id: environmentID)
+            let running = owned ? await FloePlatformServices.shared.linuxEnvironmentAvailable(id: environmentID) : false
+            guestRunning = owned ? running : nil
             packages = try await service.packages(environmentID: environmentID, language: language)
+            collectedAt = Date()
             error = nil
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
+}
+
+private extension DateFormatter {
+    static let listTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        return formatter
+    }()
 }
 #endif

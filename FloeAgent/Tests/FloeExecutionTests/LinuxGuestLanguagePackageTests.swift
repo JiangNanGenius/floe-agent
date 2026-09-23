@@ -70,7 +70,11 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
     }
 
     private static func pythonProvisioningAnswers(_ argv: [String]) -> LinuxCommandResult? {
-        if argv.contains(where: { $0.contains("sysconfig.get_paths") }) {
+        // The inventory probe also embeds `sysconfig.get_paths`; it must fall
+        // through to the inventory answer, which the per-test handler keys on
+        // the `floePythonInventory` marker.
+        if argv.contains(where: { $0.contains("sysconfig.get_paths") })
+            && !argv.contains(where: { $0.contains("floePythonInventory") }) {
             return LinuxCommandResult(stdout: "/floe/env/python/venv/lib/python3.13/site-packages\n", stderr: "", exitCode: 0)
         }
         if argv.contains(where: { $0.contains("bin/pip") }) {
@@ -89,6 +93,11 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: layer) }
         try LanguagePackageSources(pythonIndex: "https://mirror.example.com/simple/").save(in: layer)
         let runner = ScriptedLinuxCommandRunner { argv, _, _ in
+            // This fixture exports no shared floe-cache 9p share: the mount
+            // probe must fail so the install uses the environment layer cache.
+            if argv.joined(separator: " ").contains("/proc/mounts") {
+                return LinuxCommandResult(stdout: "", stderr: "", exitCode: 1)
+            }
             if let provision = Self.pythonProvisioningAnswers(argv) { return provision }
             if argv.contains(where: { $0.contains("floePythonInventory") }) {
                 return LinuxCommandResult(
@@ -117,6 +126,34 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         // The host layer path (a macOS path) never reaches the guest.
         XCTAssertFalse(install.joined.contains(layer.path), install.joined)
         XCTAssertNil(install.workingDirectory)
+    }
+
+    func testPythonInstallUsesSharedCacheWhenTheFloeCacheShareIsMounted() async throws {
+        let (environmentID, layer) = try makeLayer()
+        defer { try? FileManager.default.removeItem(at: layer) }
+        try LanguagePackageSources(pythonIndex: "https://mirror.example.com/simple/").save(in: layer)
+        let runner = ScriptedLinuxCommandRunner { argv, _, _ in
+            // A running guest that really mounted the host's floe-cache share
+            // answers the /proc/mounts probe with exit 0.
+            if argv.joined(separator: " ").contains("/proc/mounts") {
+                return LinuxCommandResult(stdout: "", stderr: "", exitCode: 0)
+            }
+            if let provision = Self.pythonProvisioningAnswers(argv) { return provision }
+            if argv.contains(where: { $0.contains("floePythonInventory") }) {
+                return LinuxCommandResult(stdout: "floePythonInventory=[]\n", stderr: "", exitCode: 0)
+            }
+            return LinuxCommandResult(stdout: "Successfully installed demo-1.0\n", stderr: "", exitCode: 0)
+        }
+        let packages = LinuxGuestLanguagePackages(runner: runner)
+        let environment = makeEnvironment(environmentID, layer: layer)
+        _ = try await packages.pythonInstall(specs: ["demo==1.0"], environment: environment, cancellation: nil)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+
+        let install = try XCTUnwrap(runner.calls.first { call in
+            call.argv.contains("-m") && call.argv.contains("pip") && call.argv.contains("install")
+        })
+        XCTAssertTrue(install.argv.contains("PIP_CACHE_DIR=/floe/cache/pip"), install.joined)
+        XCTAssertFalse(install.argv.contains("/floe/env/cache/pip"), install.joined)
     }
 
     func testPythonUninstallAndInspectUseTheVenvEntryPoints() async throws {
@@ -233,6 +270,11 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
     ) -> ScriptedLinuxCommandRunner {
         ScriptedLinuxCommandRunner { argv, workingDirectory, _ in
             let joined = argv.joined(separator: " ")
+            // Fixture guests export no shared floe-cache share: the managed
+            // install must keep the environment-layer npm cache.
+            if joined.contains("/proc/mounts") {
+                return LinuxCommandResult(stdout: "", stderr: "", exitCode: 1)
+            }
             if joined.contains("command -v") {
                 return LinuxCommandResult(stdout: "floe-manager node=/usr/bin/node\nfloe-manager npm=/usr/bin/npm\nfloe-manager pnpm=\n", stderr: "", exitCode: 0)
             }
@@ -295,9 +337,16 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         }, "commit script must run the bin link step")
         XCTAssertTrue(commit.joined.contains("/floe/env/usr/lib/node_modules"), commit.joined)
         XCTAssertTrue(commit.joined.contains("mv \"$stage/node_modules\""), commit.joined)
-        XCTAssertTrue(LinuxGuestLanguagePackages.nodeBinLinkScript.contains("/floe/env/usr/bin"))
+        // The bin-link JS is parameterized: the environment bin directory is
+        // passed as process.argv[2] by the commit call above, which still
+        // carries the literal /floe/env/usr/bin path asserted there.
+        XCTAssertTrue(LinuxGuestLanguagePackages.nodeBinLinkScript.contains("process.argv[2]"))
         // Staging metadata records the dependency generation in the layer.
-        let metadata = try XCTUnwrap(runner.calls.first { $0.joined.contains("dependencies.json") })
+        // Match the write call (stage path), not the earlier state-reading
+        // script whose text merely mentions dependencies.json.
+        let metadata = try XCTUnwrap(runner.calls.first {
+            $0.joined.contains("/floe/env/var/floe-node-transaction/stage/node_modules/.floe-install/dependencies.json")
+        })
         XCTAssertTrue(metadata.joined.contains("/floe/env/var/floe-node-transaction/stage/node_modules/.floe-install"), metadata.joined)
     }
 

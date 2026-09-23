@@ -9,6 +9,10 @@
 #   - Python's default CA verification gets HTTP 200 over HTTPS;
 #   - the 13 commands from the user feedback report really run: ps setsid
 #     nohup bash zsh zip unzip 7z xz bzip2 sqlite3 ssh scp;
+#   - when the host placed /floe/template-recipe.json, every apt requirement
+#     is re-checked against the live dpkg database (with dpkg's own version
+#     comparison) and every pinned PyPI wheel is re-imported at its pinned
+#     version — independently of /floe/template-install.json;
 #   - the FENCE/instruction probe that the APT SIGILL investigation needed is
 #     re-run with the fixed harness (diagnostic evidence, not a product gate);
 #   - package versions of everything used are recorded for the source mapping.
@@ -244,6 +248,153 @@ case "$scp_out" in
         cmd_result scp OK "client-only negative attempt, no transfer (rc=$scp_rc): $scp_detail" ;;
     *) cmd_result scp FAIL "scp rc=$scp_rc output='$scp_detail'" ;;
 esac
+
+# 6b. Runtime-template verification -------------------------------------------
+# Independently re-read the live dpkg database (never template-install.json)
+# and re-run every recipe requirement with dpkg's own version comparison, plus
+# a real import of every pinned PyPI wheel. Template failures are reported as
+# markers/JSON but do not abort this stage: the remaining checks still run and
+# the host gate decides whether the image may ship.
+if [ -f /floe/template-recipe.json ]; then
+    dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\n' \
+        >/floe/template-dpkg-live.tsv 2>>"$LOG" || true
+    template_rc=0
+    python3 - /floe /floe/template-recipe.json <<'FLOE_TEMPLATE_VERIFY_PY' || template_rc=$?
+import datetime
+import importlib
+import importlib.metadata
+import json
+import os
+import subprocess
+import sys
+
+share = sys.argv[1]
+recipe_path = sys.argv[2]
+checked_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_payload(payload):
+    with open(os.path.join(share, "template-verify.json"), "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+
+
+try:
+    with open(recipe_path, "r", encoding="utf-8") as handle:
+        recipe = json.load(handle)
+except Exception as exc:  # noqa: BLE001 - report, never crash without evidence
+    stem = os.path.splitext(os.path.basename(recipe_path))[0]
+    write_payload({
+        "schema": 1,
+        "template": stem,
+        "verified": False,
+        "missing": [],
+        "below_minimum": [],
+        "pypi_failures": [],
+        "checked_at_utc": checked_at,
+        "reason": "recipe unreadable at verification time: %s" % exc,
+    })
+    print("FLOE_TEMPLATE_UNVERIFIED 1")
+    print("FLOE_TEMPLATE_FAIL %s recipe unreadable at verification time: %s" % (stem, exc))
+    sys.exit(0)
+
+template_name = recipe.get("name") or os.path.splitext(os.path.basename(recipe_path))[0]
+packages = recipe.get("packages") or {}
+pypi = recipe.get("pypi") or {}
+
+
+def read_lines(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return [line.rstrip("\n") for line in handle if line.strip()]
+    except OSError:
+        return []
+
+
+live = {}
+for line in read_lines(os.path.join(share, "template-dpkg-live.tsv")):
+    parts = line.split("\t")
+    if len(parts) >= 2:
+        live[parts[0].split(":")[0]] = parts[1]
+
+missing = []
+below_minimum = []
+for name in sorted(packages):
+    requirement = packages[name] or {}
+    have = live.get(name)
+    if not have:
+        missing.append(name)
+        continue
+    minimum = requirement.get("min_version") if isinstance(requirement, dict) else None
+    if not minimum:
+        continue
+    try:
+        compare = subprocess.run(["dpkg", "--compare-versions", have, "ge", minimum],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        satisfied = compare.returncode == 0
+    except OSError:
+        satisfied = False
+    if not satisfied:
+        below_minimum.append({"name": name, "have": have, "minimum": minimum})
+
+pypi_failures = []
+for distribution in sorted(pypi):
+    entry = pypi[distribution] or {}
+    version = str(entry.get("version", ""))
+    module = entry.get("import") or distribution.replace("-", "_")
+    try:
+        imported = importlib.import_module(module)
+    except Exception as exc:  # noqa: BLE001 - any import failure is a failure
+        pypi_failures.append({"name": distribution,
+                              "detail": "import %s failed: %s" % (module, exc)})
+        continue
+    observed = getattr(imported, "__version__", None)
+    where = "module __version__"
+    if observed is None:
+        try:
+            observed = importlib.metadata.version(distribution)
+            where = "distribution metadata"
+        except Exception:
+            observed = None
+    if observed is None:
+        pypi_failures.append({
+            "name": distribution,
+            "detail": "imported but no observable version (cannot verify pinned %s)" % version})
+        continue
+    observed = str(observed).strip()
+    if observed != version:
+        pypi_failures.append({
+            "name": distribution,
+            "detail": "version mismatch: observed %s, pinned %s (%s)" % (observed, version, where)})
+
+verified = not (missing or below_minimum or pypi_failures)
+write_payload({
+    "schema": 1,
+    "template": template_name,
+    "verified": verified,
+    "missing": missing,
+    "below_minimum": below_minimum,
+    "pypi_failures": pypi_failures,
+    "checked_at_utc": checked_at,
+})
+
+if verified:
+    print("FLOE_TEMPLATE_VERIFIED %s" % template_name)
+else:
+    print("FLOE_TEMPLATE_UNVERIFIED %d" % (len(missing) + len(below_minimum) + len(pypi_failures)))
+    for name in missing:
+        print("FLOE_TEMPLATE_FAIL %s not installed in the live dpkg database" % name)
+    for entry in below_minimum:
+        print("FLOE_TEMPLATE_FAIL %s below minimum (have %s, need %s)"
+              % (entry["name"], entry["have"], entry["minimum"]))
+    for entry in pypi_failures:
+        print("FLOE_TEMPLATE_FAIL %s %s" % (entry["name"], entry["detail"]))
+sys.exit(0)
+FLOE_TEMPLATE_VERIFY_PY
+    note "template verification rc=$template_rc"
+else
+    note "no /floe/template-recipe.json on the share; template verification skipped"
+fi
 
 # 6. FENCE / instruction probe (diagnostic; harness fixed in 0bf0ffb4) -------
 if [ -f /floe/guest-instruction-probe.py ]; then

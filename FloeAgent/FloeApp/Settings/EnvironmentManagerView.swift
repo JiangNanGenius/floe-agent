@@ -214,6 +214,9 @@ private struct EnvironmentDetailView: View {
     private struct LinuxPackage: Identifiable, Equatable {
         let name: String
         let version: String
+        /// dpkg "install ok installed" row; autoInstalled comes from apt's
+        /// own /var/lib/apt/extended_states (manual vs auto dependency).
+        var autoInstalled: Bool
         var id: String { name }
     }
     /// One shortcut in the maintained Linux recommendation list. `package` is
@@ -278,6 +281,11 @@ private struct EnvironmentDetailView: View {
     /// Guest runtime versions probed live from this environment's guest
     /// (Python/Node), nil when the guest is not running.
     @State private var guestRuntimes: [String: String] = [:]
+    /// Live guest identity probed from the running VM itself: kernel release
+    /// (`uname -sr`) and distro (/etc/os-release). nil until a running guest
+    /// answers, never the host kernel or an image-side guess.
+    @State private var guestKernel: String?
+    @State private var guestDistribution: String?
     @Environment(\.dismiss) private var dismiss
     private var record: ContainerRecord { (current ?? report).record }
     private var writable: Bool { record.kind.isWritableLayer && record.state == .active && !record.requiresRebuild && !busy && !jobs.running.contains(report.id) }
@@ -384,6 +392,12 @@ private struct EnvironmentDetailView: View {
                         LabeledContent("environment.backend.status", value: status.running ? String(localized: "environment.backend.status.running") : String(localized: "environment.backend.status.stopped"))
                         if status.running {
                             LabeledContent("environment.backend.active_vm", value: activeVMSummary)
+                            if let kernel = guestKernel {
+                                LabeledContent("内核", value: kernel)
+                            }
+                            if let distribution = guestDistribution {
+                                LabeledContent("系统", value: distribution)
+                            }
                             LabeledContent("Python", value: guestRuntimes["Python"] ?? String(localized: "settings.exec.runtime.not_installed"))
                                 .foregroundStyle(guestRuntimes["Python"] == nil ? .secondary : .primary)
                             LabeledContent("Node", value: guestRuntimes["Node"] ?? String(localized: "settings.exec.runtime.not_installed"))
@@ -478,7 +492,14 @@ private struct EnvironmentDetailView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(package.name)
-                                Text(package.version).font(.caption).foregroundStyle(.secondary)
+                                HStack(spacing: 6) {
+                                    Text(package.version).font(.caption).foregroundStyle(.secondary)
+                                    Text(package.autoInstalled ? "自动（依赖）" : "手动安装")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(.quaternary, in: Capsule())
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                             Spacer()
                             Button("action.uninstall", role: .destructive) { pendingLinuxRemoval = package.name }
@@ -642,15 +663,21 @@ private struct EnvironmentDetailView: View {
         }
     }
 
-    /// Reads the guest's real dpkg database. Parsing dpkg-query output is
-    /// display formatting; package decisions stay inside the guest.
+    /// Reads the guest's real dpkg database plus apt's own auto/manual state
+    /// (`/var/lib/apt/extended_states`). Parsing guest output is display
+    /// formatting; package decisions stay inside the guest.
     @MainActor private func refreshLinuxPackages() async {
         linuxLoading = true
         defer { linuxLoading = false }
         do {
             let result = try await FloePlatformServices.shared.runLinuxCommand(
                 id: report.id,
-                argv: ["dpkg-query", "-W", "-f=${binary:Package}\\t${Version}\\t${Status}\\n"],
+                argv: [
+                    "/bin/sh", "-c",
+                    "dpkg-query -W -f='${binary:Package}\\t${Version}\\t${Status}\\n';"
+                        + " printf '\\nFLOE_APT_AUTO\\n';"
+                        + " cat /var/lib/apt/extended_states 2>/dev/null || true"
+                ],
                 timeout: 60)
             guard result.exitCode == 0 else {
                 linuxPackages = []
@@ -667,11 +694,29 @@ private struct EnvironmentDetailView: View {
     }
 
     private static func parseDpkgQuery(_ output: String) -> [LinuxPackage] {
-        output.split(separator: "\n").compactMap { line -> LinuxPackage? in
+        let parts = output.components(separatedBy: "\nFLOE_APT_AUTO\n")
+        let dpkgLines = parts.first ?? output
+        let extendedStates = parts.count > 1 ? parts[1] : ""
+        // extended_states stanzas: Package: <name> / Auto-Installed: 1.
+        var autoNames = Set<String>()
+        var current = ""
+        for rawLine in extendedStates.components(separatedBy: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { current = ""; continue }
+            if line.hasPrefix("Package:") {
+                current = String(line.dropFirst("Package:".count)).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("Auto-Installed:"),
+                      String(line.dropFirst("Auto-Installed:".count)).trimmingCharacters(in: .whitespaces) == "1",
+                      !current.isEmpty {
+                autoNames.insert(current)
+            }
+        }
+        return dpkgLines.split(separator: "\n").compactMap { line -> LinuxPackage? in
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
             guard fields.count >= 3,
                   fields[2].trimmingCharacters(in: .whitespaces) == "install ok installed" else { return nil }
-            return LinuxPackage(name: fields[0], version: fields[1])
+            let bareName = fields[0].split(separator: ":").first.map(String.init) ?? fields[0]
+            return LinuxPackage(name: fields[0], version: fields[1], autoInstalled: autoNames.contains(bareName))
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
@@ -737,6 +782,8 @@ private struct EnvironmentDetailView: View {
     @MainActor private func refreshGuestRuntimes() async {
         guard let status = guestStatus, status.running else {
             guestRuntimes = [:]
+            guestKernel = nil
+            guestDistribution = nil
             return
         }
         var versions: [String: String] = [:]
@@ -748,6 +795,27 @@ private struct EnvironmentDetailView: View {
             if !line.isEmpty { versions[name] = line }
         }
         guestRuntimes = versions
+        // Kernel + distro identity comes from the running guest itself, never
+        // from the host kernel or an image-side assumption. A failed probe
+        // leaves the row hidden instead of showing a guessed value.
+        if let uname = try? await FloePlatformServices.shared.runLinuxCommand(
+            id: report.id, argv: ["uname", "-sr"], timeout: 15
+        ), uname.exitCode == 0 {
+            let kernel = uname.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guestKernel = kernel.isEmpty ? nil : kernel
+        } else {
+            guestKernel = nil
+        }
+        if let osRelease = try? await FloePlatformServices.shared.runLinuxCommand(
+            id: report.id,
+            argv: ["/bin/sh", "-c", ". /etc/os-release 2>/dev/null && printf '%s %s' \"${PRETTY_NAME:-$NAME}\" \"${VERSION:-}\""],
+            timeout: 15
+        ), osRelease.exitCode == 0 {
+            let distribution = osRelease.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guestDistribution = distribution.isEmpty ? nil : distribution
+        } else {
+            guestDistribution = nil
+        }
     }
     /// Applies a backend choice through the same platform service the shell
     /// entry uses; failures (unqualified image, guest start failure) surface

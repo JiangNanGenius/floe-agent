@@ -172,7 +172,10 @@ final class GuestPythonRuntimeTests: XCTestCase {
         let base = guest.handler
         guest.handler = { argv in
             let joined = argv.joined(separator: " ")
-            if joined.contains("python3") && joined.contains("-c") {
+            // Only the real user script carries the printJSON prelude. The
+            // provisioner's sysconfig/pip/--version probes must keep falling
+            // through to `base`, otherwise the shared venv cannot be detected.
+            if joined.contains("python3"), joined.contains("-c"), joined.contains("printJSON") {
                 return LinuxCommandResult(
                     stdout: "before\n\u{1e}FLOE-RESULT {\"floeShellExitCode\": 7}\nafter\n",
                     stderr: "", exitCode: 0

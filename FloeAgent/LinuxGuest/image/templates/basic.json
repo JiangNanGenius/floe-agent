@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "name": "basic",
+  "description": "Floe basic Linux guest: the 13 user-facing shell commands from the Build 225 feedback report plus Python 3 (pip/venv/numpy), Node.js/npm and HTTPS trust. This is the package set FloeAgent/LinuxGuest/image/guest-stage1-install.sh installs for the default image; every requirement is independently re-verified against the live dpkg database during boot B of the image build.",
+  "packages": {
+    "procps": null,
+    "util-linux": null,
+    "coreutils": null,
+    "bash": null,
+    "zsh": null,
+    "zip": null,
+    "unzip": null,
+    "p7zip-full": null,
+    "xz-utils": null,
+    "bzip2": null,
+    "sqlite3": null,
+    "openssh-client": null,
+    "python3": {"min_version": "3.13"},
+    "python3-pip": null,
+    "python3-venv": null,
+    "python3-numpy": null,
+    "nodejs": null,
+    "npm": null,
+    "ca-certificates": null
+  },
+  "require_source_mapping": true
+}

@@ -16,11 +16,14 @@
 #   5. cross-build the static riscv64 Floe runner (and its relink object);
 #   6. inject /usr/local/bin/floe-exec;
 #   7. boot A: the runner is PID 1, consumes `floe.epoch=`, installs the
-#      packages over signed HTTPS APT, exports the package inventory;
+#      packages of the selected template recipe over signed HTTPS APT,
+#      installs its pinned PyPI wheels, exports the package inventory and the
+#      real template-install facts;
 #   8. boot B: fresh `floe.epoch=`, re-checks the clock, signed HTTPS APT,
-#      Python HTTPS with default CA verification, and runs the 13 user-facing
+#      Python HTTPS with default CA verification, runs the 13 user-facing
 #      commands the feedback report listed (ps setsid nohup bash zsh zip unzip
-#      7z xz bzip2 sqlite3 ssh scp) as real operations;
+#      7z xz bzip2 sqlite3 ssh scp) as real operations and independently
+#      re-verifies every template requirement against the live dpkg database;
 #   9. collect evidence (dpkg inventory, copyrights, ext4 features, logs),
 #      write manifest.json (the LinuxGuestImageStore schema) and package the
 #      distributable zip.
@@ -37,6 +40,12 @@
 #   --work DIR            scratch/output root (required)
 #   --repo DIR            repository root (default: three levels above this script)
 #   --pins FILE           pinned inputs JSON
+#   --template NAME       runtime-template recipe templates/NAME.json
+#                         (default: basic). The recipe is validated before
+#                         any heavy work; a missing/invalid recipe aborts the
+#                         build with the exact path (owner job-6f5ac974858c47c2
+#                         D). Non-basic templates get a "-NAME" image id
+#                         suffix so the artifacts cannot be confused.
 #   --image-id ID         manifest id (default: derived from the Debian build)
 #   --run-url URL         qualification run URL recorded in the manifest
 #   --source-ref REF      git commit recorded in the provenance source URLs
@@ -66,6 +75,7 @@ step() {
 work=""
 repo=""
 pins=""
+template="basic"
 image_id=""
 run_url=""
 source_ref=""
@@ -82,6 +92,7 @@ while [ $# -gt 0 ]; do
         --work) work="${2:-}"; shift 2 ;;
         --repo) repo="${2:-}"; shift 2 ;;
         --pins) pins="${2:-}"; shift 2 ;;
+        --template) template="${2:-}"; shift 2 ;;
         --image-id) image_id="${2:-}"; shift 2 ;;
         --run-url) run_url="${2:-}"; shift 2 ;;
         --source-ref) source_ref="${2:-}"; shift 2 ;;
@@ -92,7 +103,7 @@ while [ $# -gt 0 ]; do
         --ram) ram_mb="${2:-}"; shift 2 ;;
         --no-zip) make_zip=0; shift ;;
         --skip-qualified) claim_qualified=0; shift ;;
-        -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,63p' "$0"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -115,6 +126,24 @@ for tool in curl python3 parted e2fsck tune2fs losetup mount dd qemu-img sha512s
 done
 [ -f "$pins" ] || die "pinned inputs not found: $pins"
 mkdir -p "$work" "$image_dir" "$evidence_dir" "$share_dir" "$runner_dir" "$mnt_dir"
+
+# Runtime-template recipe: the package/PyPI manifest of the image being built.
+# It is validated before any heavy work (fetch/build are expensive, and a
+# missing recipe is an explicit dependency failure owned by job D).
+case "$template" in
+    ""|*/*|.|..) die "invalid --template name: '$template'" ;;
+    *[!A-Za-z0-9._-]*) die "invalid --template name: '$template' (allowed: letters, digits, '.', '_', '-')" ;;
+esac
+recipe_path="$script_dir/templates/$template.json"
+[ -f "$recipe_path" ] || die "template recipe not found: $recipe_path (owner job-6f5ac974858c47c2 D)"
+[ -r "$recipe_path" ] && [ -s "$recipe_path" ] \
+    || die "template recipe is not readable or is empty: $recipe_path (owner job-6f5ac974858c47c2 D)"
+[ -f "$script_dir/template_recipe.py" ] || die "template validator not found: $script_dir/template_recipe.py"
+if ! recipe_summary="$(python3 "$script_dir/template_recipe.py" validate --recipe "$recipe_path" 2>&1)"; then
+    die "template recipe is invalid: $recipe_path (owner job-6f5ac974858c47c2 D)
+$recipe_summary"
+fi
+printf 'template recipe: %s\n' "$recipe_summary"
 
 pin() { # pin <python expression over the parsed JSON>
     python3 - "$pins" "$1" <<'PY'
@@ -140,7 +169,14 @@ debian_bytes="$(pin 'p["debian_image"]["bytes"]')"
 daily_build="$(pin 'p["debian_image"]["daily_build"]')"
 patch_marker="$(pin 'p["engine"]["required_patch_marker"]')"
 cmdline="console=hvc0 root=/dev/vda rw loglevel=4"
-image_id="${image_id:-floe-debian13-riscv64-$(printf '%s' "$daily_build" | tr -d '-')}"
+if [ -z "$image_id" ]; then
+    image_id="floe-debian13-riscv64-$(printf '%s' "$daily_build" | tr -d '-')"
+    # Only the non-default templates get a suffix; basic keeps the historical
+    # id so existing artifacts and evidence stay unambiguous.
+    if [ "$template" != "basic" ]; then
+        image_id="$image_id-$template"
+    fi
+fi
 runner_src="$repo/FloeAgent/LinuxGuest/runner/floe_exec.c"
 [ -f "$runner_src" ] || die "runner source not found: $runner_src"
 if [ -z "$source_ref" ]; then
@@ -314,6 +350,9 @@ cp "$repo/FloeAgent/LinuxGuest/image/guest-stage1-install.sh" "$share_dir/"
 cp "$repo/FloeAgent/LinuxGuest/image/guest-stage2-verify.sh" "$share_dir/"
 cp "$repo/FloeAgent/LinuxGuest/image/guest-https-check.py" "$share_dir/"
 cp "$repo/FloeAgent/LinuxGuest/image/guest-instruction-probe.py" "$share_dir/"
+# The guest scripts read /floe/template-recipe.json on both boots; the same
+# validated bytes that the manifest records by SHA-512.
+cp "$recipe_path" "$share_dir/template-recipe.json"
 chmod 0755 "$share_dir"/*.sh "$share_dir"/*.py
 
 boot_guest() { # boot_guest <name> <guest-script> <token> <max-s>
@@ -399,8 +438,8 @@ assert_markers "$evidence_dir/boot-stage2-transcript.txt" bootB \
     FLOE_CMD_ps_OK FLOE_CMD_setsid_OK FLOE_CMD_nohup_OK FLOE_CMD_bash_OK \
     FLOE_CMD_zsh_OK FLOE_CMD_zip_OK FLOE_CMD_unzip_OK FLOE_CMD_7z_OK \
     FLOE_CMD_xz_OK FLOE_CMD_bzip2_OK FLOE_CMD_sqlite3_OK FLOE_CMD_ssh_OK \
-    FLOE_CMD_scp_OK FLOE_STAGE2_DONE \
-    || die "stage 2 capability assertions failed"
+    FLOE_CMD_scp_OK "FLOE_TEMPLATE_VERIFIED $template" FLOE_STAGE2_DONE \
+    || die "stage 2 capability assertions failed (including template '$template')"
 e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-after-stage2.log" 2>&1 || true
 tune2fs -l "$disk_img" | grep -aE 'Filesystem features|Block size|Filesystem state' >"$evidence_dir/disk-ext4-features-final.txt"
 
@@ -416,6 +455,9 @@ cp "$share_dir/stage1-apt-update.log" "$evidence_dir/" 2>/dev/null || true
 cp "$share_dir/stage1-apt-install.log" "$evidence_dir/" 2>/dev/null || true
 cp "$share_dir/stage2-package-versions.txt" "$evidence_dir/" 2>/dev/null || true
 cp "$share_dir/stage2-insns.out" "$evidence_dir/" 2>/dev/null || true
+cp "$share_dir/template-install.json" "$evidence_dir/" 2>/dev/null || true
+cp "$share_dir/template-verify.json" "$evidence_dir/" 2>/dev/null || true
+cp "$recipe_path" "$evidence_dir/template-recipe.json" 2>/dev/null || true
 
 mount -o ro,loop "$disk_img" "$mnt_dir"
 dpkg-query --admindir="$mnt_dir/var/lib/dpkg" -W \
@@ -454,6 +496,10 @@ python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" write \
     --source-url "https://github.com/JiangNanGenius/floe-agent/tree/${source_ref}/FloeAgent/LinuxGuest" \
     --build-configuration-url "https://github.com/JiangNanGenius/floe-agent/tree/${source_ref}/FloeAgent/ThirdParty/TinyEMU/guest-image" \
     --license "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1" \
+    --template-id "$template" \
+    --template-recipe "$recipe_path" \
+    --template-json "$evidence_dir/template-verify.json" \
+    --template-install-json "$evidence_dir/template-install.json" \
     "${qualified_flag[@]+"${qualified_flag[@]}"}"
 python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" verify --image-dir "$image_dir"
 
@@ -472,6 +518,7 @@ fi
 
 {
     printf 'image_id=%s\n' "$image_id"
+    printf 'template=%s\n' "$template"
     printf 'cmdline=%s init=/usr/local/bin/floe-exec floe.epoch=<boot epoch>\n' "$cmdline"
     printf 'qualified=%s\n' "$claim_qualified"
     printf 'bootA_rc=%s\n' "$(cat "$evidence_dir/boot-stage1-rc.txt")"

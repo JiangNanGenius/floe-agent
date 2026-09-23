@@ -67,10 +67,54 @@ public struct LinuxGuestLanguagePackages: Sendable {
     /// Guest-side npm/pnpm caches and the Node transaction root.
     public static let nodeTransactionRoot = LinuxGuestNodeEnvironment.guestTransactionRoot
 
+    /// App-wide shared download cache root, exported by the host as the
+    /// optional `floe-cache` 9p share and mounted at `/floe/cache`. It holds
+    /// only re-downloadable objects (pip wheels, npm tarballs); a package is
+    /// downloaded once and reused across environments. It is used only after
+    /// the guest itself reports a real mount, never assumed from a path.
+    public static let sharedCacheRoot = "/floe/cache"
+
     private let runner: any LinuxCommandRunning
 
     public init(runner: any LinuxCommandRunning) {
         self.runner = runner
+    }
+
+    /// Resolves which guest cache directory an install must use. When the
+    /// host exported the shared cache share and the running guest actually
+    /// mounted it (`/proc/mounts`), the shared path wins; otherwise the
+    /// per-environment layer cache stays in effect. This mirrors the runner
+    /// PID-1 decision in `floe_exec.c`, so direct shell installs and managed
+    /// installs cannot disagree about where downloads live.
+    private func cacheDirectory(kind: String, environmentFallback: String,
+                                environmentID: String, cancellation: CancellationToken?) async -> String {
+        let shared = Self.sharedCacheRoot + "/" + kind
+        guard await isSharedCacheMounted(environmentID: environmentID, cancellation: cancellation) else {
+            return environmentFallback
+        }
+        return shared
+    }
+
+    /// One bounded read of /proc/mounts per decision. A failing or absent
+    /// guest answers false (per-environment fallback), never an error that
+    /// blocks an unrelated package operation.
+    private func isSharedCacheMounted(environmentID: String, cancellation: CancellationToken?) async -> Bool {
+        let result: LinuxCommandResult
+        do {
+            result = try await runner.run(
+                environmentID: environmentID,
+                argv: ["/bin/sh", "-c",
+                       #"grep -q '  /floe/cache ' /proc/mounts && mkdir -p /floe/cache/pip /floe/cache/npm /floe/cache/xdg"#],
+                workingDirectory: nil,
+                standardInput: nil,
+                timeout: 15,
+                maxOutputBytes: 1024,
+                cancellation: cancellation
+            )
+        } catch {
+            return false
+        }
+        return result.exitCode == 0
     }
 
     // MARK: - Ownership
@@ -108,13 +152,19 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         let sources = try LanguagePackageSources.load(in: environment.writableLayerURL)
+        let pipCache = await cacheDirectory(
+            kind: "pip",
+            environmentFallback: Self.pythonCacheDirectory,
+            environmentID: environment.id,
+            cancellation: cancellation
+        )
         let variables: [String: String] = [
             "VIRTUAL_ENV": venv.venvPath,
             "PATH": venv.venvPath + "/bin:" + LinuxGuestNodeEnvironment.defaultGuestPath,
             "PYTHONUNBUFFERED": "1",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
-            "PIP_CACHE_DIR": Self.pythonCacheDirectory,
+            "PIP_CACHE_DIR": pipCache,
             // The user's explicit source configuration wins over any guest
             // pip configuration file; the iOS wheelhouse index never applies
             // to a Linux guest.
@@ -390,13 +440,19 @@ public struct LinuxGuestLanguagePackages: Sendable {
         }
 
         let output: String
+        let npmCache = await cacheDirectory(
+            kind: "npm",
+            environmentFallback: LinuxGuestWritablePaths.npmCache,
+            environmentID: environment.id,
+            cancellation: cancellation
+        )
         do {
             let variables: [String: String] = [
                 "HOME": LinuxGuestMountPoint.environment + "/home",
                 "TMPDIR": LinuxGuestWritablePaths.tmp,
                 "TMP": LinuxGuestWritablePaths.tmp,
                 "TEMP": LinuxGuestWritablePaths.tmp,
-                "npm_config_cache": LinuxGuestWritablePaths.npmCache,
+                "npm_config_cache": npmCache,
                 "npm_config_store_dir": LinuxGuestMountPoint.environment + "/opt/pnpm-store",
                 "npm_config_prefix": stage,
                 "npm_config_global": "false",

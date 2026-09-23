@@ -1331,10 +1331,16 @@ static void guest_bring_up(void) {
         const char *tag;
         const char *target;
     };
+    // floe-cache is optional: the host exports it only when the app-wide
+    // Runtime v2 shared download cache (cache/{pip,npm,xdg}) is available.
+    // A failed 9p mount is ignored below; set_default_environment verifies
+    // the mount in /proc/mounts before pointing any tool at it, so a guest
+    // started by an older host keeps using the per-environment layer cache.
     static const struct share shares[] = {
         {"floe", "/floe"},
         {"floe-env", "/floe/env"},
         {"workspace", "/workspace"},
+        {"floe-cache", "/floe/cache"},
     };
     for (size_t i = 0; i < sizeof shares / sizeof shares[0]; i++) {
         mkdir_p(shares[i].target, 0755);
@@ -1653,6 +1659,34 @@ static const char *default_cwd(void) {
     return "/";
 }
 
+#ifdef __linux__
+// True only when `path` is a real mount point listed in /proc/mounts. A
+// directory merely mkdir'd below an unmounted share does not qualify, so the
+// shared cache can never be mistaken for the empty mount point.
+static int floe_path_is_mount(const char *path) {
+    FILE *mounts = fopen("/proc/mounts", "re");
+    if (!mounts) return 0;
+    char line[1024];
+    char needle[300];
+    int found = 0;
+    int n = snprintf(needle, sizeof needle, " %s ", path);
+    if (n > 0 && n < (int)sizeof needle) {
+        while (fgets(line, sizeof line, mounts)) {
+            if (strstr(line, needle)) { found = 1; break; }
+        }
+    }
+    (void)fclose(mounts);
+    return found;
+}
+
+// Ensures the cache subdirectory exists and is writable; a read-only 9p
+// export or a failed mkdir must leave the per-environment cache in effect.
+static int floe_cache_ready(const char *path) {
+    if (mkdir_p(path, 0755) != 0) return 0;
+    return access(path, W_OK) == 0;
+}
+#endif
+
 static void set_default_environment(void) {
     const char *path = getenv("PATH");
     if (!path || path[0] == '\0') {
@@ -1706,6 +1740,20 @@ static void set_default_environment(void) {
         setenv("XDG_CACHE_HOME", FLOE_ENV_CACHE_XDG, 1);
         setenv("PIP_CACHE_DIR", FLOE_ENV_CACHE_PIP, 1);
         setenv("npm_config_cache", FLOE_ENV_CACHE_NPM, 1);
+
+        // Optional App-wide shared download cache. Only floe-cache actually
+        // mounted by the host (checked in /proc/mounts) and writable wins;
+        // a missing/older share keeps the per-environment paths above, so a
+        // package downloaded by one VM is reused by the next but an
+        // unmounted or read-only cache is never silently substituted.
+        if (floe_path_is_mount("/floe/cache")) {
+            if (floe_cache_ready("/floe/cache/xdg"))
+                setenv("XDG_CACHE_HOME", "/floe/cache/xdg", 1);
+            if (floe_cache_ready("/floe/cache/pip"))
+                setenv("PIP_CACHE_DIR", "/floe/cache/pip", 1);
+            if (floe_cache_ready("/floe/cache/npm"))
+                setenv("npm_config_cache", "/floe/cache/npm", 1);
+        }
     }
     // If the share is missing/unwritable the /tmp defaults above stay in
     // effect; the failure is observed per command rather than hidden.
