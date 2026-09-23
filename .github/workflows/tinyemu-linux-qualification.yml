@@ -83,7 +83,11 @@ jobs:
         if: ${{ inputs.run_smp }}
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu >/dev/null
+          # gcc + binutils plus the cross libc headers: configure probes the
+          # compiler by linking a trivial program, so a missing
+          # libc6-dev-riscv64-cross would look like a broken compiler
+          sudo apt-get install -y -qq gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+            libc6-dev-riscv64-cross >/dev/null
           riscv64-linux-gnu-gcc --version | head -1
           riscv64-linux-gnu-objcopy --version | head -1
 
@@ -783,15 +787,20 @@ jobs:
           test -s "$BOOT/kernel-riscv64.bin" || { echo "Stage S0 produced no boot pair; S4 cannot run"; exit 1; }
           test -s "$BOOT/BOOT-PAIR.txt" || { echo "Stage S0 boot-pair provenance missing"; exit 1; }
           mkdir -p work/smp/share
+          # init=/bin/sh bypasses the 2018 demo's init scripts: they are not
+          # the subject of this stage and their service startup is what hangs
+          # when a second hart exists (measured on the pinned UP kernel: a
+          # userland spin at one fixed PC; S1 keeps that retained result).
           cat > work/smp/smpboot-script.txt <<'EOF'
-          @20 mkdir -p /mnt
-          @22 mount -t 9p -o trans=virtio,version=9p2000.L /dev/root /mnt 2>/dev/null || true
-          @26 cat /proc/cpuinfo | grep -c processor > /mnt/smp-cpu-count.txt
-          @28 printf 'FLOE_SMP_CPUS_%s\n' "$(cat /mnt/smp-cpu-count.txt)"
-          @32 uname -a > /mnt/smp-uname.txt; printf 'FLOE_SMP_%s\n' UNAME
-          @38 sh -c 'dd if=/dev/zero of=/mnt/smp-io0.bin bs=64k count=192 2>/dev/null & dd if=/dev/zero of=/mnt/smp-io1.bin bs=64k count=192 2>/dev/null & wait' && printf 'FLOE_SMP_PARI%s\n' O_OK
-          @46 sh -c 'sync; md5sum /mnt/smp-io0.bin /mnt/smp-io1.bin > /mnt/smp-io-md5.txt 2>&1'; printf 'FLOE_SMP_SY%s\n' NC_OK
-          @54 printf 'FLOE_SMP_BOOT_%s\n' DONE
+          @12 mount -t proc proc /proc
+          @14 mkdir -p /mnt
+          @16 mount -t 9p -o trans=virtio,version=9p2000.L /dev/root /mnt 2>/dev/null || true
+          @20 grep -c '^hart' /proc/cpuinfo > /mnt/smp-cpu-count.txt
+          @22 printf 'FLOE_SMP_CPUS_%s\n' "$(cat /mnt/smp-cpu-count.txt)"
+          @26 uname -a > /mnt/smp-uname.txt; printf 'FLOE_SMP_%s\n' UNAME
+          @32 sh -c 'dd if=/dev/zero of=/mnt/smp-io0.bin bs=64k count=192 2>/dev/null & dd if=/dev/zero of=/mnt/smp-io1.bin bs=64k count=192 2>/dev/null & wait' && printf 'FLOE_SMP_PARI%s\n' O_OK
+          @42 sh -c 'sync; md5sum /mnt/smp-io0.bin /mnt/smp-io1.bin > /mnt/smp-io-md5.txt 2>&1'; printf 'FLOE_SMP_SY%s\n' NC_OK
+          @52 printf 'FLOE_SMP_BOOT_%s\n' DONE
           EOF
           sed -i 's/^ *//' work/smp/smpboot-script.txt
           for v in 1 2; do
@@ -799,6 +808,7 @@ jobs:
             /usr/bin/time -v work/build/floe_vm_host \
               --bios "$BOOT/bbl64.bin" --kernel "$BOOT/kernel-riscv64.bin" \
               --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu "$v" \
+              --cmdline "console=hvc0 root=/dev/vda rw init=/bin/sh" \
               --share /dev/root=work/smp/share \
               --script work/smp/smpboot-script.txt \
               --transcript "work/smp/smpboot-vcpu$v-transcript.txt" \
@@ -813,6 +823,10 @@ jobs:
 
           problems = []
           pair = {}
+          with open("work/smp/smpboot-vcpu2-transcript.txt", "r", errors="replace") as handle:
+              smp_lines = [l.strip() for l in handle
+                           if "smp" in l.lower() or "Brought up" in l or "CPU" in l]
+          print("vcpu=2 kernel SMP lines:", "; ".join(smp_lines[:6]) or "(none)")
           with open("work/smp/boot/BOOT-PAIR.txt", "r", errors="replace") as handle:
               for line in handle:
                   if line.startswith("kernel version ident:"):
@@ -909,6 +923,7 @@ jobs:
           test -s "$BOOT/bbl64.bin" || { echo "Stage S0 produced no boot pair; S5 cannot run"; exit 1; }
           mkdir -p work/smp2
           cat > work/smp2/workload.txt <<'EOF'
+          @12 mount -t proc proc /proc
           @20 sh -c 'dd if=/dev/zero of=/dev/null bs=64k count=6000 & dd if=/dev/zero of=/dev/null bs=64k count=6000 & wait'
           @50 printf 'FLOE_SMP2PERF_%s\n' DONE
           EOF
@@ -919,6 +934,7 @@ jobs:
               work/build/floe_vm_host \
                 --bios "$BOOT/bbl64.bin" --kernel "$BOOT/kernel-riscv64.bin" \
                 --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu "$v" \
+                --cmdline "console=hvc0 root=/dev/vda rw init=/bin/sh" \
                 --script work/smp2/workload.txt \
                 --transcript "work/smp2/wl-vcpu$v-r$r-transcript.txt" \
                 --stats-file "work/smp2/wl-vcpu$v-r$r-stats.jsonl" --stats-interval 1 \
@@ -933,6 +949,7 @@ jobs:
           work/build/floe_vm_host \
             --bios "$BOOT/bbl64.bin" --kernel "$BOOT/kernel-riscv64.bin" \
             --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu 2 \
+            --cmdline "console=hvc0 root=/dev/vda rw init=/bin/sh" \
             --script work/smp2/workload.txt \
             --transcript work/smp2/stop-transcript.txt \
             --stats-file work/smp2/stop-stats.jsonl --stats-interval 1 \

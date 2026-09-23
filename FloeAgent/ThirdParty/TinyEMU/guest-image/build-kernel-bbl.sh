@@ -183,17 +183,44 @@ if [ "$rebuild" = 1 ]; then
                 riscv64-linux-gnu-readelf; do
         command -v "$tool" >/dev/null 2>&1 || die "--rebuild needs $tool"
     done
-    # The pinned 2018 riscv-pk predates the diagnostics that current GCC
-    # releases promote to errors (implicit function declarations and friends
-    # became errors by default in GCC 14); keep them warnings so the pinned
-    # source builds, and never hide them: the whole log is kept as evidence.
-    bbl_cflags="-O2 -Wno-error=implicit-function-declaration \
--Wno-error=int-conversion -Wno-error=incompatible-pointer-types \
--Wno-error=return-mismatch -Wno-error=declaration-missing-parameter-type"
+    # The pinned 2018 riscv-pk predates the diagnostics current GCC releases
+    # promote to errors (implicit function declarations and friends became
+    # errors by default in GCC 14), but a GCC release that does not know a
+    # -Wno-error= name rejects it with a hard cc1 error, so probe every
+    # candidate against the actual cross compiler and keep only the accepted
+    # ones. Warnings stay warnings; the whole log is kept as evidence.
+    probe_cflag() {
+        printf 'int main(void){return 0;}\n' >"$out/.cflag-probe.c"
+        riscv64-linux-gnu-gcc $1 -c "$out/.cflag-probe.c" \
+            -o "$out/.cflag-probe.o" >/dev/null 2>&1
+    }
+    bbl_cflags="-O2"
+    for flag in -Wno-error=implicit-function-declaration \
+                -Wno-error=int-conversion \
+                -Wno-error=incompatible-pointer-types \
+                -Wno-error=return-mismatch \
+                -Wno-error=declaration-missing-parameter-type; do
+        if probe_cflag "$flag"; then
+            bbl_cflags="$bbl_cflags $flag"
+        else
+            log "cross compiler rejects $flag; not passing it"
+        fi
+    done
+    rm -f "$out/.cflag-probe.c" "$out/.cflag-probe.o"
+    # The ABI option only exists in later riscv-pk revisions; the demo patch
+    # hardcodes -mabi=lp64d in Makefile.in, so pass it only if configure
+    # advertises it (an unknown option is a warning, but the log should not
+    # carry noise that looks like a misconfiguration).
+    extra_configure=""
+    if (cd "$out/riscv-pk-src" && ./configure --help 2>/dev/null | grep -q -- '--with-abi'); then
+        extra_configure="--with-abi=lp64d"
+    fi
     (
         cd "$out/riscv-pk-src"
+        # LDFLAGS=-nostdlib keeps configure's compiler check from needing the
+        # cross libc: riscv-pk is bare-metal and links with -nostdlib anyway.
         ./configure --host=riscv64-linux-gnu --with-arch=rv64gc \
-            --with-abi=lp64d CFLAGS="$bbl_cflags"
+            $extra_configure CFLAGS="$bbl_cflags" LDFLAGS="-nostdlib"
         make -j"$jobs"
     ) >"$out/rebuild-riscv-pk.log" 2>&1 || {
         printf 'build-kernel-bbl: riscv-pk rebuild failed; last lines:\n' >&2
