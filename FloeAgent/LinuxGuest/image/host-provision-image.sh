@@ -197,10 +197,20 @@ build_root=/var/tmp/floe-image-build
 mkdir -p "$mnt$build_root/wheels"
 chmod 1777 "$mnt$build_root"
 
+# Guest execution environment. `timeout` execs its argv directly and cannot
+# see shell functions, so every bounded call must spell out
+# `timeout N env "${guest_env[@]}" chroot "$mnt" ...` — never `timeout N
+# inchroot ...`.
+guest_env=(
+    "QEMU_LD_PREFIX=$mnt"
+    "DEBIAN_FRONTEND=noninteractive"
+    "TMPDIR=$build_root"
+    "TMP=$build_root"
+    "TEMP=$build_root"
+    "HOME=/root"
+)
 inchroot() {
-    env QEMU_LD_PREFIX="$mnt" DEBIAN_FRONTEND=noninteractive \
-        TMPDIR="$build_root" TMP="$build_root" TEMP="$build_root" HOME=/root \
-        chroot "$mnt" "$@"
+    env "${guest_env[@]}" chroot "$mnt" "$@"
 }
 
 # Sanity: the binfmt handler must execute the guest's own riscv64 binaries.
@@ -303,7 +313,7 @@ cp "$recipe" "$mnt$build_root/template-recipe.json"
 phase "apt-update"
 note "apt-get update: signed HTTPS against the image's own keyring and sources"
 update_rc=0
-timeout "$apt_update_s" inchroot apt-get update \
+timeout "$apt_update_s" env "${guest_env[@]}" chroot "$mnt" apt-get update \
     >"$evidence/stage1-apt-update.log" 2>&1 || update_rc=$?
 if [ "$update_rc" != "0" ]; then
     note "apt-get update FAILED (rc=$update_rc); see evidence/stage1-apt-update.log"
@@ -318,7 +328,9 @@ phase "apt-install"
 install_list="$(tr '\n' ' ' <"$share/template-apt-list.txt")"
 # shellcheck disable=SC2086 # install_list is a deliberate word list
 install_rc=0
-timeout "$apt_install_s" inchroot apt-get install -y --no-install-recommends \
+# shellcheck disable=SC2086 # install_list is a deliberate word list
+timeout "$apt_install_s" env "${guest_env[@]}" chroot "$mnt" \
+    apt-get install -y --no-install-recommends \
     $install_list >"$evidence/stage1-apt-install.log" 2>&1 || install_rc=$?
 if [ "$install_rc" != "0" ]; then
     note "apt-get install FAILED (rc=$install_rc); see evidence/stage1-apt-install.log"
@@ -384,7 +396,8 @@ if [ -s "$share/template-pypi.tsv" ]; then
         else
             pip_rc=0
             # shellcheck disable=SC2086 # wheel_paths is a deliberate path list
-            timeout "$wheels_s" inchroot python3 -m pip install --break-system-packages \
+            timeout "$wheels_s" env "${guest_env[@]}" chroot "$mnt" \
+                python3 -m pip install --break-system-packages \
                 --no-index --no-input --disable-pip-version-check \
                 --find-links "$build_root/wheels" $wheel_paths \
                 >"$evidence/stage1-pip-install.log" 2>&1 || pip_rc=$?

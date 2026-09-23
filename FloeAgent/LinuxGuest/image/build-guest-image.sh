@@ -80,6 +80,20 @@ step() {
     printf '\n=== [%s] %s\n' "$(date -u +%H:%M:%S)" "$*"
 }
 
+# The workflow invokes this script under sudo, but later workflow steps run as
+# the invoking user and must write into the evidence bundle (boot-file
+# provenance record, staging). sudo leaves every file root-owned, which made
+# run 35922881481 fail its provenance step with EACCES after provisioning.
+# Hand the output tree back to the invoking user on every exit path.
+restore_ownership() {
+    local uid="${SUDO_UID:-}"
+    local gid="${SUDO_GID:-$uid}"
+    [ -n "$uid" ] || return 0
+    [ -d "$evidence_dir" ] || return 0
+    chown -R "$uid:$gid" "$evidence_dir" "$share_dir" "$image_dir" 2>/dev/null || true
+    chmod -R u+rwX "$evidence_dir" "$share_dir" 2>/dev/null || true
+}
+
 work=""
 repo=""
 pins=""
@@ -327,6 +341,7 @@ disk_img="$image_dir/disk.img"
 dd if="$raw" of="$disk_img" bs=512 skip="$rstart" count="$rsize" status=none
 losetup -d "$loop_device"
 trap - EXIT
+trap restore_ownership EXIT
 # The cloud builder installs compilers and document packages before the image
 # is distributed. The Debian nocloud root partition is only ~2.8 GiB, which
 # leaves too little room for APT archives, unpacking and pinned wheels. Grow
