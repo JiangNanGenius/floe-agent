@@ -5,10 +5,26 @@ import subprocess
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from resolved_pins import resolved_pins, application_pins, verify_resolution
+from resolved_pins import resolved_pins, application_pins, verify_resolution, same_pin
 
 
 class ResolvedPinsTests(unittest.TestCase):
+    def test_github_git_suffix_does_not_change_a_pin(self):
+        pin = {"identity": "swift-system", "location": "https://github.com/apple/swift-system.git",
+               "state": {"revision": "a" * 40, "version": "1.8.0"}}
+        alias = {**pin, "location": pin["location"].removesuffix(".git")}
+        self.assertTrue(same_pin(pin, alias))
+        self.assertEqual(verify_resolution([alias], [pin], []), [alias])
+        for changed in (
+            {**alias, "state": {"revision": "b" * 40, "version": "1.8.0"}},
+            {**alias, "location": "https://github.com/other/swift-system"},
+            {**alias, "location": "https://example.com/apple/swift-system"},
+            {**alias, "identity": "other"},
+        ):
+            self.assertFalse(same_pin(pin, changed))
+        self.assertFalse(same_pin({**pin, "location": "https://example.com/repo.git"},
+                                  {**pin, "location": "https://example.com/repo"}))
+
     def setUp(self):
         # swift package resolve intentionally removes the Xcode-only Whisper
         # pin from the working host lock. Expected distribution fixtures must

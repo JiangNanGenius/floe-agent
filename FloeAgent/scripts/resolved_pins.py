@@ -61,15 +61,30 @@ def application_pins(project):
     return resolved_pins({"version": 1, "object": {"pins": pins}}) if pins else []
 
 
+def same_pin(actual, expected):
+    if actual is None or expected is None:
+        return actual == expected
+    # SwiftPM can serialize GitHub's equivalent repository URLs with or
+    # without .git. Keep identity, revision, version and every other field
+    # exact; do not normalize hosts or non-GitHub source locations.
+    def canonical(pin):
+        result = dict(pin)
+        location = result.get("location", "")
+        if location.startswith("https://github.com/"):
+            result["location"] = location.removesuffix(".git")
+        return result
+    return canonical(actual) == canonical(expected)
+
+
 def verify_resolution(current, committed, app_only):
     expected = {p["identity"]: p for p in committed}
     actual = {p["identity"]: p for p in current}
     app = {p["identity"]: p for p in app_only}
     for identity, pin in app.items():
-        if expected.get(identity) != pin:
+        if not same_pin(expected.get(identity), pin):
             raise ValueError(f"Xcode app pin differs from committed lock: {identity}")
     for identity, pin in actual.items():
-        if expected.get(identity) != pin:
+        if not same_pin(expected.get(identity), pin):
             raise ValueError(f"Resolved dependency differs from committed lock: {identity}")
     for identity in expected.keys() - actual.keys():
         if identity not in app:
