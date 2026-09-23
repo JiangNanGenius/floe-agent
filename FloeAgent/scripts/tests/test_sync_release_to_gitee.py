@@ -49,6 +49,7 @@ class MockState:
         self.next_release_id = 700
         self.next_attach_id = 5000
         self.fail_upload_names = {}        # name -> remaining failures (persistent when large)
+        self.fail_after_create_names = {}  # name -> remaining "response lost" failures
         self.fail_list_once = 0
         self.requests = []                 # (method, path)
         self.serve_requests = 0
@@ -253,6 +254,8 @@ class MockHandler(BaseHTTPRequestHandler):
     # -- Gitee -------------------------------------------------------------
 
     def _gitee(self, method, path, query):
+        if path.endswith("/releases") and method == "GET":
+            return self._send(200, list(self.state.gitee_releases.values()))
         if path.endswith("/releases") and method == "POST":
             payload = json.loads(self._read_body().decode("utf-8"))
             release_id = self.state.next_release_id
@@ -298,6 +301,10 @@ class MockHandler(BaseHTTPRequestHandler):
                 if len(data) > self.state.max_upload:
                     return self._send(400, {"message": "附件大小超出限制 (%d bytes)" % self.state.max_upload})
                 fid = self.state.add_gitee_attach(release_id, name, data)
+                lost = self.state.fail_after_create_names.get(name, 0)
+                if lost > 0:
+                    self.state.fail_after_create_names[name] = lost - 1
+                    return self._send(500, {"message": "injected response loss after create"})
                 return self._send(201, {"id": fid, "name": name, "size": len(data)})
         match = re.match(r"^/api/v5/repos/[^/]+/[^/]+/releases/(\d+)/attach_files/(\d+)$", path)
         if match and method == "DELETE":
@@ -621,6 +628,113 @@ class MirrorTestCase(unittest.TestCase):
         self.assertTrue(second["ok"])
         parts = self.reassembled("medium.bin.part-")
         self.assertEqual(big, parts)
+
+    def test_manifest_has_unique_verified_ids(self):
+        self.seed_app_release()
+        self.run_mirror("v1.7.0-beta.82")
+        manifest = json.loads(self.gitee_attach_by_name("GITEE-MIRROR-MANIFEST.json")[0]["data"].decode())
+        self.assertTrue(manifest["complete"])
+        by_name = {item["name"]: item for item in manifest["assets"]}
+        self.assertEqual({"notes.txt", "small.json", "medium.bin"}, set(by_name))
+        for item in by_name.values():
+            self.assertEqual("verified", item["state"])
+            self.assertTrue(item["complete"])
+            self.assertTrue(item["giteeFiles"])
+            for record in item["giteeFiles"]:
+                self.assertEqual("hash", record["verification"])
+                attach = self.state.gitee_attach[int(record["attachId"])]
+                self.assertEqual(record["name"], attach["name"])
+                self.assertEqual(record["bytes"], attach["size"])
+                self.assertEqual(sha256_hex(attach["data"]), record["digests"]["sha256"])
+
+    def test_manifest_upload_failure_keeps_partial_evidence(self):
+        self.seed_app_release()
+        self.state.fail_upload_names["GITEE-MIRROR-MANIFEST.json"] = 99
+        result, summary = self.run_mirror("v1.7.0-beta.82", expect=3)
+        self.assertIsNotNone(summary, "summary JSON must survive a manifest failure")
+        self.assertFalse(summary["ok"])
+        self.assertIn("GITEE-MIRROR-MANIFEST.json", summary["fatal"])
+        self.assertGreaterEqual(summary["gates"]["assets"]["uploaded"], 2)
+        self.assertEqual(0, summary["gates"]["assets"]["failed"])
+        self.assertEqual("failed", summary["gates"]["releaseMetadata"]["mirrorManifest"]["status"])
+        self.assertNotIn(TOKEN, json.dumps(summary))
+        # The verified uploads are reused on the retry, not transferred again.
+        uploads_before = len([1 for method, path in self.state.requests if method == "POST" and "attach_files" in path])
+        self.state.fail_upload_names.clear()
+        _, second = self.run_mirror("v1.7.0-beta.82")
+        self.assertTrue(second["ok"])
+        uploads_after = len([1 for method, path in self.state.requests if method == "POST" and "attach_files" in path]) - uploads_before
+        self.assertEqual(1, uploads_after, "only the mirror manifest should be uploaded on the retry")
+
+    def test_post_timeout_duplicate_is_reconciled(self):
+        _, big = self.seed_app_release()
+        self.state.fail_after_create_names["medium.bin.part-00.bin"] = 1
+        _, summary = self.run_mirror("v1.7.0-beta.82", extra=["--upload-workers", "1"])
+        self.assertTrue(summary["ok"])
+        copies = self.gitee_attach_by_name("medium.bin.part-00.bin")
+        self.assertEqual(1, len(copies), "a retried upload must leave exactly one attachment")
+        self.assertEqual(sha256_hex(big[: self.shard_bytes]), sha256_hex(copies[0]["data"]))
+        manifest = json.loads(self.gitee_attach_by_name("GITEE-MIRROR-MANIFEST.json")[0]["data"].decode())
+        medium = [item for item in manifest["assets"] if item["name"] == "medium.bin"][0]
+        ids = [record["attachId"] for record in medium["giteeFiles"]]
+        self.assertIn(copies[0]["id"], [int(value) for value in ids])
+        self.assertEqual(len(ids), len(set(ids)), "each planned file keeps one unique id")
+
+    def test_wrong_existing_same_size_copy_is_repaired(self):
+        _, big = self.seed_app_release()
+        # First run mirrors everything, then a wrong same-size copy appears.
+        self.run_mirror("v1.7.0-beta.82")
+        release = list(self.state.gitee_releases.values())[0]
+        correct = self.gitee_attach_by_name("medium.bin.part-01.bin")[0]
+        self.state.gitee_attach[correct["id"]]["data"] = os.urandom(len(correct["data"]))
+        self.state.add_gitee_attach(release["id"], "medium.bin.part-01.bin", correct["data"])
+        self.run_mirror("v1.7.0-beta.82")
+        copies = self.gitee_attach_by_name("medium.bin.part-01.bin")
+        self.assertEqual(1, len(copies))
+        self.assertEqual(sha256_hex(big[self.shard_bytes : 2 * self.shard_bytes]), sha256_hex(copies[0]["data"]))
+
+    def test_subset_run_does_not_promote_replaced_sibling(self):
+        self.seed_app_release()
+        self.run_mirror("v1.7.0-beta.82")
+        release = list(self.state.gitee_releases.values())[0]
+        original = self.gitee_attach_by_name("notes.txt")[0]
+        # A same-name same-size sibling replaces the verified attachment id.
+        del self.state.gitee_attach[original["id"]]
+        self.state.add_gitee_attach(release["id"], "notes.txt", b"X" * len(original["data"]))
+        _, subset = self.run_mirror("v1.7.0-beta.82", extra=["--include-assets", "small.json"])
+        manifest = json.loads(self.gitee_attach_by_name("GITEE-MIRROR-MANIFEST.json")[0]["data"].decode())
+        notes = [item for item in manifest["assets"] if item["name"] == "notes.txt"][0]
+        self.assertFalse(notes["complete"], "an unchecked replaced sibling must not be advertised complete")
+        self.assertEqual("not-selected", notes["state"])
+        self.assertEqual([], notes["giteeFiles"])
+        small = [item for item in manifest["assets"] if item["name"] == "small.json"][0]
+        self.assertTrue(small["complete"])
+        self.assertFalse(manifest["complete"])
+        # Selecting the sibling repairs it and the claim becomes verified again.
+        _, repaired = self.run_mirror("v1.7.0-beta.82", extra=["--include-assets", "notes.txt"])
+        manifest = json.loads(self.gitee_attach_by_name("GITEE-MIRROR-MANIFEST.json")[0]["data"].decode())
+        notes = [item for item in manifest["assets"] if item["name"] == "notes.txt"][0]
+        self.assertTrue(notes["complete"])
+        self.assertEqual("verified", notes["state"])
+        self.assertEqual(1, len(self.gitee_attach_by_name("notes.txt")))
+        self.assertEqual(b"hello mirror\n", self.gitee_attach_by_name("notes.txt")[0]["data"])
+        self.assertTrue(manifest["complete"], "carried-forward verified ids keep the release complete")
+
+    def test_quota_preflight_skips_infeasible_asset_without_uploading(self):
+        self.seed_app_release()
+        _, summary = self.run_mirror(
+            "v1.7.0-beta.82",
+            extra=["--gitee-attachment-quota-mib", "0.4"],
+            expect=3,
+        )
+        self.assertFalse(summary["ok"])
+        self.assertEqual(1, summary["gates"]["assets"]["failed"])
+        failed = [item for item in summary["assets"] if item["status"] == "failed"]
+        self.assertEqual("medium.bin", failed[0]["name"])
+        self.assertIn("quota", failed[0]["detail"])
+        self.assertEqual(int(0.4 * 1024 * 1024), summary["limits"]["giteeAttachmentQuotaBytes"])
+        names = sorted(item["name"] for item in self.state.gitee_attach.values())
+        self.assertEqual(["GITEE-MIRROR-MANIFEST.json", "notes.txt", "small.json"], names)
 
     def test_time_budget_defers_work_truthfully(self):
         self.seed_app_release()

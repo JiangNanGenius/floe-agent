@@ -68,10 +68,29 @@ shasum -a 256 Floe-Agent-1.7.0-build225-unsigned.ipa   # 必须等于 parts.json
 | 方向 | 实测 | 说明 |
 | --- | --- | --- |
 | GitHub 资产下载（range 206） | 64 MiB / 1.55 s ≈ **43.3 MB/s** | 712 MiB IPA 整包下载约 19 s |
-| GitHub Actions → Gitee `attach_files` 上传 | 16 MiB curl 探针：240 s 超时仅发出 6.75 MiB ≈ **29 KB/s**（HTTP 100，仍在等待响应） | 单连接上传 712 MiB 理论上需约 7 小时；多连接并行（`--upload-workers`）是当前缓解手段 |
-| Gitee 单附件上限 | 仓库文档记录为 100 MB（Build 224 说明）；既有 Linux 镜像以 64 MiB 分片成功发布 | 工具默认 `--shard-mib 64`；超过该值的资产自动分片 |
+| GitHub Actions → Gitee `attach_files` 上传 | 16 MiB curl 探针：240 s 超时仅发出 6.75 MiB ≈ **29 KB/s**（HTTP 100，仍在等待响应） | 单连接上传 712 MiB 理论上需约 7 小时；`--upload-workers` 并行分片可缓解 |
+| **Gitee 仓库附件配额** | 实测 400：`{"message":"验证失败：文件大小已超出仓库附件配额：1 GB"}`（上传体收完后才拒绝） | 配额为**仓库级 1 GiB**，不是单文件 100 MB；当前仓库已用 1,043,397,060 B（见下节） |
+| 单附件/分片大小 | 既有 Linux 镜像以 64 MiB 分片成功发布；仓库文档记录 100 MB 说法 | 工具默认 `--shard-mib 64`，并设 `--gitee-attachment-quota-mib`（默认 1024）预检 |
 
 具体云端镜像结果与链接见本页末尾的状态小节。
+
+## 为什么 712 MiB 的 App IPA 不能托管在 Gitee（实测）/ Why the 712 MiB IPA is not hosted on Gitee
+
+2026-09-23 云端实测（run [35836567963](https://github.com/JiangNanGenius/floe-agent/actions/runs/35836567963)）：
+
+- 4 个并行连接各上传 64 MiB 分片，每个分片约 2,300–3,000 s 完成（约 28 KB/s/连接，聚合约 0.1 MB/s）。
+- 分片上传体被接收后 Gitee 一律返回 HTTP 400：`验证失败：文件大小已超出仓库附件配额：1 GB`。
+- 只读求和：镜像仓库当前附件总量 = 1,043,384,668 B（`floe-linux-guest-20260922.2` 发行版，其中 7 个分片各有 2 份重复，重复占 469,762,048 B）+ 12,392 B（本发行版）= 1,043,397,060 B ≈ 0.97 GiB。
+- 再加一个 64 MiB 分片 = 1,110,505,924 B > 1,073,741,824 B（1 GiB），因此任何新附件都会因仓库配额被拒；712 MiB 的 IPA 无论是否分片都无法放入。
+- 即使删掉重复分片（可回收约 448 MiB），已用约 547 MiB，剩余约 477 MiB，仍小于 712 MiB。
+
+结论与安全回退：
+
+1. **App IPA 的 Gitee 托管当前不可行**，这不是同步工具的缺陷；GitHub 主源是唯一可安装来源。
+2. 可直接下载的小资产（元数据、校验文件等，单个远小于配额）仍镜像到 Gitee；`GITEE-MIRROR-MANIFEST.json` 的每个资产带 `state` 与 `complete`，未托管/未校验的资产明确为 `complete: false`。
+3. **不得**把分片 URL 当作 IPA 投递给 Feather/AltStore 或运行时回退；也不得把它描述为 Gitee 托管的 IPA。
+4. 如需中国大陆托管安装包：需要更大附件配额的 Gitee 账号/仓库（用 `--gitee-attachment-quota-mib` 抬高预检），或由支持「逐片校验 + 重组后整包摘要校验」的消费方处理分片；当前 App IPA 安装路径没有这种消费方。
+5. 工具在上传前做配额预检（可用 `--no-quota-check` 关闭），配额不足的资产会立即以 `failed` 报告原因，不再浪费数十分钟上传后才收到 400。
 
 ## 自动化触发 / Automation
 

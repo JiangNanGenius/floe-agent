@@ -803,11 +803,129 @@ class MirrorRunner:
             index.setdefault(item["name"], []).append(item)
         return index
 
+    def _attachment_usage(self):
+        """Total bytes of every release attachment in the Gitee repository.
+
+        Gitee enforces a per-repository attachment quota (observed as 1 GiB
+        for this repository) *after* receiving an upload body, so a doomed
+        large upload burns its whole transfer time before failing. Summing the
+        current usage first lets the mirror skip infeasible assets instead.
+        """
+        total = 0
+        page = 1
+        releases = []
+        while True:
+            batch = self.gitee.get("/releases", {"per_page": 100, "page": page})
+            if not batch:
+                break
+            releases.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        for release in releases:
+            for item in self.gitee.list_attach_files(release["id"]):
+                total += int(item.get("size") or 0)
+        return total
+
+    def _entry_needed_bytes(self, entry, index):
+        """Bytes this asset would still add to the repository attachment usage."""
+        if entry["sharded"]:
+            needed = 0
+            for idx, name in enumerate(entry["part_names"]):
+                expected = self._part_size(entry["size"], idx, len(entry["part_names"]))
+                items = index.get(name) or []
+                if not any(int(item.get("size") or -1) == expected for item in items):
+                    needed += expected
+            return needed
+        items = index.get(entry["asset"]["name"]) or []
+        if any(int(item.get("size") or -1) == entry["size"] for item in items):
+            return 0
+        return entry["size"]
+
     def _attach_item_by_id(self, release_id, attach_id):
         for item in self.gitee.list_attach_files(release_id):
             if str(item.get("id")) == str(attach_id):
                 return item
         return None
+
+    def _file_record(self, name, size, digests, attach_id, level):
+        """Authoritative record for one planned Gitee file."""
+        return {
+            "name": name,
+            "bytes": size,
+            "digests": dict(digests or {}),
+            "attachId": attach_id,
+            "verification": level,
+        }
+
+    def _unique_verified_item(self, release_id, name, expected_bytes, expected_digests, algos, prefer_id=None):
+        """Keeps exactly one size+digest verified attachment for ``name``.
+
+        A retried upload whose response was lost, a stale part or a manually
+        created sibling can leave several attachments with the same name; the
+        public download URL would then be free to resolve to any of them. Every
+        copy that is not the (preferred, verified) one is deleted, so the name
+        identifies exactly one immutable attachment. Returns
+        ``{"item": ..., "level": ...}`` or ``None`` when nothing verified
+        remains.
+        """
+        index = self._attach_index(release_id)
+        items = list(index.get(name) or [])
+        if not items:
+            return None
+        expected_digests = expected_digests or {}
+        ordered = sorted(
+            items,
+            key=lambda item: (0 if str(item.get("id")) == str(prefer_id) else 1, str(item.get("id"))),
+        )
+        kept = None
+        level = None
+        for item in ordered:
+            if int(item.get("size") or -1) != expected_bytes:
+                continue
+            verdict = self._verify_gitee_file(release_id, item, expected_bytes, expected_digests, algos)
+            if verdict["ok"]:
+                kept = item
+                level = verdict.get("level")
+                break
+        for item in items:
+            if kept is not None and str(item.get("id")) == str(kept["id"]):
+                continue
+            self.log.emit(
+                "[dedupe] %s: removing %s copy id=%s"
+                % (name, "duplicate" if kept is not None else "unverified", item["id"])
+            )
+            self.gitee.delete_attach_file(release_id, item["id"])
+        if kept is None:
+            return None
+        return {"item": kept, "level": level}
+
+    def _confirm_unique(self, release_id, files):
+        """Fails unless every planned name resolves to exactly one attachment."""
+        index = self._attach_index(release_id)
+        for record in files:
+            items = index.get(record["name"]) or []
+            if len(items) != 1:
+                raise AssetFailure(
+                    "attachment %s has %d copies on Gitee; exactly one verified copy is required"
+                    % (record["name"], len(items))
+                )
+            if record.get("attachId") is not None and str(items[0].get("id")) != str(record["attachId"]):
+                raise AssetFailure(
+                    "attachment %s resolves to id=%s instead of the verified id=%s"
+                    % (record["name"], items[0].get("id"), record["attachId"])
+                )
+            if int(items[0].get("size") or -1) != record["bytes"]:
+                raise AssetFailure(
+                    "attachment %s size %s != recorded %s" % (record["name"], items[0].get("size"), record["bytes"])
+                )
+
+    def _verification_floor(self):
+        if self.args.verify == "hash":
+            return "hash"
+        if self.args.verify == "size":
+            return "size-only"
+        return "unverified"
 
     def _verify_gitee_file(self, release_id, item, expected_bytes, expected_digest, algos):
         """Downloads one Gitee attachment and checks size + digest. Returns dict."""
@@ -843,29 +961,27 @@ class MirrorRunner:
             return {"ok": True, "level": level, "digests": digests}
 
     def _ensure_asset_files(self, entry, release_id, index):
-        """Ensures one GitHub asset is mirrored. Returns (status, detail)."""
+        """Ensures one GitHub asset is mirrored.
+
+        Returns ``(status, detail, files)`` where ``files`` is the
+        authoritative per-file record (name, bytes, digests, unique verified
+        attach id and verification level) that the release manifest pins.
+        """
         asset = entry["asset"]
         name = asset["name"]
         size = entry["size"]
         github_digest = entry["digest"]
+        floor = self._verification_floor()
         algos = ("sha256", "sha512") if (self.args.profile == "guest-image" and entry.get("image_archive")) else ("sha256",)
 
         if not entry["sharded"]:
-            expected_digest = {"sha256": github_digest} if github_digest else {}
-            existing = index.get(name, [])
-            verified_item = None
-            for item in existing:
-                verdict = self._verify_gitee_file(release_id, item, size, expected_digest, algos)
-                if verdict["ok"]:
-                    verified_item = item
-                    break
-            if verified_item is not None:
-                keep_id = verified_item["id"]
-                for item in existing:
-                    if item["id"] != keep_id:
-                        self.log.emit("[dedupe] %s: removing extra Gitee copy id=%s" % (name, item["id"]))
-                        self.gitee.delete_attach_file(release_id, item["id"])
-                return "skipped" if len(existing) <= 1 else "deduped", {"verifiedFrom": "existing"}
+            known = {"sha256": github_digest} if github_digest else {}
+            if known:
+                found = self._unique_verified_item(release_id, name, size, known, algos)
+                if found is not None:
+                    files = [self._file_record(name, size, known, found["item"]["id"], found.get("level"))]
+                    self._confirm_unique(release_id, files)
+                    return "skipped", {"verifiedFrom": "existing"}, files
 
             # Upload fresh bytes from GitHub.
             local = os.path.join(self.work_dir, "asset")
@@ -881,7 +997,7 @@ class MirrorRunner:
             )
             self.log.emit(
                 "[download] %s done in %.0fs (%.2f MiB/s)"
-                % (name, time.monotonic() - download_started, size / 1048576.0 / max(time.monotonic() - download_started, 0.001))
+                % (name, time.monotonic() - download_started, size / 1048576.0 / max(time.monotonic() - download_started, 1e-3))
             )
             computed = result["digests"]
             if github_digest and computed.get("sha256") != github_digest:
@@ -889,25 +1005,26 @@ class MirrorRunner:
                     "GitHub download digest mismatch for %s: %s != declared %s"
                     % (name, computed.get("sha256"), github_digest)
                 )
-            for item in index.get(name, []):
-                self.log.emit("[replace] %s: removing unverified Gitee copy id=%s" % (name, item["id"]))
-                self.gitee.delete_attach_file(release_id, item["id"])
+            known = {"sha256": computed.get("sha256")}
             self._check_budget()
             uploaded = self.gitee.upload_attach_file(
                 release_id, target, name, progress=self._progress("upload " + name, size)
             )
-            authoritative = self._attach_item_by_id(release_id, uploaded.get("id")) or uploaded
-            expected = {"sha256": github_digest} if github_digest else {"sha256": computed.get("sha256")}
-            verdict = self._verify_gitee_file(release_id, authoritative, size, expected, algos)
-            if not verdict["ok"]:
-                raise AssetFailure("%s uploaded but failed verification: %s" % (name, verdict.get("reason")))
             os.unlink(target)
+            kept = self._unique_verified_item(release_id, name, size, known, algos, prefer_id=uploaded.get("id"))
+            if kept is None or kept.get("level") != floor:
+                raise AssetFailure(
+                    "%s is not uniquely %s-verified on Gitee after upload (level=%s)"
+                    % (name, floor, kept.get("level") if kept else None)
+                )
+            files = [self._file_record(name, size, known, kept["item"]["id"], kept.get("level"))]
+            self._confirm_unique(release_id, files)
             return "uploaded", {
-                "attachId": uploaded.get("id"),
+                "attachId": kept["item"]["id"],
                 "sha256": computed.get("sha256"),
                 "sourceDigestVerified": bool(github_digest),
-                "verification": verdict.get("level"),
-            }
+                "verification": kept.get("level"),
+            }, files
 
         # Sharded asset: create parts + manifest locally, then reconcile each.
         part_names = entry["part_names"]
@@ -916,19 +1033,15 @@ class MirrorRunner:
         expected_parts, existing_manifest = self._parts_from_existing_manifest(release_id, index, entry)
         need_download = False
         for idx, part_name in enumerate(part_names):
-            item = self._best_existing(index, part_name)
+            part_bytes = self._part_size(size, idx, len(part_names))
             expected = expected_parts.get(part_name) or {}
-            if item is not None and int(item.get("size") or -1) == self._part_size(size, idx, len(part_names)):
-                if expected.get("digests") and expected.get("bytes") == item.get("size"):
-                    verdict = self._verify_gitee_file(release_id, item, expected["bytes"], expected["digests"], algos)
-                    if verdict["ok"]:
-                        parts.append({"index": idx, "name": part_name, "bytes": expected["bytes"],
-                                      "digests": expected["digests"], "status": "skipped",
-                                      "verification": verdict.get("level")})
-                        continue
-                need_download = True
-                parts.append({"index": idx, "name": part_name, "bytes": int(item.get("size")), "digests": {}, "status": "pending"})
-                continue
+            if expected.get("digests") and expected.get("bytes") == part_bytes:
+                found = self._unique_verified_item(release_id, part_name, part_bytes, expected["digests"], algos)
+                if found is not None:
+                    parts.append({"index": idx, "name": part_name, "bytes": part_bytes,
+                                  "digests": expected["digests"], "status": "skipped",
+                                  "verification": found.get("level"), "attachId": found["item"]["id"]})
+                    continue
             need_download = True
             parts.append({"index": idx, "name": part_name, "bytes": None, "digests": {}, "status": "pending"})
 
@@ -984,20 +1097,13 @@ class MirrorRunner:
         for part in parts:
             if part["status"] == "skipped":
                 continue
-            part_name = part["name"]
-            item = self._best_existing(index, part_name)
-            if item is not None:
-                if int(item.get("size") or -1) == part["bytes"]:
-                    expected = {key: value for key, value in part["digests"].items() if key in algos}
-                    verdict = self._verify_gitee_file(release_id, item, part["bytes"], expected, algos)
-                    if verdict["ok"]:
-                        part["status"] = "skipped"
-                        part["verification"] = verdict.get("level")
-                        continue
-                    self.log.emit("[replace] %s: removing unverified copy id=%s" % (part_name, item["id"]))
-                else:
-                    self.log.emit("[replace] %s: removing size-mismatched copy id=%s" % (part_name, item["id"]))
-                self.gitee.delete_attach_file(release_id, item["id"])
+            expected = {key: value for key, value in part["digests"].items() if key in algos}
+            found = self._unique_verified_item(release_id, part["name"], part["bytes"], expected, algos) if expected else None
+            if found is not None:
+                part["status"] = "skipped"
+                part["verification"] = found.get("level")
+                part["attachId"] = found["item"]["id"]
+                continue
             upload_queue.append(part)
 
         def upload_part(part):
@@ -1046,16 +1152,20 @@ class MirrorRunner:
 
         for part, uploaded in outcomes:
             self._check_budget()
-            item = self._attach_item_by_id(release_id, uploaded.get("id")) or uploaded
             expected = {key: value for key, value in part["digests"].items() if key in algos}
-            verdict = self._verify_gitee_file(release_id, item, part["bytes"], expected, algos)
-            if not verdict["ok"]:
-                part_errors.append("%s: %s" % (part["name"], verdict.get("reason")))
-                self.log.emit("[fail] part %s verification: %s" % (part["name"], verdict.get("reason")))
+            kept = self._unique_verified_item(
+                release_id, part["name"], part["bytes"], expected, algos, prefer_id=uploaded.get("id")
+            )
+            if kept is None or kept.get("level") != floor:
+                part_errors.append(
+                    "%s: not uniquely %s-verified after upload (level=%s)"
+                    % (part["name"], floor, kept.get("level") if kept else None)
+                )
+                self.log.emit("[fail] part %s: post-upload verification failed" % part["name"])
                 continue
             part["status"] = "uploaded"
-            part["attachId"] = uploaded.get("id")
-            part["verification"] = verdict.get("level")
+            part["attachId"] = kept["item"]["id"]
+            part["verification"] = kept.get("level")
 
         incomplete = [
             p["name"] for p in parts
@@ -1074,20 +1184,24 @@ class MirrorRunner:
         with open(manifest_path, "w", encoding="utf-8") as handle:
             json.dump(manifest, handle, indent=2, sort_keys=False)
             handle.write("\n")
-        status, detail = self._sync_small_file(release_id, entry["shard_manifest"], manifest_path, index)
-        return ("uploaded" if any(p["status"] == "uploaded" for p in parts) or status == "uploaded" else "skipped"), {
-            "parts": parts,
-            "whole": whole,
-            "manifest": detail,
-        }
+        manifest_status, manifest_detail, manifest_file = self._sync_small_file(
+            release_id, entry["shard_manifest"], manifest_path, index
+        )
+        files = [
+            self._file_record(p["name"], p["bytes"], p["digests"], p.get("attachId"), p.get("verification"))
+            for p in parts
+        ]
+        files.append(manifest_file)
+        self._confirm_unique(release_id, files)
+        return (
+            "uploaded"
+            if any(p["status"] == "uploaded" for p in parts) or manifest_status == "uploaded"
+            else "skipped"
+        ), {"parts": parts, "whole": whole, "manifest": manifest_detail}, files
 
     def _part_size(self, asset_size, index, count):
         remaining = asset_size - index * self.args.shard_bytes
         return min(self.args.shard_bytes, remaining)
-
-    def _best_existing(self, index, name):
-        items = index.get(name) or []
-        return items[0] if items else None
 
     def _parts_from_existing_manifest(self, release_id, index, entry):
         """Reads the already published shard manifest, when it is usable.
@@ -1188,30 +1302,29 @@ class MirrorRunner:
         }
 
     def _sync_small_file(self, release_id, name, path, index):
-        """Idempotently uploads a generated manifest, replacing stale copies."""
+        """Idempotently uploads a generated manifest as one unique attachment.
+
+        Returns ``(status, detail, file_record)``; duplicates left by a retried
+        upload are removed so the name identifies exactly one verified id.
+        """
         payload = open(path, "rb").read()
         digest = hashlib.sha256(payload).hexdigest()
         size = len(payload)
-        existing = index.get(name) or []
-        for item in existing:
-            if int(item.get("size") or -1) == size:
-                verdict = self._verify_gitee_file(release_id, item, size, {"sha256": digest}, ("sha256",))
-                if verdict["ok"]:
-                    keep_id = item["id"]
-                    for other in existing:
-                        if other["id"] != keep_id:
-                            self.log.emit("[dedupe] %s: removing extra copy id=%s" % (name, other["id"]))
-                            self.gitee.delete_attach_file(release_id, other["id"])
-                    return "skipped", {"attachId": keep_id, "sha256": digest}
-        for item in existing:
-            self.log.emit("[replace] %s: removing stale copy id=%s" % (name, item["id"]))
-            self.gitee.delete_attach_file(release_id, item["id"])
-        uploaded = self.gitee.upload_attach_file(release_id, path, name)
-        authoritative = self._attach_item_by_id(release_id, uploaded.get("id")) or uploaded
-        verdict = self._verify_gitee_file(release_id, authoritative, size, {"sha256": digest}, ("sha256",))
-        if not verdict["ok"]:
-            raise AssetFailure("%s failed verification: %s" % (name, verdict.get("reason")))
-        return "uploaded", {"attachId": uploaded.get("id"), "sha256": digest}
+        expected = {"sha256": digest}
+        uploaded_id = None
+        kept = None
+        if index.get(name):
+            kept = self._unique_verified_item(release_id, name, size, expected, ("sha256",))
+        if kept is None:
+            uploaded = self.gitee.upload_attach_file(release_id, path, name)
+            uploaded_id = uploaded.get("id")
+            kept = self._unique_verified_item(release_id, name, size, expected, ("sha256",), prefer_id=uploaded_id)
+        if kept is None:
+            raise AssetFailure("%s is not uniquely hash-verified on Gitee" % name)
+        record = self._file_record(name, size, expected, kept["item"]["id"], kept.get("level"))
+        self._confirm_unique(release_id, [record])
+        status = "uploaded" if uploaded_id is not None and str(kept["item"]["id"]) == str(uploaded_id) else "skipped"
+        return status, {"attachId": kept["item"]["id"], "sha256": digest, "verification": kept.get("level")}, record
 
     # -- release metadata --------------------------------------------------
 
@@ -1221,12 +1334,17 @@ class MirrorRunner:
             "\n\n---\n\n**Gitee 中国大陆镜像（GitHub 为信任主源）。** 本镜像的发行说明与资产"
             "由 GitHub Release 同步生成，资产与 GitHub 逐字节相同（大小与 SHA-256 见 "
             "`%s`；超过 Gitee 单附件上限的资产按固定分片发布，分片清单见对应 "
-            "`*.parts.json`）。GitHub 主源：%s\n\n"
+            "`*.parts.json`）。每个资产的镜像完成状态见该清单的 `complete` 字段："
+            "`complete: false` 表示该资产尚未在 Gitee 完整托管（或只有部分分片），"
+            "请使用 GitHub 主源。Gitee 分片不是可直接安装的应用包，重组前必须校验 "
+            "大小与摘要。GitHub 主源：%s\n\n"
             "**Gitee China mirror (GitHub is the trust-bearing primary).** Metadata and "
             "assets are synced from the GitHub release named above; assets are byte-identical "
-            "to GitHub (sizes and SHA-256 in `%s`). Assets above Gitee's single-attachment "
-            "limit are published as fixed-size shards described by the matching "
-            "`*.parts.json`. Source release: %s"
+            "to GitHub (sizes and SHA-256 in `%s`). Per-asset completion is the `complete` "
+            "field of that manifest: `complete: false` means the asset is not fully hosted on "
+            "Gitee yet (or only partially sharded) — use the GitHub primary. A Gitee shard set "
+            "is not an installable app package; verify sizes and digests before reassembly. "
+            "Source release: %s"
             % (MIRROR_MANIFEST_ASSET, release_url, MIRROR_MANIFEST_ASSET, release_url)
         )
         return body + notice
@@ -1358,6 +1476,7 @@ class MirrorRunner:
         }
 
         self.deadline = None
+        self.asset_records = {}
         if args.time_budget_minutes and args.time_budget_minutes > 0:
             self.deadline = time.monotonic() + args.time_budget_minutes * 60.0
             self.log.emit("[budget] deferring new transfers after %.0f minutes" % args.time_budget_minutes)
@@ -1380,28 +1499,62 @@ class MirrorRunner:
             index = self._attach_index(release_id)
             failures = 0
             deferred = 0
+            quota_bytes = int(args.gitee_attachment_quota_mib * 1024 * 1024) if args.quota_check else 0
+            free_quota = None
+            if quota_bytes:
+                used = self._attachment_usage()
+                free_quota = quota_bytes - used
+                self.summary["limits"]["giteeAttachmentUsageBytes"] = used
+                self.summary["limits"]["giteeAttachmentQuotaBytes"] = quota_bytes
+                self.log.emit(
+                    "[quota] repository attachments %s of %s (%s free)"
+                    % (human_bytes(used), human_bytes(quota_bytes), human_bytes(max(free_quota, 0)))
+                )
             for entry in entries:
                 name = entry["asset"]["name"]
                 try:
                     if self.deadline is not None and time.monotonic() > self.deadline:
                         raise BudgetExceeded("time budget reached before starting %s" % name)
+                    if free_quota is not None and not args.dry_run:
+                        needed = self._entry_needed_bytes(entry, index)
+                        if needed > free_quota:
+                            raise AssetFailure(
+                                "Gitee repository attachment quota (%s) has only %s free; %s needs %s "
+                                "(mirror this asset on a Gitee account/repository with a larger quota)"
+                                % (
+                                    human_bytes(quota_bytes),
+                                    human_bytes(max(free_quota, 0)),
+                                    name,
+                                    human_bytes(needed),
+                                )
+                            )
                     if args.dry_run:
                         state = "present" if self._entry_present(entry, index) else "missing"
                         self.summary["assets"].append(self._asset_summary(entry, "planned-" + state, None))
                         self.summary["gates"]["assets"]["skipped" if state == "present" else "uploaded"] += 1
                         continue
-                    status, detail = self._ensure_asset_files(entry, release_id, index)
+                    status, detail, files = self._ensure_asset_files(entry, release_id, index)
                     self.summary["assets"].append(self._asset_summary(entry, status, detail))
                     if status == "uploaded":
                         self.summary["gates"]["assets"]["uploaded"] += 1
                     else:
                         self.summary["gates"]["assets"]["skipped"] += 1
                     self.summary["gates"]["assets"]["verified"] += 1
+                    if files and all(f.get("verification") == "hash" for f in files):
+                        record_state = "verified"
+                    elif files:
+                        record_state = "size-only"
+                    else:
+                        record_state = "incomplete"
+                    self.asset_records[name] = {"state": record_state, "files": files}
                     index = self._attach_index(release_id)
+                    if free_quota is not None:
+                        free_quota = quota_bytes - self._attachment_usage()
                 except BudgetExceeded as error:
                     deferred += 1
                     self.summary["gates"]["assets"]["deferred"] += 1
                     self.summary["assets"].append(self._asset_summary(entry, "deferred", str(error)))
+                    self.asset_records[name] = {"state": "deferred", "files": []}
                     self.log.emit("[deferred] %s: %s (re-run resumes)" % (name, error))
                 except (AssetFailure, MirrorError) as error:
                     failures += 1
@@ -1410,10 +1563,21 @@ class MirrorRunner:
                     if isinstance(error, HttpError) and error.status in (400, 413, 422):
                         detail += " (if Gitee rejected an oversized attachment, lower --shard-mib)"
                     self.summary["assets"].append(self._asset_summary(entry, "failed", detail))
+                    self.asset_records[name] = {"state": "failed", "files": [], "error": detail}
                     self.log.emit("[fail] %s: %s" % (name, detail))
 
             if not args.dry_run and args.write_manifest:
-                self._write_mirror_manifest(release_id, self.all_entries, self._attach_index(release_id))
+                try:
+                    self._write_mirror_manifest(release_id, self.all_entries, self._attach_index(release_id))
+                except (AssetFailure, MirrorError) as error:
+                    detail = "mirror manifest %s failed: %s" % (MIRROR_MANIFEST_ASSET, error)
+                    self.summary["gates"]["releaseMetadata"]["mirrorManifest"] = {
+                        "status": "failed",
+                        "error": str(error),
+                    }
+                    # A late failure must not lose the verified/uploaded
+                    # evidence already recorded in the summary.
+                    raise AssetFailure(detail)
 
             if args.prune_unknown:
                 self._prune_unknown(release_id, index, wanted)
@@ -1446,41 +1610,92 @@ class MirrorRunner:
             "detail": detail,
         }
 
-    def _layout_state(self, entry, index):
-        """Whether every Gitee attachment of one asset exists with the right size."""
-        if entry["sharded"]:
-            names = [entry["shard_manifest"]] + list(entry["part_names"])
-        else:
-            names = [entry["asset"]["name"]]
-        present = True
-        sizes_ok = True
-        for position, name in enumerate(names):
-            items = index.get(name) or []
-            if not items:
-                present = False
-                break
-            if entry["sharded"] and name != entry["shard_manifest"]:
-                part_index = position - 1
-                expected = self._part_size(entry["size"], part_index, len(entry["part_names"]))
-                if not any(int(item.get("size") or -1) == expected for item in items):
-                    sizes_ok = False
-        return present and sizes_ok
+    def _read_existing_manifest(self, release_id):
+        """Reads the published mirror manifest back for carry-forward state."""
+        if not release_id:
+            return {}
+        items = self._attach_index(release_id).get(MIRROR_MANIFEST_ASSET) or []
+        if not items:
+            return {}
+        item = items[0]
+        try:
+            size = int(item.get("size") or -1)
+            if size <= 0 or size > 4 * 1024 * 1024:
+                return {}
+            result = self.gitee.download_attach_file(
+                release_id, item["id"], MIRROR_MANIFEST_ASSET,
+                lambda: _MemorySink(size), expected_size=size,
+            )
+            payload = json.loads(result["data"].decode("utf-8"))
+        except (MirrorError, ValueError, KeyError) as error:
+            self.log.emit("[manifest] existing manifest unreadable (%s); no carry-forward" % error)
+            return {}
+        entries = {}
+        for asset in payload.get("assets", []):
+            if isinstance(asset, dict) and asset.get("name"):
+                entries[asset["name"]] = asset
+        return entries
+
+    def _carry_forward(self, prior, entry, index):
+        """Keeps a prior complete claim only for the exact attachment ids it pinned.
+
+        An asset this run did not select is never promoted from the mere
+        presence of a same-name attachment: the previously *verified*
+        attachment ids must still be the ones present, with the same sizes.
+        """
+        if not prior or not prior.get("complete") or not prior.get("giteeFiles"):
+            return None
+        planned = ([entry["shard_manifest"]] + list(entry["part_names"])) if entry["sharded"] else [entry["asset"]["name"]]
+        by_name = {f.get("name"): f for f in prior.get("giteeFiles") or [] if isinstance(f, dict)}
+        if set(by_name) != set(planned):
+            return None
+        for name in planned:
+            record = by_name[name]
+            attach_id = record.get("attachId")
+            expected_bytes = record.get("bytes")
+            items = [item for item in (index.get(name) or []) if str(item.get("id")) == str(attach_id)]
+            if len(items) != 1:
+                return None
+            if expected_bytes is not None and int(items[0].get("size") or -1) != int(expected_bytes):
+                return None
+        return prior.get("giteeFiles")
 
     def _write_mirror_manifest(self, release_id, entries, index):
+        prior = self._read_existing_manifest(release_id)
         computed = {
             item["name"]: item["sha256"] for item in self.summary["assets"] if item.get("sha256")
         }
         assets = []
         for entry in entries:
-            planned_names = ([entry["shard_manifest"]] + list(entry["part_names"])) if entry["sharded"] else [entry["asset"]["name"]]
+            name = entry["asset"]["name"]
+            planned_names = ([entry["shard_manifest"]] + list(entry["part_names"])) if entry["sharded"] else [name]
+            record = self.asset_records.get(name)
+            if record is not None:
+                files = record.get("files") or []
+                state = record.get("state") or "failed"
+                source = "this-run"
+            else:
+                files = self._carry_forward(prior.get(name), entry, index)
+                if files:
+                    state = "verified"
+                    source = "previous-run-ids"
+                else:
+                    files = []
+                    state = "not-selected"
+                    source = None
+            if state == "verified" and not files:
+                state = "incomplete"
             assets.append(
                 {
-                    "name": entry["asset"]["name"],
+                    "name": name,
                     "size": entry["size"],
-                    "sha256": computed.get(entry["asset"]["name"]) or entry["digest"],
+                    "sha256": computed.get(name) or entry["digest"],
                     "sharded": entry["sharded"],
-                    "giteeNames": planned_names,
-                    "complete": release_id is not None and self._layout_state(entry, index),
+                    "giteeNames": [f["name"] for f in files] if files else planned_names,
+                    "giteeFiles": files,
+                    "state": state,
+                    "verificationSource": source,
+                    "complete": state == "verified",
                 }
             )
         payload = {
@@ -1491,9 +1706,9 @@ class MirrorRunner:
             "sourcePublishedAt": self.summary["source"].get("publishedAt"),
             "giteeRepo": self.args.gitee_repo,
             "policy": "GitHub is the trust-bearing primary; assets are byte-identical copies",
-            # The mapping is stable; `complete` flips to true only once every
-            # planned attachment exists with the expected size, so a partial
-            # mirror is visible instead of implied.
+            # `complete` is true only for assets whose exact attachment ids
+            # were size+digest verified (this run or, for unselected siblings,
+            # carried forward from a previous verified manifest).
             "complete": all(item["complete"] for item in assets),
             "assets": assets,
         }
@@ -1503,7 +1718,7 @@ class MirrorRunner:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
         index = index or {}
-        status, detail = self._sync_small_file(release_id, MIRROR_MANIFEST_ASSET, path, index)
+        status, detail, _record = self._sync_small_file(release_id, MIRROR_MANIFEST_ASSET, path, index)
         self.summary["gates"]["releaseMetadata"]["mirrorManifest"] = {
             "status": status,
             "fingerprint": payload["contentFingerprint"],
@@ -1552,11 +1767,48 @@ class MirrorRunner:
                 0 if final_ok else 3,
             )
         )
-        if self.args.summary_json:
+        self._write_summary_file()
+        return 0 if final_ok else 3
+
+    def _write_summary_file(self):
+        """Persists the run summary (never blocked by a late failure)."""
+        if not self.args.summary_json or self.summary is None:
+            return
+        try:
             with open(self.args.summary_json, "w", encoding="utf-8") as handle:
                 json.dump(self.summary, handle, indent=2, sort_keys=True)
                 handle.write("\n")
-        return 0 if final_ok else 3
+        except OSError as error:
+            self.log.emit("[warn] cannot write summary JSON: %s" % error)
+
+    def finalize_failure(self, error, exit_code):
+        """Single failure path: logs, preserves and redacts in-progress evidence.
+
+        Any failure after partial success (a failed asset, a failed manifest
+        upload, a fatal request error, an interrupt) still writes the summary
+        JSON with the exact verified/uploaded/failed/deferred counts, so the
+        next run resumes from evidence instead of restarting blind.
+        """
+        message = redact(str(error), self.token)
+        self.log.emit("[fatal] %s" % message)
+        summary = self.summary or {
+            "schema": MIRROR_SUMMARY_SCHEMA,
+            "toolVersion": TOOL_VERSION,
+            "generatedAt": utc_now(),
+            "gates": {"assets": {"total": 0, "verified": 0, "uploaded": 0, "skipped": 0, "failed": 0, "deferred": 0}},
+            "assets": [],
+            "limits": {},
+        }
+        summary["ok"] = False
+        summary["exitCode"] = exit_code
+        summary["fatal"] = message
+        gates = summary.setdefault("gates", {})
+        metadata = gates.get("releaseMetadata")
+        if isinstance(metadata, dict):
+            metadata.setdefault("failure", message)
+        self.summary = summary
+        self._write_summary_file()
+        return exit_code
 
 
 class _MemorySink:
@@ -1606,6 +1858,10 @@ def parse_args(argv):
                         help="emit one progress line per N MiB transferred (default 64)")
     parser.add_argument("--upload-workers", type=int, default=1,
                         help="parallel upload connections for sharded assets (default 1)")
+    parser.add_argument("--gitee-attachment-quota-mib", type=float, default=1024.0,
+                        help="Gitee repository attachment quota in MiB (observed 1 GiB for the mirror repo)")
+    parser.add_argument("--no-quota-check", dest="quota_check", action="store_false", default=True,
+                        help="skip the repository attachment quota preflight")
     parser.add_argument("--time-budget-minutes", type=float, default=0.0,
                         help="stop starting new transfers after N minutes and report deferred work "
                              "(0 = no budget; a re-run resumes)")
@@ -1625,35 +1881,23 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
     runner = None
-    exit_code = 2
     try:
         runner = MirrorRunner(args)
-        exit_code = runner.run()
-        return exit_code
-    except MirrorError as error:
-        if runner is not None:
-            runner.log.emit("[fatal] %s" % error)
-        else:
-            print("[fatal] %s" % error, file=sys.stderr, flush=True)
-        if runner is not None and runner.args.summary_json:
-            payload = runner.summary or {"schema": MIRROR_SUMMARY_SCHEMA, "ok": False}
-            payload["ok"] = False
-            payload["fatal"] = str(redact(str(error), runner.token))
-            try:
-                with open(runner.args.summary_json, "w", encoding="utf-8") as handle:
-                    json.dump(payload, handle, indent=2, sort_keys=True)
-                    handle.write("\n")
-            except OSError:
-                pass
-        return 2
-    except AssetFailure as error:
-        if runner is not None:
-            runner.log.emit("[fatal] %s" % error)
-        else:
-            print("[fatal] %s" % error, file=sys.stderr, flush=True)
-        return 3
+        return runner.run()
+    except (AssetFailure, BudgetExceeded, MirrorError) as error:
+        if runner is None:
+            print("[fatal] %s" % redact(str(error), None), file=sys.stderr, flush=True)
+            return 3 if isinstance(error, (AssetFailure, BudgetExceeded)) else 2
+        exit_code = 3 if isinstance(error, (AssetFailure, BudgetExceeded)) else 2
+        return runner.finalize_failure(error, exit_code)
     except KeyboardInterrupt:
-        return 130
+        if runner is None:
+            return 130
+        return runner.finalize_failure(MirrorError("interrupted by caller"), 130)
+    except Exception as error:  # unexpected: still preserve the in-progress evidence
+        if runner is None:
+            raise
+        return runner.finalize_failure(error, 1)
 
 
 if __name__ == "__main__":
