@@ -1333,6 +1333,13 @@ final class AppEnvironment: ObservableObject {
                 persistenceReady = true
                 bootstrapError = nil
             }
+            // PiP/service truth: observe the existing Linux guest supervisor's
+            // bounded lifecycle stream now that the environment is fully
+            // initialized, so an observed managed-service end reaches the
+            // durable terminal pipeline exactly once with the real identity.
+            // Explicit stops are filtered by the coordinator; no view owns a
+            // monitor of its own.
+            backgroundRunCoordinator.startLinuxGuestServiceLifecycleObservation()
             // Office engine prewarm. cok_init_2 blocks its calling thread for
             // seconds, so run it at a quiet moment after launch instead of on
             // the first document open. Device-only framework; skipped in Low

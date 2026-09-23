@@ -18077,6 +18077,38 @@
         }
       }
     },
+    "background.linux.service_environment_gone_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The environment is no longer running; the managed service stopped with it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "环境已不再运行，托管服务随之终止。"
+          }
+        }
+      }
+    },
+    "background.linux.service_unexpected_stop_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The service stopped without a stop request. The guest protocol reports liveness only, so the exit reason is unknown."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务在未收到停止指令时终止；客户机协议只报告存活状态，无法得知退出原因。"
+          }
+        }
+      }
+    },
     "background.task.name_fallback": {
       "localizations": {
         "en": {

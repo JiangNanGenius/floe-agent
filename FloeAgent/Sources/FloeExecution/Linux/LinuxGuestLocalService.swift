@@ -95,7 +95,12 @@ public struct LinuxGuestLocalServiceHandle: Sendable, Equatable {
 }
 
 public struct LinuxGuestLocalServiceSnapshot: Sendable, Equatable {
-    /// starting | running | stopped | failed | notFound
+    /// starting | running | stopped | failed | unavailable | notFound
+    ///
+    /// `unavailable` is the honest answer when the supervision probe itself
+    /// failed: the process is NOT confirmed dead (a transient guest/console
+    /// error must never be reported as an exit), so the handle stays owned and
+    /// a later probe can confirm the real state.
     public var state: String
     public var pid: Int32?
     public var alive: Bool
@@ -144,6 +149,58 @@ public protocol LinuxGuestLocalServiceHosting: LinuxCommandRunning {
     func guestRemoveForward(environmentID: String, forward: LinuxGuestServiceForward) async
 }
 
+/// Why a supervised guest service is no longer running, exactly as the host
+/// observed it. The guest protocol answers liveness only (`FLOE-ALIVE` →
+/// alive/unknown-pid) and carries no exit status, so the supervisor never
+/// invents a crash cause and never invents an exit code: an observed end
+/// without an explicit host stop is reported as `processExited`, which
+/// consumers must label as an unexpected stop rather than a crash.
+public enum LinuxGuestLocalServiceStopReason: Sendable, Equatable {
+    /// The guest reported the supervised pid is no longer alive.
+    case processExited
+    /// The environment no longer runs a guest; the service disappeared with
+    /// it. No host stop was routed through the supervisor first.
+    case environmentGone
+    /// The host explicitly stopped the service (tool cancel, job cancel,
+    /// environment stop/delete, app teardown). This is an expected end and
+    /// must never be surfaced as a service failure.
+    case hostStopRequested
+
+    /// Explicit host stops are the only reason a consumer may treat as
+    /// expected; every other reason is an observed end without a stop order.
+    public var isExplicitHostStop: Bool { self == .hostStopRequested }
+}
+
+/// One observed lifecycle transition of a managed guest service. Carries the
+/// exact handle so a consumer reports the real environment/service identity
+/// (environment, runtime, pid, port, start time) instead of reconstructing it
+/// from UI state.
+public struct LinuxGuestLocalServiceLifecycleEvent: Sendable, Equatable {
+    public var handle: LinuxGuestLocalServiceHandle
+    public var reason: LinuxGuestLocalServiceStopReason
+    public var observedAt: Date
+
+    public init(
+        handle: LinuxGuestLocalServiceHandle,
+        reason: LinuxGuestLocalServiceStopReason,
+        observedAt: Date = Date()
+    ) {
+        self.handle = handle
+        self.reason = reason
+        self.observedAt = observedAt
+    }
+}
+
+/// Lifecycle-reporting seam consumed by the app's durable terminal pipeline.
+/// Deliberately separate from `LinuxGuestLocalServiceControlling` so existing
+/// scripted conformers stay source-compatible. It is a real protocol
+/// requirement (not an extension default): the production facade implements
+/// it, and callers must not rely on a defaulted method that static dispatch
+/// would answer through an existential.
+public protocol LinuxGuestLocalServiceLifecycleReporting: Sendable {
+    func localServiceLifecycleEvents() async -> AsyncStream<LinuxGuestLocalServiceLifecycleEvent>
+}
+
 /// Consumed by the app's `exec.localService` job runner when the environment
 /// is a Linux guest.
 public protocol LinuxGuestLocalServiceControlling: Sendable {
@@ -164,11 +221,24 @@ public extension LinuxGuestLocalServiceControlling {
     func activeLocalServiceCount(environmentID: String) async -> Int { 0 }
 }
 
-public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling {
+public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling, LinuxGuestLocalServiceLifecycleReporting {
+    /// Bounded lifecycle broadcast: a slow consumer keeps only the newest
+    /// events, never an unbounded backlog. One stream observation per app
+    /// (the coordinator), not one per view.
+    public static let lifecycleStreamBufferBound = 32
     private let host: any LinuxGuestLocalServiceHosting
     private let limits: LinuxGuestLimits
     private let maxLogTailBytes: Int
     private var active: [String: LinuxGuestLocalServiceHandle] = [:]
+    private var lifecycleObservers: [UUID: AsyncStream<LinuxGuestLocalServiceLifecycleEvent>.Continuation] = [:]
+    /// Latest emitted event and a monotonic count for diagnostics/tests. Only
+    /// transitions of handles the supervisor still owned are emitted, so a
+    /// repeated probe of an already-reported exit adds nothing.
+    public private(set) var lastLifecycleEvent: LinuxGuestLocalServiceLifecycleEvent?
+    public private(set) var emittedLifecycleEventCount = 0
+    public var lifecycleObserverCount: Int { lifecycleObservers.count }
+    /// Handles currently owned (running or not yet confirmed exited).
+    public var activeServiceCount: Int { active.count }
 
     public init(
         host: any LinuxGuestLocalServiceHosting,
@@ -178,6 +248,46 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         self.host = host
         self.limits = limits
         self.maxLogTailBytes = max(1024, maxLogTailBytes)
+    }
+
+    // MARK: - lifecycle reporting
+
+    /// Bounded lifecycle stream. Every event is emitted at most once per
+    /// owned handle: explicit host stops are reported as `hostStopRequested`
+    /// (consumers must not alert on them), while a confirmed guest-side end
+    /// is `processExited`/`environmentGone` with no invented cause or exit
+    /// code. A probe that could not verify liveness emits nothing and keeps
+    /// the handle owned, so a transient console error neither declares the
+    /// process dead nor leaks repeated alerts.
+    public func localServiceLifecycleEvents() async -> AsyncStream<LinuxGuestLocalServiceLifecycleEvent> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(Self.lifecycleStreamBufferBound)) { continuation in
+            let token = UUID()
+            lifecycleObservers[token] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeLifecycleObserver(token) }
+            }
+        }
+    }
+
+    private func removeLifecycleObserver(_ token: UUID) {
+        lifecycleObservers.removeValue(forKey: token)
+    }
+
+    private func emitLifecycleEvent(
+        handle: LinuxGuestLocalServiceHandle,
+        reason: LinuxGuestLocalServiceStopReason,
+        at observedAt: Date = Date()
+    ) {
+        let event = LinuxGuestLocalServiceLifecycleEvent(
+            handle: handle,
+            reason: reason,
+            observedAt: observedAt
+        )
+        lastLifecycleEvent = event
+        emittedLifecycleEventCount += 1
+        for continuation in lifecycleObservers.values {
+            continuation.yield(event)
+        }
     }
 
     public func startLocalService(
@@ -296,7 +406,26 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         // A stopped guest takes its services with it; report that as stopped
         // instead of an error so the job can finish honestly.
         guard await host.supports(environmentID: handle.environmentID) else {
-            active[handle.token] = nil
+            // Revalidate after the await: an explicit stop may have claimed
+            // this handle while the guest state was being read. A handle the
+            // host already stopped is not an unexpected end.
+            guard active.removeValue(forKey: handle.token) != nil else {
+                let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
+                return LinuxGuestLocalServiceSnapshot(
+                    state: "stopped",
+                    pid: handle.pid,
+                    alive: false,
+                    stdout: tail.text,
+                    truncated: tail.truncated,
+                    logBytes: tail.bytes
+                )
+            }
+            // The environment went away without a stop routed through this
+            // supervisor. Surface it once with the real identity; the cause
+            // stays "the environment is gone" because the guest is not
+            // readable any more.
+            await host.guestRemoveForward(environmentID: handle.environmentID, forward: handle.forward)
+            emitLifecycleEvent(handle: handle, reason: .environmentGone)
             let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
             return LinuxGuestLocalServiceSnapshot(
                 state: "stopped",
@@ -312,16 +441,37 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         do {
             alive = try await host.guestServiceAlive(environmentID: handle.environmentID, pid: handle.pid, timeout: 10)
         } catch {
+            // Could not verify liveness. A transient console/guest error is
+            // NOT a confirmed exit: keep the handle owned so a later probe
+            // can decide, and answer "unavailable" instead of claiming the
+            // process failed. No lifecycle event is emitted.
             return LinuxGuestLocalServiceSnapshot(
-                state: "failed",
+                state: "unavailable",
                 pid: handle.pid,
                 alive: false,
                 lastError: error.localizedDescription
             )
         }
-        let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
         if !alive {
-            active[handle.token] = nil
+            // Revalidate after the await: an explicit stop that landed while
+            // the probe was in flight owns this end, and a stale probe result
+            // must never emit a failure event.
+            guard active.removeValue(forKey: handle.token) != nil else {
+                let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
+                return LinuxGuestLocalServiceSnapshot(
+                    state: "stopped",
+                    pid: handle.pid,
+                    alive: false,
+                    stdout: tail.text,
+                    truncated: tail.truncated,
+                    logBytes: tail.bytes
+                )
+            }
+            // Confirmed exit: drop the published port forward first so a dead
+            // service is not reachable, then report the end exactly once.
+            await host.guestRemoveForward(environmentID: handle.environmentID, forward: handle.forward)
+            emitLifecycleEvent(handle: handle, reason: .processExited)
+            let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
             return LinuxGuestLocalServiceSnapshot(
                 state: "stopped",
                 pid: handle.pid,
@@ -331,6 +481,7 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
                 logBytes: tail.bytes
             )
         }
+        let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
         return LinuxGuestLocalServiceSnapshot(
             state: "running",
             pid: handle.pid,
@@ -342,7 +493,13 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
     }
 
     public func stopLocalService(_ handle: LinuxGuestLocalServiceHandle) async {
-        active[handle.token] = nil
+        // Explicit stop: the handle only produces a lifecycle event when this
+        // supervisor still owned it. Killing is still attempted for a handle
+        // that was already released (idempotent guest KILL).
+        let wasOwned = active.removeValue(forKey: handle.token) != nil
+        if wasOwned {
+            emitLifecycleEvent(handle: handle, reason: .hostStopRequested)
+        }
         _ = try? await host.guestKillService(environmentID: handle.environmentID, pid: handle.pid, timeout: 15)
         await host.guestRemoveForward(environmentID: handle.environmentID, forward: handle.forward)
     }

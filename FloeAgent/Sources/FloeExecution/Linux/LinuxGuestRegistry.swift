@@ -107,9 +107,11 @@ public struct LinuxGuestShapeAdmission: Sendable, Equatable {
 /// Authoritative per-session runtime truth for UI/metrics surfaces (H):
 /// pairs the environment with the identity type H's sampler consumes
 /// (`LinuxGuestRuntimeIdentity`, runtimeID + launchGeneration) plus the
-/// granted shape and liveness. The identity's `launchGeneration` stays nil
-/// until the Runtime v2 lease carries one — unknown is preserved, never
-/// invented.
+/// granted shape and liveness. `runtimeID` is the Runtime v2 slot identity
+/// (nil on the legacy admission path, preserved as unknown); the
+/// `launchGeneration` is the registry's own per-session generation, minted
+/// for every owned session, so a restart rotates the identity and no
+/// consumer has to invent one.
 public struct LinuxGuestRuntimeState: Sendable, Equatable {
     public var environmentID: String
     public var identity: LinuxGuestRuntimeIdentity
@@ -436,18 +438,20 @@ public actor TinyEMULinuxGuestRegistry {
 
     /// Authoritative runtime identity of one environment's session, for the
     /// metrics sampler's `runtimeIdentityProvider` seam. A fresh `runtimeID`
-    /// is minted per start, so it distinguishes a restart from the previous
-    /// launch even for the same environment; `launchGeneration` stays nil
-    /// until the Runtime v2 lease carries one — unknown is preserved, never
-    /// invented. No session returns an all-nil identity, never an invented
-    /// token.
+    /// is minted per Runtime v2 start, and `launchGeneration` is this
+    /// session's own minted generation (bumped on every registration,
+    /// replacement, confirmed removal or quarantine), so both distinguish a
+    /// restart from the previous launch even for the same environment. The
+    /// generation is the registry's real per-start identity — never a
+    /// locally incremented UI guess and never an invented value; a missing
+    /// session answers an all-nil identity.
     public func runtimeIdentity(environmentID: String) async -> LinuxGuestRuntimeIdentity {
         guard let session = sessions[environmentID] else {
             return LinuxGuestRuntimeIdentity()
         }
         return LinuxGuestRuntimeIdentity(
             runtimeID: session.runtimeID,
-            launchGeneration: nil
+            launchGeneration: session.generation
         )
     }
 
@@ -464,7 +468,7 @@ public actor TinyEMULinuxGuestRegistry {
                     environmentID: environmentID,
                     identity: LinuxGuestRuntimeIdentity(
                         runtimeID: session.runtimeID,
-                        launchGeneration: nil
+                        launchGeneration: session.generation
                     ),
                     running: await session.handle.isRunning(),
                     ramMB: limits.clampedRAMMB(session.descriptor.ramMB),
@@ -474,6 +478,17 @@ public actor TinyEMULinuxGuestRegistry {
             )
         }
         return states.sorted { $0.environmentID < $1.environmentID }
+    }
+
+    /// Interactive PTY sessions currently open inside one environment's
+    /// guest. The registry owns the session table, so a number is a real
+    /// measurement (zero included); an environment this service does not own
+    /// answers nil, never a fabricated zero.
+    public func activeSessionCount(environmentID: String) async -> Int? {
+        guard await environments.linuxGuestEnvironment(id: environmentID) != nil else {
+            return nil
+        }
+        return terminalSessions.values.lazy.filter { $0.environmentID == environmentID }.count
     }
 
     /// Guest RAM (MB) reserved by the guests above.
@@ -2193,7 +2208,7 @@ extension TinyEMULinuxCommandService: LinuxGuestPathMapping {
 
 /// The injected `LinuxCommandRunning` implementation: one service per app,
 /// one guest per environment, shared by shell, localPython and localService.
-public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControlling, LinuxGuestLocalServiceControlling {
+public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControlling, LinuxGuestLocalServiceControlling, LinuxGuestLocalServiceLifecycleReporting {
     private let registry: TinyEMULinuxGuestRegistry
     private let localServices: LinuxGuestLocalServiceSupervisor
 
@@ -2393,6 +2408,21 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
 
     public func activeLocalServiceCount(environmentID: String) async -> Int {
         await localServices.activeLocalServiceCount(environmentID: environmentID)
+    }
+
+    /// Bounded lifecycle stream of the owned local-service supervisor: the
+    /// app's durable terminal pipeline consumes it to surface an observed
+    /// service end exactly once (explicit stops are marked as such and must
+    /// not be alerted). See `LinuxGuestLocalServiceLifecycleReporting`.
+    public func localServiceLifecycleEvents() async -> AsyncStream<LinuxGuestLocalServiceLifecycleEvent> {
+        await localServices.localServiceLifecycleEvents()
+    }
+
+    /// Interactive sessions currently open inside one environment's guest;
+    /// nil when this service does not own the environment (unknown, never a
+    /// fabricated zero).
+    public func activeSessionCount(environmentID: String) async -> Int? {
+        await registry.activeSessionCount(environmentID: environmentID)
     }
 
     /// Latest cumulative emulator-thread CPU sample for one environment. The

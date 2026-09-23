@@ -69,6 +69,10 @@ struct LinuxEnvironmentRuntimeSnapshot: Sendable, Equatable {
     var kernelVersion: String?
     /// Actual vCPUs reported by the running guest kernel.
     var coreCount: Int?
+    /// Granted vCPU allocation from the runtime owner's own session state
+    /// (`runtimeStates()`), not a guest measurement and not inferred from a
+    /// conversation or a hold. Unknown stays nil.
+    var allocatedVCPUs: Int?
     /// Freshly measured guest memory (nil when the sample is stale — a stale
     /// reading must render unknown, never as current usage).
     var memoryUsedMB: Int?
@@ -249,6 +253,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// sample carries the runtime identity (runtime id + launch generation)
     /// issued by the runtime lease — never a locally observed increment.
     private var linuxLastRuntimeSamples: [String: LinuxGuestRuntimeSample] = [:]
+    /// Latest authoritative runtime state per environment (identity,
+    /// liveness, granted shape) read from the runtime owner's session table.
+    /// Surfaces list and label VMs from this — never from conversations,
+    /// holds or the coordinator's expected subset.
+    private var linuxRuntimeStates: [String: LinuxGuestRuntimeState] = [:]
+    /// Managed interactive terminal count per environment; nil = unavailable
+    /// (an environment the runtime does not own), never a fabricated zero.
+    private var linuxTerminalCounts: [String: Int] = [:]
+    /// Bounded record of unexpected service stops already surfaced as
+    /// terminal events. Keyed by the supervisor's per-start token, so a
+    /// repeated probe or a second observation of the same handle can never
+    /// alert twice. Explicit host stops are never recorded here: they never
+    /// produce a failure notification.
+    private var surfacedLinuxServiceStops: Set<String> = []
+    /// One app-lifetime observation of the supervisor's bounded lifecycle
+    /// stream (not one per view). Started from AppEnvironment.bootstrap()
+    /// after the environment exists.
+    private var linuxServiceLifecycleTask: Task<Void, Never>?
     /// Notification-route bookkeeping: duplicate-tap suppression and the
     /// user-handled identifiers that a late scheduling error must not
     /// resurrect. The deferred-route slot itself is owned by
@@ -1653,6 +1675,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         await linuxPortCenter.clearEngineForwards(environmentID: environmentID)
         linuxPortCenter.guestStopped(environmentID: environmentID)
         linuxPortCounts.removeValue(forKey: environmentID)
+        linuxCommandCounts.removeValue(forKey: environmentID)
+        linuxTerminalCounts.removeValue(forKey: environmentID)
+        linuxRuntimeStates.removeValue(forKey: environmentID)
         stopLinuxMetricsSampling(environmentID: environmentID)
         let title = linuxSurfaceEntries[environmentID]?.title ?? "Linux 环境"
         linuxSurfaceEntries.removeValue(forKey: environmentID)
@@ -1699,8 +1724,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// A managed guest service terminated abnormally. Shares the durable
     /// terminal-event pipeline with task failures — one vocabulary, one
-    /// queue, one authorization gate — so a service crash is surfaced like a
-    /// task failure instead of vanishing silently.
+    /// queue, one authorization gate — so a service end is surfaced like a
+    /// task failure instead of vanishing silently. The persistent alert is
+    /// emitted immediately; the shared work record follows the VM (a service
+    /// that ended inside a still-running guest must not claim the whole
+    /// environment failed).
     func linuxEnvironmentServiceDidFail(
         environmentID: String,
         title: String,
@@ -1709,19 +1737,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     ) {
         let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
         let progressText = "\(serviceName) · \(message)"
-        let snapshot = BackgroundWorkSnapshot(
-            id: workID,
-            kind: .linuxSession,
-            title: title,
-            state: .failed,
-            interruption: .checkpointed,
-            progressText: progressText,
-            deepLink: BackgroundWorkDeepLink(
+        Task { [weak self] in
+            guard let self else { return }
+            let guestRunning = await self.environment.linuxGuestService?
+                .guestIsRunning(environmentID: environmentID) ?? false
+            let snapshot = BackgroundWorkSnapshot(
+                id: workID,
                 kind: .linuxSession,
-                environmentID: environmentID
+                title: title,
+                state: guestRunning ? .running : .failed,
+                interruption: guestRunning ? .none : .checkpointed,
+                progressText: progressText,
+                deepLink: BackgroundWorkDeepLink(
+                    kind: .linuxSession,
+                    environmentID: environmentID
+                )
             )
-        )
-        Task { await BackgroundWorkRegistry.shared.register(snapshot) }
+            await BackgroundWorkRegistry.shared.register(snapshot)
+        }
         enqueueTerminalNotification(
             event: .linuxSessionTerminal(
                 environmentID: environmentID,
@@ -1741,6 +1774,70 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
     }
 
+    // MARK: - Linux guest service lifecycle observation
+
+    /// Starts the single app-lifetime observation of the supervisor's bounded
+    /// service lifecycle stream. Called once from `AppEnvironment.bootstrap`
+    /// after the environment is fully initialized; a second call is a no-op
+    /// and no view ever creates its own monitor. Explicit host stops are
+    /// ignored here — their own stop paths write the terminal record — while
+    /// an observed end without a stop order is surfaced once with the real
+    /// environment/service identity through the durable terminal pipeline.
+    func startLinuxGuestServiceLifecycleObservation() {
+        guard linuxServiceLifecycleTask == nil else { return }
+        guard let service = environment.linuxGuestService else { return }
+        linuxServiceLifecycleTask = Task { [weak self] in
+            for await event in await service.localServiceLifecycleEvents() {
+                if Task.isCancelled { return }
+                guard let self else { return }
+                await self.linuxGuestServiceLifecycleObserved(event)
+            }
+        }
+        FloeLogger(category: .app).info("linuxServiceLifecycleObservationStarted")
+    }
+
+    /// Test/diagnostic hook: cancels the observation. Never called by a view.
+    func stopLinuxGuestServiceLifecycleObservation() {
+        linuxServiceLifecycleTask?.cancel()
+        linuxServiceLifecycleTask = nil
+    }
+
+    /// Locale-neutral service identity for surfaces: runtime name and the
+    /// loopback port the service published. The pid is deliberately not
+    /// user-facing.
+    nonisolated static func linuxServiceDisplayName(
+        for handle: LinuxGuestLocalServiceHandle
+    ) -> String {
+        let runtime = handle.runtime == .node ? "Node" : "Python"
+        return "\(runtime) :\(handle.port)"
+    }
+
+    /// One observed end of a managed service. Explicit host stops return
+    /// early (never a crash alert). An observed end is recorded and surfaced
+    /// exactly once per service start token; the token is minted once per
+    /// start, so the bounded dedupe set can never suppress a future service.
+    private func linuxGuestServiceLifecycleObserved(
+        _ event: LinuxGuestLocalServiceLifecycleEvent
+    ) async {
+        guard !event.reason.isExplicitHostStop else { return }
+        let handle = event.handle
+        let key = "\(handle.environmentID)#\(handle.token)"
+        guard !surfacedLinuxServiceStops.contains(key) else { return }
+        if surfacedLinuxServiceStops.count >= 128 {
+            surfacedLinuxServiceStops.removeAll()
+        }
+        surfacedLinuxServiceStops.insert(key)
+        let message = event.reason == .environmentGone
+            ? String(localized: "background.linux.service_environment_gone_detail")
+            : String(localized: "background.linux.service_unexpected_stop_detail")
+        linuxEnvironmentServiceDidFail(
+            environmentID: handle.environmentID,
+            title: await linuxSurfaceTitle(environmentID: handle.environmentID),
+            serviceName: Self.linuxServiceDisplayName(for: handle),
+            message: message
+        )
+    }
+
     /// The user stopped the VM from the environment screen. The hold and the
     /// applied forwards are cleared and an honest suspended record is kept,
     /// but the durable per-environment preference is preserved so a later
@@ -1751,6 +1848,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         linuxPortCenter.guestStopped(environmentID: environmentID)
         linuxPortCounts.removeValue(forKey: environmentID)
         linuxCommandCounts.removeValue(forKey: environmentID)
+        linuxTerminalCounts.removeValue(forKey: environmentID)
+        linuxRuntimeStates.removeValue(forKey: environmentID)
         linuxSurfaceEntries.removeValue(forKey: environmentID)
         stopLinuxMetricsSampling(environmentID: environmentID)
         publishLinuxSurfacePager()
@@ -1780,11 +1879,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// One bounded surface sample per environment: metrics from the sampler,
     /// services from the supervisor, ports from the applied forward plans and
-    /// commands from the bounded /proc probe.
+    /// commands from the bounded /proc probe. Runtime identity and the
+    /// granted vCPU shape come from the runtime owner's session table
+    /// (`runtimeStates()`), not from any surface's expectation.
     func refreshLinuxSurfaceEntries(environmentIDs: [String]) async {
         let serviceController = FloePlatformServices.shared.linuxLocalServiceController()
         let runner = FloePlatformServices.shared.linuxCommandRunner()
         let guestController = FloePlatformServices.shared.linuxGuestController()
+        let guestService = environment.linuxGuestService
+        var statesByEnvironment: [String: LinuxGuestRuntimeState] = [:]
+        if let guestService {
+            for state in await guestService.runtimeStates() {
+                statesByEnvironment[state.environmentID] = state
+            }
+        }
         for environmentID in environmentIDs {
             // A VM that started while the app was already running must still
             // restore its persisted forwards; a hold reconcile is the moment
@@ -1792,6 +1900,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             if linuxPortCenter.plans(environmentID: environmentID).isEmpty,
                linuxPortCenter.enabledRuleCount(environmentID: environmentID) > 0 {
                 await linuxPortCenter.applyRules(environmentID: environmentID)
+            }
+            // Authoritative identity/shape for this environment: a session
+            // the runtime still owns replaces the cached state; a runtime
+            // without a session clears it so a stopped VM never keeps a
+            // stale identity that would falsely pair with a new boot.
+            if let state = statesByEnvironment[environmentID] {
+                linuxRuntimeStates[environmentID] = state
+            } else {
+                linuxRuntimeStates.removeValue(forKey: environmentID)
+            }
+            // Managed interactive terminals: a real count when this runtime
+            // owns the environment, unavailable otherwise.
+            if let guestService, let terminals = await guestService.activeSessionCount(environmentID: environmentID) {
+                linuxTerminalCounts[environmentID] = terminals
+            } else {
+                linuxTerminalCounts.removeValue(forKey: environmentID)
             }
             let existing = linuxSurfaceEntries[environmentID]
             let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
@@ -1810,7 +1934,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 memoryTotalMB: work?.metrics?.guestMemoryTotalMB
                     ?? existing?.memoryTotalMB ?? configuredRAMMB,
                 activeCommandCount: linuxCommandCounts[environmentID] ?? existing?.activeCommandCount,
-                activeServiceCount: existing?.activeServiceCount ?? 0,
+                // Unknown services stay unknown — never a fabricated zero.
+                activeServiceCount: existing?.activeServiceCount,
                 portForwardCount: linuxPortCounts[environmentID] ?? existing?.portForwardCount,
                 startedAt: work?.startedAt ?? existing?.startedAt,
                 updatedAt: Date()
@@ -1821,11 +1946,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 )
             }
             if let runner {
-                if let owned = await LinuxGuestSurfaceProbe.runnerOwnedProcessCount(
-                    runner: runner,
-                    environmentID: environmentID
-                ) {
-                    let services = entry.activeServiceCount ?? 0
+                // The probe counts every runner-owned guest process. Without a
+                // known service count the commands cannot be separated from
+                // services, so the honest answer is unknown — never a count
+                // that silently absorbs them.
+                if let services = entry.activeServiceCount,
+                   let owned = await LinuxGuestSurfaceProbe.runnerOwnedProcessCount(
+                       runner: runner,
+                       environmentID: environmentID
+                   ) {
                     let commands = max(0, owned - services)
                     linuxCommandCounts[environmentID] = commands
                     entry.activeCommandCount = commands
@@ -1873,9 +2002,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             guestMemoryTotalMB: entry.memoryTotalMB,
             gpu: .unavailableNativeOnly
         )
-        snapshot.activeCommandCount = entry.activeCommandCount ?? 0
-        snapshot.activeServiceCount = entry.activeServiceCount ?? 0
-        snapshot.portForwardCount = entry.portForwardCount ?? 0
+        // Only measured counts are written. The shared work record cannot
+        // represent "unknown", so an unavailable count leaves the record's
+        // previous value instead of overwriting it with a fabricated zero.
+        if let commands = entry.activeCommandCount { snapshot.activeCommandCount = commands }
+        if let services = entry.activeServiceCount { snapshot.activeServiceCount = services }
+        if let ports = entry.portForwardCount { snapshot.portForwardCount = ports }
         snapshot.progressText = entry.caption()
         await BackgroundWorkRegistry.shared.register(snapshot)
     }
@@ -1893,39 +2025,19 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         now: Date = Date()
     ) -> LinuxEnvironmentRuntimeSnapshot? {
         guard let entry = linuxSurfaceEntries[environmentID] else { return nil }
-        let sample = linuxLastRuntimeSamples[environmentID]
-        let fresh = sample?.isFresh(
-            now: now, validity: Self.linuxMetricsSampleValidity
-        ) == true
-        return LinuxEnvironmentRuntimeSnapshot(
+        return makeLinuxEnvironmentRuntimeSnapshot(
             environmentID: environmentID,
-            title: entry.title,
-            state: entry.state,
-            startedAt: entry.startedAt,
-            kernelVersion: sample?.kernelVersion,
-            coreCount: sample?.guestCoreCount,
-            memoryUsedMB: fresh ? sample?.guestMemoryUsedMB : nil,
-            memoryTotalMB: fresh ? sample?.guestMemoryTotalMB : nil,
-            ramConfiguredMB: entry.memoryTotalMB,
-            commandCount: entry.activeCommandCount,
-            terminalCount: nil,
-            serviceCount: entry.activeServiceCount,
-            portCount: entry.portForwardCount,
-            guestCPUFraction: fresh ? sample?.guestCPUFraction : nil,
-            hostThreadCPUFraction: fresh ? sample?.emulatorCPUFraction : nil,
-            sampledAt: sample?.sampledAt,
-            sampleIsFresh: fresh,
-            runtimeID: sample?.runtimeIdentity.runtimeID,
-            launchGeneration: sample?.runtimeIdentity.launchGeneration
+            entry: entry,
+            runtimeState: linuxRuntimeStates[environmentID],
+            now: now
         )
     }
 
     /// Snapshots for the requested environment ids, in stable id order. The
     /// default is every environment the coordinator currently tracks (the
-    /// background-held subset). Listing *all running* environments —
-    /// including ones whose background toggle is off — needs an environment
-    /// enumeration the runtime owner does not expose yet; the exact D seam is
-    /// recorded in the integration contract.
+    /// background-held subset). For the authoritative *all running* list use
+    /// `linuxRunningEnvironmentRuntimeSnapshots()`, which enumerates the
+    /// runtime owner's own sessions instead of this tracker.
     func linuxEnvironmentRuntimeSnapshots(
         environmentIDs: [String]? = nil,
         now: Date = Date()
@@ -1934,6 +2046,95 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         return ids.compactMap {
             linuxEnvironmentRuntimeSnapshot(environmentID: $0, now: now)
         }
+    }
+
+    /// Every environment the runtime owner currently reports as running, in
+    /// stable id order. This is the authoritative list for surfaces that must
+    /// show all VMs: it comes from `runtimeStates()` (the registry's own
+    /// session table), never from conversations, background holds, work
+    /// records or the coordinator's expected subset. Identity, granted vCPU
+    /// shape and start time come from the same state; counts and metrics stay
+    /// whatever has really been measured (unknown renders "暂无").
+    func linuxRunningEnvironmentRuntimeSnapshots(
+        now: Date = Date()
+    ) async -> [LinuxEnvironmentRuntimeSnapshot] {
+        guard let guestService = environment.linuxGuestService else { return [] }
+        var snapshots: [LinuxEnvironmentRuntimeSnapshot] = []
+        for state in await guestService.runtimeStates() where state.running {
+            linuxRuntimeStates[state.environmentID] = state
+            let entry = linuxSurfaceEntries[state.environmentID] ?? LinuxBackgroundSurfaceEntry(
+                environmentID: state.environmentID,
+                title: await linuxSurfaceTitle(environmentID: state.environmentID),
+                state: .running,
+                startedAt: state.startedAt
+            )
+            snapshots.append(
+                makeLinuxEnvironmentRuntimeSnapshot(
+                    environmentID: state.environmentID,
+                    entry: entry,
+                    runtimeState: state,
+                    now: now
+                )
+            )
+        }
+        return snapshots.sorted { $0.environmentID < $1.environmentID }
+    }
+
+    /// Human-facing title for an environment the coordinator has no surface
+    /// entry for: the durable work record's title when one exists, else the
+    /// neutral fallback — never a conversation or task name.
+    private func linuxSurfaceTitle(environmentID: String) async -> String {
+        if let title = linuxSurfaceEntries[environmentID]?.title { return title }
+        let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
+        if let title = await BackgroundWorkRegistry.shared.snapshot(id: workID)?.title {
+            return title
+        }
+        return "Linux 环境"
+    }
+
+    /// Single assembly point for the unified snapshot. A fresh sample is
+    /// internally consistent — its identity and its measured values belong to
+    /// the same read — so it wins. Without a fresh sample the live runtime
+    /// state supplies the identity while every measured value renders
+    /// unknown: a stale number is never shown under a newer boot's identity.
+    private func makeLinuxEnvironmentRuntimeSnapshot(
+        environmentID: String,
+        entry: LinuxBackgroundSurfaceEntry,
+        runtimeState: LinuxGuestRuntimeState?,
+        now: Date
+    ) -> LinuxEnvironmentRuntimeSnapshot {
+        let sample = linuxLastRuntimeSamples[environmentID]
+        let fresh = sample?.isFresh(
+            now: now, validity: Self.linuxMetricsSampleValidity
+        ) == true
+        let identity: LinuxGuestRuntimeIdentity
+        if fresh, let sample {
+            identity = sample.runtimeIdentity
+        } else {
+            identity = runtimeState?.identity ?? LinuxGuestRuntimeIdentity()
+        }
+        return LinuxEnvironmentRuntimeSnapshot(
+            environmentID: environmentID,
+            title: entry.title,
+            state: entry.state,
+            startedAt: entry.startedAt ?? runtimeState?.startedAt,
+            kernelVersion: sample?.kernelVersion,
+            coreCount: sample?.guestCoreCount,
+            allocatedVCPUs: runtimeState?.vcpus,
+            memoryUsedMB: fresh ? sample?.guestMemoryUsedMB : nil,
+            memoryTotalMB: fresh ? sample?.guestMemoryTotalMB : nil,
+            ramConfiguredMB: runtimeState?.ramMB ?? entry.memoryTotalMB,
+            commandCount: entry.activeCommandCount,
+            terminalCount: linuxTerminalCounts[environmentID],
+            serviceCount: entry.activeServiceCount,
+            portCount: entry.portForwardCount,
+            guestCPUFraction: fresh ? sample?.guestCPUFraction : nil,
+            hostThreadCPUFraction: fresh ? sample?.emulatorCPUFraction : nil,
+            sampledAt: sample?.sampledAt,
+            sampleIsFresh: fresh,
+            runtimeID: identity.runtimeID,
+            launchGeneration: identity.launchGeneration
+        )
     }
 
     /// One Linux page for the floating surface, built from the unified
@@ -2019,10 +2220,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             emulatorSampleProvider: { id in
                 await service.emulatorThreadCPUSample(environmentID: id)
             },
-            // The runtime lease token (runtime id + launch generation) is a
-            // B2/D contract addition; until the registry exposes it the
-            // identity stays unknown rather than inventing a generation.
-            runtimeIdentityProvider: { _ in LinuxGuestRuntimeIdentity() }
+            // Authoritative identity from the runtime owner's own session
+            // table: the Runtime v2 runtimeID plus the registry's per-start
+            // launch generation. A restart therefore changes the identity
+            // and resets the sampler's delta baselines instead of pairing
+            // two boots; unknown stays nil, never a locally invented value.
+            runtimeIdentityProvider: { id in
+                await service.runtimeIdentity(environmentID: id)
+            }
         )
         linuxMetricsSamplers[environmentID] = sampler
         let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
