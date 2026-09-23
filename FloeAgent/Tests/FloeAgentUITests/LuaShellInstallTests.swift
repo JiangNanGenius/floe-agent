@@ -50,6 +50,14 @@ struct LuaShellInstallTests {
             reports.first(where: { $0.record.kind == .project && $0.record.ownerID == owner }),
             "prepareWorkspaceEnvironment did not register a project environment for \(root.path)"
         )
+        // New project environments now default to Linux. This test exercises
+        // the retained native WASI compatibility backend, including its honest
+        // rejection of Debian package commands. Select that backend explicitly
+        // instead of accidentally starting a real guest/image download here.
+        try await FloePlatformServices.shared.setEnvironmentExecutionBackend(
+            id: report.record.id, backend: .native
+        )
+        #expect(await FloePlatformServices.shared.linuxEnvironmentOwned(id: report.record.id) == false)
         let writable = EnvironmentRoots().layerURL(id: report.record.id, kind: report.record.kind)
         let toolEnvironment = ToolEnvironment(
             id: report.record.id, writableLayerURL: writable, layerURLs: [writable],
