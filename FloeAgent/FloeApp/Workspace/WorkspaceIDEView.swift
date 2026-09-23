@@ -61,6 +61,13 @@ struct WorkspaceIDEView: View {
     /// Integrated left sidebar (file tree or source control), replacing the
     /// modal sheet.
     @State private var sidebar: IDESidebarMode?
+    /// Regular-width sessions open with the Explorer visible, matching the
+    /// VS Code workbench; a user collapse is respected for the rest of the
+    /// session. Compact (iPhone) starts unobstructed with no sidebar.
+    @State private var didSeedInitialSidebar = false
+    /// Collapsible sidebar width; kept narrower than the old modal 320pt so
+    /// the editor retains a usable area in iPad split view.
+    @State private var sidebarWidth: CGFloat = 280
     /// Office session backing an internal CodeBlitz tab overlay, keyed by
     /// workspace-relative path. One session per open document, created on
     /// demand and released when its internal tab unmounts.
@@ -109,30 +116,50 @@ struct WorkspaceIDEView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 if root != nil {
+                    GeometryReader { geometry in
                     HStack(spacing: 0) {
+                        // Persistent VS Code-style activity rail: files, search
+                        // and source control are reached from the left, never
+                        // from a crowded top bar. On compact widths the same
+                        // rail opens the slide-over drawer.
+                        IDEActivityBar(
+                            mode: $sidebar,
+                            panelVisible: Binding(
+                                get: { showsTerminal },
+                                set: { visible in
+                                    if visible { openTerminalPanel() } else { showsTerminal = false }
+                                }
+                            ),
+                            disabled: workspaceID == nil
+                        )
                         if let sidebar, sizeClass != .compact {
                             IDESidebar(
                                 mode: sidebar,
                                 center: center,
                                 workspaceID: workspaceID,
                                 workspaceName: workspaceName,
+                                pinnedRootURL: root,
                                 onClose: { self.sidebar = nil },
                                 onOpenFile: { openRoutedPath($0) }
                             )
-                            .frame(width: 320)
+                            .frame(width: sidebarWidth)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
                             Divider()
                         }
                         VStack(spacing: 0) {
                             tabStrip
                             Divider()
                             content
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                             if showsTerminal, let terminalOwner {
-                                Divider()
-                                LocalTerminalView(owner: terminalOwner, embedded: true)
-                                    .frame(height: 280)
-                                    .background(FloeTheme.readingSurface)
-                                    .accessibilityIdentifier("workspace.ide.terminalPanel")
+                                bottomPanel(terminalOwner, availableHeight: geometry.size.height)
                             }
+                            IDEStatusBar(
+                                sourceControl: center.environment.sourceControlCenter,
+                                identityMatches: pinnedWorkspaceIsCurrent,
+                                editorMode: editorMode,
+                                dirtyBuffers: state.nativeText.dirtyPaths.count
+                            )
                         }
                     }
                     .overlay(alignment: .leading) {
@@ -143,16 +170,22 @@ struct WorkspaceIDEView: View {
                                     center: center,
                                     workspaceID: workspaceID,
                                     workspaceName: workspaceName,
+                                    pinnedRootURL: root,
                                     onClose: { self.sidebar = nil },
-                                    onOpenFile: { openRoutedPath($0) }
+                                    onOpenFile: {
+                                        openRoutedPath($0)
+                                        self.sidebar = nil
+                                    }
                                 )
                             }
                         }
+                    }
                     }
                 } else { ContentUnavailableView("ide.workspace.unavailable", systemImage: "folder.badge.questionmark") }
             }
             .navigationTitle(workspaceName)
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { seedInitialSidebar() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { requestCloseIDE() } label: {
@@ -191,24 +224,10 @@ struct WorkspaceIDEView: View {
                     } label: { Label("ide.open.editor", systemImage: "doc.richtext") }
                     .disabled(tabs.activeTab == nil || root == nil)
                     .accessibilityIdentifier("workspace.ide.richEditor")
-                    // Workspace file tree/search inside the native chrome so
-                    // the native kernel keeps the explorer it needs.
-                    Button {
-                        sidebar = sidebar == .files ? nil : .files
-                    } label: { Label(IDELanguageRunText.t("文件", "Files"), systemImage: "folder") }
-                    .disabled(root == nil || workspaceID == nil)
-                    .accessibilityIdentifier("workspace.ide.files")
-                    // Common source-control entries (status, diff, stage,
-                    // commit, branch) for the IDE's pinned workspace.
-                    Button {
-                        sidebar = sidebar == .sourceControl ? nil : .sourceControl
-                    } label: { Label(IDELanguageRunText.t("源码管理", "Source control"), systemImage: "arrow.triangle.branch") }
-                    .disabled(root == nil || workspaceID == nil)
-                    .accessibilityIdentifier("workspace.ide.sourceControl")
-                    Button {
-                        toggleTerminal()
-                    } label: { Label("ide.terminal", systemImage: "terminal") }
-                    .disabled(root == nil || workspaceID == nil).accessibilityIdentifier("workspace.ide.terminal")
+                    // Files, search, source control and the terminal live in
+                    // the persistent left activity rail and bottom panel, so
+                    // the compact top bar only keeps the high-frequency run,
+                    // save, kernel-switch and routed-surface actions.
                 }
                 // The UI-test edit hooks live in the bottom bar on purpose:
                 // the trailing group overflows on compact widths, and a hook
@@ -855,11 +874,73 @@ struct WorkspaceIDEView: View {
     }
 
     private func toggleTerminal() {
+        if showsTerminal {
+            withAnimation(.snappy) { showsTerminal = false }
+        } else {
+            openTerminalPanel()
+        }
+    }
+
+    /// Opens the Explorer sidebar automatically the first time a regular
+    /// width session appears, like the familiar workbench. Compact widths
+    /// start clear, and collapsing it later is not undone within the IDE
+    /// session.
+    private func seedInitialSidebar() {
+        guard !didSeedInitialSidebar else { return }
+        didSeedInitialSidebar = true
+        guard sizeClass != .compact else { return }
+        if sidebar == nil { sidebar = .files }
+    }
+
+    /// Opens the bottom panel without recreating its terminal session: the
+    /// owner is created at most once per IDE lifetime, so collapsing the
+    /// panel and switching layout never spawns a second terminal.
+    private func openTerminalPanel() {
         guard let workspaceID, let root else { return }
         if terminalOwner == nil {
             terminalOwner = center.environment.localTerminals.owner(workspaceID: workspaceID, root: root)
         }
-        withAnimation(.snappy) { showsTerminal.toggle() }
+        withAnimation(.snappy) { showsTerminal = true }
+    }
+
+    /// True only while the app's current workspace is the one this IDE was
+    /// opened for; used to bind the status bar and panel state to the pinned
+    /// workspace rather than to whatever the global center switched to.
+    private var pinnedWorkspaceIsCurrent: Bool {
+        guard let workspaceID else { return false }
+        return center.currentWorkspace?.id == workspaceID
+    }
+
+    /// Collapsible bottom panel. Height is proportional to the workbench so
+    /// the editor always keeps a minimum working area; collapsing hides it
+    /// but keeps the terminal owner alive.
+    @ViewBuilder
+    private func bottomPanel(_ owner: LocalTerminalOwner, availableHeight: CGFloat = 600) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                Label(IDELanguageRunText.t("终端", "Terminal"), systemImage: "terminal")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+                Button {
+                    withAnimation(.snappy) { showsTerminal = false }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .frame(width: 44, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(IDELanguageRunText.t("收起终端面板", "Collapse terminal panel"))
+                .accessibilityIdentifier("workspace.ide.panel.close")
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(FloeTheme.sidebarSurface)
+            LocalTerminalView(owner: owner, embedded: true)
+        }
+        .frame(height: min(280, max(160, availableHeight * 0.42)))
+        .background(FloeTheme.readingSurface)
+        .accessibilityIdentifier("workspace.ide.terminalPanel")
     }
 
     private func openActiveInRoutedSurface() {

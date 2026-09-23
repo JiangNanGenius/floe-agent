@@ -201,6 +201,13 @@ private struct IDENativeEditorTabView: View {
     let isPaneActive: Bool
     var onRun: () -> Void
     var onSwitchToWeb: () -> Void
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    /// Compact (iPhone) shows one concise status line: saved state and the
+    /// cursor location only, so the IDE's own status bar can coexist below
+    /// without wrapping. Verbose labels stay on regular widths and remain
+    /// reachable from the toolbars on compact.
+    private var compactStatus: Bool { sizeClass == .compact }
 
     private var language: CodeLanguage? { CodeLanguage(relativePath: buffer.relativePath) }
 
@@ -328,51 +335,73 @@ private struct IDENativeEditorTabView: View {
     }
 
     private var statusBar: some View {
-        HStack(spacing: 12) {
-            if let language {
-                Label(language.displayName, systemImage: language.icon)
-            } else {
-                Label(IDELanguageRunText.t("纯文本", "Plain text"), systemImage: "doc.text")
-            }
-            Text(cursorDescription)
-                .accessibilityIdentifier("workspace.ide.nativeCursor")
-            Spacer(minLength: 0)
-            Button {
-                state.showsFind.toggle()
-            } label: {
-                Label(IDELanguageRunText.t("查找替换", "Find & replace"), systemImage: "magnifyingglass")
-            }
-            .accessibilityIdentifier("workspace.ide.nativeFindToggle")
-            .modifier(CommandFShortcut(enabled: isActiveTab && isPaneActive))
-
-            if language?.runnableToolName != nil {
-                Button {
-                    onRun()
-                } label: {
-                    Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
+        HStack(spacing: compactStatus ? 8 : 12) {
+            if compactStatus {
+                // One line on iPhone: saved state first, then location.
+                if buffer.isDirty {
+                    Label(IDELanguageRunText.t("未保存", "Unsaved"), systemImage: "circle.fill")
+                        .foregroundStyle(FloeTheme.pending)
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityIdentifier("workspace.ide.nativeSaveState")
+                } else if buffer.isLoaded {
+                    Label(IDELanguageRunText.t("已保存", "Saved"), systemImage: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityIdentifier("workspace.ide.nativeSaveState")
                 }
-                .disabled(buffer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("workspace.ide.nativeRun")
-            }
-            Button {
-                onSwitchToWeb()
-            } label: {
-                Label(IDELanguageRunText.t("Web 编辑器", "Web editor"), systemImage: "safari")
-            }
-            .accessibilityIdentifier("workspace.ide.nativeOpenInWeb")
+                Text(cursorDescription)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .accessibilityIdentifier("workspace.ide.nativeCursor")
+                Spacer(minLength: 0)
+            } else {
+                if let language {
+                    Label(language.displayName, systemImage: language.icon)
+                } else {
+                    Label(IDELanguageRunText.t("纯文本", "Plain text"), systemImage: "doc.text")
+                }
+                Text(cursorDescription)
+                    .accessibilityIdentifier("workspace.ide.nativeCursor")
+                Spacer(minLength: 0)
+                Button {
+                    state.showsFind.toggle()
+                } label: {
+                    Label(IDELanguageRunText.t("查找替换", "Find & replace"), systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("workspace.ide.nativeFindToggle")
+                .modifier(CommandFShortcut(enabled: isActiveTab && isPaneActive))
 
-            if buffer.isDirty {
-                Label(IDELanguageRunText.t("未保存", "Unsaved"), systemImage: "circle.fill")
-                    .foregroundStyle(FloeTheme.pending)
-                    .accessibilityIdentifier("workspace.ide.nativeSaveState")
-            } else if buffer.isLoaded {
-                Label(IDELanguageRunText.t("已保存", "Saved"), systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("workspace.ide.nativeSaveState")
+                if language?.runnableToolName != nil {
+                    Button {
+                        onRun()
+                    } label: {
+                        Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
+                    }
+                    .disabled(buffer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("workspace.ide.nativeRun")
+                }
+                Button {
+                    onSwitchToWeb()
+                } label: {
+                    Label(IDELanguageRunText.t("Web 编辑器", "Web editor"), systemImage: "safari")
+                }
+                .accessibilityIdentifier("workspace.ide.nativeOpenInWeb")
+
+                if buffer.isDirty {
+                    Label(IDELanguageRunText.t("未保存", "Unsaved"), systemImage: "circle.fill")
+                        .foregroundStyle(FloeTheme.pending)
+                        .accessibilityIdentifier("workspace.ide.nativeSaveState")
+                } else if buffer.isLoaded {
+                    Label(IDELanguageRunText.t("已保存", "Saved"), systemImage: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("workspace.ide.nativeSaveState")
+                }
             }
         }
         .font(FloeTheme.Typography.metadata)
-        .padding(.horizontal, 12)
+        .lineLimit(1)
+        .minimumScaleFactor(compactStatus ? 0.75 : 1)
+        .padding(.horizontal, compactStatus ? 10 : 12)
         .padding(.vertical, 6)
         .background(FloeTheme.chromeMaterial)
         .accessibilityElement(children: .contain)

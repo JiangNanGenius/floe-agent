@@ -122,6 +122,7 @@
 		4C2AB5B8C64EC6493BF92520 /* ScreenShareCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A82429B0BF7E6E52C6B4A8C /* ScreenShareCenter.swift */; };
 		4C337AC9C80DE98A41054F60 /* BackgroundRunCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D916CCF8A7BB2EDB41913DD /* BackgroundRunCoordinator.swift */; };
 		4C6D341323D93B1251394C2D /* ArchiveBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73DFAEDB946E98188CAB234D /* ArchiveBrowserView.swift */; };
+		4C7FF69D1B96FB25A810A2D7 /* IDEStatusBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4436E97C0C66AC0471B1FDA2 /* IDEStatusBar.swift */; };
 		4DA4FE4D075259455908EC22 /* PDFOperationJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 036B56AC987CE799669752B9 /* PDFOperationJournal.swift */; };
 		504258FC47B23F164C439211 /* MediaEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */; };
 		51013E3CE31A8318EDF57DA7 /* CanvasSavedImageBatchCommitPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8EBFAB4ED3E3A0AC4E178A /* CanvasSavedImageBatchCommitPlanner.swift */; };
@@ -337,6 +338,7 @@
 		E58278A541E8E87A31634F6D /* FeedbackTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */; };
 		E617FB6AC1EB2366C4F9A4CE /* ReasoningBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F88E75D475229D4424D2FC1 /* ReasoningBlockView.swift */; };
 		E68B9F53A71EC8231AA004DE /* FloeLocalModels in Frameworks */ = {isa = PBXBuildFile; productRef = A0ED3E17200948E8978373F2 /* FloeLocalModels */; };
+		E7554CB9EB51843F8FBFC5D2 /* IDEActivityBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B25959E4F8222EDB001D367 /* IDEActivityBar.swift */; };
 		E7E7CF056D40EA4B26A4961E /* IDE in Resources */ = {isa = PBXBuildFile; fileRef = D62745AAF4EE79DC8BCFECDE /* IDE */; };
 		E7F2B9E23C0AB5DFBA8A8223 /* GuestRuntimeAssembly.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC330B4DFDA361217E319768 /* GuestRuntimeAssembly.swift */; };
 		E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */; };
@@ -539,12 +541,14 @@
 		42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeBlockView.swift; sourceTree = "<group>"; };
 		42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeView.swift; sourceTree = "<group>"; };
 		436B2C5C853B7C60DCEF2059 /* ApprovalModelBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalModelBackend.swift; sourceTree = "<group>"; };
+		4436E97C0C66AC0471B1FDA2 /* IDEStatusBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEStatusBar.swift; sourceTree = "<group>"; };
 		478A0A4565D3210136338773 /* LinuxGuestBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxGuestBackend.swift; sourceTree = "<group>"; };
 		47D0960D689C2D2C8BDACECF /* LinuxPortForwardCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxPortForwardCenter.swift; sourceTree = "<group>"; };
 		492B93A9FE5F3B7768E9E895 /* ComposerDraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDraftStore.swift; sourceTree = "<group>"; };
 		4944CFBAEA7D26E2EB1FF8C0 /* EngineeringReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineeringReviewSheet.swift; sourceTree = "<group>"; };
 		49CB9C8F1ACA4A5878C21531 /* NotePageRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePageRenderer.swift; sourceTree = "<group>"; };
 		4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaEditorView.swift; sourceTree = "<group>"; };
+		4B25959E4F8222EDB001D367 /* IDEActivityBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEActivityBar.swift; sourceTree = "<group>"; };
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
 		4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsCenter.swift; sourceTree = "<group>"; };
 		4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeWorkspaceAttachmentPicker.swift; sourceTree = "<group>"; };
@@ -1011,12 +1015,14 @@
 				E782E6A24779378BB40F5953 /* GitHubActionsJobCenter.swift */,
 				D75AB31E403196E004FD9202 /* GitHubActionsJobEngine.swift */,
 				EB85CCE3602481954CF3D23A /* GitHubActionsJobStore.swift */,
+				4B25959E4F8222EDB001D367 /* IDEActivityBar.swift */,
 				B91CD5A983CE9340539D00A0 /* IDEGitHubActionsPolicy.swift */,
 				056D48997010E93B1EA2BD84 /* IDELanguageRunPolicy.swift */,
 				6B4C5A9025E3F2EFAD8D1CE6 /* IDELanguageRunView.swift */,
 				5AA8760896151B342A625F67 /* IDENativeTextPane.swift */,
 				4E430B5CA06ACEF487B5478F /* IDERunSourceStaging.swift */,
 				4DC1B32CC8B563333858CC18 /* IDESidebar.swift */,
+				4436E97C0C66AC0471B1FDA2 /* IDEStatusBar.swift */,
 				A67BD29EB5A04264BB080209 /* IDEWorkbenchState.swift */,
 				2CA3163CD02BDC8D4255197F /* IDEWorkspaceTabs.swift */,
 				50D138AAA4EB06E0A19CE9B5 /* InlinePDFReader.swift */,
@@ -2033,12 +2039,14 @@
 				C87A716B9A54B29B695F1F66 /* HostKeyTrustSheet.swift in Sources */,
 				2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */,
 				EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */,
+				E7554CB9EB51843F8FBFC5D2 /* IDEActivityBar.swift in Sources */,
 				B7663C049754E27F2A652BD5 /* IDEGitHubActionsPolicy.swift in Sources */,
 				93988B422674C07884228520 /* IDELanguageRunPolicy.swift in Sources */,
 				896228729C07DED7D28B1630 /* IDELanguageRunView.swift in Sources */,
 				472534210F52FCB8425D6BF8 /* IDENativeTextPane.swift in Sources */,
 				B39E4B81FF77201F28FB7048 /* IDERunSourceStaging.swift in Sources */,
 				D2DDABD333E6E9E1F0186ADB /* IDESidebar.swift in Sources */,
+				4C7FF69D1B96FB25A810A2D7 /* IDEStatusBar.swift in Sources */,
 				9F8F0774BA9059D0D304F7C1 /* IDEWorkbenchState.swift in Sources */,
 				1003F59DCF2B9F72C6831484 /* IDEWorkspaceTabs.swift in Sources */,
 				B3B23C39470308057F0D0761 /* IOSSystemShellBackend.swift in Sources */,
