@@ -375,6 +375,20 @@ public actor RuntimeVMPool {
             }
         }
 
+        // Permanently impossible shapes fail fast with an actionable error:
+        // no amount of waiting can satisfy a request whose minimum exceeds
+        // the device's immutable pool total. Temporary shortages (pool
+        // currently occupied, headroom, thermal) still queue below.
+        if GuestResourceAdmission.isPermanentlyUnsatisfiable(
+            request: effectiveRequest,
+            quota: configuration.quota,
+            downgrade: downgrade
+        ) {
+            throw LinuxGuestError.shapeExceedsPoolCapacity(
+                detail: "the \(configuration.quota.totalVCPUs) vCPU / \(configuration.quota.totalMemoryMiB) MiB pool cannot ever hold \(effectiveRequest.vcpus.count) vCPU(s) / \(effectiveRequest.memory.mb) MiB (environment \(environmentID)); choose a smaller shape or a larger device"
+            )
+        }
+
         let decision = GuestResourceAdmission.evaluate(
             request: effectiveRequest,
             runningVMs: usage.runningVMs,

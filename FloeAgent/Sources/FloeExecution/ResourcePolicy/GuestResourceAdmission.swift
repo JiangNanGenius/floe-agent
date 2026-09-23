@@ -32,6 +32,36 @@ public enum GuestResourceAdmissionDecision: Sendable, Equatable {
 }
 
 public enum GuestResourceAdmission {
+    /// True when NO pool usage can EVER satisfy the request under the
+    /// declared policy — the pool's own immutable total is below the
+    /// request's minimum acceptable shape. This is a permanent profile
+    /// mismatch (e.g. a dual-hart guest on a one-vCPU quota, or 2 GiB on a
+    /// 512 MiB pool) and must be reported as an actionable error instead of
+    /// queueing forever.
+    ///
+    /// The minimum acceptable shape is the request itself under `.strict`;
+    /// under `.authorized` it is whichever is lower between the request and
+    /// the caller's declared floors.
+    public static func isPermanentlyUnsatisfiable(
+        request: GuestResourceRequest,
+        quota: GuestResourceQuota,
+        downgrade: GuestShapeDowngradePolicy
+    ) -> Bool {
+        let minimumVCPUs: Int
+        let minimumMemory: GuestMemoryMiB
+        switch downgrade {
+        case .strict:
+            minimumVCPUs = request.vcpus.count
+            minimumMemory = request.memory
+        case .authorized(let vcpuFloor, let memoryFloor):
+            minimumVCPUs = min(request.vcpus.count, vcpuFloor.count)
+            minimumMemory = min(request.memory, memoryFloor)
+        }
+        if minimumVCPUs > quota.totalVCPUs { return true }
+        if minimumMemory.mb > quota.totalMemoryMiB { return true }
+        return false
+    }
+
     /// Evaluates a request against the current pool usage and quota.
     public static func evaluate(
         request: GuestResourceRequest,

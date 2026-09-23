@@ -52,6 +52,11 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     /// silently booted single; only an explicitly authorized caller accepts
     /// a single-hart downgrade.
     case smpUnsupportedByImage(environmentID: String)
+    /// The requested shape can NEVER fit this device's immutable pool quota,
+    /// even with no guest running (e.g. two vCPUs on a one-vCPU quota, or a
+    /// 2 GiB guest on a 512 MiB pool). Distinct from a temporary shortage:
+    /// queueing would wait forever, so the caller hears an actionable error.
+    case shapeExceedsPoolCapacity(detail: String)
 
     public var errorDescription: String? {
         switch self {
@@ -84,6 +89,8 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
             return "The Linux guest runner is too old: this build requires \(required)\(detail). Update the guest image component."
         case .smpUnsupportedByImage(let id):
             return "The Linux image for environment \(id) does not support two cores (no SMP capability); choose a single-core guest or use an SMP-capable image."
+        case .shapeExceedsPoolCapacity(let detail):
+            return "This device cannot run the requested guest shape: \(detail)"
         }
     }
 }

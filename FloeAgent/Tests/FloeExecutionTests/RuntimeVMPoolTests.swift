@@ -232,6 +232,94 @@ final class RuntimeVMPoolTests: XCTestCase {
         XCTAssertEqual(lease.vcpusDowngradeReason?.contains("SMP"), true)
     }
 
+    /// A strict shape that exceeds the pool's TOTAL capacity (even empty)
+    /// can never be fulfilled: actionable error now, never an endless queue.
+    func testStrictShapeBeyondPoolCapacityFailsFast() async throws {
+        // One vCPU / 512 MiB device profile, pool completely empty.
+        let pool = makePool(quota: 1, memory: 512, vms: 1)
+        do {
+            _ = try await pool.acquire(
+                environmentID: "dual", runtimeID: "rt-dual",
+                request: GuestResourceRequest(vcpus: .two, memory: .m512),
+                imageSMPCapable: true,       // image is fine; the PROFILE is not
+                downgrade: .strict
+            )
+            XCTFail("expected shapeExceedsPoolCapacity for a dual on a 1-vCPU pool")
+        } catch let error as LinuxGuestError {
+            guard case .shapeExceedsPoolCapacity(let detail) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertTrue(detail.contains("1 vCPU"), detail)
+        }
+        do {
+            _ = try await pool.acquire(
+                environmentID: "big", runtimeID: "rt-big",
+                request: GuestResourceRequest(vcpus: .one, memory: .m2048),
+                imageSMPCapable: false,
+                downgrade: .strict
+            )
+            XCTFail("expected shapeExceedsPoolCapacity for 2048 MiB on a 512 MiB pool")
+        } catch let error as LinuxGuestError {
+            guard case .shapeExceedsPoolCapacity = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        let queued = await pool.queuedCount
+        let status = await pool.status
+        XCTAssertEqual(queued, 0)
+        XCTAssertEqual(status.running, 0)
+    }
+
+    /// The same profile with an explicitly authorized downgrade succeeds:
+    /// minimum acceptable shape (floor) does fit the device pool.
+    func testAuthorizedShapeBeyondPoolDowngrades() async throws {
+        let pool = makePool(quota: 1, memory: 512, vms: 1)
+        let dual = try await pool.acquire(
+            environmentID: "dual", runtimeID: "rt-dual",
+            request: GuestResourceRequest(vcpus: .two, memory: .m512),
+            imageSMPCapable: true,
+            downgrade: .authorized(memoryFloor: .m256)
+        )
+        XCTAssertEqual(dual.shape.vcpus, .one)
+        XCTAssertTrue(dual.vcpusDowngraded)
+
+        // A 2 GiB request authorized down to the 256 MiB floor takes the
+        // largest fitting step (512 MiB here).
+        await pool.release(runtimeID: "rt-dual")
+        let big = try await pool.acquire(
+            environmentID: "big", runtimeID: "rt-big",
+            request: GuestResourceRequest(vcpus: .one, memory: .m2048),
+            imageSMPCapable: false,
+            downgrade: .authorized(memoryFloor: .m256)
+        )
+        XCTAssertEqual(big.shape.memory, .m512)
+        XCTAssertTrue(big.memoryDowngraded)
+    }
+
+    /// Temporary shortage on an adequately sized device still QUEUES (the
+    /// shape fits the pool total, only the pool is currently occupied).
+    func testTemporaryOccupiedCapacityStillQueues() async throws {
+        let pool = makePool(quota: 2, memory: 1024, vms: 2)
+        _ = try await pool.acquire(
+            environmentID: "busy", runtimeID: "rt-busy",
+            request: GuestResourceRequest(vcpus: .one, memory: .m1024),
+            imageSMPCapable: false
+        )
+        let task = Task {
+            try await pool.acquire(
+                environmentID: "big", runtimeID: "rt-big",
+                request: GuestResourceRequest(vcpus: .one, memory: .m1024),
+                imageSMPCapable: false,
+                downgrade: .strict
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        let queued = await pool.queuedCount
+        XCTAssertEqual(queued, 1)
+        task.cancel()
+        await assertCancellation(task)
+    }
+
     // MARK: - RAM: strict queues, authorized downgrades within floors
 
     func testStrictRAMShortageQueuesWithoutSilentReduction() async throws {
