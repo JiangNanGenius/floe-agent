@@ -97,20 +97,28 @@ fi
 # The official Debian container rootfs may use mirror+file URIs that ask APT
 # to fstat a local mirror-list fd. That method fails on this guest kernel
 # ("Unable to determine file size for fd"), despite working network access.
-# Keep the image's suites, components and Signed-By values, but use Debian's
-# direct HTTPS mirrors for the image build and the installed guest.
+# Disable only source files that use this method; keep unrelated sources and
+# install a direct Debian 13 HTTPS source with the archive keyring.
 for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
     [ -f "$source_file" ] || continue
-    sed -i \
-        -e 's|mirror+file:/etc/apt/mirrors/debian.list|https://deb.debian.org/debian|g' \
-        -e 's|mirror+file:/etc/apt/mirrors/debian-security.list|https://security.debian.org/debian-security|g' \
-        "$source_file"
     if grep -q 'mirror+file:' "$source_file"; then
-        note "APT mirror-list URI remains in $source_file"
-        mark APT_SOURCE_UNSUPPORTED
-        exit 9
+        mv "$source_file" "$source_file.floe-disabled"
+        note "disabled unsupported APT mirror-list source: $source_file"
     fi
 done
+cat >/etc/apt/sources.list.d/floe-direct.sources <<'FLOE_APT_SOURCES'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie trixie-updates trixie-backports
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: https://security.debian.org/debian-security
+Suites: trixie-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+FLOE_APT_SOURCES
 if ping -c1 -W3 10.0.2.2 >>"$LOG" 2>&1; then
     mark PING_OK
 else
