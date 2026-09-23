@@ -126,6 +126,11 @@ on:
         required: false
         type: string
         default: '64'
+      attachment_quota_mib:
+        description: 'Gitee repository attachment quota in MiB (raise for a larger-quota account)'
+        required: false
+        type: string
+        default: '1024'
       prune_unknown:
         description: 'Delete owned-but-unplanned attachments from the mirrored release'
         required: false
@@ -416,6 +421,7 @@ jobs:
           SOCKET_TIMEOUT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.socket_timeout_seconds || '600' }}
           UPLOAD_WORKERS: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_workers || '4' }}
           PROGRESS_MIB: ${{ github.event_name == 'workflow_dispatch' && inputs.progress_mib || '64' }}
+          ATTACHMENT_QUOTA_MIB: ${{ github.event_name == 'workflow_dispatch' && inputs.attachment_quota_mib || '1024' }}
         run: |
           set -euo pipefail
           : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
@@ -435,6 +441,7 @@ jobs:
             --min-free-mib 2048
             --progress-mib "$PROGRESS_MIB"
             --upload-workers "$UPLOAD_WORKERS"
+            --gitee-attachment-quota-mib "$ATTACHMENT_QUOTA_MIB"
             --timeout "$SOCKET_TIMEOUT_SECONDS"
             # Keep the step bounded well inside the job timeout so a slow
             # cross-border transfer ends with a truthful partial summary that
