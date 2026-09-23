@@ -326,8 +326,16 @@ if [ "$rebuild" = 1 ]; then
         # Both must be make command-line variables: the kernel's Makefile
         # assigns HOSTCC itself, so an environment value would be discarded
         # (that mistake is retained in the eighth cloud build log).
+        # The pinned 4.15 arch/riscv/Makefile builds -march from
+        # KBUILD_ARCH_A/KBUILD_ARCH_C only, i.e. "rv64ac" (no 'i', no
+        # zicsr): current binutils rejects csrs/csrc from that string
+        # ("extension zicsr required", retained failure). Overriding those
+        # two flag-only variables (they feed nothing else) produces the
+        # canonical rv64imac_zicsr_zifencei / rv64imafdc_zicsr_zifencei,
+        # which keeps the same instruction set and satisfies binutils.
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
-            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon olddefconfig
+            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon \
+            KBUILD_ARCH_A=ima KBUILD_ARCH_C=c_zicsr_zifencei olddefconfig
         # never hand out a boot pair that claims SMP but was configured
         # single-hart (the whole point of --smp)
         if [ "$smp" = 1 ]; then
@@ -335,7 +343,8 @@ if [ "$rebuild" = 1 ]; then
             grep -q '^CONFIG_NR_CPUS=2$' .config || die "--smp build did not produce CONFIG_NR_CPUS=2"
         fi
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
-            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon -j"$jobs"
+            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon \
+            KBUILD_ARCH_A=ima KBUILD_ARCH_C=c_zicsr_zifencei -j"$jobs"
     ) >"$out/rebuild-riscv-linux.log" 2>&1 || {
         printf 'build-kernel-bbl: kernel rebuild failed; last lines:\n' >&2
         tail -c 4000 "$out/rebuild-riscv-linux.log" >&2 || true
