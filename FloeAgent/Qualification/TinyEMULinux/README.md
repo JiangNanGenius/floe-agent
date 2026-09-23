@@ -68,10 +68,11 @@ adapter `vcpu_count`/`FloeVMStats` contract):
   qualification host.
 - `smp_host_test` on that same tree: 18 checks, 2 failures — both are the
   dual-hart guest symptom (no marker, no 9p write). Host-side checks pass:
-  capability probes, `vcpu_count=3` rejected, hundreds of concurrent stats
-  samples with `host_threads=2`, 3/3 stop+flush destroy cycles, and the full
-  single-hart control. The parked-hart WFI state is recorded as informational
-  evidence, not asserted (it depends on the guest firmware park loop).
+  capability probes, `vcpu_count=3` rejected, continuous concurrent stats
+  sampling from a second host thread with `host_threads=2`, 3/3 stop+flush
+  destroy cycles, and the full single-hart control. The parked-hart WFI state
+  is recorded as informational evidence, not asserted (it depends on the
+  guest firmware park loop).
 - The pinned demo kernel is UP (`CONFIG_SMP` is not set), so even a working
   dual-hart bring-up cannot show workload speedup on it; the cloud baseline
   records repeats for both hart counts and explicitly claims no speedup until
