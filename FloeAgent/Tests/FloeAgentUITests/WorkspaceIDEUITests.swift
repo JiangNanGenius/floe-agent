@@ -11,10 +11,11 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        // The kernel choice is a persisted user preference; a previous attempt
-        // may have left the Web kernel selected, so pin the native default for
-        // this launch instead of inheriting it.
-        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture", "-workspace.ide.nativeTextEditor", "YES"]
+        // The kernel choice is a persisted user preference. Never pin it with
+        // a `-workspace.ide.nativeTextEditor` launch argument: the argument
+        // domain outranks the value the app writes when the kernel switches,
+        // so the switch would appear to apply while the toolbar stays native.
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
@@ -60,9 +61,8 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        // Same persisted-kernel rule as the native test: this leg must start
-        // native and switch to Web itself, so pin the native default.
-        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture", "-workspace.ide.nativeTextEditor", "YES"]
+        // This leg starts native (the app default) and switches to Web itself.
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
