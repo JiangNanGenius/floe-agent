@@ -1,20 +1,42 @@
-# gitee-mirror — one-way GitHub → Gitee mirror.
+# gitee-mirror — one-way GitHub → Gitee mirror (refs + release assets).
 #
 # GitHub (this repository) is the single authority. This workflow only *pushes*
-# refs to the public Gitee mirror https://gitee.com/JiangNanGenius/floe-agent;
-# it never fetches from Gitee and Gitee can never overwrite GitHub.
+# refs to and *uploads verified copies* to the public Gitee mirror
+# https://gitee.com/JiangNanGenius/floe-agent; it never fetches bytes from
+# Gitee and Gitee can never overwrite GitHub.
 #
-# Mirrored refs:
-#   * the main branch (every push)
-#   * release tags: v* (App releases) and floe-linux-guest-* (component releases)
+# Two separately visible gates:
+#   * refs gate   — `mirror` job: the main branch (every push) and release tags
+#                   (v*, floe-linux-guest-*), with a Gitee-main SHA check.
+#   * release gate — `release-assets` job: one published GitHub release's
+#                   metadata and every asset, mirrored by
+#                   FloeAgent/scripts/sync_release_to_gitee.py. That script
+#                   verifies sizes and SHA-256 (GitHub now reports an asset
+#                   digest), is idempotent/resumable, and shards any asset
+#                   above Gitee's single-attachment limit (default 64 MiB, a
+#                   size already proven by the existing guest-image mirror)
+#                   together with a manifest that pins every piece.
 #
-# Secret handling: the Gitee personal access token is read only from the
-# GitHub Actions secret GITEE_TOKEN (step env). Each step copies it into a
-# mode-0600 mktemp file under RUNNER_TEMP for the duration of the step only
-# (removed by an EXIT trap). git reads it through a credential helper and
-# curl reads an Authorization header file; in both cases argv, URLs, logs and
-# persisted config carry at most the variable NAME (GITEE_TOKEN_FILE), never
-# the token value.
+# How Actions-created releases are covered: GitHub does not start new workflow
+# runs for events created with the repository's GITHUB_TOKEN (the `release`
+# event from a token-created release therefore does not trigger this file).
+# `workflow_dispatch` and `repository_dispatch` are the documented exceptions,
+# so the release workflow (or a human) can call:
+#
+#   gh api repos/JiangNanGenius/floe-agent/dispatches \
+#     -f event_type=gitee-release-sync -f client_payload[tag]=v1.7.0-beta.82
+#
+# A weekly `schedule` reconciliation mirrors the latest published release and
+# repairs any partial state, so a suppressed event still converges. The
+# `release` trigger covers human/PAT-published releases directly.
+#
+# Credentials: the Gitee personal access token is read only from the GitHub
+# Actions secret GITEE_TOKEN (step env) and written to a mode-0600 mktemp file
+# under RUNNER_TEMP for the duration of the step only (removed by an EXIT
+# trap). Git reads it through a credential helper; curl uses an Authorization
+# header file; the Python mirror reads GITEE_TOKEN_FILE. In all cases argv,
+# URLs, logs and persisted config carry at most the variable NAME, never the
+# token.
 #
 # Bootstrap: the Gitee repository started with an unrelated README commit, so
 # the first run needs an explicit force sync. Dispatch with bootstrap_force=true
@@ -28,10 +50,64 @@ on:
     tags:
       - 'v*'
       - 'floe-linux-guest-*'
+  release:
+    # `edited` keeps the Gitee release body/name in sync when a published
+    # release is corrected; draft edits are skipped by the resolve step.
+    types: [published, released, edited]
+  repository_dispatch:
+    types: [gitee-release-sync]
+  workflow_run:
+    # Best-effort coverage for Actions-created component/app releases. The
+    # guaranteed paths are repository_dispatch and the schedule below.
+    workflows:
+      - TestFlight and Unsigned IPA Release
+      - linux-guest-distribute
+      - linux-guest-runner-update
+      - component-image-ci
+    types: [completed]
+  schedule:
+    # Weekly reconciliation: latest published release, idempotent repair.
+    - cron: '23 4 * * 1'
   workflow_dispatch:
     inputs:
       bootstrap_force:
         description: 'Force the Gitee refs to the GitHub refs (one-time bootstrap only)'
+        required: false
+        type: boolean
+        default: false
+      mirror_refs:
+        description: 'Also mirror main/tags (set false when only syncing a release)'
+        required: false
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Release tag to mirror (empty = latest published release)'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Plan only: read GitHub/Gitee, mutate nothing'
+        required: false
+        type: boolean
+        default: false
+      include_assets:
+        description: 'Comma-separated asset names to mirror (empty = all)'
+        required: false
+        type: string
+        default: ''
+      shard_mib:
+        description: 'Maximum Gitee attachment size in MiB before sharding'
+        required: false
+        type: string
+        default: '64'
+      verify:
+        description: 'Verification of files already on Gitee: hash or size'
+        required: false
+        type: choice
+        options: [hash, size]
+        default: hash
+      prune_unknown:
+        description: 'Delete owned-but-unplanned attachments from the mirrored release'
         required: false
         type: boolean
         default: false
@@ -46,6 +122,7 @@ concurrency:
 jobs:
   mirror:
     name: mirror refs to Gitee
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mirror_refs) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -117,3 +194,212 @@ jobs:
           echo "github main: $GITHUB_SHA"
           echo "gitee main:  $GITEE_SHA"
           [ "$GITHUB_SHA" = "$GITEE_SHA" ]
+
+  release-assets:
+    name: mirror release metadata and assets to Gitee
+    if: ${{ github.event_name == 'release' || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_run' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # Bounded by the largest asset class (an app IPA is ~750 MB: download,
+    # upload and verify are sequential streams, never held in RAM).
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target release tag
+        id: target
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          EVENT_DRAFT: ${{ github.event.release.draft }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          umask 077
+          HEADER_FILE="$(mktemp "${RUNNER_TEMP}/gh-auth-header.XXXXXX")"
+          trap 'rm -f "$HEADER_FILE"' EXIT
+          printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$HEADER_FILE"
+
+          TAG=""
+          case "$EVENT_NAME" in
+            release)
+              if [ "$EVENT_DRAFT" = "true" ]; then
+                echo "draft release ${EVENT_TAG} published later; nothing to mirror yet"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              TAG="$EVENT_TAG"
+              ;;
+            repository_dispatch)
+              TAG="$DISPATCH_TAG"
+              ;;
+            workflow_run)
+              if [ "$RUN_CONCLUSION" != "success" ]; then
+                echo "triggering workflow run concluded ${RUN_CONCLUSION}; nothing to mirror"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              TAG="$RUN_BRANCH"
+              ;;
+            workflow_dispatch)
+              TAG="$INPUT_TAG"
+              ;;
+            schedule)
+              TAG=""
+              ;;
+          esac
+
+          if [ -z "$TAG" ]; then
+            TAG="$(curl -fsS -H @"$HEADER_FILE" \
+              "https://api.github.com/repos/${REPO}/releases?per_page=30" \
+              | python3 -c '
+          import json, sys
+          releases = [r for r in json.load(sys.stdin) if not r.get("draft")]
+          print(releases[0]["tag_name"] if releases else "")
+          ')"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "no published release found to mirror" >&2
+            exit 1
+          fi
+          case "$TAG" in
+            v[0-9A-Za-z._-]*|floe-linux-guest-[0-9A-Za-z._-]*) ;;
+            *) echo "refusing suspicious release tag: $TAG" >&2; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "mirroring release tag: $TAG"
+
+      - name: Resolve the tag commit on GitHub
+        id: tagcommit
+        if: ${{ steps.target.outputs.skip != 'true' }}
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null; then
+            git fetch --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          fi
+          SHA="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "GitHub ${TAG} -> ${SHA}"
+
+      - name: Ensure the immutable tag exists on Gitee (one-way, never forced)
+        if: ${{ steps.target.outputs.skip != 'true' }}
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+          SHA: ${{ steps.tagcommit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
+          umask 077
+          TOKEN_FILE="$(mktemp "${RUNNER_TEMP}/gitee-token.XXXXXX")"
+          trap 'rm -f "$TOKEN_FILE"' EXIT
+          printf '%s' "$GITEE_TOKEN" > "$TOKEN_FILE"
+          GITEE_TOKEN_FILE="$TOKEN_FILE"
+          export GITEE_TOKEN_FILE
+
+          GITEE_URL="https://gitee.com/JiangNanGenius/floe-agent.git"
+          git remote add gitee "$GITEE_URL"
+          CRED_HELPER='!f() { printf "username=JiangNanGenius\n"; printf "password=%s\n" "$(cat "$GITEE_TOKEN_FILE")"; }; f'
+          ggit() { git -c "credential.helper=${CRED_HELPER}" "$@"; }
+
+          REMOTE_SHA="$(ggit ls-remote gitee "refs/tags/${TAG}" | awk '{print $1}')"
+          if [ -z "$REMOTE_SHA" ]; then
+            echo "pushing tag ${TAG} to Gitee (no force)"
+            ggit push gitee "refs/tags/${TAG}:refs/tags/${TAG}"
+            REMOTE_SHA="$(ggit ls-remote gitee "refs/tags/${TAG}" | awk '{print $1}')"
+          fi
+          if [ "$REMOTE_SHA" != "$SHA" ]; then
+            echo "Gitee tag ${TAG} is ${REMOTE_SHA} but GitHub is ${SHA}; refusing to move an immutable tag" >&2
+            exit 1
+          fi
+          echo "refs gate: Gitee ${TAG} == GitHub ${SHA}"
+
+      - name: Sync release metadata and assets
+        if: ${{ steps.target.outputs.skip != 'true' }}
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+          TAG_SHA: ${{ steps.tagcommit.outputs.sha }}
+          INCLUDE_ASSETS: ${{ github.event_name == 'workflow_dispatch' && inputs.include_assets || '' }}
+          SHARD_MIB: ${{ github.event_name == 'workflow_dispatch' && inputs.shard_mib || '64' }}
+          VERIFY: ${{ github.event_name == 'workflow_dispatch' && inputs.verify || 'hash' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          PRUNE_UNKNOWN: ${{ github.event_name == 'workflow_dispatch' && inputs.prune_unknown || 'false' }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
+          umask 077
+          GITEE_TOKEN_FILE="$(mktemp "${RUNNER_TEMP}/gitee-token.XXXXXX")"
+          trap 'rm -f "$GITEE_TOKEN_FILE"' EXIT
+          printf '%s' "$GITEE_TOKEN" > "$GITEE_TOKEN_FILE"
+          export GITEE_TOKEN_FILE
+
+          FLAGS=(
+            --tag "$TAG"
+            --ref-sha "$TAG_SHA"
+            --ref-verified true
+            --verify "$VERIFY"
+            --shard-mib "$SHARD_MIB"
+            --summary-json "${RUNNER_TEMP}/gitee-release-mirror-summary.json"
+            --min-free-mib 2048
+          )
+          if [ -n "$INCLUDE_ASSETS" ]; then FLAGS+=(--include-assets "$INCLUDE_ASSETS"); fi
+          if [ "$DRY_RUN" = "true" ]; then FLAGS+=(--dry-run); fi
+          if [ "$PRUNE_UNKNOWN" = "true" ]; then FLAGS+=(--prune-unknown); fi
+          python3 FloeAgent/scripts/sync_release_to_gitee.py "${FLAGS[@]}"
+
+      - name: Publish mirror summary
+        if: ${{ always() && steps.target.outputs.skip != 'true' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          path = os.path.join(os.environ["RUNNER_TEMP"], "gitee-release-mirror-summary.json")
+          out = os.environ["GITHUB_STEP_SUMMARY"]
+          if not os.path.exists(path):
+              with open(out, "a", encoding="utf-8") as handle:
+                  handle.write("### Gitee release mirror\n\nNo summary was produced (the run stopped before the sync step).\n")
+          else:
+              with open(path, "r", encoding="utf-8") as handle:
+                  summary = json.load(handle)
+              gates = summary.get("gates", {}).get("assets", {})
+              release = summary.get("gates", {}).get("releaseMetadata", {})
+              limits = summary.get("limits", {})
+              lines = [
+                  "### Gitee release mirror: %s" % summary.get("source", {}).get("tag"),
+                  "",
+                  "| gate | state |",
+                  "| --- | --- |",
+                  "| refs | %s (ref-verified before run: %s) |" % (
+                      summary.get("gates", {}).get("refs", {}).get("tag"),
+                      summary.get("gates", {}).get("refs", {}).get("refVerifiedBeforeRun")),
+                  "| release metadata | %s |" % release.get("status"),
+                  "| assets | verified %s / uploaded %s / skipped %s / failed %s (of %s) |" % (
+                      gates.get("verified"), gates.get("uploaded"), gates.get("skipped"),
+                      gates.get("failed"), gates.get("total")),
+                  "| shard size | %s MiB |" % limits.get("shardMiB"),
+                  "| dry run | %s |" % summary.get("dryRun"),
+                  "| result | ok=%s |" % summary.get("ok"),
+                  "",
+                  "Partial failures are reported truthfully; re-run the workflow to resume.",
+              ]
+              with open(out, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Retain the mirror summary
+        if: ${{ always() && steps.target.outputs.skip != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitee-release-mirror-${{ steps.target.outputs.tag }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gitee-release-mirror-summary.json
+          if-no-files-found: ignore
+          retention-days: 30
