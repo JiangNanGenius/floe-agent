@@ -425,19 +425,19 @@ final class AppEnvironment: ObservableObject {
                 await conflictCenter.requestDecision(activity)
             },
             idleDrainHandler: {
-                // Linux admission requires a verified release, not just a
-                // decremented session count: physically unmap the resident
-                // model when nothing claims it, and prove the outcome so the
-                // arbiter can keep the queued guest waiting while a durable
-                // task still owns the mapping.
-                if let released = await arbiterLocalRuntime.releaseIdleResidentEngineIfUnclaimed(
+                // A retained task may be waiting for its own Linux tool.
+                // Preserve its logical context while yielding only an idle
+                // physical mapping; active inference remains protected.
+                if let released = await arbiterLocalRuntime.yieldIdleResidentEngineForLinux(
                     reason: "linuxStartWaiting"
                 ) {
                     return .released(modelID: released)
                 }
-                // Nil means either "nothing was resident" or "a lease/task
-                // claimed it"; the runtime's resident-model truth separates
-                // the two so a claimed model is never treated as released.
+                // During loading the model ID can still be nil while its
+                // weights are being mapped. That is retained, not empty.
+                if await arbiterLocalRuntime.hasActiveInferenceOperation() {
+                    return .retained
+                }
                 if await arbiterLocalRuntime.residentModelID() == nil {
                     return .nothingResident
                 }
