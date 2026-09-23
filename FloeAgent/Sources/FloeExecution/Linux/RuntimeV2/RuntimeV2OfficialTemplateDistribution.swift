@@ -664,6 +664,17 @@ public actor RuntimeV2OfficialTemplateService {
         guard let artifact = artifacts.first(where: { $0.templateID == templateID }) else {
             throw RuntimeV2OfficialTemplateError.noPublishedArtifact(templateID: templateID)
         }
+        // Already registered at this exact version: nothing to download or
+        // re-import. (A newer artifact version would carry a higher version.)
+        if let verified = try await store.templates.latestVerified(templateID: templateID),
+           verified.version >= artifact.version {
+            guard let existing = try await registered(templateID: templateID) else {
+                throw RuntimeV2OfficialTemplateError.templateBlockUnverified(
+                    imageID: artifact.imageID, reason: "the registered version cannot be read back"
+                )
+            }
+            return existing
+        }
         // Verify the pinned recipe bytes first: the image's block must match
         // exactly this recipe, so a mismatched artifact never registers.
         let recipe = try Self.recipe(from: artifact)
