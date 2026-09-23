@@ -481,7 +481,7 @@ jobs:
           done
           grep -q '^CONFIG_SMP=y$' "$U/riscv-linux-src/.config" || { echo "CONFIG_SMP=y missing"; exit 1; }
           grep -q '^CONFIG_NR_CPUS=2$' "$U/riscv-linux-src/.config" || { echo "CONFIG_NR_CPUS=2 missing"; exit 1; }
-          grep -q 'multi-hart IPI path present' "$U/SMP-BUILD.txt" || { echo "firmware multi-hart evidence missing"; exit 1; }
+          grep -q 'mentry.o relocates disabled_hart_mask' "$U/SMP-BUILD.txt" || { echo "firmware multi-hart evidence missing"; exit 1; }
           mkdir -p work/smp/boot
           cp "$U/boot/bbl64.bin" "$U/boot/kernel-riscv64.bin" "$U/boot/boot-files.json" work/smp/boot/
           cp "$U/SMP-BUILD.txt" "$U/boot/BOOT-PAIR.txt" work/smp/boot/
