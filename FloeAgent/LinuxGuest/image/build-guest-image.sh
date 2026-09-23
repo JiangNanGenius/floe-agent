@@ -57,8 +57,9 @@
 #                         Debian daily build, template, recipe content and
 #                         --build-id; see that file for the collision rules)
 #   --build-id ID         immutable build identity for the image id (the cloud
-#                         workflow passes the GitHub run id; default for local
-#                         runs: local-<unix seconds>)
+#                         workflow passes <run id>-<run attempt> so even an
+#                         Actions rerun gets a fresh id; default for local
+#                         runs: local-<unix seconds>-<uuid8>)
 #   --run-url URL         qualification run URL recorded in the manifest
 #   --source-ref REF      git commit recorded in the provenance source URLs
 #   --skip-fetch          reuse already-downloaded sources/images
@@ -223,7 +224,9 @@ if [ -z "$image_id" ]; then
     # state moves under them. The stable user-facing template id is the
     # <template> component; it is preserved unchanged by rebuilds.
     if [ -z "$build_id" ]; then
-        build_id="local-$(date +%s)"
+        # local-<unix seconds>-<uuid8>: whole-second timestamps alone can
+        # collide on rapid local reruns.
+        build_id="$(python3 "$script_dir/image_id.py" local-build-id)"
     fi
     image_id="$(python3 "$script_dir/image_id.py" derive \
         --daily "$daily_build" \

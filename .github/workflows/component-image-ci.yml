@@ -143,7 +143,7 @@ jobs:
           sudo bash FloeAgent/LinuxGuest/image/build-guest-image.sh \
             --work "${{ runner.temp }}/floe-image-work" \
             --template "${{ inputs.template || 'basic' }}" \
-            --build-id "${{ github.run_id }}" \
+            --build-id "${{ github.run_id }}-${{ github.run_attempt }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --source-ref "${{ github.sha }}" \
             2>&1 | tee "${{ runner.temp }}/floe-image-build.log"
@@ -611,7 +611,7 @@ jobs:
           sudo bash FloeAgent/LinuxGuest/image/build-guest-image.sh \
             --work "${{ runner.temp }}/floe-smp/work" \
             --boot-dir "${{ runner.temp }}/floe-smp/boot" \
-            --build-id "${{ github.run_id }}" \
+            --build-id "${{ github.run_id }}-${{ github.run_attempt }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --source-ref "${{ github.sha }}" \
             2>&1 | tee "${{ runner.temp }}/floe-smp/assemble.log"
