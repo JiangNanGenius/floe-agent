@@ -1295,8 +1295,12 @@ class MirrorRunner:
         assets = self.github.assets(release["id"])
         release_url = release.get("html_url") or "https://github.com/%s/releases/tag/%s" % (args.github_repo, args.tag)
 
+        all_entries = build_asset_plan(assets, args.shard_bytes, profile, "", args.exclude_assets, self.log)
         entries = build_asset_plan(assets, args.shard_bytes, profile, args.include_assets, args.exclude_assets, self.log)
-        wanted = expected_layout(entries)
+        # The release-level layout covers every asset, not just this run's
+        # --include-assets subset; pruning must never remove a sibling asset.
+        wanted = expected_layout(all_entries)
+        self.all_entries = all_entries
         self.log.emit(
             "[plan] %s: %d assets, %d Gitee attachments planned, shard size %s"
             % (args.tag, len(entries), len(wanted), human_bytes(args.shard_bytes))
@@ -1409,7 +1413,7 @@ class MirrorRunner:
                     self.log.emit("[fail] %s: %s" % (name, detail))
 
             if not args.dry_run and args.write_manifest:
-                self._write_mirror_manifest(release_id, entries)
+                self._write_mirror_manifest(release_id, self.all_entries, self._attach_index(release_id))
 
             if args.prune_unknown:
                 self._prune_unknown(release_id, index, wanted)
@@ -1442,7 +1446,43 @@ class MirrorRunner:
             "detail": detail,
         }
 
-    def _write_mirror_manifest(self, release_id, entries):
+    def _layout_state(self, entry, index):
+        """Whether every Gitee attachment of one asset exists with the right size."""
+        if entry["sharded"]:
+            names = [entry["shard_manifest"]] + list(entry["part_names"])
+        else:
+            names = [entry["asset"]["name"]]
+        present = True
+        sizes_ok = True
+        for position, name in enumerate(names):
+            items = index.get(name) or []
+            if not items:
+                present = False
+                break
+            if entry["sharded"] and name != entry["shard_manifest"]:
+                part_index = position - 1
+                expected = self._part_size(entry["size"], part_index, len(entry["part_names"]))
+                if not any(int(item.get("size") or -1) == expected for item in items):
+                    sizes_ok = False
+        return present and sizes_ok
+
+    def _write_mirror_manifest(self, release_id, entries, index):
+        computed = {
+            item["name"]: item["sha256"] for item in self.summary["assets"] if item.get("sha256")
+        }
+        assets = []
+        for entry in entries:
+            planned_names = ([entry["shard_manifest"]] + list(entry["part_names"])) if entry["sharded"] else [entry["asset"]["name"]]
+            assets.append(
+                {
+                    "name": entry["asset"]["name"],
+                    "size": entry["size"],
+                    "sha256": computed.get(entry["asset"]["name"]) or entry["digest"],
+                    "sharded": entry["sharded"],
+                    "giteeNames": planned_names,
+                    "complete": release_id is not None and self._layout_state(entry, index),
+                }
+            )
         payload = {
             "schema": MIRROR_SUMMARY_SCHEMA,
             "sourceRepo": self.args.github_repo,
@@ -1451,25 +1491,18 @@ class MirrorRunner:
             "sourcePublishedAt": self.summary["source"].get("publishedAt"),
             "giteeRepo": self.args.gitee_repo,
             "policy": "GitHub is the trust-bearing primary; assets are byte-identical copies",
-            # Stable mapping only: no per-run status, so an unchanged mapping
-            # keeps the same bytes (and the same fingerprint) across runs.
-            "assets": [
-                {
-                    "name": item["name"],
-                    "size": item["size"],
-                    "sha256": item["sha256"],
-                    "giteeNames": item["giteeNames"],
-                    "sharded": item["sharded"],
-                }
-                for item in self.summary["assets"]
-            ],
+            # The mapping is stable; `complete` flips to true only once every
+            # planned attachment exists with the expected size, so a partial
+            # mirror is visible instead of implied.
+            "complete": all(item["complete"] for item in assets),
+            "assets": assets,
         }
         payload["contentFingerprint"] = content_fingerprint(payload)
         path = os.path.join(self.work_dir, MIRROR_MANIFEST_ASSET)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
-        index = self._attach_index(release_id) if release_id else {}
+        index = index or {}
         status, detail = self._sync_small_file(release_id, MIRROR_MANIFEST_ASSET, path, index)
         self.summary["gates"]["releaseMetadata"]["mirrorManifest"] = {
             "status": status,
