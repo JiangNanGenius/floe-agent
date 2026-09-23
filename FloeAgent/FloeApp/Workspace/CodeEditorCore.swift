@@ -231,8 +231,6 @@ struct StructuredCodeTextView: UIViewRepresentable {
         var lastCommandRevision = 0
         /// Programmatic updates requested while an IME composition was active.
         var compositionGuard = IDENativeEditorCompositionGuard()
-        /// True when a composition skipped a scheduled re-highlight.
-        private var needsHighlightAfterComposition = false
 
         init(_ parent: StructuredCodeTextView) { self.parent = parent }
 
@@ -243,7 +241,7 @@ struct StructuredCodeTextView: UIViewRepresentable {
             guard view.text != text else { return }
             let hasMarkedText = view.markedTextRange != nil
             guard compositionGuard.requestProgrammaticUpdate(text, hasMarkedText: hasMarkedText) else {
-                needsHighlightAfterComposition = true
+                // Applied by textViewDidChange once the composition ends.
                 return
             }
             let selection = view.selectedRange
@@ -259,8 +257,8 @@ struct StructuredCodeTextView: UIViewRepresentable {
             guard let view = textView as? LineNumberTextView else { return }
             if view.markedTextRange != nil {
                 // The composing text already reached the model through the
-                // binding; never replace the storage or the colors now.
-                needsHighlightAfterComposition = true
+                // binding; never replace the storage or the colors now. The
+                // commit fires another change event which highlights then.
                 return
             }
             if let pending = compositionGuard.compositionDidEnd() {
@@ -279,7 +277,6 @@ struct StructuredCodeTextView: UIViewRepresentable {
         }
 
         private func applyPendingText(_ text: String, to view: LineNumberTextView) {
-            needsHighlightAfterComposition = false
             let selection = view.selectedRange
             parent.text = text
             view.text = text
@@ -289,11 +286,9 @@ struct StructuredCodeTextView: UIViewRepresentable {
 
         func highlight(_ view: LineNumberTextView) {
             guard !isHighlighting else { return }
-            // Re-rendering the storage during a composition would cancel it.
-            guard view.markedTextRange == nil else {
-                needsHighlightAfterComposition = true
-                return
-            }
+            // Re-rendering the storage during a composition would cancel it;
+            // the commit's change event renders the final text instead.
+            guard view.markedTextRange == nil else { return }
             isHighlighting = true
             defer { isHighlighting = false }
             let source = view.text ?? ""
