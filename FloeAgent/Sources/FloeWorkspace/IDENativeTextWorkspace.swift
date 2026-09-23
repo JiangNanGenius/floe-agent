@@ -99,6 +99,53 @@ public enum IDENativeTextCloseDecision: Equatable, Sendable {
     }
 }
 
+/// Why `IDENativeTextWorkspace.open(_:)` refused to mount a new buffer.
+///
+/// A refusal never drops a draft: the open-buffer budget only ever evicts a
+/// clean buffer, and when every open buffer is dirty the new file is refused
+/// with an explicit, actionable reason instead of an eviction or a silent
+/// no-op. Both languages live here so the reason is never added in one
+/// language only.
+public struct IDENativeTextOpenRefusal: Equatable, Sendable {
+    public enum Reason: Equatable, Sendable {
+        /// The open-buffer budget is full and every open buffer is dirty.
+        case bufferBudgetReached(maximumBuffers: Int)
+        /// The path is empty or names the workspace root itself.
+        case invalidPath
+    }
+
+    public let relativePath: String
+    public let reason: Reason
+    /// Buffers that stay mounted with their drafts despite the refusal.
+    public let retainedPaths: [String]
+
+    public init(relativePath: String, reason: Reason, retainedPaths: [String]) {
+        self.relativePath = relativePath
+        self.reason = reason
+        self.retainedPaths = retainedPaths
+    }
+
+    public var zhMessage: String {
+        switch reason {
+        case .bufferBudgetReached(let maximum):
+            return "已打开 \(maximum) 个缓冲区且全部有未保存的修改，无法打开「\(relativePath)」。请先保存全部或关闭一个缓冲区；当前草稿均已保留。"
+        case .invalidPath:
+            return "无法打开「\(relativePath)」：路径无效。"
+        }
+    }
+
+    public var enMessage: String {
+        switch reason {
+        case .bufferBudgetReached(let maximum):
+            return "All \(maximum) open buffers have unsaved changes, so \"\(relativePath)\" cannot be opened. Save all or close one buffer first; every current draft is preserved."
+        case .invalidPath:
+            return "\"\(relativePath)\" cannot be opened: the path is invalid."
+        }
+    }
+
+    public var message: String { IDENativeTextText.t(zhMessage, enMessage) }
+}
+
 /// Outcome of one save-all pass over the open buffers.
 public struct IDENativeTextSaveReport: Equatable, Sendable {
     public var savedPaths: [String] = []
@@ -273,6 +320,10 @@ public final class IDENativeTextBuffer {
 public final class IDENativeTextWorkspace {
     public private(set) var buffers: [IDENativeTextBuffer] = []
     public private(set) var activePath: String?
+    /// The most recent `open(_:)` refusal. It is cleared by the next open that
+    /// mounts or re-activates a buffer, so the IDE can surface a full dirty
+    /// budget (with the recovery path) instead of refusing a tap silently.
+    public private(set) var openRefusal: IDENativeTextOpenRefusal?
     public let maximumOpenBuffers: Int
     private let service: WorkspaceFileService?
 
@@ -298,22 +349,38 @@ public final class IDENativeTextWorkspace {
 
     /// Opens (or re-activates) a buffer and loads it on first open. Refuses
     /// to exceed the open-buffer budget: the oldest *clean* buffer is evicted,
-    /// never a dirty one.
+    /// never a dirty one. When every buffer is dirty the new file is refused
+    /// and `openRefusal` carries the bilingual reason; every draft stays
+    /// mounted either way.
     @discardableResult
     public func open(_ relativePath: String) async -> IDENativeTextBuffer? {
-        guard !relativePath.isEmpty, relativePath != "." else { return nil }
+        guard !relativePath.isEmpty, relativePath != "." else {
+            openRefusal = IDENativeTextOpenRefusal(
+                relativePath: relativePath, reason: .invalidPath, retainedPaths: openPaths
+            )
+            return nil
+        }
         if let existing = buffer(relativePath) {
             activePath = relativePath
+            openRefusal = nil
             return existing
         }
         if buffers.count >= maximumOpenBuffers {
-            guard let index = buffers.firstIndex(where: { !$0.isDirty }) else { return nil }
+            guard let index = buffers.firstIndex(where: { !$0.isDirty }) else {
+                openRefusal = IDENativeTextOpenRefusal(
+                    relativePath: relativePath,
+                    reason: .bufferBudgetReached(maximumBuffers: maximumOpenBuffers),
+                    retainedPaths: openPaths
+                )
+                return nil
+            }
             buffers.remove(at: index)
         }
         let created = IDENativeTextBuffer(relativePath: relativePath)
         buffers.append(created)
         activePath = relativePath
         created.load(service: service)
+        openRefusal = nil
         return created
     }
 

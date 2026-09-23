@@ -44,6 +44,10 @@ struct WorkspaceIDEView: View {
     @AppStorage("workspace.ide.nativeTextEditor") private var usesNativeEditor = true
     @State private var showsCloseConfirmation = false
     @State private var nativeCloseRequest: String?
+    /// A refused native open (budget full with every buffer dirty, or an
+    /// invalid path) is surfaced with its bilingual recovery reason instead of
+    /// dropping the tap; no draft is evicted to make room.
+    @State private var nativeOpenRefusal: IDENativeTextOpenRefusal?
     @State private var pendingModeSwitch: IDENativeTextSurfaceMode?
     @State private var nativeInsertResult: String?
     @State private var terminalOwner: LocalTerminalOwner?
@@ -389,6 +393,34 @@ struct WorkspaceIDEView: View {
                 .accessibilityIdentifier("workspace.ide.editorMode.keepSwitch")
             }
             Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { pendingModeSwitch = nil }
+        }
+        .alert(
+            IDELanguageRunText.t("无法打开新文件", "Cannot open another file"),
+            isPresented: Binding(get: { nativeOpenRefusal != nil }, set: { if !$0 { nativeOpenRefusal = nil } }),
+            presenting: nativeOpenRefusal
+        ) { refusal in
+            if case .bufferBudgetReached = refusal.reason {
+                Button(IDELanguageRunText.t("全部保存", "Save all")) {
+                    Task {
+                        let report = await state.nativeText.saveAll()
+                        // Conflicts keep their own review sheet; this notice
+                        // only reports whether the budget is recoverable now.
+                        showRoutingNotice(report.isClean
+                            ? IDELanguageRunText.t(
+                                "已保存全部缓冲区；可再次打开该文件。",
+                                "All buffers saved; open the file again."
+                            )
+                            : IDELanguageRunText.t(
+                                "仍有未保存或待评审的缓冲区；处理后重试。",
+                                "Some buffers are still unsaved or under review; resolve them and retry."
+                            ))
+                    }
+                }
+                .accessibilityIdentifier("workspace.ide.nativeOpen.saveAll")
+            }
+            Button(IDELanguageRunText.t("好", "OK"), role: .cancel) {}
+        } message: { refusal in
+            Text(refusal.message)
         }
         .onChange(of: state.pendingNativePath) { _, value in
             guard let value else { return }
@@ -893,6 +925,11 @@ struct WorkspaceIDEView: View {
         Task {
             await state.nativeText.open(path)
             state.updateNativeActivePath(state.nativeText.activePath)
+            // A refused open (full dirty budget or invalid path) is reported
+            // with its recovery reason; no buffer was evicted for it.
+            if let refusal = state.nativeText.openRefusal, refusal.relativePath == path {
+                nativeOpenRefusal = refusal
+            }
         }
     }
 

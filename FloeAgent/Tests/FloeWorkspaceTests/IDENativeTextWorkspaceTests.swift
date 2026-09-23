@@ -367,6 +367,70 @@ struct IDENativeTextBufferTests {
         #expect(workspace.buffer("keep.txt")?.isDirty == true)
     }
 
+    @Test("A full dirty budget refuses the new open and reports a recoverable reason")
+    func bufferBudgetRefusesWhenAllDirty() async throws {
+        let fixture = try NativeTextFixture()
+        defer { fixture.remove() }
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            _ = try fixture.write(name, "\(name) v0")
+        }
+
+        let workspace = IDENativeTextWorkspace(files: fixture.service, maximumOpenBuffers: 2)
+        let a = try #require(await workspace.open("a.txt"))
+        let b = try #require(await workspace.open("b.txt"))
+        a.text = "A dirty draft"
+        b.text = "B dirty draft"
+        #expect(workspace.dirtyPaths == ["a.txt", "b.txt"])
+
+        // The budget is full and every buffer is dirty: c.txt is refused with
+        // an explicit bilingual reason instead of a silent tap loss. Nothing is
+        // evicted and both drafts stay mounted.
+        #expect(await workspace.open("c.txt") == nil)
+        #expect(workspace.openPaths == ["a.txt", "b.txt"])
+        #expect(workspace.buffer("c.txt") == nil)
+        #expect(workspace.buffer("a.txt")?.text == "A dirty draft")
+        #expect(workspace.buffer("b.txt")?.text == "B dirty draft")
+        let refusal = try #require(workspace.openRefusal)
+        #expect(refusal.relativePath == "c.txt")
+        #expect(refusal.reason == .bufferBudgetReached(maximumBuffers: 2))
+        #expect(refusal.retainedPaths == ["a.txt", "b.txt"])
+        #expect(refusal.zhMessage.contains("c.txt"))
+        #expect(refusal.zhMessage.contains("保存全部"))
+        #expect(refusal.zhMessage.contains("草稿均已保留"))
+        #expect(refusal.enMessage.contains("c.txt"))
+        #expect(refusal.enMessage.contains("Save all"))
+        #expect(refusal.enMessage.contains("draft is preserved"))
+        #expect(refusal.message == refusal.zhMessage || refusal.message == refusal.enMessage)
+
+        // Re-activating an open buffer still works and clears the refusal.
+        #expect(await workspace.open("a.txt") != nil)
+        #expect(workspace.openRefusal == nil)
+        #expect(workspace.activePath == "a.txt")
+        #expect(workspace.buffer("a.txt")?.text == "A dirty draft")
+
+        // Once one buffer is clean it may be evicted; the dirty draft is kept
+        // and c.txt finally mounts.
+        #expect(await workspace.save("b.txt"))
+        let c = try #require(await workspace.open("c.txt"))
+        #expect(c.isLoaded)
+        #expect(workspace.openPaths == ["a.txt", "c.txt"])
+        #expect(workspace.buffer("a.txt")?.text == "A dirty draft")
+        #expect(workspace.openRefusal == nil)
+    }
+
+    @Test("An invalid path is refused with its own reason and no buffer change")
+    func invalidPathRefusal() async throws {
+        let fixture = try NativeTextFixture()
+        defer { fixture.remove() }
+        let workspace = IDENativeTextWorkspace(files: fixture.service)
+        #expect(workspace.openRefusal == nil)
+        #expect(await workspace.open("") == nil)
+        let refusal = try #require(workspace.openRefusal)
+        #expect(refusal.reason == .invalidPath)
+        #expect(!refusal.zhMessage.isEmpty && !refusal.enMessage.isEmpty)
+        #expect(workspace.buffers.isEmpty)
+    }
+
     @Test("A single-buffer save (tab close) commits only that file")
     func singleBufferSave() async throws {
         let fixture = try NativeTextFixture()
