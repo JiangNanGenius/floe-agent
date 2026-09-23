@@ -49,11 +49,16 @@
 #                         (default: basic). The recipe is validated before
 #                         any heavy work; a missing/invalid recipe aborts the
 #                         build with the exact path (owner job-6f5ac974858c47c2
-#                         D). The manifest id is always unique and versioned:
-#                         floe-debian13-riscv64-<daily>-<template>-r<recipe
-#                         content hash>; it never reuses the published
-#                         plain-id of the pre-template image.
-#   --image-id ID         manifest id (default: derived from the Debian build)
+#                         D). The manifest id is always unique and versioned
+#                         (floe-debian13-riscv64-<daily>-<template>-r<recipe
+#                         content hash>-b<build-id>); it never reuses the
+#                         published plain-id of the pre-template image.
+#   --image-id ID         manifest id (default: derived by image_id.py from the
+#                         Debian daily build, template, recipe content and
+#                         --build-id; see that file for the collision rules)
+#   --build-id ID         immutable build identity for the image id (the cloud
+#                         workflow passes the GitHub run id; default for local
+#                         runs: local-<unix seconds>)
 #   --run-url URL         qualification run URL recorded in the manifest
 #   --source-ref REF      git commit recorded in the provenance source URLs
 #   --skip-fetch          reuse already-downloaded sources/images
@@ -101,6 +106,7 @@ repo=""
 pins=""
 template="basic"
 image_id=""
+build_id=""
 run_url=""
 source_ref=""
 skip_fetch=0
@@ -119,6 +125,7 @@ while [ $# -gt 0 ]; do
         --pins) pins="${2:-}"; shift 2 ;;
         --template) template="${2:-}"; shift 2 ;;
         --image-id) image_id="${2:-}"; shift 2 ;;
+        --build-id) build_id="${2:-}"; shift 2 ;;
         --run-url) run_url="${2:-}"; shift 2 ;;
         --source-ref) source_ref="${2:-}"; shift 2 ;;
         --skip-fetch) skip_fetch=1; shift ;;
@@ -175,6 +182,7 @@ recipe_path="$script_dir/templates/$template.json"
 [ -r "$recipe_path" ] && [ -s "$recipe_path" ] \
     || die "template recipe is not readable or is empty: $recipe_path (owner job-6f5ac974858c47c2 D)"
 [ -f "$script_dir/template_recipe.py" ] || die "template validator not found: $script_dir/template_recipe.py"
+[ -f "$script_dir/image_id.py" ] || die "image id helper not found: $script_dir/image_id.py"
 if ! recipe_summary="$(python3 "$script_dir/template_recipe.py" validate --recipe "$recipe_path" 2>&1)"; then
     die "template recipe is invalid: $recipe_path (owner job-6f5ac974858c47c2 D)
 $recipe_summary"
@@ -206,31 +214,22 @@ daily_build="$(pin 'p["debian_image"]["daily_build"]')"
 patch_marker="$(pin 'p["engine"]["required_patch_marker"]')"
 cmdline="console=hvc0 root=/dev/vda rw loglevel=4"
 if [ -z "$image_id" ]; then
-    # Template images are NEW versioned artifacts: they must never reuse the
-    # published plain id `floe-debian13-riscv64-<daily>` (run 35923812691
-    # showed the collision breaks C5 prepare and user upgrades — same id,
-    # different disk digest). Both basic and named templates therefore carry
-    # the template name plus a stable content version derived from the
-    # recipe's semantic fields (name/packages/pypi): a recipe edit that
-    # changes what is installed re-versions the id, while description-only
-    # edits keep it stable.
-    template_rev="$(python3 - "$recipe_path" <<'PY'
-import hashlib
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    recipe = json.load(handle)
-semantic = {
-    "name": recipe.get("name"),
-    "packages": recipe.get("packages") or {},
-    "pypi": recipe.get("pypi") or {},
-}
-canonical = json.dumps(semantic, sort_keys=True, separators=(",", ":"))
-print(hashlib.sha512(canonical.encode("utf-8")).hexdigest()[:12])
-PY
-)"
-    image_id="floe-debian13-riscv64-$(printf '%s' "$daily_build" | tr -d '-')-${template}-r${template_rev}"
+    # Template images are immutable, versioned artifacts: one id must never
+    # name two byte sets (run 35923812691 reused the published plain id and
+    # broke C5 prepare + user upgrades). image_id.py derives
+    # floe-debian13-riscv64-<daily>-<template>-r<recipe-rev>-b<build-id>;
+    # the workflow passes the immutable GitHub run id as --build-id, so two
+    # rebuilds of the same recipe can never collide even when APT archive
+    # state moves under them. The stable user-facing template id is the
+    # <template> component; it is preserved unchanged by rebuilds.
+    if [ -z "$build_id" ]; then
+        build_id="local-$(date +%s)"
+    fi
+    image_id="$(python3 "$script_dir/image_id.py" derive \
+        --daily "$daily_build" \
+        --template "$template" \
+        --recipe "$recipe_path" \
+        --build-id "$build_id")"
 fi
 runner_src="$repo/FloeAgent/LinuxGuest/runner/floe_exec.c"
 [ -f "$runner_src" ] || die "runner source not found: $runner_src"
