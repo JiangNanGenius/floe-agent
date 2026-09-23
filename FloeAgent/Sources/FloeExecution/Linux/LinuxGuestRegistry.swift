@@ -201,6 +201,31 @@ public extension LinuxGuestRuntimeV2Integrating {
     }
 }
 
+/// Result-carrying stop, reachable through the existential.
+///
+/// `LinuxGuestRuntimeV2Integrating.completeStopResult` (C2 68ca2ce9) is declared
+/// ONLY as a protocol-extension default, so a call through `any
+/// LinuxGuestRuntimeV2Integrating` is statically dispatched to that default and
+/// the concrete integrator's real implementation
+/// (`RuntimeV2GuestIntegrator.completeStopResult`) is unreachable — every
+/// refusal would read back as `.unknown`. The registry must see the real
+/// outcome (a refused capture is never reported as a clean save), so the same
+/// method is declared here as a requirement and the production integrator and
+/// scripted test conformers answer it. A conformer that only implements the
+/// legacy `completeStop` keeps the truth-conservative `.unknown` path.
+///
+/// Scope note: this lives with the registry because the shared protocol file is
+/// owned by the Runtime v2 module; folding the requirement (with the identical
+/// default) into `LinuxGuestRuntimeV2Integrating` is a mechanical follow-up
+/// that would let this adapter be deleted.
+protocol LinuxGuestRuntimeV2StopOutcomeReporting: Sendable {
+    func completeStopResult(
+        environmentID: String, runtimeID: String, imageID: String, clean: Bool
+    ) async -> RuntimeV2StopOutcome
+}
+
+extension RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2StopOutcomeReporting {}
+
 public actor TinyEMULinuxGuestRegistry {
     /// Logical capacity of each environment raw disk. Test registries can
     /// override via `init(targetDiskCapacityBytes:)`; production grows to
@@ -221,6 +246,13 @@ public actor TinyEMULinuxGuestRegistry {
         /// session's capability handshake. nil when the boot path did not
         /// negotiate (unknown, never assumed ready).
         var networkStatus: LinuxGuestNetworkStatus?
+        /// Identity of this owned session, minted every time a handle becomes
+        /// the environment's owned guest (registration, replacement, confirmed
+        /// removal, quarantine). A lifecycle operation suspended across an
+        /// await revalidates this value before it writes, restarts or rebooks
+        /// anything, so a stale operation can never resurrect the old handle or
+        /// mutate a replacement session.
+        var generation: UInt64
     }
 
     private let environments: any LinuxGuestEnvironmentProviding
@@ -260,6 +292,32 @@ public actor TinyEMULinuxGuestRegistry {
     /// Covers starts in flight and running sessions alike, so concurrent
     /// starts cannot oversubscribe the device's guest budget.
     private var guestReservations: [String: Int] = [:]
+    /// Per-environment lifecycle linearization. A shape/RAM change holds this
+    /// lock for its whole stop → apply → restart → confirm critical section; a
+    /// teardown takes it before its destructive phase (channel/handle close,
+    /// delta capture, working-disk/lease/slot release). The engine stop/start
+    /// paths await, so the actor is reentrant: without this lock a resuming
+    /// reshape could restart a handle whose working disk, lease and pool slot a
+    /// concurrent stop already released. `teardownsInFlight` remains the
+    /// cancellation signal a reshape re-checks after every await; the lock
+    /// additionally guarantees the teardown cannot release the disk/lease
+    /// while the reshape is still inside its restart, and a reshape waiting
+    /// behind a teardown revalidates session identity before touching anything.
+    private struct LifecycleWaiter {
+        var token: UInt64
+        var isShapeChange: Bool
+        var continuation: CheckedContinuation<Void, Never>
+    }
+
+    private struct LifecycleLock {
+        var ownerToken: UInt64
+        var ownerIsShapeChange: Bool
+        var waiters: [LifecycleWaiter]
+    }
+
+    private var lifecycleLocks: [String: LifecycleLock] = [:]
+    private var lifecycleOperationTokenCounter: UInt64 = 0
+    private var sessionGenerationCounter: UInt64 = 0
 
     /// One interactive guest terminal plus its buffered output.
     private struct TerminalSession {
@@ -457,6 +515,143 @@ public actor TinyEMULinuxGuestRegistry {
         ResidentMemoryReservations.clear(id: "linux-guest:" + environmentID)
     }
 
+    /// Mints the identity of the next owned session.
+    private func nextSessionGeneration() -> UInt64 {
+        sessionGenerationCounter &+= 1
+        return sessionGenerationCounter
+    }
+
+    /// Mints the owner token for the next lifecycle operation.
+    private func nextLifecycleOperationToken() -> UInt64 {
+        lifecycleOperationTokenCounter &+= 1
+        return lifecycleOperationTokenCounter
+    }
+
+    /// True while a shape/RAM change owns the environment's lifecycle lock.
+    private func isShapeChangeInFlight(environmentID: String) -> Bool {
+        lifecycleLocks[environmentID]?.ownerIsShapeChange == true
+    }
+
+    /// FIFO acquire of the environment's lifecycle lock. The token identifies
+    /// the owner, so a late release can never free another operation's lock.
+    private func acquireLifecycle(
+        environmentID: String,
+        token: UInt64,
+        isShapeChange: Bool
+    ) async {
+        if var lock = lifecycleLocks[environmentID] {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.waiters.append(
+                    LifecycleWaiter(
+                        token: token, isShapeChange: isShapeChange, continuation: continuation
+                    )
+                )
+                lifecycleLocks[environmentID] = lock
+            }
+            return
+        }
+        lifecycleLocks[environmentID] = LifecycleLock(
+            ownerToken: token, ownerIsShapeChange: isShapeChange, waiters: []
+        )
+    }
+
+    /// Releases the lifecycle lock, handing it to the next waiter in arrival
+    /// order. A stale token is ignored: it cannot free another owner's lock.
+    private func releaseLifecycle(environmentID: String, token: UInt64) {
+        guard var lock = lifecycleLocks[environmentID], lock.ownerToken == token else { return }
+        guard !lock.waiters.isEmpty else {
+            lifecycleLocks[environmentID] = nil
+            return
+        }
+        let next = lock.waiters.removeFirst()
+        lock.ownerToken = next.token
+        lock.ownerIsShapeChange = next.isShapeChange
+        lifecycleLocks[environmentID] = lock
+        next.continuation.resume()
+    }
+
+    /// True when the environment's owned session is still the generation a
+    /// suspended operation captured: it is false after a stop removed or
+    /// re-quarantined that handle and after a replacement start registered a
+    /// new one.
+    private func isCurrentSession(environmentID: String, generation: UInt64) -> Bool {
+        sessions[environmentID]?.generation == generation
+    }
+
+    /// Internal lifecycle diagnostics (not public API). The deterministic
+    /// interleaving tests use this predicate to drive a stop into a parked
+    /// shape change instead of sleeping.
+    struct LifecycleDiagnostics: Sendable, Equatable {
+        var startInFlight: Bool
+        var teardownInFlight: Bool
+        var shapeChangeInFlight: Bool
+    }
+
+    func lifecycleDiagnostics(environmentID: String) -> LifecycleDiagnostics {
+        LifecycleDiagnostics(
+            startInFlight: startingEnvironments.contains(environmentID),
+            teardownInFlight: teardownsInFlight.contains(environmentID),
+            shapeChangeInFlight: isShapeChangeInFlight(environmentID: environmentID)
+        )
+    }
+
+    /// Runs C2's result-carrying stop when the substrate answers it (see
+    /// `LinuxGuestRuntimeV2StopOutcomeReporting`); otherwise the legacy void
+    /// stop runs and the outcome is honestly unknown.
+    private func runtimeV2StopOutcome(
+        _ runtimeV2: any LinuxGuestRuntimeV2Integrating,
+        environmentID: String,
+        runtimeID: String,
+        imageID: String,
+        clean: Bool
+    ) async -> RuntimeV2StopOutcome {
+        if let reporter = runtimeV2 as? any LinuxGuestRuntimeV2StopOutcomeReporting {
+            return await reporter.completeStopResult(
+                environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
+            )
+        }
+        await runtimeV2.completeStop(
+            environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
+        )
+        return .unknown
+    }
+
+    /// Consumes Runtime v2's result-carrying stop (C2 `completeStopResult`). A
+    /// stop whose delta capture failed is NEVER reported as a clean save: the
+    /// environment surfaces repair-required (the store already refuses a fresh
+    /// boot over the retained disk) and the caller must not claim "saved",
+    /// "destroyed" or a normal restart. Returns true only when the stop may be
+    /// reported as a clean, persisted shutdown.
+    @discardableResult
+    private func recordStopOutcome(
+        _ outcome: RuntimeV2StopOutcome,
+        environmentID: String,
+        action: String,
+        runtimeID: String
+    ) -> Bool {
+        switch outcome {
+        case .captured, .noWorkingDisk, .unknown:
+            return true
+        case .retainedForRepair(let reason):
+            lastErrors[environmentID] = "the guest stopped but its state could NOT be saved: \(reason)"
+            lastImpacts[environmentID] =
+                "\(action): \(environmentID) stopped, but its state was NOT saved cleanly; the working disk is retained for repair and a normal restart is refused until the repair completes"
+            FloeLogger(category: .tools).error(
+                "Linux guest stop persistence failed environment=\(environmentID) runtime=\(runtimeID): \(reason)"
+            )
+            return false
+        case .notStopped:
+            // The VM/threads were not confirmed stopped: the disk, lease and
+            // slot stay owned and the existing quarantine message (set by the
+            // caller) stays authoritative. Never claimed saved.
+            if lastErrors[environmentID] == nil {
+                lastErrors[environmentID] =
+                    "the guest stop did not confirm; the working disk and lease are retained for recovery"
+            }
+            return false
+        }
+    }
+
     /// Starts the environment's guest. Returns false when the environment is
     /// not a Linux guest this service owns.
     @discardableResult
@@ -477,6 +672,14 @@ public actor TinyEMULinuxGuestRegistry {
                 environmentID: environmentID,
                 detail: "the previous guest is still running after a failed stop; retry stopGuest and wait for it to succeed, nothing was started"
             )
+        }
+        if isShapeChangeInFlight(environmentID: environmentID) {
+            // A shape/RAM change is between its stop and its restart on this
+            // environment: the VM is intentionally down and its handle is
+            // owned by that operation. Starting here would either fight the
+            // restart or register a handle the reshape would then overwrite;
+            // the caller waits for the shape change to finish.
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
         if let existing = sessions[environmentID], await existing.handle.isRunning() {
             return true
@@ -595,14 +798,22 @@ public actor TinyEMULinuxGuestRegistry {
                     // The VM survived a failed start/stop: the working disk,
                     // the lease and the pool slot stay owned, exactly like
                     // the legacy quarantine reservation.
-                    await runtimeV2.completeStop(
-                        environmentID: environmentID, runtimeID: admission.runtimeID,
+                    let outcome = await runtimeV2StopOutcome(
+                        runtimeV2, environmentID: environmentID, runtimeID: admission.runtimeID,
                         imageID: descriptor.imageID, clean: false
                     )
+                    recordStopOutcome(
+                        outcome, environmentID: environmentID, action: "start cleanup",
+                        runtimeID: admission.runtimeID
+                    )
                 } else if !sessionRegistered {
-                    await runtimeV2.completeStop(
-                        environmentID: environmentID, runtimeID: admission.runtimeID,
+                    let outcome = await runtimeV2StopOutcome(
+                        runtimeV2, environmentID: environmentID, runtimeID: admission.runtimeID,
                         imageID: descriptor.imageID, clean: true
+                    )
+                    recordStopOutcome(
+                        outcome, environmentID: environmentID, action: "start cleanup",
+                        runtimeID: admission.runtimeID
                     )
                     await runtimeV2.releaseSlot(
                         environmentID: environmentID, runtimeID: admission.runtimeID
@@ -824,7 +1035,8 @@ public actor TinyEMULinuxGuestRegistry {
             taskID: taskID,
             forwards: [],
             runtimeID: admission?.runtimeID,
-            networkStatus: LinuxGuestNetworkStatus.from(capabilities: negotiatedCapabilities)
+            networkStatus: LinuxGuestNetworkStatus.from(capabilities: negotiatedCapabilities),
+            generation: nextSessionGeneration()
         )
         do {
             // Requested forwards are part of the start contract: if the
@@ -1434,7 +1646,8 @@ public actor TinyEMULinuxGuestRegistry {
             startedAt: Date(),
             taskID: taskID,
             forwards: [],
-            runtimeID: runtimeID
+            runtimeID: runtimeID,
+            generation: nextSessionGeneration()
         )
         quarantinedEnvironments.insert(environmentID)
         lastErrors[environmentID] =
@@ -1466,12 +1679,27 @@ public actor TinyEMULinuxGuestRegistry {
             lastImpacts[environmentID] = "\(action): a stop is already in progress for \(environmentID); no second teardown was started"
             return
         }
-        defer { teardownsInFlight.remove(environmentID) }
+        // Serialize with an in-flight shape/RAM change: it holds the lifecycle
+        // lock across its stop → apply → restart critical section, so the
+        // destructive teardown below can never close the handle or release the
+        // working disk, lease and pool slot while that operation is still
+        // restarting the same guest. The reshape re-checks this registered
+        // teardown after every await and aborts instead of resurrecting the VM.
+        let lifecycleToken = nextLifecycleOperationToken()
+        await acquireLifecycle(
+            environmentID: environmentID, token: lifecycleToken, isShapeChange: false
+        )
+        defer {
+            // Finish the teardown (including the in-flight marker a reshape
+            // revalidates against) before the next lifecycle operation starts.
+            teardownsInFlight.remove(environmentID)
+            releaseLifecycle(environmentID: environmentID, token: lifecycleToken)
+        }
         for (sessionID, terminal) in terminalSessions where terminal.environmentID == environmentID {
             terminalSessions.removeValue(forKey: sessionID)
             await terminal.handle.close()
         }
-        guard let session = sessions.removeValue(forKey: environmentID) else {
+        guard var session = sessions.removeValue(forKey: environmentID) else {
             // No session: still release a reservation left by an in-flight
             // start that will not register one.
             if !startingEnvironments.contains(environmentID) {
@@ -1489,14 +1717,23 @@ public actor TinyEMULinuxGuestRegistry {
         // the disk stay owned by this environment until a later stop really
         // succeeds; a start on the same disk would otherwise corrupt it.
         if await session.handle.isRunning() {
+            // The retained handle gets a fresh identity: any shape change that
+            // captured this session before the failed stop can no longer match
+            // it and can never restart a quarantined guest.
+            session.generation = nextSessionGeneration()
             sessions[environmentID] = session
             quarantinedEnvironments.insert(environmentID)
             if let runtimeV2, let runtimeID = session.runtimeID {
                 // Keep the working disk, the lease and the pool slot owned by
-                // this quarantined environment; record the interruption.
-                await runtimeV2.completeStop(
-                    environmentID: environmentID, runtimeID: runtimeID,
+                // this quarantined environment; record the interruption. The
+                // result is consumed so a refused capture is never smoothed
+                // into a clean save.
+                let outcome = await runtimeV2StopOutcome(
+                    runtimeV2, environmentID: environmentID, runtimeID: runtimeID,
                     imageID: session.descriptor.imageID, clean: false
+                )
+                recordStopOutcome(
+                    outcome, environmentID: environmentID, action: action, runtimeID: runtimeID
                 )
             }
             lastErrors[environmentID] =
@@ -1511,21 +1748,32 @@ public actor TinyEMULinuxGuestRegistry {
         quarantinedEnvironments.remove(environmentID)
         guestReservations[environmentID] = nil
         clearReservation(environmentID: environmentID)
+        var stopSavedCleanly = true
         if let runtimeV2, let runtimeID = session.runtimeID {
-            // Confirmed stop: flush + capture the delta, record the clean
-            // shutdown, sweep the runtime dir, release the lease, and only
-            // then free the pool slot.
-            await runtimeV2.completeStop(
-                environmentID: environmentID, runtimeID: runtimeID,
+            // Confirmed stop: flush + capture the delta, record the shutdown,
+            // sweep the runtime dir and release the lease. The result is
+            // consumed: a refused capture (retained for repair) is reported
+            // truthfully instead of as a clean save. The arbiter/pool slot is
+            // released by the actual stop — the VM's threads are gone and the
+            // handle is closed — separately from whether the persistence
+            // succeeded (the store refuses a fresh boot over the retained
+            // disk until the repair completes).
+            let outcome = await runtimeV2StopOutcome(
+                runtimeV2, environmentID: environmentID, runtimeID: runtimeID,
                 imageID: session.descriptor.imageID, clean: true
+            )
+            stopSavedCleanly = recordStopOutcome(
+                outcome, environmentID: environmentID, action: action, runtimeID: runtimeID
             )
             await runtimeV2.releaseSlot(environmentID: environmentID, runtimeID: runtimeID)
         }
-        // The disk and shares are untouched; only runtime state was dropped.
-        lastImpacts[environmentID] =
-            "\(action): guest runtime for \(environmentID) stopped and destroyed; persistent disk and shares preserved; other environments untouched"
+        if stopSavedCleanly {
+            // The disk and shares are untouched; only runtime state was dropped.
+            lastImpacts[environmentID] =
+                "\(action): guest runtime for \(environmentID) stopped and destroyed; persistent disk and shares preserved; other environments untouched"
+        }
         FloeLogger(category: .tools).info(
-            "Linux guest \(action) environment=\(environmentID) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB)"
+            "Linux guest \(action) environment=\(environmentID) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB) stopSavedCleanly=\(stopSavedCleanly)"
         )
     }
 
@@ -1567,11 +1815,36 @@ public actor TinyEMULinuxGuestRegistry {
     /// working disk stays exactly where it is), recreated with the new shape,
     /// and the console stream and command channel survive the reboot (the
     /// same boundary the in-guest runner upgrade already uses). The budget
-    /// is validated BEFORE anything is disrupted, and a failed restart
-    /// restores the previous shape.
+    /// is validated BEFORE anything is disrupted, a failed restart restores
+    /// the previous shape, and the whole sequence is serialized against
+    /// teardown/start by the per-environment lifecycle lock: the session
+    /// captured here is revalidated after every suspension, so a stale shape
+    /// change can never restart the old handle, rebook a released reservation
+    /// or overwrite a replacement session.
     public func setShape(environmentID: String, ramMB: Int, vcpus: Int) async throws {
-        guard var session = sessions[environmentID], await session.handle.isRunning() else {
+        // Fast fail without a session, then capture the identity this request
+        // is about. The capture is only a candidate; it is revalidated under
+        // the lifecycle lock before anything is touched.
+        guard let snapshot = sessions[environmentID], await snapshot.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        let lifecycleToken = nextLifecycleOperationToken()
+        await acquireLifecycle(
+            environmentID: environmentID, token: lifecycleToken, isShapeChange: true
+        )
+        defer { releaseLifecycle(environmentID: environmentID, token: lifecycleToken) }
+        guard isCurrentSession(environmentID: environmentID, generation: snapshot.generation),
+              let session = sessions[environmentID] else {
+            // A stop removed the session — or a replacement start registered a
+            // new handle — while this request waited: the request belongs to
+            // the old guest and must not touch the new one.
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        guard !teardownsInFlight.contains(environmentID) else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        guard !startingEnvironments.contains(environmentID) else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
         guard let setRAMMB = session.handle.setRAMMB else {
             throw LinuxGuestError.invalidConfiguration("this guest session does not support memory tiers")
@@ -1579,113 +1852,149 @@ public actor TinyEMULinuxGuestRegistry {
         let tier = RuntimeMemoryTier.tier(forRequestedMB: ramMB, minimumMB: limits.minRAMMB)
         let clamped = limits.clampedRAMMB(tier.mb)
         let previous = limits.clampedRAMMB(session.descriptor.ramMB)
-        let previousVCPUs = GuestVCPUCount.clamping(session.descriptor.vcpus ?? 1)
+        let previousVCPUs = GuestVCPUCount.clamping(session.descriptor.vcpus ?? 1).count
         let requestedVCPUs = GuestVCPUCount.clamping(vcpus)
-        let setVCPUs = session.handle.setVCPUs
-        guard requestedVCPUs != previousVCPUs else {
-            // RAM-only path: pure retier.
-            if clamped == previous { return }
-            try await validateAndApplyRetier(
+        if requestedVCPUs.count == previousVCPUs {
+            // RAM-only path: pure retier, planned through the RAM-only seam.
+            guard clamped != previous else { return }
+            try await applyShapeChange(
                 environmentID: environmentID,
-                session: &session,
-                clamped: clamped,
-                previous: previous,
-                setRAMMB: setRAMMB
+                session: session,
+                ramMB: clamped,
+                vcpus: nil,
+                previousRAMMB: previous,
+                previousVCPUs: previousVCPUs,
+                setRAMMB: setRAMMB,
+                setVCPUs: nil
             )
             return
         }
-        guard let setVCPUs else {
+        guard let setVCPUs = session.handle.setVCPUs else {
             throw LinuxGuestError.invalidConfiguration(
                 "this guest session does not support vCPU changes"
             )
         }
-        // Budget validation BEFORE any disruption: the new shape must fit
-        // next to the other running guests, or the VM stays untouched.
+        try await applyShapeChange(
+            environmentID: environmentID,
+            session: session,
+            ramMB: clamped,
+            vcpus: requestedVCPUs.count,
+            previousRAMMB: previous,
+            previousVCPUs: previousVCPUs,
+            setRAMMB: setRAMMB,
+            setVCPUs: setVCPUs
+        )
+    }
+
+    /// The disruptive half of a shape change, run while `setShape` holds the
+    /// environment's lifecycle lock. The lock keeps a teardown's destructive
+    /// phase (delta capture, working-disk/lease/slot release) from overlapping
+    /// a reshape restart; `teardownsInFlight` is re-checked after every await
+    /// so a stop that lands meanwhile always wins — this method then leaves the
+    /// stopped handle to that stop instead of restarting, rebooking or
+    /// confirming anything.
+    private func applyShapeChange(
+        environmentID: String,
+        session: Session,
+        ramMB: Int,
+        vcpus: Int?,
+        previousRAMMB: Int,
+        previousVCPUs: Int,
+        setRAMMB: @Sendable (Int) -> Void,
+        setVCPUs: (@Sendable (Int) -> Void)?
+    ) async throws {
+        // Budget validation BEFORE any disruption: the requested shape must fit
+        // next to the other running guests, or the VM stays untouched. Nothing
+        // is stopped if this throws.
         if let runtimeV2 {
-            try await runtimeV2.planReshape(
-                environmentID: environmentID,
-                ramMB: clamped,
-                vcpus: requestedVCPUs.count,
-                currentVCPUs: previousVCPUs.count
-            )
+            if let vcpus {
+                try await runtimeV2.planReshape(
+                    environmentID: environmentID,
+                    ramMB: ramMB,
+                    vcpus: vcpus,
+                    currentVCPUs: previousVCPUs
+                )
+            } else {
+                try await runtimeV2.planRetier(environmentID: environmentID, ramMB: ramMB)
+            }
         } else {
-            let others = reservedGuestRAMMB - previous
-            guard others + clamped <= limits.maxGuestRAMMB else {
+            let others = reservedGuestRAMMB - previousRAMMB
+            guard others + ramMB <= limits.maxGuestRAMMB else {
                 throw LinuxGuestError.capacityReached(
-                    detail: "moving to the \(clamped) MB tier would reserve \(others + clamped) MB of the \(limits.maxGuestRAMMB) MB device guest RAM budget; \(others) MB is reserved by other guests"
+                    detail: "moving to the \(ramMB) MB tier would reserve \(others + ramMB) MB of the \(limits.maxGuestRAMMB) MB device guest RAM budget; \(others) MB is reserved by other guests"
                 )
             }
         }
+        // From here on the guest is disrupted; the caller's task is only
+        // honoured before the stop, and a registered teardown always wins.
+        try Task.checkCancellation()
+        try requireShapeChangeOwnership(environmentID: environmentID)
         await session.handle.stop()
+        try requireShapeChangeOwnership(environmentID: environmentID)
+        let changeLabel = vcpus == nil ? "memory-tier change" : "shape change"
+        let shapeLabel = vcpus == nil
+            ? "the previous \(previousRAMMB) MB tier stays in effect"
+            : "the previous \(previousRAMMB) MB / \(previousVCPUs) vCPU shape stays in effect"
         guard await session.handle.isRunning() == false else {
             throw LinuxGuestError.stopFailed(
                 environmentID: environmentID,
-                detail: "the guest did not stop for the shape change; the previous \(previous) MB / \(previousVCPUs.count) vCPU shape stays in effect"
+                detail: "the guest did not stop for the \(changeLabel); \(shapeLabel)"
             )
         }
-        setRAMMB(clamped)
-        setVCPUs(requestedVCPUs.count)
+        try requireShapeChangeOwnership(environmentID: environmentID)
+        setRAMMB(ramMB)
+        setVCPUs?(vcpus ?? previousVCPUs)
         do {
             try await session.handle.start()
         } catch {
-            setRAMMB(previous)
-            setVCPUs(previousVCPUs.count)
-            try? await session.handle.start()
+            // Rollback: restore the previous shape and, unless a stop is
+            // already registered (it owns the handle and will close it), try
+            // to bring the guest back exactly as it was. The session stays
+            // registered either way, so a later start/stop can heal a failed
+            // rollback.
+            setRAMMB(previousRAMMB)
+            setVCPUs?(previousVCPUs)
+            if !teardownsInFlight.contains(environmentID) {
+                try? await session.handle.start()
+            }
             throw error
         }
-        session.descriptor.ramMB = clamped
-        session.descriptor.vcpus = requestedVCPUs.count
-        sessions[environmentID] = session
-        guestReservations[environmentID] = clamped
-        publishReservation(environmentID: environmentID, ramMB: clamped)
+        guard !teardownsInFlight.contains(environmentID) else {
+            // A stop landed while the restart was in flight. The VM is running
+            // again at the requested shape; the teardown waiting on this lock
+            // owns the handle from here and will stop it. Do not rebook the new
+            // shape, re-register the session or confirm anything.
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        guard isCurrentSession(environmentID: environmentID, generation: session.generation) else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        var updated = session
+        updated.descriptor.ramMB = ramMB
+        if let vcpus { updated.descriptor.vcpus = vcpus }
+        sessions[environmentID] = updated
+        guestReservations[environmentID] = ramMB
+        publishReservation(environmentID: environmentID, ramMB: ramMB)
         if let runtimeV2 {
-            await runtimeV2.confirmReshape(
-                environmentID: environmentID, ramMB: clamped, vcpus: requestedVCPUs.count
-            )
+            if let vcpus {
+                await runtimeV2.confirmReshape(
+                    environmentID: environmentID, ramMB: ramMB, vcpus: vcpus
+                )
+            } else {
+                await runtimeV2.confirmTier(environmentID: environmentID, ramMB: ramMB)
+            }
         }
     }
 
-    /// RAM-only retier shared by `setShape` and the legacy tier path:
-    /// validates the budget, stops, applies the tier, restarts (restoring
-    /// the previous tier when the restart fails) and rebooks the reservation.
-    private func validateAndApplyRetier(
-        environmentID: String,
-        session: inout Session,
-        clamped: Int,
-        previous: Int,
-        setRAMMB: @Sendable (Int) -> Void
-    ) async throws {
-        if let runtimeV2 {
-            try await runtimeV2.planRetier(environmentID: environmentID, ramMB: clamped)
-        } else {
-            let others = reservedGuestRAMMB - previous
-            guard others + clamped <= limits.maxGuestRAMMB else {
-                throw LinuxGuestError.capacityReached(
-                    detail: "moving to the \(clamped) MB tier would reserve \(others + clamped) MB of the \(limits.maxGuestRAMMB) MB device guest RAM budget; \(others) MB is reserved by other guests"
-                )
-            }
+    /// Re-checks, after every await in the disruptive path, that this shape
+    /// change still owns the environment: no stop was registered and no start
+    /// slipped in. The operation aborts without touching the guest otherwise.
+    private func requireShapeChangeOwnership(environmentID: String) throws {
+        if teardownsInFlight.contains(environmentID) {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
-        await session.handle.stop()
-        guard await session.handle.isRunning() == false else {
-            throw LinuxGuestError.stopFailed(
-                environmentID: environmentID,
-                detail: "the guest did not stop for the memory-tier change; the previous \(previous) MB tier stays in effect"
-            )
-        }
-        setRAMMB(clamped)
-        do {
-            try await session.handle.start()
-        } catch {
-            setRAMMB(previous)
-            try? await session.handle.start()
-            throw error
-        }
-        session.descriptor.ramMB = clamped
-        sessions[environmentID] = session
-        guestReservations[environmentID] = clamped
-        publishReservation(environmentID: environmentID, ramMB: clamped)
-        if let runtimeV2 {
-            await runtimeV2.confirmTier(environmentID: environmentID, ramMB: clamped)
+        if startingEnvironments.contains(environmentID) {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
     }
 
@@ -1781,7 +2090,7 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func addForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
-        guard var session = sessions[environmentID], await session.handle.isRunning() else {
+        guard let session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
         guard session.forwards.count < limits.maxServiceForwards else {
@@ -1789,9 +2098,16 @@ public actor TinyEMULinuxGuestRegistry {
                 "at most \(limits.maxServiceForwards) host forwards are supported per guest"
             )
         }
-        try session.handle.addForward(forward)
-        session.forwards.append(forward)
-        sessions[environmentID] = session
+        // Revalidate the captured session identity after the await: a stop or
+        // shape change may have replaced it, and writing the stale copy back
+        // would resurrect its descriptor over the replacement.
+        guard var current = sessions[environmentID],
+              current.generation == session.generation else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        try current.handle.addForward(forward)
+        current.forwards.append(forward)
+        sessions[environmentID] = current
     }
 
     public func removeForward(environmentID: String, forward: LinuxGuestServiceForward) async {
