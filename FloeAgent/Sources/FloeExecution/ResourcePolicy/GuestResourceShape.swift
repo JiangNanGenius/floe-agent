@@ -16,9 +16,9 @@
 //
 // RELEASE CAPABILITY (B4): engine capacity, image-manifest claims and device
 // quota are all DISTINCT from what this release is qualified to ship. Real
-// cloud run 35851127603 proved the fresh SMP kernel boots and serves parallel
-// 9P on one hart while two harts stall at the first fork/exec, with no
-// measurable dual speedup (Local/Private/active/next-release/A2-final-evidence.md).
+// cloud qualification (GitHub Actions run 35851127603) proved the fresh SMP
+// kernel boots and serves parallel 9P on one hart while two harts stall at
+// the first fork/exec, with no measurable dual speedup.
 // The authoritative per-release gate is therefore `GuestReleaseShapePolicy`
 // (single hart only) and is enforced at EVERY production boundary — pool
 // admission, reshape planning/confirmation, the registry and direct runtime
