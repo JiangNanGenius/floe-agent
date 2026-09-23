@@ -78,6 +78,7 @@ public actor RuntimeV2LeaseStore {
 
     private let layout: RuntimeV2Layout
     private let registry: RuntimeV2Registry
+    private let repairHolds: RuntimeV2RepairHoldStore
     private let seams: Seams
     private var fileManager: FileManager { .default }
     /// This process's boot token; leases from other incarnations are
@@ -102,12 +103,14 @@ public actor RuntimeV2LeaseStore {
         layout: RuntimeV2Layout,
         registry: RuntimeV2Registry,
         incarnation: String = UUID().uuidString,
-        seams: Seams = .production
+        seams: Seams = .production,
+        repairHolds: RuntimeV2RepairHoldStore? = nil
     ) {
         self.layout = layout
         self.registry = registry
         self.incarnation = incarnation
         self.seams = seams
+        self.repairHolds = repairHolds ?? RuntimeV2RepairHoldStore(layout: layout)
     }
 
     // MARK: acquire / renew / release
@@ -124,6 +127,16 @@ public actor RuntimeV2LeaseStore {
     ) async throws -> HeldLease {
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         try RuntimeV2Identifier.validate(runtimeID, kind: .runtime)
+
+        // The durable repair exclusion is consulted BEFORE any lease logic,
+        // including stale-lease reclamation: a repair hold never expires and
+        // names preserved bytes a fresh start must never overwrite, so the
+        // TTL-based reclaim below can never clear it.
+        if let hold = await repairHolds.hold(environmentID: environmentID) {
+            throw RuntimeV2Error.environmentRepairRequired(
+                environmentID: environmentID, reason: hold.reason
+            )
+        }
 
         if let existing = try loadLease(environmentID: environmentID) {
             if existing.runtimeID == runtimeID {
@@ -221,6 +234,55 @@ public actor RuntimeV2LeaseStore {
         return !(lease.isExpired(now: Date()) && Self.processLiveness(lease: lease))
     }
 
+    /// Ownership lookup BY RUNTIME id (the runtime/vm directory name), for
+    /// recovery of a working disk whose own runtime.json is missing or
+    /// unparseable: the lease sidecars and the registry lease table are the
+    /// only durable links from a runtime id back to its environment. Sidecars
+    /// are authoritative (they survive a registry fault); a sidecar that
+    /// cannot be decoded is quarantined like any corrupt lease, never
+    /// half-trusted. nil means no ownership trace exists anywhere.
+    public func lease(forRuntimeID runtimeID: String) async -> Lease? {
+        let root = layout.environmentsDirectory
+        if let entries = try? fileManager.contentsOfDirectory(atPath: root.path) {
+            for entry in entries {
+                let url = root.appendingPathComponent(entry, isDirectory: true)
+                    .appendingPathComponent("lease.json")
+                guard fileManager.fileExists(atPath: url.path),
+                      let data = try? Data(contentsOf: url),
+                      let lease = try? Self.decoder.decode(Lease.self, from: data),
+                      lease.version == Lease.currentVersion else { continue }
+                if lease.runtimeID == runtimeID { return lease }
+            }
+        }
+        // The registry lease table is the secondary trace (e.g. the sidecar
+        // was lost but the durable row survived).
+        if let rows = try? await registry.heldLeases() {
+            for row in rows where row.runtimeID == runtimeID {
+                return Lease(
+                    environmentID: row.environmentID, runtimeID: row.runtimeID,
+                    incarnation: row.incarnation, sessionToken: row.sessionToken,
+                    pid: row.pid, acquiredAt: row.acquiredAt, renewedAt: row.renewedAt,
+                    ttlSeconds: row.ttlSeconds
+                )
+            }
+        }
+        // Reclaimed stale leases are archived, never deleted — the archive is
+        // the durable attribution trace for a runtime whose sidecar was
+        // already reclaimed by an earlier recovery pass.
+        let archive = layout.recoveryMigrationsDirectory
+            .appendingPathComponent("stale-leases", isDirectory: true)
+        if let entries = try? fileManager.contentsOfDirectory(atPath: archive.path) {
+            for entry in entries where entry.hasPrefix("lease-") {
+                guard let data = try? Data(contentsOf: archive.appendingPathComponent(entry)),
+                      let lease = try? Self.decoder.decode(Lease.self, from: data),
+                      lease.version == Lease.currentVersion,
+                      lease.runtimeID == runtimeID else { continue }
+                return lease
+            }
+        }
+        return nil
+    }
+
     // MARK: startup recovery
 
     /// Scans every lease sidecar after an app restart. Leases from a dead
@@ -253,6 +315,14 @@ public actor RuntimeV2LeaseStore {
             }
             if lease.incarnation == incarnation {
                 continue // our own live lease (re-attach path)
+            }
+            // A durable repair hold outranks even a provably stale lease: the
+            // hold names preserved bytes whose owner is NOT proven accounted
+            // for, so the lease sidecar stays as evidence and the environment
+            // is reported unresolved instead of being reclaimed.
+            if await repairHolds.hasHold(environmentID: environmentID) {
+                unresolved.append(environmentID)
+                continue
             }
             let gone = await (staleProof?(lease) ?? false)
                 || (lease.isExpired(now: Date()) && Self.processLiveness(lease: lease))

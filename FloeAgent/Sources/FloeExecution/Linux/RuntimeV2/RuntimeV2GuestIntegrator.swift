@@ -175,13 +175,18 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         /// Replaces the durable repairRequired transition (throw to inject a
         /// registry fault at exactly that stage). nil = normal.
         public var markRepairRequired: (@Sendable (String, String) async throws -> Void)?
+        /// Replaces the durable non-expiring repair-hold placement (throw to
+        /// inject an IO/full-disk fault at exactly that stage). nil = normal.
+        public var placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)?
 
         public init(
             recordShutdown: (@Sendable (RuntimeV2DeltaStore.ShutdownRecord, String) async throws -> Void)? = nil,
-            markRepairRequired: (@Sendable (String, String) async throws -> Void)? = nil
+            markRepairRequired: (@Sendable (String, String) async throws -> Void)? = nil,
+            placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)? = nil
         ) {
             self.recordShutdown = recordShutdown
             self.markRepairRequired = markRepairRequired
+            self.placeRepairHold = placeRepairHold
         }
 
         public static let production = Seams()
@@ -330,6 +335,23 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         environmentID: String, runtimeID: String, imageID: String,
         legacyWritableDirectory: URL?, targetCapacityBytes: Int64
     ) async throws -> RuntimeV2WorkingDisk {
+        // Fail closed BEFORE anything else (including image migration): an
+        // environment whose state is repairRequired, or whose durable
+        // non-expiring repair hold is present, must never boot a fresh empty
+        // data/delta over preserved data, on any retry — even when the
+        // registry state write itself was the thing that failed (the hold is
+        // the fault-surviving exclusion).
+        if let row = try await store.registry.environment(id: environmentID),
+           row.state == "repairRequired" {
+            throw RuntimeV2Error.environmentRepairRequired(
+                environmentID: environmentID, reason: row.repairReason
+            )
+        }
+        if let hold = await store.repairHolds.hold(environmentID: environmentID) {
+            throw RuntimeV2Error.environmentRepairRequired(
+                environmentID: environmentID, reason: hold.reason
+            )
+        }
         try await ensureImageMigrated(imageID)
         if (try await store.registry.environment(id: environmentID)) == nil {
             let legacyDiskDirectory = legacyWritableDirectory?
@@ -344,16 +366,6 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 baseImageID: imageID,
                 legacyDiskDirectory: legacyDiskDirectory,
                 legacyLayerDirectory: legacyWritableDirectory
-            )
-        }
-        // Fail closed before any lease or materialization: an environment
-        // whose migration ended repairRequired (e.g. an origin conflict that
-        // quarantined the legacy disk) must never boot a fresh empty
-        // data/delta over the preserved data, on any retry.
-        if let row = try await store.registry.environment(id: environmentID),
-           row.state == "repairRequired" {
-            throw RuntimeV2Error.environmentRepairRequired(
-                environmentID: environmentID, reason: row.repairReason
             )
         }
         // Lease first: single writable ownership of the environment's delta.
@@ -588,14 +600,18 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     /// Failed-capture retention. The complete stopped disk moves into
     /// recovery/quarantine (never deleted, never left as a bootable live
     /// duplicate) — that physical preservation is independent of persistence
-    /// success. THEN the durable failure state (shutdown record +
-    /// repairRequired marker) is written, and only after BOTH durable writes
-    /// committed is the lease released. If either durable write fails (full
-    /// disk / IO / DB fault), the preservation is NOT converted into success:
-    /// the lease stays held — the sole exclusion that keeps a new start from
-    /// overwriting the preserved bytes — and the returned outcome says so
-    /// truthfully (the guest registry surfaces it as repair-required and
-    /// refuses a normal restart).
+    /// success. THEN the durable failure state is written in exclusion
+    /// strength order: (1) the non-expiring repair hold — it survives process
+    /// death, TTL expiry and stale-lease reclamation, so it is the durable
+    /// cross-process exclusion; (2) the shutdown record; (3) the
+    /// repairRequired marker. The TTL lease is released only when EVERY
+    /// durable write committed; if any of them fails (full disk / IO / DB
+    /// fault) the lease stays held as the surviving in-process exclusion and
+    /// the returned outcome says so truthfully. When even the hold could not
+    /// be persisted, the quarantined bytes themselves are the durable
+    /// evidence: startup recovery re-derives the hold from the orphaned
+    /// quarantine entry (RuntimeV2Store.recoverPreservedQuarantine), so the
+    /// preserved state can never become undiscoverable.
     @discardableResult
     private func preserveAfterFailedCapture(
         environmentID: String, runtimeID: String, directory: URL, error: Error
@@ -604,20 +620,48 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             "runtime-vm-\(runtimeID)-\(UUID().uuidString)", isDirectory: true
         )
         let preserved: String
+        let preservedPath: String
         if (try? fileManager.moveItem(at: directory, to: quarantine)) != nil {
+            preservedPath = "recovery/quarantine/\(quarantine.lastPathComponent)"
             preserved = "the stopped working disk could not be captured into the delta "
                 + "(\(error.localizedDescription)); the complete disk was preserved at "
-                + "recovery/quarantine/\(quarantine.lastPathComponent)"
+                + preservedPath
         } else {
+            preservedPath = "runtime/vm/\(runtimeID)"
             preserved = "the stopped working disk could not be captured into the delta "
                 + "(\(error.localizedDescription)) and could not be quarantined; the disk remains "
-                + "at runtime/vm/\(runtimeID)"
+                + "at \(preservedPath)"
         }
         let detail = preserved + " and the environment was marked repairRequired"
         let record = RuntimeV2DeltaStore.ShutdownRecord(
             environmentID: environmentID, runtimeID: runtimeID,
             stoppedAt: Date(), clean: false, deltaGeneration: nil, detail: detail
         )
+        // 1. The durable non-expiring exclusion FIRST.
+        do {
+            if let placeRepairHold = seams.placeRepairHold {
+                try await placeRepairHold(environmentID, runtimeID, detail, preservedPath)
+            } else {
+                try await store.repairHolds.place(
+                    environmentID: environmentID, runtimeID: runtimeID,
+                    reason: detail, preservedPath: preservedPath
+                )
+            }
+        } catch {
+            // The hold could not be persisted: keep the lease (the surviving
+            // exclusion) and say so. No `try?` here converts preservation
+            // failure into success, and releaseLease is deliberately NOT
+            // called; the quarantined bytes remain discoverable to startup
+            // recovery, which re-derives this hold on every launch.
+            let retained = detail + "; additionally the durable repair hold could not be "
+                + "persisted (\(error.localizedDescription)), so the write lease was "
+                + "retained, the preserved bytes remain the authoritative evidence and the "
+                + "environment cannot be restarted until repair is acknowledged"
+            await store.logs.log("runtime v2 stop capture failed environment=\(environmentID): \(retained)")
+            return retained
+        }
+        // 2. + 3. Shutdown record and repairRequired marker: both must commit
+        // before the TTL lease is released.
         do {
             if let recordShutdown = seams.recordShutdown {
                 try await recordShutdown(record, environmentID)
@@ -632,9 +676,9 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 )
             }
         } catch {
-            // Durable failure state could not be written: keep the lease and
-            // say so. No `try?` here converts preservation failure into
-            // success, and releaseLease is deliberately NOT called.
+            // Durable failure state could not be fully written: the hold
+            // already excludes fresh starts cross-process, and the lease stays
+            // held too until every durable write commits.
             let retained = detail + "; additionally the repair marker could not be "
                 + "persisted (\(error.localizedDescription)), so the write lease was "
                 + "retained and the environment cannot be restarted until repair"

@@ -713,6 +713,406 @@ final class RuntimeV2StartupTests: XCTestCase {
         XCTAssertEqual(stopEvents, ["acquire:env-v2", "disk:env-v2", "data:env-v2", "stop:env-v2:true", "release:env-v2"])
     }
 
+    // MARK: - P0: startup salvage failure is durably non-restartable
+
+    /// Startup salvage failure + a registry fault at the repairRequired
+    /// write: the quarantine move preserves the bytes, the durable non-
+    /// expiring repair hold is placed anyway, the swallowed state write is
+    /// reported truthfully in the notes, and a REPEATED launch on a new store
+    /// identity still refuses any fresh start until repair is acknowledged.
+    /// After acknowledgement the ordinary boot path works again.
+    func testStartupSalvageFailurePlacesDurableHoldAndSurvivesRegistryFault() async throws {
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        let faulting = RuntimeV2Store(
+            layout: layout,
+            seams: .init(markRepairRequired: { _, _ in
+                throw RuntimeV2Error.registryCorrupt("injected registry fault")
+            })
+        )
+        _ = try await faulting.prepareAndRecover(build: "test")
+        _ = try await faulting.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        try await registerEnvironment(in: faulting, id: "env-salvage-fault", baseImageID: image.id)
+
+        // Leftover working disk whose ownership record lacks the boot base
+        // digest: the verified salvage path refuses it (real fault, no seam).
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-salvage-fault")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0x5A, count: 8192).write(to: directory.appendingPathComponent("disk.img"))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-salvage-fault", environmentID: "env-salvage-fault",
+                baseImageID: image.id, createdAt: Date()
+            ),
+            to: directory
+        )
+
+        let report = try await faulting.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.quarantinedRuntimeDirs.contains("rt-salvage-fault"))
+        XCTAssertFalse(report.preservedRuntimeDirs.contains("rt-salvage-fault"))
+        // The registry fault was reported, never swallowed into a restartable
+        // environment.
+        XCTAssertTrue(
+            report.notes.contains { $0.contains("env-salvage-fault") && $0.contains("could not be persisted") },
+            "expected a truthful fault note, got \(report.notes)"
+        )
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("runtime-vm-rt-salvage-fault") }
+        XCTAssertEqual(quarantined.count, 1)
+        let preservedDisk = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        XCTAssertEqual(try Data(contentsOf: preservedDisk), Data(repeating: 0x5A, count: 8192))
+        // The durable hold exists even though the registry write faulted.
+        let hold = await faulting.repairHolds.hold(environmentID: "env-salvage-fault")
+        XCTAssertNotNil(hold)
+        let stateAfterFault = try await faulting.registry.environment(id: "env-salvage-fault")?.state
+        XCTAssertNotEqual(stateAfterFault, "repairRequired")
+
+        // REPEATED LAUNCH on a brand-new store identity (production seams):
+        // the hold is non-expiring, so the environment stays non-restartable
+        // and the preserved bytes stay untouched.
+        let relaunched = RuntimeV2Store(layout: layout)
+        let secondReport = try await relaunched.prepareAndRecover(build: "test")
+        let holdAfterRelaunch = await relaunched.repairHolds.hold(environmentID: "env-salvage-fault")
+        XCTAssertNotNil(holdAfterRelaunch)
+        let stateAfterRelaunch = try await relaunched.registry.environment(id: "env-salvage-fault")?.state
+        XCTAssertEqual(stateAfterRelaunch, "repairRequired")
+        XCTAssertEqual(try Data(contentsOf: preservedDisk), Data(repeating: 0x5A, count: 8192))
+
+        let integrator = RuntimeV2GuestIntegrator(store: relaunched, legacyImagesRoot: legacyRoot, build: "test")
+        do {
+            _ = try await integrator.prepareWorkingDisk(
+                environmentID: "env-salvage-fault", runtimeID: "rt-salvage-fault-2", imageID: image.id,
+                legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+            )
+            XCTFail("a fresh VM must never boot over preserved salvage bytes")
+        } catch RuntimeV2Error.environmentRepairRequired(let environmentID, _) {
+            XCTAssertEqual(environmentID, "env-salvage-fault")
+        }
+        let freshDir = try layout.runtimeVMDirectory(runtimeID: "rt-salvage-fault-2")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: freshDir.path))
+        let leaseAfterRefusal = try await relaunched.leases.holder(environmentID: "env-salvage-fault")
+        XCTAssertNil(leaseAfterRefusal)
+        XCTAssertEqual(try Data(contentsOf: preservedDisk), Data(repeating: 0x5A, count: 8192))
+        _ = secondReport
+
+        // Explicit acknowledgement after verifying the recoverable state:
+        // the preserved bytes are reported, the hold lifts, the environment
+        // returns to the ordinary stopped flow and a real boot succeeds.
+        let verification = try await relaunched.acknowledgeRepair(environmentID: "env-salvage-fault")
+        guard case .recoverable(let preservedPath) = verification else {
+            XCTFail("the preserved bytes must be verified before acknowledgement, got \(verification)")
+            return
+        }
+        XCTAssertTrue(preservedPath.contains("recovery/quarantine/"))
+        let holdAfterAck = await relaunched.repairHolds.hold(environmentID: "env-salvage-fault")
+        XCTAssertNil(holdAfterAck)
+        let stateAfterAck = try await relaunched.registry.environment(id: "env-salvage-fault")?.state
+        XCTAssertEqual(stateAfterAck, "stopped")
+
+        let admission = try await integrator.acquireSlot(
+            environmentID: "env-salvage-fault", runtimeID: "rt-salvage-fault-3", requestedMB: 512
+        )
+        XCTAssertGreaterThan(admission.ramMB, 0)
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-salvage-fault", runtimeID: "rt-salvage-fault-3", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: work.diskURL.path))
+        await integrator.completeStop(
+            environmentID: "env-salvage-fault", runtimeID: "rt-salvage-fault-3", imageID: image.id, clean: true
+        )
+        let delta = try await relaunched.deltas.loadDelta(environmentID: "env-salvage-fault")
+        XCTAssertNotNil(delta)
+    }
+
+    /// When even the quarantine MOVE fails (real fault: a foreign file blocks
+    /// the quarantine directory), the bytes stay exactly where they are, the
+    /// report says preserved — not quarantined — and the durable hold still
+    /// excludes every future start, idempotently across launches.
+    func testStartupSalvageFailureWithQuarantineMoveFaultPreservesBytesInPlace() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-move-fault", baseImageID: "img")
+        // A read-only quarantine directory: every move into it fails with a
+        // real permission fault, no seam needed.
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: layout.quarantineDirectory.path)
+
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-move-fault")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0xB7, count: 8192).write(to: directory.appendingPathComponent("disk.img"))
+        try RuntimeV2WorkingDirectory.writeMeta(
+            RuntimeV2WorkingDirectory.Meta(
+                runtimeID: "rt-move-fault", environmentID: "env-move-fault",
+                baseImageID: "img", createdAt: Date()
+            ),
+            to: directory
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-move-fault"))
+        XCTAssertFalse(report.quarantinedRuntimeDirs.contains("rt-move-fault"))
+        XCTAssertTrue(
+            report.notes.contains { $0.contains("rt-move-fault") && $0.contains("could not be quarantined") },
+            "expected a truthful quarantine-fault note, got \(report.notes)"
+        )
+        // The bytes are exactly where the guest left them.
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xB7, count: 8192)
+        )
+        let holdAfterRecovery = await relaunched.repairHolds.hold(environmentID: "env-move-fault")
+        XCTAssertNotNil(holdAfterRecovery)
+        let moveFaultState = try await relaunched.registry.environment(id: "env-move-fault")?.state
+        XCTAssertEqual(moveFaultState, "repairRequired")
+
+        // Repeated launch: idempotent preservation, still non-restartable.
+        let third = RuntimeV2Store(layout: layout)
+        let thirdReport = try await third.prepareAndRecover(build: "test")
+        XCTAssertTrue(thirdReport.preservedRuntimeDirs.contains("rt-move-fault"))
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xB7, count: 8192)
+        )
+        let holdAfterThird = await third.repairHolds.hold(environmentID: "env-move-fault")
+        XCTAssertNotNil(holdAfterThird)
+
+        let integrator = RuntimeV2GuestIntegrator(store: third, build: "test")
+        do {
+            _ = try await integrator.prepareWorkingDisk(
+                environmentID: "env-move-fault", runtimeID: "rt-move-fault-2", imageID: "img",
+                legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+            )
+            XCTFail("a fresh VM must never boot while the hold exists")
+        } catch RuntimeV2Error.environmentRepairRequired {
+            // expected
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: (try? layout.runtimeVMDirectory(runtimeID: "rt-move-fault-2"))?.path ?? "")
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xB7, count: 8192)
+        )
+    }
+
+    // MARK: - P0: unreadable ownership record + live lease preserves the disk
+
+    /// A damaged runtime.json NEVER grants permission to move a potentially
+    /// active VM disk: ownership is attributed by directory runtimeID through
+    /// the lease sidecar, a live/unexpired lease preserves every byte in
+    /// place, and a second/reentrant recovery round does the same.
+    func testRecoveryPreservesDiskWithUnreadableMetaUnderLiveLease() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-nometa", baseImageID: "img")
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-nometa")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0xC3, count: 8192).write(to: directory.appendingPathComponent("disk.img"))
+        // Damaged ownership record.
+        try Data("not json".utf8).write(to: directory.appendingPathComponent("runtime.json"))
+        try writeLease(
+            environmentID: "env-nometa", runtimeID: "rt-nometa", incarnation: "other-incarnation",
+            pid: Int64(ProcessInfo.processInfo.processIdentifier), renewedAt: Date(), ttlSeconds: 30
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-nometa"))
+        XCTAssertFalse(report.quarantinedRuntimeDirs.contains("rt-nometa"))
+        XCTAssertTrue(
+            report.notes.contains { $0.contains("rt-nometa") && $0.contains("lease") },
+            "expected a lease-attribution preservation note, got \(report.notes)"
+        )
+        // Exact path, exact bytes, nothing captured or invented.
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xC3, count: 8192)
+        )
+        let nometaDelta = try await relaunched.deltas.loadDelta(environmentID: "env-nometa")
+        XCTAssertNil(nometaDelta)
+        // The unresolved live lease marks the environment interrupted (the
+        // pre-existing unreclaimable-lease behavior); the disk itself is
+        // untouched and no repair state is invented for a live owner.
+        let nometaState = try await relaunched.registry.environment(id: "env-nometa")?.state
+        XCTAssertEqual(nometaState, "interrupted")
+
+        // Second + reentrant recovery rounds (a second store identity AND a
+        // repeat pass on the same one) preserve it identically.
+        let second = RuntimeV2Store(layout: layout)
+        let secondReport = try await second.prepareAndRecover(build: "test")
+        XCTAssertTrue(secondReport.preservedRuntimeDirs.contains("rt-nometa"))
+        let reentrantReport = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(reentrantReport.preservedRuntimeDirs.contains("rt-nometa"))
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xC3, count: 8192)
+        )
+        // No quarantine move happened in any round.
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("runtime-vm-rt-nometa") }
+        XCTAssertTrue(quarantined.isEmpty)
+    }
+
+    /// A MISSING runtime.json with a dead pid is still inside the lease TTL:
+    /// the owning thread may hold an open disk handle, so the disk is
+    /// preserved byte-for-byte — never moved, captured or deleted.
+    func testRecoveryPreservesDiskWithMissingMetaUnderUnexpiredDeadPidLease() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-nometa-ttl", baseImageID: "img")
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-nometa-ttl")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0xD4, count: 8192).write(to: directory.appendingPathComponent("disk.img"))
+        // No runtime.json at all; dead pid but the TTL has not expired.
+        try writeLease(
+            environmentID: "env-nometa-ttl", runtimeID: "rt-nometa-ttl", incarnation: "other-incarnation",
+            pid: 4_000_000, renewedAt: Date(), ttlSeconds: 30
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.contains("rt-nometa-ttl"))
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("disk.img")),
+            Data(repeating: 0xD4, count: 8192)
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent("runtime.json").path) == false
+        )
+    }
+
+    /// A proven-stale lease attributes the runtime to a KNOWN environment but
+    /// the unreadable runtime.json makes the disk unprovable against any boot
+    /// base: salvage is impossible, so the same durable repair-hold protocol
+    /// as a failed salvage applies — quarantine the bytes, exclude the
+    /// environment until repair is acknowledged, say so truthfully.
+    func testRecoveryQuarantinesUnattributableDiskWithProvenStaleLease() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-nometa-stale", baseImageID: "img")
+        let directory = try layout.runtimeVMDirectory(runtimeID: "rt-nometa-stale")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0xE5, count: 8192).write(to: directory.appendingPathComponent("disk.img"))
+        try Data("not json".utf8).write(to: directory.appendingPathComponent("runtime.json"))
+        try writeLease(
+            environmentID: "env-nometa-stale", runtimeID: "rt-nometa-stale", incarnation: "dead-incarnation",
+            pid: 4_000_000, renewedAt: Date(timeIntervalSinceNow: -600), ttlSeconds: 30
+        )
+
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.quarantinedRuntimeDirs.contains("rt-nometa-stale"))
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("runtime-vm-rt-nometa-stale") }
+        XCTAssertEqual(quarantined.count, 1)
+        let preservedDisk = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        XCTAssertEqual(try Data(contentsOf: preservedDisk), Data(repeating: 0xE5, count: 8192))
+        let staleHold = await relaunched.repairHolds.hold(environmentID: "env-nometa-stale")
+        XCTAssertNotNil(staleHold)
+        let staleState = try await relaunched.registry.environment(id: "env-nometa-stale")?.state
+        XCTAssertEqual(staleState, "repairRequired")
+
+        // Acknowledgement verifies the preserved bytes, then lifts the hold.
+        let verification = try await relaunched.acknowledgeRepair(environmentID: "env-nometa-stale")
+        guard case .recoverable = verification else {
+            XCTFail("the quarantined bytes must be verified, got \(verification)")
+            return
+        }
+        let holdAfterAck = await relaunched.repairHolds.hold(environmentID: "env-nometa-stale")
+        XCTAssertNil(holdAfterAck)
+        let stateAfterAck = try await relaunched.registry.environment(id: "env-nometa-stale")?.state
+        XCTAssertEqual(stateAfterAck, "stopped")
+        // The acknowledged sidecar is archived as evidence, never deleted.
+        let archived = try FileManager.default.contentsOfDirectory(
+            atPath: layout.recoveryMigrationsDirectory.appendingPathComponent("repair-holds", isDirectory: true).path
+        ).filter { $0.hasPrefix("repair-hold-env-nometa-stale") }
+        XCTAssertEqual(archived.count, 1)
+    }
+
+    // MARK: - repair holds never block a normally clean environment
+
+    /// A clean start/stop cycle never places a repair hold, and an
+    /// acknowledgement on such an environment is an explicit no-op that
+    /// leaves every state byte untouched.
+    func testCleanStartStopLeavesNoRepairHoldAndAcknowledgeIsNoop() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "test-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        _ = try await integrator.acquireSlot(
+            environmentID: "env-clean", runtimeID: "rt-clean", requestedMB: 512
+        )
+        let work = try await integrator.prepareWorkingDisk(
+            environmentID: "env-clean", runtimeID: "rt-clean", imageID: image.id,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        let handle = try FileHandle(forUpdating: work.diskURL)
+        try handle.seek(toOffset: 2 << 20)
+        try handle.write(contentsOf: Data(repeating: 0xEF, count: 4096))
+        try handle.close()
+        await integrator.completeStop(
+            environmentID: "env-clean", runtimeID: "rt-clean", imageID: image.id, clean: true
+        )
+        let delta = try await store.deltas.loadDelta(environmentID: "env-clean")
+        XCTAssertNotNil(delta)
+        let cleanLease = try await store.leases.holder(environmentID: "env-clean")
+        XCTAssertNil(cleanLease)
+
+        // No repair hold was ever placed; a relaunch salvages nothing and
+        // blocks nothing.
+        let relaunched = RuntimeV2Store(layout: layout)
+        let report = try await relaunched.prepareAndRecover(build: "test")
+        XCTAssertTrue(report.preservedRuntimeDirs.isEmpty)
+        XCTAssertTrue(report.quarantinedRuntimeDirs.isEmpty)
+        XCTAssertTrue(report.repairReapplied.isEmpty)
+        let cleanHold = await relaunched.repairHolds.hold(environmentID: "env-clean")
+        XCTAssertNil(cleanHold)
+
+        // Acknowledgement without a hold is an explicit no-op.
+        let verification = try await relaunched.acknowledgeRepair(environmentID: "env-clean")
+        XCTAssertEqual(verification, .nothingToRecover)
+        let state = try await relaunched.registry.environment(id: "env-clean")?.state
+        XCTAssertEqual(state, "active")
+        let state2 = try await relaunched.acknowledgeRepair(environmentID: "env-clean")
+        XCTAssertEqual(state2, .nothingToRecover)
+    }
+
+    // MARK: - fixtures (P0 helpers)
+
+    private func registerEnvironment(
+        in store: RuntimeV2Store? = nil, id: String, baseImageID: String, state: String = "stopped"
+    ) async throws {
+        let registry = await (store ?? self.store).registry
+        let now = Date()
+        try await registry.upsertEnvironment(
+            RuntimeV2Registry.EnvironmentRow(
+                id: id, kind: "linuxVM", ownerID: nil, name: id,
+                baseImageID: baseImageID, baseRootfsDigest: nil, state: state,
+                dataPath: "environments/\(id)/data", compatHostFHS: false,
+                repairReason: nil, createdAt: now, lastUsedAt: now
+            )
+        )
+    }
+
+    private func writeLease(
+        environmentID: String, runtimeID: String, incarnation: String,
+        pid: Int64, renewedAt: Date, ttlSeconds: Int64
+    ) throws {
+        let environmentDir = try layout.environmentDirectory(environmentID: environmentID)
+        try FileManager.default.createDirectory(at: environmentDir, withIntermediateDirectories: true)
+        let lease = RuntimeV2LeaseStore.Lease(
+            environmentID: environmentID, runtimeID: runtimeID, incarnation: incarnation,
+            sessionToken: "token", pid: pid,
+            acquiredAt: renewedAt, renewedAt: renewedAt, ttlSeconds: ttlSeconds
+        )
+        try RuntimeV2LeaseStore.encoder.encode(lease).write(
+            to: environmentDir.appendingPathComponent("lease.json"), options: .atomic
+        )
+    }
+
     // MARK: - fixtures
 
     /// Scripted Runtime v2 substrate: records the exact calls the guest

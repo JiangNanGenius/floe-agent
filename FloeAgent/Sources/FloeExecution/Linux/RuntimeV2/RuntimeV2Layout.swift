@@ -296,6 +296,15 @@ public struct RuntimeV2Layout: Sendable {
         try environmentDirectory(environmentID: environmentID).appendingPathComponent("lease.json")
     }
 
+    /// The durable, non-expiring repair exclusion for an environment. Unlike
+    /// the lease sidecar this marker carries NO TTL: it survives process
+    /// death, TTL expiry and stale-lease reclamation, and every start /
+    /// recovery path must consult it BEFORE reclaiming a lease or preparing a
+    /// disk. It is cleared only by an explicit repair acknowledgement.
+    public func environmentRepairHoldURL(environmentID: String) throws -> URL {
+        try environmentDirectory(environmentID: environmentID).appendingPathComponent("repair-hold.json")
+    }
+
     public func environmentServicesURL(environmentID: String) throws -> URL {
         try environmentDirectory(environmentID: environmentID).appendingPathComponent("services.json")
     }

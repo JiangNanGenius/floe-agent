@@ -23,6 +23,10 @@ public actor RuntimeV2Store {
         /// unknown environment): preserved byte-for-byte, never captured,
         /// moved or deleted.
         public var preservedRuntimeDirs: [String]
+        /// Environments whose preserved quarantine disk was discovered
+        /// orphaned (the stop-time repair marker could not be persisted) and
+        /// was re-marked repairRequired with a durable repair hold.
+        public var repairReapplied: [String]
         public var repairedImages: [String]
         public var rebuiltExpandedViews: [String]
         public var sweptStagingEntries: Int
@@ -36,6 +40,7 @@ public actor RuntimeV2Store {
             self.salvagedRuntimeDirs = []
             self.quarantinedRuntimeDirs = []
             self.preservedRuntimeDirs = []
+            self.repairReapplied = []
             self.repairedImages = []
             self.rebuiltExpandedViews = []
             self.sweptStagingEntries = 0
@@ -79,6 +84,7 @@ public actor RuntimeV2Store {
     public let images: RuntimeV2ImageStore
     public let deltas: RuntimeV2DeltaStore
     public let leases: RuntimeV2LeaseStore
+    public let repairHolds: RuntimeV2RepairHoldStore
     public let pool: RuntimeVMPool
     public let workspaces: RuntimeV2WorkspaceStore
     public let caches: RuntimeV2CacheStore
@@ -86,19 +92,49 @@ public actor RuntimeV2Store {
     public let templates: RuntimeV2TemplateStore
     private var fileManager: FileManager { .default }
 
+    /// Injectable fault seams for the durability-critical recovery paths, so
+    /// each persistent stage (repair-hold marker vs registry state) can be
+    /// driven with a deterministic fault and the surviving exclusion proven.
+    public struct Seams: Sendable {
+        /// Replaces the durable repairRequired transition during startup
+        /// recovery (throw to inject a registry fault at exactly that stage).
+        /// nil = normal.
+        public var markRepairRequired: (@Sendable (String, String) async throws -> Void)?
+        /// Replaces the durable repair-hold placement during startup
+        /// recovery (throw to inject an IO/full-disk fault at exactly that
+        /// stage). nil = normal.
+        public var placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)?
+
+        public init(
+            markRepairRequired: (@Sendable (String, String) async throws -> Void)? = nil,
+            placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)? = nil
+        ) {
+            self.markRepairRequired = markRepairRequired
+            self.placeRepairHold = placeRepairHold
+        }
+
+        public static let production = Seams()
+    }
+
+    private let seams: Seams
+
     public init(
         layout: RuntimeV2Layout,
         poolConfiguration: RuntimeVMPool.Configuration = .init(),
         templateSeams: RuntimeV2TemplateStore.Seams = .production,
-        blobSeams: RuntimeV2BlobStore.Seams = .production
+        blobSeams: RuntimeV2BlobStore.Seams = .production,
+        seams: Seams = .production
     ) {
         self.layout = layout
+        self.seams = seams
         let registry = RuntimeV2Registry(layout: layout)
         self.registry = registry
         self.blobs = RuntimeV2BlobStore(layout: layout, registry: registry, seams: blobSeams)
         self.images = RuntimeV2ImageStore(layout: layout, registry: registry, blobs: blobs)
         self.deltas = RuntimeV2DeltaStore(layout: layout)
-        self.leases = RuntimeV2LeaseStore(layout: layout, registry: registry)
+        let repairHolds = RuntimeV2RepairHoldStore(layout: layout)
+        self.repairHolds = repairHolds
+        self.leases = RuntimeV2LeaseStore(layout: layout, registry: registry, repairHolds: repairHolds)
         self.pool = RuntimeVMPool(configuration: poolConfiguration, registry: registry)
         self.workspaces = RuntimeV2WorkspaceStore(layout: layout, registry: registry)
         self.caches = RuntimeV2CacheStore(layout: layout)
@@ -125,10 +161,19 @@ public actor RuntimeV2Store {
         report.interruptedQueueEntries = (try? await registry.interruptOpenQueueEntries()) ?? 0
 
         // 2. Leases: reclaim provably-stale ones; anything unreclaimable is
-        //    reported and its environment marked interrupted.
+        //    reported and its environment marked interrupted. A durable repair
+        //    hold outranks the interruption marking: the hold is the
+        //    authoritative exclusion, and the lease stays untouched as
+        //    evidence until repair is acknowledged.
         let unresolved = (try? await leases.recoverOnLaunch()) ?? []
         report.unreclaimableLeases = unresolved
         for environmentID in unresolved {
+            if await repairHolds.hasHold(environmentID: environmentID) {
+                report.notes.append(
+                    "environment \(environmentID): a durable repair hold excludes this environment; the unreclaimable lease was left untouched"
+                )
+                continue
+            }
             try? await registry.setEnvironmentState(
                 id: environmentID, state: "interrupted",
                 repairReason: "a lease from a previous run could not be proven stale; the environment was not touched"
@@ -140,6 +185,14 @@ public actor RuntimeV2Store {
         //    quarantine when salvage fails. runtime/ is never a state source:
         //    everything ends up captured, quarantined or swept.
         report = await recoverRuntimeDirectories(report: report)
+
+        // 3c. Authoritative quarantine recovery: a preserved working disk
+        //     whose stop-time repair marker could not be persisted (full
+        //     disk / IO / DB fault) is itself the durable evidence. Recovery
+        //     re-derives the repairRequired state + durable hold from the
+        //     orphaned quarantine entry, so preserved bytes can never become
+        //     undiscoverable just because the original marker write failed.
+        report = await recoverPreservedQuarantine(report: report)
 
         // 3b. Staged blob ownership claims are process-lifetime: a restart
         //     means no stage/ingest is in flight any more, so leftover claims
@@ -184,7 +237,60 @@ public actor RuntimeV2Store {
         for entry in entries where !entry.hasPrefix(".") {
             let directory = root.appendingPathComponent(entry, isDirectory: true)
             guard let meta = RuntimeV2WorkingDirectory.readMeta(from: directory) else {
-                // No ownership record: not adoptable, but kept for inspection.
+                // Unparseable or missing ownership record: this NEVER grants
+                // permission to move a potentially active VM disk. Attribute
+                // ownership by directory runtimeID through the lease
+                // sidecars + registry first; preserve byte-for-byte while any
+                // ownership is uncertain.
+                if let lease = await leases.lease(forRuntimeID: entry) {
+                    if await leases.hasLiveOwnership(environmentID: lease.environmentID) {
+                        report.preservedRuntimeDirs.append(entry)
+                        report.notes.append(
+                            "runtime/vm/\(entry) preserved: the ownership record is unreadable and environment \(lease.environmentID) still holds a live or unexpired write lease for this runtime; the disk was not touched"
+                        )
+                        continue
+                    }
+                    if await repairHolds.hasHold(environmentID: lease.environmentID) {
+                        report.preservedRuntimeDirs.append(entry)
+                        report.notes.append(
+                            "runtime/vm/\(entry) preserved: the ownership record is unreadable and environment \(lease.environmentID) has a durable repair hold for this runtime; the disk was not touched"
+                        )
+                        continue
+                    }
+                    if let environment = try? await registry.environment(id: lease.environmentID),
+                       environment.state != "deleting" {
+                        // The lease is proven stale and attributes this runtime
+                        // to a known environment, but without runtime.json the
+                        // disk bytes cannot be proven against any boot base:
+                        // salvage is impossible. The same durable repair-hold
+                        // protocol as a failed salvage applies — quarantine the
+                        // bytes, exclude the environment until repair is
+                        // acknowledged, and say so truthfully.
+                        let attributed = RuntimeV2WorkingDirectory.Meta(
+                            runtimeID: entry, environmentID: lease.environmentID,
+                            baseImageID: environment.baseImageID ?? "", createdAt: Date()
+                        )
+                        report = await preserveUnsalvageableWorkingDirectory(
+                            report: report, entry: entry, directory: directory,
+                            meta: attributed,
+                            error: RuntimeV2Error.workingDirectoryProvenanceUnavailable(
+                                environmentID: lease.environmentID,
+                                reason: "the working directory ownership record is unreadable; the disk cannot be attributed to a boot base"
+                            )
+                        )
+                        continue
+                    }
+                    // Lease attribution exists but the environment is gone or
+                    // being deleted: ownership is maximally uncertain — keep
+                    // every byte exactly where it is.
+                    report.preservedRuntimeDirs.append(entry)
+                    report.notes.append(
+                        "runtime/vm/\(entry) preserved: the ownership record is unreadable and its lease-attributed environment \(lease.environmentID) is gone or being deleted; the disk was not touched"
+                    )
+                    continue
+                }
+                // No ownership trace anywhere: not adoptable, but kept for
+                // inspection.
                 let quarantine = layout.quarantineDirectory
                     .appendingPathComponent("runtime-vm-\(entry)-\(UUID().uuidString)", isDirectory: true)
                 try? fileManager.moveItem(at: directory, to: quarantine)
@@ -203,20 +309,146 @@ public actor RuntimeV2Store {
                 report.notes.append(preservation)
                 continue
             }
+            // A durable repair hold outranks salvage: the hold names preserved
+            // bytes awaiting explicit repair acknowledgement, so a leftover
+            // directory of that environment (e.g. a quarantine move that
+            // failed at stop time) is left byte-for-byte untouched.
+            if await repairHolds.hasHold(environmentID: meta.environmentID) {
+                report.preservedRuntimeDirs.append(entry)
+                report.notes.append(
+                    "runtime/vm/\(entry) preserved: environment \(meta.environmentID) has a durable repair hold; the directory was not captured, moved or deleted"
+                )
+                continue
+            }
             do {
                 try await salvageWorkingDirectory(directory: directory, meta: meta)
                 try? fileManager.removeItem(at: directory)
                 report.salvagedRuntimeDirs.append(entry)
             } catch {
-                let quarantine = layout.quarantineDirectory
-                    .appendingPathComponent("runtime-vm-\(entry)-\(UUID().uuidString)", isDirectory: true)
-                try? fileManager.moveItem(at: directory, to: quarantine)
-                report.quarantinedRuntimeDirs.append(entry)
-                try? await registry.setEnvironmentState(
-                    id: meta.environmentID, state: "repairRequired",
-                    repairReason: "interrupted working disk could not be salvaged: \(error.localizedDescription)"
+                report = await preserveUnsalvageableWorkingDirectory(
+                    report: report, entry: entry, directory: directory, meta: meta, error: error
                 )
             }
+        }
+        return report
+    }
+
+    /// Salvage failed: preserve the complete disk truthfully and make the
+    /// environment durably non-restartable. The bytes are quarantined when the
+    /// move succeeds, otherwise they stay untouched in runtime/vm; either way
+    /// a non-expiring repair hold is placed FIRST so no future start can
+    /// overwrite them, and the registry repairRequired state is written
+    /// without swallowing — a failed durable write is reported in the notes,
+    /// never converted into a silently restartable environment.
+    private func preserveUnsalvageableWorkingDirectory(
+        report: RecoveryReport, entry: String, directory: URL,
+        meta: RuntimeV2WorkingDirectory.Meta, error: Error
+    ) async -> RecoveryReport {
+        var report = report
+        let reason = "interrupted working disk could not be salvaged: \(error.localizedDescription)"
+        let quarantine = layout.quarantineDirectory
+            .appendingPathComponent("runtime-vm-\(entry)-\(UUID().uuidString)", isDirectory: true)
+        let preservedPath: String
+        if (try? fileManager.moveItem(at: directory, to: quarantine)) != nil {
+            report.quarantinedRuntimeDirs.append(entry)
+            preservedPath = "recovery/quarantine/\(quarantine.lastPathComponent)"
+        } else {
+            // The move itself failed: the bytes stay exactly where they are.
+            report.preservedRuntimeDirs.append(entry)
+            preservedPath = "runtime/vm/\(entry)"
+            report.notes.append(
+                "runtime/vm/\(entry) could not be quarantined (\(reason)); the directory was left untouched"
+            )
+        }
+        await placeRepairHold(
+            environmentID: meta.environmentID, runtimeID: entry,
+            reason: reason, preservedPath: preservedPath, report: &report
+        )
+        await markRepairRequired(environmentID: meta.environmentID, reason: reason, report: &report)
+        return report
+    }
+
+    private func placeRepairHold(
+        environmentID: String, runtimeID: String, reason: String,
+        preservedPath: String?, report: inout RecoveryReport
+    ) async {
+        do {
+            if let placeRepairHold = seams.placeRepairHold {
+                try await placeRepairHold(environmentID, runtimeID, reason, preservedPath)
+            } else {
+                try await repairHolds.place(
+                    environmentID: environmentID, runtimeID: runtimeID,
+                    reason: reason, preservedPath: preservedPath
+                )
+            }
+        } catch {
+            // The marker could not be persisted (full disk / IO fault): the
+            // preserved bytes stay discoverable through the quarantine scan
+            // (recoverPreservedQuarantine re-derives this hold next launch),
+            // and the exclusion must not silently become a restartable state.
+            report.notes.append(
+                "environment \(environmentID): the durable repair hold could not be persisted (\(error.localizedDescription)); the preserved bytes at \(preservedPath ?? "unknown") remain the authoritative evidence and re-marking is retried on every launch"
+            )
+        }
+    }
+
+    private func markRepairRequired(
+        environmentID: String, reason: String, report: inout RecoveryReport
+    ) async {
+        do {
+            if let markRepairRequired = seams.markRepairRequired {
+                try await markRepairRequired(environmentID, reason)
+            } else {
+                try await registry.setEnvironmentState(
+                    id: environmentID, state: "repairRequired", repairReason: reason
+                )
+            }
+        } catch {
+            report.notes.append(
+                "environment \(environmentID): the repairRequired state could not be persisted (\(error.localizedDescription)); the durable repair hold keeps the environment non-restartable"
+            )
+        }
+    }
+
+    /// The preserved working disk is itself durable evidence: when a stop- or
+    /// recovery-time fault prevented the repair marker from being persisted,
+    /// the orphaned quarantine entry (its runtime.json still names the
+    /// environment) re-derives the repairRequired state + durable hold on
+    /// every launch until repair is acknowledged. Quarantine entries are
+    /// never moved or deleted here.
+    ///
+    /// An acknowledged entry is skipped: the archived hold records the exact
+    /// preservedPath the acknowledgement verified, so the bytes remaining in
+    /// quarantine (kept for the repair flow) can never re-block a correctly
+    /// repaired environment on a later recovery pass.
+    private func recoverPreservedQuarantine(report: RecoveryReport) async -> RecoveryReport {
+        var report = report
+        guard let entries = try? fileManager.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+        else { return report }
+        let acknowledged = acknowledgedQuarantineEntryNames()
+        for entry in entries where entry.hasPrefix("runtime-vm-") {
+            if acknowledged.contains(entry) { continue }
+            let directory = layout.quarantineDirectory.appendingPathComponent(entry, isDirectory: true)
+            guard let meta = RuntimeV2WorkingDirectory.readMeta(from: directory) else { continue }
+            guard (try? RuntimeV2Identifier.validate(meta.environmentID, kind: .environment)) != nil else {
+                continue
+            }
+            guard let environment = try? await registry.environment(id: meta.environmentID),
+                  environment.state != "deleting" else { continue }
+            // Already honestly marked (possibly with a live hold): nothing to
+            // re-derive. A hold that exists always wins, so only the
+            // no-hold + not-repairRequired combination is the orphan window.
+            if environment.state == "repairRequired",
+               await repairHolds.hasHold(environmentID: meta.environmentID) {
+                continue
+            }
+            let reason = "preserved working disk discovered at recovery/quarantine/\(entry): an earlier stop or recovery could not persist its repair marker; the bytes were never lost"
+            await placeRepairHold(
+                environmentID: meta.environmentID, runtimeID: meta.runtimeID,
+                reason: reason, preservedPath: "recovery/quarantine/\(entry)", report: &report
+            )
+            await markRepairRequired(environmentID: meta.environmentID, reason: reason, report: &report)
+            report.repairReapplied.append(meta.environmentID)
         }
         return report
     }
@@ -403,6 +635,69 @@ public actor RuntimeV2Store {
             }
         }
         return report
+    }
+
+    /// The basenames of every quarantine entry whose repair hold was
+    /// explicitly acknowledged: the archived hold sidecar records the exact
+    /// preservedPath the acknowledgement verified.
+    private func acknowledgedQuarantineEntryNames() -> Set<String> {
+        let archive = layout.recoveryMigrationsDirectory
+            .appendingPathComponent("repair-holds", isDirectory: true)
+        guard let entries = try? fileManager.contentsOfDirectory(atPath: archive.path) else { return [] }
+        var names = Set<String>()
+        for entry in entries where entry.hasPrefix("repair-hold-") {
+            guard let data = try? Data(contentsOf: archive.appendingPathComponent(entry)),
+                  let hold = try? RuntimeV2RepairHoldStore.decoder.decode(
+                      RuntimeV2RepairHoldStore.Hold.self, from: data
+                  ),
+                  let preservedPath = hold.preservedPath else { continue }
+            names.insert((preservedPath as NSString).lastPathComponent)
+        }
+        return names
+    }
+
+    // MARK: repair acknowledgement
+
+    /// The durable repair exclusion for an environment, for status/repair
+    /// surfaces. nil means the environment is not excluded.
+    public func repairHoldStatus(environmentID: String) async -> RuntimeV2RepairHoldStore.Hold? {
+        await repairHolds.hold(environmentID: environmentID)
+    }
+
+    /// Explicit repair acknowledgement: the ONLY way a durable repair hold
+    /// clears. The recoverable state is verified first — preserved bytes are
+    /// reported to the caller (and left in place for the repair flow), or the
+    /// absence of preserved bytes is verified before the exclusion lifts.
+    /// The environment returns to the ordinary stopped flow only after the
+    /// registry transition commits; a failed durable write keeps the hold and
+    /// throws. Idempotent: an environment without a hold answers
+    /// `.nothingToRecover` and is never touched (a normally clean-stopped
+    /// environment is never blocked in the first place).
+    @discardableResult
+    public func acknowledgeRepair(
+        environmentID: String
+    ) async throws -> RuntimeV2RepairHoldStore.RecoverableState {
+        guard let hold = await repairHolds.hold(environmentID: environmentID) else {
+            return .nothingToRecover
+        }
+        let state = await repairHolds.verifyRecoverable(environmentID: environmentID)
+        // Durable state first: only a committed transition may lift the hold.
+        if let environment = try await registry.environment(id: environmentID) {
+            guard environment.state != "deleting" else {
+                // Deleting wins: the whole environment directory (hold
+                // sidecar included) is being torn down.
+                await repairHolds.acknowledge(environmentID: environmentID)
+                return state
+            }
+            try await registry.setEnvironmentState(
+                id: environmentID, state: "stopped", repairReason: nil
+            )
+        }
+        await repairHolds.acknowledge(environmentID: environmentID)
+        await logs.log(
+            "runtime v2 repair acknowledged environment=\(environmentID) reason=\(hold.reason)"
+        )
+        return state
     }
 
     // MARK: scratch environment promotion
