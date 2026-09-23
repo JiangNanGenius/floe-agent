@@ -3,25 +3,25 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "35747909238",
+    "runID": "35818562658",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10703852716,
-    "workflowCommit": "251203a2e46ec278ccd84089b20a8aaa6a9c30cc",
-    "archiveSHA256": "d81da081af954172b8b9b824caaf0adbb2840393f481b963a83390a7f6a90d60",
-    "executableSHA256": "c9491619ce65149f837e5c2325a249d567842acab12b0dc8a515a2d320691c22",
+    "artifactID": 10732382536,
+    "workflowCommit": "f373c1c012e52f5640f5fe2c470a9790fc1cff64",
+    "archiveSHA256": "9740cb072681faccf1cf1005f3b62bc2cd8ea0a7c75002e6689b2aad0a9db489",
+    "executableSHA256": "f66033a17eaa15f5ebbc8b8fa6e3e112842f9cb20a3bb9389a6950862eae78fa",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "fa20177d8c6147079c0e79f3d4991c757e4d07302803f66787c78aa167435b57",
-      "FloeOfficeNative.mm": "9d9805d1ee170d574b1370a1eae0dd5d49a8089df9532e7603759f0c30aefd58",
+      "FloeOfficeNative.mm": "9315a3fdce5633209f0749a712f431677bbf14063b687489d4ba5a85d326c031",
       "FloeOfficeAttachment.cpp": "281c55eb6ccb6ae85092ade38a7debe30cd2d010e76e0cbbcd3d88bcc42bfde8",
       "FloeOfficeAttachment.hxx": "0fe8268cd8bb8355593d662b1cd19e707a8ea5a03068d359c0ef1edfb67b8a76"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "1a91bcddac50af4468b8945e20251bd0ab649edec8b81e78e52044c9860b9faa",
+    "manifestSHA256": "537362ec99a0824c95a29e7741b00210e2637290e3706e3aed5bf14711b4f5c7",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "fa20177d8c6147079c0e79f3d4991c757e4d07302803f66787c78aa167435b57",
-      "Info.plist": "2eb182ee435d827e9eec83734faeaebb32a1589bf45615c646d402d818eb73a9",
+      "Info.plist": "afc7a799d3a31e39e287acf0c5489594d63277fc3717faa7d6f1459868b1e9d3",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
     },
     "swiftProbeSHA256": "edadb4a7251e1aae8d3c4cac0a6f3c83b4a148b6345034f11470ee6f4957032f",
@@ -100,17 +100,17 @@
           "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
         }
       },
-      "archiveSHA256": "803ee11275f109ca3d7aa21e40d2f548cd7f0982f0510e394995d1d980da69d2",
+      "archiveSHA256": "1deef18b894dd250bd2d26e389d9f0d44eec4dc72b6260b002f811bd16e3f226",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "803ee11275f109ca3d7aa21e40d2f548cd7f0982f0510e394995d1d980da69d2",
+      "selectedArchiveSHA256": "1deef18b894dd250bd2d26e389d9f0d44eec4dc72b6260b002f811bd16e3f226",
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "803ee11275f109ca3d7aa21e40d2f548cd7f0982f0510e394995d1d980da69d2",
-        "libooxlo.a": "f9ae480992e1d0903c62724bbca6d084c65927270d4752d4bdbf63349d06ae52"
+        "libscfiltlo.a": "1deef18b894dd250bd2d26e389d9f0d44eec4dc72b6260b002f811bd16e3f226",
+        "libooxlo.a": "85364959773d16f0a9092749392be9989b1f13bc2a81f41c1daab63a4de1ddda"
       },
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "f9ae480992e1d0903c62724bbca6d084c65927270d4752d4bdbf63349d06ae52",
+          "archiveSHA256": "85364959773d16f0a9092749392be9989b1f13bc2a81f41c1daab63a4de1ddda",
           "objectSHA256ByMember": {
             "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77",
             "chartexport.o": "af7da7bb40ebc0af6204c5980be4b5963f96d642f1c37276674b463b4f237168"
