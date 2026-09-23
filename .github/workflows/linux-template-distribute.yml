@@ -1,0 +1,1437 @@
+# linux-template-distribute — publish the qualified BASIC Floe Linux template
+# image and its complete corresponding source as a published (non-draft)
+# GitHub component prerelease, without rebuilding the image.
+#
+# This is not a general publishing platform: the exact retained run,
+# artifacts, digests and the component tag are pinned below, and every pin is
+# re-verified against the GitHub API — and, for the small evidence artifacts,
+# against their actual bytes — before anything is downloaded or uploaded.
+#
+# Safety rules enforced here:
+#   * the distribution job runs only for workflow_dispatch; the push trigger
+#     runs the read-only preflight (that is how the workflow gets registered
+#     from its own branch) and nothing else. Preflight never writes release
+#     state, and the distribute job never runs when preflight fails.
+#   * the release is created as a published PRERELEASE, never `latest`, never
+#     a draft, and the tag does not start with `v` (the App release pipeline
+#     watches those).
+#   * an existing tag, or any release this workflow did not create, fails
+#     closed; only our own marked prerelease is resumed and assets are never
+#     overwritten (`--clobber` is never used).
+#   * the image archive keeps the bbl/kernel/disk bytes; only `manifest.json`
+#     provenance is rewritten (release-tag source URLs, distributionAllowed).
+#   * no release is created unless the corresponding sources are complete:
+#     Debian mapping gaps 0 with every mapped file verified, the exact cross
+#     glibc `.dsc` with its Checksums-Sha256 files, the runner relink object
+#     and the kernel/bbl sources pinned to the shipped binaries, and the
+#     basic template qualification report says qualified with no missing,
+#     below-minimum or PyPI failures.
+#
+# Pinned release constants (verified, not guessed):
+#   component CI run 35928017233 @ 706413fd816ee6c4197dd7e5184f6fc14fc2f762
+#   image candidate   artifact 10780173063  (zip sha512 d5548351…, 547188315 bytes)
+#   image evidence    artifact 10780098263
+#   template qualify  artifact 10780182944
+#   sources           artifacts 10780128817 / 10780870977 / 10780696519
+name: linux-template-distribute
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_commit:
+        description: 'Full 40-hex commit the component tag floe-linux-template-basic-20260923.1 is created on'
+        required: true
+        type: string
+  push:
+    # Registration path only: pushing this workflow on its own branch (or the
+    # component branch) runs the read-only preflight so the primary can then
+    # dispatch it from that branch.
+    branches:
+      - main
+      - codex/linux-template-distribute
+    paths:
+      - .github/workflows/linux-template-distribute.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: linux-template-distribute
+  cancel-in-progress: false
+
+env:
+  REPO: JiangNanGenius/floe-agent
+  SERVER: https://github.com
+  # Component tag: no leading `v` (keeps the App release pipeline untouched),
+  # never `latest`, created on the dispatch target commit only.
+  COMPONENT_TAG: floe-linux-template-basic-20260923.1
+  RELEASE_TITLE: Floe Linux template basic floe-debian13-riscv64-202609202607-basic-r572a77382feb-b35928017233 (component release)
+  RELEASE_MARKER: '<!-- floe-linux-template-distribution:v1 -->'
+  IMAGE_ID: floe-debian13-riscv64-202609202607-basic-r572a77382feb-b35928017233
+  RUN_ID: '35928017233'
+  RUN_SHA: 706413fd816ee6c4197dd7e5184f6fc14fc2f762
+  IMAGE_ARTIFACT: linux-guest-image-candidate-35928017233
+  IMAGE_ARTIFACT_ID: '10780173063'
+  IMAGE_ARTIFACT_BYTES: '528931782'
+  IMAGE_ZIP: floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b35928017233.zip
+  IMAGE_ZIP_SHA512: d5548351a7a26c688b7db21b18b82a23bf548b4b543243ebcb258be8f9a689626c24a5abde226c5533d4ca6f8464a15a8800922fa82e52b0aaec6c8a91ec43da
+  IMAGE_ZIP_BYTES: '547188315'
+  DISK_SHA512: 34952a2d0cfc147a08a0f21eb4632e6e90560792084250f8d980a0da371ba47b9029e096972b2cfb92598ee0ce893ec6df338033c7a7d7bb9737a6aa0ad65039
+  IMAGE_EVIDENCE_ARTIFACT: linux-guest-image-evidence-35928017233
+  IMAGE_EVIDENCE_ARTIFACT_ID: '10780098263'
+  IMAGE_EVIDENCE_ARTIFACT_BYTES: '1480018'
+  TEMPLATE_QUALIFICATION_ARTIFACT: linux-guest-template-qualification-35928017233
+  TEMPLATE_QUALIFICATION_ARTIFACT_ID: '10780182944'
+  TEMPLATE_QUALIFICATION_ARTIFACT_BYTES: '2599'
+  SOURCE_UPSTREAM_ARTIFACT: linux-guest-sources-upstream-35928017233
+  SOURCE_UPSTREAM_ARTIFACT_ID: '10780128817'
+  SOURCE_UPSTREAM_ARTIFACT_BYTES: '416338567'
+  SOURCE_DEBIAN_ARTIFACT: linux-guest-sources-debian-1-35928017233
+  SOURCE_DEBIAN_ARTIFACT_ID: '10780870977'
+  SOURCE_DEBIAN_ARTIFACT_BYTES: '1040003914'
+  SOURCE_EVIDENCE_ARTIFACT: linux-guest-source-evidence-35928017233
+  SOURCE_EVIDENCE_ARTIFACT_ID: '10780696519'
+  SOURCE_EVIDENCE_ARTIFACT_BYTES: '11056612'
+
+jobs:
+  preflight:
+    name: preflight (${{ github.event_name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the pinned runs, artifacts, tag, target commit and evidence bytes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.target_commit || '' }}
+          PREFLIGHT_OUT: ${{ runner.temp }}/floe-dist-preflight/preflight.json
+          PREFLIGHT_DIR: ${{ runner.temp }}/floe-dist-preflight
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$PREFLIGHT_OUT")"
+          python3 - <<'PREFLIGHT_PY'
+          import base64, hashlib, json, os, re, subprocess, sys, time
+
+          REPO = os.environ["REPO"]
+          EVENT = os.environ["EVENT_NAME"]
+          TAG = os.environ["COMPONENT_TAG"]
+          TARGET = (os.environ.get("TARGET_COMMIT") or "").strip()
+          OUT = os.environ["PREFLIGHT_OUT"]
+          WORK = os.environ["PREFLIGHT_DIR"]
+          WORKFLOW = os.path.join(os.environ["GITHUB_WORKSPACE"], ".github/workflows/linux-template-distribute.yml")
+
+          failures, facts = [], {}
+
+          def ok(message):
+              print("OK: %s" % message, flush=True)
+
+          def fail(message):
+              failures.append(message)
+              print("FAIL: %s" % message, flush=True)
+
+          def note(message):
+              print("note: %s" % message, flush=True)
+
+          def require(condition, message):
+              ok(message) if condition else fail(message)
+              return bool(condition)
+
+          def gh(path, allow_missing=False):
+              result = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if result.returncode != 0:
+                  if allow_missing and "404" in (result.stderr + result.stdout):
+                      return None
+                  raise SystemExit("gh api %s failed: %s%s" % (path, result.stdout.strip(), result.stderr.strip()))
+              return json.loads(result.stdout)
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for block in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                      digest.update(block)
+              return digest.hexdigest()
+
+          # --- this workflow's own safety contract --------------------------------
+          contract = open(WORKFLOW, encoding="utf-8").read()
+          for needle in ("workflow_dispatch:", "target_commit:", "--prerelease", "--latest=false",
+                         "if: github.event_name == 'workflow_dispatch'", "codex/linux-template-distribute",
+                         "floe-linux-template-basic-20260923.1"):
+              require(needle in contract, "workflow contract contains %r" % needle)
+          clobber_lines = [line for line in contract.splitlines()
+                           if "--clobber" in line and not line.lstrip().startswith("#") and "never" not in line]
+          require(not clobber_lines, "workflow never passes --clobber to a release command")
+          require(not TAG.startswith(("v", "V")) and TAG != "latest", "component tag %r does not start with v and is not latest" % TAG)
+
+          # --- tag / release state (never overwrite) ------------------------------
+          release = gh("repos/%s/releases/tags/%s" % (REPO, TAG), allow_missing=True)
+          facts["release"] = None
+          if release is None:
+              ref = gh("repos/%s/git/ref/tags/%s" % (REPO, TAG), allow_missing=True)
+              if ref is None:
+                  note("tag %s and its release are both free" % TAG)
+              elif EVENT == "workflow_dispatch":
+                  fail("tag %s already exists without a release; refusing to touch it" % TAG)
+              else:
+                  note("tag %s already exists (registration preflight only)" % TAG)
+          else:
+              ours = bool(release.get("prerelease")) and not bool(release.get("draft")) \
+                  and release.get("tag_name") == TAG and os.environ["RELEASE_MARKER"] in (release.get("body") or "")
+              facts["release"] = {"id": release.get("id"), "draft": release.get("draft"), "prerelease": release.get("prerelease"),
+                                  "url": release.get("html_url"), "target_commitish": release.get("target_commitish"),
+                                  "ours": ours, "assets": sorted(asset["name"] for asset in release.get("assets", []))}
+              if ours:
+                  note("our own prerelease %s already exists (idempotent resume)" % release.get("html_url"))
+              elif EVENT == "workflow_dispatch":
+                  fail("release for tag %s already exists and is not our prerelease (draft=%s prerelease=%s)"
+                       % (TAG, release.get("draft"), release.get("prerelease")))
+              else:
+                  note("tag %s already has a release (registration preflight only)" % TAG)
+
+          # --- pinned run and artifacts -------------------------------------------
+          PINS = [
+              {"kind": "image candidate", "name": os.environ["IMAGE_ARTIFACT"], "id": int(os.environ["IMAGE_ARTIFACT_ID"]),
+               "bytes": int(os.environ["IMAGE_ARTIFACT_BYTES"]), "job": "image"},
+              {"kind": "image evidence", "name": os.environ["IMAGE_EVIDENCE_ARTIFACT"], "id": int(os.environ["IMAGE_EVIDENCE_ARTIFACT_ID"]),
+               "bytes": int(os.environ["IMAGE_EVIDENCE_ARTIFACT_BYTES"]), "job": "image"},
+              {"kind": "template qualification", "name": os.environ["TEMPLATE_QUALIFICATION_ARTIFACT"],
+               "id": int(os.environ["TEMPLATE_QUALIFICATION_ARTIFACT_ID"]), "bytes": int(os.environ["TEMPLATE_QUALIFICATION_ARTIFACT_BYTES"]),
+               "job": "templates"},
+              {"kind": "source upstream", "name": os.environ["SOURCE_UPSTREAM_ARTIFACT"], "id": int(os.environ["SOURCE_UPSTREAM_ARTIFACT_ID"]),
+               "bytes": int(os.environ["SOURCE_UPSTREAM_ARTIFACT_BYTES"]), "job": "sources"},
+              {"kind": "source debian shard", "name": os.environ["SOURCE_DEBIAN_ARTIFACT"], "id": int(os.environ["SOURCE_DEBIAN_ARTIFACT_ID"]),
+               "bytes": int(os.environ["SOURCE_DEBIAN_ARTIFACT_BYTES"]), "job": "sources"},
+              {"kind": "source evidence", "name": os.environ["SOURCE_EVIDENCE_ARTIFACT"], "id": int(os.environ["SOURCE_EVIDENCE_ARTIFACT_ID"]),
+               "bytes": int(os.environ["SOURCE_EVIDENCE_ARTIFACT_BYTES"]), "job": "sources"},
+          ]
+          run = gh("repos/%s/actions/runs/%s" % (REPO, os.environ["RUN_ID"]))
+          jobs = gh("repos/%s/actions/runs/%s/jobs?per_page=100" % (REPO, os.environ["RUN_ID"]))["jobs"]
+          artifacts = gh("repos/%s/actions/runs/%s/artifacts?per_page=100" % (REPO, os.environ["RUN_ID"]))["artifacts"]
+          require(run["head_sha"] == os.environ["RUN_SHA"], "run %s head_sha is %s" % (os.environ["RUN_ID"], os.environ["RUN_SHA"][:12]))
+          require(run["status"] == "completed" and run["conclusion"] == "success", "run %s completed successfully" % os.environ["RUN_ID"])
+          require((run.get("head_repository") or {}).get("full_name") == REPO, "run %s belongs to %s" % (os.environ["RUN_ID"], REPO))
+          artifact_facts = []
+          for pin in PINS:
+              matches = [artifact for artifact in artifacts if artifact["id"] == pin["id"]]
+              require(len(matches) == 1, "%s: artifact id %s exists in run %s" % (pin["kind"], pin["id"], os.environ["RUN_ID"]))
+              if matches:
+                  artifact = matches[0]
+                  require(artifact["name"] == pin["name"], "%s: artifact name is %s" % (pin["kind"], pin["name"]))
+                  require(artifact.get("expired") is False, "%s: artifact %s is not expired (expires %s)" % (pin["kind"], pin["name"], artifact.get("expires_at")))
+                  require(artifact["size_in_bytes"] == pin["bytes"], "%s: artifact %s is %d bytes" % (pin["kind"], pin["name"], pin["bytes"]))
+                  require(artifact["workflow_run"]["id"] == int(os.environ["RUN_ID"]), "%s: artifact belongs to run %s" % (pin["kind"], os.environ["RUN_ID"]))
+                  artifact_facts.append({"kind": pin["kind"], "name": pin["name"], "id": pin["id"], "bytes": pin["bytes"],
+                                         "created_at": artifact.get("created_at"), "expires_at": artifact.get("expires_at")})
+              job = next((entry for entry in jobs if entry["name"] == pin["job"]), None)
+              require(job is not None and job["conclusion"] == "success", "%s: producer job %r succeeded" % (pin["kind"], pin["job"]))
+          debian_shards = sorted(artifact["name"] for artifact in artifacts
+                                 if re.match(r"^linux-guest-sources-debian-\d+-%s$" % os.environ["RUN_ID"], artifact["name"]))
+          require(debian_shards == [os.environ["SOURCE_DEBIAN_ARTIFACT"]],
+                  "the source run has exactly the pinned Debian shard set %s" % debian_shards)
+
+          # --- small evidence artifacts: content-level gates ----------------------
+          def download(name, dest):
+              result = subprocess.run(["gh", "run", "download", os.environ["RUN_ID"], "--repo", REPO, "-n", name, "-D", dest],
+                                      capture_output=True, text=True)
+              if result.returncode != 0:
+                  raise SystemExit("gh run download %s failed: %s%s" % (name, result.stdout.strip(), result.stderr.strip()))
+
+          def text(path):
+              with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                  return handle.read()
+
+          evidence = os.path.join(WORK, "evidence")
+          download(os.environ["IMAGE_EVIDENCE_ARTIFACT"], os.path.join(evidence, "image"))
+          download(os.environ["TEMPLATE_QUALIFICATION_ARTIFACT"], os.path.join(evidence, "qualification"))
+          download(os.environ["SOURCE_EVIDENCE_ARTIFACT"], os.path.join(evidence, "source"))
+
+          # image evidence: candidate zip + disk digests and the manifest template block
+          zip_record = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(evidence, "image", "zip-sha512.txt")), re.MULTILINE)
+          require(zip_record is not None and zip_record.group(1) == os.environ["IMAGE_ZIP_SHA512"],
+                  "image evidence zip-sha512 matches the pinned candidate archive")
+          disk_record = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(evidence, "image", "disk-sha512.txt")), re.MULTILINE)
+          require(disk_record is not None and disk_record.group(1) == os.environ["DISK_SHA512"],
+                  "image evidence disk-sha512 matches the pinned disk digest")
+          manifest = json.loads(text(os.path.join(evidence, "image", "manifest.json")))
+          require(manifest.get("id") == os.environ["IMAGE_ID"], "image evidence manifest id is %s" % os.environ["IMAGE_ID"])
+          require(bool(manifest.get("qualified")), "image evidence manifest stays qualified")
+          template = manifest.get("template") or {}
+          require(template.get("id") == "basic" and bool(template.get("verified")), "manifest template block is basic and verified")
+          require(not (template.get("missingPackages") or template.get("belowMinimum") or template.get("pypiFailures")),
+                  "manifest template block has no missing/below-minimum/PyPI failures")
+          recorded = {artifact.get("role"): artifact for artifact in (manifest.get("artifacts") or [])}
+          require((recorded.get("disk") or {}).get("sha512", "").lower() == os.environ["DISK_SHA512"],
+                  "manifest disk digest matches the pinned disk digest")
+          pins_text = text(os.path.join(evidence, "image", "bios-kernel-pins.txt"))
+          pinned_members = set()
+          for member in ("bbl64.bin", "kernel-riscv64.bin"):
+              match = re.search(r"^%s\s+bytes=(\d+)\s+sha256=([0-9a-f]{64})$" % re.escape(member), pins_text, re.MULTILINE)
+              require(match is not None, "image evidence pins %s" % member)
+              if match:
+                  pinned_members.add(member)
+          # the candidate zip's manifest is compared byte-for-byte against this
+          # evidence copy in the distribute job (which holds both); here we
+          # prove the evidence manifest itself is complete and consistent
+          require(sorted(recorded) == ["bios", "disk", "kernel"], "evidence manifest records bios, kernel and disk")
+          for role, member in (("bios", "bbl64.bin"), ("kernel", "kernel-riscv64.bin"), ("disk", "disk.img")):
+              entry = recorded.get(role) or {}
+              require(bool(re.match(r"^[0-9a-f]{128}$", str(entry.get("sha512", "")).lower())),
+                      "evidence manifest %s sha512 is well formed" % role)
+              require(str(entry.get("bytes", "")).isdigit() and int(entry.get("bytes", 0)) > 0,
+                      "evidence manifest %s bytes are recorded" % role)
+          require(pinned_members >= {"bbl64.bin", "kernel-riscv64.bin"},
+                  "image evidence pins bbl64.bin and kernel-riscv64.bin")
+
+          # template qualification report: qualified, no failures
+          qualification = json.loads(text(os.path.join(evidence, "qualification", "floe-templates", "template-qualification.json")))
+          reports = qualification.get("reports") or []
+          basic = next((report for report in reports if report.get("recipe") == "basic"), None)
+          require(basic is not None, "template qualification reports cover the basic recipe")
+          if basic:
+              require(bool(basic.get("qualified")), "template basic is qualified")
+              missing = [entry.get("package") for entry in (basic.get("requirements") or []) if not entry.get("present")]
+              require(not missing, "every basic requirement is present (%d missing)" % len(missing))
+          verify = json.loads(text(os.path.join(evidence, "image", "template-verify.json")))
+          require(verify.get("template") == "basic" and bool(verify.get("verified")),
+                  "image evidence template-verify marks basic verified")
+          require(not (verify.get("missing") or verify.get("missingPackages")
+                       or verify.get("below_minimum") or verify.get("belowMinimum")
+                       or verify.get("pypi_failures") or verify.get("pypiFailures")),
+                  "template-verify has no missing/below-minimum/PyPI failures")
+
+          # source evidence: zero Debian mapping gaps + intact manifest sidecar
+          gaps = [line for line in text(os.path.join(evidence, "source", "debian-source-gaps.tsv")).splitlines()
+                  if line.strip() and not line.startswith("#")]
+          require(not gaps, "Debian source map has zero gaps (%d rows)" % len(gaps))
+          manifest_digest = hashlib.sha512(open(os.path.join(evidence, "source", "SOURCES-MANIFEST.md"), "rb").read()).hexdigest()
+          sidecar = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(evidence, "source", "SOURCES-MANIFEST.md.sha512")), re.MULTILINE)
+          require(sidecar is not None and sidecar.group(1) == manifest_digest, "SOURCES-MANIFEST.md matches its sha512 record")
+          require("gap_packages=0" in text(os.path.join(evidence, "source", "SOURCES-MANIFEST.md")),
+                  "SOURCES-MANIFEST.md records gap_packages=0")
+
+          # --- dispatch target commit ---------------------------------------------
+          facts["target"] = None
+          if EVENT == "workflow_dispatch":
+              require(bool(re.fullmatch(r"[0-9a-f]{40}", TARGET)), "target commit is a full 40-hex SHA")
+              if re.fullmatch(r"[0-9a-f]{40}", TARGET):
+                  commit = gh("repos/%s/commits/%s" % (REPO, TARGET))
+                  require(commit["sha"] == TARGET, "target commit resolves to itself")
+                  facts["target"] = {"sha": commit["sha"], "subject": commit["commit"]["message"].splitlines()[0],
+                                     "date": commit["commit"]["committer"]["date"]}
+                  require(gh("repos/%s/contents/FloeAgent/LinuxGuest?ref=%s" % (REPO, TARGET), allow_missing=True) is not None,
+                          "target commit contains FloeAgent/LinuxGuest")
+                  require(gh("repos/%s/contents/FloeAgent/LinuxGuest/image/templates/basic.json?ref=%s" % (REPO, TARGET), allow_missing=True) is not None,
+                          "target commit contains the basic template recipe")
+                  # The image build ran at RUN_SHA; the runner and recipe sources
+                  # that produced the shipped binaries must be identical at the
+                  # tag target so the source offer matches the bytes.
+                  for relative, expected in (
+                      ("FloeAgent/LinuxGuest/runner/floe_exec.c", None),
+                      ("FloeAgent/LinuxGuest/runner/floe_clock.h", None),
+                      ("FloeAgent/LinuxGuest/image/templates/basic.json", (template.get("recipeSha512") or "").lower()),
+                  ):
+                      payload = gh("repos/%s/contents/%s?ref=%s" % (REPO, relative, TARGET), allow_missing=True)
+                      if payload is None:
+                          fail("target commit lacks %s" % relative)
+                          continue
+                      digest = hashlib.sha512(base64.b64decode(payload["content"])).hexdigest()
+                      note("%s at target: sha512 %s" % (relative, digest[:16]))
+                      if relative.endswith("basic.json"):
+                          require(expected and digest == expected,
+                                  "basic recipe sha512 at the target matches the manifest template block")
+                      run_payload = gh("repos/%s/contents/%s?ref=%s" % (REPO, relative, os.environ["RUN_SHA"]), allow_missing=True)
+                      if run_payload is None:
+                          fail("run commit lacks %s" % relative)
+                      else:
+                          run_digest = hashlib.sha512(base64.b64decode(run_payload["content"])).hexdigest()
+                          require(run_digest == digest, "%s is identical at the target commit and the image run commit" % relative)
+
+          payload = {"schema": "floe-linux-template-preflight/v1", "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                     "event": EVENT, "repository": REPO, "componentTag": TAG, "targetCommit": TARGET or None,
+                     "run": {"id": run["id"], "head_sha": run["head_sha"], "conclusion": run["conclusion"], "url": run["html_url"]},
+                     "artifacts": artifact_facts, "facts": facts, "failures": failures}
+          with open(OUT, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2)
+              handle.write("\n")
+          print("\npreflight: %d failure(s); wrote %s" % (len(failures), OUT))
+          for failure in failures:
+              print("  - %s" % failure)
+          if EVENT == "workflow_dispatch":
+              print("dispatch:  gh workflow run linux-template-distribute.yml --repo %s --ref <branch> -f target_commit=%s" % (REPO, TARGET))
+          sys.exit(1 if failures else 0)
+          PREFLIGHT_PY
+
+      - name: Upload the preflight record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-template-distribution-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-dist-preflight/
+          if-no-files-found: warn
+          retention-days: 30
+
+  distribute:
+    name: distribute (published prerelease)
+    needs: preflight
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_COMMIT: ${{ inputs.target_commit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize the pinned constants and the embedded verifier
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist" ASSETS="$RUNNER_TEMP/floe-dist/assets"
+          mkdir -p "$DIST" "$ASSETS"
+          python3 - <<'PINS_PY'
+          import json, os
+          mapping = {
+              "repo": "REPO", "server": "SERVER", "tag": "COMPONENT_TAG", "target_commit": "TARGET_COMMIT",
+              "image_id": "IMAGE_ID", "run_id": "RUN_ID", "run_sha": "RUN_SHA", "image_zip": "IMAGE_ZIP",
+              "image_zip_sha512": "IMAGE_ZIP_SHA512", "image_zip_bytes": "IMAGE_ZIP_BYTES", "disk_sha512": "DISK_SHA512",
+              "image_artifact": "IMAGE_ARTIFACT", "image_artifact_id": "IMAGE_ARTIFACT_ID",
+              "image_evidence_artifact": "IMAGE_EVIDENCE_ARTIFACT", "image_evidence_artifact_id": "IMAGE_EVIDENCE_ARTIFACT_ID",
+              "template_qualification_artifact": "TEMPLATE_QUALIFICATION_ARTIFACT",
+              "template_qualification_artifact_id": "TEMPLATE_QUALIFICATION_ARTIFACT_ID",
+              "source_upstream_artifact": "SOURCE_UPSTREAM_ARTIFACT", "source_upstream_artifact_id": "SOURCE_UPSTREAM_ARTIFACT_ID",
+              "source_debian_artifact": "SOURCE_DEBIAN_ARTIFACT", "source_debian_artifact_id": "SOURCE_DEBIAN_ARTIFACT_ID",
+              "source_evidence_artifact": "SOURCE_EVIDENCE_ARTIFACT", "source_evidence_artifact_id": "SOURCE_EVIDENCE_ARTIFACT_ID",
+              "workflow_run": "GITHUB_RUN_ID", "workflow_sha": "GITHUB_SHA",
+          }
+          pins = {key: os.environ[name] for key, name in mapping.items()}
+          pins["expected_image_id"] = os.environ["IMAGE_ID"]
+          with open(os.path.join(os.environ["DIST"], "pins.json"), "w", encoding="utf-8") as handle:
+              json.dump(pins, handle, indent=2)
+              handle.write("\n")
+          print("pinned: tag=%s target=%s image=%s" % (pins["tag"], pins["target_commit"], pins["image_id"]))
+          PINS_PY
+          cat > "$DIST/verify_dist.py" <<'VERIFY_DIST_PY'
+          #!/usr/bin/env python3
+          """verify_dist.py — verify this exact retained Floe BASIC Linux template
+          image + source release, repack the image archive with provenance-only
+          manifest changes and assemble the published-prerelease material.
+
+          Called by .github/workflows/linux-template-distribute.yml with a pins.json
+          holding the exact retained run/artifact/hash constants. Fail-closed:
+          anything that cannot be proven aborts before the release is created.
+          Nothing here publishes, tags or overwrites.
+          """
+          from __future__ import annotations
+
+          import argparse
+          import base64
+          import gzip
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import struct
+          import subprocess
+          import sys
+          import time
+          import zipfile
+
+          HEX128 = re.compile(r"^[0-9a-f]{128}$")
+          HEX64 = re.compile(r"^[0-9a-f]{64}$")
+          IMAGE_MEMBERS = ("manifest.json", "bbl64.bin", "kernel-riscv64.bin", "disk.img")
+          RELEASE_MARKER = "<!-- floe-linux-template-distribution:v1 -->"
+
+
+          class Check:
+              def __init__(self, label):
+                  self.label, self.failures, self.notes = label, [], []
+
+              def ok(self, message):
+                  print("OK: %s" % message, flush=True)
+
+              def note(self, message):
+                  self.notes.append(message)
+                  print("note: %s" % message, flush=True)
+
+              def require(self, condition, message):
+                  if condition:
+                      self.ok(message)
+                  else:
+                      self.failures.append(message)
+                      print("FAIL: %s" % message, flush=True)
+                  return bool(condition)
+
+              def finish(self):
+                  if self.failures:
+                      print("\n%s: %d unresolved problem(s)" % (self.label, len(self.failures)), flush=True)
+                      for failure in self.failures:
+                          print("  - %s" % failure, flush=True)
+                      return 1
+                  print("%s: all checks passed" % self.label, flush=True)
+                  return 0
+
+
+          def sha(path, algo="sha512", chunk=4 * 1024 * 1024):
+              digest = hashlib.new(algo)
+              with open(path, "rb") as handle:
+                  for block in iter(lambda: handle.read(chunk), b""):
+                      digest.update(block)
+              return digest.hexdigest()
+
+
+          def size(path):
+              return os.path.getsize(path)
+
+
+          def text(path):
+              with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                  return handle.read()
+
+
+          def load(path):
+              with open(path, "r", encoding="utf-8") as handle:
+                  return json.load(handle)
+
+
+          def dump(path, payload):
+              os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+              with open(path, "w", encoding="utf-8") as handle:
+                  json.dump(payload, handle, indent=2)
+                  handle.write("\n")
+
+
+          def sums(path):
+              """Parse a `sha256sum`-style list into {name: digest}."""
+              parsed = {}
+              for line in text(path).splitlines():
+                  parts = line.split(None, 1)
+                  if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+                      parsed[parts[1].lstrip("*").strip()] = parts[0]
+              return parsed
+
+
+          def verify_list(check, root, list_path, label):
+              """Verify every entry of a sha256sum list; returns (listed, verified)."""
+              if not check.require(os.path.isfile(list_path), "%s checksum list is present" % label):
+                  return {}, 0
+              listed, verified = sums(list_path), 0
+              check.require(bool(listed), "%s checksum list has entries" % label)
+              for name, digest in sorted(listed.items()):
+                  target = os.path.join(root, name)
+                  if not os.path.isfile(target):
+                      check.fail("%s: listed file missing: %s" % (label, name))
+                  elif sha(target, "sha256") != digest:
+                      check.fail("%s: sha256 mismatch: %s" % (label, name))
+                  else:
+                      verified += 1
+              check.ok("%s: %d/%d listed files verified" % (label, verified, len(listed)))
+              return listed, verified
+
+
+          def dsc_files(path):
+              """Files declared by a .dsc Checksums-Sha256 block: {name: (sha256, size)}."""
+              declared, inside = {}, False
+              for line in text(path).splitlines():
+                  if line.startswith("Checksums-Sha256:"):
+                      inside = True
+                      continue
+                  if inside:
+                      if line[:1] in (" ", "\t"):
+                          parts = line.split()
+                          if len(parts) == 3:
+                              declared[parts[2]] = (parts[0].lower(), int(parts[1]))
+                          continue
+                      inside = False
+              return declared
+
+
+          def fingerprint(path):
+              """Return (warnings, facts) for a gzip/tar source tarball."""
+              try:
+                  with gzip.open(path, "rb") as handle:
+                      while handle.read(8 * 1024 * 1024):
+                          pass
+              except Exception as exc:  # noqa: BLE001 - the real error text is the evidence
+                  return ["unreadable archive: %s" % exc], {}
+              return [], {"sha256": sha(path, "sha256"), "bytes": size(path)}
+
+
+          def elf(path):
+              with open(path, "rb") as handle:
+                  head = handle.read(20)
+                  if len(head) < 20 or head[:4] != b"\x7fELF":
+                      return None
+                  endian = "<" if head[5] == 1 else ">"
+                  return {"class": 64 if head[4] == 2 else 32, "type": struct.unpack_from(endian + "H", head, 16)[0],
+                          "machine": struct.unpack_from(endian + "H", head, 18)[0]}
+
+
+          def gh_json(path):
+              """Read a GitHub API path; returns None when the path does not exist."""
+              result = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if result.returncode != 0:
+                  if "404" in (result.stderr + result.stdout):
+                      return None
+                  raise SystemExit("gh api %s failed: %s%s" % (path, result.stdout.strip(), result.stderr.strip()))
+              return json.loads(result.stdout)
+
+
+          def install_asset(source, out_dir):
+              """Copy a small file into the release asset directory."""
+              target = os.path.join(out_dir, os.path.basename(source))
+              with open(source, "rb") as src, open(target, "wb") as dst:
+                  while True:
+                      block = src.read(4 * 1024 * 1024)
+                      if not block:
+                          break
+                      dst.write(block)
+              return target
+
+
+          # ---------------------------------------------------------------------------
+          # image — streaming: the 16 GiB sparse disk never lands on disk raw
+          # ---------------------------------------------------------------------------
+          def stream_member_digest(zip_path, member, algo="sha512"):
+              digest = hashlib.new(algo)
+              with zipfile.ZipFile(zip_path) as archive:
+                  with archive.open(member) as handle:
+                      for block in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                          digest.update(block)
+              return digest.hexdigest()
+
+
+          def cmd_image(check, pins, args):
+              out = args.out_dir
+              os.makedirs(out, exist_ok=True)
+              zips = [os.path.join(root, name) for root, _dirs, files in os.walk(args.zip_dir) for name in files if name.endswith(".zip")]
+              if not check.require(len(zips) == 1, "retained image artifact holds exactly one zip"):
+                  return 1
+              zip_path, name = zips[0], os.path.basename(zips[0])
+              check.require(name == pins["image_zip"], "retained archive is named %s" % pins["image_zip"])
+              archive_sha512, archive_bytes = sha(zip_path), size(zip_path)
+              check.require(archive_sha512 == pins["image_zip_sha512"], "retained archive sha512 is the pinned %s" % archive_sha512[:16])
+              check.require(archive_bytes == int(pins["image_zip_bytes"]), "retained archive size is the pinned %d bytes" % archive_bytes)
+
+              with zipfile.ZipFile(zip_path) as archive:
+                  infos = archive.infolist()
+                  check.require(sorted(info.filename for info in infos) == sorted(IMAGE_MEMBERS),
+                                "archive members are exactly %s" % ", ".join(IMAGE_MEMBERS))
+                  if not check.require(all(not info.is_dir() and os.path.basename(info.filename) == info.filename for info in infos),
+                                       "archive members are plain files"):
+                      return 1
+                  dates = {info.filename: info.date_time for info in infos}
+                  member_sizes = {info.filename: info.file_size for info in infos}
+                  manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+
+              check.require(manifest.get("id") == pins["expected_image_id"], "manifest id is %s" % pins["expected_image_id"])
+              recorded = {artifact.get("role"): artifact for artifact in (manifest.get("artifacts") or [])}
+              digests = {}
+              for role, member in (("bios", "bbl64.bin"), ("kernel", "kernel-riscv64.bin"), ("disk", "disk.img")):
+                  digests[role] = {"role": role, "path": member, "sha512": stream_member_digest(zip_path, member), "bytes": member_sizes[member]}
+                  entry = recorded.get(role) or {}
+                  check.require(entry.get("sha512", "").lower() == digests[role]["sha512"], "%s bytes match the retained manifest" % role)
+                  check.require(int(entry.get("bytes", 0)) == digests[role]["bytes"], "%s size matches the retained manifest" % role)
+              check.require(digests["disk"]["sha512"] == pins["disk_sha512"], "disk sha512 matches the pinned digest")
+              check.require(bool(HEX128.match(str(recorded.get("bios", {}).get("sha512", "")).lower())), "bios digest is well formed")
+              check.require(bool(manifest.get("qualified")) and bool(manifest.get("qualificationRun")), "manifest stays qualified with its run")
+              template = manifest.get("template") or {}
+              check.require(template.get("id") == "basic" and bool(template.get("verified")), "manifest template block is basic and verified")
+              check.require(not (template.get("missingPackages") or template.get("belowMinimum") or template.get("pypiFailures")),
+                            "manifest template block has no missing/below-minimum/PyPI failures")
+              check.require(bool(HEX128.match(str(template.get("recipeSha512", "")).lower())), "template recipe digest is well formed")
+
+              evidence = args.evidence_dir
+              first = load(os.path.join(evidence, "manifest.json"))
+              for role in ("bios", "kernel", "disk"):
+                  entry = (first.get("artifacts") and {a.get("role"): a for a in first["artifacts"]}.get(role)) or {}
+                  check.require(entry.get("sha512", "").lower() == digests[role]["sha512"], "image evidence %s digest matches (no byte changed)" % role)
+              evidence_pins = {}
+              for line in text(os.path.join(evidence, "bios-kernel-pins.txt")).splitlines():
+                  match = re.match(r"^(\S+)\s+bytes=(\d+)\s+sha256=([0-9a-f]{64})$", line.strip())
+                  if match:
+                      evidence_pins[match.group(1)] = (int(match.group(2)), match.group(3))
+              check.require(set(evidence_pins) >= {"bbl64.bin", "kernel-riscv64.bin"},
+                            "image evidence pins bbl64.bin and kernel-riscv64.bin")
+              for member, role in (("bbl64.bin", "bios"), ("kernel-riscv64.bin", "kernel")):
+                  pin = evidence_pins.get(member)
+                  if not pin:
+                      continue
+                  check.require(stream_member_digest(zip_path, member, "sha256") == pin[1], "image evidence %s sha256 matches" % member)
+                  check.require(member_sizes[member] == pin[0], "image evidence %s size matches" % member)
+              disk = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(evidence, "disk-sha512.txt")), re.MULTILINE)
+              disk_bytes = re.search(r"^disk_bytes=(\d+)", text(os.path.join(evidence, "disk-sha512.txt")), re.MULTILINE)
+              check.require(disk is not None and disk.group(1) == digests["disk"]["sha512"], "image evidence disk.img sha512 matches")
+              check.require(disk_bytes is not None and int(disk_bytes.group(1)) == digests["disk"]["bytes"], "image evidence disk.img size matches")
+              candidate_zip = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(evidence, "zip-sha512.txt")), re.MULTILINE)
+              chain = {"candidate_zip_sha512": candidate_zip.group(1) if candidate_zip else None, "retained_zip_sha512": archive_sha512}
+              if candidate_zip:
+                  check.require(candidate_zip.group(1) == archive_sha512, "retained zip is the candidate archive from the image evidence")
+
+              # provenance-only manifest rewrite, then repack with the original member dates
+              provenance = manifest.setdefault("provenance", {})
+              before = {key: provenance.get(key) for key in ("sourceURL", "buildConfigurationURL", "distributionAllowed")}
+              provenance["sourceURL"] = "%s/%s/releases/tag/%s" % (pins["server"], pins["repo"], pins["tag"])
+              provenance["buildConfigurationURL"] = "%s/%s/tree/%s/FloeAgent/ThirdParty/TinyEMU/guest-image" % (pins["server"], pins["repo"], pins["tag"])
+              provenance["distributionAllowed"] = True
+              manifest["artifacts"] = [digests[role] for role in ("bios", "kernel", "disk")]
+              check.require(before["distributionAllowed"] is not True, "distributionAllowed was not already true (real flag flip)")
+              manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+              repacked = os.path.join(out, name)
+              with zipfile.ZipFile(zip_path) as source, zipfile.ZipFile(
+                      repacked, "w", zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as archive:
+                  for member in IMAGE_MEMBERS:
+                      info = zipfile.ZipInfo(member, date_time=dates.get(member, (2026, 9, 20, 0, 0, 0)))
+                      info.compress_type = zipfile.ZIP_DEFLATED
+                      if member == "manifest.json":
+                          with archive.open(info, "w") as sink:
+                              sink.write(manifest_bytes)
+                      else:
+                          # Streaming writer: the 16 GiB sparse disk flows
+                          # source->sink in 4 MiB buffers, never held whole.
+                          with archive.open(info, "w", force_zip64=True) as sink, source.open(member) as member_src:
+                              shutil.copyfileobj(member_src, sink, 4 * 1024 * 1024)
+              with zipfile.ZipFile(repacked) as archive:
+                  infos = archive.infolist()
+                  check.require(sorted(info.filename for info in infos) == sorted(IMAGE_MEMBERS), "final archive members are unchanged")
+                  with archive.open("manifest.json") as handle:
+                      check.require(json.loads(handle.read().decode("utf-8")) == manifest, "final archive carries the rewritten manifest")
+                  for role, member in (("bios", "bbl64.bin"), ("kernel", "kernel-riscv64.bin"), ("disk", "disk.img")):
+                      digest = hashlib.sha512()
+                      with archive.open(member) as handle:
+                          for block in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                              digest.update(block)
+                      check.require(digest.hexdigest() == digests[role]["sha512"], "final archive %s bytes unchanged" % role)
+              sums_lines = ["%s  %s\n" % (hashlib.sha512(manifest_bytes).hexdigest(), "manifest.json")]
+              sums_lines += ["%s  %s\n" % (digests[role]["sha512"], digests[role]["path"]) for role in ("bios", "kernel", "disk")]
+              with open(os.path.join(out, "SHA512SUMS"), "w", encoding="utf-8") as handle:
+                  handle.write("".join(sums_lines))
+              with open(os.path.join(out, "manifest.json"), "wb") as handle:
+                  handle.write(manifest_bytes)
+
+              facts = {"input_zip": {"name": name, "sha512": archive_sha512, "bytes": archive_bytes},
+                       "final_zip": {"name": name, "sha512": sha(repacked), "sha256": sha(repacked, "sha256"), "bytes": size(repacked)},
+                       "artifacts": digests, "manifest": manifest,
+                       "provenance": {"before": before, "after": {"sourceURL": provenance["sourceURL"],
+                                                                  "buildConfigurationURL": provenance["buildConfigurationURL"],
+                                                                  "distributionAllowed": True}},
+                       "chain": chain}
+              dump(args.report, {"facts": facts, "notes": check.notes})
+              return check.finish()
+
+
+          # ---------------------------------------------------------------------------
+          # sources
+          # ---------------------------------------------------------------------------
+          def verify_debian(check, root, sources_dir, packages_path):
+              """Debian corresponding-source checks with the full payload."""
+              facts = {}
+              gaps = [line for line in text(os.path.join(root, "debian-source-gaps.tsv")).splitlines()
+                      if line.strip() and not line.startswith("#")]
+              check.require(not gaps, "Debian mapping has zero gaps (%d rows)" % len(gaps))
+              for line in gaps:
+                  check.note("debian gap: %s" % line)
+              listed, verified = verify_list(check, sources_dir, os.path.join(sources_dir, "SOURCES.sha256"), "debian-sources")
+              on_disk = {os.path.relpath(os.path.join(dirpath, name), sources_dir)
+                         for dirpath, _dirnames, files in os.walk(sources_dir) for name in files
+                         if os.path.relpath(os.path.join(dirpath, name), sources_dir) not in ("SOURCES.sha256", "SOURCES.tsv")}
+              check.require(on_disk == set(listed), "debian-sources holds exactly the listed files (%d)" % len(on_disk))
+              tsv_path = os.path.join(sources_dir, "SOURCES.tsv")
+              if check.require(os.path.isfile(tsv_path), "debian-sources/SOURCES.tsv is present"):
+                  tsv_files = {name.strip() for line in text(tsv_path).splitlines() if line.strip() and not line.startswith("#")
+                               for name in line.split("\t")[-1].split(",") if name.strip()}
+                  check.require(tsv_files == set(listed), "SOURCES.tsv lists exactly the SOURCES.sha256 files (%d)" % len(tsv_files))
+                  facts["sources_tsv_files"] = len(tsv_files)
+              rows = [line.split("\t") for line in text(os.path.join(root, "debian-package-source-map.tsv")).splitlines()
+                      if line.strip() and not line.startswith("#")]
+              header = text(os.path.join(root, "debian-package-source-map.tsv")).splitlines()[0]
+              check.require(header.startswith("#binary\tbinary_version\tsource\tsource_version\tsuite\tpool_base\tdirectory\tfile\tsha256\tsize"),
+                            "Debian map has the expected 10-column header")
+              check.require(all(len(row) == 10 for row in rows), "every Debian map row has 10 columns")
+              rows = [row for row in rows if len(row) == 10]
+              by_name = {}
+              for dirpath, _dirnames, files in os.walk(sources_dir):
+                  for name in files:
+                      by_name.setdefault(name, []).append(os.path.join(dirpath, name))
+              broken = 0
+              for row in rows:
+                  matches = [path for path in by_name.get(row[7], []) if sha(path, "sha256") == row[8]]
+                  if not matches or int(row[9]) != size(matches[0]):
+                      broken += 1
+                      if broken <= 10:
+                          check.fail("mapped source file missing/short: %s (%s)" % (row[7], row[0]))
+              check.require(broken == 0, "every mapped source file is present with the recorded sha256 and size (%d rows)" % len(rows))
+              packages = {}
+              for line in text(packages_path).splitlines():
+                  parts = line.split("\t")
+                  if len(parts) >= 5:
+                      packages[parts[0].split(":")[0]] = (parts[1], parts[3], parts[4])
+              check.require(bool(packages), "installed package inventory parsed (%d packages)" % len(packages))
+              mapped = {row[0].split(":")[0]: row for row in rows}
+              unmapped = sorted(set(packages) - set(mapped))
+              check.require(not unmapped, "every installed package has a source mapping (%d unmapped)" % len(unmapped))
+              for name in unmapped[:10]:
+                  check.note("unmapped installed package: %s" % name)
+              mismatch = [name for name, info in packages.items() if name in mapped and mapped[name][3] != info[2]]
+              check.require(not mismatch, "installed source versions match the mapping (%d mismatches)" % len(mismatch))
+              for item in mismatch[:10]:
+                  check.note("source version mismatch: %s" % (item,))
+              indexes = {}
+              index_path = os.path.join(root, "debian-index", "indexes.tsv")
+              if check.require(os.path.isfile(index_path), "debian-index/indexes.tsv is present"):
+                  for line in text(index_path).splitlines():
+                      parts = line.split("\t")
+                      if len(parts) < 4:
+                          continue
+                      path = os.path.join(root, "debian-index", parts[3])
+                      check.require(os.path.isfile(path) and sha(path, "sha256") == parts[2],
+                                    "Debian index %s matches its recorded digest" % parts[0])
+                      indexes[parts[0]] = {"url": parts[1], "sha256": parts[2], "file": parts[3]}
+              facts.update({"gap_rows": len(gaps), "mapped_files": len(rows), "verified_files": verified,
+                            "installed_packages": len(packages), "indexes": indexes,
+                            "sources_sha256": sha(os.path.join(sources_dir, "SOURCES.sha256"), "sha256") if os.path.isfile(os.path.join(sources_dir, "SOURCES.sha256")) else None})
+              return facts
+
+
+          def cmd_sources(check, pins, args):
+              root, evidence = args.root, args.evidence_dir
+              facts = {}
+              for name in ("upstream", "runner-relink", "toolchain-source", "debian-sources", "debian-index",
+                           "SOURCES-MANIFEST.md", "debian-package-source-map.tsv", "debian-source-gaps.tsv",
+                           "guest-packages.tsv"):
+                  check.require(os.path.exists(os.path.join(root, name)), "source bundle has %s" % name)
+              if check.failures:
+                  return check.finish()
+              manifest_sha = sha(os.path.join(root, "SOURCES-MANIFEST.md"))
+              sidecar = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(root, "SOURCES-MANIFEST.md.sha512")), re.MULTILINE)
+              check.require(sidecar is not None and sidecar.group(1) == manifest_sha, "SOURCES-MANIFEST.md matches its sha512 record")
+              summary = text(os.path.join(root, "SOURCES-MANIFEST.md"))
+              check.require("gap_packages=0" in summary, "SOURCES-MANIFEST.md records gap_packages=0")
+
+              # --- Debian corresponding sources -------------------------------------
+              debian_facts = verify_debian(check, root, os.path.join(root, "debian-sources"),
+                                           os.path.join(root, "guest-packages.tsv"))
+              facts["debian"] = debian_facts
+
+              # --- basic template qualification report ----------------------------
+              qualification_dir = args.qualification_dir
+              qualification_path = os.path.join(qualification_dir, "floe-templates", "template-qualification.json")
+              check.require(os.path.isfile(qualification_path), "template qualification report is present")
+              if os.path.isfile(qualification_path):
+                  qualification = load(qualification_path)
+                  reports = qualification.get("reports") or []
+                  basic = next((report for report in reports if report.get("recipe") == "basic"), None)
+                  check.require(basic is not None, "template qualification covers the basic recipe")
+                  if basic:
+                      check.require(bool(basic.get("qualified")), "template basic is qualified")
+                      missing = [entry.get("package") for entry in (basic.get("requirements") or []) if not entry.get("present")]
+                      check.require(not missing, "every basic requirement is present (%d missing)" % len(missing))
+                      facts["template"] = {"qualified": bool(basic.get("qualified")),
+                                           "requirements": len(basic.get("requirements") or []),
+                                           "recipe_files": qualification.get("recipe_files")}
+                  verify_path = os.path.join(evidence, "template-verify.json")
+                  if check.require(os.path.isfile(verify_path), "image evidence carries template-verify.json"):
+                      verify = load(verify_path)
+                      check.require(verify.get("template") == "basic" and bool(verify.get("verified")),
+                                    "template-verify marks the basic template verified")
+                      check.require(not (verify.get("missing") or verify.get("missingPackages")
+                                         or verify.get("below_minimum") or verify.get("belowMinimum")
+                                         or verify.get("pypi_failures") or verify.get("pypiFailures")),
+                                    "template-verify has no missing/below-minimum/PyPI failures")
+              # the manifest template block is verified against the live image in cmd_image
+
+              # --- cross toolchain / glibc (exact .dsc, never a fuzzy version) ------
+              toolchain_dir = os.path.join(root, "toolchain-source")
+              pairs = []
+              for line in text(os.path.join(toolchain_dir, "toolchain-versions.txt")).splitlines():
+                  match = re.match(r"^binary\s+(\S+)\s+(\S+)\s+source\s+(\S+)\s+(\S+)$", line.strip())
+                  if match:
+                      pairs.append(match.groups())
+              check.require(bool(pairs), "toolchain-versions.txt records installed source versions")
+              glibc = next((version.split("cross")[0] for binary, version, _s, _v in pairs if re.match(r"^libc6-[^-]+-cross$", binary)), None)
+              check.require(glibc is not None, "the installed cross libc names the glibc version")
+              wanted = sorted({(source, version) for _b, _v, source, version in pairs} | {("glibc", glibc)} if glibc else set())
+              dscs = {}
+              for package, version in wanted:
+                  path = os.path.join(toolchain_dir, "%s_%s.dsc" % (package, version))
+                  if check.require(os.path.isfile(path), "exact source package present: %s_%s.dsc" % (package, version)):
+                      dscs[(package, version)] = path
+                      for name, (digest, declared_size) in sorted(dsc_files(path).items()):
+                          target = os.path.join(toolchain_dir, name)
+                          check.require(os.path.isfile(target) and sha(target, "sha256") == digest and size(target) == declared_size,
+                                        "%s: %s matches the .dsc Checksums-Sha256" % (package, name))
+              _listed, verified = verify_list(check, toolchain_dir, os.path.join(toolchain_dir, "toolchain-sources.sha256"), "toolchain-sources")
+              gap_lines = [line.strip() for line in text(os.path.join(toolchain_dir, "TOOLCHAIN-GAPS.txt")).splitlines() if line.strip()]
+              resolved = True
+              for line in gap_lines:
+                  if line.startswith(("glibc_exact_missing=", "glibc_source_missing=")):
+                      check.fail("real glibc source gap: %s" % line)
+                      resolved = False
+                      continue
+                  names = set(re.findall(r"(?:binary/source=|source=)([A-Za-z0-9][A-Za-z0-9+._-]*)", line))
+                  if names & {package for package, _version in dscs}:
+                      check.note("historical fetch attempt resolved by a verified exact source: %s" % line)
+                  else:
+                      check.fail("unresolved toolchain gap: %s" % line)
+                      resolved = False
+              if not gap_lines:
+                  check.ok("TOOLCHAIN-GAPS.txt has no gap lines")
+              elif resolved:
+                  check.ok("every toolchain gap line is a historical attempt resolved by a verified exact source")
+              facts["toolchain"] = {"glibc_version": glibc, "source_packages": ["%s=%s" % pair for pair in wanted],
+                                    "installed": ["%s %s -> %s %s" % pair for pair in pairs], "verified_files": verified,
+                                    "dsc_sha256": {("%s_%s.dsc" % key): sha(path, "sha256") for key, path in sorted(dscs.items())},
+                                    "gap_lines": gap_lines}
+
+              # --- runner relink material (LGPL-2.1 static glibc) -------------------
+              relink = os.path.join(root, "runner-relink")
+              for name in ("floe_exec.c", "floe_clock.h", "Makefile", "RELINK.md", "toolchain.txt", "runner-sha256.txt", "floe-exec-riscv64.o"):
+                  check.require(os.path.isfile(os.path.join(relink, name)), "runner-relink/%s is present" % name)
+              if check.failures:
+                  return check.finish()
+              obj = os.path.join(relink, "floe-exec-riscv64.o")
+              info = elf(obj)
+              check.require(info is not None and info["class"] == 64 and info["machine"] == 243 and info["type"] == 1,
+                            "relink object is a 64-bit little-endian RISC-V ET_REL object")
+              obj_sha = sha(obj, "sha256")
+              toolchain_record = text(os.path.join(relink, "toolchain.txt"))
+              check.require(obj_sha in toolchain_record, "relink object sha256 is recorded in toolchain.txt")
+              check.require("link_command=" in toolchain_record and "cross_cc=" in toolchain_record, "toolchain.txt records compiler and link command")
+              shipped = re.search(r"^([0-9a-f]{64})\s", text(os.path.join(relink, "runner-sha256.txt")), re.MULTILINE)
+              evidence_runner = re.search(r"^([0-9a-f]{64})\s", text(os.path.join(evidence, "runner-sha256.txt")), re.MULTILINE)
+              check.require(shipped is not None and evidence_runner is not None and shipped.group(1) == evidence_runner.group(1),
+                            "shipped runner sha256 matches the image build evidence")
+              check.require("LGPL" in text(os.path.join(relink, "RELINK.md")), "RELINK.md documents the LGPL-2.1 relink path")
+              for name in ("floe_exec.c", "floe_clock.h"):
+                  payload = gh_json("repos/%s/contents/FloeAgent/LinuxGuest/runner/%s?ref=%s" % (pins["repo"], name, pins["target_commit"]))
+                  if payload is None:
+                      check.fail("target commit lacks FloeAgent/LinuxGuest/runner/%s" % name)
+                  else:
+                      check.require(hashlib.sha256(base64.b64decode(payload["content"])).hexdigest() == sha(os.path.join(relink, name), "sha256"),
+                                    "runner-relink/%s is byte-identical to the target commit" % name)
+              facts["relink"] = {"object_sha256": obj_sha, "object_bytes": size(obj), "shipped_runner_sha256": shipped.group(1) if shipped else None,
+                                 "sources_sha256": {name: sha(os.path.join(relink, name), "sha256") for name in ("floe_exec.c", "floe_clock.h", "Makefile")}}
+
+              # --- kernel + boot loader --------------------------------------------
+              upstream = os.path.join(root, "upstream")
+              upstream_manifest = text(os.path.join(upstream, "SOURCE-MANIFEST.md"))
+              evidence_pins = {}
+              for line in text(os.path.join(evidence, "bios-kernel-pins.txt")).splitlines():
+                  match = re.match(r"^(\S+)\s+bytes=(\d+)\s+sha256=([0-9a-f]{64})$", line.strip())
+                  if match:
+                      evidence_pins[match.group(1)] = (int(match.group(2)), match.group(3))
+              pinned = {}
+              for member in ("bbl64.bin", "kernel-riscv64.bin"):
+                  match = re.search(r"- `%s` sha256 `([0-9a-f]{64})` \((\d+) bytes\)" % re.escape(member), upstream_manifest)
+                  check.require(match is not None, "upstream SOURCE-MANIFEST.md pins %s" % member)
+                  if match and member in evidence_pins:
+                      check.require((int(match.group(2)), match.group(1)) == evidence_pins[member], "upstream %s pin matches the shipped binary" % member)
+                      pinned[member] = {"sha256": match.group(1), "bytes": int(match.group(2))}
+              tarballs = {}
+              for name in sorted(os.listdir(upstream)):
+                  if name.endswith((".tar.gz", ".tar.xz")):
+                      warnings, digests = fingerprint(os.path.join(upstream, name))
+                      for warning in warnings:
+                          check.fail("upstream %s %s" % (name, warning))
+                      if digests:
+                          tarballs[name] = digests
+              check.require(len(tarballs) >= 2, "upstream carries kernel and boot loader source tarballs (%d)" % len(tarballs))
+              # build-kernel-bbl.sh copies each pinned patch (and the kernel config) into
+              # the matching *-src tree before tarring it, so the shipped corresponding
+              # source keeps them at upstream/riscv-pk-src/ and upstream/riscv-linux-src/.
+              for relative in ("riscv-pk-src/riscv-pk.diff", "riscv-linux-src/riscv-linux.diff",
+                               "riscv-linux-src/config_linux_riscv64"):
+                  check.require(os.path.isfile(os.path.join(upstream, relative)), "upstream/%s is present" % relative)
+              facts["upstream"] = {"manifest_sha256": sha(os.path.join(upstream, "SOURCE-MANIFEST.md"), "sha256"), "pins": pinned, "tarballs": tarballs}
+
+              # --- license texts that must travel with the image --------------------
+              for name in ("guest-copyrights.tar.gz", "guest-common-licenses.tar.gz", "guest-packages.tsv"):
+                  check.require(os.path.isfile(os.path.join(evidence, name)), "image evidence carries %s" % name)
+              facts["licenses"] = {name: {"sha256": sha(os.path.join(evidence, name), "sha256"), "bytes": size(os.path.join(evidence, name))}
+                                   for name in ("guest-copyrights.tar.gz", "guest-common-licenses.tar.gz", "guest-packages.tsv")
+                                   if os.path.isfile(os.path.join(evidence, name))}
+              dump(args.report, {"facts": facts, "notes": check.notes})
+              return check.finish()
+
+
+          # ---------------------------------------------------------------------------
+          # merge (one retained artifact tree into the source assembly root)
+          # ---------------------------------------------------------------------------
+          def cmd_merge(check, pins, args):
+              copied, conflicts = 0, 0
+              for root, _dirs, files in os.walk(args.source_dir):
+                  for name in files:
+                      src = os.path.join(root, name)
+                      rel = os.path.relpath(src, args.source_dir)
+                      dst = os.path.join(args.root, rel)
+                      if os.path.exists(dst):
+                          if sha(src) == sha(dst):
+                              continue
+                          check.fail("conflicting duplicate %s (from %s)" % (rel, os.path.basename(args.source_dir)))
+                          conflicts += 1
+                          continue
+                      os.makedirs(os.path.dirname(dst), exist_ok=True)
+                      shutil.copy2(src, dst)
+                      copied += 1
+              check.ok("merged %s: %d file(s) copied, %d conflict(s)" % (os.path.basename(args.source_dir), copied, conflicts))
+              return check.finish()
+
+
+          # ---------------------------------------------------------------------------
+          # package-hash record (written before the large uploads)
+          # ---------------------------------------------------------------------------
+          def cmd_hash(check, pins, args):
+              image = load(args.image_report)
+              final = image["facts"]["final_zip"]
+              payload = {
+                  "schema": "floe-linux-template-package-hash/v1",
+                  "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                  "componentTag": pins["tag"],
+                  "targetCommit": pins["target_commit"],
+                  "workflowRun": pins["workflow_run"],
+                  "imageID": image["facts"]["manifest"]["id"],
+                  "archiveName": final["name"],
+                  "archiveSHA512": final["sha512"],
+                  "archiveSHA256": final["sha256"],
+                  "archiveBytes": final["bytes"],
+                  "manifestSHA512": sha(os.path.join(args.image_dir, "manifest.json")),
+                  "sourceMaterial": "verified after this record; release created only when complete",
+                  "releaseState": "pending-publish",
+              }
+              dump(os.path.join(args.out_dir, "package-hash.json"), payload)
+              dump(args.report, payload)
+              check.ok("package hash recorded: %s sha512 %s" % (payload["archiveName"], payload["archiveSHA512"][:16]))
+              return check.finish()
+
+
+          # ---------------------------------------------------------------------------
+          # record (release notes, source offer, distribution.json, catalog entry)
+          # ---------------------------------------------------------------------------
+          def cmd_record(check, pins, args):
+              image, sources = load(args.image_report), load(args.sources_report)
+              out = args.out_dir
+              os.makedirs(out, exist_ok=True)
+              final = image["facts"]["final_zip"]
+              manifest = image["facts"]["manifest"]
+
+              for name in ("manifest.json", "SHA512SUMS"):
+                  install_asset(os.path.join(args.image_dir, name), out)
+
+              # The notes, offer and sums must describe the FINAL asset set, so
+              # account for the files this step itself adds. SHA256SUMS lists
+              # every other asset (a sums file never lists itself).
+              asset_names = sorted(os.listdir(out))
+              known_extra = ["RELEASE-NOTES.md", "SOURCE-OFFER.md", "SHA256SUMS", "distribution.json"]
+              full_names = sorted(set(asset_names) | set(known_extra))
+              def asset_list(names):
+                  return [{"name": name, "sha256": sha(os.path.join(out, name), "sha256"), "bytes": size(os.path.join(out, name))}
+                          for name in names if os.path.isfile(os.path.join(out, name))]
+              release_url = "%s/%s/releases/tag/%s" % (pins["server"], pins["repo"], pins["tag"])
+
+              notes = [RELEASE_MARKER, "# %s" % (args.release_title or pins["tag"]), "",
+                       "Component prerelease for the qualified Floe BASIC Linux template image `%s`." % manifest.get("id"),
+                       "Created by `.github/workflows/linux-template-distribute.yml` (run %s)." % pins["workflow_run"], "",
+                       "## Image", "",
+                       "- archive: `%s` (%d bytes)" % (final["name"], final["bytes"]),
+                       "- archive sha512: `%s`" % final["sha512"],
+                       "- archive sha256: `%s`" % final["sha256"],
+                       "- cmdline: `%s`" % manifest.get("cmdline", ""),
+                       "- bbl/kernel/disk bytes and digests are unchanged from the qualified build; only",
+                       "  `manifest.json` provenance was rewritten (release-tag source URLs + `distributionAllowed: true`).", "",
+                       "## Corresponding source in this release", ""]
+              notes += ["- `%s`" % name for name in full_names]
+              notes += ["", "Component CI run %s (`%s`)." % (pins["run_id"], pins["run_sha"]),
+                        "`SOURCE-OFFER.md` carries the license mapping, the Debian source index digests and the",
+                        "LGPL-2.1 relink material; `SHA256SUMS` covers every other asset.", "",
+                        "Release state: **published prerelease** (`draft: false`, `prerelease: true`, `latest: false`, tag does not start with `v`).", ""]
+              with open(os.path.join(out, "RELEASE-NOTES.md"), "w", encoding="utf-8") as handle:
+                  handle.write("\n".join(notes))
+
+              source_facts = sources.get("facts", {})
+              offer = ["# Corresponding source offer — Floe BASIC Linux template image `%s`" % manifest.get("id"), "",
+                       "This component prerelease publishes the image archive and the complete corresponding",
+                       "source for the exact binaries inside it. The manifest inside the archive declares",
+                       "`distributionAllowed: true` and points at this release tag for its source URLs.", "",
+                       "## Provenance", "",
+                       "- release tag target commit: `%s`" % pins["target_commit"],
+                       "- distribution run: %s (`%s`)" % (pins["workflow_run"], pins["workflow_sha"]),
+                       "- component CI run: %s (`%s`), retained candidate archive sha512 `%s`" % (pins["run_id"], pins["run_sha"], image["facts"]["input_zip"]["sha512"]),
+                       "- image id: `%s` (qualified, template `basic` verified)" % manifest.get("id"), "",
+                       "## License mapping", "",
+                       "| Component | License | Source in this release |", "| --- | --- | --- |",
+                       "| Floe runner | MPL-2.0 | `runner-relink` asset |",
+                       "| glibc (statically linked into the runner) | LGPL-2.1 | `toolchain-source` asset, glibc `%s` + `runner-relink` RELINK.md |" % source_facts.get("toolchain", {}).get("glibc_version"),
+                       "| Linux kernel 4.15 (riscv-linux) | GPL-2.0 | `upstream` asset |",
+                       "| riscv-pk / bbl | BSD-3-Clause | `upstream` asset |",
+                       "| Debian userland packages | per package (mostly GPL/LGPL/BSD/MIT) | `debian-sources` assets + `guest-copyrights.tar.gz` / `guest-common-licenses.tar.gz` in the image-evidence asset |", "",
+                       "## Debian source completeness", "",
+                       "- mapped files (binary -> source -> file): %s" % source_facts.get("debian", {}).get("mapped_files"),
+                       "- verified corresponding files: %s" % source_facts.get("debian", {}).get("verified_files"),
+                       "- source mapping gaps: %s" % source_facts.get("debian", {}).get("gap_rows"),
+                       "- installed packages covered: %s" % source_facts.get("debian", {}).get("installed_packages"),
+                       "- suites: %s" % ", ".join(sorted((source_facts.get("debian", {}).get("indexes") or {}).keys())), "",
+                       "## Relink (LGPL-2.1 §6)", "",
+                       "The shipped runner (`sha256 %s`) is statically linked against glibc." % source_facts.get("relink", {}).get("shipped_runner_sha256"),
+                       "The `runner-relink` asset carries `floe_exec.c`, `floe_clock.h`, `Makefile`, the",
+                       "relocatable object (`sha256 %s`), the exact link command and RELINK.md;" % source_facts.get("relink", {}).get("object_sha256"),
+                       "the matching glibc source is in the `toolchain-source` asset.", "", "## Asset digests", ""]
+              # The offer table and SHA256SUMS cover exactly the files that exist
+              # when they are written (everything except SHA256SUMS itself and
+              # distribution.json, which records them); distribution.json then
+              # lists the complete final set.
+              sums_names = [name for name in full_names if name not in ("SHA256SUMS", "distribution.json")]
+              offer += ["- `%s` sha256 `%s` (%d bytes)" % (asset["name"], asset["sha256"], asset["bytes"]) for asset in asset_list(sums_names)]
+              offer += ["", "## Notes", "",
+                        "- The image archive is the qualified candidate repacked with a provenance-only manifest change.",
+                        "- This release is a published component prerelease; the App pins its public archive URL.", ""]
+              with open(os.path.join(out, "SOURCE-OFFER.md"), "w", encoding="utf-8") as handle:
+                  handle.write("\n".join(offer))
+
+              with open(os.path.join(out, "SHA256SUMS"), "w", encoding="utf-8") as handle:
+                  handle.write("".join("%s  %s\n" % (asset["sha256"], asset["name"]) for asset in asset_list(sums_names)))
+
+              catalog_entry = {"id": manifest.get("id"), "componentTag": pins["tag"], "releaseURL": release_url,
+                               "imageURL": "%s/%s/releases/download/%s/%s" % (pins["server"], pins["repo"], pins["tag"], final["name"]),
+                               "archiveSHA512": final["sha512"], "archiveSHA256": final["sha256"], "archiveBytes": final["bytes"],
+                               "manifestSHA512": sha(os.path.join(out, "manifest.json")),
+                               "sourceOfferURL": release_url, "sourceCommit": pins["target_commit"],
+                               "distributionAllowed": True, "qualified": bool(manifest.get("qualified")), "releaseState": "published-prerelease",
+                               "manifest": manifest}
+              dump(os.path.join(out, "distribution.json"),
+                   {"schema": "floe-linux-template-distribution/v1", "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "repository": pins["repo"], "componentTag": pins["tag"], "targetCommit": pins["target_commit"],
+                    "workflowRun": pins["workflow_run"], "workflowSHA": pins["workflow_sha"], "pins": pins,
+                    "image": {"finalArchive": final, "inputArchive": image["facts"]["input_zip"], "manifest": manifest,
+                              "provenanceChange": image["facts"]["provenance"], "chain": image["facts"]["chain"]},
+                     "sources": source_facts, "assets": asset_list(full_names), "catalogEntry": catalog_entry,
+                     "release": {"draft": False, "prerelease": True, "latest": False, "tagStartsWithV": False}})
+              dump(args.report, {"assets": asset_list(full_names), "catalogEntry": catalog_entry})
+              check.ok("distribution record written with %d asset(s)" % len(full_names))
+              return check.finish()
+
+
+          def main(argv=None):
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument("command", choices=("image", "sources", "hash", "record", "merge"))
+              parser.add_argument("--pins", required=True)
+              parser.add_argument("--zip-dir", default="")
+              parser.add_argument("--evidence-dir", default="")
+              parser.add_argument("--qualification-dir", default="")
+              parser.add_argument("--image-dir", default="")
+              parser.add_argument("--source-dir", default="")
+              parser.add_argument("--root", default="")
+              parser.add_argument("--out-dir", default="")
+              parser.add_argument("--report", required=True)
+              parser.add_argument("--image-report", default="")
+              parser.add_argument("--sources-report", default="")
+              parser.add_argument("--release-title", default="")
+              args = parser.parse_args(argv)
+              if args.command in ("image", "hash", "record") and not args.out_dir:
+                  parser.error("--out-dir is required for %s" % args.command)
+              pins = load(args.pins)
+              checks = {"image": cmd_image, "sources": cmd_sources, "hash": cmd_hash, "record": cmd_record, "merge": cmd_merge}
+              return checks[args.command](Check(args.command), pins, args)
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          VERIFY_DIST_PY
+          python3 -m py_compile "$DIST/verify_dist.py"
+          cp "$GITHUB_WORKSPACE/.github/workflows/linux-template-distribute.yml" "$DIST/workflow.yml"
+
+      - name: Download the retained image candidate, image evidence and template qualification
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist"
+          gh run download "$RUN_ID" --repo "$REPO" -n "$IMAGE_ARTIFACT" -D "$DIST/retained/catalog"
+          gh run download "$RUN_ID" --repo "$REPO" -n "$IMAGE_EVIDENCE_ARTIFACT" -D "$DIST/retained/image-evidence"
+          gh run download "$RUN_ID" --repo "$REPO" -n "$TEMPLATE_QUALIFICATION_ARTIFACT" -D "$DIST/retained/qualification"
+          find "$DIST/retained" -maxdepth 2 -type f -printf '%12s  %p\n' | sort -k2 | head -40
+
+      - name: Verify the image archive and rewrite only the manifest provenance
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist"
+          python3 "$DIST/verify_dist.py" image --pins "$DIST/pins.json" \
+            --zip-dir "$DIST/retained/catalog" --evidence-dir "$DIST/retained/image-evidence" \
+            --out-dir "$DIST/image" --report "$DIST/image.json"
+
+      - name: Record the final package hashes (small artifact, before the large uploads)
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist"
+          python3 "$DIST/verify_dist.py" hash --pins "$DIST/pins.json" \
+            --image-report "$DIST/image.json" --image-dir "$DIST/image" \
+            --out-dir "$DIST/package-hash" --report "$DIST/package-hash/package-hash.json"
+
+      - name: Upload the package-hash artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-template-distribution-package-hash-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-dist/package-hash/package-hash.json
+            ${{ runner.temp }}/floe-dist/image/manifest.json
+            ${{ runner.temp }}/floe-dist/image/SHA512SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Download the retained corresponding-source bundles
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist"
+          gh run download "$RUN_ID" --repo "$REPO" -n "$SOURCE_UPSTREAM_ARTIFACT" -D "$DIST/retained/source-upstream"
+          gh run download "$RUN_ID" --repo "$REPO" -n "$SOURCE_DEBIAN_ARTIFACT" -D "$DIST/retained/source-debian-1"
+          gh run download "$RUN_ID" --repo "$REPO" -n "$SOURCE_EVIDENCE_ARTIFACT" -D "$DIST/retained/source-evidence"
+          du -sh "$DIST/retained"/*
+
+      - name: Assemble and verify the corresponding sources
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist"
+          ROOT="$DIST/sources"
+          mkdir -p "$ROOT"
+          for bundle in source-upstream source-evidence; do
+            python3 "$DIST/verify_dist.py" merge --pins "$DIST/pins.json" \
+              --source-dir "$DIST/retained/$bundle" --root "$ROOT" --out-dir "$ROOT" \
+              --report "$DIST/merge-$bundle.json"
+          done
+          # The Debian artifact uploads one shard directory, so its download root
+          # is the shard itself: place it at debian-sources/shard-<N>.
+          SHARD="$(printf '%s' "$SOURCE_DEBIAN_ARTIFACT" | sed -E 's/^linux-guest-sources-debian-([0-9]+)-[0-9]+$/shard-\1/')"
+          test "$SHARD" != "$SOURCE_DEBIAN_ARTIFACT" || { echo "cannot derive the shard directory from $SOURCE_DEBIAN_ARTIFACT"; exit 1; }
+          mkdir -p "$ROOT/debian-sources/$SHARD"
+          python3 "$DIST/verify_dist.py" merge --pins "$DIST/pins.json" \
+            --source-dir "$DIST/retained/source-debian-1" --root "$ROOT/debian-sources/$SHARD" --out-dir "$ROOT" \
+            --report "$DIST/merge-source-debian.json"
+          # The license texts, package inventory and build transcripts stay with
+          # the source material (the source collector only references them).
+          python3 "$DIST/verify_dist.py" merge --pins "$DIST/pins.json" \
+            --source-dir "$DIST/retained/image-evidence" --root "$ROOT" --out-dir "$ROOT" \
+            --report "$DIST/merge-image-evidence.json"
+          python3 "$DIST/verify_dist.py" sources --pins "$DIST/pins.json" \
+            --root "$ROOT" --evidence-dir "$DIST/retained/image-evidence" \
+            --qualification-dir "$DIST/retained/qualification" --report "$DIST/sources.json"
+
+      - name: Build the release assets
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist" ASSETS="$RUNNER_TEMP/floe-dist/assets"
+          ROOT="$DIST/sources"
+          tar_bundle() { local src="$1" name="$2"; tar -C "$(dirname "$src")" -cf "$ASSETS/$name.tar" "$(basename "$src")"; }
+          ZIP="$(find "$DIST/image" -maxdepth 1 -name '*.zip' -type f | head -1)"
+          test -n "$ZIP" || { echo "no repacked image archive"; exit 1; }
+          cp "$ZIP" "$DIST/image/manifest.json" "$DIST/image/SHA512SUMS" "$ASSETS/"
+          tar_bundle "$ROOT/upstream" "linux-guest-sources-upstream-$RUN_ID"
+          tar_bundle "$ROOT/runner-relink" "linux-guest-runner-relink-$RUN_ID"
+          tar_bundle "$ROOT/toolchain-source" "linux-guest-toolchain-source-$RUN_ID"
+          shopt -s nullglob
+          for shard in "$ROOT"/debian-sources/shard-*; do
+            test -d "$shard" || continue
+            tar_bundle "$shard" "linux-guest-sources-debian-$(basename "$shard")-$RUN_ID"
+          done
+          shopt -u nullglob
+          mkdir -p "$DIST/source-index/debian-sources"
+          cp "$ROOT"/*.md "$ROOT"/*.sha512 "$ROOT"/*.tsv "$DIST/source-index/"
+          cp -r "$ROOT/debian-index" "$DIST/source-index/"
+          cp "$ROOT/debian-sources/SOURCES.sha256" "$ROOT/debian-sources/SOURCES.tsv" "$DIST/source-index/debian-sources/"
+          tar_bundle "$DIST/source-index" "linux-guest-source-index-$RUN_ID"
+          tar_bundle "$DIST/retained/image-evidence" "linux-guest-image-evidence-$RUN_ID"
+          tar_bundle "$DIST/retained/qualification" "linux-guest-template-qualification-$RUN_ID"
+          python3 "$DIST/verify_dist.py" record --pins "$DIST/pins.json" \
+            --image-report "$DIST/image.json" --sources-report "$DIST/sources.json" --image-dir "$DIST/image" \
+            --out-dir "$ASSETS" --report "$DIST/record.json" --release-title "$RELEASE_TITLE"
+          find "$ASSETS" -maxdepth 1 -type f -printf '%12s  %p\n' | sort -k2
+          python3 - <<'SIZE_PY'
+          import os
+          limit = 2_000_000_000
+          for name in sorted(os.listdir(os.environ["ASSETS"])):
+              size = os.path.getsize(os.path.join(os.environ["ASSETS"], name))
+              print("%12d  %s" % (size, name))
+              if size >= limit:
+                  raise SystemExit("asset exceeds the GitHub release per-asset limit: %s" % name)
+          SIZE_PY
+
+      - name: Create or resume the component prerelease (never latest, never a draft)
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist" ASSETS="$RUNNER_TEMP/floe-dist/assets"
+          python3 - <<'RELEASE_PY'
+          import hashlib, json, os, subprocess, sys, time
+
+          def _sha256(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for block in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                      digest.update(block)
+              return digest.hexdigest()
+
+          REPO, TAG, TARGET = os.environ["REPO"], os.environ["COMPONENT_TAG"], os.environ["TARGET_COMMIT"]
+          MARKER, ASSETS = os.environ["RELEASE_MARKER"], os.environ["ASSETS"]
+          notes = os.path.join(ASSETS, "RELEASE-NOTES.md")
+
+          def gh(*args, allow_failure=False):
+              result = subprocess.run(["gh", *args], capture_output=True, text=True)
+              if result.returncode != 0 and not allow_failure:
+                  raise SystemExit("gh %s failed: %s%s" % (" ".join(args[:4]), result.stdout, result.stderr))
+              return result
+
+          def api(path, allow_missing=False):
+              result = gh("api", path, allow_failure=True)
+              if result.returncode != 0:
+                  if allow_missing:
+                      return None
+                  raise SystemExit("gh api %s failed: %s%s" % (path, result.stdout, result.stderr))
+              return json.loads(result.stdout)
+
+          def find_release():
+              """Return the release for TAG. Anything that carries the tag name but
+              is not exactly our single marked published prerelease is a hard stop
+              before any write."""
+              release = api("repos/%s/releases/tags/%s" % (REPO, TAG), allow_missing=True)
+              if release is not None:
+                  return release
+              listed = api("repos/%s/releases?per_page=100" % REPO) or []
+              matches = [item for item in listed if item.get("tag_name") == TAG]
+              if not matches:
+                  return None
+              if len(matches) == 1 and matches[0].get("prerelease") and not matches[0].get("draft") \
+                      and MARKER in (matches[0].get("body") or ""):
+                  return matches[0]
+              raise SystemExit("release %s exists but is not our single marked prerelease; refusing to touch it: %s"
+                               % (TAG, [(item.get("id"), item.get("draft"), item.get("prerelease")) for item in matches]))
+
+          def required_release():
+              found = find_release()
+              if found is None:
+                  raise SystemExit("release %s is not visible after the upload step" % TAG)
+              return found
+
+          files = sorted(os.path.join(ASSETS, name) for name in os.listdir(ASSETS))
+          release = find_release()
+          if release is None:
+              if api("repos/%s/git/ref/tags/%s" % (REPO, TAG), allow_missing=True) is not None:
+                  raise SystemExit("tag %s already exists; refusing to overwrite it" % TAG)
+              print(gh("release", "create", TAG, "--repo", REPO, "--prerelease", "--latest=false",
+                       "--target", TARGET, "--title", os.environ["RELEASE_TITLE"], "--notes-file", notes).stdout.strip())
+          elif not (release.get("prerelease") and not release.get("draft") and release.get("tag_name") == TAG
+                    and MARKER in (release.get("body") or "")):
+              raise SystemExit("release %s exists and is not our marked prerelease; refusing to touch it" % TAG)
+          else:
+              print("resuming prerelease %s" % release.get("html_url"))
+
+          release = required_release()
+          existing = {asset["name"]: asset for asset in release.get("assets", [])}
+          planned, skipped = [], []
+          for path in files:
+              name = os.path.basename(path)
+              size = os.path.getsize(path)
+              digest = "sha256:" + _sha256(path)
+              current = existing.get(name)
+              if current:
+                  if current.get("size") == size and (not current.get("digest") or current["digest"] == digest):
+                      skipped.append(name)
+                      continue
+                  raise SystemExit("release already has a different asset %s; refusing to overwrite" % name)
+              planned.append(path)
+          if planned:
+              print(gh("release", "upload", TAG, *planned, "--repo", REPO).stdout.strip())
+          release = required_release()
+          if release.get("draft"):
+              raise SystemExit("release %s unexpectedly became a draft" % TAG)
+          if not release.get("prerelease"):
+              raise SystemExit("release %s is not a prerelease" % TAG)
+          assets = {asset["name"]: asset for asset in release.get("assets", [])}
+          problems = []
+          for path in files:
+              name = os.path.basename(path)
+              asset = assets.get(name)
+              if not asset:
+                  problems.append("missing asset %s" % name)
+                  continue
+              if asset.get("size") != os.path.getsize(path):
+                  problems.append("size mismatch for %s" % name)
+          for path in files:
+              name = os.path.basename(path)
+              asset = assets.get(name)
+              if asset and asset.get("digest"):
+                  want = "sha256:" + _sha256(path)
+                  if asset["digest"] != want:
+                      problems.append("digest mismatch for %s" % name)
+          extra = sorted(set(assets) - {os.path.basename(path) for path in files})
+          if extra:
+              problems.append("unexpected pre-existing assets: %s" % extra)
+          if problems:
+              raise SystemExit("release verification failed: %s" % "; ".join(problems))
+
+          # public download URL check (published prerelease assets are anonymous)
+          base = "%s/%s/releases/download/%s" % (os.environ["SERVER"], REPO, TAG)
+          for path in files:
+              name = os.path.basename(path)
+              probe = subprocess.run(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "60",
+                                      "-L", "%s/%s" % (base, name)], capture_output=True, text=True)
+              code = probe.stdout.strip()
+              if code not in ("200", "302"):
+                  problems.append("public URL for %s answered %s" % (name, code or probe.stderr.strip()))
+          if problems:
+              raise SystemExit("public URL verification failed: %s" % "; ".join(problems))
+
+          record = {"syncedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "url": release.get("html_url"),
+                    "id": release.get("id"), "tag": TAG, "target_commitish": release.get("target_commitish"),
+                    "draft": release.get("draft"), "prerelease": release.get("prerelease"), "make_latest": False,
+                    "assets": [{"name": name, "size": asset.get("size"), "digest": asset.get("digest"),
+                                "public_url": "%s/%s" % (base, name)} for name, asset in sorted(assets.items())],
+                    "uploaded": [os.path.basename(path) for path in planned], "skipped": skipped}
+          with open(os.path.join(os.environ["DIST"], "release.json"), "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          print("prerelease %s: %d asset(s) (%d uploaded, %d already present)" % (record["url"], len(assets), len(planned), len(skipped)))
+          print("state: draft=%s prerelease=%s latest=never" % (record["draft"], record["prerelease"]))
+          RELEASE_PY
+
+      - name: Publish the distribution record (small artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-template-distribution-record-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-dist/assets/distribution.json
+            ${{ runner.temp }}/floe-dist/assets/RELEASE-NOTES.md
+            ${{ runner.temp }}/floe-dist/assets/SOURCE-OFFER.md
+            ${{ runner.temp }}/floe-dist/assets/SHA256SUMS
+            ${{ runner.temp }}/floe-dist/assets/manifest.json
+            ${{ runner.temp }}/floe-dist/assets/SHA512SUMS
+            ${{ runner.temp }}/floe-dist/package-hash/package-hash.json
+            ${{ runner.temp }}/floe-dist/release.json
+            ${{ runner.temp }}/floe-dist/image.json
+            ${{ runner.temp }}/floe-dist/sources.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        run: |
+          export DIST="$RUNNER_TEMP/floe-dist"
+          {
+            echo "## Floe Linux template basic distribution"
+            echo ""
+            echo "- component tag: \`$COMPONENT_TAG\` (published prerelease, never latest, never a draft)"
+            echo "- target commit: \`$TARGET_COMMIT\`"
+            echo "- pinned component CI run: $RUN_ID @ $RUN_SHA"
+            echo "- pinned artifacts: image $IMAGE_ARTIFACT_ID / evidence $IMAGE_EVIDENCE_ARTIFACT_ID / qualification $TEMPLATE_QUALIFICATION_ARTIFACT_ID / sources $SOURCE_UPSTREAM_ARTIFACT_ID / $SOURCE_DEBIAN_ARTIFACT_ID / $SOURCE_EVIDENCE_ARTIFACT_ID"
+            echo ""
+            if [ -f "$DIST/package-hash/package-hash.json" ]; then
+              echo '```json'
+              cat "$DIST/package-hash/package-hash.json"
+              echo '```'
+            fi
+            if [ -f "$DIST/release.json" ]; then
+              echo '```json'
+              cat "$DIST/release.json"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
