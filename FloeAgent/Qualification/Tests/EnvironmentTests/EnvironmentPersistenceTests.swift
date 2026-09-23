@@ -182,10 +182,28 @@ extension EnvironmentPersistenceTests {
         let templateURL = roots.layerURL(id: template.id, kind: .template)
         #expect(try Data(contentsOf: templateURL.appendingPathComponent("usr/lib/value")) == Data("template-data".utf8))
         #expect(try LayerManifest.loadChecked(from: templateURL)?.casRefs.isEmpty == true)
-        do { _ = try await registry.createTemplate(from: source.id, name: "saved"); Issue.record("Duplicate template accepted") } catch {}
+        // The runtime-v2 template contract (C, 27d82790): committing the SAME
+        // content again is idempotent — it returns the existing version, it
+        // does not create a second record and never overwrites bytes.
+        let identical = try await registry.createTemplate(from: source.id, name: "saved")
+        #expect(identical.id == template.id)
+        #expect(identical.templateVersion == template.templateVersion)
+        #expect(identical.templateDigest == template.templateDigest)
+        #expect(await registry.templates(named: "saved").count == 1)
+        // Committing DIFFERENT content creates the next version; the committed
+        // version 1 keeps its bytes and digest (immutability, never overwrite).
+        let changed = sourceURL.appendingPathComponent("usr/lib/extra")
+        try FileManager.default.createDirectory(at: changed.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("changed".utf8).write(to: changed)
+        let next = try await registry.createTemplate(from: source.id, name: "saved")
+        #expect(next.templateVersion == 2)
+        #expect(next.templateDigest != template.templateDigest)
+        #expect(try Data(contentsOf: templateURL.appendingPathComponent("usr/lib/value")) == Data("template-data".utf8))
+        #expect(await registry.template(named: "saved", version: 1)?.templateDigest == template.templateDigest)
         let restarted = EnvironmentRegistry(roots: roots, baseRevision: "one")
         try await restarted.prepare()
-        #expect(await restarted.template(named: "saved")?.id == template.id)
+        #expect(await restarted.template(named: "saved")?.id == next.id)
+        #expect(await restarted.template(named: "saved", version: 1)?.id == template.id)
     }
 }
 
