@@ -14,6 +14,12 @@ RUNNER = Path(__file__).with_name("run_test_with_diagnostics.py")
 
 
 class TestDiagnosticRunner(unittest.TestCase):
+    def test_sampling_delay_preserves_first_expired_deadline(self):
+        self.assertEqual(runner.expired_deadline_reason(10, 0, 0, 4, 0.5, True), "stalled")
+        self.assertEqual(runner.expired_deadline_reason(10, 0, 3.8, 4, 0.5, True), "timeout")
+        self.assertEqual(runner.expired_deadline_reason(10, 0, 0, 4, 0.5, False), "timeout")
+        self.assertIsNone(runner.expired_deadline_reason(0.25, 0, 0, 4, 0.5, True))
+
     def invoke(self, code, *options):
         with tempfile.TemporaryDirectory() as root:
             output = Path(root) / "evidence"

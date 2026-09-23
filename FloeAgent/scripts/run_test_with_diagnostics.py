@@ -101,6 +101,14 @@ def sample_simulator(identifier, destination):
         pass
 
 
+def expired_deadline_reason(now, start, last_output, timeout, quiet_limit, execution_ready):
+    """Sampling can cross both deadlines; report the one that expired first."""
+    deadline, reason = start + timeout, "timeout"
+    if execution_ready and last_output + quiet_limit < deadline:
+        deadline, reason = last_output + quiet_limit, "stalled"
+    return reason if now >= deadline else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -163,8 +171,11 @@ def main():
                     sample_children(process.pid, args.output_dir)
                     sample_simulator(args.simulator_id, args.output_dir)
                     sampled_phase = quiet_phase
-                if now - start >= args.timeout or (execution_ready and now - last_output >= quiet_limit):
-                    reason = "timeout" if now - start >= args.timeout else "stalled"
+                expired = expired_deadline_reason(
+                    time.monotonic(), start, last_output, args.timeout, quiet_limit, execution_ready
+                )
+                if expired is not None:
+                    reason = expired
                     if args.simulator_id:
                         # Give xcodebuild a chance to finish its xcresult before
                         # escalating cleanup to this driver's own process group.
