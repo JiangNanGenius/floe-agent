@@ -209,6 +209,13 @@ public actor LocalModelRuntime {
         activeEngine?.key.modelID
     }
 
+    /// Internal test/inspection hook: how many durable runs still hold a
+    /// logical local-model claim. The ledger itself stays private so only the
+    /// runtime can mutate it; focused lifecycle tests assert this count across
+    /// an explicit Linux yield to prove the logical claim survived the
+    /// physical release.
+    var retainedTaskCount: Int { taskResidency.activeTaskCount }
+
     /// Claims local-model residency for a durable run before preprocessing or
     /// inference starts. This is cheap and idempotent for launch recovery.
     public func retainForTask(taskID: UUID, modelID: String) {
@@ -330,16 +337,31 @@ public actor LocalModelRuntime {
             )
             return
         }
-        guard let previous = activeEngine else { return }
-        activeEngine = nil
         idleUnloadTask = nil
-        await previous.engine.shutdown()
-        lifecycle.recordEngineShutdown()
+        guard let releasedModel = await releaseResidentEngine(reason: reason) else { return }
         lifecycle.recordIdleUnload()
-        loadState = .unloaded
         FloeLogger(category: .providers).info(
-            "localInferenceIdleUnloaded reason=\(reason) releasedModel=\(previous.key.modelID) idleSeconds=\(idleUnloadInterval.components.seconds) activeTasks=\(taskResidency.activeTaskCount)"
+            "localInferenceIdleUnloaded reason=\(reason) releasedModel=\(releasedModel) idleSeconds=\(idleUnloadInterval.components.seconds) activeTasks=\(taskResidency.activeTaskCount)"
         )
+    }
+
+    /// Single release point for the resident mapping. Clears the container,
+    /// awaits its shutdown and counts the shutdown exactly once so every
+    /// release path (explicit unload, failure eviction, idle window, Linux
+    /// yield) leaves the same truthful `loadState` and never a stale
+    /// `activeEngine`. Returns the released model identifier, or nil when the
+    /// runtime already had no resident engine.
+    @discardableResult
+    private func releaseResidentEngine(reason: String) async -> String? {
+        guard let resident = activeEngine else { return nil }
+        activeEngine = nil
+        await resident.engine.shutdown()
+        lifecycle.recordEngineShutdown()
+        loadState = .unloaded
+        FloeLogger(category: .providers).debug(
+            "localInferenceResidentEngineReleased reason=\(reason) model=\(resident.key.modelID) retainedTasks=\(taskResidency.activeTaskCount)"
+        )
+        return resident.key.modelID
     }
 
     /// Maps the model into memory without generating tokens. The settings UI
@@ -1125,20 +1147,91 @@ public actor LocalModelRuntime {
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
         guard engineLeaseCount == 0, taskResidency.activeTaskCount == 0,
-              let resident = activeEngine else {
+              activeEngine != nil else {
             FloeLogger(category: .providers).info(
                 "localInferenceIdleResidentKeep reason=\(reason) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
             )
             return nil
         }
-        activeEngine = nil
-        await resident.engine.shutdown()
-        lifecycle.recordEngineShutdown()
-        loadState = .unloaded
+        guard let releasedModel = await releaseResidentEngine(reason: reason) else { return nil }
         FloeLogger(category: .providers).info(
-            "localInferenceIdleResidentReleased reason=\(reason) releasedModel=\(resident.key.modelID)"
+            "localInferenceIdleResidentReleased reason=\(reason) releasedModel=\(releasedModel)"
         )
-        return resident.key.modelID
+        return releasedModel
+    }
+
+    /// True while a load/benchmark/chat operation holds the FIFO inference
+    /// slot. The Linux-yield contract needs this signal: during a container
+    /// construction `residentModelID()` is still nil while weights may already
+    /// be mapping, so a drain that only checked `residentModelID()` would
+    /// misreport "nothing resident" and admit Linux over an in-flight load.
+    /// Callers report `.retained`, never `.nothingResident`, while this is
+    /// true.
+    public func hasActiveInferenceOperation() -> Bool { inferenceBusy }
+
+    /// Explicit Linux resource demand (integration contract B2↔F2): unmaps the
+    /// resident engine even while durable runs still hold their logical
+    /// claims, because those runs are physically idle between turns — most
+    /// importantly a local run suspended on its own Linux tool. The Core
+    /// arbiter's idle-drain handler calls this before admitting a Linux guest;
+    /// the two-minute idle window and `releaseIdleResidentEngineIfUnclaimed`
+    /// deliberately KEEP their durable-claim protection, so this narrow call
+    /// is the only path that may unmap an engine a retained run owns.
+    ///
+    /// Contracts:
+    ///  * An active load/benchmark/generation owns the mapping and the FIFO
+    ///    inference slot. The demand then answers `nil` (arbiter `.retained`)
+    ///    immediately — it never waits on, cancels or seizes active work, so
+    ///    the guest stays queued through the arbiter's bounded retry loop and
+    ///    is admitted when the operation has finished and the mapping is
+    ///    physically idle again. No slot/reentrancy deadlock is possible: this
+    ///    call holds no lock and never awaits a slot it does not own.
+    ///  * When the slot is free, ownership is taken synchronously (no
+    ///    suspension between the check and the unmap), so the release is
+    ///    serialized with every other slot holder and cannot race a load.
+    ///  * The durable task ledger is NOT touched: task identity, conversation
+    ///    and tool context, checkpoints and the run's generation are all
+    ///    preserved. The run continues with its next generation, which
+    ///    reloads the same pinned snapshot and replays the settled transcript.
+    ///  * A failed or cancelled Linux request needs no rollback here: the only
+    ///    thing that changed is the physical mapping, so the run stays valid
+    ///    and recoverable either way.
+    ///
+    /// Returns the released model identifier, or nil when an active operation
+    /// (or no resident engine) means nothing was released; callers distinguish
+    /// "retained" from "nothing resident" with `hasActiveInferenceOperation()`
+    /// and `residentModelID()`.
+    @discardableResult
+    public func yieldIdleResidentEngineForLinux(reason: String) async -> String? {
+        // The demand is activity: a pending idle timer must not fire against
+        // the mapping this call is about to release (or against the reload).
+        cancelIdleUnload()
+        // An operation in flight owns both the slot and the mapping. Answer
+        // `.retained` promptly through the existing outcome semantics instead
+        // of consuming the arbiter's bounded wait here.
+        guard !inferenceBusy, engineLeaseCount == 0 else {
+            FloeLogger(category: .providers).info(
+                "localInferenceLinuxYieldRetained reason=\(reason) busy=\(inferenceBusy) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+            )
+            return nil
+        }
+        // Take the free slot synchronously: no suspension separates the checks
+        // above from this assignment, so no load can start in between and the
+        // unmap below is atomic with respect to every other slot holder.
+        inferenceBusy = true
+        defer { releaseInferenceSlot() }
+        guard activeEngine != nil else {
+            FloeLogger(category: .providers).info(
+                "localInferenceLinuxYieldRetained reason=\(reason) busy=false activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) resident=none"
+            )
+            return nil
+        }
+        guard let releasedModel = await releaseResidentEngine(reason: reason) else { return nil }
+        lifecycle.recordLinuxYield()
+        FloeLogger(category: .providers).info(
+            "localInferenceLinuxYielded reason=\(reason) releasedModel=\(releasedModel) retainedTasks=\(taskResidency.activeTaskCount) reloadOnNextTurn=true"
+        )
+        return releasedModel
     }
 
     private func acquireInferenceSlot() async {

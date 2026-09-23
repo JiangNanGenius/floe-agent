@@ -55,6 +55,12 @@ struct LocalInferenceLifecycleDiagnostics {
     /// Build 222: engines released by the two-minute idle timer rather than by
     /// an explicit unload, a failure or a decode retry.
     private(set) var idleUnloadCount = 0
+    /// Engines physically released by an explicit Linux resource demand while
+    /// durable runs kept their logical claims (`yieldIdleResidentEngineForLinux`).
+    /// Deliberately distinct from `idleUnloadCount`: the yield path is the one
+    /// release that may unmap an engine a retained run still owns, and device
+    /// logs/tests must be able to tell the two policies apart.
+    private(set) var linuxYieldCount = 0
     private(set) var engineReuseCount = 0
     private(set) var visionShedCount = 0
     private(set) var loadFailureCount = 0
@@ -71,6 +77,7 @@ struct LocalInferenceLifecycleDiagnostics {
     mutating func recordEngineCreated() { engineCreateCount += 1 }
     mutating func recordEngineShutdown() { engineShutdownCount += 1 }
     mutating func recordIdleUnload() { idleUnloadCount += 1 }
+    mutating func recordLinuxYield() { linuxYieldCount += 1 }
     mutating func recordEngineReused() { engineReuseCount += 1 }
     mutating func recordVisionShed() { visionShedCount += 1 }
     mutating func recordReclaim() { reclaimCount += 1 }
@@ -108,6 +115,7 @@ struct LocalInferenceLifecycleDiagnostics {
     var summaryLine: String {
         "enginesCreated=\(engineCreateCount) enginesShutdown=\(engineShutdownCount) "
             + "idleUnloads=\(idleUnloadCount) "
+            + "linuxYields=\(linuxYieldCount) "
             + "engineReuses=\(engineReuseCount) visionSheds=\(visionShedCount) "
             + "loadFailures=\(loadFailureCount) loadRecoveries=\(loadRecoveredCount) "
             + "decodeRetries=\(decodeRetryCount) reclaims=\(reclaimCount) "
