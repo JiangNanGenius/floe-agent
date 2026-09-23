@@ -2066,6 +2066,209 @@ final class RuntimeV2StartupTests: XCTestCase {
         XCTAssertTrue(excludedCorrupt)
     }
 
+    /// C7 P0 — identical-corrupt-bytes ABA. Resolver A observes a corrupt
+    /// marker (digest D, inode i, generation g). During A's repair another
+    /// writer publishes a NEW marker through a temp file + atomic rename(2)
+    /// carrying the EXACT same corrupt bytes (the reviewer's ABA): the digest
+    /// is still D, so the old digest-only guard removed B's exclusion. The
+    /// replacement is nevertheless a different file instance (new inode) and,
+    /// when it went through `place()`, a newer generation — A must leave it
+    /// exactly where it is (fail closed). A fresh store stays excluded for B,
+    /// while a NEW explicit repair that re-observes the live instance resolves
+    /// normally.
+    func testIdenticalCorruptBytesABANeverErasesNewerMarker() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-aba", baseImageID: "img")
+        let markerURL = try layout.environmentRepairHoldURL(environmentID: "env-aba")
+        try FileManager.default.createDirectory(at: markerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let corruptBytes = Data("identical-corrupt-payload".utf8)
+        // The original corrupt marker A later observes, itself published via
+        // temp+rename (the crash-shaped write the recovery path produces).
+        try atomicRenamePublish(corruptBytes, to: markerURL)
+
+        // Resolver A captures the observation at the start of its flow.
+        let resolverA = RuntimeV2RepairHoldStore(layout: layout)
+        let observedARaw = await resolverA.corruptMarkerObservation(environmentID: "env-aba")
+        let observedA = try XCTUnwrap(observedARaw)
+        XCTAssertEqual(observedA.digest, FloeDigest.sha512Hex(corruptBytes))
+
+        // --- Interleaving: another writer temp+renames IDENTICAL corrupt
+        // bytes over the directory entry (new inode, same SHA-512).
+        let identityBefore = observedA.fileIdentity
+        try atomicRenamePublish(corruptBytes, to: markerURL)
+        let replacementStore = RuntimeV2RepairHoldStore(layout: layout)
+        let identityAfterRaw = await replacementStore.corruptMarkerObservation(environmentID: "env-aba")
+        let identityAfter = try XCTUnwrap(identityAfterRaw?.fileIdentity)
+        XCTAssertNotEqual(identityBefore.inode, identityAfter.inode, "the rename must replace the file instance")
+        XCTAssertEqual(
+            try FloeDigest.sha512Hex(Data(contentsOf: markerURL)), observedA.digest,
+            "the ABA premise: byte identity still matches after the rename"
+        )
+
+        // NEGATIVE CONTROL for the old digest-only predicate: it would have
+        // authorized removal of the newer B file.
+        let oldDigestOnlyPredicate = (try? FloeDigest.sha512Hex(Data(contentsOf: markerURL))) == observedA.digest
+        XCTAssertTrue(oldDigestOnlyPredicate, "the old digest-only guard demonstrably fails open on this ABA")
+
+        // A commits late: its stale observation must NOT remove B.
+        try await resolverA.recordResolution(
+            environmentID: "env-aba", preservedPath: nil, resolution: "discarded",
+            observedCorruptMarker: observedA
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: markerURL.path),
+            "A's stale observation must never remove B's identical-bytes replacement"
+        )
+
+        // Fresh PROCESS identity (brand-new store) stays excluded for B.
+        let reborn = RuntimeV2Store(layout: layout)
+        let holdForB = await reborn.repairHolds.hold(environmentID: "env-aba")
+        XCTAssertNotNil(holdForB, "B's identical-bytes replacement keeps failing closed on a fresh store")
+        let excludedB = await reborn.leases.excludes(environmentID: "env-aba")
+        XCTAssertTrue(excludedB, "B's exclusion remains in force after A's stale commit")
+
+        // Generation backstop: same bytes, SAME file instance, but an
+        // intervening `place()` advanced the monotonic generation — the
+        // generation mismatch alone must keep the marker.
+        let observedLiveRaw = await RuntimeV2RepairHoldStore(layout: layout)
+            .corruptMarkerObservation(environmentID: "env-aba")
+        let observedLive = try XCTUnwrap(observedLiveRaw)
+        let generationURL = markerURL.deletingLastPathComponent()
+            .appendingPathComponent("repair-hold.generation")
+        try Data("4242".utf8).write(to: generationURL, options: .atomic)
+        try await resolverA.recordResolution(
+            environmentID: "env-aba", preservedPath: nil, resolution: "discarded",
+            observedCorruptMarker: observedLive
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: markerURL.path),
+            "an intervening generation bump must keep even an inode-stable marker"
+        )
+        try FileManager.default.removeItem(at: generationURL)
+
+        // Legitimate explicit repair of the LIVE instance: the new flow
+        // re-observes B at its own start, every identity matches at commit,
+        // and the exclusion lifts cleanly (nothing to recover here).
+        let resolved = try await reborn.discardRepair(
+            environmentID: "env-aba", reason: "re-observed live corrupt marker; explicit cleanup"
+        )
+        XCTAssertEqual(resolved.resolution, "discarded")
+        let after = RuntimeV2RepairHoldStore(layout: layout)
+        let afterHold = await after.hold(environmentID: "env-aba")
+        XCTAssertNil(afterHold, "the fresh explicit repair lifts the live exclusion")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: markerURL.path),
+            "the matching live corrupt instance is removed by its own resolution"
+        )
+    }
+
+    /// C7 P0 — when the cross-process mutation lock cannot be taken:
+    ///   * a resolution must NEVER remove a corrupt marker even with an
+    ///     observation whose digest/generation/inode all match (without the
+    ///     flock the live entry cannot be proven equal), and
+    ///   * `place()` must THROW and write NOTHING — no marker and no
+    ///     generation bump — rather than publish unlocked, since an unlocked
+    ///     atomic rename could be erased by a resolver that holds the lock
+    ///     and has only just re-checked the previous corrupt instance.
+    /// A different environment (its own lock) is unaffected.
+    func testMutationLockOutageKeepsMarkerAndMakesPlaceRefuse() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        try await registerEnvironment(id: "env-nolock", baseImageID: "img")
+        let envDir = try layout.environmentDirectory(environmentID: "env-nolock")
+        try FileManager.default.createDirectory(at: envDir, withIntermediateDirectories: true)
+        let markerURL = try layout.environmentRepairHoldURL(environmentID: "env-nolock")
+        let generationURL = envDir.appendingPathComponent("repair-hold.generation")
+        let corruptBytes = Data("locked-out-corrupt".utf8)
+        try atomicRenamePublish(corruptBytes, to: markerURL)
+
+        // Phase 1: lock usable — a genuine observation is captured.
+        let holds = RuntimeV2RepairHoldStore(layout: layout)
+        let observedRaw = await holds.corruptMarkerObservation(environmentID: "env-nolock")
+        let observed = try XCTUnwrap(observedRaw)
+
+        // Phase 2: block the lock open (a directory occupies the lock path so
+        // open(O_RDWR|O_CREAT) fails EISDIR — the same guard a failed flock
+        // hits). A new observation answers nil rather than promise an
+        // identity it cannot serialize.
+        let lockURL = envDir.appendingPathComponent(".repair-hold.lock")
+        try FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: false)
+        let blockedStore = RuntimeV2RepairHoldStore(layout: layout)
+        let blockedObservation = await blockedStore.corruptMarkerObservation(environmentID: "env-nolock")
+        XCTAssertNil(
+            blockedObservation,
+            "without the mutation lock no removable observation is produced"
+        )
+
+        // The previously-captured, fully-matching observation must not remove
+        // the corrupt marker while the lock is unavailable.
+        try await blockedStore.recordResolution(
+            environmentID: "env-nolock", preservedPath: nil, resolution: "discarded",
+            observedCorruptMarker: observed
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: markerURL.path),
+            "lock unavailable → the corrupt marker stays (fail closed)"
+        )
+        let reborn = RuntimeV2Store(layout: layout)
+        let stillExcluded = await reborn.repairHolds.hold(environmentID: "env-nolock")
+        XCTAssertNotNil(stillExcluded, "the environment stays excluded")
+        let stillExcludedLease = await reborn.leases.excludes(environmentID: "env-nolock")
+        XCTAssertTrue(stillExcludedLease, "the lease-side exclusion stays in force")
+
+        // place() refuses outright and writes NEITHER the marker NOR a
+        // generation: an unlocked publish is never allowed to race a locked
+        // resolver.
+        let beforeBytes = try Data(contentsOf: markerURL)
+        do {
+            try await blockedStore.place(
+                environmentID: "env-nolock", runtimeID: "rt-racer", reason: "unlocked attempt"
+            )
+            XCTFail("place must throw when the mutation lock is unavailable")
+        } catch RuntimeV2Error.layoutCorrupt {
+            // expected
+        }
+        XCTAssertEqual(try Data(contentsOf: markerURL), beforeBytes, "the live marker is untouched")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: generationURL.path),
+            "no generation sidecar may appear on a refused place"
+        )
+
+        // A DIFFERENT environment owns its own lock and places normally.
+        let neighborStore = RuntimeV2RepairHoldStore(layout: layout)
+        try await neighborStore.place(
+            environmentID: "env-nolock-neighbor", runtimeID: "rt-x", reason: "separate lock"
+        )
+        let neighbor = await neighborStore.hold(environmentID: "env-nolock-neighbor")
+        XCTAssertNotNil(neighbor)
+
+        // Phase 3: lock restored — the same genuine observation now removes
+        // the live corrupt instance.
+        try FileManager.default.removeItem(at: lockURL)
+        try await blockedStore.recordResolution(
+            environmentID: "env-nolock", preservedPath: nil, resolution: "discarded",
+            observedCorruptMarker: observed
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: markerURL.path),
+            "with the lock restored, the matching observed instance is removed"
+        )
+        // The neighbor placed during the outage remains live.
+        let neighborAfter = await neighborStore.hold(environmentID: "env-nolock-neighbor")
+        XCTAssertNotNil(neighborAfter)
+    }
+
+    /// Publishes `data` through an explicit same-directory temp file +
+    /// rename(2), the atomic-replace primitive `place()` uses: the directory
+    /// entry points at a brand-new inode even when the bytes are identical.
+    private func atomicRenamePublish(_ data: Data, to url: URL) throws {
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".tmp-\(UUID().uuidString)")
+        try data.write(to: temporary)
+        let rc = rename(temporary.path, url.path)
+        XCTAssertEqual(rc, 0, "rename(2) must atomically publish the marker")
+    }
+
     /// Multi-repair cycles (review P0): resolving repair A binds to A's exact
     /// hold instance — a LATER, distinct failure B writes a live marker with a
     /// fresh holdID, and history must never suppress it. After process death +

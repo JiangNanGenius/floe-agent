@@ -733,7 +733,7 @@ public actor RuntimeV2Store {
             )
         }
         let resolvedHold = await repairHolds.effectiveHold(environmentID: environmentID)
-        let observedCorruptMarker = await repairHolds.corruptMarkerDigest(environmentID: environmentID)
+        let observedCorruptMarker = await repairHolds.corruptMarkerObservation(environmentID: environmentID)
         guard let preservedPath = resolvedHold?.preservedPath else {
             throw RuntimeV2Error.repairResolutionUnavailable(
                 environmentID: environmentID,
@@ -821,7 +821,7 @@ public actor RuntimeV2Store {
                 environmentID: environmentID, preservedPath: preservedPath,
                 resolution: "restored", diskDigestSHA512: digest,
                 resolvedHoldID: resolvedHold?.holdID,
-                observedCorruptMarkerDigest: observedCorruptMarker
+                observedCorruptMarker: observedCorruptMarker
             )
         } catch {
             try? await registry.setEnvironmentState(
@@ -864,7 +864,7 @@ public actor RuntimeV2Store {
         // BEFORE anything is moved — a crafted sidecar can never authorize a
         // move, and can never lift the exclusion either.
         let resolvedHold = await repairHolds.effectiveHold(environmentID: environmentID)
-        let observedCorruptMarker = await repairHolds.corruptMarkerDigest(environmentID: environmentID)
+        let observedCorruptMarker = await repairHolds.corruptMarkerObservation(environmentID: environmentID)
         let recordedPath = resolvedHold?.preservedPath
         var preservedPath: String?
         var discardedDigest: String?
@@ -878,7 +878,7 @@ public actor RuntimeV2Store {
                 return try await commitDiscard(
                     environmentID: environmentID, preservedPath: nil,
                     diskDigestSHA512: nil, resolvedHoldID: resolvedHold?.holdID,
-                    observedCorruptMarkerDigest: observedCorruptMarker,
+                    observedCorruptMarker: observedCorruptMarker,
                     reason: reason
                 )
             }
@@ -915,7 +915,7 @@ public actor RuntimeV2Store {
         return try await commitDiscard(
             environmentID: environmentID, preservedPath: preservedPath,
             diskDigestSHA512: discardedDigest, resolvedHoldID: resolvedHold?.holdID,
-            observedCorruptMarkerDigest: observedCorruptMarker,
+            observedCorruptMarker: observedCorruptMarker,
             reason: reason
         )
     }
@@ -925,7 +925,7 @@ public actor RuntimeV2Store {
     /// re-mark when the resolution cannot be persisted.
     private func commitDiscard(
         environmentID: String, preservedPath: String?, diskDigestSHA512: String?,
-        resolvedHoldID: String?, observedCorruptMarkerDigest: String?, reason: String
+        resolvedHoldID: String?, observedCorruptMarker: RuntimeV2RepairHoldStore.CorruptMarkerObservation?, reason: String
     ) async throws -> RepairResolutionReport {
         if let environment = try await registry.environment(id: environmentID),
            environment.state != "deleting" {
@@ -938,7 +938,7 @@ public actor RuntimeV2Store {
                 environmentID: environmentID, preservedPath: preservedPath,
                 resolution: "discarded", diskDigestSHA512: diskDigestSHA512,
                 resolvedHoldID: resolvedHoldID,
-                observedCorruptMarkerDigest: observedCorruptMarkerDigest
+                observedCorruptMarker: observedCorruptMarker
             )
         } catch {
             try? await registry.setEnvironmentState(
@@ -979,7 +979,7 @@ public actor RuntimeV2Store {
                 reason: "no repair exclusion exists; there is nothing to clean up"
             )
         }
-        let observedCorruptMarker = await repairHolds.corruptMarkerDigest(environmentID: environmentID)
+        let observedCorruptMarker = await repairHolds.corruptMarkerObservation(environmentID: environmentID)
         // Fresh physical scan (never trusting the hold's preservedPath): find
         // the unacknowledged preserved quarantine entries that are either
         // unprovable or provenanced for this environment.
@@ -1054,7 +1054,7 @@ public actor RuntimeV2Store {
                 environmentID: environmentID, preservedPath: resolvedPath,
                 resolution: "discarded", diskDigestSHA512: evidenceDigest,
                 resolvedHoldID: await repairHolds.effectiveHold(environmentID: environmentID)?.holdID,
-                observedCorruptMarkerDigest: observedCorruptMarker
+                observedCorruptMarker: observedCorruptMarker
             )
         } catch {
             try? await registry.setEnvironmentState(

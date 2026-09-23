@@ -21,7 +21,14 @@
 //   - A corrupt marker sidecar is NEVER moved away: every read re-detects the
 //     unreadable file and answers a synthesized unreadable hold, so repeated
 //     reads and brand-new store instances fail closed without needing any
-//     writable disk to retain the exclusion.
+//     writable disk to retain the exclusion. The ONLY path that ever removes
+//     one is a COMMITTED explicit resolution, and even it removes only the
+//     exact corrupt-file instance it observed at the start of its flow: the
+//     removal re-verifies the bytes' digest, the monotonic per-environment
+//     marker generation (bumped by every `place()`) and the file-instance
+//     identity (inode/device/ctime/size) under the mutation lock — a same-
+//     bytes temp+rename replacement during the repair (an ABA) is a distinct
+//     newer exclusion and fails the re-check, so it can never be erased.
 //   - The preserved bytes are themselves durable evidence: an unacknowledged
 //     recovery/quarantine/runtime-vm-* entry whose runtime.json names the
 //     environment answers a synthesized hold on every read (quarantine
@@ -67,6 +74,53 @@ public actor RuntimeV2RepairHoldStore {
             self.reason = reason
             self.preservedPath = preservedPath
             self.createdAt = createdAt
+        }
+    }
+
+    /// Observation of a CORRUPT marker captured at the START of a resolution
+    /// flow. A digest alone can never identify a file instance: another store
+    /// can temp-file + atomic-rename a marker carrying the EXACT same corrupt
+    /// bytes during the repair (an ABA), and byte equality would then let the
+    /// stale resolver erase the newer exclusion. The observation therefore
+    /// binds to three independent identities, all re-verified inside the
+    /// mutation lock at commit time:
+    ///   - `digest` — the corrupt bytes' SHA-512 (content identity),
+    ///   - `generation` — the monotonic marker generation `place()` bumps on
+    ///     every write (nil when no generation sidecar exists, e.g. a marker
+    ///     last written before this mechanism shipped),
+    ///   - `fileIdentity` — the directory entry's file-instance identity
+    ///     (inode / device / ctime / size); a temp+rename replacement is a
+    ///     NEW file even when its bytes are identical.
+    /// Any mismatch at commit fails closed: the marker stays, the exclusion
+    /// stays, and only a NEW explicit flow that re-observes the live marker
+    /// can ever lift it.
+    public struct CorruptMarkerObservation: Sendable, Equatable {
+        public var digest: String
+        public var generation: Int64?
+        public var fileIdentity: SidecarFileIdentity
+
+        public init(digest: String, generation: Int64?, fileIdentity: SidecarFileIdentity) {
+            self.digest = digest
+            self.generation = generation
+            self.fileIdentity = fileIdentity
+        }
+    }
+
+    /// File-instance identity of a marker directory entry, read via stat(2).
+    /// An atomic rename replaces the entry with a DIFFERENT inode even when
+    /// the bytes are identical, so this (unlike a content digest) tells a
+    /// temp+rename ABA replacement from the originally observed file.
+    public struct SidecarFileIdentity: Sendable, Equatable {
+        public var inode: UInt64
+        public var device: UInt64
+        public var changeTime: Int64
+        public var size: Int64
+
+        public init(inode: UInt64, device: UInt64, changeTime: Int64, size: Int64) {
+            self.inode = inode
+            self.device = device
+            self.changeTime = changeTime
+            self.size = size
         }
     }
 
@@ -245,10 +299,13 @@ public actor RuntimeV2RepairHoldStore {
     /// Places (or refreshes) the durable marker exclusion. The write happens
     /// under the shared marker-mutation lock: serialized against the resolver
     /// side, so a `place()` can never interleave with (and be erased by) a
-    /// stale resolution's cleanup. Throws when the marker itself cannot be
-    /// persisted (full disk / IO fault): callers must then keep every other
-    /// surviving exclusion (the lease) and rely on the preserved bytes as the
-    /// durable evidence.
+    /// stale resolution's cleanup. Throws — writing NEITHER marker NOR
+    /// generation — when the cross-process mutation lock cannot be opened or
+    /// acquired (an unlocked atomic publish could race a locked resolver and
+    /// be unlinked), or when the marker itself cannot be persisted (full disk /
+    /// IO fault). On any such throw callers keep every other surviving
+    /// exclusion (the lease) and rely on the preserved bytes as the durable
+    /// evidence.
     public func place(
         environmentID: String, runtimeID: String, reason: String, preservedPath: String? = nil
     ) throws {
@@ -260,49 +317,177 @@ public actor RuntimeV2RepairHoldStore {
                 environmentID: environmentID, runtimeID: runtimeID,
                 reason: reason, preservedPath: preservedPath
             )
+            // Atomic temp+rename publish, THEN the generation bump. Any crash
+            // between the two leaves a live marker with the previous
+            // generation, which only makes the identity checks stricter.
             try Self.encoder.encode(hold).write(to: url, options: .atomic)
+            try bumpMarkerGeneration(environmentID: environmentID)
         }
     }
 
-    /// The SHA-512 of the marker sidecar bytes WHEN the sidecar exists but
-    /// does not decode as a valid current-version hold for this environment
-    /// (a corrupt marker). nil when there is no sidecar or it is a valid
-    /// marker. A resolver captures this at the START of a resolution flow and
-    /// hands it to `recordResolution`, which may then remove the corrupt
-    /// marker under the mutation lock with a byte-identity re-check — a
-    /// racing newer marker (valid, or different corrupt bytes) is never
-    /// touched, so a stale resolution can never erase a live exclusion.
-    public func corruptMarkerDigest(environmentID: String) -> String? {
-        guard let url = try? layout.environmentRepairHoldURL(environmentID: environmentID),
-              fileManager.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              (try? Self.decoder.decode(Hold.self, from: data)) == nil
+    /// The marker sidecar's CORRUPT-FILE OBSERVATION when the sidecar exists
+    /// but does not decode as a hold (a corrupt marker), or nil when there is
+    /// no sidecar / it is a valid marker / its file identity cannot be read.
+    /// A resolver captures this at the START of a resolution flow and hands
+    /// it to `recordResolution`. The observation is NOT just a digest: it
+    /// additionally binds to the monotonic `place()` generation and to the
+    /// file-instance identity (inode/device/ctime/size), so a newer marker
+    /// that temp+rename replaced the entry with the EXACT same corrupt bytes
+    /// during the repair (an ABA) is a different file instance and is not
+    /// removed by the stale resolver. The guarantee covers cooperating
+    /// writers (every `place()`/resolver takes the flock) and path-rename
+    /// splices (bytes and inode are read through one fd); it does not stop
+    /// a non-cooperating process with directory access that bypasses the
+    /// lock — see `recordResolution` for the stated boundary.
+    public func corruptMarkerObservation(environmentID: String) -> CorruptMarkerObservation? {
+        guard let url = try? layout.environmentRepairHoldURL(environmentID: environmentID) else {
+            return nil
+        }
+        // Observed under the mutation lock via a SINGLE fd (open+fstat+read):
+        // a cooperating writer that temp+renames during a resolution is
+        // serialized, and even a non-cooperating rename cannot splice one
+        // file's bytes onto another file's inode inside this observation.
+        // If the lock cannot be taken this answers nil (no observation → no
+        // removable identity), i.e. it fails closed.
+        do {
+            return try withMarkerMutationLock(environmentID: environmentID) {
+                guard fileManager.fileExists(atPath: url.path),
+                      let snapshot = readSidecarInstanceBound(at: url),
+                      (try? Self.decoder.decode(Hold.self, from: snapshot.data)) == nil
+                else { return nil }
+                let digest = try FloeDigest.sha512Hex(snapshot.data)
+                return CorruptMarkerObservation(
+                    digest: digest,
+                    generation: readMarkerGeneration(environmentID: environmentID),
+                    fileIdentity: snapshot.identity
+                )
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    /// Per-environment sidecar recording how many times `place()` published a
+    /// marker. A monotonic, separately-named file: a temp+rename replacement
+    /// of the marker that repeats the identical corrupt bytes cannot repeat a
+    /// past generation, because every legitimate `place()` advances it under
+    /// the same mutation lock.
+    private func markerGenerationURL(environmentID: String) throws -> URL {
+        try layout.environmentDirectory(environmentID: environmentID)
+            .appendingPathComponent("repair-hold.generation")
+    }
+
+    private func readMarkerGeneration(environmentID: String) -> Int64? {
+        guard let url = try? markerGenerationURL(environmentID: environmentID),
+              let text = try? String(contentsOf: url, encoding: .utf8),
+              let value = Int64(text.trimmingCharacters(in: .whitespacesAndNewlines))
         else { return nil }
-        return (try? FloeDigest.sha512Hex(data)) ?? ""
+        return value
+    }
+
+    private func bumpMarkerGeneration(environmentID: String) throws {
+        let url = try markerGenerationURL(environmentID: environmentID)
+        let next = (readMarkerGeneration(environmentID: environmentID) ?? 0) &+ 1
+        try String(next).data(using: .utf8)!.write(to: url, options: .atomic)
     }
 
     /// Serializes every mutation of the marker sidecar (place / guarded
     /// corrupt-marker removal) across store instances AND processes: an
     /// flock(2) exclusive lock on a per-environment lock file, held only for
-    /// the tiny critical section. Best-effort: when the lock cannot be taken
-    /// (unwritable directory) the body still runs — removal then fails
-    /// closed (bytes stay, exclusion stays) and placement uses the atomic
-    /// rename it already used.
+    /// the tiny critical section. The body runs ONLY when the lock is
+    /// actually held; if the lock file cannot be opened or flock fails the
+    /// call THROWS before the body runs. This is deliberate: an unlocked
+    /// `place()` could rename a new marker over the sidecar while a resolver
+    /// (holding the lock) has only just re-checked the old corrupt instance,
+    /// after which the resolver's by-path unlink would erase the brand-new
+    /// exclusion. Placement therefore fails loudly and writes NOTHING (no
+    /// marker, no generation) when the lock is unavailable, and the read-side
+    /// observation answers nil. Callers that only remove markers treat the
+    /// throw as fail-closed (leave the marker in place).
     private func withMarkerMutationLock<T>(
         environmentID: String, _ body: () throws -> T
-    ) rethrows -> T {
-        guard let directory = try? layout.environmentDirectory(environmentID: environmentID)
-        else { return try body() }
+    ) throws -> T {
+        let directory: URL
+        do {
+            directory = try layout.environmentDirectory(environmentID: environmentID)
+        } catch {
+            throw RuntimeV2Error.layoutCorrupt(
+                "the repair-hold mutation lock directory for \(environmentID) cannot be resolved; the marker was left untouched"
+            )
+        }
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let lockPath = directory.appendingPathComponent(".repair-hold.lock").path
         let fd = open(lockPath, O_RDWR | O_CREAT, 0o600)
-        guard fd != -1 else { return try body() }
-        flock(fd, LOCK_EX)
+        guard fd != -1 else {
+            throw RuntimeV2Error.layoutCorrupt(
+                "the repair-hold mutation lock at \(lockPath) cannot be opened; no marker mutation is permitted while the lock is unavailable"
+            )
+        }
+        guard flock(fd, LOCK_EX) == 0 else {
+            close(fd)
+            throw RuntimeV2Error.layoutCorrupt(
+                "the repair-hold mutation lock at \(lockPath) cannot be acquired; no marker mutation is permitted without it"
+            )
+        }
         defer {
             flock(fd, LOCK_UN)
             close(fd)
         }
         return try body()
+    }
+
+    /// Bytes + file-instance identity of the marker read through ONE open
+    /// file descriptor (`open` → `fstat` → `read` loop). Reading the bytes
+    /// by path and stating the path in two steps could splice two file
+    /// generations when a temp+rename lands between them (A's bytes paired
+    /// with B's inode); the fd binds bytes and stat to the SAME file
+    /// instance atomically. This is instance-bound observation, not
+    /// path-bound: it cannot be confused by a rename after `open`.
+    private struct SidecarSnapshot {
+        let data: Data
+        let identity: SidecarFileIdentity
+    }
+
+    private func readSidecarInstanceBound(at url: URL) -> SidecarSnapshot? {
+        let fd = open(url.path, O_RDONLY)
+        guard fd != -1 else { return nil }
+        defer { close(fd) }
+        var status = stat()
+        guard fstat(fd, &status) == 0 else { return nil }
+        // A real marker sidecar is a small JSON document. Bound the read so a
+        // corrupt/oversized marker can never become an unbounded allocation:
+        // beyond the cap we answer nil (no observation → no removal; the
+        // ordinary read path still fails closed on the raw file).
+        let maximumMarkerBytes = 1 << 20
+        guard status.st_size <= maximumMarkerBytes else { return nil }
+        var data = Data()
+        data.reserveCapacity(Int(status.st_size))
+        let chunk = 64 * 1024
+        var buffer = [UInt8](repeating: 0, count: chunk)
+        while true {
+            let readCount = read(fd, &buffer, chunk)
+            if readCount < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if readCount == 0 { break }
+            data.append(buffer, count: readCount)
+            if data.count > maximumMarkerBytes { return nil }
+        }
+        #if canImport(Darwin)
+        let changeTime = Int64(status.st_ctimespec.tv_sec)
+        #else
+        let changeTime = Int64(status.st_ctim.tv_sec)
+        #endif
+        return SidecarSnapshot(
+            data: data,
+            identity: SidecarFileIdentity(
+                inode: UInt64(status.st_ino),
+                device: UInt64(status.st_dev),
+                changeTime: changeTime,
+                size: Int64(status.st_size)
+            )
+        )
     }
 
     /// The basenames of every quarantine entry whose repair was explicitly
@@ -370,7 +555,7 @@ public actor RuntimeV2RepairHoldStore {
     public func recordResolution(
         environmentID: String, preservedPath: String?, resolution: String,
         diskDigestSHA512: String? = nil, resolvedHoldID: String? = nil,
-        observedCorruptMarkerDigest: String? = nil
+        observedCorruptMarker: CorruptMarkerObservation? = nil
     ) throws {
         let archive = layout.recoveryMigrationsDirectory
             .appendingPathComponent("repair-holds", isDirectory: true)
@@ -393,29 +578,62 @@ public actor RuntimeV2RepairHoldStore {
         //   neutralizes any marker whose holdID has a committed resolution —
         //   and a later `place()` atomically replaces it.
         // - The only bytes ever removed are a CORRUPT marker the resolver
-        //   OBSERVED at the start of this very flow (byte-identical re-check
-        //   inside the lock): without this, a corrupt marker could never be
-        //   lifted at all, since it carries no holdID to suppress. A racing
-        //   newer marker — valid, or corrupt with different bytes — fails the
-        //   re-check and is left untouched (fail closed).
+        //   OBSERVED at the start of this very flow, re-verified INSIDE THE
+        //   LOCK against THREE identities read through one fd (so bytes and
+        //   inode can never be spliced by an intervening rename): byte
+        //   digest, the monotonic marker generation, and the file-instance
+        //   identity (inode/device/ctime/size). Digest alone cannot do this:
+        //   a racing `place()` may temp+rename the entry with byte-identical
+        //   corrupt contents (an ABA), which is nevertheless a newer
+        //   exclusion with a newer generation and a different inode — any
+        //   mismatch leaves it untouched. Removal additionally REQUIRES the
+        //   cross-process lock: when it cannot be taken nothing corrupt is
+        //   ever deleted (strict fail closed), and without an observation
+        //   nothing is removed, since a corrupt marker carries no holdID.
         // - When the live marker is the resolved instance A itself, a
         //   best-effort COPY to the evidence archive is made (never a move).
-        try withMarkerMutationLock(environmentID: environmentID) {
+        //
+        // Honest boundary: flock is cooperative. The single-fd observation
+        // and the generation/inode/digest re-check are atomic against every
+        // cooperating `place()`/resolver (all take this lock), but a
+        // non-cooperating writer with directory access that bypasses the
+        // lock and renames over the entry in the tiny window between the
+        // locked re-check and the unlink cannot be excluded by userspace
+        // alone; such a writer already owns the on-disk exclusion. This is
+        // documented, not claimed as provably impossible.
+        // The resolution record above is already the durable commit; the
+        // marker handling below is best effort and must never un-commit it.
+        // The helper only runs the body while holding the flock (it throws
+        // otherwise), and a throw here simply leaves the corrupt marker in
+        // place — the read side keeps excluding and a later retry lifts it.
+        try? withMarkerMutationLock(environmentID: environmentID) {
             guard let url = try? layout.environmentRepairHoldURL(environmentID: environmentID),
-                  let data = try? Data(contentsOf: url) else { return }
-            if let marker = try? Self.decoder.decode(Hold.self, from: data) {
+                  fileManager.fileExists(atPath: url.path),
+                  let snapshot = readSidecarInstanceBound(at: url)
+            else { return }
+            if let marker = try? Self.decoder.decode(Hold.self, from: snapshot.data) {
                 if let resolvedHoldID, !resolvedHoldID.isEmpty, marker.holdID == resolvedHoldID {
                     let destination = archive.appendingPathComponent(
                         "repair-hold-\(environmentID)-\(stamp).json"
                     )
-                    try? data.write(to: destination, options: .atomic)
+                    try? snapshot.data.write(to: destination, options: .atomic)
                 }
                 return
             }
-            if let observedCorruptMarkerDigest, !observedCorruptMarkerDigest.isEmpty,
-               (try? FloeDigest.sha512Hex(data)) == observedCorruptMarkerDigest {
-                try? fileManager.removeItem(at: url)
-            }
+            // The body only ever runs while the flock is held, so a corrupt
+            // marker is removed solely when the observed instance is proven
+            // still live via digest + generation + inode.
+            guard let observed = observedCorruptMarker else { return }
+            let liveGeneration = readMarkerGeneration(environmentID: environmentID)
+            let liveDigest = try? FloeDigest.sha512Hex(snapshot.data)
+            guard liveDigest == observed.digest,
+                  liveGeneration == observed.generation,
+                  snapshot.identity == observed.fileIdentity
+            else { return }
+            // The flock excludes every cooperating replacement and the
+            // single-fd re-check binds these exact bytes to this inode; the
+            // remaining non-cooperating window is documented above.
+            try? fileManager.removeItem(at: url)
         }
     }
 
