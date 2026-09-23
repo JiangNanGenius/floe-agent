@@ -4,6 +4,20 @@ import SwiftUI
 import FloeCore
 import FloeGit
 
+/// Pure workspace-identity decision used by both the pinned source-control
+/// pane (rendering/lock) and the mutation guard inside `perform(pinnedRoot:)`.
+/// A nil pin means "follow the global current workspace" (the legacy
+/// inspector behavior); a non-nil pin matches only the exact standardized
+/// workspace root — discovering a repository above the workspace does not
+/// change which workspace owns the pane.
+enum SourceControlRootIdentity {
+    static func matches(current: URL?, pinned: URL?) -> Bool {
+        guard let pinned else { return true }
+        guard let current else { return false }
+        return current.standardizedFileURL == pinned.standardizedFileURL
+    }
+}
+
 @MainActor
 final class SourceControlCenter: ObservableObject {
     @Published private(set) var snapshot = GitRepositorySnapshot(isRepository: false)
@@ -81,6 +95,15 @@ final class SourceControlCenter: ObservableObject {
 
     var isGitHubConnected: Bool { account != nil }
     var isDeviceLoginPending: Bool { deviceAuthorization != nil }
+
+    /// The workspace root the global center currently resolves its
+    /// repository operations to. A host that pins a pane to a specific
+    /// workspace compares this to its pinned root before allowing writes.
+    var currentWorkspaceRoot: URL? { environment.workspaceCenter.currentRootURL }
+
+    /// The observed workspace center a pinned pane needs to redraw on an
+    /// A→B workspace switch.
+    var boundWorkspaceCenter: WorkspaceCenter { environment.workspaceCenter }
     /// True when the discovered repository root is an ancestor of the
     /// workspace root (a workspace nested inside a repository, or a linked
     /// worktree). The view surfaces the real root in that case.
@@ -139,15 +162,53 @@ final class SourceControlCenter: ObservableObject {
     }
 
     func perform(_ operation: @escaping @MainActor () async throws -> Void) async {
+        await perform(pinnedRoot: nil, operation)
+    }
+
+    /// Runs a UI mutation with a workspace-identity guard. A pane that is
+    /// pinned to the workspace it was opened for passes that root; if the
+    /// global current workspace has since switched (an async A→B change the
+    /// disabled button alone cannot cover), the operation is refused before
+    /// any Git service call and a bilingual error is recorded.
+    func perform(
+        pinnedRoot: URL?,
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) async {
+        if !SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: pinnedRoot) {
+            errorMessage = SecretRedactor.redact(IDELanguageRunText.t(
+                "工作区已切换，已阻止对原仓库的操作。请重新打开该工作区的 IDE。",
+                "The workspace switched; the operation on the previous repository was blocked. Reopen the IDE for that workspace."
+            ))
+            return
+        }
         guard !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
         do {
             try await operation()
+            // A switch during the await means the success belongs to A; do
+            // not clear B's error state, and let B refresh its own snapshot.
+            guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: pinnedRoot) else {
+                await refreshRepository()
+                return
+            }
             errorMessage = nil
         } catch {
+            // A's failure must not surface in B's pane after a switch.
+            guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: pinnedRoot) else {
+                await refreshRepository()
+                return
+            }
             errorMessage = SecretRedactor.redact(error.localizedDescription)
         }
+    }
+
+    /// Exact-identity check used both by the pinned pane's rendering and by
+    /// the mutation guard: only the standardized workspace root itself
+    /// matches (a nested repository's discovered root is handled by the
+    /// mutation methods, never by weakening which workspace owns the pane).
+    func rootMatchesPinned(_ root: URL) -> Bool {
+        SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: root)
     }
 
     func loadConnection() async {
@@ -281,42 +342,73 @@ final class SourceControlCenter: ObservableObject {
         generation == refreshGeneration && environment.workspaceCenter.currentRootURL == root
     }
 
+    /// Refreshes the published snapshot only while the workspace the mutation
+    /// started for is still the current one. If the workspace switched A→B
+    /// while a Git call was in flight, A's result is dropped and B gets its
+    /// own refresh instead, so B's pane never renders A's state. The Git
+    /// operation itself is neither retargeted nor reverted (it already ran).
+    private func republishAfterMutation(workspaceRoot: URL) async throws {
+        guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: workspaceRoot) else {
+            await refreshRepository()
+            return
+        }
+        let repoRoot = repositoryRoot ?? workspaceRoot
+        let updated = try await git.snapshot(at: repoRoot)
+        // Re-check after the snapshot await too: the switch may have landed
+        // during this second round trip.
+        guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: workspaceRoot) else {
+            await refreshRepository()
+            return
+        }
+        snapshot = updated
+        repositoryRoot = updated.repositoryRoot
+    }
+
     /// Local init stands alone: no GitHub sign-in is required and no remote
     /// identity is consulted. The author identity is configured per commit —
     /// the connected GitHub identity when present, otherwise a local default.
     func initializeRepository() async throws {
-        guard let root = environment.workspaceCenter.currentRootURL else {
+        guard let wsRoot = environment.workspaceCenter.currentRootURL else {
             throw FloeError.notFound("workspace")
         }
-        snapshot = try await git.initialize(at: root)
+        let initialized = try await git.initialize(at: wsRoot)
+        guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: wsRoot) else {
+            await refreshRepository()
+            return
+        }
+        snapshot = initialized
         repositoryRoot = snapshot.repositoryRoot
     }
 
     func stageAll() async throws {
-        let root = try workspaceRoot()
-        try await git.stageAll(at: root)
-        snapshot = try await git.snapshot(at: root)
+        let wsRoot = try requiredWorkspaceRoot()
+        let repoRoot = try workspaceRoot()
+        try await git.stageAll(at: repoRoot)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func stage(paths: [String]) async throws {
-        let root = try workspaceRoot()
-        try await git.stage(paths: paths, at: root)
-        snapshot = try await git.snapshot(at: root)
+        let wsRoot = try requiredWorkspaceRoot()
+        let repoRoot = try workspaceRoot()
+        try await git.stage(paths: paths, at: repoRoot)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func unstage(paths: [String]) async throws {
-        let root = try workspaceRoot()
-        try await git.unstage(paths: paths, at: root)
-        snapshot = try await git.snapshot(at: root)
+        let wsRoot = try requiredWorkspaceRoot()
+        let repoRoot = try workspaceRoot()
+        try await git.unstage(paths: paths, at: repoRoot)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     /// Discards the selected file's changes after writing a private recovery
     /// copy (working tree plus staged bytes when `includeStaged`). The returned
     /// outcome carries the recovery path so the UI can offer it.
     func discard(paths: [String], includeStaged: Bool = false) async throws -> GitDiscardOutcome {
-        let root = try workspaceRoot()
-        let outcome = try await git.discard(paths: paths, at: root, includeStaged: includeStaged)
-        snapshot = try await git.snapshot(at: root)
+        let wsRoot = try requiredWorkspaceRoot()
+        let repoRoot = try workspaceRoot()
+        let outcome = try await git.discard(paths: paths, at: repoRoot, includeStaged: includeStaged)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
         return outcome
     }
 
@@ -326,43 +418,47 @@ final class SourceControlCenter: ObservableObject {
     }
 
     func merge(branch: String) async throws -> GitMergeOutcome {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         let identity = try await gitIdentity()
         let outcome = try await git.mergeRef(
             at: root, refName: "refs/heads/\(branch)",
             authorName: identity.name, authorEmail: identity.email
         )
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
         return outcome
     }
 
     /// Fetches then merges the upstream (ordinary pull with merge fallback).
     func pullMerge() async throws -> GitMergeOutcome {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         let identity = try await gitIdentity()
         let outcome = try await git.pullMerge(
             at: root, token: try credentials.token(),
             authorName: identity.name, authorEmail: identity.email
         )
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
         return outcome
     }
 
     func resolveConflict(path: String, content: String) async throws -> GitMergeOutcome {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         let identity = try await gitIdentity()
         let outcome = try await git.resolveConflict(
             at: root, path: path, content: content,
             authorName: identity.name, authorEmail: identity.email
         )
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
         return outcome
     }
 
     func abortMerge() async throws {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         try await git.abortMerge(at: root)
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func isMerging() async throws -> Bool {
@@ -388,46 +484,52 @@ final class SourceControlCenter: ObservableObject {
     }
 
     func commit(message: String) async throws {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         let identity = try await gitIdentity()
         _ = try await git.commit(
             at: root, message: message,
             authorName: identity.name, authorEmail: identity.email
         )
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func fetch() async throws {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         try await git.fetch(at: root, token: try credentials.token())
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func pull() async throws {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         try await git.pullFastForward(at: root, token: try credentials.token())
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func push() async throws {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         guard let token = try credentials.token() else {
             throw FloeError.invalidConfiguration("Connect GitHub before pushing")
         }
         try await git.push(at: root, token: token)
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func createBranch(name: String) async throws {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         try await git.createBranch(at: root, name: name)
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func switchBranch(name: String) async throws {
+        let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         try await git.switchBranch(at: root, name: name)
-        snapshot = try await git.snapshot(at: root)
+        try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
     func diff(path: String?) async throws -> String {
@@ -456,6 +558,15 @@ final class SourceControlCenter: ObservableObject {
             token: token, name: name, isPrivate: isPrivate, description: description
         )
         repositories = try await github.repositories(token: token)
+    }
+
+    /// The workspace root itself (not the discovered repository root above
+    /// it): the identity a pinned pane compares against after an await.
+    private func requiredWorkspaceRoot() throws -> URL {
+        guard let root = environment.workspaceCenter.currentRootURL else {
+            throw FloeError.notFound("workspace")
+        }
+        return root
     }
 
     /// Operations stage/commit/diff against the discovered repository root so

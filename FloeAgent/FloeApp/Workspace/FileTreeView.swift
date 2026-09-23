@@ -17,6 +17,10 @@ struct FileTreeView: View {
     /// The IDE sidebar owns its own header/refresh chrome; embedding keeps the
     /// tree's toolbar out of the host navigation bar.
     var showsToolbar = true
+    /// IDE Explorer density: hides the default list separators/insets so the
+    /// tree reads like an editor explorer instead of a document picker.
+    /// Row hit targets stay at the 44pt accessibility minimum.
+    var dense = false
     /// Called when the user taps a file (tree mode) or a hit (search mode).
     let onSelectFile: (String) -> Void
 
@@ -182,6 +186,10 @@ struct FileTreeView: View {
                     }
                 }
                 .contextMenu { rowMenu(for: node) }
+                .listRowInsets(dense
+                    ? EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
+                    : EdgeInsets())
+                .listRowSeparator(dense ? .hidden : .visible, edges: .all)
             }
         }
         .listStyle(.plain)

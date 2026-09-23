@@ -80,6 +80,10 @@ targets:
       - path: FloeApp/Resources/EngineeringViewers
         type: folder
         buildPhase: resources
+      # Resources/IDE now carries only the CodeBlitz/Monaco attribution and
+      # vendor license files (the 28MB web-workbench payload was removed when
+      # IDE text editing became native-only). The license inventory requires
+      # these notices to stay bundled.
       - path: FloeApp/Resources/IDE
         type: folder
         buildPhase: resources
@@ -479,6 +483,7 @@ targets:
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
+      - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift

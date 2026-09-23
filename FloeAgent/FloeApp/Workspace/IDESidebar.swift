@@ -22,6 +22,7 @@ import FloeWorkspace
 
 enum IDESidebarMode: String, Identifiable, CaseIterable {
     case files
+    case search
     case sourceControl
 
     var id: String { rawValue }
@@ -29,6 +30,7 @@ enum IDESidebarMode: String, Identifiable, CaseIterable {
     var title: String {
         switch self {
         case .files: IDELanguageRunText.t("文件", "Files")
+        case .search: IDELanguageRunText.t("搜索", "Search")
         case .sourceControl: IDELanguageRunText.t("源码管理", "Source Control")
         }
     }
@@ -36,6 +38,7 @@ enum IDESidebarMode: String, Identifiable, CaseIterable {
     var systemImage: String {
         switch self {
         case .files: "folder"
+        case .search: "magnifyingglass"
         case .sourceControl: "arrow.triangle.branch"
         }
     }
@@ -48,6 +51,10 @@ struct IDESidebar: View {
     /// without one.
     let workspaceID: UUID?
     let workspaceName: String
+    /// The workspace root this IDE session was opened for. The source-control
+    /// pane is pinned to it: a switch to another workspace locks its writes
+    /// instead of operating the global center's new repository.
+    let pinnedRootURL: URL?
     var onClose: () -> Void
     /// Native file-tree selection. The IDE routes the path to the native text
     /// pane or to the typed viewer tab, never to a text decode.
@@ -60,6 +67,7 @@ struct IDESidebar: View {
         center: WorkspaceCenter,
         workspaceID: UUID?,
         workspaceName: String,
+        pinnedRootURL: URL?,
         onClose: @escaping () -> Void,
         onOpenFile: @escaping (String) -> Void = { _ in }
     ) {
@@ -67,6 +75,7 @@ struct IDESidebar: View {
         self.center = center
         self.workspaceID = workspaceID
         self.workspaceName = workspaceName
+        self.pinnedRootURL = pinnedRootURL
         self.onClose = onClose
         self.onOpenFile = onOpenFile
         _tree = StateObject(wrappedValue: FileTreeViewModel(center: center))
@@ -122,18 +131,25 @@ struct IDESidebar: View {
                 .accessibilityIdentifier("workspace.ide.sidebar.ownershipNotice")
             }
             switch mode {
-            case .files:
-                FileTreeView(viewModel: tree, showsToolbar: false) { path in
+            case .files, .search:
+                // Files and search share one tree view model so typing a
+                // query never rescans from a second enumeration of the tree.
+                FileTreeView(viewModel: tree, showsToolbar: mode == .search, dense: true) { path in
                     onOpenFile(path)
                 }
                 .task { await tree.loadRoot() }
                 .disabled(!pinnedWorkspaceIsCurrent)
-                .accessibilityIdentifier("workspace.ide.sidebar.files")
+                .accessibilityIdentifier(mode == .search ? "workspace.ide.sidebar.search" : "workspace.ide.sidebar.files")
             case .sourceControl:
-                // The ordinary source-control surface: one refresh per pinned
-                // workspace identity, and its own error alert.
-                SourceControlView(center: center.environment.sourceControlCenter)
-                    .id(workspaceID?.uuidString ?? "no-workspace")
+                // The ordinary source-control surface, pinned to the
+                // workspace this IDE was opened for: one refresh per pinned
+                // workspace identity, its own error alert, and a read-only
+                // lock (with no refresh and no writes) after a switch.
+                SourceControlView(
+                    center: center.environment.sourceControlCenter,
+                    pinnedRootURL: pinnedRootURL
+                )
+                .id(workspaceID?.uuidString ?? "no-workspace")
             }
         }
         .background(FloeTheme.readingSurface)
@@ -142,10 +158,13 @@ struct IDESidebar: View {
 
     private func refresh() {
         switch mode {
-        case .files:
+        case .files, .search:
             Task { await tree.loadRoot() }
         case .sourceControl:
-            Task { await center.environment.sourceControlCenter.refreshRepository() }
+            // A locked (switched-away) pane never drives a global refresh.
+            if pinnedWorkspaceIsCurrent {
+                Task { await center.environment.sourceControlCenter.refreshRepository() }
+            }
         }
     }
 }
