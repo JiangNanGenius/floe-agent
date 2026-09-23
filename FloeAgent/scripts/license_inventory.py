@@ -1098,11 +1098,18 @@ def load_pins() -> list[dict]:
             ["git", "show", "HEAD:FloeAgent/Package.resolved"], cwd=REPO, text=True
         )
     )
-    pins = verify_resolution(
+    committed_pins = resolved_pins(committed)
+    verified_pins = verify_resolution(
         resolved_pins(current),
-        resolved_pins(committed),
+        committed_pins,
         application_pins(PROJECT_YML.read_text()),
     )
+    # SwiftPM may rewrite a GitHub URL with or without its optional .git
+    # suffix on another host. verify_resolution has already established that
+    # this is the same immutable pin. Emit the committed spelling so a cloud
+    # checkout cannot spuriously change the recorded license source.
+    committed_by_identity = {pin["identity"]: pin for pin in committed_pins}
+    pins = [committed_by_identity.get(pin["identity"], pin) for pin in verified_pins]
     rows = []
     for pin in pins:
         state = pin["state"]

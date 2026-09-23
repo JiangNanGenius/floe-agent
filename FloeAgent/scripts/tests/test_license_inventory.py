@@ -180,6 +180,21 @@ class LicenseInventoryTests(unittest.TestCase):
             self.assertRegex(pin["revision"], r"^[0-9a-f]{40}$", pin["identity"])
             self.assertNotEqual(pin["revision"], pin["version"], pin["identity"])
 
+    def test_swiftpm_url_spelling_does_not_change_license_source(self):
+        committed = json.loads(subprocess.check_output(
+            ["git", "show", "HEAD:FloeAgent/Package.resolved"], cwd=REPO, text=True
+        ))
+        swift_system = next(pin for pin in committed["pins"] if pin["identity"] == "swift-system")
+        canonical_source = swift_system["location"]
+        self.assertTrue(canonical_source.endswith(".git"))
+        swift_system["location"] = canonical_source.removesuffix(".git")
+        with tempfile.TemporaryDirectory() as folder:
+            resolved = Path(folder) / "Package.resolved"
+            resolved.write_text(json.dumps(committed), encoding="utf-8")
+            with mock.patch.object(li, "PACKAGE_RESOLVED", resolved):
+                pin = next(pin for pin in li.load_pins() if pin["identity"] == "swift-system")
+        self.assertEqual(pin["location"], canonical_source)
+
     def test_committed_evidence_binds_every_pin_revision_and_source(self):
         pins = {pin["identity"]: pin for pin in li.load_pins()}
         evidence = li.load_evidence()
