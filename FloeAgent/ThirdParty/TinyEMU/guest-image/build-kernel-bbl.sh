@@ -197,7 +197,12 @@ if [ "$rebuild" = 1 ]; then
         riscv64-linux-gnu-gcc $1 -c "$out/.cflag-probe.c" \
             -o "$out/.cflag-probe.o" >/dev/null 2>&1
     }
-    bbl_cflags="-O2"
+    # Ubuntu's cross toolchain compiles with the distribution hardening
+    # defaults (-fstack-protector-strong, -D_FORTIFY_SOURCE=3); riscv-pk is
+    # bare metal and links -nostdlib, so those references (__stack_chk_fail,
+    # __stack_chk_guard, __*_chk) have no implementation. Ubuntu already broke
+    # the link this way once; disable them explicitly for this build only.
+    bbl_cflags="-O2 -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
     for flag in -Wno-error=implicit-function-declaration \
                 -Wno-error=int-conversion \
                 -Wno-error=incompatible-pointer-types \
