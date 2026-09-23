@@ -12,11 +12,25 @@
  * Usage:
  *   floe_vm_host --bios bbl64.bin --kernel kernel.bin --disk rootfs.bin
  *                [--rw] [--share tag=dir]... [--net] [--ram MB]
- *                [--cmdline "..."] [--script cmds.txt]
+ *                [--vcpu N] [--cmdline "..."] [--script cmds.txt]
  *                [--transcript out.txt] [--until MARKER] [--max-s N]
+ *                [--stats-file out.jsonl] [--stats-interval S]
  *
  * Script line format:  @<delay_seconds> <command text>
  * Exit: 0 = marker seen or guest poweroff; 2 = timeout; 1 = error.
+ *
+ * FLOE-SMP (--vcpu): 0/1 = legacy single hart (default, bit-compatible),
+ * 2 = dual hart on two host threads. The host samples FloeVMStats into
+ * --stats-file (JSON lines) so a run proves *actual* per-hart execution
+ * (host_threads, per-hart retired insns), not just host CPU count.
+ *
+ * Evidence rules (enforced here, not just by convention):
+ *  - the --until marker must never appear verbatim in any scripted input
+ *    line: the guest TTY echoes input, so a literal marker could be
+ *    "observed" without the guest executing anything. The host refuses to
+ *    run such a script; build markers at runtime inside the guest
+ *    (printf 'X_%s' OK, echo X_$((6*7))).
+ *  - on timeout (rc=2) the transcript and the final stats sample are kept.
  */
 
 #include <stdio.h>
@@ -36,6 +50,7 @@ typedef struct {
 } TimedCmd;
 
 static FILE *transcript;
+static FILE *stats_file;
 static char marker[256];
 static int marker_seen;
 
@@ -72,12 +87,41 @@ static void on_console(void *opaque, const uint8_t *data, int len)
     }
 }
 
+/* One JSON stats sample. Never fails the run: stats are evidence, and a
+ * sample failure is recorded as an event instead of hiding it. */
+static void stats_sample(FloeVM *vm, const char *event, double t)
+{
+    FloeVMStats st;
+    int i;
+    if (!stats_file)
+        return;
+    if (floe_vm_get_stats(vm, &st) != 0) {
+        fprintf(stats_file,
+                "{\"event\":\"%s\",\"t\":%.3f,\"error\":\"floe_vm_get_stats failed\"}\n",
+                event, t);
+        fflush(stats_file);
+        return;
+    }
+    fprintf(stats_file, "{\"event\":\"%s\",\"t\":%.3f,\"vcpu_count\":%d,"
+                        "\"host_threads\":%d,\"hart_insns\":[",
+            event, t, st.vcpu_count, st.host_threads);
+    for (i = 0; i < FLOE_VM_MAX_VCPU; i++)
+        fprintf(stats_file, "%s%llu", i ? "," : "",
+                (unsigned long long)st.hart_insns[i]);
+    fprintf(stats_file, "],\"hart_powered_down\":[");
+    for (i = 0; i < FLOE_VM_MAX_VCPU; i++)
+        fprintf(stats_file, "%s%d", i ? "," : "", st.hart_powered_down[i]);
+    fprintf(stats_file, "]}\n");
+    fflush(stats_file);
+}
+
 static void usage(void)
 {
     fprintf(stderr,
         "usage: floe_vm_host --bios F --kernel F --disk F [--rw]\n"
-        "       [--share tag=dir]... [--net] [--ram MB] [--cmdline S]\n"
-        "       [--script F] [--transcript F] [--until S] [--max-s N]\n");
+        "       [--share tag=dir]... [--net] [--ram MB] [--vcpu N]\n"
+        "       [--cmdline S] [--script F] [--transcript F] [--until S]\n"
+        "       [--max-s N] [--stats-file F] [--stats-interval S]\n");
     exit(1);
 }
 
@@ -88,8 +132,9 @@ int main(int argc, char **argv)
     TimedCmd cmds[MAX_CMDS];
     int cmd_count = 0, cmd_next = 0;
     const char *script_path = NULL, *transcript_path = NULL;
-    double max_s = 120, start;
-    int i, rc = 2;
+    const char *stats_path = NULL;
+    double max_s = 120, start, stats_interval = 5.0, last_stats = 0;
+    int i, rc = 2, requested_vcpu = 0;
 
     memset(&cfg, 0, sizeof(cfg));
     cfg.ram_mb = 128;
@@ -104,6 +149,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--rw")) cfg.disk_rw = 1;
         else if (!strcmp(argv[i], "--net")) cfg.net_enable = 1;
         else if (!strcmp(argv[i], "--ram") && i + 1 < argc) cfg.ram_mb = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--vcpu") && i + 1 < argc) requested_vcpu = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--cmdline") && i + 1 < argc) cfg.cmdline = argv[++i];
         else if (!strcmp(argv[i], "--share") && i + 1 < argc) {
             char *spec = argv[++i], *eq = strchr(spec, '=');
@@ -115,6 +161,8 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script_path = argv[++i];
         else if (!strcmp(argv[i], "--transcript") && i + 1 < argc) transcript_path = argv[++i];
+        else if (!strcmp(argv[i], "--stats-file") && i + 1 < argc) stats_path = argv[++i];
+        else if (!strcmp(argv[i], "--stats-interval") && i + 1 < argc) stats_interval = atof(argv[++i]);
         else if (!strcmp(argv[i], "--until") && i + 1 < argc) {
             snprintf(marker, sizeof(marker), "%s", argv[++i]);
         }
@@ -122,6 +170,20 @@ int main(int argc, char **argv)
         else usage();
     }
     if (!cfg.bios_path) usage();
+
+    if (requested_vcpu < 0 || requested_vcpu > floe_vm_max_vcpu_count()) {
+        fprintf(stderr,
+                "floe_vm_host: --vcpu %d out of range 0..%d\n",
+                requested_vcpu, floe_vm_max_vcpu_count());
+        return 1;
+    }
+    cfg.vcpu_count = requested_vcpu; /* 0/1 = legacy single hart */
+    if (cfg.vcpu_count > 1 && !floe_vm_smp_capable()) {
+        fprintf(stderr,
+                "floe_vm_host: --vcpu %d requested but the linked engine is not "
+                "SMP capable (floe_vm_smp_capable()=0)\n", cfg.vcpu_count);
+        return 1;
+    }
 
     if (script_path) {
         FILE *sf = fopen(script_path, "r");
@@ -145,14 +207,40 @@ int main(int argc, char **argv)
         transcript = fopen(transcript_path, "w");
         if (!transcript) { perror(transcript_path); return 1; }
     }
+    if (stats_path) {
+        stats_file = fopen(stats_path, "w");
+        if (!stats_file) { perror(stats_path); return 1; }
+    }
 
-    fprintf(stderr, "floe_vm_host: engine=%s ram=%lluMB net=%d shares=%d\n",
-            floe_vm_engine_version(), (unsigned long long)cfg.ram_mb,
-            cfg.net_enable, cfg.share_count);
+    /* Honest-marker gate: the marker literal must not be present in any
+     * scripted input line, otherwise the TTY echo of the input line could
+     * satisfy --without the guest executing anything. */
+    if (marker[0]) {
+        for (i = 0; i < cmd_count; i++) {
+            if (strstr(cmds[i].text, marker)) {
+                fprintf(stderr,
+                    "floe_vm_host: refusing to run: --until marker '%s' appears\n"
+                    "verbatim in the scripted input line '%s'; the guest TTY echo\n"
+                    "could fake it. Build the marker at runtime inside the guest\n"
+                    "(e.g. printf 'NAME_%%s\\n' OK or echo NAME_$((6*7))).\n",
+                    marker, cmds[i].text);
+                return 1;
+            }
+        }
+    }
+
+    fprintf(stderr, "floe_vm_host: engine=%s smp_capable=%d max_vcpu=%d "
+            "vcpu=%d ram=%lluMB net=%d shares=%d\n",
+            floe_vm_engine_version(), floe_vm_smp_capable(),
+            floe_vm_max_vcpu_count(), cfg.vcpu_count,
+            (unsigned long long)cfg.ram_mb, cfg.net_enable, cfg.share_count);
 
     vm = floe_vm_create(&cfg, on_console, NULL);
     if (!vm)
         return 1;
+
+    if (stats_file)
+        stats_sample(vm, "create", 0.0);
 
     start = now_s();
     while (now_s() - start < max_s) {
@@ -165,23 +253,38 @@ int main(int argc, char **argv)
         }
         if (floe_vm_run_slice(vm, 10) == 1) {
             fprintf(stderr, "\nfloe_vm_host: guest poweroff requested\n");
+            stats_sample(vm, "poweroff", now_s() - start);
             rc = 0;
             break;
         }
         if (marker[0] && marker_seen) {
             fprintf(stderr, "\nfloe_vm_host: marker '%s' observed\n", marker);
+            stats_sample(vm, "marker", now_s() - start);
             rc = 0;
             break;
+        }
+        if (stats_file && stats_interval > 0 && el - last_stats >= stats_interval) {
+            stats_sample(vm, "sample", el);
+            last_stats = el;
         }
         if (cmd_next >= cmd_count && !marker[0] && el > max_s / 2)
             break; /* no script and no marker: nothing more to wait for */
     }
-    if (rc == 2)
-        fprintf(stderr, "\nfloe_vm_host: timeout after %.1fs\n",
+    if (rc == 2) {
+        fprintf(stderr, "\nfloe_vm_host: timeout after %.1fs (transcript kept)\n",
                 now_s() - start);
+        if (stats_file)
+            stats_sample(vm, "timeout", now_s() - start);
+    }
 
     floe_vm_destroy(vm);
-    if (transcript)
+    if (transcript) {
+        fflush(transcript);
         fclose(transcript);
+    }
+    if (stats_file) {
+        fprintf(stats_file, "{\"event\":\"end\",\"rc\":%d}\n", rc);
+        fclose(stats_file);
+    }
     return rc;
 }

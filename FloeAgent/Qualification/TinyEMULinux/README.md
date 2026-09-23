@@ -9,7 +9,8 @@ the engine, not full-app acceptance.
 
 | Path | Purpose |
 | --- | --- |
-| `floe_vm_host.c` | CLI host: boots a VM, feeds a timed `@sec command` script to the guest console, records a transcript, exits 0 when `--until MARKER` is observed or the guest requests poweroff |
+| `floe_vm_host.c` | CLI host: boots a VM, feeds a timed `@sec command` script to the guest console, records a transcript, exits 0 when `--until MARKER` is observed or the guest requests poweroff. `--vcpu N` selects the hart count (0/1 = legacy single hart, 2 = dual hart on two host threads), `--stats-file` samples `FloeVMStats` as JSON lines (per-hart retired insns, host threads), and the host refuses to run when a `--until` marker appears verbatim in a scripted input line (TTY echo could otherwise fake it) |
+| `smp_host_test.c` | FLOE-SMP qualification via the public adapter API: capability/config probes (`vcpu_count > max` rejected), a real dual-hart guest boot with concurrent stats sampling from a second host thread, per-hart execution proof (`host_threads=2` + hart 1 retired insns — never host `nproc`), 9p IO, repeated stop+flush destroy cycles and a single-hart control |
 | `lifecycle_test.c` | repeatable create/destroy, hostfwd bind/remove/destroy, recoverable oversized-BIOS/kernel and RAM-OOM failures |
 | `two_vm_test.c` | two networked VMs on two host threads (isolated slirp/forwarding/cleanup); with `<bios> <kernel> <disk>` also two concurrent real guest boots with per-VM console markers and per-VM 9p shares |
 | `containment_test.c` | drives the patched `fs_disk.c` directly: `..`, `/`, symlink traversal, rename escape, file-fid children, and FIFO/device metadata-only handling (no blocking open) |
@@ -24,6 +25,57 @@ cd FloeAgent/Qualification/TinyEMULinux
 ./run_local_smoke.sh              # Linux host
 MACOS=1 ./run_local_smoke.sh      # macOS host (build shims, console-only)
 ```
+
+SMP host qualification (needs the FLOE-SMP engine patches from job A):
+
+```sh
+# build (from this directory; relative paths because the workspace has spaces)
+make -f ../../ThirdParty/TinyEMU/adapter/Makefile \
+  TINYEMU_SRC=<tinyemu-src> PATCH_DIR=../../ThirdParty/TinyEMU/patches \
+  BUILD=<build-dir> HOST_DIR=. -j4 [MACOS=1]
+cc -O2 -Wall -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_GNU_SOURCE \
+  -DCONFIG_VERSION='"2019-12-21"' -DCONFIG_SLIRP -DCONFIG_RISCV_MAX_XLEN=64 \
+  -I<build-dir> -I<tinyemu-src> -I../../ThirdParty/TinyEMU/adapter \
+  -c -o <build-dir>/smp_host_test.o smp_host_test.c
+cc -o <build-dir>/smp_host_test <build-dir>/smp_host_test.o <build-dir>/libfloevm.a -lm -lpthread
+
+# 1 vs 2 hart host boots with stats
+<build-dir>/floe_vm_host --bios <img>/bbl64.bin --kernel <img>/kernel-riscv64.bin \
+  --disk <img>/root-riscv64.bin --ram 128 --vcpu 2 --script <cmds> \
+  --transcript out.txt --stats-file out.jsonl --until MARKER --max-s 120
+# full SMP test (marker/9p checks fail honestly while the dual-hart guest
+# bring-up is broken; the summary JSON records exactly which checks failed)
+<build-dir>/smp_host_test --bios <img>/bbl64.bin --kernel <img>/kernel-riscv64.bin \
+  --disk <img>/root-riscv64.bin --share floe=<dir> --ram 128 \
+  --summary smp.json --transcript smp-transcript.txt
+```
+
+## FLOE-SMP qualification status (2026-09-23, host: Apple Silicon macOS, interpreter)
+
+Measured with job A's in-flight SMP tree (patch `0010-smp-dual-hart.patch`,
+adapter `vcpu_count`/`FloeVMStats` contract):
+
+- `--vcpu 0/1` keeps the legacy single-hart path: `host_threads=0`, only hart 0
+  retires instructions, the demo guest boots to its runtime-assembled marker
+  (verified locally; see the stats lines `host_threads:0`).
+- `--vcpu 2` really spawns two host threads and BOTH harts retire instructions
+  (local run: ~5.4e9 insns per hart in 90 s, `hart_powered_down` never set).
+  But the **guest produced a 0-byte console transcript in 90 s**: the dual-hart
+  guest bring-up does not reach Linux's console yet. Retained transcripts +
+  `*-stats.jsonl` show this plainly; `run_smp` CI stages gate on the real
+  guest marker, so a dual-hart image/engine is **not** accepted until the
+  guest boots with two harts. Root cause is engine-side (job A scope), not the
+  qualification host.
+- `smp_host_test` on that same tree: 18 checks, 2 failures — both are the
+  dual-hart guest symptom (no marker, no 9p write). Host-side checks pass:
+  capability probes, `vcpu_count=3` rejected, hundreds of concurrent stats
+  samples with `host_threads=2`, 3/3 stop+flush destroy cycles, and the full
+  single-hart control. The parked-hart WFI state is recorded as informational
+  evidence, not asserted (it depends on the guest firmware park loop).
+- The pinned demo kernel is UP (`CONFIG_SMP` is not set), so even a working
+  dual-hart bring-up cannot show workload speedup on it; the cloud baseline
+  records repeats for both hart counts and explicitly claims no speedup until
+  an SMP guest kernel lands (job A guest-image scope).
 
 ## Measured status (2026-09-20, host: Apple Silicon macOS, interpreter)
 
@@ -49,8 +101,25 @@ Open qualification items run in cloud CI
 modern kernel vs. 2018 bbl SBI compatibility (expected blocker, recorded as
 evidence), Debian 13 userland on the old kernel fallback, APT / python3 /
 node / numpy, file-persistence across reboot, PTY/fork/exec/signal checks,
-boot/memory/time measurements. iPad performance: **pending** — no device
+boot/memory/time measurements, and (opt-in `run_smp=true`) the FLOE-SMP
+stages S1–S3 described below. iPad performance: **pending** — no device
 measurements exist yet; never extrapolate from the above.
+
+### Cloud SMP stage contract (`run_smp=true`)
+
+- **S1** boots the demo guest with `floe_vm_host --vcpu 1` and `--vcpu 2`
+  and hard-fails unless: `vcpu=1` uses inline interpretation
+  (`host_threads=0`), `vcpu=2` spawns two host threads with hart 1 actually
+  retiring instructions, and BOTH guests reach a runtime-assembled marker.
+  A missing dual-hart marker is kept as a real failure (transcript + stats
+  uploaded per stage) — never downgraded to a skip.
+- **S2** runs `smp_host_test` (capability probes, concurrent stats sampling,
+  9p IO, repeated stop+flush destroys, single-hart control) and uploads its
+  summary/transcript immediately.
+- **S3** runs a repeated (3×) `--vcpu 1` vs `--vcpu 2` performance baseline
+  with per-hart instruction counters and writes `smp-perf-baseline.json`;
+  the recorded `speedup_claim` stays `null` for the UP demo kernel. Host
+  `nproc` is never used as evidence of dual-hart execution.
 
 ## Cloud results (2026-09-20, ubuntu-latest, raw transcripts kept as artifacts)
 

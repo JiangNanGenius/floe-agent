@@ -13,18 +13,31 @@
 #    riscv64 stages (B: modern kernel probe, C: userland on the 4.15
 #    fallback kernel, D: APT/numpy/node, E: persistence). That downloads a
 #    ~3 GB image and takes up to ~2 h, so it is opt-in.
+#  - manual dispatch with run_smp=true additionally runs the FLOE-SMP
+#    stages (S1..S3): host `--vcpu 1` vs `--vcpu 2` real boots with
+#    per-hart FloeVMStats, the smp_host_test (capability/config probes,
+#    actual per-hart execution threads, concurrent stats sampling, 9p IO,
+#    stop+flush, single-hart control) and a repeated single vs dual
+#    parallel performance baseline. This requires job A's dual-hart
+#    engine; a failure here is a real, retained result (transcripts +
+#    stats stay in the per-step artifacts), never a skipped check.
+#    "Dual core works" is never inferred from nproc.
 #
 # Evidence rules (kept honest after a real false-positive incident):
 #  - guest markers are only ever emitted by printf/echo *built at runtime*,
 #    so the literal marker string never appears in the console input line
 #    that the guest TTY echoes back. A marker hit therefore means the guest
-#    executed something, not that it echoed the command.
+#    executed something, not that it echoed the command. `floe_vm_host`
+#    additionally refuses to run when the --until marker appears verbatim
+#    in a scripted input line, so the rule is enforced, not just agreed.
 #  - exit codes are captured from the real command (`cmd >log 2>&1; printf
 #    'RC=%d\n' $?`); never from the tail of a pipeline.
 #  - `--until` values use the same runtime-assembled markers, so the host
 #    cannot exit on TTY echo.
 #  - raw guest logs are exported to the host through the 9p share when the
 #    stage mounts it, and all transcripts/timing/RC files are uploaded.
+#  - on a timeout the host keeps the transcript and the final stats sample
+#    (rc=2), so a failed boot leaves evidence instead of nothing.
 name: tinyemu-linux-qualification
 
 on:
@@ -40,6 +53,10 @@ on:
         default: false
       apt_probe:
         description: 'Targeted path: prepare the rootfs, set the guest clock, then run one real sequential guest script (APT https update/install, numpy/node, Python HTTPS, fence hint probe). Skips A/B/C/E.'
+        type: boolean
+        default: false
+      run_smp:
+        description: 'Also run the FLOE-SMP stages (S1..S3): 1/2 hart real execution threads, per-hart stats, IO, stop+flush and a repeated single vs dual baseline'
         type: boolean
         default: false
   push:
@@ -420,6 +437,265 @@ jobs:
           set -e
           grep -a FLOE_PERSIST work/stageE2-transcript.txt || true
 
+      # ------------------------------------------------------------------
+      # Stage S (opt-in, run_smp): FLOE-SMP qualification.
+      # A failure in any S stage is a real result and is kept in the
+      # per-step artifacts (transcripts + stats); nothing here is skipped
+      # silently and dual-hart success is never inferred from nproc.
+      # Coverage boundary: these stages verify the host-visible SMP
+      # contract (capability queries, real per-hart execution threads,
+      # stats sampling, guest IO under two harts, stop+flush destroy).
+      # Engine-internal LR/SC/AMO + shared-memory adversarial tests live in
+      # job A's FloeTinyEMUTests (Swift target, not built in this
+      # engine-only lane); do not read a green S run as covering them.
+      # ------------------------------------------------------------------
+      - name: Build the SMP host qualification test (links the freshly built engine)
+        if: ${{ inputs.run_smp }}
+        run: |
+          set -euo pipefail
+          cd FloeAgent/Qualification/TinyEMULinux
+          cc -O2 -Wall -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_GNU_SOURCE \
+             -DCONFIG_VERSION=\"2019-12-21\" -DCONFIG_SLIRP -DCONFIG_RISCV_MAX_XLEN=64 \
+             -I../../../work/build -I../../../work/src/tinyemu-2019-12-21 \
+             -I../../ThirdParty/TinyEMU/adapter \
+             -c -o ../../../work/build/smp_host_test.o smp_host_test.c
+          cc -o ../../../work/build/smp_host_test ../../../work/build/smp_host_test.o \
+             ../../../work/build/libfloevm.a -lm -lpthread -lrt
+          file ../../../work/build/smp_host_test
+
+      - name: Stage S1 — host --vcpu 1 vs 2 real boots with per-hart stats
+        if: ${{ inputs.run_smp }}
+        run: |
+          set -euo pipefail
+          IMG=work/src/diskimage-linux-riscv-2018-09-23
+          mkdir -p work/smp
+          cat > work/smp/host-script.txt <<'EOF'
+          @8 uname -a
+          @12 echo FLOE_SMP_HOST_A_$((6*7))
+          @18 printf 'FLOE_SMP_HOST_%s\n' DONE
+          EOF
+          sed -i 's/^ *//' work/smp/host-script.txt
+          for v in 1 2; do
+            set +e
+            work/build/floe_vm_host --bios "$IMG/bbl64.bin" --kernel "$IMG/kernel-riscv64.bin" \
+              --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu "$v" \
+              --script work/smp/host-script.txt \
+              --transcript "work/smp/host-vcpu$v-transcript.txt" \
+              --stats-file "work/smp/host-vcpu$v-stats.jsonl" --stats-interval 2 \
+              --until FLOE_SMP_HOST_DONE --max-s 150 > "work/smp/host-vcpu$v-stdout.txt" 2>&1
+            echo "host_vcpu${v}_rc=$?" | tee -a "work/smp/host-vcpu$v-rc.txt"
+            set -e
+          done
+          python3 - <<'PY'
+          import json, sys
+          problems = []
+          for v in ("1", "2"):
+              path = f"work/smp/host-vcpu{v}-stats.jsonl"
+              samples = []
+              try:
+                  with open(path, "r", encoding="utf-8") as handle:
+                      for line in handle:
+                          line = line.strip()
+                          if line:
+                              samples.append(json.loads(line))
+              except OSError as exc:
+                  print(f"stats file missing/illegal: {path}: {exc}")
+                  sys.exit(1)
+              if not samples:
+                  print(f"no stats samples in {path}")
+                  sys.exit(1)
+              final = [s for s in samples if s.get("event") in ("marker", "poweroff", "timeout")]
+              last = final[-1] if final else samples[-1]
+              host_threads = max(s.get("host_threads", 0) for s in samples)
+              hart1 = max((s.get("hart_insns") or [0, 0])[1] for s in samples)
+              print(f"vcpu={v}: host_threads={host_threads} hart1_max_insns={hart1} "
+                    f"last_event={last.get('event')} t={last.get('t')}")
+              if v == "1":
+                  if host_threads != 0:
+                      problems.append("vcpu=1 must keep inline interpretation (host_threads=0)")
+              else:
+                  if host_threads != 2:
+                      problems.append("vcpu=2 must spawn one host thread per hart (host_threads=2)")
+                  if hart1 <= 0:
+                      problems.append("vcpu=2 hart 1 must retire instructions (actual execution thread)")
+          if problems:
+              for item in problems:
+                  print("SMP STATS GATE FAILED:", item)
+              sys.exit(1)
+          print("SMP stats gate: host_threads 0 (vcpu=1) / 2 (vcpu=2); hart 1 really executes")
+          PY
+          # Actual execution threads are necessary but not sufficient: the
+          # vcpu=2 guest must really boot and reach the runtime-assembled
+          # marker. A missing marker is a retained failure, not a skip.
+          if ! grep -qa FLOE_SMP_HOST_A_42 work/smp/host-vcpu2-transcript.txt \
+             || ! grep -qa FLOE_SMP_HOST_DONE work/smp/host-vcpu2-transcript.txt; then
+            echo "SMP BOOT GATE FAILED: the vcpu=2 guest produced no marker"
+            echo "(transcript bytes: $(wc -c < work/smp/host-vcpu2-transcript.txt))"
+            echo "The per-hart stats above show the threads; the guest-visible boot"
+            echo "under two harts is the gap. Transcript and stats are uploaded."
+            exit 1
+          fi
+          grep -qa FLOE_SMP_HOST_A_42 work/smp/host-vcpu1-transcript.txt \
+            || { echo "single-hart control boot did not reach its marker"; exit 1; }
+          echo "SMP boot gate: vcpu=1 control and vcpu=2 guest both reached their markers"
+
+      - name: Upload Stage S1 evidence (per-step, immediate)
+        if: ${{ always() && inputs.run_smp }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-host-stage-s1-${{ github.run_id }}
+          path: work/smp/host-vcpu*
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Stage S2 — smp_host_test (threads, stats locking, 9p IO, stop+flush, single control)
+        if: ${{ always() && inputs.run_smp }}
+        run: |
+          set -euo pipefail
+          IMG=work/src/diskimage-linux-riscv-2018-09-23
+          mkdir -p work/smp/share
+          set +e
+          work/build/smp_host_test --bios "$IMG/bbl64.bin" --kernel "$IMG/kernel-riscv64.bin" \
+            --disk "$IMG/root-riscv64.bin" --share floe=work/smp/share --ram 128 \
+            --dual-max-s 150 \
+            --summary work/smp/smp-test-summary.json \
+            --transcript work/smp/smp-test-transcript.txt \
+            > work/smp/smp-test-stdout.txt 2>&1
+          rc=$?
+          set -e
+          echo "smp_host_test_rc=$rc" | tee work/smp/smp-test-rc.txt
+          tail -c 3000 work/smp/smp-test-stdout.txt
+          if [ "$rc" != 0 ]; then
+            echo "SMP host test failed (rc=$rc); summary/transcript/9p state are kept"
+            exit 1
+          fi
+          grep -a "SMP_HOST_OK" work/smp/smp-test-stdout.txt
+
+      - name: Upload Stage S2 evidence (per-step, immediate)
+        if: ${{ always() && inputs.run_smp }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-host-stage-s2-${{ github.run_id }}
+          path: |
+            work/smp/smp-test-*.*
+            work/smp/share/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Stage S3 — single vs dual parallel performance repeated baseline
+        if: ${{ always() && inputs.run_smp }}
+        run: |
+          set -euo pipefail
+          IMG=work/src/diskimage-linux-riscv-2018-09-23
+          cat > work/smp/perf-script.txt <<'EOF'
+          @10 dd if=/dev/zero of=/dev/null bs=64k count=2048 2>&1 | tail -1
+          @22 printf 'FLOE_SMP_PERF_%s\n' DONE
+          EOF
+          sed -i 's/^ *//' work/smp/perf-script.txt
+          for v in 1 2; do
+            for r in 1 2 3; do
+              set +e
+              work/build/floe_vm_host --bios "$IMG/bbl64.bin" --kernel "$IMG/kernel-riscv64.bin" \
+                --disk "$IMG/root-riscv64.bin" --ram 128 --vcpu "$v" \
+                --script work/smp/perf-script.txt \
+                --transcript "work/smp/perf-vcpu$v-r$r-transcript.txt" \
+                --stats-file "work/smp/perf-vcpu$v-r$r-stats.jsonl" --stats-interval 1 \
+                --until FLOE_SMP_PERF_DONE --max-s 90 \
+                > "work/smp/perf-vcpu$v-r$r-stdout.txt" 2>&1
+              echo "perf_vcpu${v}_r${r}_rc=$?" >> "work/smp/perf-vcpu$v-r$r-rc.txt"
+              set -e
+            done
+          done
+          python3 - <<'PY' | tee work/smp/smp-perf-baseline.txt
+          import json, statistics
+          runs = []
+          problems = []
+          for v in (1, 2):
+              for r in (1, 2, 3):
+                  base = f"work/smp/perf-vcpu{v}-r{r}"
+                  samples = []
+                  with open(base + "-stats.jsonl", "r", encoding="utf-8") as handle:
+                      for line in handle:
+                          line = line.strip()
+                          if line:
+                              samples.append(json.loads(line))
+                  host_threads = max(s.get("host_threads", 0) for s in samples)
+                  hart1 = max((s.get("hart_insns") or [0, 0])[1] for s in samples)
+                  hart0 = max((s.get("hart_insns") or [0, 0])[0] for s in samples)
+                  final = [s for s in samples if s.get("event") in ("marker", "poweroff", "timeout")]
+                  last = final[-1] if final else samples[-1]
+                  try:
+                      with open(base + "-transcript.txt", "r", errors="replace") as handle:
+                          transcript = handle.read()
+                  except OSError:
+                      transcript = ""
+                  booted = "FLOE_SMP_PERF_DONE" in transcript
+                  runs.append({
+                      "vcpu": v, "repeat": r,
+                      "guest_booted": booted,
+                      "wall_s_to_final_event": last.get("t"),
+                      "final_event": last.get("event"),
+                      "host_threads": host_threads,
+                      "hart0_max_insns": hart0,
+                      "hart1_max_insns": hart1,
+                  })
+                  if v == 2:
+                      if host_threads != 2:
+                          problems.append(f"run vcpu=2 r{r}: host_threads={host_threads}, expected 2")
+                      if hart1 <= 0:
+                          problems.append(f"run vcpu=2 r{r}: hart 1 retired no instructions")
+          medians = {}
+          for v in (1, 2):
+              booted = [x for x in runs if x["vcpu"] == v and x["guest_booted"]]
+              if booted:
+                  medians[str(v)] = {
+                      "booted_runs": len(booted),
+                      "median_wall_s": statistics.median([x["wall_s_to_final_event"] for x in booted]),
+                      "median_hart0_insns": statistics.median([x["hart0_max_insns"] for x in booted]),
+                      "median_hart1_insns": statistics.median([x["hart1_max_insns"] for x in booted]),
+                  }
+              else:
+                  medians[str(v)] = {
+                      "booted_runs": 0,
+                      "note": "no guest-booted run; the workload comparison is not measurable",
+                  }
+          payload = {
+              "tool": "floe_vm_host --vcpu + FloeVMStats",
+              "runs": runs,
+              "medians": medians,
+              "speedup_claim": None,
+              "note": ("Repeated baseline only. The pinned 4.15 demo kernel is UP "
+                       "(CONFIG_SMP is not set), so a vcpu=2 guest cannot use the "
+                       "second hart for the workload; no parallel speedup is claimed "
+                       "from these numbers. Reproduce after an SMP guest kernel lands. "
+                       "Dual-hart execution is proven by host_threads/per-hart insns, "
+                       "never by host nproc."),
+          }
+          with open("work/smp/smp-perf-baseline.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2)
+              handle.write("\n")
+          for row in runs:
+              print(f"vcpu={row['vcpu']} r{row['repeat']}: booted={row['guest_booted']} "
+                    f"wall={row['wall_s_to_final_event']}s host_threads={row['host_threads']} "
+                    f"hart0={row['hart0_max_insns']} hart1={row['hart1_max_insns']}")
+          print("medians:", json.dumps(medians))
+          if problems:
+              for item in problems:
+                  print("SMP PERF GATE FAILED:", item)
+              raise SystemExit(1)
+          print("SMP perf gate: every vcpu=2 run had 2 host threads and hart 1 executing")
+          PY
+          python3 -m json.tool work/smp/smp-perf-baseline.json >/dev/null && echo "smp-perf-baseline.json valid"
+
+      - name: Upload Stage S3 evidence (per-step, immediate)
+        if: ${{ always() && inputs.run_smp }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smp-host-stage-s3-${{ github.run_id }}
+          path: work/smp/perf-vcpu*
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Summarize results
         if: always()
         run: |
@@ -451,9 +727,32 @@ jobs:
           share = sorted(os.path.basename(p) for p in
                          (os.path.join("work/share9p", f) for f in os.listdir("work/share9p"))
                          if os.path.isfile(p)) if os.path.isdir("work/share9p") else []
+
+          def maybe_json(path):
+              raw = slurp(path)
+              if not raw:
+                  return None
+              try:
+                  return json.loads(raw)
+              except json.JSONDecodeError:
+                  return {"unparsable": raw[:400]}
+
+          smp = {
+              "run_smp": os.environ.get("INPUT_RUN_SMP", ""),
+              "stage_s1_vcpu1_rc": rc("work/smp/host-vcpu1-rc.txt"),
+              "stage_s1_vcpu2_rc": rc("work/smp/host-vcpu2-rc.txt"),
+              "stage_s2_host_test_rc": rc("work/smp/smp-test-rc.txt"),
+              "stage_s2_host_test": maybe_json("work/smp/smp-test-summary.json"),
+              "stage_s3_perf_baseline": maybe_json("work/smp/smp-perf-baseline.json"),
+              "note": ("stage_s2/s3 summaries carry host_threads and per-hart retired "
+                       "instructions; dual-hart success is asserted from those, never "
+                       "from host nproc"),
+          }
           summary = {
               "engine_sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
+              "source_ref": os.environ.get("GITHUB_SHA", ""),
               "run_debian": os.environ.get("INPUT_RUN_DEBIAN", ""),
+              "run_smp": os.environ.get("INPUT_RUN_SMP", ""),
               "deb_package_versions": [l.strip() for l in
                                        slurp("work/debian-osrelease.txt").splitlines() if l.strip()][:2],
               "debian_image_sha512": slurp("work/debian-sha512.txt").split(" ")[0],
@@ -472,6 +771,7 @@ jobs:
               "guest_log_files": share,
               "markers": {m: (m in blob) for m in markers},
               "marker_note": "true only means the literal string appeared in a console transcript; guest scripts assemble markers at runtime so TTY echo of the input line cannot produce them",
+              "smp": smp,
           }
           print(json.dumps(summary, indent=2))
           PY
@@ -501,4 +801,9 @@ jobs:
             work/boot-listing.txt
             work/partitions.txt
             work/share9p/*
+            work/smp/*.json
+            work/smp/*.jsonl
+            work/smp/*.txt
+            work/smp/*-transcript.txt
+            work/smp/*-rc.txt
           retention-days: 30

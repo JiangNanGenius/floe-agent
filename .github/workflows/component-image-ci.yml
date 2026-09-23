@@ -6,11 +6,37 @@
 # bundle, boots the image twice for real capability checks, and uploads
 # artifacts with digests. Publishing/announcing is the primary agent's call.
 #
+# Boot-file provenance (two distinct paths — never conflated):
+#   * `image` (default): the image candidate ships the PINNED 2018 demo
+#     bbl64.bin/kernel-riscv64.bin (smp not enabled; UP kernel, CONFIG_SMP is
+#     not set). `boot-association.json` in the evidence records their hashes
+#     and states the origin as `pinned-demo`.
+#   * `smp_image` (opt-in): build kernel+bbl from the pinned sources
+#     (`build-kernel-bbl.sh --rebuild`) and assemble the image with THOSE
+#     fresh boot files. This needs the A-side assembly hook
+#     (`build-guest-image.sh --boot-dir DIR`; requested from job
+#     job-40f1f1e9603240dd). Until the hook lands the job fails explicitly
+#     with the fresh-build evidence uploaded — it never mislabels a
+#     pinned-kernel image as an SMP/preinstalled product.
+#   * `rebuild_kernel` only affects the SOURCES job: it rebuilds kernel+bbl
+#     for source/hash evidence and does NOT change the image's boot files.
+#     The sources job writes `boot-association.json` that contrasts the
+#     image's pinned hashes with the fresh rebuild hashes and states that
+#     the rebuild is not the shipped bytes.
+#
+# Runtime-template recipes: the `templates` job runs
+# `FloeAgent/scripts/qualify_runtime_templates.py` against the image's own
+# package inventory. Recipes are owned by job D (job-6f5ac974858c47c2);
+# while a recipe file is missing the job fails with exit 3
+# (explicit dependency failure) instead of qualifying an unverified image.
+#
 # Jobs (independent so a retry does not rebuild the other):
 #   image   — fetch pinned inputs, build engine + image, boot-verify twice,
 #             package the zip + manifest + evidence.
 #   sources — exact kernel/bbl source, runner relink material, cross-toolchain
 #             source and the Debian binary->source corresponding sources.
+#   smp-image  — opt-in: fresh kernel+bbl build + image assembly (A hook gate).
+#   templates  — opt-in: basic/dev-document recipe qualification (D gate).
 #
 # Manual runs can build only one job; `sources` alone needs the run id that
 # holds the image evidence (its small package inventory), which is enough to
@@ -29,9 +55,17 @@ on:
         type: boolean
         default: true
       rebuild_kernel:
-        description: 'Also rebuild kernel+bbl inside the source job (very heavy)'
+        description: 'Sources job ONLY: rebuild kernel+bbl from pinned source and record their hashes (does NOT change the image candidate boot files; see smp_image)'
         type: boolean
         default: false
+      smp_image:
+        description: 'Build kernel+bbl from source and assemble the image with them (needs build-guest-image.sh --boot-dir from job A; explicit dependency failure until then)'
+        type: boolean
+        default: false
+      templates:
+        description: 'Qualify the image inventory against basic/dev-document template recipes (explicit dependency failure while D recipes are missing)'
+        type: boolean
+        default: true
       image_run_id:
         description: 'With sources only: run id that holds linux-guest-image-evidence-*'
         type: string
@@ -104,6 +138,35 @@ jobs:
             --source-ref "${{ github.sha }}" \
             2>&1 | tee "${{ runner.temp }}/floe-image-build.log"
 
+      - name: Record the boot-file provenance association (pinned-demo origin)
+        if: always()
+        run: |
+          set -euo pipefail
+          W="${{ runner.temp }}/floe-image-work"
+          if [ -d "$W/evidence" ]; then
+            python3 - "$W/evidence" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" "${{ github.sha }}" <<'PY'
+          import json, os, sys
+          evidence, run_url, source_ref = sys.argv[1], sys.argv[2], sys.argv[3]
+          pins_path = os.path.join(evidence, "bios-kernel-pins.txt")
+          record = {
+              "image_run": run_url,
+              "source_ref": source_ref,
+              "boot_files_origin": "pinned-demo",
+              "note": ("The image candidate ships the pinned 2018 demo bbl64.bin and "
+                       "kernel-riscv64.bin (UP kernel, CONFIG_SMP is not set). This image "
+                       "is NOT an SMP/kernel-rebuild product; a fresh-kernel image "
+                       "requires the smp_image path and its assembly hook."),
+          }
+          if os.path.isfile(pins_path):
+              with open(pins_path, "r", encoding="utf-8", errors="replace") as handle:
+                  record["bios_kernel_pins"] = handle.read().strip().splitlines()
+          with open(os.path.join(evidence, "boot-association.json"), "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          print(json.dumps(record, indent=2))
+          PY
+          fi
+
       - name: Stage the flat evidence bundle (stable artifact layout)
         if: always()
         run: |
@@ -115,6 +178,11 @@ jobs:
           if [ -d "$W/evidence" ]; then cp -a "$W/evidence/." "$B/"; fi
           if [ -f "$W/image/manifest.json" ]; then cp "$W/image/manifest.json" "$B/manifest.json"; fi
           if [ -f "$W/image/SHA512SUMS" ]; then cp "$W/image/SHA512SUMS" "$B/SHA512SUMS"; fi
+          # the build log is evidence: keep it with the (small) bundle so a
+          # failed boot still leaves the raw transcript reachable
+          if [ -f "${{ runner.temp }}/floe-image-build.log" ]; then
+            cp "${{ runner.temp }}/floe-image-build.log" "$B/floe-image-build.log"
+          fi
           ls -la "$B" | head -30
 
       - name: Show the evidence summary
@@ -195,6 +263,68 @@ jobs:
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/$IMAGE_RUN" \
             $EXTRA 2>&1 | tee "${{ runner.temp }}/floe-sources.log"
 
+      - name: Boot-file association — pinned image bytes vs any freshly rebuilt kernel+bbl
+        if: always()
+        run: |
+          set -euo pipefail
+          S="${{ runner.temp }}/floe-sources"
+          E="${{ runner.temp }}/floe-image-evidence"
+          IMAGE_RUN="${{ (github.event_name == 'workflow_dispatch' && inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}"
+          python3 - "$S" "$E" "$IMAGE_RUN" "${{ inputs.rebuild_kernel }}" \
+            "${{ github.server_url }}/${{ github.repository }}" <<'PY'
+          import json, os, re, sys
+          sources, evidence, image_run, rebuilt, server_repo = (
+              sys.argv[1], sys.argv[2], sys.argv[3],
+              sys.argv[4] == "true", sys.argv[5])
+          record = {
+              "image_run": f"{server_repo}/actions/runs/{image_run}",
+              "image_boot_files_origin": "pinned-demo",
+              "fresh_rebuild_this_run": rebuilt,
+              "fresh_equals_pinned_image_bytes": False,
+              "note": ("The image candidate ships the pinned 2018 demo bbl64.bin / "
+                       "kernel-riscv64.bin. Any rebuild performed by this sources job is "
+                       "SOURCE/HASH evidence for those pin revisions and is not "
+                       "byte-identical to (and must never be claimed as) the bytes inside "
+                       "the image candidate."),
+          }
+          pins = os.path.join(evidence, "bios-kernel-pins.txt")
+          if os.path.isfile(pins):
+              with open(pins, "r", encoding="utf-8", errors="replace") as handle:
+                  record["image_pinned_boot_files"] = [
+                      line for line in handle.read().strip().splitlines() if line.strip()]
+          manifest = os.path.join(sources, "upstream", "SOURCE-MANIFEST.md")
+          if os.path.isfile(manifest):
+              with open(manifest, "r", encoding="utf-8", errors="replace") as handle:
+                  text = handle.read()
+              section = text.split("## Rebuild outputs (this run)", 1)
+              if len(section) == 2:
+                  hashes = re.findall(r"^([0-9a-f]{64})\s+(\S+)$", section[1],
+                                      flags=re.MULTILINE)
+                  record["fresh_rebuild_outputs"] = [
+                      {"sha256": h, "path": p} for h, p in hashes]
+                  if hashes:
+                      record["fresh_equals_pinned_image_bytes"] = False
+              if "## Rebuild outputs (this run)" not in text:
+                  record["fresh_rebuild_outputs"] = []
+                  record["fresh_rebuild_note"] = (
+                      "no kernel/bbl rebuild in this sources job (rebuild_kernel=false)")
+          with open(os.path.join(sources, "boot-association.json"), "w",
+                    encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          with open(os.path.join(sources, "BOOT-ASSOCIATION.md"), "w",
+                    encoding="utf-8") as handle:
+              handle.write("# Boot-file association (image bytes vs rebuild evidence)\n\n")
+              handle.write(f"- image candidate run: {record['image_run']}\n")
+              handle.write("- image boot files: pinned 2018 demo bbl64.bin + kernel-riscv64.bin\n")
+              handle.write(f"- kernel/bbl rebuilt in this sources job: {rebuilt}\n")
+              for item in record.get("fresh_rebuild_outputs", []):
+                  handle.write(f"  - fresh rebuild sha256 `{item['sha256']}` {item['path']}\n")
+              handle.write("\n")
+              handle.write(record["note"] + "\n")
+          print(json.dumps(record, indent=2))
+          PY
+
       - name: Show the source bundle summary
         if: always()
         run: |
@@ -265,10 +395,239 @@ jobs:
             ${{ runner.temp }}/floe-sources/*.md
             ${{ runner.temp }}/floe-sources/*.sha512
             ${{ runner.temp }}/floe-sources/*.tsv
+            ${{ runner.temp }}/floe-sources/*.json
             ${{ runner.temp }}/floe-sources/debian-index/
             ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.sha256
             ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.tsv
           if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Template recipe qualification: does THIS image really carry the packages
+  # a named preinstalled-template recipe declares? Recipes are owned by job D
+  # (job-6f5ac974858c47c2); while a recipe file is missing the job exits 3
+  # (explicit dependency failure) and never certifies an unverified image.
+  # ---------------------------------------------------------------------------
+  templates:
+    needs: image
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.templates && needs.image.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the image evidence (package inventory)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-guest-image-evidence-${{ (inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}
+          path: ${{ runner.temp }}/floe-image-evidence
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ (inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}
+
+      # Best effort: the sources job may still be running (it can take hours
+      # for the Debian part). Without it the source cross-check is explicitly
+      # reported as not performed instead of being silently skipped. The
+      # source map is uploaded by THIS run's sources job, so it is fetched by
+      # this run id, not by image_run_id.
+      - name: Try to download the source map (source cross-check)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-guest-source-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-source-evidence
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.run_id }}
+
+      - name: Qualify basic + dev-document template recipes against the inventory
+        run: |
+          set -euo pipefail
+          E="${{ runner.temp }}/floe-image-evidence"
+          SM="${{ runner.temp }}/floe-source-evidence/debian-package-source-map.tsv"
+          test -f "$E/guest-packages.tsv" || { echo "no guest-packages.tsv in the image evidence"; exit 2; }
+          ARGS=(--recipe basic --recipe dev-document
+                --packages "$E/guest-packages.tsv"
+                --out "${{ runner.temp }}/floe-templates")
+          if [ -f "$SM" ]; then ARGS+=(--source-map "$SM"); fi
+          set +e
+          python3 FloeAgent/scripts/qualify_runtime_templates.py "${ARGS[@]}" \
+            2>&1 | tee "${{ runner.temp }}/floe-templates.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "template_qualification_rc=$rc" | tee "${{ runner.temp }}/floe-templates-rc.txt"
+          if [ "$rc" = "3" ]; then
+            echo "DEPENDENCY FAILURE (exit 3): template recipe files are missing —"
+            echo "owner job-6f5ac974858c47c2 (D) has not delivered them yet. The image"
+            echo "is NOT labelled as carrying a basic/dev-document template."
+          fi
+          exit "$rc"
+
+      - name: Show the qualification report
+        if: always()
+        run: |
+          cat "${{ runner.temp }}/floe-templates/template-qualification.md" 2>/dev/null || true
+          cat "${{ runner.temp }}/floe-templates-rc.txt" 2>/dev/null || true
+
+      - name: Upload the template qualification (per-step artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-template-qualification-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-templates/template-qualification.json
+            ${{ runner.temp }}/floe-templates/template-qualification.md
+            ${{ runner.temp }}/floe-templates.log
+            ${{ runner.temp }}/floe-templates-rc.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # SMP/kernel-rebuild image assembly: build kernel+bbl from the pinned source
+  # and assemble the image candidate with THOSE boot files. The assembly hook
+  # (`build-guest-image.sh --boot-dir DIR`) is the integration contract
+  # requested from job A (job-40f1f1e9603240dd). Until it lands, this job
+  # fails explicitly with the fresh-build evidence uploaded: no pinned-kernel
+  # image may be labelled as an SMP product.
+  # ---------------------------------------------------------------------------
+  smp-image:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.smp_image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies (cross compiler + mount/convert/zip tooling)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils parted e2fsprogs gcc-riscv64-linux-gnu \
+            zip unzip curl python3 >/dev/null
+
+      - name: Build kernel + bbl from the pinned source (real rebuild)
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/floe-smp/upstream"
+          bash FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh \
+            --out "${{ runner.temp }}/floe-smp/upstream" --rebuild \
+            --jobs "$(nproc)" 2>&1 | tee "${{ runner.temp }}/floe-smp/kernel-bbl-rebuild.log"
+
+      - name: Record the fresh boot-file hashes (this run's build)
+        run: |
+          set -euo pipefail
+          U="${{ runner.temp }}/floe-smp/upstream"
+          test -f "$U/riscv-pk-src/bbl/bbl" || { echo "bbl was not built"; exit 1; }
+          test -f "$U/riscv-linux-src/arch/riscv/boot/Image" || { echo "kernel Image was not built"; exit 1; }
+          {
+            printf 'fresh rebuild of the pinned riscv-pk / riscv-linux revisions\n'
+            sha256sum "$U/riscv-pk-src/bbl/bbl" \
+                      "$U/riscv-linux-src/arch/riscv/boot/Image"
+            printf 'source revisions in upstream/SOURCE-MANIFEST.md (pins)\n'
+            grep -E 'riscv-pk|riscv-linux' "$U/SOURCE-MANIFEST.md" | head -4 || true
+          } | tee "${{ runner.temp }}/floe-smp/fresh-boot-files.txt"
+          mkdir -p "${{ runner.temp }}/floe-smp/boot"
+          cp "$U/riscv-pk-src/bbl/bbl" "${{ runner.temp }}/floe-smp/boot/bbl64.bin"
+          cp "$U/riscv-linux-src/arch/riscv/boot/Image" "${{ runner.temp }}/floe-smp/boot/kernel-riscv64.bin"
+
+      - name: Probe the image assembly hook (A-side contract)
+        id: probe
+        run: |
+          set -euo pipefail
+          if bash FloeAgent/LinuxGuest/image/build-guest-image.sh --help 2>&1 | grep -q -- '--boot-dir'; then
+            echo "hook=present" >> "$GITHUB_OUTPUT"
+            echo "assembly hook present: build-guest-image.sh --boot-dir"
+          else
+            echo "hook=missing" >> "$GITHUB_OUTPUT"
+            {
+              printf 'DEPENDENCY FAILURE: assembling an image with freshly built kernel+bbl\n'
+              printf 'requires the A-side hook:\n\n'
+              printf '    build-guest-image.sh --boot-dir DIR\n\n'
+              printf 'where DIR contains bbl64.bin and kernel-riscv64.bin built by\n'
+              printf 'build-kernel-bbl.sh --rebuild; the script must record their sha256\n'
+              printf 'in the manifest and keep the pinned-inputs check skippable for them.\n\n'
+              printf 'owner: job-40f1f1e9603240dd (A: engine/adapter/guest-image/runner)\n\n'
+              printf 'No image was assembled. The fresh kernel+bbl bytes and their hashes\n'
+              printf 'are uploaded as evidence and must not be presented as the shipped image.\n'
+            } | tee "${{ runner.temp }}/floe-smp/DEPENDENCY.md"
+            exit 1
+          fi
+
+      - name: Assemble the image candidate with the freshly built boot files
+        if: ${{ steps.probe.outputs.hook == 'present' }}
+        run: |
+          set -euo pipefail
+          sudo bash FloeAgent/LinuxGuest/image/build-guest-image.sh \
+            --work "${{ runner.temp }}/floe-smp/work" \
+            --boot-dir "${{ runner.temp }}/floe-smp/boot" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --source-ref "${{ github.sha }}" \
+            2>&1 | tee "${{ runner.temp }}/floe-smp/assemble.log"
+          python3 - "${{ runner.temp }}/floe-smp" "${{ github.sha }}" <<'PY'
+          import json, os, sys
+          root, source_ref = sys.argv[1], sys.argv[2]
+          fresh = os.path.join(root, "fresh-boot-files.txt")
+          image = os.path.join(root, "work", "image")
+          record = {
+              "boot_files_origin": "fresh-rebuild",
+              "source_ref": source_ref,
+              "note": ("This image candidate was assembled with kernel+bbl rebuilt from "
+                       "the pinned source revisions in this run; the manifest digests "
+                       "must match fresh-boot-files.txt."),
+          }
+          if os.path.isfile(fresh):
+              with open(fresh, "r", encoding="utf-8", errors="replace") as handle:
+                  record["fresh_boot_files"] = handle.read().strip().splitlines()
+          manifest = os.path.join(image, "manifest.json")
+          if os.path.isfile(manifest):
+              with open(manifest, "r", encoding="utf-8") as handle:
+                  record["manifest"] = json.load(handle)
+          with open(os.path.join(root, "boot-association.json"), "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          print(json.dumps(record, indent=2))
+          PY
+
+      - name: Show the SMP image result (or the dependency failure)
+        if: always()
+        run: |
+          cat "${{ runner.temp }}/floe-smp/DEPENDENCY.md" 2>/dev/null || true
+          cat "${{ runner.temp }}/floe-smp/fresh-boot-files.txt" 2>/dev/null || true
+          tail -c 3000 "${{ runner.temp }}/floe-smp/assemble.log" 2>/dev/null || true
+
+      - name: Upload the SMP fresh-build evidence (per-step, always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-smp-fresh-build-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-smp/fresh-boot-files.txt
+            ${{ runner.temp }}/floe-smp/DEPENDENCY.md
+            ${{ runner.temp }}/floe-smp/kernel-bbl-rebuild.log
+            ${{ runner.temp }}/floe-smp/upstream/SOURCE-MANIFEST.md
+            ${{ runner.temp }}/floe-smp/upstream/rebuild-riscv-pk.log
+            ${{ runner.temp }}/floe-smp/upstream/rebuild-riscv-linux.log
+            ${{ runner.temp }}/floe-smp/boot-association.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the SMP image candidate (only when assembled)
+        if: ${{ always() && steps.probe.outputs.hook == 'present' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-image-candidate-smp-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-smp/work/image/*.zip
+            ${{ runner.temp }}/floe-smp/work/image/manifest.json
+            ${{ runner.temp }}/floe-smp/work/image/SHA512SUMS
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the SMP image evidence (only when assembled)
+        if: ${{ always() && steps.probe.outputs.hook == 'present' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-image-evidence-smp-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-smp/work/evidence/
+            ${{ runner.temp }}/floe-smp/boot-association.json
+          if-no-files-found: warn
           retention-days: 30
 
   # Metadata-only repair: rewrite manifest.json provenance for an already-built
