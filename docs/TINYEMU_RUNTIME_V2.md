@@ -50,10 +50,38 @@ are referenced by approved credential identifiers and never enter this tree.
   `/usr/local` and guest language environments.
 - The logical system disk starts at 16 GiB and may grow to 32 GiB. Physical
   storage reflects written delta blocks rather than a full disk per environment.
-- APT, pip, npm and Cargo downloads may use shared caches; installed state is
-  never shared between environments.
-- Build temporaries and package caches use the environment data layer or shared
-  cache, avoiding the small guest root and `/tmp` limits seen in Build 221.
+- The host's Runtime v2 `cache/` tree is rebuildable; of its kinds only blob
+  `staging` is populated today. Guest package caches and build temporaries
+  (pip/XDG/npm caches under `/floe/env/cache`, `TMPDIR=/floe/env/tmp`) live
+  inside each environment's persistent layer, so they survive restarts but are
+  not deduplicated across environments. Downloads may be cached; **installed
+  state is never shared** between environments.
+
+## Software templates and pinned environments
+
+A software template is an immutable, content-addressed record of a complete
+verified disk plus its real package listing and qualification provenance — not
+a mutable "golden VM" and not a cache. Registering identical content is
+idempotent; different content under the same name is a new version, and an
+existing version is never overwritten. Garbage collection runs only on verified
+versions with zero references (environment, catalog, build, recovery or
+quarantine) past the grace window, and quarantines rather than deletes; a
+direct environment pin protects its version.
+
+An environment that carries a pin boots exactly that `template_id`, version and
+digest or fails closed (`templatePinUnavailable`, `templateBaseImageMismatch`);
+pin changes are refused while a lease is held, and unpinned environments keep
+base-image behavior. Only private changes are captured per environment: a
+pinned environment's delta is bound to the template version's immutable disk,
+so an environment never absorbs another version's or another environment's
+state.
+
+Delivery state: no App flow currently creates a pinned environment — current
+environments boot the verified base image, and the pinning/provenance
+machinery is exercised by module tests. The official `basic` and `dev-document`
+templates report `dependency-missing` because their complete installed-disk and
+recipe artifacts are still pending, so no preinstalled-package template is
+selectable yet.
 
 ## Migration and recovery
 
@@ -78,10 +106,12 @@ STOPPED -> STARTING -> RUNNING -> IDLE -> STOPPING -> STOPPED
 
 An environment has at most one writable `ExecutionLease`. Commands, terminals
 and background services for that environment stay on the same VM so they share
-the guest process space, filesystem, network and localhost. Up to four VMs run
-at once; a fifth environment waits in a cancellable queue. One environment may
-run up to eight ordinary commands and four interactive terminals inside its
-single guest. This is guest process concurrency, not TinyEMU SMP.
+the guest process space, filesystem, network and localhost. Concurrent guests
+are bounded by the device quota (four VMs on supported iPads, fewer on smaller
+devices); an environment over the quota waits in a cancellable queue. Inside
+one guest the command channel admits up to eight concurrent ordinary commands,
+and interactive terminal sessions are tracked per environment on the same VM.
+This is guest process concurrency, not TinyEMU SMP.
 
 When no command, terminal or registered background service remains, the
 environment enters `IDLE`. After the idle budget, Floe requests guest shutdown,
@@ -91,18 +121,33 @@ service registry and are launched again after the environment boots.
 
 ## Memory and local-model arbitration
 
-Devices with at least 12 GiB of physical memory receive a 2 GiB VM pool;
-others receive 1.5 GiB. VM requests use 256, 512, 768 or 1024 MiB tiers, and
-the resource manager admits only combinations within the current pressure
-budget. TinyEMU guest RAM is fixed when the machine is created. Until safe
-balloon support exists, a tier change uses stop, flush and restart.
+The device pool quota is a fixed per-hardware table (iPad 8 GiB: 4 vCPU /
+2048 MiB / 4 VMs; 12 GiB: 4 / 3072 MiB / 4; 16 GiB and above: 4 / 4096 MiB / 4;
+smaller devices and iPhone sizes get smaller quota sets), clamped to the
+process's usable core count. A new environment requests one vCPU and a 256 MiB
+RAM tier; the pool admits only combinations inside the current pressure and
+headroom budget and returns the granted shape, and temporary shortages queue
+cancellably. Guest RAM is fixed when the machine is created; until safe balloon
+support exists, a tier change uses stop, flush and restart. SMP-capable boot
+comes only from a verified image manifest: the current pinned image declares no
+SMP capability, so a dual-hart request fails closed with an actionable reason
+rather than booting one hart silently, and the performance tier that would
+widen the quota is not enabled.
 
 MLX local inference and TinyEMU share a process-wide heavy-runtime arbiter.
-Linux waits for an active local inference/tool continuation to finish before
-admission. Starting a local model reports affected Linux commands, terminals
-and services before a user-authorized stop. An idle local model unloads after
-two minutes; memory pressure may release idle resources but does not terminate
-an active command.
+Linux admission waits for local inference to be idle and verifies the release:
+an engine that is logically retained by a durable task but physically idle is
+unmapped for the Linux start and reloads its pinned snapshot on the next model
+turn, while genuinely active inference is never cancelled — the guest stays
+queued, and if the model is still active after the bounded wait the start fails
+with a truthful "model is still in use" error instead of deadlocking. In the other direction, starting a local model while Linux environments are
+running asks for confirmation (listing the affected commands, terminals and
+services) before stopping them; when every active guest belongs to the
+requesting task's own disposable tool guest and no service exists, that guest
+is released automatically and the continuation proceeds, while a foreign,
+user-started, quarantined or racing guest still takes the explicit
+confirmation. An idle local model unloads after two minutes; memory pressure may
+release idle resources but does not terminate an active command.
 
 ## Background services and ports
 
@@ -124,3 +169,13 @@ storage contracts. They do not prove real-iPad background survival, PiP
 presentation, LAN reachability, VM pressure behavior or guest filesystem
 durability. Those remain device acceptance items for the matching immutable
 TestFlight build.
+
+The next integration is not covered by the delivered build's evidence either.
+The native IDE editor and the compressed-archive engine have module tests plus a
+cloud simulator UI run (iPad: native save/cold-reopen, Web fallback, DXF and DWG
+all passed); the compact-width re-run, real-device keyboard/IME behavior and any
+device archive work remain open. Templates, pinning and the pool are
+module-tested, but no App flow creates a pinned environment yet, dual-hart boot
+fails closed pending a real SMP guest image, the six-vCPU tier is disabled, and
+the PiP identity/service repairs still owe dropped-stream and pending
+start/stop fixes. None of this is device acceptance.

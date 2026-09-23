@@ -1,10 +1,10 @@
 # Floe Agent Engineering Guide
 
-**Current internal TestFlight: 1.7.0 (218).** Apple VALID, unexpired status, the existing private Floe QA group and IN_BETA_TESTING were verified on September 21 at 15:08 UTC. This includes the explicit Linux install path, Office CJK/Pencil and routing repairs, IDE source control and archive browsing, and stable multi-turn local-model tools. Only focused checks and the cloud accepted-SDK build/upload validation were required; device acceptance belongs to the tester. [Delivery evidence](../docs/TESTFLIGHT_1.7.0_BETA.md).
+**Current internal TestFlight: 1.7.0 (225)** (immutable tag `v1.7.0-beta.82`, source `fe0852b4`). Apple `VALID`, unexpired, audience `APP_STORE_ELIGIBLE`, the sole private Floe QA group and `IN_BETA_TESTING` were verified on September 22 at 20:17 UTC, and both beta-note languages were read back. The accepted-SDK release job preserved the unsigned IPA before signing and published the matching GitHub prerelease and Feather entry; device acceptance belongs to the tester. [Delivery evidence](../docs/TESTFLIGHT_1.7.0_BETA.md).
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 
-This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe 1.7. Minimum deployment is iOS/iPadOS 26.0; database schema is v43. Heavy App builds and archives run in cloud CI. Build 201 (`be06cece`, `v1.7.0-beta.58`) was a prior internal TestFlight delivery; Apple VALID, unexpired status, the single private Floe QA group, `IN_BETA_TESTING` and both test-note languages were verified at 2026-09-19 17:44 UTC. GitHub beta.58 and its matching Feather entry are also published; both were recovered from the retained build 201 artifact after the lean publish job stopped on a missing release-notes file, without rebuilding or re-uploading.
+This directory contains the Swift package, generated Xcode project, native app, tests, and release scripts for Floe 1.7. Minimum deployment is iOS/iPadOS 26.0; database schema is v44. Heavy App builds and archives run in cloud CI. Build 201 (`be06cece`, `v1.7.0-beta.58`) was a prior internal TestFlight delivery; Apple VALID, unexpired status, the single private Floe QA group, `IN_BETA_TESTING` and both test-note languages were verified at 2026-09-19 17:44 UTC. GitHub beta.58 and its matching Feather entry are also published; both were recovered from the retained build 201 artifact after the lean publish job stopped on a missing release-notes file, without rebuilding or re-uploading.
 
 Build 186 (`d421fea2`, `v1.7.0-beta.43`, [run 35306551280](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)) failed qualification and was not uploaded. The accepted-SDK App regression passed 204/204 including all 23 IDE cases. Both Notes UI legs failed the Office back-control identifier check; the Notes component had one iPad Excel Quick Look timeout, while the actual content-summary fallback worked. SDK 27 module tests rejected one non-namespaced localization key. Original evidence and the source-verified unsigned device recovery archive are retained.
 
@@ -46,7 +46,12 @@ status vocabulary; the ioctl and resolver-probe side is Linux-only and needs a
 booted guest. `test_readme_source_links.py` keeps the README quick-add badges
 linked to the official HTTPS quick-add endpoints (`/add/feather`,
 `/add/altstore`), the badge assets present, the release download link separate
-and GitHub-safe, and pins the shared Feather source URL.
+and GitHub-safe, and pins the shared Feather source URL. Cloud CI runs the
+native IDE editor cases with
+`-only-testing:FloeAgentUITests/WorkspaceIDEUITests` on iPad and iPhone
+simulator legs (see `.github/workflows/ci.yml`); a passing simulator leg is not
+device acceptance. The IDE module contracts run in the SwiftPM suite
+(`IDENativeTextWorkspaceTests`, `ArchiveEngineTests`, `ArchiveBrowserServiceTests`).
 
 Since the Phase 2 TinyEMU migration there is no bundled CPython/NodeMobile
 build input: local Python/Node execute inside each environment's TinyEMU
@@ -85,12 +90,12 @@ CI regenerates the project and fails if the committed project differs.
 | `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX downloads, resource policy, dynamic local context, and bounded local tool-call translation. |
 | `FloeAgentRuntime` | Continuous run state machine, context assembly, Plan/Goal/Memory, harness, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time tool catalog, scoped execution, approvals, audit chain, Keychain, and catastrophic-action gate. |
-| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v43, including media-job owner/idempotency columns and durable private-workspace cleanup intents. |
-| `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. |
+| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v44, including media-job owner/idempotency columns, durable private-workspace cleanup intents, and the conversation search index repair. |
+| `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. Also the native text/code editing workspace (`IDENativeTextWorkspace`, with the Web workbench retained as the advanced fallback) and the bounded native archive engine (zip/tar/tar.gz/tar.xz create, list and extract; bzip2 create-only; 7z read-only). |
 | `FloeGit` | Non-destructive libgit2 repository operations, GitHub API/Keychain integration, and model-facing local/cloud source-control tools. |
-| `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. |
+| `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. `FloeExecution` owns Runtime v2: content-addressed images, immutable software templates with pinned per-environment deltas, the CPU/RAM/VM pool with fail-closed SMP admission, and the TinyEMU guest service. |
 | `FloeSkills` | Declarative Skill validation, compatibility, provenance, install staging, and tool ceilings. |
-| `FloeApp` | SwiftUI workbench, visible browser, voice coordinator, task inspector, settings, notifications, and background recovery. |
+| `FloeApp` | SwiftUI workbench, visible browser, voice coordinator, task inspector, settings, notifications, background recovery, and the status Picture-in-Picture surface behind its release gate. |
 
 ## Runtime invariants
 

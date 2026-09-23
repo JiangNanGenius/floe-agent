@@ -40,6 +40,8 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 **Build 224 从未编译成功。** 其不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败的验收 SDK run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留；参见 [Build 224 说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)与 Build 225 说明中的失败记录表。
 
+**源码状态——下一构建（尚未分配新版本号或标签）。** `main` 已在已交付的 225 构建之上加入下一轮集成：原生 IDE 文本/代码编辑器（Web 工作台保留为高级回退）、本机压缩归档的创建/列出/解压、不可变环境模板与私有写时复制磁盘及 CPU/内存资源池、后台/画中画身份修复、本地模型的同任务 Linux 工具继续（自动释放该任务自己的临时客体）、带持久化按会话草稿的展开式提示词编辑器、唯一的第三方许可入口、原生优先媒体路由，以及下一次固定的 Office 宿主。下文对每项都标记**下一构建**。这些内容已集成到源码，并按[使用指南](docs/USER_GUIDE.zh-CN.md)与[下一版状态](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md)中列出的检查验证——模块测试、云端 App/模拟器运行或宿主固定构建——但**不在**已交付的 225 构建中，且均不构成真机验收。
+
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
 ### 手记、Office 与本地语音
@@ -59,6 +61,7 @@ Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 O
 - **在工作区内构建视觉流程。** 每个工作区可打开一个原生无限画布项目，通过自然触控管理内容节点、显式生成任务、产物节点、节点原位 AI 与受限画布助手。
 - **连接标准 MCP。** 普通 Agent 可按需连接 Streamable HTTP 服务器；远程工具始终有独立命名空间、继续经过本地策略检查，并且默认不向画布开放。
 - **在工作区内管理源码。** 轻量原生源码管理可查看更改与差异、初始化仓库、暂存、提交、分支、抓取、快进拉取、推送并连接 GitHub。
+- **使用原生代码工作台编辑代码。** IDE 的文本/代码标签使用原生 Swift 编辑器：多缓冲区、行号、有界语法高亮、查找替换、撤销/重做，以及保留草稿的冲突安全保存；Web 工作台（多光标、折叠与自带文件浏览器）保留为一个开关；当缓冲区预算用尽时，新打开会被拒绝并给出双语说明与**全部保存**，而不是丢弃草稿。**下一构建**：已通过模块与模拟器验证，尚未真机验收。
 - **直接转换已有文档。** Markdown、Word、HTML、RTF 和文本互转，并支持 PDF 输入/输出。模型只需提供文件位置，无需重新抄写全文；源文件保留，扫描件及格式限制会明确提示。
 - **创建并修改 Office 文件。** 可在本机生成 DOCX、XLSX 和 PPTX，右侧只读查看，随后使用本地 Office 引擎编辑真实页面、单元格和幻灯片对象。从工作区预览编辑时进入独立全屏编辑器；只有从 IDE 文件树打开才保留内嵌标签。关闭有未保存修改的文档会询问保存、放弃或取消，Command-S 通过同一保存路径就地保存，文档无需上传云端。完整排版保真与高级 Office 功能仍在验收。
 - **任务级权限。** 文件、网络、浏览器、上传、凭据和远程执行权限都有明确上限；敏感操作仍需逐次确认。
@@ -88,7 +91,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.0（build 221）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（2026-09-22 03:13 UTC 核实 Apple VALID、未过期及 IN_BETA_TESTING）。[TestFlight 交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)保留精确的源码、构建、上传、测试说明与测试组证据，以及此前版本的交付历史。Build 192 与 193 从未编译成功；Build 194 与 195 被 Apple 接受但从未发布——[192](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)、[193](docs/RELEASE_NOTES_1.7.0_BUILD_193.md)、[194](docs/RELEASE_NOTES_1.7.0_BUILD_194.md)、[195](docs/RELEASE_NOTES_1.7.0_BUILD_195.md) 记录。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
+Floe Agent **1.7.0（build 225）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`，2026-09-22 20:17 UTC 从不可变标签 `v1.7.0-beta.82` 验证）。[TestFlight 交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)保留精确的源码、构建、上传、测试说明与测试组证据，以及此前版本的交付历史。Build 192 与 193 从未编译成功；Build 194 与 195 被 Apple 接受但从未发布——[192](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)、[193](docs/RELEASE_NOTES_1.7.0_BUILD_193.md)、[194](docs/RELEASE_NOTES_1.7.0_BUILD_194.md)、[195](docs/RELEASE_NOTES_1.7.0_BUILD_195.md) 记录。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
 
 ### 未签名 IPA
 
@@ -104,7 +107,7 @@ GitHub 预发布版本为高级测试者和下游打包者提供未签名 IPA：
 
 ### Gitee 中国镜像
 
-面向 GitHub 较慢的网络，公开单向镜像发布在 [`gitee.com/JiangNanGenius/floe-agent`](https://gitee.com/JiangNanGenius/floe-agent)。GitHub 始终是唯一承担信任的主源：Linux 客体下载器总是先尝试 GitHub Releases，仅在主源出现有界可用性失败（断网、5xx、408/429）后才联系 Gitee 镜像；明确 4xx、无效响应、本地拒绝或取消一律安全中止。由于 Gitee 单个附件上限 100 MB，约 573 MB 的 Linux 镜像以一份清单加九个 64 MiB 分片发布，每个分片按大小与 SHA-512 固定，整包按与目录一致的摘要固定；已验证分片保留在稳定暂存目录，中断后可断点续传，重组归档在导入前再次比对整包 SHA-512。[gitee-mirror](.github/workflows/gitee-mirror.yml) 工作流把 `main` 与发布标签单向从 GitHub 推送到 Gitee 并校验两边 `main` 一致；它从不从 Gitee 拉取，因此 Gitee 永远不能覆盖 GitHub。详见[镜像分发说明](docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md#distribution-mirror-gitee-sharded)。
+面向 GitHub 较慢的网络，公开单向镜像发布在 [`gitee.com/JiangNanGenius/floe-agent`](https://gitee.com/JiangNanGenius/floe-agent)。GitHub 始终是唯一承担信任的主源，且镜像明确是**部分镜像**：[gitee-mirror](.github/workflows/gitee-mirror.yml) 工作流把 `main` 与发布标签单向从 GitHub 推送到 Gitee 并校验两边 `main` 一致（它从不从 Gitee 拉取，因此 Gitee 永远不能覆盖 GitHub）；发行资产另有独立门禁，逐文件按大小与 SHA-256 校验后复制。Gitee 的发行附件受配额限制：仓库级附件配额实测为 1 GiB，因此 712 MiB 的未签名 IPA **不**托管在 Gitee，也不存在 Gitee 直装包或 Feather/AltStore 源——只镜像小型发行资产，并在 `GITEE-MIRROR-MANIFEST.json` 中逐资产记录状态。约 573 MB 的 Linux 镜像以一份清单加九个 64 MiB 分片发布（64 MiB 是镜像脚本的分片大小，并非已测定的平台上限）；每个分片按大小与 SHA-512 固定，整包按与目录一致的摘要固定。Linux 客体下载器总是先尝试 GitHub Releases，仅在主源出现有界可用性失败（断网、5xx、408/429）后才联系 Gitee 镜像；明确 4xx、无效响应、本地拒绝或取消一律安全中止；已验证分片保留在稳定暂存目录，中断后可断点续传，重组归档在导入前再次比对整包 SHA-512。详见[镜像限制](docs/FLOE_GITEE_RELEASE_MIRROR.md)与[镜像分发说明](docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md#distribution-mirror-gitee-sharded)。
 
 ### Feather 安装源
 
@@ -163,7 +166,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 ### 工作区、Git 与审批
 
-私有任务工作区会与首条消息原子创建并绑定；项目工作区继续使用用户明确选择的 Files 范围。文件检查器新增轻量源码管理标签；ZIP、TAR 与 7z 压缩包也在同一检查器中有界浏览，支持条目预览与暂存解压，需要 Linux 运行时的格式（压缩 tar、单文件 gzip/bzip2/xz 与 RAR）会如实说明而不会静默启动客体。**设置 → GitHub 与源码管理**支持 GitHub 官方设备授权直接登录和细粒度 Token 后备入口，凭据只保存在设备钥匙串，并可列出、克隆和创建仓库。已打开的源码管理面板会在仓库初始化或任何 Git 变更后立即刷新，并在回到前台时重新读取，因此 Agent 工具创建的仓库无需手动刷新即可显示。
+私有任务工作区会与首条消息原子创建并绑定；项目工作区继续使用用户明确选择的 Files 范围。文件检查器新增轻量源码管理标签；ZIP、TAR 与 7z 压缩包也在同一检查器中有界浏览，支持条目预览与暂存解压。**下一构建**增加本机 tar.gz/tar.xz 与单文件 gzip/xz 处理，以及归档创建——可创建 ZIP、TAR、tar.gz、tar.xz、tar.bz2 及单文件 gzip/bzip2/xz，可列出或解压 ZIP、TAR、tar.gz、tar.xz 与 7z——全程无需启动 Linux 客体；bzip2 解压与 RAR 浏览改为说明具体原因（RAR 解压可通过 Agent 的已签名解码器完成）。**设置 → GitHub 与源码管理**支持 GitHub 官方设备授权直接登录和细粒度 Token 后备入口，凭据只保存在设备钥匙串，并可列出、克隆和创建仓库。已打开的源码管理面板会在仓库初始化或任何 Git 变更后立即刷新，并在回到前台时重新读取，因此 Agent 工具创建的仓库无需手动刷新即可显示。
 
 有界只读、本地工作区操作、生图/识图、OCR、PDF 只读和局域网发现不等待审批模型。任务权限在聊天输入框下方选择后自动保存，也可在任务运行中切换。用户明确要求安装、部署、环境修复或更新 Floe 守护程序后，完成该目标所需的常规系统包、换源、依赖修复和守护程序原子更新不会逐条重复询问。删除、凭据、上传、付款、目标不明的宽泛远程命令，以及强制推送/历史改写仍会被阻止或要求明确复核。“帮我测试一下所有工具”这类宽泛请求可以授权安全诊断，但不会静默扩展为删除、凭据或破坏性测试。
 
@@ -171,7 +174,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 TinyEMU/Linux 是解释器、CLI、软件包与服务类工作的主要本地运行环境。本地 Python、Node.js、Shell 和服务运行在所选环境的 Linux 客体中；首次出现 Linux 需求（Shell、`exec.localPython`、Node/npm、`apt`/`dpkg`、后台服务或语言包）时，会先执行同一套可取消的“准备 → 下载 → 校验 → 安装 → 启动”流程，然后继续执行原命令。**设置 → 执行环境**与终端提供同一份组件状态，以及明确的下载、更新、启动、停止入口和客体上报的网络状态。Shell 与直接 Python 共享该环境的文件、软件包和唯一 venv；客体 apt/dpkg 安装 Linux 包，Python 使用 pip/venv，Node 使用客体的 npm。iOS 原生 Python/Node 的源码与构建配方已封存，其运行时载荷（包括原生 Ruby 解释器）不再随本版 App 分发；需要客体的语言或工具会如实提示，而不会回退到已移除的进程内运行时。二进制包须匹配 Linux 客体 ABI，iOS wheel 不会作为 Linux 二进制复用。签名 WASI 目录（如 Lua 5.4.8、Ruby 3.4.1、PHP 8.2.33 与 `floe-text`）仍是独立的 WebAssembly 沙箱能力，通过已验证目录安装，而不是 Debian 软件包。
 
-图像、视频、音频、PDF 与 OCR 任务原生优先：这类任务交给 App 自带的专用工具——设备侧的 Apple 框架（Vision、CoreImage、AVFoundation/VideoToolbox、CoreML、PDFKit）或生成类任务已配置的模型通道——客体解释器不是它们的默认路径；不会因为 Linux 客体已安装就把视频/图片/音频/PDF 请求交给它。只有当前任务的操作没有可用的原生工具覆盖，或用户明确要求脚本/命令行时，才使用 Linux 客体处理媒体。路由只依据当前任务真实启用并配置好的能力：工具名字本身不代表该操作可用，未被提供的能力会如实说明，而不是被静默模拟；工具按任务精选，不会把完整全局目录交给本地小模型。路由契约、测试与剩余真机验证边界见[下一版状态文档](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md)。
+**下一构建**——图像、视频、音频、PDF 与 OCR 任务原生优先：这类任务交给 App 自带的专用工具——设备侧的 Apple 框架（Vision、CoreImage、AVFoundation/VideoToolbox、CoreML、PDFKit）或生成类任务已配置的模型通道——客体解释器不是它们的默认路径；不会因为 Linux 客体已安装就把视频/图片/音频/PDF 请求交给它。只有当前任务的操作没有可用的原生工具覆盖，或用户明确要求脚本/命令行时，才使用 Linux 客体处理媒体。路由只依据当前任务真实启用并配置好的能力：工具名字本身不代表该操作可用，未被提供的能力会如实说明，而不是被静默模拟；工具按任务精选，不会把完整全局目录交给本地小模型。路由契约、测试与剩余真机验证边界见[下一版状态文档](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md)。
 
 技能可以附带受限的 `.py` 文件和锁定版本的纯 Python 依赖。Floe 在创建或安装技能时验证脚本路径与源码、解析并检查通用 wheel，并记录获准的脚本和依赖指纹。后续运行只能复用这份完全相同的已审计代码，变化的任务数据通过 JSON 单独传入；修改脚本或依赖、提权、危险文件改动、凭据和外部副作用仍回到正常审批流程。
 
@@ -230,7 +233,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 
 准备进行大型或安全敏感改动前，请阅读[贡献指南](CONTRIBUTING.zh-CN.md)，并先创建 Issue 说明用户问题、范围、安全影响和验证方法。安全漏洞请按[安全策略](SECURITY.zh-CN.md)私下报告。
 
-Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。App 只保留一个法律入口：**设置 → 诊断与关于 → 第三方开源许可**，其中完整呈现 TinyEMU/slirp 全文及其他所有随包声明，并附带版本与来源的构件摘要；仓库中由脚本生成的记录仍为 [`FloeAgent/LICENSES-THIRD-PARTY.md`](FloeAgent/LICENSES-THIRD-PARTY.md)。
+Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。App 只保留一个法律入口：**设置 → 诊断与关于 → 第三方开源许可**，其中完整呈现 TinyEMU/slirp 全文及其他所有随包声明，并附带版本与来源的构件摘要；仓库中由脚本生成的记录仍为 [`FloeAgent/LICENSES-THIRD-PARTY.md`](FloeAgent/LICENSES-THIRD-PARTY.md)。**下一构建**把原先单独的 TinyEMU 页面合并进这一入口。
 
 1.7 界面更新加入「通用 → 自动/日间/夜间」外观、项目与会话容器管理，以及可折叠的思考与工具调用组。功能可用性和测试版验收进展见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 
