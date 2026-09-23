@@ -42,6 +42,12 @@
 #   --source-ref REF      git commit recorded in the provenance source URLs
 #   --skip-fetch          reuse already-downloaded sources/images
 #   --skip-engine         reuse an existing engine build in <work>/build
+#   --boot-dir DIR        use bbl64.bin + kernel-riscv64.bin from DIR instead
+#                         of the pinned 2018 demo pair (for a freshly built
+#                         kernel/bbl: SMP qualification). Their real hashes are
+#                         recorded in evidence/bios-kernel-pins.txt and in the
+#                         manifest, and the pinned-kernel capability claim is
+#                         dropped from the qualification evidence text.
 #   --boot-max-s N        per-boot timeout seconds (default 2700)
 #   --ram MB              guest RAM (default 1024)
 #   --no-zip              skip the distributable zip (manifest still written)
@@ -65,6 +71,7 @@ run_url=""
 source_ref=""
 skip_fetch=0
 skip_engine=0
+boot_dir=""
 boot_max_s=2700
 ram_mb=1024
 make_zip=1
@@ -80,6 +87,7 @@ while [ $# -gt 0 ]; do
         --source-ref) source_ref="${2:-}"; shift 2 ;;
         --skip-fetch) skip_fetch=1; shift ;;
         --skip-engine) skip_engine=1; shift ;;
+        --boot-dir) boot_dir="${2:-}"; shift 2 ;;
         --boot-max-s) boot_max_s="${2:-}"; shift 2 ;;
         --ram) ram_mb="${2:-}"; shift 2 ;;
         --no-zip) make_zip=0; shift ;;
@@ -148,19 +156,42 @@ fi
 demo_dir="$work/src/diskimage-linux-riscv-2018-09-23"
 tinyemu_src="$work/src/tinyemu-2019-12-21"
 [ -d "$tinyemu_src" ] || die "TinyEMU source missing (fetch failed?)"
-[ -d "$demo_dir" ] || die "demo archive missing (fetch failed?)"
+if [ -z "$boot_dir" ]; then
+    [ -d "$demo_dir" ] || die "demo archive missing (fetch failed?)"
+fi
 [ "$(sha256sum "$work/src/tinyemu-2019-12-21.tar.gz" | cut -d' ' -f1)" = "$engine_sha" ] \
     || die "tinyemu-2019-12-21.tar.gz does not match the pinned sha256"
 [ "$(sha256sum "$work/src/diskimage-linux-riscv-2018-09-23.tar.gz" | cut -d' ' -f1)" = "$demo_sha" ] \
     || die "diskimage-linux-riscv-2018-09-23.tar.gz does not match the pinned sha256"
 printf 'engine_url=%s\nengine_sha256=%s\ndemo_sha256=%s\n' "$engine_url" "$engine_sha" "$demo_sha" \
     >"$evidence_dir/input-pins.txt"
-[ "$(sha256sum "$demo_dir/bbl64.bin" | cut -d' ' -f1)" = "$bios_sha" ] || die "bbl64.bin does not match the pinned sha256"
-[ "$(sha256sum "$demo_dir/kernel-riscv64.bin" | cut -d' ' -f1)" = "$kernel_sha" ] || die "kernel-riscv64.bin does not match the pinned sha256"
-cp "$demo_dir/bbl64.bin" "$image_dir/bbl64.bin"
-cp "$demo_dir/kernel-riscv64.bin" "$image_dir/kernel-riscv64.bin"
-printf 'bbl64.bin bytes=%s sha256=%s\nkernel-riscv64.bin bytes=%s sha256=%s\n' \
-    "$bios_bytes" "$bios_sha" "$kernel_bytes" "$kernel_sha" >"$evidence_dir/bios-kernel-pins.txt"
+if [ -n "$boot_dir" ]; then
+    # Freshly built boot pair (e.g. a CONFIG_SMP kernel + bbl from the SMP
+    # qualification pipeline). It is NOT the pinned 2018 pair, so the pin
+    # check is replaced by "must exist, must be non-empty" and the real
+    # hashes are recorded for the manifest and for review.
+    [ -d "$boot_dir" ] || die "--boot-dir is not a directory: $boot_dir"
+    for f in bbl64.bin kernel-riscv64.bin; do
+        [ -s "$boot_dir/$f" ] || die "--boot-dir is missing $f: $boot_dir"
+    done
+    cp "$boot_dir/bbl64.bin" "$image_dir/bbl64.bin"
+    cp "$boot_dir/kernel-riscv64.bin" "$image_dir/kernel-riscv64.bin"
+    printf 'boot pair source=--boot-dir %s (locally built, NOT the pinned 2018 pair)\n' "$boot_dir" \
+        >"$evidence_dir/bios-kernel-pins.txt"
+    printf 'bbl64.bin bytes=%s sha256=%s\nkernel-riscv64.bin bytes=%s sha256=%s\n' \
+        "$(stat -c %s "$image_dir/bbl64.bin")" "$(sha256sum "$image_dir/bbl64.bin" | cut -d' ' -f1)" \
+        "$(stat -c %s "$image_dir/kernel-riscv64.bin")" "$(sha256sum "$image_dir/kernel-riscv64.bin" | cut -d' ' -f1)" \
+        >>"$evidence_dir/bios-kernel-pins.txt"
+    printf 'pinned bbl sha256=%s\npinned kernel sha256=%s\n' "$bios_sha" "$kernel_sha" \
+        >>"$evidence_dir/bios-kernel-pins.txt"
+else
+    [ "$(sha256sum "$demo_dir/bbl64.bin" | cut -d' ' -f1)" = "$bios_sha" ] || die "bbl64.bin does not match the pinned sha256"
+    [ "$(sha256sum "$demo_dir/kernel-riscv64.bin" | cut -d' ' -f1)" = "$kernel_sha" ] || die "kernel-riscv64.bin does not match the pinned sha256"
+    cp "$demo_dir/bbl64.bin" "$image_dir/bbl64.bin"
+    cp "$demo_dir/kernel-riscv64.bin" "$image_dir/kernel-riscv64.bin"
+    printf 'bbl64.bin bytes=%s sha256=%s\nkernel-riscv64.bin bytes=%s sha256=%s\n' \
+        "$bios_bytes" "$bios_sha" "$kernel_bytes" "$kernel_sha" >"$evidence_dir/bios-kernel-pins.txt"
+fi
 
 # ---------------------------------------------------------------------------
 step "2/9 build the embeddable engine + qualification host"
@@ -392,7 +423,12 @@ qualified_flag=()
 if [ "$claim_qualified" = 1 ]; then
     qualified_flag=(--qualified)
 fi
-evidence_text="component-image-ci boot A+B: runner PID1 clock from floe.epoch, signed HTTPS apt update/install, Python HTTPS 200, 13 user commands executed. Runtime capability on this exact kernel/bbl/userland was independently verified by tinyemu-linux-qualification run 35500083112 (APT/numpy/node/HTTPS)."
+evidence_text="component-image-ci boot A+B: runner PID1 clock from floe.epoch, signed HTTPS apt update/install, Python HTTPS 200, 13 user commands executed."
+if [ -n "$boot_dir" ]; then
+    evidence_text="$evidence_text Unpinned boot pair from --boot-dir (locally built kernel/bbl); the 2018-pair capability run and its runtime claim do not apply to this image."
+else
+    evidence_text="$evidence_text Runtime capability on this exact kernel/bbl/userland was independently verified by tinyemu-linux-qualification run 35500083112 (APT/numpy/node/HTTPS)."
+fi
 python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" write \
     --image-dir "$image_dir" \
     --id "$image_id" \
