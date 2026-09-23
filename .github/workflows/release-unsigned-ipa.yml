@@ -1542,6 +1542,13 @@ jobs:
               --notes-file release-notes.md
           fi
 
+      - name: Request Gitee synchronization for the published release
+        continue-on-error: true
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f event_type=gitee-release-sync -f "client_payload[tag]=$RELEASE_TAG"
+          echo 'Gitee synchronization requested; attachment verification and quota are separate delivery gates.' >> "$GITHUB_STEP_SUMMARY"
+
   # ---------------------------------------------------------------------------
   # Lean single-build release route (explicit user-requested internal delivery).
   #
@@ -1869,6 +1876,12 @@ jobs:
               --title "Floe Agent $VERSION (build $BUILD)" \
               --notes-file release-notes.md
           fi
+      - name: Request Gitee synchronization for the published release
+        continue-on-error: true
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f event_type=gitee-release-sync -f "client_payload[tag]=$RELEASE_TAG"
+          echo 'Gitee synchronization requested; attachment verification and quota are separate delivery gates.' >> "$GITHUB_STEP_SUMMARY"
       - name: Request Feather publication from the published asset
         id: feather
         run: |

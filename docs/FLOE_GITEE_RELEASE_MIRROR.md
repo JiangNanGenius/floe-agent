@@ -102,7 +102,9 @@ shasum -a 256 Floe-Agent-1.7.0-build225-unsigned.ipa   # 必须等于 parts.json
 - 每周 `schedule` 对最新已发布 Release 做一次幂等对账；
 - `workflow_dispatch`（可指定 `release_tag`、`dry_run`、`include_assets`、`shard_mib`、`verify`、`upload_workers`、`time_budget_minutes` 等）。
 
-用仓库 `GITHUB_TOKEN` 创建的 Release **不会**触发新的 `release` 工作流运行（`workflow_dispatch` 与 `repository_dispatch` 是文档化的例外），因此发布流程或维护者可显式通知：
+用仓库 `GITHUB_TOKEN` 创建的 Release **不会**触发新的 `release` 工作流运行（`workflow_dispatch` 与 `repository_dispatch` 是文档化的例外）。`release-unsigned-ipa.yml` 的配对发布和精简发布路径均在 GitHub 发布成功后显式发送 `gitee-release-sync`；请求成功不代表附件已完成校验或配额足够。维护者也可手动通知：
+
+Both paired and lean App publication paths explicitly request Gitee synchronization after publishing on GitHub. Dispatch acceptance is separate from mirror verification and attachment quota.
 
 ```bash
 gh api repos/JiangNanGenius/floe-agent/dispatches \
@@ -119,8 +121,8 @@ gh workflow run gitee-mirror.yml --ref main \
 ## 剩余的中国大陆加速集成 / Remaining China acceleration integration
 
 1. **仓库附件配额（当前主要阻塞）**：镜像仓库 1 GiB 附件配额已用 995.1 MiB（其中约 448 MiB 是 `floe-linux-guest-20260922.2` 发行版的重复分片）。在此之前需要：删除重复分片回收空间、或改用配额更大的 Gitee 账号/仓库；即使回收重复，712 MiB IPA 仍放不下。
-2. **App IPA（> 64 MiB）没有可直接安装的 Gitee URL**：Gitee 只能托管分片，而当前配额连分片也放不下。中国大陆用户要获得加速安装，需要一个「下载分片 → 校验 → 重组 → 再安装」的消费方；Feather/AltStore 均不支持，因此当前 App 安装路径仍以 GitHub 为主源。
-3. **上传带宽**：GitHub-hosted runner 到 Gitee 的上传实测约 29 KB/s（单连接，4 连接聚合约 0.1 MB/s）；从中国大陆网络发起上传会快得多。云端 `--upload-workers` 已实现。
+2. **App IPA 没有可直接安装的 Gitee URL**：当前镜像策略将大于 64 MiB 的资产分片，但仓库配额不足以容纳完整 IPA；64 MiB 是脚本默认值，并非已测定的平台单文件上限。分片安装需要「下载 → 校验 → 重组 → 再安装」的消费方，现有 Feather/AltStore 路径不具备该能力，因此 App 安装仍以 GitHub 为主源。
+3. **上传带宽**：GitHub-hosted runner 到 Gitee 的上传实测约 29 KB/s（单连接，4 连接聚合约 0.1 MB/s）；中国大陆上传节点的速度尚未实测。云端 `--upload-workers` 已实现。
 4. Linux 客户机镜像的 Gitee 回退已由 App 实现并验证（`shard-manifest.json` v1）；新的组件发行版仍需把镜像 URL 固定进 App 目录（`LinuxGuestImageStore` 的 catalog），这是版本发布流程的一部分，不是本工作流自动完成的。
 5. 每个新 Release 的镜像结果（`gitee-release-mirror-<tag>-<run_id>` 工件）应在发布记录中引用；refs 门禁与资产门禁分别记录。
 
