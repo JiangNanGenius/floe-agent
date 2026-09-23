@@ -1,22 +1,31 @@
 // FloeAppTests — Composer editing contract.
 //
-// Pins the Part-10 multi-line/full-edit behavior at the pure decision
-// layer: draft-store revision semantics (stale async writes rejected),
-// 100k round-trip fidelity, per-conversation isolation, the Cmd+Return /
-// IME send policy, the line + one-third-height growth budget, the measured
-// height memo, the rough token estimate and the failed-send full-text
-// restore. Device feel (dynamic type, split, rotation, keyboard) remains
-// user acceptance on a real device.
+// Pins the Part-10 multi-line/full-edit behavior at the decision and seam
+// layers: draft-store revision semantics (stale async writes rejected,
+// revisions never restart after a clear), the async-send commit contract
+// (what a successful/failed send may erase), 100k round-trip fidelity,
+// per-conversation isolation, selection clamping/restore ordering, the
+// per-instance full-editor controller (two windows never share actions),
+// debounced footer counts, the Cmd+Return / IME send policy, the line +
+// one-third-height growth budget, the measured height memo, the rough token
+// estimate and the failed-send full-text restore. Device feel (dynamic
+// type, split, rotation, keyboard) remains user acceptance on a real
+// device.
 
 #if canImport(UIKit)
 import Foundation
 import Testing
 import UIKit
+import FloeModels
 @testable import FloeApp
 
 private func makeTempDraftURL() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("composer-tests-\(UUID().uuidString).json")
+}
+
+private func makeAttachment(_ name: String) -> AttachmentRef {
+    AttachmentRef(kind: .document, displayName: name, uti: "public.data")
 }
 
 @Suite("FloeApp.ComposerDraftStore")
@@ -33,7 +42,7 @@ struct ComposerDraftStoreTests {
         #expect(longText.count > 90_000)
         let revision = store.save(text: longText, conversationID: id)
         #expect(revision == 1)
-        store.flush()
+        #expect(store.flushAndWait())
 
         let reloaded = ComposerDraftStore(fileURL: url)
         let restored = reloaded.entry(for: id)?.text ?? ""
@@ -79,6 +88,82 @@ struct ComposerDraftStoreTests {
         #expect(store.text(for: id) == "用户正在输入更多")
     }
 
+    @Test("Clearing never restarts the revision sequence (stale writers stay rejected)")
+    func revisionFloorAfterClear() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        guard let sentRevision = store.save(text: "已发送的草稿", conversationID: id) else {
+            Issue.record("Save must return a revision")
+            return
+        }
+        store.clear(conversationID: id)
+        // A stale merge captured before the clear must not match a fresh
+        // entry that restarted at revision 1.
+        #expect(store.save(
+            text: "过期转写", conversationID: id, expectedRevision: sentRevision
+        ) == nil)
+        #expect(store.text(for: id).isEmpty)
+        // The next legitimate write continues above the cleared revision.
+        let next = store.save(text: "新草稿", conversationID: id)
+        #expect(next == sentRevision + 1)
+        #expect(store.text(for: id) == "新草稿")
+    }
+
+    @Test("A successful send keeps text typed while the send was in flight")
+    func asyncSendKeepsInFlightDraft() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sent = "第一版提示词"
+        #expect(store.save(text: sent, conversationID: id) == 1)
+        // While the run is in flight the composer suppresses the send's own
+        // empty-field save and the user types the next prompt.
+        #expect(store.save(text: "第二条还在输入", conversationID: id, expectedRevision: 1) == 2)
+        // Send succeeds: only the content that was sent is committed away.
+        #expect(store.clearAfterSend(conversationID: id, sentText: sent))
+        #expect(store.text(for: id) == "第二条还在输入")
+        // A stale voice merge holding the pre-send revision is still dead.
+        #expect(store.save(text: "旧转写", conversationID: id, expectedRevision: 1) == nil)
+        #expect(store.text(for: id) == "第二条还在输入")
+    }
+
+    @Test("A successful send clears an untouched draft and drops sent attachments only")
+    func asyncSendClearsUntouchedDraft() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        #expect(store.save(
+            text: "发送内容", attachments: [sentAttachment], conversationID: id
+        ) == 1)
+        #expect(store.clearAfterSend(
+            conversationID: id, sentText: "发送内容", sentAttachments: [sentAttachment]
+        ))
+        #expect(store.entry(for: id) == nil)
+        #expect(store.text(for: id).isEmpty)
+    }
+
+    @Test("Attachments staged during a send survive the commit; sent ones do not")
+    func asyncSendKeepsNewAttachments() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        let laterAttachment = makeAttachment("later.pdf")
+        #expect(store.save(
+            text: "发送内容", attachments: [sentAttachment], conversationID: id
+        ) == 1)
+        // The user stages another file while the send is in flight.
+        #expect(store.save(
+            text: "发送内容",
+            attachments: [sentAttachment, laterAttachment],
+            conversationID: id,
+            expectedRevision: 1
+        ) == 2)
+        #expect(store.clearAfterSend(
+            conversationID: id, sentText: "发送内容", sentAttachments: [sentAttachment]
+        ))
+        #expect(store.text(for: id).isEmpty)
+        #expect(store.attachments(for: id).map(\.id) == [laterAttachment.id])
+    }
+
     @Test("Selection updates do not bump the draft revision")
     func selectionDoesNotBumpRevision() {
         let store = ComposerDraftStore(fileURL: makeTempDraftURL())
@@ -89,6 +174,20 @@ struct ComposerDraftStoreTests {
         #expect(store.entry(for: id)?.revision == revision)
         #expect(store.entry(for: id)?.selectionLocation == 2)
         #expect(store.entry(for: id)?.selectionLength == 3)
+        #expect(store.entry(for: id)?.selection == NSRange(location: 2, length: 3))
+    }
+
+    @Test("A captured caret round-trips through disk for relaunch restore")
+    func selectionRoundTripsThroughDisk() {
+        let url = makeTempDraftURL()
+        let id = UUID()
+        let store = ComposerDraftStore(fileURL: url)
+        #expect(store.save(text: "第一行\n第二行", conversationID: id) == 1)
+        store.updateSelection(NSRange(location: 4, length: 0), conversationID: id)
+        #expect(store.flushAndWait())
+        let reloaded = ComposerDraftStore(fileURL: url)
+        #expect(reloaded.entry(for: id)?.selection == NSRange(location: 4, length: 0))
+        try? FileManager.default.removeItem(at: url)
     }
 
     @Test("Flush persists the latest snapshot for background/relaunch")
@@ -97,10 +196,60 @@ struct ComposerDraftStoreTests {
         let store = ComposerDraftStore(fileURL: url)
         let id = UUID()
         store.save(text: "最新内容", conversationID: id)
-        store.flush()
+        #expect(store.flushAndWait())
+        #expect(store.lastWriteState == .idle)
         let reloaded = ComposerDraftStore(fileURL: url)
         #expect(reloaded.text(for: id) == "最新内容")
         try? FileManager.default.removeItem(at: url)
+    }
+
+    @Test("A failed durable write is reported, never silently swallowed")
+    func writeFailureReportedAndRecoverable() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("composer-blocked-\(UUID().uuidString)")
+        // A regular file where the drafts directory should be makes both
+        // createDirectory and the atomic write fail deterministically.
+        try Data("blocked".utf8).write(to: parent)
+        let url = parent.appendingPathComponent("drafts.json")
+        let store = ComposerDraftStore(fileURL: url)
+        let id = UUID()
+        store.save(text: "无法落盘的内容", conversationID: id)
+        #expect(!store.flushAndWait(timeout: 1))
+        #expect(store.lastWriteState.failureMessage != nil)
+        // The in-memory draft is untouched, and a retry after the obstruction
+        // is gone succeeds.
+        #expect(store.text(for: id) == "无法落盘的内容")
+        try FileManager.default.removeItem(at: parent)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        #expect(store.flushAndWait(timeout: 2))
+        #expect(store.lastWriteState == .idle)
+        let reloaded = ComposerDraftStore(fileURL: url)
+        #expect(reloaded.text(for: id) == "无法落盘的内容")
+        try? FileManager.default.removeItem(at: parent)
+    }
+
+    @Test("An unreadable draft file is preserved and the failure is reported")
+    func corruptFilePreserved() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("composer-corrupt-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("drafts.json")
+        try Data("{ this is not the draft document".utf8).write(to: url)
+
+        let store = ComposerDraftStore(fileURL: url)
+        #expect(store.text(for: UUID()).isEmpty)
+        #expect(store.lastWriteState.failureMessage != nil)
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        let preserved = names.filter { $0.contains("corrupt-") }
+        #expect(preserved.count == 1)
+        // The preserved copy still holds the original bytes.
+        if let name = preserved.first {
+            let data = try Data(contentsOf: directory.appendingPathComponent(name))
+            #expect(String(decoding: data, as: UTF8.self)
+                == "{ this is not the draft document")
+        }
+        try? FileManager.default.removeItem(at: directory)
     }
 }
 
@@ -183,5 +332,138 @@ struct ComposerEditingPrimitivesTests {
         #expect(ComposerDraftSafety.draftAfterSendFailure(
             originalDraft: "", trimmedGoal: "", currentDraft: "").isEmpty)
     }
+
+    @Test("A restored selection is clamped into the current UTF16 text")
+    func selectionClamp() {
+        #expect(ComposerSelection.clamped(
+            NSRange(location: 2, length: 3), utf16Length: 5
+        ) == NSRange(location: 2, length: 3))
+        #expect(ComposerSelection.clamped(
+            NSRange(location: 9, length: 1), utf16Length: 5
+        ) == NSRange(location: 5, length: 0))
+        #expect(ComposerSelection.clamped(
+            NSRange(location: 2, length: 99), utf16Length: 5
+        ) == NSRange(location: 2, length: 3))
+        #expect(ComposerSelection.clamped(
+            NSRange(location: NSNotFound, length: 0), utf16Length: 5
+        ) == nil)
+        #expect(ComposerSelection.clamped(nil, utf16Length: 5) == nil)
+    }
+
+    @Test("The initial text is seeded before the caret, so non-zero carets restore")
+    func selectionPrepareOrder() {
+        let view = UITextView()
+        ComposerSelection.prepare(view, text: "中文abc", selection: NSRange(location: 2, length: 1))
+        #expect(view.text == "中文abc")
+        #expect(view.selectedRange == NSRange(location: 2, length: 1))
+        // A caret from a longer draft clamps to the end of the shorter one.
+        ComposerSelection.prepare(view, text: "ab", selection: NSRange(location: 2, length: 1))
+        #expect(view.selectedRange == NSRange(location: 2, length: 0))
+    }
+
+    @Test("Footer counts stay off the keystroke path and handle a 100k draft")
+    func footerCountsDebounce() async {
+        let counts = ComposerFooterCounts()
+        let text = String(repeating: "中文abc123。", count: 12_000)
+        #expect(text.count > 100_000)
+        counts.schedule(text: text, debounce: .milliseconds(10))
+        // Nothing is computed synchronously while typing.
+        #expect(counts.characters == 0)
+        await counts.waitForScheduledCounts()
+        #expect(counts.characters == text.count)
+        #expect(counts.estimatedTokens == ComposerTokenEstimator.estimatedTokens(in: text))
+    }
+
+    @Test("A newer edit invalidates an older scheduled count")
+    func footerCountsRevisionGuard() async {
+        let counts = ComposerFooterCounts()
+        counts.schedule(text: "AAAA", debounce: .milliseconds(80))
+        counts.schedule(text: "B", debounce: .milliseconds(10))
+        await counts.waitForScheduledCounts()
+        #expect(counts.characters == 1)
+        #expect(counts.estimatedTokens == ComposerTokenEstimator.estimatedTokens(in: "B"))
+        // An immediate recount cancels a pending debounce and wins.
+        counts.schedule(text: "仍在等待", debounce: .seconds(5))
+        counts.setImmediately(text: "abc")
+        #expect(counts.characters == 3)
+        await counts.waitForScheduledCounts()
+        #expect(counts.characters == 3)
+    }
+}
+
+@Suite("FloeApp.ComposerFullEditor")
+@MainActor
+struct ComposerFullEditorTests {
+
+    @Test("Two editor instances never share toolbar actions or selections")
+    func controllerIsolationAcrossInstances() {
+        let firstController = FullEditorController()
+        let secondController = FullEditorController()
+        let firstView = FullEditorUITextView()
+        let secondView = FullEditorUITextView()
+        firstView.text = "first window"
+        secondView.text = "second window"
+        let secondInitialSelection = secondView.selectedRange
+        firstController.attach(firstView)
+        secondController.attach(secondView)
+
+        var firstCaptured: NSRange?
+        var secondCaptured: NSRange?
+        firstController.onFinalSelection = { firstCaptured = $0 }
+        secondController.onFinalSelection = { secondCaptured = $0 }
+
+        firstController.selectAll()
+        #expect(firstView.selectedRange == NSRange(location: 0, length: 12))
+        // The other window's caret is exactly where it was.
+        #expect(secondView.selectedRange == secondInitialSelection)
+
+        firstController.captureSelection()
+        #expect(firstCaptured == NSRange(location: 0, length: 12))
+        #expect(secondCaptured == nil)
+
+        // Detaching one editor leaves the other fully functional.
+        firstController.detach(firstView)
+        firstController.captureSelection()
+        secondController.captureSelection()
+        #expect(secondCaptured == secondInitialSelection)
+    }
+
+    @Test("Undo runs on the attached view's own manager")
+    func controllerUndoRouting() {
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+        manager.beginUndoGrouping()
+        let probe = UndoProbe()
+        manager.registerUndo(withTarget: probe) { $0.undid = true }
+        manager.endUndoGrouping()
+
+        let controller = FullEditorController()
+        let view = FullEditorUITextView()
+        view.text = "text"
+        view.sharedUndoManager = manager
+        controller.attach(view)
+        #expect(view.undoManager === manager)
+        #expect(controller.canUndo)
+        controller.undo()
+        #expect(probe.undid)
+    }
+
+    @Test("The inline field and full editor share one undo history")
+    func sharedUndoManagerAcrossSurfaces() {
+        let shared = UndoManager()
+        let inline = HardwareReturnTextView()
+        inline.sharedUndoManager = shared
+        let full = FullEditorUITextView()
+        full.sharedUndoManager = shared
+        #expect(inline.undoManager === shared)
+        #expect(full.undoManager === shared)
+        // Without an injected manager each view keeps UIKit's own.
+        #expect(HardwareReturnTextView().undoManager !== shared)
+        #expect(FullEditorUITextView().undoManager !== shared)
+    }
+}
+
+private final class UndoProbe: @unchecked Sendable {
+    var undid = false
 }
 #endif

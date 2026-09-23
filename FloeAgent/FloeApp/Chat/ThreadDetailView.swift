@@ -765,6 +765,7 @@ struct ThreadDetailView: View {
                     onPermissions: { showingPermissionsSheet = true },
                     approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
                     contextID: viewModel.conversationID,
+                    isDraftConsumedBySend: viewModel.isConsumingDraft,
                     embedded: embedded,
                     documentAssistant: documentAssistant
                 )

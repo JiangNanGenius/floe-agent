@@ -37,6 +37,15 @@ final class HardwareReturnTextView: UITextView {
     /// when sending is disabled or an input method still has marked text.
     var commandReturnHandler: (() -> Bool)?
 
+    /// A composer-owned undo manager shared with the full editor, so
+    /// undo/redo continues across the inline ↔ expanded surfaces instead of
+    /// each UITextView keeping a private history. Nil keeps UIKit's default.
+    var sharedUndoManager: UndoManager?
+
+    override var undoManager: UndoManager? {
+        sharedUndoManager ?? super.undoManager
+    }
+
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var consumed = Set<UIPress>()
         for press in presses {
@@ -78,6 +87,15 @@ struct ComposerReturnField: UIViewRepresentable {
     /// Height available to the hosting page; the field never grows beyond
     /// one third of it. Nil disables the height rule.
     var maxHeightBudget: CGFloat? = nil
+    /// Caret/selection captured in the full editor (or on the previous
+    /// launch). Applied only once the initial text exists and only while the
+    /// user is not editing, so it never fights the live caret.
+    var restoredSelection: NSRange? = nil
+    /// Undo manager shared with the expanded editor; nil keeps UIKit's own.
+    var undoManager: UndoManager? = nil
+    /// Reports the live caret/selection so the caller can persist it and the
+    /// full editor can reopen exactly where editing stopped.
+    var onSelectionChange: ((NSRange?) -> Void)? = nil
     var onReturn: () -> Void
 
     private let textInsets = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
@@ -120,6 +138,11 @@ struct ComposerReturnField: UIViewRepresentable {
         ])
         view.placeholderLabel.text = placeholder
         view.accessibilityLabel = placeholder
+        view.sharedUndoManager = undoManager
+        // Text first, selection second: a saved non-zero caret cannot be
+        // applied to an empty view (it would be clamped away).
+        ComposerSelection.prepare(view, text: text, selection: restoredSelection)
+        context.coordinator.noteAppliedSelection(restoredSelection)
         return view
     }
 
@@ -128,10 +151,16 @@ struct ComposerReturnField: UIViewRepresentable {
         // the snapshot so send availability and the callback track the
         // current draft/model state instead of the initial empty field.
         context.coordinator.field = self
+        uiView.sharedUndoManager = undoManager
         // Never clobber in-flight IME composition or echo the user's own edit.
         if uiView.markedTextRange == nil, uiView.text != text {
             uiView.text = text
             context.coordinator.noteTextChange()
+        }
+        // A restored caret (full editor dismissed, task reopened) only lands
+        // while the field itself is not the editing surface.
+        if !uiView.isFirstResponder {
+            context.coordinator.applyRestoredSelectionIfNeeded(in: uiView)
         }
         uiView.commandReturnHandler = { [weak uiView, canSend, onReturn] in
             guard ComposerSendKeyPolicy.commandReturnSends(
@@ -246,6 +275,10 @@ struct ComposerReturnField: UIViewRepresentable {
         private var naturalHeightMemo = ComposerFieldMetrics.HeightCache()
         /// One-line height, keyed by width + content-size category only.
         private var lineHeightMemo = ComposerFieldMetrics.HeightCache()
+        /// Last selection this coordinator restored or reported, so the
+        /// update cycle never re-applies (and never echoes) the same range.
+        private var lastAppliedSelection: NSRange?
+        private var lastReportedSelection: NSRange?
 
         init(field: ComposerReturnField) {
             self.field = field
@@ -253,6 +286,23 @@ struct ComposerReturnField: UIViewRepresentable {
 
         func noteTextChange() {
             contentGeneration += 1
+        }
+
+        func noteAppliedSelection(_ selection: NSRange?) {
+            lastAppliedSelection = selection
+            lastReportedSelection = selection
+        }
+
+        /// Restores a caret captured elsewhere once the text exists. Skipped
+        /// while the user is editing this field, and idempotent per range.
+        func applyRestoredSelectionIfNeeded(in textView: UITextView) {
+            guard let target = ComposerSelection.clamped(
+                field.restoredSelection,
+                utf16Length: (textView.text as NSString).length
+            ) else { return }
+            guard textView.selectedRange != target, lastAppliedSelection != target else { return }
+            lastAppliedSelection = target
+            textView.selectedRange = target
         }
 
         func cachedNaturalHeight(
@@ -298,6 +348,21 @@ struct ComposerReturnField: UIViewRepresentable {
             if textView.isScrollEnabled {
                 textView.scrollRangeToVisible(textView.selectedRange)
             }
+            reportSelectionIfChanged(textView)
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            reportSelectionIfChanged(textView)
+        }
+
+        /// Persists the live caret so the full editor can reopen at exactly
+        /// that position (and the store can restore it after a relaunch).
+        private func reportSelectionIfChanged(_ textView: UITextView) {
+            let range = textView.selectedRange
+            guard range != lastReportedSelection else { return }
+            lastReportedSelection = range
+            lastAppliedSelection = range
+            field.onSelectionChange?(range)
         }
 
         func textView(

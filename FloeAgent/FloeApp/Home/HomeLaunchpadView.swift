@@ -146,6 +146,7 @@ struct HomeLaunchpadView: View {
                 onStop: {},
                 onPermissions: { showsDraftPermissions = true },
                 approvalMode: viewModel.draftPolicy.approvalMode,
+                isDraftConsumedBySend: viewModel.isConsumingDraft,
                 notesDraftID: viewModel.draftConversationID
             )
         }

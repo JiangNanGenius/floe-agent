@@ -129,6 +129,54 @@
         }
       }
     },
+    "composer.draft.save_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draft not saved: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿暂时无法保存：%@"
+          }
+        }
+      }
+    },
+    "composer.draft.retry": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "composer.model.persist_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switched to %@, but the default model could not be saved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已切换到 %@，但默认模型未能保存。"
+          }
+        }
+      }
+    },
     "notes.navigation.backToNotes": {
       "localizations": {
         "en": {

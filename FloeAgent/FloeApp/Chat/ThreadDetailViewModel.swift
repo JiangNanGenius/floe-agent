@@ -83,6 +83,11 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var loadingEarlierMessages = false
     /// Composer draft text.
     @Published var draft: String = ""
+    /// True from the moment `send` consumes the draft until the send's
+    /// outcome is known. The composer keeps the sent content in the draft
+    /// store while it is set, so a failure can restore it and a success can
+    /// clear exactly what was sent.
+    @Published private(set) var isConsumingDraft = false
     @Published var selectedModelID: UUID?
     private var didRestoreConversationModel = false
     /// Workspace selected for the next run.
@@ -566,6 +571,11 @@ final class ThreadDetailViewModel: ObservableObject {
         // context-budget rejection — restores every character, never a
         // trimmed or truncated version.
         let originalDraft = draft
+        // A Canvas/contextual goal owns its own prompt; only a send that
+        // actually consumed the composer draft may clear or restore it.
+        let consumesComposerDraft = goalOverride == nil
+        isConsumingDraft = consumesComposerDraft
+        defer { isConsumingDraft = false }
         actionError = nil
         if isRunning, let expectedRunID = selectedRun?.id {
             do {
@@ -579,9 +589,12 @@ final class ThreadDetailViewModel: ObservableObject {
                     executionMode: executionMode,
                     attachments: stagedAttachments
                 )
-                draft = ""
-                attachments = []
-                ComposerDraftStore.shared.clear(conversationID: conversationID)
+                if consumesComposerDraft {
+                    consumeSentDraft(
+                        originalDraft: originalDraft,
+                        stagedAttachments: stagedAttachments
+                    )
+                }
                 pendingInputs = try await center.environment.runningInputStore
                     .pending(conversationID: conversationID)
             } catch {
@@ -589,7 +602,7 @@ final class ThreadDetailViewModel: ObservableObject {
             }
             return
         }
-        draft = ""
+        if consumesComposerDraft { draft = "" }
         do {
             let started = try await center.startRun(
                 goal: goal,
@@ -616,25 +629,53 @@ final class ThreadDetailViewModel: ObservableObject {
             case .failure(let error):
                 throw error
             }
-            attachments = []
-            ComposerDraftStore.shared.clear(conversationID: conversationID)
+            if consumesComposerDraft {
+                consumeSentDraft(
+                    originalDraft: originalDraft,
+                    stagedAttachments: stagedAttachments
+                )
+            }
             await load()
         } catch {
-            // Full-text restore: what the user wrote is exactly what comes
-            // back (new text typed while the send was in flight wins).
-            draft = ComposerDraftSafety.draftAfterSendFailure(
-                originalDraft: originalDraft,
-                trimmedGoal: goal,
-                currentDraft: draft
-            )
-            ComposerDraftStore.shared.save(
-                text: draft,
-                attachments: attachments,
-                conversationID: conversationID
-            )
-            if attachments.isEmpty { attachments = stagedAttachments }
+            if consumesComposerDraft {
+                // Attachments staged for the failed send come back first,
+                // then the full original text, and only then is the pair
+                // persisted — a relaunch restores prompt and files together.
+                // Text the user typed while the send was in flight wins.
+                if attachments.isEmpty { attachments = stagedAttachments }
+                draft = ComposerDraftSafety.draftAfterSendFailure(
+                    originalDraft: originalDraft,
+                    trimmedGoal: goal,
+                    currentDraft: draft
+                )
+                ComposerDraftStore.shared.save(
+                    text: draft,
+                    attachments: attachments,
+                    conversationID: conversationID
+                )
+            }
             actionError = presentableError(error, stage: "startOrCompleteRun")
         }
+    }
+
+    /// Clears exactly the draft content a successful send consumed. Text and
+    /// attachments staged while the send was in flight stay bound to the
+    /// conversation; the draft store keeps a revision floor so a stale
+    /// async merge can never resurrect the cleared revision.
+    private func consumeSentDraft(
+        originalDraft: String,
+        stagedAttachments: [AttachmentRef]
+    ) {
+        if draft == originalDraft { draft = "" }
+        let sentIDs = Set(stagedAttachments.map(\.id))
+        if !sentIDs.isEmpty {
+            attachments.removeAll { sentIDs.contains($0.id) }
+        }
+        ComposerDraftStore.shared.clearAfterSend(
+            conversationID: conversationID,
+            sentText: originalDraft,
+            sentAttachments: stagedAttachments
+        )
     }
 
     func selectAgentMode(_ mode: AgentExecutionMode) {

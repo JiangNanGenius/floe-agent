@@ -47,6 +47,10 @@ final class HomeLaunchpadViewModel: ObservableObject {
     @Published private(set) var draftConversationID = UUID()
     /// Single-flight send guard (double-tap safe).
     @Published private(set) var isSending = false
+    /// True from the moment `sendNewTask` consumes the draft until the task
+    /// exists. The composer keeps the sent content in the draft store while
+    /// it is set, so text typed during task creation is never erased.
+    @Published private(set) var isConsumingDraft = false
     /// Honest error surface for the last failed send.
     @Published private(set) var actionError: String?
 
@@ -191,10 +195,15 @@ final class HomeLaunchpadViewModel: ObservableObject {
         guard canSend,
               center.providerAndModel(modelID: selectedModelID) != nil
         else { return nil }
-        isSending = true
-        defer { isSending = false }
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let stagedAttachments = attachments
+        let sentText = draft
+        isSending = true
+        isConsumingDraft = true
+        defer {
+            isSending = false
+            isConsumingDraft = false
+        }
         do {
             let conversationID: UUID
             if let taskStarter {
@@ -206,15 +215,28 @@ final class HomeLaunchpadViewModel: ObservableObject {
                     goal: goal, stagedAttachments: stagedAttachments
                 )
             }
-            draft = ""
-            attachments = []
+            // Clear only what this send consumed: text typed while the task
+            // was being created (and attachments staged in that window)
+            // stays in the launchpad composer.
+            if draft == sentText { draft = "" }
+            let sentIDs = Set(stagedAttachments.map(\.id))
+            if !sentIDs.isEmpty {
+                attachments.removeAll { sentIDs.contains($0.id) }
+            }
             draftConversationID = UUID()
-            ComposerDraftStore.shared.clear(conversationID: ComposerDraftStore.homeDraftID)
+            ComposerDraftStore.shared.clearAfterSend(
+                conversationID: ComposerDraftStore.homeDraftID,
+                sentText: sentText,
+                sentAttachments: stagedAttachments
+            )
             actionError = nil
             await load()
             return conversationID
         } catch {
-            // Failure keeps the draft and creates no lingering thread.
+            // Failure keeps the draft and creates no lingering thread. The
+            // store still holds the sent draft (an emptied field during the
+            // send did not overwrite it), so text and attachments survive a
+            // relaunch too.
             actionError = error.localizedDescription
             return nil
         }

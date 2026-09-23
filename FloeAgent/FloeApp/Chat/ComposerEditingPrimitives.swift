@@ -9,6 +9,8 @@
 // SwiftUI/view state so FloeAppTests can pin them directly.
 
 #if canImport(UIKit)
+import Combine
+import Foundation
 import UIKit
 
 /// Hardware-key send policy for the shared composer.
@@ -81,6 +83,101 @@ enum ComposerTokenEstimator {
             (0x3400...0x9FFF).contains(Int($0.value))
         }.count
         return max(1, cjkCount + (scalarCount - cjkCount + 3) / 4)
+    }
+}
+
+/// Selection handoff between the inline field and the full editor. Both
+/// surfaces edit the same UTF16-backed string, so a caret captured in one
+/// surface (or restored from disk on the next launch) can point past the
+/// end of a shorter draft or belong to another conversation. Every restore
+/// is clamped, and restoring is always two ordered steps: seed the text
+/// first, apply the selection second — a non-zero selection set on an empty
+/// text view is clamped away before the text exists.
+enum ComposerSelection {
+    /// Clamps a stored selection into a UTF16 range of `utf16Length`.
+    /// `NSNotFound` and negative values collapse to a safe caret.
+    static func clamped(_ range: NSRange?, utf16Length: Int) -> NSRange? {
+        guard let range, range.location != NSNotFound else { return nil }
+        let length = max(0, utf16Length)
+        let location = min(max(0, range.location), length)
+        let available = length - location
+        return NSRange(location: location, length: min(max(0, range.length), available))
+    }
+
+    /// Seeds a text view with its initial text and then restores the caret
+    /// (the order `makeUIView` must use; kept here so it is testable).
+    @MainActor
+    static func prepare(_ textView: UITextView, text: String, selection: NSRange?) {
+        textView.text = text
+        apply(selection, to: textView)
+    }
+
+    /// Applies a clamped selection. Returns the range actually applied, or
+    /// nil when there was nothing to restore.
+    @MainActor
+    @discardableResult
+    static func apply(_ range: NSRange?, to textView: UITextView) -> NSRange? {
+        guard let clamped = clamped(range, utf16Length: (textView.text as NSString).length) else {
+            return nil
+        }
+        textView.selectedRange = clamped
+        return clamped
+    }
+}
+
+/// Debounced character/token footer for the full editor.
+///
+/// The footer previously recomputed `text.count` (grapheme segmentation) and
+/// the full scalar token scan inside the SwiftUI body — i.e. on every
+/// keystroke of a possibly 100k-character draft. Counts are now scheduled
+/// behind a cancellation-safe debounce and computed off the main actor; a
+/// newer revision invalidates an older computation instead of racing it.
+@MainActor
+final class ComposerFooterCounts: ObservableObject {
+    @Published private(set) var characters = 0
+    @Published private(set) var estimatedTokens = 0
+
+    private var generation = 0
+    private var pending: Task<Void, Never>?
+
+    /// Recomputes synchronously (editor just opened). Cancels any pending
+    /// debounce so an older keystroke burst cannot overwrite it.
+    func setImmediately(text: String) {
+        pending?.cancel()
+        pending = nil
+        generation += 1
+        characters = text.count
+        estimatedTokens = ComposerTokenEstimator.estimatedTokens(in: text)
+    }
+
+    /// Schedules a revision-based recount after `debounce`.
+    func schedule(text: String, debounce: Duration = .milliseconds(220)) {
+        generation += 1
+        let generation = self.generation
+        pending?.cancel()
+        guard !text.isEmpty else {
+            pending = nil
+            characters = 0
+            estimatedTokens = 0
+            return
+        }
+        pending = Task { [weak self] in
+            try? await Task.sleep(for: debounce)
+            guard !Task.isCancelled else { return }
+            let snapshot = text
+            let counted = await Task.detached(priority: .utility) {
+                (snapshot.count, ComposerTokenEstimator.estimatedTokens(in: snapshot))
+            }.value
+            guard let self, self.generation == generation else { return }
+            self.characters = counted.0
+            self.estimatedTokens = counted.1
+        }
+    }
+
+    /// Awaits the currently scheduled computation (deterministic flush in
+    /// tests and before a sheet closes).
+    func waitForScheduledCounts() async {
+        await pending?.value
     }
 }
 

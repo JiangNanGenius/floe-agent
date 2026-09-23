@@ -173,6 +173,12 @@ struct ThreadComposerView: View {
     /// Changes when the composer is reused for another conversation. Local
     /// transient errors must not leak into the next task.
     var contextID: UUID? = nil
+    /// True from the moment a send consumes this draft until its outcome is
+    /// known. While set, an emptied field means "the send took it", so the
+    /// store keeps the sent content: a failure can restore it and a success
+    /// can clear exactly what was sent without erasing anything typed while
+    /// the send was in flight.
+    var isDraftConsumedBySend: Bool = false
     /// An unsent Home draft may select Notes without mounting a task workspace.
     var notesDraftID: UUID? = nil
     var embedded: Bool = false
@@ -190,14 +196,26 @@ struct ThreadComposerView: View {
     @State private var pendingLocalModelSwitch: PendingLocalModelSwitch?
     @State private var pendingLocalCapabilityModel: ModelProfile?
     @State private var preparingLocalModelID: String?
+    /// Display name of a model whose *default persistence* failed; the
+    /// selection itself is already active for this composer.
+    @State private var modelPersistenceFailure: String?
     @State private var dictationPrefix = ""
     @State private var slashNotice: String?
     @State private var isFullEditorPresented = false
     @State private var editorSelection: NSRange?
+    /// Conversation identity captured when the full editor was presented: a
+    /// late dismissal callback must never write a caret into another task.
+    @State private var editorDraftKey: UUID?
+    /// One undo history shared by the inline field and the full editor for
+    /// this composer instance, so expanding the prompt keeps undo/redo.
+    @State private var composerUndoManager = UndoManager()
     /// Last revision this composer wrote to the draft store; async merges
     /// (voice transcript landing) must match it or rebase instead of
     /// overwriting newer text.
     @State private var draftRevision: Int?
+    /// The app-owned draft store. Observed so a failed durable write can be
+    /// shown instead of being silently swallowed.
+    @ObservedObject private var draftStore = ComposerDraftStore.shared
     @EnvironmentObject private var voiceInput: VoiceInputController
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
@@ -211,10 +229,14 @@ struct ThreadComposerView: View {
         contextID ?? ComposerDraftStore.homeDraftID
     }
 
-    private var draftStore: ComposerDraftStore { .shared }
-
     var body: some View {
         VStack(spacing: 0) {
+            if let saveFailure = draftStore.lastWriteState.failureMessage {
+                draftSaveBanner(saveFailure)
+            }
+            if let modelPersistenceFailure {
+                modelPersistenceBanner(modelPersistenceFailure)
+            }
             if !slashActions.isEmpty {
                 slashCommandPalette
             }
@@ -286,7 +308,12 @@ struct ThreadComposerView: View {
             ComposerFullEditorSheet(
                 text: $draft,
                 restoredSelection: editorSelection,
+                undoManager: composerUndoManager,
                 onFinalSelection: { range in
+                    // Conversation identity guard: a late callback from a
+                    // sheet that belonged to another task must not write a
+                    // caret into the task that is open now.
+                    guard editorDraftKey == draftKey else { return }
                     editorSelection = range
                     draftStore.updateSelection(range, conversationID: draftKey)
                 }
@@ -301,39 +328,64 @@ struct ThreadComposerView: View {
             slashNotice = nil
         }
         .onChange(of: draftKey, initial: true) { oldKey, newKey in
-            if let oldKey, oldKey != newKey {
+            if oldKey != newKey {
                 // Task switch / Home staging rotation: persist everything
                 // queued, then drop the old entry when its draft was
                 // consumed (sent) rather than abandoned mid-edit.
                 draftStore.flush()
                 if draft.isEmpty { draftStore.clear(conversationID: oldKey) }
+                // A different conversation is a different draft: undo
+                // history and an open editor must never carry over.
+                composerUndoManager.removeAllActions()
+                if isFullEditorPresented { isFullEditorPresented = false }
+                editorDraftKey = nil
             }
             let entry = draftStore.entry(for: newKey)
             draftRevision = entry?.revision
-            // Restore the caret the full editor last captured, also after
-            // an app relaunch.
-            if let location = entry?.selectionLocation,
-               let length = entry?.selectionLength {
-                editorSelection = NSRange(location: location, length: length)
-            }
+            // Always replace the caret with this conversation's stored one —
+            // never keep the previous task's selection when none was saved.
+            editorSelection = entry?.selection
         }
         .onChange(of: draft) { _, newValue in
-            // Debounced inside the store; the revision guard rejects a
-            // stale async merge instead of letting it overwrite typing.
-            draftRevision = draftStore.save(
+            // A send consumed this draft; the store keeps the sent content
+            // until the outcome is known (a failure can restore it, a
+            // success clears exactly what was sent).
+            if isDraftConsumedBySend, newValue.isEmpty {
+                return
+            }
+            if let revision = draftStore.save(
                 text: newValue,
                 attachments: attachments,
                 conversationID: draftKey,
                 expectedRevision: draftRevision
-            )
+            ) {
+                draftRevision = revision
+            } else {
+                // An async merge landed while this edit was in flight. The
+                // field is the newer truth, so persist it unguarded rather
+                // than dropping the keystroke.
+                draftRevision = draftStore.save(
+                    text: newValue,
+                    attachments: attachments,
+                    conversationID: draftKey
+                )
+            }
         }
         .onChange(of: attachments) { _, newValue in
-            draftRevision = draftStore.save(
+            if let revision = draftStore.save(
                 text: draft,
                 attachments: newValue,
                 conversationID: draftKey,
                 expectedRevision: draftRevision
-            )
+            ) {
+                draftRevision = revision
+            } else {
+                draftRevision = draftStore.save(
+                    text: draft,
+                    attachments: newValue,
+                    conversationID: draftKey
+                )
+            }
         }
         .onChange(of: contextID) { _, _ in
             attachmentError = nil
@@ -704,6 +756,15 @@ struct ThreadComposerView: View {
                 canSend: canSend && !isAttachmentProcessing,
                 lineLimit: 1...8,
                 maxHeightBudget: composerHeightBudget,
+                restoredSelection: editorSelection,
+                undoManager: composerUndoManager,
+                onSelectionChange: { range in
+                    // Live caret handoff: the full editor reopens exactly
+                    // where inline editing stopped, and a relaunch restores
+                    // the same position (persisted by the draft store).
+                    editorSelection = range
+                    draftStore.updateSelection(range, conversationID: draftKey)
+                },
                 onReturn: { onSend() }
             )
             .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
@@ -715,6 +776,10 @@ struct ThreadComposerView: View {
             // state: staging a file, processing a photo or a running turn
             // never disables the expand entry.
             Button {
+                // Bind this editor presentation to the conversation it was
+                // opened from, and start from the freshest captured caret.
+                editorDraftKey = draftKey
+                editorSelection = draftStore.entry(for: draftKey)?.selection ?? editorSelection
                 isFullEditorPresented = true
             } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -1082,9 +1147,28 @@ struct ThreadComposerView: View {
 
     private func applyModelSelection(_ model: ModelProfile) {
         selectedModelID = model.id
-        // Persist so the task keeps this model after a reload instead of
-        // reverting to the old default.
-        Task { await environment.conversationCenter.setDefaultAgentModel(model.id) }
+        // Persist through the existing model-preferences service
+        // (ConversationCenter.setDefaultAgentModel → FloeSync →
+        // ModelConfigurationStore's default_agent_model_id). That wrapper
+        // swallows a failed durable write, so verify the persisted value and
+        // surface a mismatch instead of silently pretending the default
+        // changed; a run always uses the in-memory selection either way.
+        Task { @MainActor in
+            let center = environment.conversationCenter
+            await center.setDefaultAgentModel(model.id)
+            let persisted = try? await environment.configurationStore.preferences()
+            // A rapid switch may already have moved on; never report a stale
+            // model as a persistence failure.
+            guard selectedModelID == model.id else { return }
+            if persisted?.defaultAgentModelID == model.id {
+                modelPersistenceFailure = nil
+            } else {
+                modelPersistenceFailure = model.displayName
+                FloeLogger(category: .app).error(
+                    "composerModelPersistFailed model=\(model.id.uuidString)"
+                )
+            }
+        }
     }
 
     /// WorkBuddy-style quick control kept beside the model selector. The
@@ -1446,6 +1530,61 @@ struct ThreadComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    /// A failed durable draft write is visible (and retryable), never a
+    /// silent `try?`. The in-memory draft is untouched, so the retry writes
+    /// the latest text.
+    private func draftSaveBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "externaldrive.badge.exclamationmark")
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityHidden(true)
+            Text(String(format: String(localized: "composer.draft.save_failed"), message))
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+                .lineLimit(2)
+            Spacer()
+            Button("composer.draft.retry") {
+                draftStore.flush()
+            }
+            .font(FloeTheme.Typography.metadata.weight(.semibold))
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("composer.draft.retry")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("composer.draft.save_failed")
+    }
+
+    /// The model switch is active for this composer, but the durable default
+    /// could not be verified — surface it rather than silently skipping.
+    private func modelPersistenceBanner(_ modelName: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "externaldrive.badge.questionmark")
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityHidden(true)
+            Text(String(format: String(localized: "composer.model.persist_failed"), modelName))
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+                .lineLimit(2)
+            Spacer()
+            Button {
+                modelPersistenceFailure = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(FloeTheme.pending)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: 28, minHeight: 28)
+            .accessibilityLabel(Text("action.done"))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("composer.model.persist_failed")
     }
 }
 
