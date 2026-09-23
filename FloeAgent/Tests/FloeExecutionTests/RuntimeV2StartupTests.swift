@@ -107,18 +107,35 @@ final class RuntimeV2StartupTests: XCTestCase {
         )
         let residue = try await registry.environment(id: "env-residue")
         XCTAssertNotNil(residue)
-        // The applied migration is recorded exactly once.
+        // Each applied migration is recorded exactly once (v1 "initial" plus
+        // the later additive migrations — the schema-migration table must
+        // never contain a duplicate version).
         var verify: OpaquePointer?
         XCTAssertEqual(sqlite3_open(layout.registryDatabaseURL.path, &verify), SQLITE_OK)
         defer { sqlite3_close(verify) }
         var statement: OpaquePointer?
         XCTAssertEqual(
-            sqlite3_prepare_v2(verify, "SELECT COUNT(*) FROM schema_migrations", -1, &statement, nil),
+            sqlite3_prepare_v2(
+                verify,
+                "SELECT COUNT(*) - COUNT(DISTINCT version) FROM schema_migrations",
+                -1, &statement, nil
+            ),
             SQLITE_OK
         )
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 1)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 0)
         sqlite3_finalize(statement)
+        var versionOne: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(
+                verify, "SELECT COUNT(*) FROM schema_migrations WHERE version = 1",
+                -1, &versionOne, nil
+            ),
+            SQLITE_OK
+        )
+        XCTAssertEqual(sqlite3_step(versionOne), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(versionOne, 0), 1)
+        sqlite3_finalize(versionOne)
     }
 
     /// The applied SQL audit artifact is written next to the database and no

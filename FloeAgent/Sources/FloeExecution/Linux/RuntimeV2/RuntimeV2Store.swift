@@ -21,6 +21,8 @@ public actor RuntimeV2Store {
         public var repairedImages: [String]
         public var rebuiltExpandedViews: [String]
         public var sweptStagingEntries: Int
+        /// Interrupted template builds: marked failed honestly, never verified.
+        public var interruptedTemplateBuilds: Int
         public var notes: [String]
 
         public init() {
@@ -31,6 +33,7 @@ public actor RuntimeV2Store {
             self.repairedImages = []
             self.rebuiltExpandedViews = []
             self.sweptStagingEntries = 0
+            self.interruptedTemplateBuilds = 0
             self.notes = []
         }
     }
@@ -48,12 +51,19 @@ public actor RuntimeV2Store {
         public var runtimeTemporaryBytes: Int64
         public var logBytes: Int64
         public var registryBytes: Int64
+        /// Immutable template disks: logical bytes (what each version would
+        /// occupy alone) and measured allocated bytes. Shared template disks
+        /// are counted once here, never once per environment.
+        public var templateLogicalBytes: Int64
+        public var templateAllocatedBytes: Int64
+        public var templateDownloadBytes: Int64
 
         public init() {
             sharedBaseBlobBytes = 0; expandedRebuildableBytes = 0
             environmentDeltaBytes = 0; environmentDataBytes = 0
             workspaceOwnedBytes = 0; workspaceScratchBytes = 0
             cacheBytes = 0; runtimeTemporaryBytes = 0; logBytes = 0; registryBytes = 0
+            templateLogicalBytes = 0; templateAllocatedBytes = 0; templateDownloadBytes = 0
         }
     }
 
@@ -67,11 +77,13 @@ public actor RuntimeV2Store {
     public let workspaces: RuntimeV2WorkspaceStore
     public let caches: RuntimeV2CacheStore
     public let logs: RuntimeV2LogStore
+    public let templates: RuntimeV2TemplateStore
     private var fileManager: FileManager { .default }
 
     public init(
         layout: RuntimeV2Layout,
         poolConfiguration: RuntimeVMPool.Configuration = .init(),
+        templateSeams: RuntimeV2TemplateStore.Seams = .production,
     ) {
         self.layout = layout
         let registry = RuntimeV2Registry(layout: layout)
@@ -84,6 +96,10 @@ public actor RuntimeV2Store {
         self.workspaces = RuntimeV2WorkspaceStore(layout: layout, registry: registry)
         self.caches = RuntimeV2CacheStore(layout: layout)
         self.logs = RuntimeV2LogStore(layout: layout)
+        self.templates = RuntimeV2TemplateStore(
+            layout: layout, registry: registry, blobs: blobs,
+            images: images, deltas: deltas, seams: templateSeams
+        )
     }
 
     // MARK: prepare + recover
@@ -137,6 +153,13 @@ public actor RuntimeV2Store {
         //    "uninstalled" and the boot path never redownloads.
         report = await rebuildMissingExpandedViews(report: report)
 
+        // 8. Interrupted template builds: an unverified install can never
+        //    become a verified version. Mark failed, quarantine the staging
+        //    evidence, sweep orphaned clone directories.
+        let templateNotes = (try? await templates.recoverInterruptedBuilds()) ?? []
+        report.interruptedTemplateBuilds = templateNotes.count
+        report.notes.append(contentsOf: templateNotes)
+
         await logs.log("Runtime v2 recovery: \(report.notes.count) notes, salvaged=\(report.salvagedRuntimeDirs.count), quarantined=\(report.quarantinedRuntimeDirs.count)")
         return report
     }
@@ -186,12 +209,21 @@ public actor RuntimeV2Store {
         }
         let expanded = try await images.ensureExpanded(imageID: meta.baseImageID)
         let baseRootfs = expanded.appendingPathComponent(rootfsRef.expandedPath)
+        // Salvage keeps the environment's exact template binding — the pinned
+        // template disk, or the base image rootfs — so an interrupted
+        // environment is captured with only its private changes and its next
+        // boot accepts the delta.
+        let deltaBase = try await templates.deltaBase(
+            environmentID: meta.environmentID, imageID: meta.baseImageID,
+            baseRootfs: baseRootfs, baseRootfsSHA512: rootfsRef.sha512
+        )
         let info = try await deltas.capture(
             environmentID: meta.environmentID,
             workingDisk: workingDisk,
-            baseRootfs: baseRootfs,
+            baseRootfs: deltaBase.diskURL,
             baseImageID: meta.baseImageID,
-            baseRootfsSHA512: rootfsRef.sha512
+            baseRootfsSHA512: deltaBase.digest,
+            templatePin: deltaBase.templatePin
         )
         try await deltas.recordShutdown(
             RuntimeV2DeltaStore.ShutdownRecord(
@@ -384,6 +416,14 @@ public actor RuntimeV2Store {
         breakdown.runtimeTemporaryBytes = directorySize(layout.runtimeDirectory)
         breakdown.logBytes = directorySize(layout.logsDirectory)
         breakdown.registryBytes = directorySize(layout.registryDirectory)
+        // Template truth comes from the registry rows (measured at build
+        // time), not from a directory walk: the disk bytes live in the shared
+        // blob store and are already counted in sharedBaseBlobBytes, so only
+        // per-version logical/allocated/download figures are surfaced here.
+        let templateRows = (try? await registry.templates(state: .verified)) ?? []
+        breakdown.templateLogicalBytes = templateRows.reduce(0) { $0 + $1.logicalBytes }
+        breakdown.templateAllocatedBytes = templateRows.reduce(0) { $0 + $1.allocatedBytes }
+        breakdown.templateDownloadBytes = templateRows.reduce(0) { $0 + $1.downloadBytes }
         return breakdown
     }
 

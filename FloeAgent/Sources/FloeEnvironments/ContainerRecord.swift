@@ -59,6 +59,11 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
     /// Explicit backend selection. nil/absent only in pre-migration
     /// registries (prepare() rewrites those to the default with a backup).
     public var executionBackend: EnvironmentExecutionBackend?
+    /// Immutable template version/digest this container was seeded from. A
+    /// later template commit never retroactively re-points a container: the
+    /// pinned version stays the one the environment actually boots.
+    public var templateVersion: Int?
+    public var templateDigest: String?
 
     /// Effective backend with the decode-compatibility default applied.
     public var effectiveExecutionBackend: EnvironmentExecutionBackend { executionBackend ?? .native }
@@ -79,7 +84,9 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
         templateID: String? = nil,
         requiresRebuild: Bool = false,
         rebuildReason: String? = nil,
-        executionBackend: EnvironmentExecutionBackend? = nil
+        executionBackend: EnvironmentExecutionBackend? = nil,
+        templateVersion: Int? = nil,
+        templateDigest: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -97,6 +104,8 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
         self.requiresRebuild = requiresRebuild
         self.rebuildReason = rebuildReason
         self.executionBackend = executionBackend
+        self.templateVersion = templateVersion
+        self.templateDigest = templateDigest
     }
 
     public static let currentLayerFormat = 1

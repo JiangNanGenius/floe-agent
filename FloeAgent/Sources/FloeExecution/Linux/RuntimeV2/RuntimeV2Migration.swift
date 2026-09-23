@@ -50,13 +50,20 @@ public actor RuntimeV2EnvironmentMigrator {
         public var compat: Compat
         public var createdAt: Date
         public var migratedAt: Date?
+        /// Immutable software-template pin (nil = base image only). Migration
+        /// records the ACTUAL base and never reinstalls or rewrites guest
+        /// content; a pin is only ever added by an explicit pin operation.
+        public var templateID: String?
+        public var templateVersion: Int?
+        public var templateDigest: String?
 
         public static let currentVersion = 1
 
         public init(
             environmentID: String, kind: String, ownerID: String?, name: String?,
             baseImageID: String, baseRootfsSHA512: String, compatHostFHS: Bool,
-            createdAt: Date, migratedAt: Date? = nil
+            createdAt: Date, migratedAt: Date? = nil,
+            templateID: String? = nil, templateVersion: Int? = nil, templateDigest: String? = nil
         ) {
             self.version = EnvironmentMetadata.currentVersion
             self.environmentID = environmentID
@@ -68,6 +75,9 @@ public actor RuntimeV2EnvironmentMigrator {
             self.compat = Compat(hostFHS: compatHostFHS)
             self.createdAt = createdAt
             self.migratedAt = migratedAt
+            self.templateID = templateID
+            self.templateVersion = templateVersion
+            self.templateDigest = templateDigest
         }
     }
 

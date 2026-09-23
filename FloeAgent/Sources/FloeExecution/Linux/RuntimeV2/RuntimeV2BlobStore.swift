@@ -95,6 +95,18 @@ public actor RuntimeV2BlobStore {
         return fileManager.fileExists(atPath: url.path)
     }
 
+    /// The read-only path of a blob that provably exists. Callers that clone
+    /// straight from the store (template builds clone the parent's blob disk
+    /// without a second materialization) still get a missing-blob error
+    /// instead of a silent empty file.
+    public func verifiedBlobURL(digest: String) throws -> URL {
+        let url = try layout.blobURL(digest: digest)
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw RuntimeV2Error.blobMissing(digest)
+        }
+        return url
+    }
+
     /// Full re-verification of a blob (used by recovery scans and expansion).
     public func verify(digest: String) async throws {
         let url = try layout.blobURL(digest: digest)

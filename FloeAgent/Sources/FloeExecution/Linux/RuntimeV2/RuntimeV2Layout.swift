@@ -61,6 +61,20 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
     case queueTimedOut(environmentID: String, seconds: Int)
     case migrationFailed(id: String, phase: String, reason: String)
     case insufficientSpace(required: Int64, available: Int64)
+    case templateNotFound(templateID: String, version: Int)
+    case templateNotVerified(templateID: String, version: Int, reason: String?)
+    case templateVersionImmutable(templateID: String, version: Int, existingDigest: String, newDigest: String)
+    case templateBuildInFlight(templateID: String, version: Int)
+    case templateParentDigestChanged(templateID: String, version: Int, recorded: String, resolved: String)
+    case templatePinUnavailable(environmentID: String, templateID: String, version: Int, reason: String)
+    case templateBaseImageMismatch(environmentID: String, templateBaseImage: String, environmentBaseImage: String)
+    case templateRecipeInvalid(reason: String)
+    case templateInstallerUnverified(reason: String)
+    case templateRequirementMissing(templateID: String, version: Int, missing: [String])
+    case templateNotOfficial(templateID: String)
+    case templateEnvironmentRunning(environmentID: String)
+    case environmentNotFound(String)
+    case deltaTemplateConflict(environmentID: String, recorded: String, verified: String)
 
     public var errorDescription: String? {
         switch self {
@@ -100,6 +114,34 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
             return "migration \(id) failed in phase \(phase): \(reason); the rollback point is preserved"
         case .insufficientSpace(let required, let available):
             return "insufficient storage: need \(required) bytes, \(available) available"
+        case .templateNotFound(let templateID, let version):
+            return "no software template '\(templateID)' version \(version)"
+        case .templateNotVerified(let templateID, let version, let reason):
+            return "software template '\(templateID)' version \(version) is not verified and can never be booted\(reason.map { ": \($0)" } ?? "")"
+        case .templateVersionImmutable(let templateID, let version, let existingDigest, let newDigest):
+            return "software template '\(templateID)' version \(version) is immutable: recorded \(existingDigest.prefix(16))… but the new build produced \(newDigest.prefix(16))…; a new version is required"
+        case .templateBuildInFlight(let templateID, let version):
+            return "software template '\(templateID)' version \(version) already has a build in flight; nothing was started"
+        case .templateParentDigestChanged(let templateID, let version, let recorded, let resolved):
+            return "software template '\(templateID)' version \(version) recorded parent \(recorded.prefix(16))… but the resolved parent is \(resolved.prefix(16))…; the build was refused (no illegal rebase)"
+        case .templatePinUnavailable(let environmentID, let templateID, let version, let reason):
+            return "environment \(environmentID) is pinned to software template '\(templateID)' version \(version) which is unavailable: \(reason); the environment was not booted on a different base"
+        case .templateBaseImageMismatch(let environmentID, let templateBaseImage, let environmentBaseImage):
+            return "environment \(environmentID) boots base image '\(environmentBaseImage)' but its pinned template was built on '\(templateBaseImage)'; booting that combination is refused"
+        case .templateRecipeInvalid(let reason):
+            return "software template recipe is invalid: \(reason)"
+        case .templateInstallerUnverified(let reason):
+            return "the template installer did not verify the installation: \(reason); the template was not registered as verified"
+        case .templateRequirementMissing(let templateID, let version, let missing):
+            return "software template '\(templateID)' version \(version) does not satisfy its recipe; missing/unobtainable: \(missing.joined(separator: ", "))"
+        case .templateNotOfficial(let templateID):
+            return "'\(templateID)' is not an official software template; nothing was registered"
+        case .templateEnvironmentRunning(let environmentID):
+            return "environment \(environmentID) still holds a live lease; the template pin cannot be changed while it is running"
+        case .environmentNotFound(let environmentID):
+            return "no Runtime v2 environment registered as '\(environmentID)'"
+        case .deltaTemplateConflict(let environmentID, let recorded, let verified):
+            return "system delta for \(environmentID) was captured from \(recorded) but the boot base is \(verified); the delta was not applied (no rebase across template versions)"
         }
     }
 }
@@ -109,7 +151,7 @@ public enum RuntimeV2Error: Error, LocalizedError, Sendable, Equatable {
 /// workspace ids, all of which are untrusted as path input.
 public enum RuntimeV2Identifier {
     public enum Kind: String, Sendable {
-        case image, environment, workspace, runtime, migration, scratch
+        case image, environment, workspace, runtime, migration, scratch, template
     }
 
     @discardableResult

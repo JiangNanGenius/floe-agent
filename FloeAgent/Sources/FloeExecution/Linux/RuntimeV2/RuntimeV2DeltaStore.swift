@@ -45,13 +45,20 @@ public actor RuntimeV2DeltaStore {
         public var capacityBytes: Int64
         public var generation: UInt64
         public var updatedAt: Date
+        /// Immutable template pin this delta was captured from (nil = a base
+        /// image only). The binding is the whole reason an old delta can never
+        /// be replayed over a different template version.
+        public var templateID: String?
+        public var templateVersion: Int?
+        public var templateDigest: String?
 
         public static let currentVersion = 1
 
         public init(
             environmentID: String, baseImageID: String, baseRootfsSHA512: String,
             baseBytes: Int64, blockSize: Int64, capacityBytes: Int64,
-            generation: UInt64, updatedAt: Date
+            generation: UInt64, updatedAt: Date,
+            templateID: String? = nil, templateVersion: Int? = nil, templateDigest: String? = nil
         ) {
             self.version = DeltaHeader.currentVersion
             self.environmentID = environmentID
@@ -62,6 +69,9 @@ public actor RuntimeV2DeltaStore {
             self.capacityBytes = capacityBytes
             self.generation = generation
             self.updatedAt = updatedAt
+            self.templateID = templateID
+            self.templateVersion = templateVersion
+            self.templateDigest = templateDigest
         }
     }
 
@@ -136,6 +146,22 @@ public actor RuntimeV2DeltaStore {
         guard header.blockSize > 0, header.capacityBytes >= 0, header.baseBytes >= 0 else {
             throw RuntimeV2Error.deltaCorrupt(environmentID: environmentID, reason: "negative or zero geometry")
         }
+        // Template binding consistency: all three fields or none, with a real
+        // version and a SHA-512 digest.
+        let templateFields = [header.templateID != nil, header.templateVersion != nil, header.templateDigest != nil]
+        if templateFields.contains(true) {
+            guard templateFields.allSatisfy({ $0 }),
+                  let templateVersion = header.templateVersion,
+                  templateVersion >= 1,
+                  let templateDigest = header.templateDigest,
+                  templateDigest.count == 128,
+                  templateDigest.allSatisfy({ $0.isHexDigit }) else {
+                throw RuntimeV2Error.deltaCorrupt(
+                    environmentID: environmentID,
+                    reason: "partial or malformed template pin in the delta header"
+                )
+            }
+        }
         let blockCount = Int((header.capacityBytes + header.blockSize - 1) / header.blockSize)
         let (bitmapGeneration, bitmap) = try readBlockFile(
             try bitmapURL(environmentID), magic: Self.bitmapMagic, environmentID: environmentID
@@ -182,11 +208,18 @@ public actor RuntimeV2DeltaStore {
     // MARK: materialize (base clone + delta apply → working disk)
 
     /// Builds the per-VM working disk: a copy-on-write clone of the verified
-    /// base rootfs with every delta block applied at its offset. The result
-    /// is writable; the base stays read-only and shared.
+    /// base rootfs (or the pinned template's disk) with every delta block
+    /// applied at its offset. The result is writable; the base stays read-only
+    /// and shared.
+    ///
+    /// `expectedBaseRootfsSHA512` and `expectedTemplate` bind the delta to the
+    /// exact base the caller is about to boot. A delta captured from another
+    /// base or another template version is refused, never applied.
     public func materializeWorkingDisk(
         environmentID: String,
         baseRootfs: URL,
+        expectedBaseRootfsSHA512: String? = nil,
+        expectedTemplate: RuntimeV2TemplatePin? = nil,
         into workingDisk: URL
     ) throws -> Int64 {
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
@@ -204,10 +237,46 @@ public actor RuntimeV2DeltaStore {
         try fileManager.copyItem(at: baseRootfs, to: workingDisk)
         #endif
         try fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: workingDisk.path)
+        return try applyDelta(
+            environmentID: environmentID,
+            expectedBaseRootfsSHA512: expectedBaseRootfsSHA512,
+            expectedTemplate: expectedTemplate,
+            into: workingDisk
+        )
+    }
 
-        guard let info = try loadDelta(environmentID: environmentID) else {
-            return (try fileManager.attributesOfItem(atPath: workingDisk.path)[.size] as? Int64) ?? 0
+    /// Applies the environment's private delta over an already-materialized
+    /// working disk (the caller cloned the pinned template disk or the base
+    /// rootfs). Validates the full base binding before writing one byte.
+    @discardableResult
+    public func applyDelta(
+        environmentID: String,
+        expectedBaseRootfsSHA512: String? = nil,
+        expectedTemplate: RuntimeV2TemplatePin? = nil,
+        into workingDisk: URL
+    ) throws -> Int64 {
+        try RuntimeV2Identifier.validate(environmentID, kind: .environment)
+        guard fileManager.fileExists(atPath: workingDisk.path) else {
+            throw RuntimeV2Error.deltaCorrupt(
+                environmentID: environmentID,
+                reason: "the working disk is missing before the delta could be applied"
+            )
         }
+        let diskSize = (try fileManager.attributesOfItem(atPath: workingDisk.path)[.size] as? Int64) ?? 0
+        guard let info = try loadDelta(environmentID: environmentID) else {
+            return diskSize
+        }
+        if let expectedBaseRootfsSHA512,
+           info.header.baseRootfsSHA512.lowercased() != expectedBaseRootfsSHA512.lowercased() {
+            throw RuntimeV2Error.deltaBaseConflict(
+                environmentID: environmentID,
+                recorded: info.header.baseRootfsSHA512,
+                verified: expectedBaseRootfsSHA512.lowercased()
+            )
+        }
+        try verifyTemplateBinding(
+            header: info.header, expectedTemplate: expectedTemplate, environmentID: environmentID
+        )
         let (bitmapGeneration, bitmap) = try readBlockFile(
             try bitmapURL(environmentID), magic: Self.bitmapMagic, environmentID: environmentID
         )
@@ -229,7 +298,52 @@ public actor RuntimeV2DeltaStore {
         }
         try handle.truncate(atOffset: UInt64(info.header.capacityBytes))
         try handle.synchronize()
-        return info.header.capacityBytes
+        return max(info.header.capacityBytes, diskSize)
+    }
+
+    // MARK: base binding
+
+    /// Human-readable identity of the base a delta was captured from.
+    public nonisolated static func baseIdentity(of header: DeltaHeader) -> String {
+        if let id = header.templateID, let version = header.templateVersion, let digest = header.templateDigest {
+            return "template \(id)@\(version) (\(digest.prefix(16))…)"
+        }
+        return "base image \(header.baseImageID) (\(header.baseRootfsSHA512.prefix(16))…)"
+    }
+
+    /// Refuses a delta whose recorded template binding is not exactly the
+    /// template the caller is about to boot. An unpinned base-image delta over
+    /// a template disk (and vice versa) is the same conflict: the install
+    /// state was captured from different bytes.
+    private func verifyTemplateBinding(
+        header: DeltaHeader, expectedTemplate: RuntimeV2TemplatePin?, environmentID: String
+    ) throws {
+        if let expected = expectedTemplate {
+            guard let id = header.templateID,
+                  let version = header.templateVersion,
+                  let digest = header.templateDigest else {
+                throw RuntimeV2Error.deltaTemplateConflict(
+                    environmentID: environmentID,
+                    recorded: Self.baseIdentity(of: header),
+                    verified: expected.describedIdentity
+                )
+            }
+            guard id == expected.templateID,
+                  version == expected.version,
+                  digest.lowercased() == expected.digest.lowercased() else {
+                throw RuntimeV2Error.deltaTemplateConflict(
+                    environmentID: environmentID,
+                    recorded: Self.baseIdentity(of: header),
+                    verified: expected.describedIdentity
+                )
+            }
+        } else if header.templateID != nil {
+            throw RuntimeV2Error.deltaTemplateConflict(
+                environmentID: environmentID,
+                recorded: Self.baseIdentity(of: header),
+                verified: "base image \(header.baseImageID)"
+            )
+        }
     }
 
     // MARK: capture (working disk → staged, verified, atomically promoted delta)
@@ -245,7 +359,8 @@ public actor RuntimeV2DeltaStore {
         workingDisk: URL,
         baseRootfs: URL,
         baseImageID: String,
-        baseRootfsSHA512: String
+        baseRootfsSHA512: String,
+        templatePin: RuntimeV2TemplatePin? = nil
     ) throws -> DeltaInfo {
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         let previous = try loadDelta(environmentID: environmentID)
@@ -257,6 +372,21 @@ public actor RuntimeV2DeltaStore {
                 recorded: previous.header.baseRootfsSHA512,
                 verified: baseRootfsSHA512.lowercased()
             )
+        }
+        if let previous {
+            // The recorded template binding must still be the pin we are
+            // capturing against. An environment pinned to template v2 must
+            // never fold its state into (or out of) template v1's bytes.
+            let recordedMatches = previous.header.templateID == templatePin?.templateID
+                && previous.header.templateVersion == templatePin?.version
+                && (previous.header.templateDigest ?? "").lowercased() == (templatePin?.digest ?? "").lowercased()
+            guard recordedMatches else {
+                throw RuntimeV2Error.deltaTemplateConflict(
+                    environmentID: environmentID,
+                    recorded: Self.baseIdentity(of: previous.header),
+                    verified: templatePin?.describedIdentity ?? "base image \(baseImageID)"
+                )
+            }
         }
 
         let baseSize = (try fileManager.attributesOfItem(atPath: baseRootfs.path)[.size] as? Int64) ?? 0
@@ -330,7 +460,10 @@ public actor RuntimeV2DeltaStore {
             blockSize: blockSize,
             capacityBytes: capacity,
             generation: generation,
-            updatedAt: Date()
+            updatedAt: Date(),
+            templateID: templatePin?.templateID,
+            templateVersion: templatePin?.version,
+            templateDigest: templatePin?.digest.lowercased()
         )
         try writeBlockFile(
             Data(bitmap), generation: generation, magic: Self.bitmapMagic,

@@ -53,6 +53,87 @@ public actor RuntimeV2Registry {
         public var repairReason: String?
         public var createdAt: Date
         public var lastUsedAt: Date
+        /// Immutable software-template pin. The environment boots exactly this
+        /// template version or fails closed; it is never silently re-pointed
+        /// at a newer base (schema v2, nil for base-image-only environments).
+        public var templateID: String?
+        public var templateVersion: Int?
+        public var templateDigest: String?
+
+        public init(
+            id: String, kind: String, ownerID: String?, name: String?,
+            baseImageID: String?, baseRootfsDigest: String?, state: String,
+            dataPath: String?, compatHostFHS: Bool, repairReason: String?,
+            createdAt: Date, lastUsedAt: Date,
+            templateID: String? = nil, templateVersion: Int? = nil, templateDigest: String? = nil
+        ) {
+            self.id = id
+            self.kind = kind
+            self.ownerID = ownerID
+            self.name = name
+            self.baseImageID = baseImageID
+            self.baseRootfsDigest = baseRootfsDigest
+            self.state = state
+            self.dataPath = dataPath
+            self.compatHostFHS = compatHostFHS
+            self.repairReason = repairReason
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.templateID = templateID
+            self.templateVersion = templateVersion
+            self.templateDigest = templateDigest
+        }
+    }
+
+    /// One immutable software-template version (schema v2). The disk bytes
+    /// live in the content-addressed blob store (`diskDigest`); the row owns
+    /// the truth: content digest, architecture, parent source, package list,
+    /// verification state and reference bookkeeping.
+    public enum TemplateState: String, Sendable { case building, verified, failed, quarantined }
+
+    public struct SoftwareTemplateRow: Sendable, Equatable {
+        public var templateID: String
+        public var version: Int
+        /// Content digest over the canonical (parent, architecture, packages,
+        /// recipe) tuple — never over timestamps or host paths.
+        public var digest: String
+        public var architecture: String
+        public var parentKind: String // base-image | template-version
+        public var parentID: String
+        public var parentVersion: Int?
+        public var parentDigest: String
+        public var state: TemplateState
+        public var reason: String?
+        public var manifestJSON: String?
+        public var packageCount: Int
+        public var logicalBytes: Int64
+        public var allocatedBytes: Int64
+        public var downloadBytes: Int64
+        public var buildMode: String? // clone | copy
+        public var diskDigest: String?
+        public var buildID: String?
+        public var stagingPath: String?
+        public var createdAt: Date
+        public var verifiedAt: Date?
+    }
+
+    public struct TemplatePackageRow: Sendable, Equatable {
+        public var templateID: String
+        public var version: Int
+        public var name: String
+        public var packageVersion: String
+        public var architecture: String?
+        public var source: String?
+        public var installState: String
+        public var digest: String?
+    }
+
+    public struct TemplateReferenceRow: Sendable, Equatable {
+        public var templateID: String
+        public var version: Int
+        public var refKind: String // environment | catalog | build | recovery | quarantine
+        public var refID: String
+        public var createdAt: Date
     }
 
     public struct WorkspaceRow: Sendable, Equatable {
@@ -274,6 +355,59 @@ public actor RuntimeV2Registry {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+        """),
+        // v2: immutable software-template versions, their package DB listing
+        // (the real in-guest install evidence) and their reference counts,
+        // plus the environment's immutable template pin. A template version is
+        // never mutated in place: a new install is a new version, and an
+        // environment boots exactly the version it recorded or fails closed.
+        (2, "software-templates", """
+        CREATE TABLE software_templates (
+          template_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          digest TEXT NOT NULL,
+          architecture TEXT NOT NULL,
+          parent_kind TEXT NOT NULL,
+          parent_id TEXT NOT NULL,
+          parent_version INTEGER,
+          parent_digest TEXT NOT NULL,
+          state TEXT NOT NULL,
+          reason TEXT,
+          manifest_json TEXT,
+          package_count INTEGER NOT NULL DEFAULT 0,
+          logical_bytes INTEGER NOT NULL DEFAULT 0,
+          allocated_bytes INTEGER NOT NULL DEFAULT 0,
+          download_bytes INTEGER NOT NULL DEFAULT 0,
+          build_mode TEXT,
+          disk_digest TEXT,
+          build_id TEXT,
+          staging_path TEXT,
+          created_at TEXT NOT NULL,
+          verified_at TEXT,
+          PRIMARY KEY (template_id, version)
+        );
+        CREATE TABLE software_template_packages (
+          template_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          package_version TEXT NOT NULL,
+          architecture TEXT,
+          source TEXT,
+          install_state TEXT NOT NULL,
+          digest TEXT,
+          PRIMARY KEY (template_id, version, name)
+        );
+        CREATE TABLE template_references (
+          template_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          ref_kind TEXT NOT NULL,
+          ref_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (template_id, version, ref_kind, ref_id)
+        );
+        ALTER TABLE environments ADD COLUMN template_id TEXT;
+        ALTER TABLE environments ADD COLUMN template_version INTEGER;
+        ALTER TABLE environments ADD COLUMN template_digest TEXT;
         """)
     ]
 
@@ -577,13 +711,16 @@ public actor RuntimeV2Registry {
             try run(
                 """
                 INSERT INTO environments (id, kind, owner_id, name, base_image_id, base_rootfs_digest,
-                  state, data_path, compat_host_fhs, repair_reason, created_at, last_used_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  state, data_path, compat_host_fhs, repair_reason, created_at, last_used_at,
+                  template_id, template_version, template_digest)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, owner_id=excluded.owner_id,
                   name=excluded.name, base_image_id=excluded.base_image_id,
                   base_rootfs_digest=excluded.base_rootfs_digest, state=excluded.state,
                   data_path=excluded.data_path, compat_host_fhs=excluded.compat_host_fhs,
-                  repair_reason=excluded.repair_reason, last_used_at=excluded.last_used_at
+                  repair_reason=excluded.repair_reason, last_used_at=excluded.last_used_at,
+                  template_id=excluded.template_id, template_version=excluded.template_version,
+                  template_digest=excluded.template_digest
                 """,
                 bind: { statement in
                     Self.bindText(row.id, to: statement, index: 1)
@@ -598,13 +735,20 @@ public actor RuntimeV2Registry {
                     Self.bindOptionalText(row.repairReason, to: statement, index: 10)
                     Self.bindText(Self.iso(row.createdAt), to: statement, index: 11)
                     Self.bindText(Self.iso(row.lastUsedAt), to: statement, index: 12)
+                    Self.bindOptionalText(row.templateID, to: statement, index: 13)
+                    if let version = row.templateVersion {
+                        sqlite3_bind_int64(statement, 14, Int64(version))
+                    } else {
+                        sqlite3_bind_null(statement, 14)
+                    }
+                    Self.bindOptionalText(row.templateDigest, to: statement, index: 15)
                 }
             )
         }
     }
 
     public func environment(id: String) throws -> EnvironmentRow? {
-        try query("SELECT id, kind, owner_id, name, base_image_id, base_rootfs_digest, state, data_path, compat_host_fhs, repair_reason, created_at, last_used_at FROM environments WHERE id=?", bind: { statement in
+        try query("SELECT id, kind, owner_id, name, base_image_id, base_rootfs_digest, state, data_path, compat_host_fhs, repair_reason, created_at, last_used_at, template_id, template_version, template_digest FROM environments WHERE id=?", bind: { statement in
             Self.bindText(id, to: statement, index: 1)
         }) { statement in
             EnvironmentRow(
@@ -619,7 +763,11 @@ public actor RuntimeV2Registry {
                 compatHostFHS: sqlite3_column_int(statement, 8) != 0,
                 repairReason: text(statement, 9),
                 createdAt: Self.date(text(statement, 10)) ?? Date.distantPast,
-                lastUsedAt: Self.date(text(statement, 11)) ?? Date.distantPast
+                lastUsedAt: Self.date(text(statement, 11)) ?? Date.distantPast,
+                templateID: text(statement, 12),
+                templateVersion: sqlite3_column_type(statement, 13) == SQLITE_NULL
+                    ? nil : Int(sqlite3_column_int64(statement, 13)),
+                templateDigest: text(statement, 14)
             )
         }.first
     }
@@ -1055,5 +1203,429 @@ public actor RuntimeV2Registry {
             text($0, 0) ?? ""
         }
         return try ids.compactMap { try migration(id: $0) }
+    }
+
+    // MARK: software templates (immutable versions; never mutated in place)
+
+    private static let templateColumns = """
+    template_id, version, digest, architecture, parent_kind, parent_id, parent_version, \
+    parent_digest, state, reason, manifest_json, package_count, logical_bytes, \
+    allocated_bytes, download_bytes, build_mode, disk_digest, build_id, staging_path, \
+    created_at, verified_at
+    """
+
+    private func templateRow(_ statement: OpaquePointer?) -> SoftwareTemplateRow {
+        SoftwareTemplateRow(
+            templateID: text(statement, 0) ?? "",
+            version: Int(sqlite3_column_int64(statement, 1)),
+            digest: text(statement, 2) ?? "",
+            architecture: text(statement, 3) ?? "",
+            parentKind: text(statement, 4) ?? "",
+            parentID: text(statement, 5) ?? "",
+            parentVersion: sqlite3_column_type(statement, 6) == SQLITE_NULL
+                ? nil : Int(sqlite3_column_int64(statement, 6)),
+            parentDigest: text(statement, 7) ?? "",
+            state: TemplateState(rawValue: text(statement, 8) ?? "") ?? .failed,
+            reason: text(statement, 9),
+            manifestJSON: text(statement, 10),
+            packageCount: Int(sqlite3_column_int(statement, 11)),
+            logicalBytes: sqlite3_column_int64(statement, 12),
+            allocatedBytes: sqlite3_column_int64(statement, 13),
+            downloadBytes: sqlite3_column_int64(statement, 14),
+            buildMode: text(statement, 15),
+            diskDigest: text(statement, 16),
+            buildID: text(statement, 17),
+            stagingPath: text(statement, 18),
+            createdAt: Self.date(text(statement, 19)) ?? Date.distantPast,
+            verifiedAt: Self.date(text(statement, 20))
+        )
+    }
+
+    /// Opens a new immutable template version in `building` state. INSERT-only:
+    /// a version that already exists is never overwritten here. Returns false
+    /// when the row already existed (the caller decides idempotency; a
+    /// conflicting digest is always refused upstream).
+    @discardableResult
+    public func beginTemplateVersion(
+        templateID: String, version: Int, digest: String, architecture: String,
+        parentKind: String, parentID: String, parentVersion: Int?, parentDigest: String,
+        manifestJSON: String?, buildID: String?, stagingPath: String?
+    ) throws -> Bool {
+        var inserted = false
+        try transaction {
+            try run(
+                """
+                INSERT INTO software_templates (\(Self.templateColumns))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'building', NULL, ?, 0, 0, 0, 0, NULL, NULL, ?, ?, ?, NULL)
+                ON CONFLICT(template_id, version) DO NOTHING
+                """,
+                bind: { statement in
+                    Self.bindText(templateID, to: statement, index: 1)
+                    sqlite3_bind_int64(statement, 2, Int64(version))
+                    Self.bindText(digest, to: statement, index: 3)
+                    Self.bindText(architecture, to: statement, index: 4)
+                    Self.bindText(parentKind, to: statement, index: 5)
+                    Self.bindText(parentID, to: statement, index: 6)
+                    if let parentVersion {
+                        sqlite3_bind_int64(statement, 7, Int64(parentVersion))
+                    } else {
+                        sqlite3_bind_null(statement, 7)
+                    }
+                    Self.bindText(parentDigest, to: statement, index: 8)
+                    Self.bindOptionalText(manifestJSON, to: statement, index: 9)
+                    Self.bindOptionalText(buildID, to: statement, index: 10)
+                    Self.bindOptionalText(stagingPath, to: statement, index: 11)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 12)
+                }
+            )
+            inserted = sqlite3_changes(db) > 0
+        }
+        return inserted
+    }
+
+    /// Reopens a FAILED version for a fresh build attempt (a fresh clone of the
+    /// same recorded parent + recipe). A verified or quarantined version can
+    /// never be reopened — immutability is the whole point.
+    @discardableResult
+    public func reopenTemplateVersion(
+        templateID: String, version: Int, architecture: String,
+        parentKind: String, parentID: String, parentVersion: Int?, parentDigest: String,
+        manifestJSON: String?, buildID: String?, stagingPath: String?
+    ) throws -> Bool {
+        var reopened = false
+        try transaction {
+            try run(
+                """
+                UPDATE software_templates SET state='building', reason=NULL, digest='',
+                  architecture=?, parent_kind=?, parent_id=?, parent_version=?, parent_digest=?,
+                  manifest_json=?, package_count=0, logical_bytes=0, allocated_bytes=0,
+                  download_bytes=0, build_mode=NULL, disk_digest=NULL, build_id=?, staging_path=?,
+                  created_at=?, verified_at=NULL
+                WHERE template_id=? AND version=? AND state='failed'
+                """,
+                bind: { statement in
+                    Self.bindText(architecture, to: statement, index: 1)
+                    Self.bindText(parentKind, to: statement, index: 2)
+                    Self.bindText(parentID, to: statement, index: 3)
+                    if let parentVersion {
+                        sqlite3_bind_int64(statement, 4, Int64(parentVersion))
+                    } else {
+                        sqlite3_bind_null(statement, 4)
+                    }
+                    Self.bindText(parentDigest, to: statement, index: 5)
+                    Self.bindOptionalText(manifestJSON, to: statement, index: 6)
+                    Self.bindOptionalText(buildID, to: statement, index: 7)
+                    Self.bindOptionalText(stagingPath, to: statement, index: 8)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 9)
+                    Self.bindText(templateID, to: statement, index: 10)
+                    sqlite3_bind_int64(statement, 11, Int64(version))
+                }
+            )
+            reopened = sqlite3_changes(db) > 0
+        }
+        return reopened
+    }
+
+    /// The atomic switch: a version only reaches `verified` after the disk was
+    /// ingested and its digest re-checked. Recorded bytes are measured values.
+    public func markTemplateVerified(
+        templateID: String, version: Int, digest: String, diskDigest: String,
+        logicalBytes: Int64, allocatedBytes: Int64, downloadBytes: Int64,
+        buildMode: String, packageCount: Int
+    ) throws {
+        try transaction {
+            try run(
+                """
+                UPDATE software_templates SET state='verified', digest=?, disk_digest=?,
+                  logical_bytes=?, allocated_bytes=?, download_bytes=?, build_mode=?,
+                  package_count=?, reason=NULL, verified_at=?
+                WHERE template_id=? AND version=? AND state='building'
+                """,
+                bind: { statement in
+                    Self.bindText(digest, to: statement, index: 1)
+                    Self.bindText(diskDigest, to: statement, index: 2)
+                    sqlite3_bind_int64(statement, 3, logicalBytes)
+                    sqlite3_bind_int64(statement, 4, allocatedBytes)
+                    sqlite3_bind_int64(statement, 5, downloadBytes)
+                    Self.bindText(buildMode, to: statement, index: 6)
+                    sqlite3_bind_int(statement, 7, Int32(packageCount))
+                    Self.bindText(Self.iso(Date()), to: statement, index: 8)
+                    Self.bindText(templateID, to: statement, index: 9)
+                    sqlite3_bind_int64(statement, 10, Int64(version))
+                }
+            )
+        }
+    }
+
+    /// Fails a build attempt honestly: only a `building` row transitions, so a
+    /// verified version can never be knocked back to failed by a late error.
+    public func failTemplateVersion(
+        templateID: String, version: Int, reason: String, stagingPath: String? = nil
+    ) throws {
+        try transaction {
+            try run(
+                """
+                UPDATE software_templates SET state='failed', reason=?, staging_path=COALESCE(?, staging_path)
+                WHERE template_id=? AND version=? AND state='building'
+                """,
+                bind: { statement in
+                    Self.bindText(reason, to: statement, index: 1)
+                    Self.bindOptionalText(stagingPath, to: statement, index: 2)
+                    Self.bindText(templateID, to: statement, index: 3)
+                    sqlite3_bind_int64(statement, 4, Int64(version))
+                }
+            )
+        }
+    }
+
+    /// Quarantine keeps the row (and its evidence) but makes the version
+    /// unpinnable: a collected or damaged template is never silently booted.
+    public func quarantineTemplateVersion(templateID: String, version: Int, reason: String) throws {
+        try transaction {
+            try run(
+                """
+                UPDATE software_templates SET state='quarantined', reason=?
+                WHERE template_id=? AND version=? AND state != 'quarantined'
+                """,
+                bind: { statement in
+                    Self.bindText(reason, to: statement, index: 1)
+                    Self.bindText(templateID, to: statement, index: 2)
+                    sqlite3_bind_int64(statement, 3, Int64(version))
+                }
+            )
+        }
+    }
+
+    public func template(templateID: String, version: Int) throws -> SoftwareTemplateRow? {
+        try query(
+            "SELECT \(Self.templateColumns) FROM software_templates WHERE template_id=? AND version=?",
+            bind: { statement in
+                Self.bindText(templateID, to: statement, index: 1)
+                sqlite3_bind_int64(statement, 2, Int64(version))
+            },
+            map: { self.templateRow($0) }
+        ).first
+    }
+
+    public func templateVersions(templateID: String) throws -> [SoftwareTemplateRow] {
+        try query(
+            "SELECT \(Self.templateColumns) FROM software_templates WHERE template_id=? ORDER BY version",
+            bind: { Self.bindText(templateID, to: $0, index: 1) },
+            map: { self.templateRow($0) }
+        )
+    }
+
+    public func templates(state: TemplateState) throws -> [SoftwareTemplateRow] {
+        try query(
+            "SELECT \(Self.templateColumns) FROM software_templates WHERE state=? ORDER BY created_at",
+            bind: { Self.bindText(state.rawValue, to: $0, index: 1) },
+            map: { self.templateRow($0) }
+        )
+    }
+
+    public func latestTemplate(templateID: String, state: TemplateState? = nil) throws -> SoftwareTemplateRow? {
+        let rows = try templateVersions(templateID: templateID)
+        return rows.last { row in
+            guard let state else { return true }
+            return row.state == state
+        }
+    }
+
+    /// Replaces a version's package listing atomically (the install evidence
+    /// travels with the version, which is why it can never be edited later).
+    public func setTemplatePackages(
+        templateID: String, version: Int, packages: [TemplatePackageRow]
+    ) throws {
+        try transaction {
+            try run(
+                "DELETE FROM software_template_packages WHERE template_id=? AND version=?",
+                bind: { statement in
+                    Self.bindText(templateID, to: statement, index: 1)
+                    sqlite3_bind_int64(statement, 2, Int64(version))
+                }
+            )
+            for package in packages {
+                try run(
+                    """
+                    INSERT INTO software_template_packages
+                      (template_id, version, name, package_version, architecture, source, install_state, digest)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    bind: { statement in
+                        Self.bindText(templateID, to: statement, index: 1)
+                        sqlite3_bind_int64(statement, 2, Int64(version))
+                        Self.bindText(package.name, to: statement, index: 3)
+                        Self.bindText(package.packageVersion, to: statement, index: 4)
+                        Self.bindOptionalText(package.architecture, to: statement, index: 5)
+                        Self.bindOptionalText(package.source, to: statement, index: 6)
+                        Self.bindText(package.installState, to: statement, index: 7)
+                        Self.bindOptionalText(package.digest, to: statement, index: 8)
+                    }
+                )
+            }
+            try run(
+                "UPDATE software_templates SET package_count=? WHERE template_id=? AND version=?",
+                bind: { statement in
+                    sqlite3_bind_int(statement, 1, Int32(packages.count))
+                    Self.bindText(templateID, to: statement, index: 2)
+                    sqlite3_bind_int64(statement, 3, Int64(version))
+                }
+            )
+        }
+    }
+
+    public func templatePackages(templateID: String, version: Int) throws -> [TemplatePackageRow] {
+        try query(
+            """
+            SELECT template_id, version, name, package_version, architecture, source, install_state, digest
+            FROM software_template_packages WHERE template_id=? AND version=? ORDER BY name
+            """,
+            bind: { statement in
+                Self.bindText(templateID, to: statement, index: 1)
+                sqlite3_bind_int64(statement, 2, Int64(version))
+            }
+        ) { statement in
+            TemplatePackageRow(
+                templateID: text(statement, 0) ?? "",
+                version: Int(sqlite3_column_int64(statement, 1)),
+                name: text(statement, 2) ?? "",
+                packageVersion: text(statement, 3) ?? "",
+                architecture: text(statement, 4),
+                source: text(statement, 5),
+                installState: text(statement, 6) ?? "",
+                digest: text(statement, 7)
+            )
+        }
+    }
+
+    // MARK: template references (the GC protection boundary)
+
+    public func addTemplateReference(
+        templateID: String, version: Int, kind: String, refID: String
+    ) throws {
+        try transaction {
+            try run(
+                """
+                INSERT INTO template_references (template_id, version, ref_kind, ref_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(template_id, version, ref_kind, ref_id) DO NOTHING
+                """,
+                bind: { statement in
+                    Self.bindText(templateID, to: statement, index: 1)
+                    sqlite3_bind_int64(statement, 2, Int64(version))
+                    Self.bindText(kind, to: statement, index: 3)
+                    Self.bindText(refID, to: statement, index: 4)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 5)
+                }
+            )
+        }
+    }
+
+    public func removeTemplateReference(
+        templateID: String, version: Int, kind: String, refID: String
+    ) throws {
+        try transaction {
+            try run(
+                "DELETE FROM template_references WHERE template_id=? AND version=? AND ref_kind=? AND ref_id=?",
+                bind: { statement in
+                    Self.bindText(templateID, to: statement, index: 1)
+                    sqlite3_bind_int64(statement, 2, Int64(version))
+                    Self.bindText(kind, to: statement, index: 3)
+                    Self.bindText(refID, to: statement, index: 4)
+                }
+            )
+        }
+    }
+
+    public func templateReferences(templateID: String, version: Int) throws -> [TemplateReferenceRow] {
+        try query(
+            """
+            SELECT template_id, version, ref_kind, ref_id, created_at FROM template_references
+            WHERE template_id=? AND version=? ORDER BY ref_kind, ref_id
+            """,
+            bind: { statement in
+                Self.bindText(templateID, to: statement, index: 1)
+                sqlite3_bind_int64(statement, 2, Int64(version))
+            }
+        ) { statement in
+            TemplateReferenceRow(
+                templateID: text(statement, 0) ?? "",
+                version: Int(sqlite3_column_int64(statement, 1)),
+                refKind: text(statement, 2) ?? "",
+                refID: text(statement, 3) ?? "",
+                createdAt: Self.date(text(statement, 4)) ?? Date.distantPast
+            )
+        }
+    }
+
+    /// Versions with zero references (all kinds) — GC candidates only.
+    public func unreferencedTemplateVersions() throws -> [SoftwareTemplateRow] {
+        try query(
+            """
+            SELECT \(Self.templateColumns) FROM software_templates t
+            WHERE state='verified' AND NOT EXISTS (
+              SELECT 1 FROM template_references r
+              WHERE r.template_id=t.template_id AND r.version=t.version
+            )
+            ORDER BY created_at
+            """,
+            bind: nil,
+            map: { self.templateRow($0) }
+        )
+    }
+
+    /// Records (or refuses) an environment's immutable template pin. The
+    /// environment row must exist; a pin is never invented for a missing row.
+    @discardableResult
+    public func pinEnvironmentTemplate(
+        environmentID: String, templateID: String, version: Int, digest: String
+    ) throws -> Bool {
+        var updated = false
+        try transaction {
+            let existing = try query(
+                "SELECT COUNT(*) FROM environments WHERE id=?",
+                bind: { Self.bindText(environmentID, to: $0, index: 1) }
+            ) { Int(sqlite3_column_int($0, 0)) }.first ?? 0
+            guard existing > 0 else { return }
+            try run(
+                """
+                UPDATE environments SET template_id=?, template_version=?, template_digest=?,
+                  last_used_at=? WHERE id=?
+                """,
+                bind: { statement in
+                    Self.bindText(templateID, to: statement, index: 1)
+                    sqlite3_bind_int64(statement, 2, Int64(version))
+                    Self.bindText(digest, to: statement, index: 3)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 4)
+                    Self.bindText(environmentID, to: statement, index: 5)
+                }
+            )
+            updated = true
+        }
+        return updated
+    }
+
+    @discardableResult
+    public func clearEnvironmentTemplatePin(environmentID: String) throws -> Bool {
+        var updated = false
+        try transaction {
+            let before = try query(
+                "SELECT COUNT(*) FROM environments WHERE id=? AND template_id IS NOT NULL",
+                bind: { Self.bindText(environmentID, to: $0, index: 1) }
+            ) { Int(sqlite3_column_int($0, 0)) }.first ?? 0
+            guard before > 0 else { return }
+            try run(
+                """
+                UPDATE environments SET template_id=NULL, template_version=NULL, template_digest=NULL,
+                  last_used_at=? WHERE id=?
+                """,
+                bind: { statement in
+                    Self.bindText(Self.iso(Date()), to: statement, index: 1)
+                    Self.bindText(environmentID, to: statement, index: 2)
+                }
+            )
+            updated = true
+        }
+        return updated
     }
 }

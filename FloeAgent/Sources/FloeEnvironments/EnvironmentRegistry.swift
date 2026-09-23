@@ -179,8 +179,24 @@ public actor EnvironmentRegistry {
 
     public func record(id: String) -> ContainerRecord? { records[id] }
 
+    /// The newest committed version of a template. Existing callers keep
+    /// working; containers that pinned an earlier version resolve that exact
+    /// version through `template(named:version:)` (never through this call).
     public func template(named name: String) -> ContainerRecord? {
-        records.values.first { $0.kind == .template && ($0.name == name || $0.id == name) }
+        let matches = records.values.filter { $0.kind == .template && ($0.name == name || $0.id == name) }
+        return matches.max { ($0.templateVersion ?? 1) < ($1.templateVersion ?? 1) }
+    }
+
+    public func template(named name: String, version: Int) -> ContainerRecord? {
+        records.values.first {
+            $0.kind == .template && ($0.name == name || $0.id == name) && $0.templateVersion == version
+        }
+    }
+
+    public func templates(named name: String) -> [ContainerRecord] {
+        records.values
+            .filter { $0.kind == .template && ($0.name == name || $0.id == name) }
+            .sorted { ($0.templateVersion ?? 1) < ($1.templateVersion ?? 1) }
     }
 
     public func containersOwned(by ownerID: String) -> [ContainerRecord] {
@@ -211,14 +227,17 @@ public actor EnvironmentRegistry {
             touch(existing.id)
             return records[existing.id] ?? existing
         }
-        let templateBackend = templateID.flatMap { records[$0]?.executionBackend }
+        let template = templateID.flatMap { records[$0] }
+        let templateBackend = template?.executionBackend
         var record = ContainerRecord(
             kind: .project,
             ownerID: workspaceID,
             name: URL(fileURLWithPath: workspaceRootPath).lastPathComponent,
             baseRevision: baseRevision,
             templateID: templateID,
-            executionBackend: executionBackend ?? templateBackend ?? defaultExecutionBackend
+            executionBackend: executionBackend ?? templateBackend ?? defaultExecutionBackend,
+            templateVersion: template?.templateVersion,
+            templateDigest: template?.templateDigest
         )
         do {
             try materialize(record, seedFrom: templateID)
@@ -266,7 +285,9 @@ public actor EnvironmentRegistry {
             baseRevision: baseRevision,
             parentID: parent?.id,
             templateID: parent?.templateID,
-            executionBackend: executionBackend ?? parent?.executionBackend ?? defaultExecutionBackend
+            executionBackend: executionBackend ?? parent?.executionBackend ?? defaultExecutionBackend,
+            templateVersion: parent?.templateVersion,
+            templateDigest: parent?.templateDigest
         )
         do {
             try materialize(record, seedFrom: parent?.id)
@@ -278,7 +299,11 @@ public actor EnvironmentRegistry {
         return record
     }
 
-    /// Commits the writable layer of `sourceID` into a new template.
+    /// Commits the writable layer of `sourceID` into an immutable template
+    /// VERSION. Committing identical content again returns the existing
+    /// version (idempotent); committing different content creates the next
+    /// version and never overwrites a committed one. Environments that were
+    /// seeded from an earlier version keep booting that exact version.
     @discardableResult
     public func createTemplate(from sourceID: String, name: String) throws -> ContainerRecord {
         try prepare()
@@ -286,36 +311,208 @@ public actor EnvironmentRegistry {
         guard source.state != .deleting, !source.requiresRebuild else {
             throw FloeError.validationFailed("Source environment is deleting or requires rebuild")
         }
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, template(named: name) == nil else {
-            throw FloeError.validationFailed("Template name is empty or already exists")
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("Template name is empty")
         }
         let sourceURL = roots.layerURL(id: source.id, kind: source.kind)
-        guard var manifest = try LayerManifest.loadChecked(from: sourceURL) else {
+        guard let manifest = try LayerManifest.loadChecked(from: sourceURL) else {
             throw FloeError.validationFailed("Source layer manifest is missing")
         }
-        var template = ContainerRecord(kind: .template, name: name, baseRevision: source.baseRevision, executionBackend: source.executionBackend)
+        let digest = try Self.templateContentDigest(manifest: manifest, layerURL: sourceURL)
+        if let identical = templates(named: name).first(where: { $0.templateDigest == digest }) {
+            return identical
+        }
+        let nextVersion = (templates(named: name).map { $0.templateVersion ?? 1 }.max() ?? 0) + 1
+        var template = ContainerRecord(
+            kind: .template, name: name, baseRevision: source.baseRevision,
+            executionBackend: source.executionBackend,
+            templateVersion: nextVersion, templateDigest: digest
+        )
         let destinationURL = roots.layerURL(id: template.id, kind: .template)
         do {
             try cloneOrCopyDirectory(from: sourceURL, to: destinationURL)
-            manifest.kind = .shared
-            manifest.id = template.id
+            var written = manifest
+            written.kind = .shared
+            written.id = template.id
             // Template files are independent APFS clones/copies. They do not
             // own source-layer cache references and remain valid after GC.
-            manifest.casRefs = []
-            for index in manifest.packages.indices { manifest.packages[index].layer = .shared }
-            try manifest.write(to: destinationURL)
-            template.packageCount = manifest.packages.count
+            written.casRefs = []
+            for index in written.packages.indices { written.packages[index].layer = .shared }
+            try written.write(to: destinationURL)
+            template.packageCount = written.packages.count
             let files = fileManager.enumerator(at: destinationURL, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])
             while let file = files?.nextObject() as? URL {
                 let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
                 if values.isRegularFile == true { template.bytes += Int64(values.fileSize ?? 0) }
             }
-            try saveRecord(template)
+           try saveRecord(template)
             return template
         } catch {
             try? fileManager.removeItem(at: destinationURL)
             throw error
         }
+    }
+
+    // MARK: - official templates (actual images only)
+
+    public static let officialTemplateIDs = ["basic", "dev-document"]
+    /// The template images are produced by this integration owner (K → D
+    /// contract). Nothing is fabricated while they are missing.
+    public static let officialTemplateOwner = "job-6f5ac974858c47c2 (D)"
+
+    public enum OfficialTemplateState: String, Codable, Sendable {
+        case registered
+        case dependencyMissing = "dependency-missing"
+    }
+
+    public struct OfficialTemplateStatus: Sendable, Equatable {
+        public var templateID: String
+        public var state: OfficialTemplateState
+        public var name: String?
+        public var version: Int?
+        public var digest: String?
+        public var reason: String?
+
+        public init(
+            templateID: String, state: OfficialTemplateState, name: String? = nil,
+            version: Int? = nil, digest: String? = nil, reason: String? = nil
+        ) {
+            self.templateID = templateID
+            self.state = state
+            self.name = name
+            self.version = version
+            self.digest = digest
+            self.reason = reason
+        }
+    }
+
+    /// Registers an official template from its actual image/layer artifact.
+    /// The artifact must exist and carry a readable layer manifest; identical
+    /// content under the same version is an idempotent no-op, different
+    /// content under the same version is refused (immutability).
+    @discardableResult
+    public func registerOfficialTemplate(
+        templateID: String,
+        version: Int,
+        digest: String,
+        baseRevision: String? = nil,
+        executionBackend: EnvironmentExecutionBackend = .linuxVM,
+        imageLayerURL: URL
+    ) throws -> ContainerRecord {
+        try prepare()
+        guard Self.officialTemplateIDs.contains(templateID) else {
+            throw FloeError.validationFailed(
+                "'\(templateID)' is not an official template; expected one of \(Self.officialTemplateIDs.joined(separator: ", "))"
+            )
+        }
+        guard version >= 1 else {
+            throw FloeError.validationFailed("Official template version must be >= 1")
+        }
+        let normalized = digest.lowercased()
+        guard normalized.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+            throw FloeError.validationFailed("Official template digest must be a SHA-256 hex value")
+        }
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: imageLayerURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw FloeError.notFound(
+                "official template image for \(templateID)@\(version); owner \(Self.officialTemplateOwner)"
+            )
+        }
+        guard let manifest = try LayerManifest.loadChecked(from: imageLayerURL) else {
+            throw FloeError.validationFailed(
+                "official template image for \(templateID)@\(version) has no readable layer manifest; nothing was registered"
+            )
+        }
+        if let existing = template(named: templateID, version: version) {
+            guard existing.templateDigest == normalized else {
+                throw FloeError.validationFailed(
+                    "official template \(templateID)@\(version) is immutable: recorded \(existing.templateDigest ?? "(none)"), got \(normalized)"
+                )
+            }
+            return existing
+        }
+        var record = ContainerRecord(
+            kind: .template, name: templateID, baseRevision: baseRevision ?? self.baseRevision,
+            executionBackend: executionBackend,
+            templateVersion: version, templateDigest: normalized
+        )
+        let destinationURL = roots.layerURL(id: record.id, kind: .template)
+        do {
+            try cloneOrCopyDirectory(from: imageLayerURL, to: destinationURL)
+            var written = manifest
+            written.kind = .shared
+            written.id = record.id
+            written.casRefs = []
+            for index in written.packages.indices { written.packages[index].layer = .shared }
+            try written.write(to: destinationURL)
+            record.packageCount = written.packages.count
+            record.bytes = try directoryByteCount(at: destinationURL)
+            try saveRecord(record)
+            return record
+        } catch {
+            try? fileManager.removeItem(at: destinationURL)
+            throw error
+        }
+    }
+
+    /// Honest status for every official template. Until D's actual image is
+    /// registered this reports `dependency-missing` naming the owner; no
+    /// version, digest or package list is invented.
+    public func officialTemplateStatus() -> [OfficialTemplateStatus] {
+        Self.officialTemplateIDs.map { templateID in
+            if let registered = template(named: templateID) {
+                return OfficialTemplateStatus(
+                    templateID: templateID, state: .registered,
+                    name: registered.name, version: registered.templateVersion,
+                    digest: registered.templateDigest, reason: nil
+                )
+            }
+            return OfficialTemplateStatus(
+                templateID: templateID, state: .dependencyMissing,
+                version: nil, digest: nil,
+                reason: "no official template image registered; image owner is \(Self.officialTemplateOwner)"
+            )
+        }
+    }
+
+    private static func templateContentDigest(
+        manifest: LayerManifest, layerURL: URL, fileManager: FileManager = .default
+    ) throws -> String {
+        var hasherInput = "floe-layer-template:v1\n"
+        hasherInput += "base=\(manifest.baseRevision)\nformat=\(manifest.layerFormat)\n"
+        for package in manifest.packages.sorted(by: { $0.name < $1.name }) {
+            hasherInput += "package=\(package.name)|\(package.version)|\(package.architecture)|\(package.layer.rawValue)\n"
+        }
+        // Bind the file inventory's sizes as well: identical package sets with
+        // different content never share a version.
+        if let enumerator = fileManager.enumerator(
+            at: layerURL, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+        ) {
+            var entries: [String] = []
+            for case let url as URL in enumerator {
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values.isRegularFile == true else { continue }
+                let relative = url.path.hasPrefix(layerURL.path)
+                    ? String(url.path.dropFirst(layerURL.path.count))
+                    : url.lastPathComponent
+                entries.append("\(relative):\(values.fileSize ?? 0)")
+            }
+            for entry in entries.sorted() { hasherInput += "file=\(entry)\n" }
+        }
+        return FloeDigest.sha256Hex(Data(hasherInput.utf8))
+    }
+
+    private func directoryByteCount(at url: URL) throws -> Int64 {
+        var total: Int64 = 0
+        if let enumerator = fileManager.enumerator(
+            at: url, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+        ) {
+            for case let file as URL in enumerator {
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if values.isRegularFile == true { total += Int64(values.fileSize ?? 0) }
+            }
+        }
+        return total
     }
 
     @discardableResult
@@ -407,17 +604,33 @@ public actor EnvironmentRegistry {
             }
             cursor = parent.parentID
         }
-        if let templateID = record.templateID, let template = records[templateID] {
-            append(roots.layerURL(id: template.id, kind: .template), kind: .shared)
-        } else if let parentID = record.parentID,
-                  let parent = records[parentID],
-                  let templateID = parent.templateID,
-                  let template = records[templateID] {
+        // The container's pinned template version wins; a container never
+        // silently switches to a newer committed template version. A pinned
+        // version that is no longer present resolves to nothing rather than
+        // to a different version.
+        if let template = resolvedTemplateRecord(for: record) {
             append(roots.layerURL(id: template.id, kind: .template), kind: .shared)
         }
         append(roots.sharedURL, kind: .shared)
         if let bundledBaseURL { append(bundledBaseURL, kind: .base) }
         return ResolvedLayerStack(layers: layers)
+    }
+
+    /// Resolves the immutable template version a container was seeded from.
+    /// Checks the explicit version pin first, then the exact record id; a
+    /// version mismatch is never resolved to a different version.
+    private func resolvedTemplateRecord(for record: ContainerRecord) -> ContainerRecord? {
+        let parent = record.parentID.flatMap { records[$0] }
+        guard let templateID = record.templateID ?? parent?.templateID else { return nil }
+        let pinnedVersion = record.templateVersion ?? parent?.templateVersion
+        if let pinnedVersion, let pinned = template(named: templateID, version: pinnedVersion) {
+            return pinned
+        }
+        guard let exact = records[templateID] else { return nil }
+        if let pinnedVersion, let exactVersion = exact.templateVersion, exactVersion != pinnedVersion {
+            return nil
+        }
+        return exact
     }
 
     public func quotaSnapshot() -> EnvironmentQuota { quota }

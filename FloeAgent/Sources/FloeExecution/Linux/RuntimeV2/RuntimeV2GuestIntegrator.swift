@@ -21,18 +21,30 @@
 import Foundation
 import FloeCore
 
-/// Pool admission result: the granted memory tier may be lower than
-/// requested when the device budget is under pressure (honest downgrade,
-/// reported through the status surface).
+/// Pool admission result: the granted memory tier and vCPU count may be
+/// lower than requested when the device budget is under pressure (honest
+/// downgrade, reported through the status surface and the boot descriptor).
 public struct RuntimeV2Admission: Sendable, Equatable {
     public var runtimeID: String
     public var ramMB: Int
     public var downgraded: Bool
+    /// vCPUs actually granted at create time (the engine reads the count once).
+    public var vcpus: Int
+    /// True when the vCPU count was reduced below the request by an
+    /// authorized downgrade policy.
+    public var vcpusDowngraded: Bool
+    public var downgradeReason: String?
 
-    public init(runtimeID: String, ramMB: Int, downgraded: Bool) {
+    public init(
+        runtimeID: String, ramMB: Int, downgraded: Bool,
+        vcpus: Int = 1, vcpusDowngraded: Bool = false, downgradeReason: String? = nil
+    ) {
         self.runtimeID = runtimeID
         self.ramMB = ramMB
         self.downgraded = downgraded
+        self.vcpus = vcpus
+        self.vcpusDowngraded = vcpusDowngraded
+        self.downgradeReason = downgradeReason
     }
 }
 
@@ -52,6 +64,25 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// Admits a start (queues when the pool is full). Granted RAM wins over
     /// the requested value.
     func acquireSlot(environmentID: String, runtimeID: String, requestedMB: Int) async throws -> RuntimeV2Admission
+    /// Three-axis admission (vCPU + RAM + VM) for a shape-aware start. The
+    /// granted vCPU count and RAM are the values the machine is created with;
+    /// an image whose manifest does not PROVE SMP can never be granted two
+    /// harts (the engine's `floe_vm_smp_capable()` is not image evidence).
+    func acquireShape(
+        environmentID: String, runtimeID: String,
+        request: GuestResourceRequest, imageSMPCapable: Bool,
+        downgrade: GuestShapeDowngradePolicy
+    ) async throws -> LinuxGuestShapeAdmission
+    /// Validates a requested shape change (vCPU and/or RAM) against the pool
+    /// quota and the image capability BEFORE the stop/flush/restart path.
+    func planReshape(
+        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int
+    ) async throws
+    /// Records the shape a completed stop → flush → restart made true.
+    func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async
+    /// SMP capability proven by the canonical image manifest (never by an
+    /// engine query and never assumed). Default false.
+    func imageSMPCapable(imageID: String) async -> Bool
     /// Releases the pool slot after the session is fully torn down.
     func releaseSlot(environmentID: String, runtimeID: String) async
     /// Takes the single-writer lease and materializes the working disk
@@ -85,6 +116,14 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     func planRetier(environmentID: String, ramMB: Int) async throws
     /// Confirms a tier change after the stop/flush/restart path completed.
     func confirmTier(environmentID: String, ramMB: Int) async
+}
+
+public extension LinuxGuestRuntimeV2Integrating {
+    /// Conservative default for conformers that cannot evaluate image
+    /// manifests: a capability that is not proven is false. The production
+    /// integrator overrides this with the verified image manifest's own
+    /// declaration — never an engine query.
+    func imageSMPCapable(imageID: String) async -> Bool { false }
 }
 
 /// Production integrator backed by a RuntimeV2Store.
@@ -129,6 +168,89 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         return RuntimeV2Admission(
             runtimeID: slot.runtimeID, ramMB: slot.tier.mb, downgraded: slot.downgradedAtAdmission
         )
+    }
+
+    /// Shape-aware admission: the pool grants the real vCPU/RAM shape and the
+    /// result carries exactly what was granted, so the boot descriptor is
+    /// created with the granted count (never the request and never an
+    /// engine-derived guess).
+    public func acquireShape(
+        environmentID: String, runtimeID: String,
+        request: GuestResourceRequest, imageSMPCapable: Bool,
+        downgrade: GuestShapeDowngradePolicy
+    ) async throws -> LinuxGuestShapeAdmission {
+        try await ensurePrepared()
+        // The image manifest is the capability authority: the caller's flag is
+        // a hint that can never widen an unproven image into SMP. The engine
+        // gate (floe_vm_smp_capable) is deliberately not consulted here.
+        let proven = await provenSMPCapability(environmentID: environmentID)
+        let granted = try await store.pool.acquire(
+            environmentID: environmentID, runtimeID: runtimeID,
+            request: request, imageSMPCapable: proven, downgrade: downgrade
+        )
+        var reason = granted.vcpusDowngradeReason ?? granted.memoryDowngradeReason
+        if request.vcpus == .two, imageSMPCapable, !proven {
+            let note = "the caller claimed SMP but the image manifest does not prove it; the claim was not used"
+            reason = reason.map { "\($0); \(note)" } ?? note
+        }
+        return LinuxGuestShapeAdmission(
+            runtimeID: granted.runtimeID,
+            ramMB: granted.shape.memory.mb,
+            vcpus: granted.shape.vcpus.count,
+            downgraded: granted.wasDowngraded,
+            vcpusDowngraded: granted.vcpusDowngraded,
+            downgradeReason: reason
+        )
+    }
+
+    /// Validates a vCPU/RAM change against the pool quota and the image's SMP
+    /// proof before any disruption. Nothing is stopped if this throws.
+    public func planReshape(
+        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int
+    ) async throws {
+        try await ensurePrepared()
+        let proven = await provenSMPCapability(environmentID: environmentID)
+        let request = GuestResourceRequest(
+            vcpus: GuestVCPUCount.clamping(vcpus),
+            memory: GuestMemoryMiB.smallestHolding(max(0, ramMB)) ?? .m2048,
+            origin: .environmentPolicy
+        )
+        try await store.pool.validateShapeChange(
+            environmentID: environmentID, request: request, imageSMPCapable: proven
+        )
+    }
+
+    /// Records the shape a completed stop → flush → restart actually produced.
+    public func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async {
+        guard let slot = await store.pool.slot(environmentID: environmentID) else { return }
+        let shape = GuestResourceRequest(
+            vcpus: GuestVCPUCount.clamping(vcpus),
+            memory: GuestMemoryMiB.smallestHolding(max(0, ramMB)) ?? .m2048,
+            origin: .environmentPolicy
+        )
+        await store.pool.confirmShape(runtimeID: slot.runtimeID, shape: shape)
+    }
+
+    /// SMP capability proven by the verified image manifest. Absent or false
+    /// declarations answer false; the engine query is never consulted.
+    public func imageSMPCapable(imageID: String) async -> Bool {
+        (try? await store.images.smpCapability(imageID: imageID))?.capable ?? false
+    }
+
+    /// The image whose manifest must prove the capability for this
+    /// environment: the pinned template's root base image when one is pinned
+    /// (the template rootfs boots with that image's kernel/BIOS), else the
+    /// environment's own base image. Anything unresolved answers false.
+    private func provenSMPCapability(environmentID: String) async -> Bool {
+        if let pin = try? await store.templates.environmentPin(environmentID: environmentID) {
+            guard let root = try? await store.templates.baseImageID(
+                templateID: pin.templateID, version: pin.version
+            ) else { return false }
+            return await imageSMPCapable(imageID: root)
+        }
+        guard let row = try? await store.registry.environment(id: environmentID),
+              let imageID = row.baseImageID else { return false }
+        return await imageSMPCapable(imageID: imageID)
     }
 
     public func releaseSlot(environmentID: String, runtimeID: String) async {
@@ -206,9 +328,41 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             to: directory
         )
         let diskURL = directory.appendingPathComponent("disk.img")
-        let materializedCapacity = try await store.deltas.materializeWorkingDisk(
-            environmentID: environmentID, baseRootfs: baseRootfs, into: diskURL
-        )
+        // Deep reuse: an environment pinned to an immutable software template
+        // boots a clone of exactly that template version's complete disk plus
+        // its own private delta. The pin is resolved exactly — never "latest"
+        // — and a pin that no longer resolves fails closed instead of booting
+        // a different base.
+        let pin = try await store.templates.environmentPin(environmentID: environmentID)
+        let materializedCapacity: Int64
+        if let pin {
+            _ = try await store.templates.clonePinnedTemplateDisk(
+                environmentID: environmentID, runtimeID: runtimeID,
+                imageID: imageID, into: diskURL
+            )
+            // The delta was captured against (and must be applied onto) the
+            // pinned template's disk, not the base image rootfs.
+            let deltaBase = try await store.templates.deltaBase(
+                environmentID: environmentID, imageID: imageID,
+                baseRootfs: baseRootfs, baseRootfsSHA512: rootfsRef.sha512
+            )
+            materializedCapacity = try await store.deltas.applyDelta(
+                environmentID: environmentID,
+                expectedBaseRootfsSHA512: deltaBase.digest,
+                expectedTemplate: pin,
+                into: diskURL
+            )
+        } else {
+            // Base-image-only environments keep the previous behavior exactly;
+            // the delta is still bound to the verified base digest, so a base
+            // swap can never silently absorb an old delta.
+            materializedCapacity = try await store.deltas.materializeWorkingDisk(
+                environmentID: environmentID, baseRootfs: baseRootfs,
+                expectedBaseRootfsSHA512: rootfsRef.sha512,
+                expectedTemplate: nil,
+                into: diskURL
+            )
+        }
         // Grow-only to the target capacity (sparse): a pristine environment
         // gets the full configured logical disk; an existing delta never shrinks.
         let requestedCapacity = min(targetCapacityBytes, LinuxGuestDiskLayout.maximumLogicalCapacityBytes)
@@ -253,12 +407,22 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                let rootfsRef = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"],
                let expanded = try? await store.images.ensureExpanded(imageID: imageID) {
                 let baseRootfs = expanded.appendingPathComponent(rootfsRef.expandedPath)
-                if let info = try? await store.deltas.capture(
+                // Capture binds the delta to exactly the base the working disk
+                // was cloned from: the pinned template's immutable disk when
+                // one is pinned, else the verified base image rootfs. A pinned
+                // environment's delta therefore holds only its private
+                // changes, and can never be folded into different bytes.
+                let deltaBase = try? await store.templates.deltaBase(
+                    environmentID: environmentID, imageID: imageID,
+                    baseRootfs: baseRootfs, baseRootfsSHA512: rootfsRef.sha512
+                )
+                if let deltaBase, let info = try? await store.deltas.capture(
                     environmentID: environmentID,
                     workingDisk: diskURL,
-                    baseRootfs: baseRootfs,
+                    baseRootfs: deltaBase.diskURL,
                     baseImageID: imageID,
-                    baseRootfsSHA512: rootfsRef.sha512
+                    baseRootfsSHA512: deltaBase.digest,
+                    templatePin: deltaBase.templatePin
                 ) {
                     try? await store.deltas.recordShutdown(
                         RuntimeV2DeltaStore.ShutdownRecord(

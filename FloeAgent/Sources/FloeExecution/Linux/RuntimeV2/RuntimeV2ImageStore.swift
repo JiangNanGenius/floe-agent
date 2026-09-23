@@ -41,6 +41,24 @@ public actor RuntimeV2ImageStore {
             }
         }
 
+        /// Capabilities the image itself proves. Capability claims are NEVER
+        /// inferred from the engine (`floe_vm_smp_capable()` is the engine
+        /// gate, not guest compatibility) and NEVER default to true: an image
+        /// that does not declare a capability does not have it.
+        public struct Capabilities: Codable, Sendable, Equatable {
+            /// True only when the image's own kernel/firmware were qualified
+            /// for SMP (declared by the image build/qualification run).
+            public var smp: Bool?
+            /// Where the claim came from (legacy manifest key, qualification
+            /// run id). Recorded so an ungrounded claim is visible.
+            public var declaredBy: String?
+
+            public init(smp: Bool? = nil, declaredBy: String? = nil) {
+                self.smp = smp
+                self.declaredBy = declaredBy
+            }
+        }
+
         public var version: Int
         public var imageID: String
         public var createdAt: Date
@@ -49,18 +67,28 @@ public actor RuntimeV2ImageStore {
         /// were taken from: provenance, qualification record, runner contract
         /// and compatible origins stay byte-identical.
         public var legacyManifestData: Data
+        /// Declared image capabilities (schema-additive; absent on older
+        /// manifests and then treated as "not declared" = false).
+        public var capabilities: Capabilities?
 
         public static let currentVersion = 2
 
-        public init(imageID: String, createdAt: Date, artifacts: [String: ArtifactRef], legacyManifestData: Data) {
+        public init(
+            imageID: String, createdAt: Date, artifacts: [String: ArtifactRef],
+            legacyManifestData: Data, capabilities: Capabilities? = nil
+        ) {
             self.version = Manifest.currentVersion
             self.imageID = imageID
             self.createdAt = createdAt
             self.artifacts = artifacts
             self.legacyManifestData = legacyManifestData
+            self.capabilities = capabilities
         }
 
         public var rootfsDigest: String? { artifacts["rootfs"]?.sha512 ?? artifacts["disk"]?.sha512 }
+
+        /// SMP is granted only on an explicit true declaration.
+        public var smpCapable: Bool { capabilities?.smp == true }
     }
 
     public struct MigrationReport: Sendable, Equatable {
@@ -112,6 +140,40 @@ public actor RuntimeV2ImageStore {
     public func isImageVerified(imageID: String) async throws -> Bool {
         guard try await registry.bootableImage(id: imageID, root: layout.root) != nil else { return false }
         return try manifest(imageID: imageID) != nil
+    }
+
+    /// The image's declared capabilities, or nil when there is no manifest.
+    public func capabilities(imageID: String) throws -> Manifest.Capabilities? {
+        try manifest(imageID: imageID)?.capabilities
+    }
+
+    /// SMP capability proven by the canonical image manifest. An absent
+    /// declaration, a false declaration or an unverified image all answer
+    /// false with an honest reason. The engine's `floe_vm_smp_capable()` is
+    /// deliberately never consulted: engine capability is not evidence that
+    /// THIS image's kernel/firmware can use a second hart.
+    public func smpCapability(imageID: String) async throws -> (capable: Bool, reason: String) {
+        guard try await registry.bootableImage(id: imageID, root: layout.root) != nil else {
+            return (false, "image '\(imageID)' is not verified; no capability can be assumed")
+        }
+        guard let manifest = try manifest(imageID: imageID) else {
+            return (false, "no v2 manifest for '\(imageID)'; SMP capability defaults to false")
+        }
+        guard let capabilities = manifest.capabilities else {
+            return (
+                false,
+                "image '\(imageID)' does not declare SMP in its manifest; capability defaults to false "
+                    + "(the engine gate is not image evidence)"
+            )
+        }
+        guard capabilities.smp == true else {
+            return (
+                false,
+                "image '\(imageID)' declares smp=\(capabilities.smp.map(String.init) ?? "absent")"
+                    + (capabilities.declaredBy.map { " (\($0))" } ?? "")
+            )
+        }
+        return (true, "declared by \(capabilities.declaredBy ?? "the image manifest")")
     }
 
     // MARK: expansion (rebuildable view)
@@ -266,9 +328,22 @@ public actor RuntimeV2ImageStore {
             // Already migrated with identical content? Reuse the verified v2
             // install: no re-copy, no switch; the legacy directory can move
             // aside straight into the rollback point.
+            let declaredCapabilities = Self.declaredCapabilities(legacyManifestData: legacyData)
             if let existing = try manifest(imageID: imageID),
                try await registry.bootableImage(id: imageID, root: layout.root) != nil,
                manifestMatches(manifest: existing, image: image) {
+                // Capability metadata is not install content: a legacy
+                // manifest that now declares a capability (or withdrew one)
+                // refreshes the v2 manifest in place. Artifact digests are
+                // untouched and the verified row stays the truth.
+                if existing.capabilities != declaredCapabilities {
+                    var refreshed = existing
+                    refreshed.capabilities = declaredCapabilities
+                    try Self.encoder.encode(refreshed).write(
+                        to: layout.imageManifestURL(imageID: imageID), options: .atomic
+                    )
+                    await verifier.invalidate(id: imageID)
+                }
                 try await registry.setMigrationPhase(id: migrationID, phase: .verified)
                 try await moveLegacyAside(
                     legacyDirectory: legacyDirectory, migrationID: migrationID, kind: "legacy-images"
@@ -320,7 +395,8 @@ public actor RuntimeV2ImageStore {
             // file before anything switches.
             try await registry.setMigrationPhase(id: migrationID, phase: .verified)
             let v2Manifest = Manifest(
-                imageID: imageID, createdAt: Date(), artifacts: refs, legacyManifestData: legacyData
+                imageID: imageID, createdAt: Date(), artifacts: refs,
+                legacyManifestData: legacyData, capabilities: declaredCapabilities
             )
             let staging = layout.expandedImagesDirectory
                 .appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
@@ -465,6 +541,25 @@ public actor RuntimeV2ImageStore {
 
     private func manifestRole(_ role: LinuxGuestImageArtifact.Role) -> String {
         role == .disk ? "rootfs" : role.rawValue
+    }
+
+    /// Reads capability claims from the verbatim legacy manifest without
+    /// decoding it into the (older) `LinuxGuestImage` shape, which would drop
+    /// unknown keys. Absent keys mean "not declared" — never true.
+    static func declaredCapabilities(legacyManifestData: Data) -> Manifest.Capabilities? {
+        guard let object = try? JSONSerialization.jsonObject(with: legacyManifestData) as? [String: Any] else {
+            return nil
+        }
+        if let smp = object["smp_capable"] as? Bool {
+            return Manifest.Capabilities(smp: smp, declaredBy: "legacy manifest smp_capable")
+        }
+        if let smp = object["smpCapable"] as? Bool {
+            return Manifest.Capabilities(smp: smp, declaredBy: "legacy manifest smpCapable")
+        }
+        if let capabilities = object["capabilities"] as? [String: Any], let smp = capabilities["smp"] as? Bool {
+            return Manifest.Capabilities(smp: smp, declaredBy: "legacy manifest capabilities.smp")
+        }
+        return nil
     }
 
     private func manifestMatches(manifest: Manifest, image: LinuxGuestImage) -> Bool {
