@@ -1380,7 +1380,11 @@ class MirrorRunner:
         self.log.emit("[release] updating Gitee release %s: %s" % (tag, ", ".join(sorted(updates))))
         if self.args.dry_run:
             return {"status": "planned-update", "releaseId": existing.get("id"), "updates": sorted(updates)}, existing
-        self.gitee.update_release(existing["id"], updates)
+        # Gitee requires tag_name and name on every release PATCH (observed
+        # 400 "tag_name is missing","name is missing" without them).
+        payload = {"tag_name": tag, "name": name}
+        payload.update(updates)
+        self.gitee.update_release(existing["id"], payload)
         return {"status": "updated", "releaseId": existing.get("id"), "updates": sorted(updates)}, existing
 
     # -- main flow ---------------------------------------------------------

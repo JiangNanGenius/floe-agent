@@ -51,6 +51,7 @@ class MockState:
         self.fail_upload_names = {}        # name -> remaining failures (persistent when large)
         self.fail_after_create_names = {}  # name -> remaining "response lost" failures
         self.fail_list_once = 0
+        self.patch_payloads = []           # release PATCH bodies, for contract checks
         self.requests = []                 # (method, path)
         self.serve_requests = 0
 
@@ -324,6 +325,9 @@ class MockHandler(BaseHTTPRequestHandler):
                 return self._send(200, self._gitee_release_json(release))
             if method == "PATCH":
                 payload = json.loads(self._read_body().decode("utf-8"))
+                if not payload.get("tag_name") or not payload.get("name"):
+                    return self._send(400, {"messages": ["tag_name is missing", "name is missing"]})
+                self.state.patch_payloads.append(payload)
                 for key in ("name", "body", "prerelease", "target_commitish"):
                     if key in payload:
                         release[key] = payload[key]
@@ -527,6 +531,9 @@ class MirrorTestCase(unittest.TestCase):
         self.assertIn("Updated body", release["body"])
         self.assertEqual("Floe Agent (build 225) rev2", release["name"])
         self.assertEqual(0, summary["gates"]["assets"]["uploaded"])
+        self.assertTrue(self.state.patch_payloads, "metadata update must PATCH")
+        self.assertEqual("v1.7.0-beta.82", self.state.patch_payloads[-1]["tag_name"])
+        self.assertEqual("Floe Agent (build 225) rev2", self.state.patch_payloads[-1]["name"])
 
     def test_duplicate_names_are_pruned(self):
         self.seed_app_release()
