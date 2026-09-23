@@ -106,6 +106,16 @@ on:
         type: choice
         options: [hash, size]
         default: hash
+      time_budget_minutes:
+        description: 'Stop starting new transfers after N minutes (job timeout is 360)'
+        required: false
+        type: string
+        default: '300'
+      socket_timeout_seconds:
+        description: 'Per-socket timeout for one transfer'
+        required: false
+        type: string
+        default: '600'
       prune_unknown:
         description: 'Delete owned-but-unplanned attachments from the mirrored release'
         required: false
@@ -334,6 +344,8 @@ jobs:
           VERIFY: ${{ github.event_name == 'workflow_dispatch' && inputs.verify || 'hash' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           PRUNE_UNKNOWN: ${{ github.event_name == 'workflow_dispatch' && inputs.prune_unknown || 'false' }}
+          TIME_BUDGET_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.time_budget_minutes || '300' }}
+          SOCKET_TIMEOUT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.socket_timeout_seconds || '600' }}
         run: |
           set -euo pipefail
           : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
@@ -352,10 +364,11 @@ jobs:
             --summary-json "${RUNNER_TEMP}/gitee-release-mirror-summary.json"
             --min-free-mib 2048
             --progress-mib 64
+            --timeout "$SOCKET_TIMEOUT_SECONDS"
             # Keep the step bounded well inside the job timeout so a slow
             # cross-border transfer ends with a truthful partial summary that
             # the next run resumes instead of an opaque timeout.
-            --time-budget-minutes 300
+            --time-budget-minutes "$TIME_BUDGET_MINUTES"
           )
           if [ -n "$INCLUDE_ASSETS" ]; then FLAGS+=(--include-assets "$INCLUDE_ASSETS"); fi
           if [ "$DRY_RUN" = "true" ]; then FLAGS+=(--dry-run); fi
