@@ -320,14 +320,19 @@ if [ "$rebuild" = 1 ]; then
             # append, then let olddefconfig resolve dependencies/ordering
             cat "$frag" >> .config
         fi
-        make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig
+        # HOSTCC gets -fcommon: the pinned 4.15 tree's dtc lexer/parser both
+        # declare yylloc as a tentative definition, which GCC 10+ (default
+        # -fno-common) rejects as a multiple definition (retained failure).
+        HOSTCC="${HOSTCC:-gcc} -fcommon" \
+            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig
         # never hand out a boot pair that claims SMP but was configured
         # single-hart (the whole point of --smp)
         if [ "$smp" = 1 ]; then
             grep -q '^CONFIG_SMP=y$' .config || die "--smp build did not produce CONFIG_SMP=y"
             grep -q '^CONFIG_NR_CPUS=2$' .config || die "--smp build did not produce CONFIG_NR_CPUS=2"
         fi
-        make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$jobs"
+        HOSTCC="${HOSTCC:-gcc} -fcommon" \
+            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$jobs"
     ) >"$out/rebuild-riscv-linux.log" 2>&1 || {
         printf 'build-kernel-bbl: kernel rebuild failed; last lines:\n' >&2
         tail -c 4000 "$out/rebuild-riscv-linux.log" >&2 || true
