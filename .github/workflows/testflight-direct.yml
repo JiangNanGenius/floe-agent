@@ -349,6 +349,28 @@ jobs:
           name: expedited-unsigned-ipa-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
           path: FloeAgent/release-assets/
           if-no-files-found: error
+      - name: Verify the pinned Office host in the retained device payload
+        if: inputs.reuse_artifact_run == ''
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          python3 scripts/verify_office_app_embedding.py "$APP_PATH" --output "$RUNNER_TEMP/office-device-embedding.json"
+          python3 - "$RUNNER_TEMP/office-device-embedding.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          if not all(report.get(key) is True for key in (
+              'unsignedPayloadVerified', 'appLinksOfficeHost', 'hostSourceMatchesPin'
+          )):
+              raise SystemExit('Office device payload is not bound to the pinned host source')
+          # This is a payload check, not proof of an editable iPad slide.
+          PY
+      - name: Retain the Office device payload verification
+        if: ${{ always() && inputs.reuse_artifact_run == '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: office-device-embedding-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
+          path: ${{ runner.temp }}/office-device-embedding.json
+          if-no-files-found: warn
       # Symbols are captured after the unsigned IPA is retained so a retry can
       # restore the package even when symbolication fails, while a symbol
       # failure still fails this job and blocks signing/TestFlight distribution
