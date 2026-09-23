@@ -15,7 +15,6 @@ import FloeWorkspace
 struct IDEStatusBar: View {
     @ObservedObject var sourceControl: SourceControlCenter
     var identityMatches: Bool
-    var editorMode: IDENativeTextSurfaceMode
     var dirtyBuffers: Int
     @Environment(\.horizontalSizeClass) private var sizeClass
 
@@ -47,16 +46,6 @@ struct IDEStatusBar: View {
                     systemImage: "circle.dashed.inset.filled"
                 )
                 .foregroundStyle(FloeTheme.primary)
-            }
-            // The verbose kernel label stays on regular widths; the native
-            // pane already reports saved state and location in its own row.
-            if !compact {
-                Label(
-                    editorMode == .native
-                        ? IDELanguageRunText.t("原生编辑器", "Native editor")
-                        : IDELanguageRunText.t("Web 编辑器", "Web editor"),
-                    systemImage: editorMode == .native ? "chevron.left.forwardslash.chevron.right" : "safari"
-                )
             }
         }
         .font(.caption2)

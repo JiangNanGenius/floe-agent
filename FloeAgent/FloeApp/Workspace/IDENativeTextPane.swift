@@ -63,7 +63,6 @@ struct IDENativeTextPane: View {
     /// The IDE's code tab is showing this pane.
     var isActive: Bool
     var onRun: () -> Void
-    var onSwitchToWeb: () -> Void
     var onSaved: () -> Void
     var onRequestClose: (String) -> Void
 
@@ -84,7 +83,6 @@ struct IDENativeTextPane: View {
                             isActiveTab: workspace.activePath == buffer.relativePath,
                             isPaneActive: isActive,
                             onRun: onRun,
-                            onSwitchToWeb: onSwitchToWeb
                         )
                         .opacity(workspace.activePath == buffer.relativePath ? 1 : 0)
                         .allowsHitTesting(workspace.activePath == buffer.relativePath)
@@ -200,7 +198,6 @@ private struct IDENativeEditorTabView: View {
     let isActiveTab: Bool
     let isPaneActive: Bool
     var onRun: () -> Void
-    var onSwitchToWeb: () -> Void
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     /// Compact (iPhone) shows one concise status line: saved state and the
@@ -253,13 +250,6 @@ private struct IDENativeEditorTabView: View {
                         .font(.footnote)
                 }
             }
-        } actions: {
-            Button {
-                onSwitchToWeb()
-            } label: {
-                Label(IDELanguageRunText.t("切换到 Web 编辑器", "Switch to the Web editor"), systemImage: "safari")
-            }
-            .accessibilityIdentifier("workspace.ide.nativeFallbackToWeb")
         }
     }
 
@@ -380,13 +370,6 @@ private struct IDENativeEditorTabView: View {
                     .disabled(buffer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("workspace.ide.nativeRun")
                 }
-                Button {
-                    onSwitchToWeb()
-                } label: {
-                    Label(IDELanguageRunText.t("Web 编辑器", "Web editor"), systemImage: "safari")
-                }
-                .accessibilityIdentifier("workspace.ide.nativeOpenInWeb")
-
                 if buffer.isDirty {
                     Label(IDELanguageRunText.t("未保存", "Unsaved"), systemImage: "circle.fill")
                         .foregroundStyle(FloeTheme.pending)

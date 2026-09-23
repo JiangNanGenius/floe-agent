@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// IDEWorkbenchState.swift — run-flow companion to `IDEWorkbenchState`
-// (declared in IDEWorkbenchWebView.swift). This file owns the observable
-// controller that turns a pure `IDELanguageRunPolicy` plan into a dispatch
+// IDEWorkbenchState.swift — the IDE's editor state plus the run-flow
+// companion that turns a pure `IDELanguageRunPolicy` plan into a dispatch
 // into an owned execution session:
 //
 // * the snapshot is flushed first and a conflict aborts the run outright;
@@ -33,7 +32,7 @@
 //
 // It deliberately contains no command construction: all argv/quoting lives in
 // `IDELanguageRunPolicy`, and all transfer verification in
-// `IDERunSourceStaging`.
+// `IDERunSourceStager`.
 
 #if canImport(UIKit)
 import Foundation
@@ -45,14 +44,63 @@ import FloeSSH
 import FloeTools
 import FloeWorkspace
 
-extension IDEWorkbenchState {
-    /// True only when every dirty editor model (either kernel) has been
-    /// written to disk and no unresolved conflict remains. The run button
-    /// refuses to dispatch unless this holds, so a run never executes a stale
-    /// snapshot.
-    var isCleanForDispatch: Bool {
-        ready && !saving && !hasAnyDirty && conflict == nil
+/// The IDE workbench's editor state. Text/code editing is native
+/// Swift/UIKit only (no Web/Monaco text kernel): one native buffer per open
+/// file, saved through the same `WorkspaceFileService` the run flow reads.
+@MainActor
+final class IDEWorkbenchState: ObservableObject {
+    @Published var saving = false
+    @Published var error: String?
+    @Published var activePath: String?
+    /// The workspace file session the run flow reads through.
+    let files: IDEWorkspaceSession?
+    /// Native text/code buffers: one per open file, created here so save-all
+    /// and the run controller see them without extra wiring.
+    let nativeText: IDENativeTextWorkspace
+
+    init(files: WorkspaceFileService?) {
+        self.files = files.map { IDEWorkspaceSession(files: $0) }
+        self.nativeText = IDENativeTextWorkspace(files: files)
     }
+
+    /// True when any native buffer holds unsaved text.
+    var hasAnyDirty: Bool { nativeText.hasDirty }
+
+    /// Native-only save availability: a save is offered whenever a buffer is
+    /// dirty (the file service is synchronous and always ready).
+    var canSave: Bool { nativeText.hasDirty && !saving }
+
+    /// Kept for the run-flow contract: with a native-only editor the source
+    /// of truth (the file service) is ready as soon as the IDE exists.
+    var ready: Bool { true }
+
+    /// The native pane's active buffer changed.
+    func updateNativeActivePath(_ path: String?) {
+        activePath = path
+    }
+
+    /// Applies a reviewed conflict resolution to the native buffer. The pane
+    /// owns the review sheet; the state only routes the decision.
+    func resolve(_ review: WorkspaceEditConflict, content: String) async {
+        await nativeText.resolveConflict(path: review.path, content: content)
+    }
+
+    /// Saves every dirty native buffer. Returns true only when nothing is
+    /// left unsaved or conflicted.
+    @discardableResult func saveAll() async -> Bool {
+        let report = await nativeText.saveAll()
+        return report.isClean && !nativeText.hasDirty
+    }
+}
+
+extension IDEWorkbenchState {
+    /// True only when every dirty editor model has been written to disk and
+    /// no unresolved conflict remains. The run button refuses to dispatch
+    /// unless this holds, so a run never executes a stale snapshot.
+    var isCleanForDispatch: Bool {
+        ready && !saving && !hasAnyDirty && nativeText.pendingConflict() == nil
+    }
+}
 }
 
 /// User-facing run outcome. Reasons stay as typed values; the view localizes
@@ -538,7 +586,7 @@ final class IDELanguageRunController: ObservableObject {
             return
         }
 
-        let hadConflict = state.conflict != nil
+        let hadConflict = state.nativeText.pendingConflict() != nil
         let saved = await state.saveAll()
         guard isCurrent(attempt), !isStopRequested(attempt) else { return }
         guard IDELanguageRunPolicy.contextDrift(initial: structural, current: pinnedContext()) == nil else {
@@ -550,8 +598,8 @@ final class IDELanguageRunController: ObservableObject {
 
         let decision = IDELanguageRunPolicy.dispatchDecision(
             plan: plan,
-            snapshotSaved: saved && !state.dirty,
-            hasUnresolvedConflict: hadConflict || state.conflict != nil
+            snapshotSaved: saved && !state.hasAnyDirty,
+            hasUnresolvedConflict: hadConflict || state.nativeText.pendingConflict() != nil
         )
         guard case .dispatch = decision else {
             if case .blocked(let reason) = decision { status = .blocked(reason) }
