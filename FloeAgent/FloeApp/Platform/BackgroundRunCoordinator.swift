@@ -257,8 +257,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var pendingNotificationRoute: (key: String, link: BackgroundWorkDeepLink, identifier: String)?
     /// Monotonic route-request generation. An async target-existence check
     /// that finishes after a newer tap started must not navigate: the stale
-    /// completion is dropped when its generation is no longer current.
-    private var notificationRouteGeneration: UInt64 = 0
+    /// completion is dropped when its generation is no longer current. A
+    /// deferred retry reuses the current generation.
+    private var notificationRouteRequest = TaskDeepLinkRouteRequest()
+    /// Actual "the navigation subscribers are mounted" evidence. Persistence
+    /// plus an active scene only prove the hierarchy may exist; the
+    /// `.floeOpenConversation` / `.floeOpenExecutionEnvironment` subscribers
+    /// live in the root view, and a route posted before they mount goes
+    /// nowhere while consuming the durable event. `reconcileSchedulesAfterLaunch`
+    /// is invoked exactly by that root view's launch `.task`, so it is the
+    /// app's real subscriber-installed signal.
+    private var navigationSubscribersReady = false
     private var lastSkippedContinuedUpdateAt: Date = .distantPast
     private var continuedEligibility = ContinuedProcessingEligibilityState<UUID>()
     private var surfacedRunID: UUID?
@@ -1008,8 +1017,23 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let elapsed = max(0, Int(now.timeIntervalSince(run.startedAt)))
         let minutes = elapsed / 60
         let seconds = elapsed % 60
-        let duration = minutes > 0 ? "\(minutes) 分 \(seconds) 秒" : "\(seconds) 秒"
-        var lines = ["\(run.title)", "已完成 · 用时 \(duration)"]
+        let duration = minutes > 0
+            ? String(
+                format: String(localized: "background.surface.duration.minutes_seconds"),
+                minutes,
+                seconds
+            )
+            : String(
+                format: String(localized: "background.surface.duration.seconds"),
+                seconds
+            )
+        var lines = [
+            run.title,
+            String(
+                format: String(localized: "background.surface.completed_duration"),
+                duration
+            ),
+        ]
         if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             lines.append(String(message.prefix(120)))
         }
@@ -1353,18 +1377,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// App-layer outcome caption for a terminal event. The core layer stays
     /// locale-neutral; the wording lives here with the rest of the surface
-    /// copy (a full Localizable.xcstrings migration for these new strings is
-    /// tracked in the release evidence).
+    /// copy and resolves through the App's en/zh-Hans catalog.
     nonisolated static func terminalEventBody(
         kind: TaskTerminalEventKind,
         resultMessage: String?,
         fallbackBody: String
     ) -> String {
         let label: String = switch kind {
-        case .completed: "已完成"
-        case .failed: "运行失败"
-        case .cancelled: "已取消"
-        case .actionRequired: "等待审批"
+        case .completed: String(localized: "background.event.completed")
+        case .failed: String(localized: "background.event.failed")
+        case .cancelled: String(localized: "background.event.cancelled")
+        case .actionRequired: String(localized: "background.event.approval")
         }
         let detail: String
         if let trimmed = resultMessage?
@@ -1411,9 +1434,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             case .cancelled: .cancelled
             }
             let fallbackBody: String = switch outcome {
-            case .succeeded: "打开任务查看结果与待办进度。"
-            case .failed: "打开任务查看并恢复。"
-            case .cancelled: "任务已停止，检查点已保留，可重新开始或继续。"
+            case .succeeded: String(localized: "background.run.success_body")
+            case .failed: String(localized: "background.run.failure_body")
+            case .cancelled: String(localized: "background.run.cancelled_body")
             }
             self.enqueueTerminalNotification(
                 event: .modelRunTerminal(
@@ -1573,7 +1596,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             linuxBackgroundHold.surfaceChanged(to: environmentID)
             prepareLinuxSurfaceIfPossible(environmentID: environmentID)
         case .endHoldAndStop(let environmentID):
-            await stopAndFlushLinuxEnvironment(environmentID: environmentID, reason: "用户关闭了画中画")
+            await stopAndFlushLinuxEnvironment(
+                environmentID: environmentID,
+                reason: String(localized: "background.linux.stop_reason.pip_closed")
+            )
         case .retractSurface:
             environment.backgroundVideoService.update(
                 title: "Floe 已回到前台",
@@ -1604,7 +1630,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // every subsequent frame, so a metric tick can never repage it.
         let title = linuxSurfacePager.current?.title ?? "Linux 环境"
         let text = linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)
-            .map(Self.linuxSurfacePageText(for:)) ?? "Linux 环境运行中"
+            .map(Self.linuxSurfacePageText(for:)) ?? String(localized: "background.linux.surface_running")
         environment.backgroundVideoService.setRunContext(
             title: title,
             progress: text,
@@ -1636,7 +1662,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             title: title,
             state: .cancelled,
             interruption: .none,
-            progressText: "\(reason)；环境已安全停止并刷新磁盘，后台运行偏好保留",
+            progressText: String(
+                format: String(localized: "background.linux.stop_detail"),
+                reason
+            ),
             deepLink: BackgroundWorkDeepLink(kind: .linuxSession, environmentID: environmentID)
         )
         await BackgroundWorkRegistry.shared.register(snapshot)
@@ -1650,8 +1679,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 kind: .cancelled,
                 body: Self.terminalEventBody(
                     kind: .cancelled,
-                    resultMessage: "\(reason)。磁盘已保留，可再次启动。",
-                    fallbackBody: "环境已停止。"
+                    resultMessage: String(
+                        format: String(localized: "background.linux.disk_preserved"),
+                        reason
+                    ),
+                    fallbackBody: String(localized: "background.linux.stopped_body")
                 ),
                 launchGeneration: linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)?
                     .launchGeneration
@@ -1695,7 +1727,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 body: Self.terminalEventBody(
                     kind: .failed,
                     resultMessage: message,
-                    fallbackBody: "后台服务异常退出。"
+                    fallbackBody: String(localized: "background.linux.service_exited_body")
                 ),
                 launchGeneration: linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)?
                     .launchGeneration
@@ -1914,10 +1946,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         now: Date = Date()
     ) -> String {
         func countText(_ value: Int?) -> String {
-            value.map(String.init) ?? "暂无"
+            value.map(String.init) ?? String(localized: "background.value.unavailable")
         }
         func percentText(_ value: Double?) -> String {
-            guard let value else { return "暂无" }
+            guard let value else { return String(localized: "background.value.unavailable") }
             return String(format: "%.0f%%", value * 100)
         }
         // Short, stable VM identity: the runtime token when the lease
@@ -1930,22 +1962,42 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 + " · VM \(shortIdentity)"
         )
         lines.append(
-            "CPU 客户机 \(percentText(snapshot.guestCPUFraction))"
-                + " · 宿主线程 \(percentText(snapshot.hostThreadCPUFraction))"
-                + " · \(snapshot.coreCount.map { "\($0) 核" } ?? "暂无")"
+            String(
+                format: String(localized: "background.pip.cpu_guest"),
+                percentText(snapshot.guestCPUFraction)
+            )
+                + " · " + String(
+                    format: String(localized: "background.pip.host_thread"),
+                    percentText(snapshot.hostThreadCPUFraction)
+                )
+                + " · " + (snapshot.coreCount.map {
+                    String(format: String(localized: "background.pip.cores"), $0)
+                } ?? String(localized: "background.value.unavailable"))
         )
         let memory: String
         if let used = snapshot.memoryUsedMB, let total = snapshot.memoryTotalMB {
             memory = "\(used)/\(total) MB"
         } else {
-            memory = "暂无"
+            memory = String(localized: "background.value.unavailable")
         }
-        lines.append("内存 \(memory)")
+        lines.append(String(format: String(localized: "background.pip.memory"), memory))
         lines.append(
-            "命令 \(countText(snapshot.commandCount))"
-                + " · 终端 \(countText(snapshot.terminalCount))"
-                + " · 服务 \(countText(snapshot.serviceCount))"
-                + " · 端口 \(countText(snapshot.portCount))"
+            String(
+                format: String(localized: "background.pip.commands"),
+                countText(snapshot.commandCount)
+            )
+                + " · " + String(
+                    format: String(localized: "background.pip.terminals"),
+                    countText(snapshot.terminalCount)
+                )
+                + " · " + String(
+                    format: String(localized: "background.pip.services"),
+                    countText(snapshot.serviceCount)
+                )
+                + " · " + String(
+                    format: String(localized: "background.pip.ports"),
+                    countText(snapshot.portCount)
+                )
         )
         return lines.joined(separator: "\n")
     }
@@ -2048,7 +2100,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             Task { [weak self] in
                 await self?.stopAndFlushLinuxEnvironment(
                     environmentID: environmentID,
-                    reason: "用户关闭了画中画"
+                    reason: String(localized: "background.linux.stop_reason.pip_closed")
                 )
             }
         }
@@ -2280,7 +2332,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: "等待你的审批")
         }
-        let taskName = activeRuns[runID]?.title ?? "任务"
+        let taskName = activeRuns[runID]?.title ?? String(localized: "background.task.name_fallback")
         Task { [weak self] in
             guard let self else { return }
             let policy = try? await SQLiteWorkspaceStore(database: self.environment.database)
@@ -2293,8 +2345,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     kind: .actionRequired,
                     body: Self.terminalEventBody(
                         kind: .actionRequired,
-                        resultMessage: "需要确认：\(toolName)",
-                        fallbackBody: "有一个工具调用等待你的确认。"
+                        resultMessage: String(
+                            format: String(localized: "background.approval.result"),
+                            toolName
+                        ),
+                        fallbackBody: String(localized: "background.approval.body")
                     )
                 ),
                 policy: policy?.notificationPolicy
@@ -2626,6 +2681,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     func reconcileSchedulesAfterLaunch() async {
+        // Only the root view's launch `.task` calls this, and SwiftUI runs it
+        // after that root view — the host of the `.floeOpenConversation` and
+        // `.floeOpenExecutionEnvironment` subscribers — has been installed in
+        // a window. Record that real subscriber evidence before a deferred
+        // notification route is flushed, instead of trusting persistence plus
+        // scene phase as a proxy.
+        navigationSubscribersReady = true
         await reconcilePendingMediaJobs()
         await runDueSchedules()
         await reconcileLinuxBackgroundSessionsAfterLaunch()
@@ -2774,10 +2836,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         return "\(identifier)|\(payload)"
     }
 
-    /// Routes one parsed notification deep link behind three gates: duplicate
-    /// suppression, cold-launch readiness (database + active scene) and
-    /// target existence. `isRetry` is true for a deferred route being flushed:
-    /// it skips the dedup window, which the original attempt already consumed.
+    /// Routes one parsed notification deep link behind four gates: duplicate
+    /// suppression, cold-launch readiness (database + active scene + mounted
+    /// navigation subscribers) and authoritative target existence.
+    /// `isRetry` is true for a deferred route being flushed: it skips the
+    /// dedup window, which the original attempt already consumed, and reuses
+    /// the original generation.
     @MainActor
     private func handleNotificationRoute(
         key: String,
@@ -2785,31 +2849,32 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         identifier: String,
         isRetry: Bool = false
     ) {
-        let generation: UInt64
-        if isRetry {
-            generation = notificationRouteGeneration
-        } else {
-            notificationRouteGeneration &+= 1
-            generation = notificationRouteGeneration
-        }
         if !isRetry, let last = recentNotificationRoutes[key],
            Date().timeIntervalSince(last) < Self.duplicateNotificationRouteWindow {
+            // A repeat tap of the route that is already being handled. It must
+            // not supersede the in-flight request: the request owns the single
+            // durable event and will consume it exactly once when it finishes.
             FloeLogger(category: .app).info(
                 "notificationRouteIgnored reason=duplicate key=\(key)"
             )
-            notificationOutbox.discard(identifier: identifier)
-            persistNotificationOutbox()
             return
         }
-        guard environment.persistenceReady, effectiveScenePhase == .active else {
-            // Cold launch (or a transition that has not produced an active
-            // scene yet): hold the single pending slot and retry when the app
-            // is ready. The navigation subscribers mount with the root view,
-            // which exists only once `persistenceReady` flips, so
-            // persistence + active scene is the correct readiness proxy.
+        let generation: UInt64
+        if isRetry {
+            generation = notificationRouteRequest.current
+        } else {
+            generation = notificationRouteRequest.begin()
+        }
+        guard environment.persistenceReady, effectiveScenePhase == .active,
+              navigationSubscribersReady else {
+            // Cold launch (or a transition that has not produced a mounted,
+            // active root view yet): hold the single pending slot and retry
+            // when the app is actually ready. Persistence + active scene alone
+            // are a proxy; `navigationSubscribersReady` is the real evidence
+            // that the root view hosting the deep-link subscribers exists.
             pendingNotificationRoute = (key: key, link: link, identifier: identifier)
             FloeLogger(category: .app).info(
-                "notificationRouteDeferred key=\(key) persistenceReady=\(self.environment.persistenceReady) scene=\(String(describing: self.effectiveScenePhase))"
+                "notificationRouteDeferred key=\(key) persistenceReady=\(self.environment.persistenceReady) scene=\(String(describing: self.effectiveScenePhase)) navigationReady=\(self.navigationSubscribersReady)"
             )
             return
         }
@@ -2820,11 +2885,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // A foreground launch reloads the task list before this check so
             // a just-restored conversation is not mistaken for a deleted one.
             await self.environment.conversationCenter.reload()
-            let exists = await self.deepLinkTargetExists(link)
+            let target = await self.resolveDeepLinkTarget(link)
             await MainActor.run {
                 // A newer tap supersedes this in-flight check: navigating
                 // now would race the newer route.
-                guard self.notificationRouteGeneration == generation else {
+                guard self.notificationRouteRequest.accepts(generation: generation) else {
                     FloeLogger(category: .app).info(
                         "notificationRouteIgnored reason=staleGeneration key=\(key)"
                     )
@@ -2834,33 +2899,81 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     key: key,
                     link: link,
                     identifier: identifier,
-                    targetExists: exists
+                    target: target
                 )
             }
         }
     }
 
-    private func deepLinkTargetExists(_ link: BackgroundWorkDeepLink) async -> Bool {
+    /// Resolves whether a notification's target can still be opened, using
+    /// only authoritative registry/runtime reads:
+    /// - the environment registry record store (D side) answers existence;
+    /// - the Linux runtime's ownership seam (B2, `ownsLinuxEnvironment`)
+    ///   answers existence while stopped.
+    /// Neither read starts a guest. A stopped environment is existence; an
+    /// unreadable seam is unknown — never deleted.
+    private func resolveDeepLinkTarget(_ link: BackgroundWorkDeepLink) async -> TaskDeepLinkTargetState {
         switch link.kind {
         case .modelRun:
-            guard let conversationID = link.conversationID else { return false }
+            guard let conversationID = link.conversationID else {
+                // No identity to open. The event is still consumed with an
+                // honest "cannot open" note instead of posting a dead route.
+                return .unknown
+            }
             // A deleted conversation must prompt, never route: the workbench
             // selection would point at a record the UI cannot load.
-            return environment.conversationCenter.conversations
+            let exists = environment.conversationCenter.conversations
                 .contains { $0.id == conversationID }
+            return exists ? .exists : .missing
         case .linuxSession, .linuxService:
-            // The guest registry can only speak for guests it is running in
-            // this process; a running guest proves the environment exists.
-            // A stopped one is ambiguous (stopped-but-present vs deleted
-            // needs the D enumeration), so the caller routes to the safe
-            // environment list with the missing-target message instead of
-            // focusing a possibly-dead id.
-            guard let environmentID = link.environmentID else { return true }
-            guard let controller = FloePlatformServices.shared.linuxGuestController()
-            else { return true }
-            let status = await controller.guestStatus(environmentID: environmentID)
-            return status.running
+            // No environment id: the family-level link opens the environment
+            // list, which always exists. Nothing about a stopped/deleted
+            // environment is claimed.
+            guard let environmentID = link.environmentID else { return .exists }
+            // Authoritative record read first: it is what separates a deleted
+            // environment from a stopped one. `nil` means the registry could
+            // not answer, so deletion must not be claimed.
+            let recordExists = await environmentRecordExists(environmentID: environmentID)
+            guard let controller = FloePlatformServices.shared.linuxGuestController() else {
+                // No Linux runtime in this build: the registry still proves
+                // existence, but liveness is unknown, so nothing is reported
+                // as running or stopped.
+                return TaskDeepLinkTargetState.linuxEnvironment(
+                    recordExists: recordExists,
+                    ownedByRuntime: nil,
+                    guestIsRunning: nil
+                )
+            }
+            let owned = await FloePlatformServices.shared
+                .linuxEnvironmentOwned(id: environmentID)
+            var running: Bool?
+            if owned {
+                // Status for an owned environment is a read on the runtime's
+                // registry; it never starts a guest just to answer.
+                running = await controller.guestStatus(environmentID: environmentID).running
+            }
+            return TaskDeepLinkTargetState.linuxEnvironment(
+                recordExists: recordExists,
+                ownedByRuntime: owned,
+                guestIsRunning: running
+            )
         }
+    }
+
+    /// Authoritative environment-record read (D side). Loads the registry the
+    /// same idempotent way every environment surface does; the load never
+    /// starts a guest. `nil` means the read failed and the caller must not
+    /// claim deletion.
+    private func environmentRecordExists(environmentID: String) async -> Bool? {
+        do {
+            try await environment.environmentRegistry.prepare()
+        } catch {
+            FloeLogger(category: .app).warning(
+                "notificationRouteEnvironmentRegistryUnavailable error=\(error.localizedDescription)"
+            )
+            return nil
+        }
+        return await environment.environmentRegistry.record(id: environmentID) != nil
     }
 
     @MainActor
@@ -2868,41 +2981,49 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         key: String,
         link: BackgroundWorkDeepLink,
         identifier: String,
-        targetExists: Bool
+        target: TaskDeepLinkTargetState
     ) {
         let routing = TaskNotificationDecision.resolveRouting(
             persistenceReady: environment.persistenceReady,
             hasActiveScene: effectiveScenePhase == .active,
+            navigationSubscribersReady: navigationSubscribersReady,
             isDuplicate: false,
-            targetExists: targetExists
+            target: target
         )
         switch routing {
         case .routeNow:
             Self.route(deepLink: link)
-            // The user acted on this event: it no longer needs to stay queued
-            // (a flushing duplicate would otherwise alert twice).
-            notificationOutbox.discard(identifier: identifier)
-            userHandledNotificationIdentifiers[identifier] = Date()
-            persistNotificationOutbox()
         case .deferUntilReady:
             pendingNotificationRoute = (key: key, link: link, identifier: identifier)
         case .ignoreDuplicate:
             break
-        case .promptMissingTarget:
-            presentMissingTargetPrompt(link: link, identifier: identifier)
+        case .promptMissingTarget, .promptStoppedTarget, .promptUnavailableTarget:
+            presentUnreachableTargetPrompt(
+                link: link,
+                target: routing.promptedTargetState ?? .unknown,
+                identifier: identifier
+            )
+        }
+        // One durable-event rule for every outcome: an outcome that navigated
+        // or told the user why it could not consumes the event; a deferred or
+        // suppressed outcome keeps it queued for a later attempt (a flushing
+        // duplicate would otherwise alert twice).
+        if routing.consumesDurableEvent {
             notificationOutbox.discard(identifier: identifier)
             userHandledNotificationIdentifiers[identifier] = Date()
             persistNotificationOutbox()
         }
     }
 
-    /// Retries the deferred notification route once the database and an
-    /// active scene are both ready. Call sites: foreground transition,
-    /// authorization refresh and the end of launch reconciliation.
+    /// Retries the deferred notification route once the database, an active
+    /// scene and the mounted navigation subscribers are all ready. Call sites:
+    /// foreground transition, authorization refresh and the end of launch
+    /// reconciliation.
     @MainActor
     private func flushPendingNotificationRoute() {
         guard let pending = pendingNotificationRoute else { return }
-        guard environment.persistenceReady, effectiveScenePhase == .active else { return }
+        guard environment.persistenceReady, effectiveScenePhase == .active,
+              navigationSubscribersReady else { return }
         pendingNotificationRoute = nil
         handleNotificationRoute(
             key: pending.key,
@@ -2918,38 +3039,57 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         userHandledNotificationIdentifiers = userHandledNotificationIdentifiers.filter { $0.value > cutoff }
     }
 
-    /// A notification pointed at a task or environment that no longer exists.
-    /// Present an in-app message and route to the SAFE surface — the task
-    /// list / environment list — never into the dead target, never another
-    /// system notification (tapping that would only re-enter this same
-    /// missing-target path), and never a crash.
+    /// A notification pointed at a target that cannot be opened right now.
+    /// Three honest answers, never a crash and never a false deletion claim:
+    /// - missing: the authoritative record is gone;
+    /// - stopped: the environment exists but nothing is running for it;
+    /// - unknown: existence could not be confirmed.
+    /// The alert carries the safe identity (never the dead target) so tapping
+    /// it repeats exactly this safe behavior. Families with a real list
+    /// listener open that list — focused on the environment only while it is
+    /// known to exist; a route with no listener stays banner-only instead of
+    /// promising a destination that never opens.
     @MainActor
-    private func presentMissingTargetPrompt(
+    private func presentUnreachableTargetPrompt(
         link: BackgroundWorkDeepLink,
+        target: TaskDeepLinkTargetState,
         identifier: String
     ) {
         let title: String
         let body: String
         switch link.kind {
         case .modelRun:
-            title = "无法打开任务"
-            body = "该任务可能已被删除，请从任务列表选择现有任务。"
+            title = String(localized: "notification.unreachable.task.title")
+            body = String(localized: "notification.unreachable.task.body")
         case .linuxSession, .linuxService:
-            title = "无法打开环境"
-            body = "该环境可能已被删除，已为你打开执行环境列表。"
+            title = String(localized: "notification.unreachable.environment.title")
+            switch target {
+            case .missing:
+                body = String(localized: "notification.unreachable.environment.deleted_body")
+            case .existsStopped:
+                body = String(localized: "notification.unreachable.environment.stopped_body")
+            case .exists, .unknown:
+                body = String(localized: "notification.unreachable.environment.unknown_body")
+            }
         }
-        // Family-only deep link: the model-run route no-ops without a
-        // conversation id, the Linux route opens the environment list. Both
-        // are safe by construction.
-        let safeLink = BackgroundWorkDeepLink(kind: link.kind)
+        // Focus the list on the environment only when it is known to exist;
+        // a deleted or unconfirmed id is opened as an unfocused list.
+        let focusedEnvironmentID = target == .existsStopped ? link.environmentID : nil
+        let hasListFallback = TaskNotificationDecision.hasSafeListFallback(kind: link.kind)
+        let safeLink = BackgroundWorkDeepLink(
+            kind: link.kind,
+            environmentID: hasListFallback ? focusedEnvironmentID : nil
+        )
         TaskBannerCenter.shared.present(
             title: title,
             body: body,
             deepLink: safeLink
         )
-        Self.route(deepLink: safeLink)
+        if hasListFallback {
+            Self.route(deepLink: safeLink)
+        }
         FloeLogger(category: .app).warning(
-            "notificationRouteMissingTarget identifier=\(identifier) kind=\(link.kind.rawValue)"
+            "notificationRouteUnreachable identifier=\(identifier) kind=\(link.kind.rawValue) target=\(target.rawValue)"
         )
     }
 

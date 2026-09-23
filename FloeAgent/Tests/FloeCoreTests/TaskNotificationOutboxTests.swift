@@ -8,6 +8,7 @@
 import Foundation
 import Testing
 @testable import FloeCore
+import FloeModels
 
 private func makeEvent(
     id: String = "run.1.terminal",
@@ -320,5 +321,190 @@ struct TaskNotificationOutboxTests {
             createdAt: now.addingTimeInterval(-TaskTerminalEvent.defaultMaximumAlertAge - 1)
         )
         #expect(aged.isExpired(now: now))
+    }
+}
+
+// MARK: - Notification deep-link target resolution and routing (H2)
+//
+// The pure decisions behind notification taps: how an authoritative
+// existence/liveness answer maps to a route, and when a route may not proceed
+// yet. Lives in FloeCoreTests because the terminal-event outbox it protects is
+// FloeCore; the decision types themselves are FloeModels.
+
+@Suite("FloeModels.TaskNotificationDeepLinkRouting")
+struct TaskNotificationDeepLinkRoutingTests {
+
+    private func resolve(
+        persistenceReady: Bool = true,
+        hasActiveScene: Bool = true,
+        navigationSubscribersReady: Bool = true,
+        isDuplicate: Bool = false,
+        target: TaskDeepLinkTargetState
+    ) -> TaskDeepLinkRouting {
+        TaskNotificationDecision.resolveRouting(
+            persistenceReady: persistenceReady,
+            hasActiveScene: hasActiveScene,
+            navigationSubscribersReady: navigationSubscribersReady,
+            isDuplicate: isDuplicate,
+            target: target
+        )
+    }
+
+    @Test("A running target routes once every readiness gate is satisfied")
+    func readyRunningTargetRoutes() {
+        let state = TaskDeepLinkTargetState.linuxEnvironment(
+            recordExists: true,
+            ownedByRuntime: true,
+            guestIsRunning: true
+        )
+        #expect(state == .exists)
+        #expect(resolve(target: state) == .routeNow)
+        #expect(resolve(target: .exists) == .routeNow)
+    }
+
+    @Test("Cold launch defers until persistence, scene and mounted subscribers are ready")
+    func coldLaunchDefers() {
+        #expect(resolve(persistenceReady: false, target: .exists) == .deferUntilReady)
+        #expect(resolve(hasActiveScene: false, target: .exists) == .deferUntilReady)
+        // The root view's deep-link subscribers are real evidence, not a
+        // proxy: posting a route before they mount goes nowhere while
+        // consuming the durable event.
+        #expect(resolve(navigationSubscribersReady: false, target: .exists) == .deferUntilReady)
+        #expect(!TaskDeepLinkRouting.deferUntilReady.consumesDurableEvent)
+    }
+
+    @Test("A repeat tap is suppressed before any other gate and keeps the in-flight route")
+    func duplicateSuppressedFirst() {
+        #expect(resolve(
+            persistenceReady: false,
+            navigationSubscribersReady: false,
+            isDuplicate: true,
+            target: .exists
+        ) == .ignoreDuplicate)
+        // The original in-flight request still owns and consumes the event.
+        #expect(!TaskDeepLinkRouting.ignoreDuplicate.consumesDurableEvent)
+    }
+
+    @Test("A deleted Linux environment prompts instead of routing")
+    func deletedEnvironmentPrompts() {
+        let state = TaskDeepLinkTargetState.linuxEnvironment(
+            recordExists: false,
+            ownedByRuntime: false,
+            guestIsRunning: false
+        )
+        #expect(state == .missing)
+        #expect(resolve(target: state) == .promptMissingTarget)
+        #expect(TaskDeepLinkRouting.promptMissingTarget.consumesDurableEvent)
+    }
+
+    @Test("A stopped existing environment is never reported as deleted")
+    func stoppedExistingEnvironmentIsNotDeletion() {
+        // The registry still holds the record and the runtime still owns the
+        // environment; only the guest is not running.
+        let state = TaskDeepLinkTargetState.linuxEnvironment(
+            recordExists: true,
+            ownedByRuntime: true,
+            guestIsRunning: false
+        )
+        #expect(state == .existsStopped)
+        let routing = resolve(target: state)
+        #expect(routing == .promptStoppedTarget)
+        #expect(routing != .promptMissingTarget)
+        #expect(routing.promptedTargetState == .existsStopped)
+        #expect(routing.consumesDurableEvent)
+    }
+
+    @Test("A service link shares the environment answer and keeps the list fallback")
+    func serviceLinkSharesEnvironmentAnswer() {
+        // A linuxService deep link addresses its session's environment, so the
+        // same authoritative reads answer for both families.
+        let serviceLink = BackgroundWorkDeepLink(
+            kind: .linuxService,
+            environmentID: "env-7",
+            serviceJobID: UUID()
+        )
+        #expect(serviceLink.kind == .linuxService)
+        #expect(serviceLink.environmentID == "env-7")
+        let parsed = BackgroundWorkDeepLink.parse(serviceLink.userInfo)
+        #expect(parsed?.kind == .linuxService)
+        #expect(parsed?.environmentID == "env-7")
+        #expect(parsed?.serviceJobID == serviceLink.serviceJobID)
+        // Both Linux families can open the real environment list; the
+        // model-run family has no task-list listener in this build.
+        #expect(TaskNotificationDecision.hasSafeListFallback(kind: .linuxSession))
+        #expect(TaskNotificationDecision.hasSafeListFallback(kind: .linuxService))
+        #expect(!TaskNotificationDecision.hasSafeListFallback(kind: .modelRun))
+        // A stopped service session still exists: prompt, never "deleted".
+        let stopped = TaskDeepLinkTargetState.linuxEnvironment(
+            recordExists: true,
+            ownedByRuntime: true,
+            guestIsRunning: false
+        )
+        #expect(resolve(target: stopped) == .promptStoppedTarget)
+    }
+
+    @Test("An unreadable registry reports unknown, never deletion")
+    func unreadableRegistryIsUnknownNotDeleted() {
+        let state = TaskDeepLinkTargetState.linuxEnvironment(
+            recordExists: nil,
+            ownedByRuntime: false,
+            guestIsRunning: nil
+        )
+        #expect(state == .unknown)
+        #expect(resolve(target: state) == .promptUnavailableTarget)
+        #expect(TaskDeepLinkRouting.promptUnavailableTarget.consumesDurableEvent)
+        #expect(TaskDeepLinkRouting.promptUnavailableTarget.promptedTargetState == .unknown)
+    }
+
+    @Test("A record with an unknown liveness is unknown, not running and not deleted")
+    func recordPresentButRuntimeSilentIsUnknown() {
+        let state = TaskDeepLinkTargetState.linuxEnvironment(
+            recordExists: true,
+            ownedByRuntime: nil,
+            guestIsRunning: nil
+        )
+        #expect(state == .unknown)
+    }
+
+    @Test("A model-run link has no list listener, so its unreachable prompt stays banner-only")
+    func modelRunPromptIsBannerOnly() {
+        #expect(!TaskNotificationDecision.hasSafeListFallback(kind: .modelRun))
+        #expect(resolve(target: .missing) == .promptMissingTarget)
+    }
+
+    @Test("Only navigating or prompting outcomes consume the durable event")
+    func durableEventConsumption() {
+        #expect(TaskDeepLinkRouting.routeNow.consumesDurableEvent)
+        #expect(TaskDeepLinkRouting.promptMissingTarget.consumesDurableEvent)
+        #expect(TaskDeepLinkRouting.promptStoppedTarget.consumesDurableEvent)
+        #expect(TaskDeepLinkRouting.promptUnavailableTarget.consumesDurableEvent)
+        #expect(!TaskDeepLinkRouting.deferUntilReady.consumesDurableEvent)
+        #expect(!TaskDeepLinkRouting.ignoreDuplicate.consumesDurableEvent)
+        #expect(TaskDeepLinkRouting.routeNow.promptedTargetState == nil)
+    }
+
+    @Test("An earlier tap completion cannot act after a newer request begins")
+    func generationRejectsEarlierCompletion() {
+        var request = TaskDeepLinkRouteRequest()
+        let first = request.begin()
+        #expect(request.accepts(generation: first))
+        let second = request.begin()
+        #expect(second > first)
+        // The earlier tap's async existence check finishes late: it must not
+        // navigate over the newer tap.
+        #expect(!request.accepts(generation: first))
+        #expect(request.accepts(generation: second))
+        #expect(request.current == second)
+    }
+
+    @Test("A deferred retry reuses the current generation instead of bumping it")
+    func retryKeepsGeneration() {
+        var request = TaskDeepLinkRouteRequest()
+        let tap = request.begin()
+        // The retry path does not begin a new request: it carries the original
+        // generation so the single durable event is consumed exactly once.
+        #expect(request.accepts(generation: tap))
+        #expect(request.current == tap)
+        #expect(!request.accepts(generation: tap &+ 1))
     }
 }
