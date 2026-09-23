@@ -20,6 +20,156 @@ from office_release_gates import (CAPABILITY_FLAGS, capability_status, false_cap
                                   host_source_matches_pin, validate_capability_claims)
 from pin_office_host_artifact import LOCK, check as pin_check
 
+HOST_SOURCE = HOST_PUBLIC_HEADER.parent / 'FloeOfficeNative.mm'
+
+
+def host_fragment(text, begin, end):
+    return text.split(begin, 1)[1].split(end, 1)[0]
+
+
+class OfficeEditEntryDeferralTests(unittest.TestCase):
+    """The shipped host gates the presentation edit entry on the first paint.
+
+    Build 225's device white screen: the host drove the guarded mobile edit
+    entry on the open-permission clock — as soon as `app.file.readOnly` was a
+    boolean, before the engine's first status delivered the document extent.
+    For the file-based presentation formats that switched
+    `ImpressTileLayer._switchToPartBasedView` on an empty extent, building an
+    edit surface that never painted (while the preview, which keeps the
+    file-based view, painted fine). These pins hold the causal repair: the
+    entry is paint-gated, the open-permission report settles exactly once, and
+    a close owns the pending entry.
+    """
+
+    def source(self):
+        return HOST_SOURCE.read_text()
+
+    def test_presentation_entry_is_paint_gated_and_word_excel_unchanged(self):
+        source = self.source()
+        # The permission-probe completion routes file-based formats through the
+        # paint-gated deferral and runs every other format directly.
+        self.assertIn('if (FloeDocumentRequiresVisibleRender(probed.workingFileURL.pathExtension))',
+                      source)
+        self.assertIn('[probed deferEditEntryUntilFirstPaint];', source)
+        self.assertIn('[probed runEditEntryAndReport];', source)
+        # The deferral parks the entry; the first-paint trigger runs it.
+        self.assertIn('- (void)deferEditEntryUntilFirstPaint {', source)
+        self.assertIn('- (void)runEditEntryAndReport {', source)
+        self.assertIn('if (self.editEntryPending) [self runEditEntryAndReport];', source)
+        # The probe's finish decision requires the part-based edit surface for
+        # an editable session; a file-based startup paint is preview evidence.
+        self.assertIn('FloeRenderFactsSatisfySessionReady(renderFacts, probe.readOnlySession, fileBasedView)',
+                      source)
+
+    def test_open_permission_report_settles_exactly_once(self):
+        source = self.source()
+        # Every report path funnels through the one-shot reporter, which is
+        # guarded by the per-generation latch. A late probe/entry completion
+        # can never report a second permission over a settled one.
+        self.assertIn('- (void)reportOpenPermissionOnce:(BOOL)success readOnly:(BOOL)readOnly {',
+                      source)
+        self.assertIn('if (self.openPermissionReported) return;', source)
+        # The only direct callback invocation lives inside the one-shot
+        # reporter; every other report path calls the reporter instead.
+        self.assertEqual(
+            source.count('self.onWorkingCopyOpenedWithPermission(success, readOnly)'), 1)
+        call_sites = [line for line in source.splitlines()
+                      if 'reportOpenPermissionOnce:' in line
+                      and not line.strip().startswith('- (void)reportOpenPermissionOnce')]
+        self.assertGreaterEqual(len(call_sites), 6)
+        # No path may invoke the callback directly with a literal result any
+        # more: the literal-result invocations were the unguarded duplicates.
+        for line in source.splitlines():
+            if 'onWorkingCopyOpenedWithPermission(' in line and 'void (^' not in line:
+                self.assertIn('self.onWorkingCopyOpenedWithPermission(success, readOnly)', line)
+
+    def test_pending_entry_is_dropped_at_close_and_settles_on_probe_failure(self):
+        source = self.source()
+        # A close owns the outcome: a paint-gated entry never runs against a
+        # surface that is going away.
+        begin_close = source.split('- (void)beginClose {', 1)[1].split('- (void)settleCloseWaitersWithError:', 1)[0]
+        self.assertIn('self.editEntryPending = NO;', begin_close)
+        # The probe-failure path settles a still-pending entry without forcing
+        # an entry on an engine that never proved a paint.
+        self.assertIn('[self settlePendingEditEntryWithoutEntry];', source)
+        settle = source.split('- (void)settlePendingEditEntryWithoutEntry {', 1)[1] \
+                     .split('- (void)insertAttachmentFromFileURL:', 1)[0]
+        self.assertIn('if (!self.editEntryPending) return;', settle)
+        self.assertIn('[self reportOpenPermissionOnce:YES readOnly:self.sessionIsReadOnly];', settle)
+
+    def test_stage_logs_carry_correlation_ids(self):
+        source = self.source()
+        # open / permission / edit entry / paint / save stages each carry the
+        # per-controller session id and open generation, content-free.
+        for event in ('@"open"', '@"permission"', '@"edit-entry-deferred"', '@"edit-entry"',
+                      '@"edit-entry-result"', '@"first-paint"', '@"visible-render"',
+                      '@"save-requested"', '@"save-completed"'):
+            self.assertIn(event, source)
+        self.assertIn('_sessionID = [[NSUUID UUID] UUIDString];', source)
+        self.assertIn('self.openGeneration += 1;', source)
+        self.assertGreaterEqual(source.count('@"session": self.sessionID'), 6)
+        self.assertGreaterEqual(source.count('@"session": host.sessionID'), 1)
+        self.assertGreaterEqual(source.count('@"generation": @(self.openGeneration)'), 4)
+
+
+class OfficeEditEntryGateTests(unittest.TestCase):
+    """Compile and exercise the shipped two-threshold render decision.
+
+    The edit-entry trigger and the session-ready threshold are compiled from
+    the actual shipped source and driven with synthetic engine states: a
+    decoded tile on the file-based startup triggers the entry but never
+    readies an editable session; only the part-based edit surface does.
+    """
+
+    HARNESS = r'''
+static FloeRenderFacts facts(bool type, bool loaded, bool canvas, bool tile) {
+    FloeRenderFacts value;
+    value.docTypeKnown = type; value.docLoaded = loaded; value.canvasSized = canvas;
+    value.tileDecoded = tile; value.pixelPainted = false; value.vectorRendering = false;
+    return value;
+}
+int main() { @autoreleasepool {
+    // A decoded tile on the file-based startup: the edit entry may run, but an
+    // editable session is not ready on preview evidence.
+    assert(FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, true)));
+    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true), false, true));
+    // The part-based edit surface painted: the editable session is ready.
+    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true), false, false));
+    // A read-only preview is ready on the same file-based paint.
+    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true), true, true));
+    // Skeletons, an unloaded document or an unknown type never trigger either.
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, false)));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, false, true, true)));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(false, true, true, true)));
+    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, false), false, false));
+    // The paint gate applies to the file-based presentation formats only.
+    assert(FloeDocumentRequiresVisibleRender(@"pptx"));
+    assert(FloeDocumentRequiresVisibleRender(@"odp"));
+    assert(!FloeDocumentRequiresVisibleRender(@"docx"));
+    assert(!FloeDocumentRequiresVisibleRender(@"xlsx"));
+    puts("edit-entry gate passed");
+    return 0;
+} }
+'''
+
+    def test_shipped_two_threshold_gate_compiles_and_holds(self):
+        source = HOST_SOURCE.read_text()
+        decision = host_fragment(source, '// FLOE_RENDER_DECISION_BEGIN', '// FLOE_RENDER_DECISION_END')
+        gate = host_fragment(source, '// FLOE_EDIT_ENTRY_GATE_BEGIN', '// FLOE_EDIT_ENTRY_GATE_END')
+        with tempfile.TemporaryDirectory(prefix='floe-edit-entry-gate-') as folder:
+            root = Path(folder)
+            program = root / 'gate.mm'
+            program.write_text('#import <Foundation/Foundation.h>\n#include <cassert>\n#include <cstdio>\n'
+                               + decision + '\n' + gate + '\n' + self.HARNESS)
+            subprocess.run(['xcrun', '--sdk', 'macosx', 'clang++', '-std=c++20', '-fobjc-arc',
+                            '-Wall', '-Werror', '-framework', 'Foundation', str(program),
+                            '-o', str(root / 'gate')], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(root / 'gate')], check=True, capture_output=True,
+                                    text=True, timeout=20)
+        self.assertIn('edit-entry gate passed', result.stdout)
+        # A compiled gate proves nothing about the engine or a device.
+        self.assertNotIn('deviceRoundtripPassed', result.stdout)
+
 
 class NativeHostProjectTests(unittest.TestCase):
     def project(self):

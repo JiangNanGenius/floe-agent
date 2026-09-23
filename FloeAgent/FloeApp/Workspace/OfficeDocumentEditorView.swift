@@ -137,6 +137,23 @@ enum OfficeRenderRequirement: Equatable {
     }
 }
 
+/// Monotonic open generation for one Office session. Every `activate` advances
+/// it; a native callback carries the generation it was installed for, so a
+/// stale callback from a controller an earlier generation mounted can never
+/// settle the current session — independently of the controller identity
+/// check, which it backs with an explicit, testable generation rule.
+struct OfficeOpenGeneration: Equatable {
+    private(set) var current = 0
+
+    @discardableResult
+    mutating func advance() -> Int {
+        current += 1
+        return current
+    }
+
+    func isCurrent(_ generation: Int) -> Bool { generation == current }
+}
+
 /// Truthful readiness state machine for one mounted native session. The open
 /// event, the engine permission and a save receipt never make a
 /// `.visibleRenderRequired` session ready on their own: only the host's real
@@ -296,6 +313,10 @@ final class OfficeFileSession: ObservableObject {
     /// previous open-only readiness (and the release gate keeps the Office
     /// capability unqualified) until the rebuilt framework is pinned.
     private var hostSupportsVisibleRender = false
+    /// Monotonic open generation. Every `activate` advances it; the native
+    /// callbacks it installs capture their generation, so a callback from a
+    /// controller an earlier generation mounted can never settle this session.
+    private var openGeneration = OfficeOpenGeneration()
     /// Invoked after a verified original-file commit. Owning surfaces use it to
     /// refresh sibling entries (IDE tabs, file tree, preview) so a save is
     /// visible from every entry point.
@@ -733,6 +754,19 @@ final class OfficeFileSession: ObservableObject {
         return value
     }
 
+    /// The bounded wait for the host's verified engine-permission report. For
+    /// an editable presentation the report legitimately follows the first
+    /// painted document tile — the guarded edit entry is paint-gated on the
+    /// host, so the open-permission report arrives after the engine proved a
+    /// real paint, not at page-init time. The wait therefore tracks the
+    /// opening contract's budget with a margin that keeps the open watchdog
+    /// the outer, harder bound: the recoverable "not confirmed yet" outcome
+    /// always wins over a hard timeout failure for a merely slow host.
+    static func permissionReportBudget(openingPolicy: OfficeOpeningPolicy?,
+                                       readOnly: Bool) -> TimeInterval {
+        (openingPolicy?.openingBudget ?? (readOnly ? 30 : 45)) - 5
+    }
+
     private func resolveEnginePermission(_ value: Bool?) {
         guard let waiter = permissionWaiter else { return }
         permissionWaiter = nil
@@ -859,7 +893,8 @@ final class OfficeFileSession: ObservableObject {
     private func acknowledgeEditPermission() async throws {
         #if canImport(FloeOfficeNative)
         guard let native = controller as? FloeOfficeNativeViewController else { return }
-        var hostReadOnly = await awaitEnginePermission(seconds: 25)
+        var hostReadOnly = await awaitEnginePermission(
+            seconds: Self.permissionReportBudget(openingPolicy: openingPolicy, readOnly: readOnly))
         guard native.isViewLoaded, let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) else {
             // Without a mounted surface the engine has not opened yet. The host
             // callback (or the open watchdog) still owns this session; never
@@ -1080,7 +1115,12 @@ final class OfficeFileSession: ObservableObject {
     }
 
     private func save(returnToPreview: Bool) async -> Bool {
-        guard canAct, !readOnly, let workspace, let session else { return false }
+        // The loaded/editable/visible distinction is explicit at the save
+        // boundary: a session that never reached its verified ready state (an
+        // unrendered presentation included) must never flush the engine — an
+        // unloaded or unrendered document is not saved, and the retained
+        // working copy is never overwritten by an unverified state.
+        guard canAct, !readOnly, renderGate?.permitsSave ?? true, let workspace, let session else { return false }
         operating = true
         defer { finishOperation() }
         phase = .saving
@@ -1581,6 +1621,10 @@ final class OfficeFileSession: ObservableObject {
         let native = try FloeOfficeNativeViewController(
             workingFileURL: session.workingURL,
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
+        // Every mounted controller owns one open generation. Callbacks below
+        // capture it, so a stale callback from a controller an earlier
+        // generation mounted can never settle this session's state.
+        let generation = openGeneration.advance()
         runtimeFailed = false
         engineSessionReadOnly = nil
         resolveEnginePermission(nil)
@@ -1611,7 +1655,8 @@ final class OfficeFileSession: ObservableObject {
             // exactly once; neither is an open or save event.
             let ready: @convention(block) (NSString?, TimeInterval) -> Void = { [weak self, weak native] _, _ in
                 Task { @MainActor in
-                    guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+                    guard let self, let native, self.controller === native,
+                          self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
                     self.cancelRenderWatchdog()
                     guard self.renderGate?.visibleRenderObserved() == .ready else { return }
                     // A real paint always wins, including after a bounded
@@ -1624,7 +1669,8 @@ final class OfficeFileSession: ObservableObject {
             _ = native.perform(NSSelectorFromString("setOnVisibleRenderReady:"), with: ready as AnyObject)
             let failed: @convention(block) (NSError) -> Void = { [weak self, weak native] _ in
                 Task { @MainActor in
-                    guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+                    guard let self, let native, self.controller === native,
+                          self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
                     self.cancelRenderWatchdog()
                     guard self.renderGate?.hostFailed() == .failed else { return }
                     // The host's bounded outcome is the engine's own report that
@@ -1643,7 +1689,8 @@ final class OfficeFileSession: ObservableObject {
         // session) before it reports. The plain open event only reports a hard
         // failure here.
         native.onWorkingCopyOpened = { [weak self, weak native] success in
-            guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+            guard let self, let native, self.controller === native,
+                  self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
             if !success {
                 self.cancelOpenWatchdog()
                 self.resolveEnginePermission(nil)
@@ -1651,7 +1698,8 @@ final class OfficeFileSession: ObservableObject {
             }
         }
         native.onWorkingCopyOpenedWithPermission = { [weak self, weak native] success, readOnly in
-            guard let self, let native, self.controller === native, !self.runtimeFailed else { return }
+            guard let self, let native, self.controller === native,
+                  self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
             self.engineSessionReadOnly = readOnly
             self.resolveEnginePermission(readOnly)
             if !success {
@@ -1692,7 +1740,8 @@ final class OfficeFileSession: ObservableObject {
             }
         }
         native.onEnginePermissionChanged = { [weak self, weak native] readOnly in
-            guard let self, let native, self.controller === native else { return }
+            guard let self, let native, self.controller === native,
+                  self.openGeneration.isCurrent(generation) else { return }
             self.engineSessionReadOnly = readOnly
             self.resolveEnginePermission(readOnly)
             if !readOnly, !native.isReadOnly, self.readOnly {
@@ -1701,7 +1750,8 @@ final class OfficeFileSession: ObservableObject {
             }
         }
         native.onClosed = { [weak self, weak native] _ in
-            guard let self, let native, self.controller === native, !self.expectedClose else { return }
+            guard let self, let native, self.controller === native,
+                  self.openGeneration.isCurrent(generation), !self.expectedClose else { return }
             self.runtimeFailed = true
             self.error = OfficeInkText.t(
                 "文档已被文档引擎关闭；编辑副本已保留，可在“保留的文档”中恢复。",

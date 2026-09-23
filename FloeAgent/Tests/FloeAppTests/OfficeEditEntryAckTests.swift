@@ -58,4 +58,42 @@ struct OfficeEditEntryAckTests {
         #expect(value.pendingPassword == false)
     }
 }
+
+@Suite("FloeApp.OfficeOpenGeneration")
+@MainActor
+struct OfficeOpenGenerationTests {
+
+    @Test("The generation advances monotonically per mounted open")
+    func advancesMonotonically() {
+        var generation = OfficeOpenGeneration()
+        #expect(generation.current == 0)
+        #expect(generation.advance() == 1)
+        #expect(generation.advance() == 2)
+        #expect(generation.current == 2)
+    }
+
+    @Test("A callback from an older generation can never settle the current session")
+    func staleGenerationIsRejected() {
+        var generation = OfficeOpenGeneration()
+        let preview = generation.advance()
+        #expect(generation.isCurrent(preview))
+        // The preview-to-edit switch mounts a new controller: the generation
+        // the preview's callbacks captured is stale from here on.
+        let editing = generation.advance()
+        #expect(generation.isCurrent(editing))
+        #expect(!generation.isCurrent(preview), "a stale callback must not settle the new session")
+        // A late render/permission report from the preview's controller is
+        // ignored even though it arrives after the edit mount.
+        #expect(!generation.isCurrent(preview))
+        #expect(generation.isCurrent(editing))
+    }
+
+    @Test("Generation zero is never current once the first open advanced")
+    func zeroIsNeverCurrentAfterFirstAdvance() {
+        var generation = OfficeOpenGeneration()
+        #expect(generation.isCurrent(0), "before any open, generation zero is the current one")
+        _ = generation.advance()
+        #expect(!generation.isCurrent(0))
+    }
+}
 #endif

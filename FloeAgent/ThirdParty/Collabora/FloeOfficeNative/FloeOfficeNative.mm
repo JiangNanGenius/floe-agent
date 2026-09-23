@@ -659,6 +659,7 @@ static void ServerReady() {
 - (void)serverBecameReady {
     if (self.state != FloeRuntimeStarting) return;
     self.state = FloeRuntimeReady;
+    FloeOfficeLog(@"host-ready", @{});
     [self finishWaiters:nil];
 }
 - (void)fail:(NSError *)error {
@@ -874,9 +875,40 @@ static void ServerReady() {
 // polls the shipped `FloeRenderProbeScript` and finishes exactly once; a
 // session that never paints its document surface reports a bounded failure
 // instead of leaving a blank editor that claims to be ready.
+
+// FLOE_EDIT_ENTRY_GATE_BEGIN
+// Two thresholds over the same decoded-tile facts, compiled independently by
+// test_office_native_host.py against synthetic engine states:
+//
+// * the edit-entry trigger fires once ANY surface painted a decoded document
+//   tile — proof of a live paint pipeline and a real document extent, the
+//   earliest point the guarded mobile edit entry may switch the file-based
+//   presentation startup into the part-based edit layout without building it
+//   on an empty extent;
+// * the session-ready threshold additionally requires the part-based edit
+//   surface for an editable session (fileBasedView cleared): a file-based
+//   startup paint is preview evidence, never edit-surface evidence.
+static bool FloeRenderFactsSatisfyEditEntryTrigger(FloeRenderFacts facts) {
+    return FloeRenderFactsSatisfyVisibleRender(facts);
+}
+
+static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readOnly, bool fileBasedView) {
+    if (!FloeRenderFactsSatisfyVisibleRender(facts)) return false;
+    return readOnly || !fileBasedView;
+}
+// FLOE_EDIT_ENTRY_GATE_END
+
 @interface FloeOfficeNativeViewController (FloeRenderProbe)
 - (void)evaluateRenderFactsWithCompletion:(void (^)(NSDictionary<NSString *, id> * _Nullable facts,
                                                     NSError * _Nullable error))completion;
+/// The engine decoded at least one document tile on a sized canvas — proof of
+/// a live paint pipeline and a real document extent. Fired at most once per
+/// session, before the session-ready decision, and never for a skeleton-only
+/// surface. The host gates the guarded mobile edit entry on this: switching
+/// the file-based presentation startup into the part-based edit layout before
+/// any tile exists builds the edit surface on an empty document extent, which
+/// is the device white screen.
+- (void)renderProbeDidObserveFirstPaint:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
@@ -887,6 +919,10 @@ static void ServerReady() {
 /// Presentation/drawing formats must show a decoded document tile; other
 /// formats report the first paint as diagnostics but never fail the session.
 @property (nonatomic) BOOL requiresVisibleRender;
+/// The mount grant this probe was started for. An editable session's
+/// session-ready evidence must come from the part-based edit surface
+/// (fileBasedView cleared), never from the file-based startup view.
+@property (nonatomic, readonly) BOOL readOnlySession;
 @property (nonatomic) NSTimeInterval deadline;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *diagnostics;
 - (instancetype)initWithController:(FloeOfficeNativeViewController *)controller
@@ -901,6 +937,8 @@ static void ServerReady() {
     NSUInteger _attempts;
     BOOL _finished;
     BOOL _cancelled;
+    /// The first-paint trigger was delivered; it fires at most once per session.
+    BOOL _firstPaintReported;
     NSMutableDictionary<NSString *, id> *_lastFacts;
     /// Last logged probe stage; polling every 200 ms must not flood the log.
     NSString *_lastLoggedStage;
@@ -917,6 +955,7 @@ static void ServerReady() {
     if ((self = [super init])) {
         _controller = controller;
         _requiresVisibleRender = FloeDocumentRequiresVisibleRender(workingFile.pathExtension);
+        _readOnlySession = readOnly;
         // A preview of the same presentation shapes is cheaper than an editable
         // session (no edit-mode switch and no part-based relayout), so it gets a
         // smaller bound. Both stay below the App's open watchdog so the honest
@@ -1001,10 +1040,28 @@ static void ServerReady() {
                 FloeOfficeLog(@"render-probe-facts", facts);
             }
             FloeRenderFacts renderFacts = [probe renderFactsFromDictionary:facts];
-            if (FloeRenderFactsSatisfyVisibleRender(renderFacts)) {
-                [probe finishWithStage:@"visible-render"];
-                [probe.controller renderProbeDidObserveVisibleRender:probe.diagnostics];
-                return;
+            if (FloeRenderFactsSatisfyEditEntryTrigger(renderFacts)) {
+                // A decoded document tile proves a live paint pipeline and a
+                // real document extent: the earliest point the guarded mobile
+                // edit entry may switch the file-based startup into the
+                // part-based edit layout without building it on an empty
+                // extent. Reported before the session-ready decision, at most
+                // once per session, so a pending edit entry always runs.
+                if (!probe->_firstPaintReported) {
+                    probe->_firstPaintReported = YES;
+                    [probe.controller renderProbeDidObserveFirstPaint:probe.diagnostics];
+                }
+                BOOL fileBasedView = [facts[@"fileBasedView"] isKindOfClass:NSNumber.class]
+                    && [facts[@"fileBasedView"] boolValue];
+                if (FloeRenderFactsSatisfySessionReady(renderFacts, probe.readOnlySession, fileBasedView)) {
+                    [probe finishWithStage:@"visible-render"];
+                    [probe.controller renderProbeDidObserveVisibleRender:probe.diagnostics];
+                    return;
+                }
+                // An editable presentation still shows the file-based startup:
+                // the guarded entry now switches it to the part-based edit
+                // layout. Keep polling, bounded by the deadline, for the edit
+                // surface's own paint — the session is only ready on that.
             }
         }
         if (probe->_startedAt && -[probe->_startedAt timeIntervalSinceNow] >= probe.deadline) {
@@ -1100,6 +1157,29 @@ static void ServerReady() {
 @property (nonatomic, strong) FloeOfficeRenderProbe *renderProbe;
 @property (nonatomic, readwrite, getter=hasVisibleRender) BOOL visibleRenderObserved;
 @property (nonatomic, readwrite, copy, nullable) NSDictionary<NSString *, id> *renderDiagnostics;
+/// Per-controller correlation identity for the bounded, content-free stage
+/// logs (open, permission, edit entry, paint, save). Never document contents.
+@property (nonatomic, copy, readonly) NSString *sessionID;
+/// Monotonic open generation of this controller; every viewWillAppear open
+/// request advances it. Stage logs carry it so a device trace can order the
+/// open/permission/entry/paint sequence of one mounted session.
+@property (nonatomic) NSUInteger openGeneration;
+/// The guarded mobile edit entry is paint-gated for the file-based
+/// presentation formats: it runs once the render probe observed the first
+/// decoded document tile, never on the open-permission clock. The pending
+/// entry is stored here until that trigger (or a settle path) fires.
+@property (nonatomic) BOOL editEntryPending;
+/// The guarded edit entry is running; a second trigger can never start a
+/// concurrent engine switch.
+@property (nonatomic) BOOL editEntryRunning;
+/// The open-permission report settled exactly once for this open generation;
+/// a late probe/entry completion can never report a second time.
+@property (nonatomic) BOOL openPermissionReported;
+/// The render probe observed at least one decoded document tile (any surface).
+@property (nonatomic) BOOL firstPaintObserved;
+/// The render probe finished (ready or failed); a late deferral can never
+/// park the edit entry behind a finished probe.
+@property (nonatomic) BOOL renderProbeFinished;
 - (void)startRenderProbe;
 - (void)enginePermissionDidUpdate:(BOOL)readOnly;
 - (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
@@ -1107,6 +1187,18 @@ static void ServerReady() {
 - (void)attemptEngineEditEntryWithAttempts:(NSUInteger)attempts
                                 completion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion;
 - (void)attemptEngineEditEntryWithCompletion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion;
+/// Settles the open-permission report exactly once for this open generation.
+- (void)reportOpenPermissionOnce:(BOOL)success readOnly:(BOOL)readOnly;
+/// Defers the guarded mobile edit entry until the render probe's first-paint
+/// trigger (file-based presentation formats). Runs it at once when the paint
+/// already happened, and settles without an entry when the probe already
+/// finished without one.
+- (void)deferEditEntryUntilFirstPaint;
+/// Runs the guarded edit entry at most once and reports its real outcome.
+- (void)runEditEntryAndReport;
+/// Settles a still-pending edit entry without forcing an entry: the render
+/// gate owns the bounded outcome. Exactly once.
+- (void)settlePendingEditEntryWithoutEntry;
 @end
 
 @implementation FloeOfficeEnginePermissionObserver
@@ -1144,6 +1236,7 @@ static void ServerReady() {
         // The App's requested grant until the engine reports its own permission.
         _sessionIsReadOnly = readOnly;
         _workingFileURL = file;
+        _sessionID = [[NSUUID UUID] UUIDString];
         _saveReceipts = [FloeSaveReceiptJoiner new];
         _closeWaiters = [NSMutableArray array];
         _editor = [[DocumentViewController alloc] initWithNibName:nil bundle:nil];
@@ -1160,12 +1253,14 @@ static void ServerReady() {
             host.documentOpened = success;
             if (host.onWorkingCopyOpened) host.onWorkingCopyOpened(success);
             FloeOfficeLog(@"open", @{@"success": @(success),
+                                     @"session": host.sessionID,
+                                     @"generation": @(host.openGeneration),
                                      @"format": host.workingFileURL.pathExtension.lowercaseString ?: @"",
                                      @"readOnly": @(host.readOnly),
                                      @"appDocId": @(host.editor.document->appDocId)});
             if (!success) {
                 host.sessionIsReadOnly = YES;
-                if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(NO, YES);
+                [host reportOpenPermissionOnce:NO readOnly:YES];
                 [host beginCloseIfRequested];
                 return;
             }
@@ -1181,7 +1276,7 @@ static void ServerReady() {
                 // spinner" on iPhone. Report immediately; the permission
                 // observer still streams later engine state for diagnostics.
                 host.sessionIsReadOnly = YES;
-                if (host.onWorkingCopyOpenedWithPermission) host.onWorkingCopyOpenedWithPermission(YES, YES);
+                [host reportOpenPermissionOnce:YES readOnly:YES];
                 [host beginCloseIfRequested];
                 return;
             }
@@ -1192,22 +1287,28 @@ static void ServerReady() {
                 // an edit grant: keep the conservative read-only state. The
                 // permission observer corrects it once the engine reports.
                 probed.sessionIsReadOnly = known ? readOnly : YES;
+                FloeOfficeLog(@"permission", @{@"session": probed.sessionID,
+                                              @"generation": @(probed.openGeneration),
+                                              @"known": @(known),
+                                              @"readOnly": @(probed.sessionIsReadOnly)});
                 // An editable backing document that the mobile editor mounted in
                 // its viewing-first UI is not a denied document: follow the
                 // engine's own guarded entry once, then report the real state.
                 if (known && !readOnly && !probed.readOnly) {
-                    [probed attemptEngineEditEntryWithCompletion:^(BOOL stillReadOnly, BOOL pendingPassword) {
-                        FloeOfficeNativeViewController *entered = weakSelf;
-                        if (!entered || entered.closed || entered.closing) return;
-                        entered.sessionIsReadOnly = stillReadOnly;
-                        if (entered.onWorkingCopyOpenedWithPermission)
-                            entered.onWorkingCopyOpenedWithPermission(YES, stillReadOnly);
-                        [entered beginCloseIfRequested];
-                    }];
+                    if (FloeDocumentRequiresVisibleRender(probed.workingFileURL.pathExtension)) {
+                        // The file-based presentation startup must paint once
+                        // before the guarded entry: switching the layout on an
+                        // empty document extent builds an edit surface that
+                        // never paints (the device white screen).
+                        [probed deferEditEntryUntilFirstPaint];
+                    } else {
+                        // Word/Excel have no file-based layout switch; the
+                        // entry keeps its open-permission timing (unchanged).
+                        [probed runEditEntryAndReport];
+                    }
                     return;
                 }
-                if (probed.onWorkingCopyOpenedWithPermission)
-                    probed.onWorkingCopyOpenedWithPermission(YES, probed.sessionIsReadOnly);
+                [probed reportOpenPermissionOnce:YES readOnly:probed.sessionIsReadOnly];
                 [probed beginCloseIfRequested];
             }];
         };
@@ -1253,6 +1354,7 @@ static void ServerReady() {
     __weak FloeOfficeNativeViewController *weakSaveHost = self;
     if (![self.saveReceipts begin:requestID completion:^(BOOL success) {
         FloeOfficeLog(@"save-completed", @{@"request": requestID ?: @"",
+                                           @"session": weakSaveHost.sessionID ?: @"",
                                            @"success": @(success),
                                            @"visibleRender": @(weakSaveHost.visibleRenderObserved)});
         completion(success ? nil : OfficeError(8, @"Office could not complete this save. Your document copies have been retained."));
@@ -1261,6 +1363,7 @@ static void ServerReady() {
         return;
     }
     FloeOfficeLog(@"save-requested", @{@"request": requestID ?: @"",
+                                       @"session": self.sessionID,
                                        @"visibleRender": @(self.visibleRenderObserved),
                                        @"uiEdit": @(self.sessionIsReadOnly == NO)});
     NSData *encoded = [NSJSONSerialization dataWithJSONObject:@[requestID] options:0 error:nil];
@@ -1375,11 +1478,30 @@ static void ServerReady() {
         completion(facts, error);
     }];
 }
+- (void)renderProbeDidObserveFirstPaint:(NSDictionary<NSString *, id> *)diagnostics {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    if (self.firstPaintObserved) return;
+    self.firstPaintObserved = YES;
+    FloeOfficeLog(@"first-paint", @{@"session": self.sessionID,
+                                    @"generation": @(self.openGeneration),
+                                    @"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
+                                        ? diagnostics[@"elapsed"] : @0});
+    // The paint-gated edit entry (file-based presentation formats) runs exactly
+    // once, here: the engine proved a live pipeline and a real document extent,
+    // so the part-based edit layout is built from a sized document.
+    if (self.editEntryPending) [self runEditEntryAndReport];
+}
 - (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
     self.visibleRenderObserved = YES;
+    self.firstPaintObserved = YES;
+    self.renderProbeFinished = YES;
     self.renderDiagnostics = diagnostics;
-    FloeOfficeLog(@"visible-render", diagnostics);
+    FloeOfficeLog(@"visible-render", @{@"session": self.sessionID,
+                                       @"generation": @(self.openGeneration),
+                                       @"docType": diagnostics[@"docType"] ?: @"",
+                                       @"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
+                                           ? diagnostics[@"elapsed"] : @0});
     if (self.onVisibleRenderReady)
         self.onVisibleRenderReady(diagnostics[@"docType"],
                                   [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
@@ -1387,14 +1509,24 @@ static void ServerReady() {
 }
 - (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    self.renderProbeFinished = YES;
     self.renderDiagnostics = diagnostics;
-    FloeOfficeLog(@"visible-render-failed", diagnostics);
+    FloeOfficeLog(@"visible-render-failed", @{@"session": self.sessionID,
+                                              @"generation": @(self.openGeneration),
+                                              @"stage": diagnostics[@"stage"] ?: @"",
+                                              @"failure": diagnostics[@"failure"] ?: @""});
+    // A still-pending edit entry settles here without forcing an entry: the
+    // engine never proved a paint, and the render gate owns the bounded
+    // outcome. The report still settles exactly once.
+    [self settlePendingEditEntryWithoutEntry];
     if (self.onVisibleRenderFailed) self.onVisibleRenderFailed(error);
 }
 - (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    self.renderProbeFinished = YES;
     self.renderDiagnostics = diagnostics;
-    FloeOfficeLog(@"visible-render-unobserved", diagnostics);
+    FloeOfficeLog(@"visible-render-unobserved", @{@"session": self.sessionID,
+                                                  @"generation": @(self.openGeneration)});
 }
 // Retries until the editor has created its map. app.file.readOnly is the
 // backing permission; _permission/isReadOnlyMode() alone is the mobile UI mode.
@@ -1501,6 +1633,75 @@ static void ServerReady() {
         completion(readOnly, error);
     }];
 }
+/// Settles the open-permission report exactly once for this open generation.
+/// Every path (preview, non-deferred entry, paint-gated entry, probe failure,
+/// close) funnels through here, so a late probe or entry completion can never
+/// report a second permission over an already-settled one.
+- (void)reportOpenPermissionOnce:(BOOL)success readOnly:(BOOL)readOnly {
+    NSAssert(NSThread.isMainThread, @"Office open reports are main-queue owned");
+    if (self.openPermissionReported) return;
+    self.openPermissionReported = YES;
+    if (self.onWorkingCopyOpenedWithPermission) self.onWorkingCopyOpenedWithPermission(success, readOnly);
+}
+/// Defers the guarded mobile edit entry until the render probe's first-paint
+/// trigger. The file-based presentation startup must paint once before the
+/// layout switch: entering on the open-permission clock built the part-based
+/// edit surface on an empty document extent, which never painted on device.
+- (void)deferEditEntryUntilFirstPaint {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    if (self.editEntryPending || self.editEntryRunning || self.openPermissionReported) return;
+    if (self.firstPaintObserved) { [self runEditEntryAndReport]; return; }
+    if (self.renderProbeFinished) {
+        // The probe already settled without a paint: report the real backing
+        // permission without forcing an entry; the render gate owns the
+        // bounded outcome and a later entry could only race a dead surface.
+        [self reportOpenPermissionOnce:YES readOnly:self.sessionIsReadOnly];
+        [self beginCloseIfRequested];
+        return;
+    }
+    self.editEntryPending = YES;
+    FloeOfficeLog(@"edit-entry-deferred", @{@"session": self.sessionID,
+                                            @"generation": @(self.openGeneration)});
+}
+/// Runs the guarded edit entry at most once and reports its real outcome.
+/// A close that wins the race owns the outcome; the entry result is dropped.
+- (void)runEditEntryAndReport {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    if (self.editEntryRunning || self.openPermissionReported) return;
+    self.editEntryPending = NO;
+    self.editEntryRunning = YES;
+    FloeOfficeLog(@"edit-entry", @{@"session": self.sessionID,
+                                   @"generation": @(self.openGeneration)});
+    __weak FloeOfficeNativeViewController *weakSelf = self;
+    [self attemptEngineEditEntryWithCompletion:^(BOOL stillReadOnly, BOOL pendingPassword) {
+        FloeOfficeNativeViewController *entered = weakSelf;
+        if (!entered) return;
+        entered.editEntryRunning = NO;
+        if (entered.closed || entered.closing) return;
+        entered.sessionIsReadOnly = stillReadOnly;
+        FloeOfficeLog(@"edit-entry-result", @{@"session": entered.sessionID,
+                                              @"generation": @(entered.openGeneration),
+                                              @"readOnly": @(stillReadOnly),
+                                              @"pendingPassword": @(pendingPassword)});
+        [entered reportOpenPermissionOnce:YES readOnly:stillReadOnly];
+        [entered beginCloseIfRequested];
+    }];
+}
+/// Settles a still-pending edit entry without forcing an entry: the engine
+/// never proved a paint, so switching the layout could only build the edit
+/// surface on an empty extent. The backing permission is reported once and
+/// the render gate owns the bounded outcome.
+- (void)settlePendingEditEntryWithoutEntry {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    if (!self.editEntryPending) return;
+    self.editEntryPending = NO;
+    if (self.closed || self.closing) return;
+    FloeOfficeLog(@"edit-entry-settled-without-entry", @{@"session": self.sessionID,
+                                                         @"generation": @(self.openGeneration),
+                                                         @"readOnly": @(self.sessionIsReadOnly)});
+    [self reportOpenPermissionOnce:YES readOnly:self.sessionIsReadOnly];
+    [self beginCloseIfRequested];
+}
 - (void)insertAttachmentFromFileURL:(NSURL *)fileURL completion:(void (^)(NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office attachment requests are main-queue owned");
     if (self.readOnly || self.closing || self.closed || self.insertingAttachment || self.saveReceipts.activeRequestID ||
@@ -1592,6 +1793,10 @@ static void ServerReady() {
 }
 - (void)beginClose {
     if (self.closed || self.closing) return;
+    // A close owns the session's outcome from here: a paint-gated edit entry
+    // still waiting for its trigger is dropped, never run against a surface
+    // that is going away, and its report is left to the close path.
+    self.editEntryPending = NO;
     // A closed session can never paint again; stop the render probe so its
     // deadline cannot report a failure or a ready signal for a dead surface.
     [self.renderProbe cancel];
@@ -1719,8 +1924,13 @@ static void ServerReady() {
     [super viewWillAppear:animated];
     // The upstream editor opens its document from its own viewWillAppear, so
     // reaching this point means a kit session is (or will be) live and every
-    // later close must go through the engine's acknowledgement path.
-    self.openRequested = YES;
+    // later close must go through the engine's acknowledgement path. The
+    // document itself opens only once per controller (the upstream guard on
+    // fakeClientFd), so the open generation advances on the first request.
+    if (!self.openRequested) {
+        self.openRequested = YES;
+        self.openGeneration += 1;
+    }
 }
 - (void)viewDidLoad {
     [super viewDidLoad];

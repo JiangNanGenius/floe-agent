@@ -121,5 +121,57 @@ struct OfficePresentationOpeningTests {
         #expect(unverified.renderObserved() == .ready)
         #expect(unverified.warning == nil)
     }
+
+    // MARK: - Loaded / editable / visible at the save boundary
+
+    @Test("A presentation that settled open but never painted cannot save")
+    func unrenderedPresentationCannotSave() {
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        #expect(gate.openSettled() == .waitingForRender)
+        #expect(!gate.permitsSave, "an opened but unpainted presentation must not save")
+        #expect(gate.deadlineExceeded() == .failed)
+        #expect(!gate.permitsSave, "a bounded-outcome presentation must not save either")
+    }
+
+    @Test("A presentation can save only once the edit surface itself painted")
+    func renderedPresentationCanSave() {
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        _ = gate.openSettled()
+        #expect(gate.visibleRenderObserved() == .ready)
+        #expect(gate.permitsSave, "a painted presentation permits save")
+        // A late failure after a real paint never revokes the save permit.
+        #expect(gate.hostFailed() == .ready)
+        #expect(gate.permitsSave)
+    }
+
+    @Test("Word and Excel can save from the settled open, unchanged")
+    func documentsCanSaveAtOpen() {
+        for path in ["docx", "xlsx"] {
+            var gate = OfficeVisibleRenderGate(requirement: .openOnly)
+            #expect(gate.openSettled() == .ready, Comment(rawValue: path))
+            #expect(gate.permitsSave, Comment(rawValue: path))
+        }
+    }
+
+    // MARK: - Permission report budget
+
+    @Test("The permission report wait outlasts the paint-gated report but stays under the open watchdog")
+    func permissionReportBudgetTracksTheOpeningContract() {
+        // Editable presentation: the host's verified report legitimately follows
+        // the first painted tile (the paint-gated edit entry), so the wait is
+        // the editable opening budget minus the watchdog margin.
+        let editable = OfficeOpeningPolicy(requiresVisibleRender: true, readOnly: false)
+        #expect(OfficeFileSession.permissionReportBudget(openingPolicy: editable, readOnly: false) == 40)
+        #expect(OfficeFileSession.permissionReportBudget(openingPolicy: editable, readOnly: false)
+                < editable.openingBudget, "the open watchdog stays the outer bound")
+        // Preview keeps its historical bound.
+        let preview = OfficeOpeningPolicy(requiresVisibleRender: true, readOnly: true)
+        #expect(OfficeFileSession.permissionReportBudget(openingPolicy: preview, readOnly: true) == 25)
+        #expect(OfficeFileSession.permissionReportBudget(openingPolicy: preview, readOnly: true)
+                < preview.openingBudget)
+        // A session without a policy falls back to the same contract.
+        #expect(OfficeFileSession.permissionReportBudget(openingPolicy: nil, readOnly: false) == 40)
+        #expect(OfficeFileSession.permissionReportBudget(openingPolicy: nil, readOnly: true) == 25)
+    }
 }
 #endif
