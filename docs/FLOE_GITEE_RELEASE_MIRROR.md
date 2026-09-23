@@ -126,7 +126,7 @@ gh workflow run gitee-mirror.yml --ref main \
 
 ## 状态 / Status（2026-09-23 实测）
 
-载体：分支 `codex/gitee-release-asset-mirror`，最终修订 `46d9fa10`；成功运行 [35844170219](https://github.com/JiangNanGenius/floe-agent/actions/runs/35844170219)。
+载体：分支 `codex/gitee-release-asset-mirror`，最终修订 `5a502af9`；成功运行 [35844170219](https://github.com/JiangNanGenius/floe-agent/actions/runs/35844170219)（首次发布清单）与 [35844874266](https://github.com/JiangNanGenius/floe-agent/actions/runs/35844874266)（幂等复核：`verified=6 uploaded=0 skipped=6 failed=0`，清单字节一致被跳过；仅 `prerelease` 元数据修正为与 GitHub 一致）。
 
 - Gitee Release [v1.7.0-beta.82](https://gitee.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.82)（id 1162007）：名称与 GitHub 一致，`prerelease=true`，`target_commitish=fe0852b4…`（GitHub 标签 SHA），正文附双语镜像说明（含「分片不是可安装包」警告）。
 - 6 个可直下资产：`state=verified`、`complete=true`，每个计划文件名只对应一个已验证附件 id，逐文件 SHA-256 与 GitHub 摘要一致；URL 形如 `https://gitee.com/JiangNanGenius/floe-agent/releases/download/v1.7.0-beta.82/<name>`。
