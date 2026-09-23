@@ -671,15 +671,17 @@ struct ComposerFullEditorTests {
         var sends = 0
         controller.onSend = { sends += 1 }
         // The composer's live guard is off (no model, blank draft, a send in
-        // flight): the press is not consumed and nothing is sent.
-        #expect(!controller.commandReturnSends(hasMarkedText: false))
-        #expect(!controller.send(hasMarkedText: false))
+        // flight): nothing is sent and the press is not consumed.
+        #expect(!controller.commandReturnSends())
+        #expect(!controller.requestSend())
         #expect(sends == 0)
         controller.sendAllowed = true
         // An unconfirmed input-method candidate can never send.
-        #expect(!controller.send(hasMarkedText: true))
+        controller.markedTextOverride = true
+        #expect(!controller.requestSend())
         #expect(sends == 0)
-        #expect(controller.send(hasMarkedText: false))
+        controller.markedTextOverride = false
+        #expect(controller.requestSend())
         #expect(sends == 1)
         // The exact same policy the inline field uses.
         #expect(ComposerSendKeyPolicy.commandReturnSends(
@@ -688,8 +690,33 @@ struct ComposerFullEditorTests {
         // Without a composer action the editor never fires one.
         controller.onSend = nil
         controller.sendAllowed = true
-        #expect(!controller.send(hasMarkedText: false))
+        #expect(!controller.requestSend())
         #expect(sends == 1)
+    }
+
+    @Test("The toolbar send button and Cmd+Enter share one real IME guard")
+    func editorToolbarAndKeyboardShareImeGuard() {
+        let controller = FullEditorController()
+        let view = FullEditorUITextView()
+        controller.attach(view)
+        var sends = 0
+        controller.onSend = { sends += 1 }
+        controller.sendAllowed = true
+        #expect(!controller.hasMarkedText)
+        // A half-confirmed candidate blocks the single entrypoint that both
+        // the toolbar button and the hardware shortcut call, so the button
+        // cannot send when the keyboard shortcut is suppressed.
+        controller.markedTextOverride = true
+        #expect(!controller.commandReturnSends())
+        #expect(!controller.requestSend())
+        #expect(sends == 0)
+        controller.markedTextOverride = false
+        #expect(controller.requestSend())
+        #expect(sends == 1)
+        // A detached editor has no marked text and still follows the guard.
+        controller.detach(view)
+        #expect(controller.requestSend())
+        #expect(sends == 2)
     }
 }
 

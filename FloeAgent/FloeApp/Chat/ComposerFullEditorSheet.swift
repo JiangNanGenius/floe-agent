@@ -17,13 +17,14 @@
 //
 // Keyboard contract: plain Return inserts a newline (including while an
 // input method has marked text, which is never intercepted). Hardware
-// Cmd+Enter sends through exactly the composer's inline guard (the same
-// `canSend` state and the same `onSend` action, including its context-budget
-// handling) and is consumed only when the send actually fired; during IME
-// composition — or while sending is unavailable — it falls through to the
-// default newline behavior. Done always just dismisses and never sends.
-// Undo/redo is shared with the inline field through the composer's undo
-// manager when one is supplied.
+// Cmd+Enter and the editor's explicit send button both call the same guarded
+// entrypoint: exactly the composer's inline guard (`canSend` and `onSend`,
+// including its context-budget handling) plus the editor's real marked-text
+// state, so neither action can send while an input method has an unconfirmed
+// candidate. Cmd+Enter is consumed only when the send actually fired;
+// otherwise it falls through to the default newline behavior. Done always
+// just dismisses and never sends. Undo/redo is shared with the inline field
+// through the composer's undo manager when one is supplied.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -78,10 +79,24 @@ final class FullEditorController: ObservableObject {
         textView?.selectAll(nil)
     }
 
-    /// Whether a hardware Cmd+Enter press may send right now: never with an
-    /// input method's unconfirmed marked text, and never when the composer's
-    /// send guard says no (no model, blank draft, attachment still
-    /// processing, task already being created).
+    /// Live IME state of the attached editor. UIKit only exposes marked text
+    /// on the view; tests inject the value here so the guard can be pinned
+    /// without synthesizing a hardware press.
+    var markedTextOverride: Bool?
+    /// True while an input method still has unconfirmed marked text.
+    var hasMarkedText: Bool {
+        markedTextOverride ?? (textView?.markedTextRange != nil)
+    }
+
+    /// Whether a send may fire right now: never with an input method's
+    /// unconfirmed marked text, and never when the composer's send guard says
+    /// no (no model, blank draft, attachment still processing, task already
+    /// being created).
+    func commandReturnSends() -> Bool {
+        commandReturnSends(hasMarkedText: hasMarkedText)
+    }
+
+    /// Pure policy variant (the exact rule the inline field applies).
     func commandReturnSends(hasMarkedText: Bool) -> Bool {
         guard onSend != nil, sendAllowed else { return false }
         return ComposerSendKeyPolicy.commandReturnSends(
@@ -90,12 +105,15 @@ final class FullEditorController: ObservableObject {
         )
     }
 
-    /// Fires the composer's send. Returns true only when the send actually
-    /// happened, so an unavailable press is never consumed and keeps the
-    /// default newline behavior.
+    /// The single send entrypoint for both UI actions — the hardware
+    /// Cmd+Enter handler and the toolbar send button — so the IME guard can
+    /// never diverge between them: it evaluates the real editor's marked-text
+    /// state and then runs the composer's send. Returns true only when the
+    /// send actually happened, so an unavailable press is not consumed and
+    /// the toolbar action reports the same outcome.
     @discardableResult
-    func send(hasMarkedText: Bool) -> Bool {
-        guard commandReturnSends(hasMarkedText: hasMarkedText) else { return false }
+    func requestSend() -> Bool {
+        guard commandReturnSends() else { return false }
         onSend?()
         return true
     }
@@ -145,7 +163,7 @@ struct ComposerFullEditorSheet: View {
                     onFinalSelection: { range in
                         onFinalSelection?(range)
                     },
-                    onSend: { sendFromEditor() }
+                    onSend: { performSend() }
                 )
                 Divider()
                 footer
@@ -182,11 +200,12 @@ struct ComposerFullEditorSheet: View {
                         Image(systemName: "selection.pin.in.out")
                     }
                     .accessibilityLabel("composer.editor.select_all")
-                    // Explicit send operation, mirroring Cmd+Enter: it uses
-                    // the composer's own guard and action. Done below stays a
-                    // pure dismissal and never sends.
+                    // Explicit send operation, mirroring Cmd+Enter: both call
+                    // the controller's single guarded entrypoint (real IME
+                    // marked-text check included). Done below stays a pure
+                    // dismissal and never sends.
                     Button {
-                        sendFromEditor()
+                        controller.requestSend()
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
                     }
@@ -211,9 +230,12 @@ struct ComposerFullEditorSheet: View {
         .onDisappear { controller.captureSelection() }
     }
 
-    /// Sends through the composer's own action, then closes the editor so
-    /// the user sees the run it just started (the draft was consumed).
-    private func sendFromEditor() {
+    /// Performs the composer's send and closes the editor so the user sees
+    /// the run it just started (the draft was consumed). This is reached only
+    /// after `FullEditorController.requestSend()` allowed the send: the
+    /// toolbar button, the Cmd+Enter handler and this action must never form
+    /// a second, weaker guard path.
+    private func performSend() {
         guard canSend, let onSend else { return }
         onSend()
         dismiss()
@@ -350,12 +372,12 @@ private struct FullEditorTextView: UIViewRepresentable {
                 self?.parent.onSend()
             }
             controller.attach(view)
-            view.commandSendHandler = { [weak view, weak controller] in
-                // IME protection: a half-confirmed candidate can never send;
-                // an unavailable press is not consumed either, so plain
-                // Return keeps its newline behavior.
-                guard let view, let controller else { return false }
-                return controller.send(hasMarkedText: view.markedTextRange != nil)
+            view.commandSendHandler = { [weak controller] in
+                // Same guarded entrypoint as the toolbar send button; the
+                // controller reads the real editor's IME state itself, so an
+                // unconfirmed candidate can never send and an unavailable
+                // press is not consumed (plain Return keeps its newline).
+                controller?.requestSend() ?? false
             }
         }
 
