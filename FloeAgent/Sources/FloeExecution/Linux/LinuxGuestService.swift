@@ -45,6 +45,13 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     /// a lower protocol): concurrent tokens would corrupt output, so the
     /// channel fails closed until the runner component is updated.
     case runnerUpgradeRequired(required: String, found: String?)
+    /// The request asks for two harts but THIS image (kernel/firmware) has
+    /// no SMP capability evidence. This is a permanent shape/image mismatch,
+    /// reported immediately as an actionable error — distinct from a
+    /// temporary quota shortage (which queues). A dual guest is never
+    /// silently booted single; only an explicitly authorized caller accepts
+    /// a single-hart downgrade.
+    case smpUnsupportedByImage(environmentID: String)
 
     public var errorDescription: String? {
         switch self {
@@ -75,6 +82,8 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
         case .runnerUpgradeRequired(let required, let found):
             let detail = found.map { " (guest reported: \($0))" } ?? " (guest runner does not answer capability negotiation)"
             return "The Linux guest runner is too old: this build requires \(required)\(detail). Update the guest image component."
+        case .smpUnsupportedByImage(let id):
+            return "The Linux image for environment \(id) does not support two cores (no SMP capability); choose a single-core guest or use an SMP-capable image."
         }
     }
 }
@@ -122,9 +131,18 @@ public struct LinuxGuestLimits: Sendable, Equatable {
     /// start. Tests override it with a small value.
     public var runnerProbeTimeout: TimeInterval
 
+    /// - Parameters:
+    ///   - defaultRAMMB: default for an environment that declares no RAM
+    ///     and where the advisory has no workload evidence: the 256 MiB
+    ///     floor covers ordinary shell work. The GuestResourceAdvisory
+    ///     recommends a larger shape from declared workload signals; the
+    ///     device pool bucket (512 MiB on ≤4 GB devices) is the fleet
+    ///     ceiling, not a per-VM default. Changing this is a policy change,
+    ///     not proof of the cause of the historical ~182 MiB guest.
+    ///   - maxRAMMB: per-VM ceiling matching the approved ladder (2 GiB).
     public init(
         defaultRAMMB: Int = 256,
-        maxRAMMB: Int = 1024,
+        maxRAMMB: Int = 2048,
         minRAMMB: Int = 96,
         defaultMaxOutputBytes: Int = 256 * 1024,
         maxOutputBytes: Int = 1024 * 1024,
@@ -321,6 +339,10 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
     /// Identifier of the guest image manifest (bios/kernel/rootfs).
     public var imageID: String
     public var ramMB: Int?
+    /// vCPUs granted by the resource pool (1 or 2). nil defaults to one hart;
+    /// the registry sets this from the pool lease/admission at start time.
+    /// A dual value is only valid for an image with SMP capability evidence.
+    public var vcpus: Int?
     /// Networking is opt-in: the engine has one process-wide slirp instance,
     /// so only one network-enabled guest can exist at a time.
     public var networkEnabled: Bool
@@ -334,6 +356,7 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
         shares: [LinuxGuestShare] = [],
         imageID: String,
         ramMB: Int? = nil,
+        vcpus: Int? = nil,
         networkEnabled: Bool = false,
         serviceForwards: [LinuxGuestServiceForward] = []
     ) {
@@ -344,6 +367,7 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
         self.shares = shares
         self.imageID = imageID
         self.ramMB = ramMB
+        self.vcpus = vcpus
         self.networkEnabled = networkEnabled
         self.serviceForwards = serviceForwards
     }

@@ -84,6 +84,9 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     /// create time and has no balloon/resize API, so a tier change takes
     /// effect through the safe stop → flush → restart path only.
     private var ramMB: Int
+    /// Guest harts for the NEXT `start()` (1 or 2). The engine has no online
+    /// vCPU hotplug; a hart-count change is also a stop → restart.
+    private var vcpuCount: GuestVCPUCount
     private let consoleStream: AsyncStream<Data>
     private let sink: TinyEMUConsoleSink
     private let lock = NSLock()
@@ -107,6 +110,7 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         self.descriptor = descriptor
         self.image = image
         self.ramMB = limits.clampedRAMMB(descriptor.ramMB)
+        self.vcpuCount = GuestVCPUCount.clamping(descriptor.vcpus ?? 1)
         var continuation: AsyncStream<Data>.Continuation!
         self.consoleStream = AsyncStream(bufferingPolicy: .bufferingNewest(Self.consoleChunkLimit)) {
             continuation = $0
@@ -126,6 +130,24 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         lock.lock()
         ramMB = newValue
         lock.unlock()
+    }
+
+    /// Sets the hart count used by the next `start()` (1 or 2). Only
+    /// meaningful between a confirmed stop and the restart; the running VM
+    /// is never mutated and there is no online hotplug. Intended for the
+    /// registry's safe stop/restart shape-change path (see RuntimeVMPool
+    /// `validateShapeChange`/`confirmShape`).
+    public func setVCPUs(_ newValue: Int) {
+        lock.lock()
+        vcpuCount = GuestVCPUCount.clamping(newValue)
+        lock.unlock()
+    }
+
+    /// The shape the next `start()` boots (diagnostics/verification).
+    public var configuredShape: (vcpus: Int, ramMB: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (vcpuCount.count, ramMB)
     }
 
     /// Creates the VM and starts the run loop thread. Idempotent while the
@@ -163,6 +185,8 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
 
         var config = FloeVMConfig()
         config.ram_mb = UInt64(ramMB)
+        // Explicit hart count (the engine treats 0/1 as single hart).
+        config.vcpu_count = Int32(vcpuCount.count)
         config.disk_rw = image.diskReadWrite ? 1 : 0
         config.net_enable = descriptor.networkEnabled ? 1 : 0
         config.share_count = Int32(sharePlan.count)
@@ -503,7 +527,10 @@ public struct TinyEMUGuestSessionFactory: Sendable {
             addForward: { try machine.addForward($0) },
             removeForward: { try machine.removeForward($0) },
             emulatorCPUSample: { machine.emulatorThreadCPUSample() },
-            setRAMMB: { machine.setRAMMB($0) }
+            setRAMMB: { machine.setRAMMB($0) },
+            // Same stop → restart boundary as RAM: the registry's shape-change
+            // path validates through RuntimeVMPool then applies both.
+            setVCPUs: { machine.setVCPUs($0) }
         )
     }
 }
