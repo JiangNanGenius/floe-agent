@@ -51,9 +51,12 @@ struct WorkspaceIDEView: View {
     /// VS Code workbench; a user collapse is respected for the rest of the
     /// session. Compact (iPhone) starts unobstructed with no sidebar.
     @State private var didSeedInitialSidebar = false
-    /// Collapsible sidebar width; kept narrower than the old modal 320pt so
-    /// the editor retains a usable area in iPad split view.
-    @State private var sidebarWidth: CGFloat = 280
+    /// Collapsible sidebar width, proportional to the available width so the
+    /// editor keeps the majority of the workbench even in iPad split view.
+    /// Clamped to a readable 200...300pt range.
+    private func resolvedSidebarWidth(availableWidth: CGFloat) -> CGFloat {
+        min(300, max(200, availableWidth * 0.3))
+    }
     @State private var forwardedInitialNativeTextPath = false
     /// In-flight Office share snapshot. The owning tab session reclaims it on
     /// dismiss via `finishSaveCopy()`.
@@ -117,7 +120,7 @@ struct WorkspaceIDEView: View {
                                 onClose: { self.sidebar = nil },
                                 onOpenFile: { openRoutedPath($0) }
                             )
-                            .frame(width: sidebarWidth)
+                            .frame(width: resolvedSidebarWidth(availableWidth: geometry.size.width))
                             .transition(.move(edge: .leading).combined(with: .opacity))
                             Divider()
                         }
@@ -355,7 +358,7 @@ struct WorkspaceIDEView: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .frame(minHeight: 36)
+                .frame(minHeight: FloeTheme.minimumTarget)
                 .background(active ? FloeTheme.primary.opacity(0.14) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
@@ -368,7 +371,7 @@ struct WorkspaceIDEView: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption2)
-                        .frame(width: 28, height: 28)
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -590,7 +593,7 @@ struct WorkspaceIDEView: View {
                     withAnimation(.snappy) { showsTerminal = false }
                 } label: {
                     Image(systemName: "chevron.down")
-                        .frame(width: 44, height: 30)
+                        .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
@@ -598,7 +601,7 @@ struct WorkspaceIDEView: View {
                 .accessibilityIdentifier("workspace.ide.panel.close")
             }
             .padding(.horizontal, 10)
-            .frame(height: 32)
+            .frame(height: FloeTheme.minimumTarget)
             .background(FloeTheme.sidebarSurface)
             LocalTerminalView(owner: owner, embedded: true)
         }

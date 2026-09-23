@@ -481,6 +481,7 @@ targets:
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
+      - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
