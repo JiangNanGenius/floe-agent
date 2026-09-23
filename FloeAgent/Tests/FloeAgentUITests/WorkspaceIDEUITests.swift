@@ -11,7 +11,10 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
+        // The kernel choice is a persisted user preference; a previous attempt
+        // may have left the Web kernel selected, so pin the native default for
+        // this launch instead of inheriting it.
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture", "-workspace.ide.nativeTextEditor", "YES"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
@@ -57,7 +60,9 @@ final class WorkspaceIDEUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
-        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
+        // Same persisted-kernel rule as the native test: this leg must start
+        // native and switch to Web itself, so pin the native default.
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture", "-workspace.ide.nativeTextEditor", "YES"]
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
@@ -83,32 +88,12 @@ final class WorkspaceIDEUITests: XCTestCase {
         save.tap()
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: save)], timeout: 20)
         capture("ide-web-fallback-saved")
-        // Compact widths collapse the trailing toolbar items into the system
-        // overflow menu; assert the same two actions through whichever
-        // surface actually renders them instead of weakening the check.
-        let richEditor = app.buttons["workspace.ide.richEditor"]
-        let terminal = app.buttons["workspace.ide.terminal"]
-        if richEditor.waitForExistence(timeout: 5) {
-            XCTAssertTrue(richEditor.isEnabled)
-            XCTAssertTrue(terminal.isEnabled)
-        } else {
-            let overflow = app.buttons["OverflowBarButtonItem"]
-            XCTAssertTrue(overflow.waitForExistence(timeout: 5))
-            overflow.tap()
-            // The app is forced to zh-Hans above; overflow menu items carry
-            // only their localized labels, not the button identifiers.
-            let richItem = overflowedAction(app, label: "用专用编辑器打开")
-            let terminalItem = overflowedAction(app, label: "终端")
-            XCTAssertTrue(richItem.exists)
-            XCTAssertTrue(terminalItem.exists)
-            XCTAssertTrue(richItem.isEnabled)
-            XCTAssertTrue(terminalItem.isEnabled)
-            capture("ide-web-fallback-overflow")
-            // Dismiss the menu through its own dismissal layer before the
-            // close step below; the tap must not reach the editor.
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
-            wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: richItem)], timeout: 5)
-        }
+        // Compact widths collapse trailing toolbar items into the system
+        // overflow menu, and different items may collapse independently, so
+        // assert each action through whichever surface actually renders it
+        // instead of weakening the check.
+        assertToolbarAction(app, identifier: "workspace.ide.richEditor", overflowLabel: "用专用编辑器打开")
+        assertToolbarAction(app, identifier: "workspace.ide.terminal", overflowLabel: "终端")
         app.buttons["workspace.ide.close"].tap()
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
@@ -280,5 +265,38 @@ final class WorkspaceIDEUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         return item
+    }
+
+    /// Asserts one toolbar action is reachable and enabled through either the
+    /// bar itself or the compact overflow menu, and leaves the menu dismissed
+    /// so the next probe starts from the normal workbench.
+    private func assertToolbarAction(
+        _ app: XCUIApplication,
+        identifier: String,
+        overflowLabel: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let direct = app.buttons[identifier]
+        if direct.waitForExistence(timeout: 5), direct.isHittable {
+            XCTAssertTrue(direct.isEnabled, "\(identifier) must stay enabled", file: file, line: line)
+            return
+        }
+        let overflow = app.buttons["OverflowBarButtonItem"]
+        XCTAssertTrue(
+            overflow.waitForExistence(timeout: 5),
+            "neither the toolbar nor the overflow menu renders \(identifier)",
+            file: file, line: line
+        )
+        overflow.tap()
+        // The app is forced to zh-Hans above; overflow menu items carry only
+        // their localized labels, not the button identifiers.
+        let item = overflowedAction(app, label: overflowLabel, timeout: 10)
+        XCTAssertTrue(item.exists && item.isEnabled, "\(identifier) must stay enabled", file: file, line: line)
+        capture("ide-web-fallback-overflow-\(identifier)")
+        // Dismiss the menu through its own dismissal layer; the tap must not
+        // reach the editor.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
+        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: item)], timeout: 5)
     }
 }
