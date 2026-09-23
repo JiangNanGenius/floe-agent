@@ -12,6 +12,7 @@
 import Combine
 import Foundation
 import UIKit
+import FloeModels
 
 /// Hardware-key send policy for the shared composer.
 enum ComposerSendKeyPolicy {
@@ -194,6 +195,86 @@ enum ComposerDraftSafety {
     ) -> String {
         if !currentDraft.isEmpty { return currentDraft }
         return originalDraft.isEmpty ? trimmedGoal : originalDraft
+    }
+}
+
+/// One send's claim on the composer field and the persisted draft.
+///
+/// Captured at the send entrypoint (after the send's own programmatic clear,
+/// when there is one) and asked only on outcome. Both the editor generation
+/// and the draft store's text identity are pinned, because neither string
+/// equality nor the store alone can tell "still the sent draft" from "the
+/// user typed and came back to the same string" (A → B → A). A successful
+/// send may clear only the identity it actually consumed; a failure keeps
+/// the existing full-text restore semantics.
+@MainActor
+struct ComposerSendCommit {
+    /// Conversation whose draft the send consumed.
+    let conversationID: UUID
+    /// Complete draft as it was sent (never the trimmed goal).
+    let sentText: String
+    /// Attachments that belonged to the send.
+    let sentAttachments: [AttachmentRef]
+    /// Live editor generation when the send consumed the field.
+    let editorGeneration: Int
+    /// Text identity of the draft store when the send started.
+    let storeToken: ComposerDraftStore.SendCommitToken
+
+    init(
+        draft: String,
+        attachments: [AttachmentRef],
+        editorGeneration: Int,
+        conversationID: UUID,
+        store: ComposerDraftStore? = nil
+    ) {
+        let store = store ?? .shared
+        self.conversationID = conversationID
+        self.sentText = draft
+        self.sentAttachments = attachments
+        self.editorGeneration = editorGeneration
+        self.storeToken = store.sendCommitToken(for: conversationID)
+    }
+
+    /// True while the live field still holds exactly the generation this
+    /// send consumed; any user edit since — including A → B → A — is false.
+    func editorStillConsumed(currentGeneration: Int) -> Bool {
+        currentGeneration == editorGeneration
+    }
+
+    /// The draft to show after a successful send: empty only when the field
+    /// has not changed since the send consumed it.
+    func draftAfterSuccess(currentDraft: String, currentGeneration: Int) -> String {
+        editorStillConsumed(currentGeneration: currentGeneration) ? "" : currentDraft
+    }
+
+    /// Attachments remaining after a successful send: only the sent refs are
+    /// consumed, so a file staged during the flight keeps its identity.
+    func attachmentsAfterSuccess(current: [AttachmentRef]) -> [AttachmentRef] {
+        let sentIDs = Set(sentAttachments.map(\.id))
+        guard !sentIDs.isEmpty else { return current }
+        return current.filter { !sentIDs.contains($0.id) }
+    }
+
+    /// Durable reconciliation of a successful send; clears the stored text
+    /// only while its captured text identity is unchanged.
+    @discardableResult
+    func commitStore(store: ComposerDraftStore? = nil) -> Bool {
+        (store ?? .shared).clearAfterSend(
+            conversationID: conversationID,
+            sentText: sentText,
+            sentAttachments: sentAttachments,
+            sendToken: storeToken
+        )
+    }
+
+    /// The draft to restore after a failed send (bounded by what the user
+    /// typed while the send was in flight).
+    func draftAfterFailure(trimmedGoal: String, currentDraft: String) -> String {
+        ComposerDraftSafety.draftAfterSendFailure(
+            originalDraft: sentText,
+            trimmedGoal: trimmedGoal,
+            currentDraft: currentDraft
+        )
     }
 }
 #endif

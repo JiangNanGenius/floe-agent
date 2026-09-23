@@ -303,12 +303,15 @@ struct ThreadComposerView: View {
         }
         .sheet(isPresented: $isFullEditorPresented) {
             // The full editor binds the same draft as the inline field, so
-            // both surfaces always agree. Done only dismisses — sending
-            // stays the composer's explicit send action.
+            // both surfaces always agree. Cmd+Enter (or the editor's send
+            // button) runs the same guarded send action as the inline field;
+            // Done only dismisses.
             ComposerFullEditorSheet(
                 text: $draft,
                 restoredSelection: editorSelection,
                 undoManager: composerUndoManager,
+                canSend: canSend && !isAttachmentProcessing,
+                onSend: { onSend() },
                 onFinalSelection: { range in
                     // Conversation identity guard: a late callback from a
                     // sheet that belonged to another task must not write a

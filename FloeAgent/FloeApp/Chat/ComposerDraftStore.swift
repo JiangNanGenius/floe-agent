@@ -52,6 +52,21 @@ final class ComposerDraftStore: ObservableObject {
         }
     }
 
+    /// Identity of the draft text at the moment a send consumed it.
+    ///
+    /// String equality is not identity: while a send is awaiting its run the
+    /// user can edit A → B → A, and the stored text compares equal to the
+    /// sent one again even though it is a brand-new draft. A token captured
+    /// with `sendCommitToken(for:)` pins the exact text generation, and a
+    /// commit may clear the stored text only while that generation is
+    /// unchanged. Attachment-only and selection-only updates never advance
+    /// the text generation, so staging a file during a send never keeps the
+    /// sent prompt alive.
+    struct SendCommitToken: Equatable, Sendable {
+        fileprivate let conversationID: UUID
+        fileprivate let textGeneration: Int
+    }
+
     /// Outcome of the durable write pipeline. The composer surfaces
     /// `.failed` so a save problem is visible; nothing is silently dropped.
     enum WriteState: Equatable {
@@ -86,6 +101,13 @@ final class ComposerDraftStore: ObservableObject {
     /// entry but keeps this floor, so a stale async writer holding an older
     /// revision is still rejected after the sequence would have restarted.
     private var revisionFloor: [UUID: Int] = [:]
+    /// Monotonic identity of each conversation's *text* alone: every real
+    /// text change advances it (even one that returns to an earlier string),
+    /// while attachment-only and selection-only updates do not. Send commits
+    /// compare it instead of string equality. Deliberately in-memory: a token
+    /// only has to outlive one in-flight send, and a relaunch starts a new
+    /// draft epoch anyway.
+    private var textGenerations: [UUID: Int] = [:]
     private let fileURL: URL
     private let writeQueue: DispatchQueue
     /// Monotonic revision of the in-memory snapshot, bumped by every
@@ -169,6 +191,17 @@ final class ComposerDraftStore: ObservableObject {
         entries[conversationID]?.attachments ?? []
     }
 
+    /// Captures the identity of a conversation's text right now; pass the
+    /// token to `clearAfterSend` so only that exact text can be committed
+    /// away. A send that starts before any edit and commits after the user
+    /// retyped the same string gets a mismatched token and keeps the draft.
+    func sendCommitToken(for conversationID: UUID) -> SendCommitToken {
+        SendCommitToken(
+            conversationID: conversationID,
+            textGeneration: textGenerations[conversationID] ?? 0
+        )
+    }
+
     // MARK: - Writes
 
     /// Stores the draft and returns the new revision. When `expectedRevision`
@@ -192,6 +225,12 @@ final class ComposerDraftStore: ObservableObject {
             text: "", attachments: [], revision: 0,
             updatedAt: Date(), selectionLocation: nil, selectionLength: nil
         )
+        // The text generation tracks the *text*: a real change always
+        // advances it (A → B → A is two changes, never zero), while an
+        // attachment-only update leaves it where it was.
+        if text != entry.text {
+            textGenerations[conversationID, default: 0] += 1
+        }
         entry.text = text
         entry.attachments = attachments
         entry.revision = next
@@ -218,32 +257,45 @@ final class ComposerDraftStore: ObservableObject {
 
     /// Removes the draft after a successful send (or a deleted conversation).
     /// The revision floor stays behind, so a stale async writer holding an
-    /// older revision is rejected instead of matching a fresh entry.
+    /// older revision is rejected instead of matching a fresh entry. The
+    /// text generation advances too: text saved after a clear is a new draft,
+    /// never the one a pre-clear send token captured.
     func clear(conversationID: UUID) {
         guard let removed = entries.removeValue(forKey: conversationID) else { return }
         revisionFloor[conversationID] = max(
             revisionFloor[conversationID] ?? 0, removed.revision
         )
+        textGenerations[conversationID, default: 0] += 1
         markDirty()
     }
 
     /// Commits a successful send without erasing work started while the send
     /// was in flight:
-    /// - the sent text is dropped only while the store still holds it (or the
-    ///   field was emptied as part of the send); newer text survives,
+    /// - the sent text is dropped only while the store still holds the exact
+    ///   text generation the send started from (`sendToken`) and that text is
+    ///   still the sent one (or the field was emptied as part of the send);
+    ///   newer text — including a retyped A → B → A — survives,
     /// - only the attachment refs that were part of the send are dropped;
-    ///   attachments staged during the send stay bound to the draft.
+    ///   attachments staged during the send keep their own identity.
+    /// A nil `sendToken` keeps the pre-identity text comparison for callers
+    /// that do not capture a generation.
     /// Returns true when the entry existed and was reconciled.
     @discardableResult
     func clearAfterSend(
         conversationID: UUID,
         sentText: String,
-        sentAttachments: [AttachmentRef] = []
+        sentAttachments: [AttachmentRef] = [],
+        sendToken: SendCommitToken? = nil
     ) -> Bool {
         guard let current = entries[conversationID] else { return false }
         let sentIDs = Set(sentAttachments.map(\.id))
         let remaining = current.attachments.filter { !sentIDs.contains($0.id) }
-        let consumedText = current.text == sentText || current.text.isEmpty
+        let identityMatches = sendToken.map {
+            $0.conversationID == conversationID
+                && $0.textGeneration == (textGenerations[conversationID] ?? 0)
+        } ?? true
+        let consumedText = identityMatches
+            && (current.text == sentText || current.text.isEmpty)
         if consumedText, remaining.isEmpty {
             clear(conversationID: conversationID)
             return true

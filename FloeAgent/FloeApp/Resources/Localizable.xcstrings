@@ -129,6 +129,22 @@
         }
       }
     },
+    "composer.editor.send": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
+          }
+        }
+      }
+    },
     "composer.draft.save_failed": {
       "localizations": {
         "en": {

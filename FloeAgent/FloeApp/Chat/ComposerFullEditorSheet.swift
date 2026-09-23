@@ -17,10 +17,13 @@
 //
 // Keyboard contract: plain Return inserts a newline (including while an
 // input method has marked text, which is never intercepted). Hardware
-// Cmd+Return performs the Done action only when no marked text is pending;
-// sending stays the composer's explicit action, exactly like the inline
-// field. Undo/redo is shared with the inline field through the composer's
-// undo manager when one is supplied.
+// Cmd+Enter sends through exactly the composer's inline guard (the same
+// `canSend` state and the same `onSend` action, including its context-budget
+// handling) and is consumed only when the send actually fired; during IME
+// composition — or while sending is unavailable — it falls through to the
+// default newline behavior. Done always just dismisses and never sends.
+// Undo/redo is shared with the inline field through the composer's undo
+// manager when one is supplied.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -36,6 +39,14 @@ final class FullEditorController: ObservableObject {
     /// Called with the final selection when the editor closes (Done or a
     /// swipe dismissal), so the caret survives the sheet.
     var onFinalSelection: ((NSRange?) -> Void)?
+
+    /// Whether the composer's inline send guard currently allows a send.
+    /// Mirrored from the presenting composer on every update so the editor
+    /// never invents a second send rule.
+    var sendAllowed = false
+    /// The composer's own send action (the same closure as the inline field
+    /// and send button, including its context-budget handling).
+    var onSend: (() -> Void)?
 
     private weak var textView: UITextView?
 
@@ -67,6 +78,28 @@ final class FullEditorController: ObservableObject {
         textView?.selectAll(nil)
     }
 
+    /// Whether a hardware Cmd+Enter press may send right now: never with an
+    /// input method's unconfirmed marked text, and never when the composer's
+    /// send guard says no (no model, blank draft, attachment still
+    /// processing, task already being created).
+    func commandReturnSends(hasMarkedText: Bool) -> Bool {
+        guard onSend != nil, sendAllowed else { return false }
+        return ComposerSendKeyPolicy.commandReturnSends(
+            canSend: sendAllowed,
+            hasMarkedText: hasMarkedText
+        )
+    }
+
+    /// Fires the composer's send. Returns true only when the send actually
+    /// happened, so an unavailable press is never consumed and keeps the
+    /// default newline behavior.
+    @discardableResult
+    func send(hasMarkedText: Bool) -> Bool {
+        guard commandReturnSends(hasMarkedText: hasMarkedText) else { return false }
+        onSend?()
+        return true
+    }
+
     /// Reports the current selection to the owner exactly once per close.
     func captureSelection() {
         guard let textView else { return }
@@ -87,6 +120,12 @@ struct ComposerFullEditorSheet: View {
     var restoredSelection: NSRange?
     /// Undo manager shared with the inline field (nil keeps UIKit's own).
     var undoManager: UndoManager? = nil
+    /// The composer's live send guard (same value as the inline field and
+    /// send button). The editor's send operation is disabled while false.
+    var canSend: Bool = false
+    /// The composer's send action: identical to the inline send, including
+    /// its provider/budget validation and failure-restore handling.
+    var onSend: (() -> Void)? = nil
     /// Delivers the final selection for persistence (draft store).
     var onFinalSelection: ((NSRange?) -> Void)?
 
@@ -102,10 +141,11 @@ struct ComposerFullEditorSheet: View {
                     restoredSelection: restoredSelection,
                     undoManager: undoManager,
                     controller: controller,
+                    canSend: canSend,
                     onFinalSelection: { range in
                         onFinalSelection?(range)
                     },
-                    onDone: { dismiss() }
+                    onSend: { sendFromEditor() }
                 )
                 Divider()
                 footer
@@ -142,8 +182,17 @@ struct ComposerFullEditorSheet: View {
                         Image(systemName: "selection.pin.in.out")
                     }
                     .accessibilityLabel("composer.editor.select_all")
-                    // Done closes the editor only; sending stays the
-                    // composer's explicit send action.
+                    // Explicit send operation, mirroring Cmd+Enter: it uses
+                    // the composer's own guard and action. Done below stays a
+                    // pure dismissal and never sends.
+                    Button {
+                        sendFromEditor()
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                    }
+                    .disabled(!canSend || onSend == nil)
+                    .accessibilityLabel("composer.editor.send")
+                    .accessibilityIdentifier("composer.editor.send")
                     Button("action.done") { dismiss() }
                         .accessibilityIdentifier("composer.editor.done")
                 }
@@ -160,6 +209,14 @@ struct ComposerFullEditorSheet: View {
         // swipe-down dismissal can tear the sheet down without it — capture
         // explicitly so the caret really is restored on reopen.
         .onDisappear { controller.captureSelection() }
+    }
+
+    /// Sends through the composer's own action, then closes the editor so
+    /// the user sees the run it just started (the draft was consumed).
+    private func sendFromEditor() {
+        guard canSend, let onSend else { return }
+        onSend()
+        dismiss()
     }
 
     private var footer: some View {
@@ -184,11 +241,14 @@ struct ComposerFullEditorSheet: View {
     }
 }
 
-/// UITextView for the full editor: same Cmd+Return discipline as the inline
-/// field (never during marked text) plus the shared undo manager.
+/// UITextView for the full editor: same Cmd+Enter send discipline as the
+/// inline field (never during marked text, only while the composer's guard
+/// allows it) plus the shared undo manager.
 final class FullEditorUITextView: UITextView {
-    /// Handles Cmd+Return; returns true when the press was consumed.
-    var commandReturnHandler: (() -> Bool)?
+    /// Handles Cmd+Enter by asking the editor controller to send; returns
+    /// true only when the send actually fired, so an unavailable press keeps
+    /// the default newline behavior.
+    var commandSendHandler: (() -> Bool)?
     /// Composer-owned undo manager shared with the inline field.
     var sharedUndoManager: UndoManager?
 
@@ -202,7 +262,7 @@ final class FullEditorUITextView: UITextView {
             guard let key = press.key, key.keyCode == .keyboardReturnOrEnter else { continue }
             let modifiers = key.modifierFlags
                 .intersection([.shift, .control, .alternate, .command])
-            guard modifiers == .command, commandReturnHandler?() == true else { continue }
+            guard modifiers == .command, commandSendHandler?() == true else { continue }
             consumed.insert(press)
         }
         let remaining = presses.subtracting(consumed)
@@ -217,8 +277,11 @@ private struct FullEditorTextView: UIViewRepresentable {
     var restoredSelection: NSRange?
     var undoManager: UndoManager?
     var controller: FullEditorController
+    /// Same live send guard as the inline field.
+    var canSend: Bool
     var onFinalSelection: (NSRange?) -> Void
-    var onDone: () -> Void
+    /// Composer send performed by Cmd+Enter / the toolbar send button.
+    var onSend: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -238,6 +301,7 @@ private struct FullEditorTextView: UIViewRepresentable {
         view.isFindInteractionEnabled = true
         view.accessibilityIdentifier = "composer.editor.input"
         view.sharedUndoManager = undoManager
+        controller.sendAllowed = canSend
         // Text first, selection second: a non-zero caret restored onto an
         // empty view would be clamped to 0 and then silently lost.
         ComposerSelection.prepare(view, text: text, selection: restoredSelection)
@@ -249,6 +313,8 @@ private struct FullEditorTextView: UIViewRepresentable {
     func updateUIView(_ uiView: FullEditorUITextView, context: Context) {
         context.coordinator.parent = self
         uiView.sharedUndoManager = undoManager
+        // Mirror the composer's live guard; never re-derive a second rule.
+        controller.sendAllowed = canSend
         // Never clobber in-flight IME composition or echo the user's edit.
         if uiView.markedTextRange == nil, uiView.text != text {
             uiView.text = text
@@ -280,18 +346,22 @@ private struct FullEditorTextView: UIViewRepresentable {
             controller.onFinalSelection = { [weak self] range in
                 self?.parent.onFinalSelection(range)
             }
+            controller.onSend = { [weak self] in
+                self?.parent.onSend()
+            }
             controller.attach(view)
-            view.commandReturnHandler = { [weak view, weak self] in
-                // IME protection: a half-confirmed candidate can never close
-                // the editor; plain Return keeps its newline behavior.
-                guard view?.markedTextRange == nil else { return false }
-                self?.parent.onDone()
-                return true
+            view.commandSendHandler = { [weak view, weak controller] in
+                // IME protection: a half-confirmed candidate can never send;
+                // an unavailable press is not consumed either, so plain
+                // Return keeps its newline behavior.
+                guard let view, let controller else { return false }
+                return controller.send(hasMarkedText: view.markedTextRange != nil)
             }
         }
 
         func detach(from view: UITextView) {
             controller?.onFinalSelection = nil
+            controller?.onSend = nil
             controller?.detach(view)
             controller = nil
         }

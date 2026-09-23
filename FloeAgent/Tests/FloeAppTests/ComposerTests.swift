@@ -2,15 +2,17 @@
 //
 // Pins the Part-10 multi-line/full-edit behavior at the decision and seam
 // layers: draft-store revision semantics (stale async writes rejected,
-// revisions never restart after a clear), the async-send commit contract
-// (what a successful/failed send may erase), 100k round-trip fidelity,
-// per-conversation isolation, selection clamping/restore ordering, the
-// per-instance full-editor controller (two windows never share actions),
-// debounced footer counts, the Cmd+Return / IME send policy, the line +
-// one-third-height growth budget, the measured height memo, the rough token
-// estimate and the failed-send full-text restore. Device feel (dynamic
-// type, split, rotation, keyboard) remains user acceptance on a real
-// device.
+// revisions never restart after a clear), send identity (a stored text or
+// live editor generation the user retyped during the await — A→B→A — is
+// never erased), the async-send commit contract (what a successful/failed
+// send may erase), 100k round-trip fidelity, per-conversation isolation,
+// selection clamping/restore ordering, the per-instance full-editor
+// controller (two windows never share actions), the editor's Cmd+Enter send
+// policy (inline guard + IME marked text), debounced footer counts, the
+// Cmd+Return / IME send policy, the line + one-third-height growth budget,
+// the measured height memo, the rough token estimate and the failed-send
+// full-text restore. Device feel (dynamic type, split, rotation, keyboard)
+// remains user acceptance on a real device.
 
 #if canImport(UIKit)
 import Foundation
@@ -175,6 +177,97 @@ struct ComposerDraftStoreTests {
         #expect(store.entry(for: id)?.selectionLocation == 2)
         #expect(store.entry(for: id)?.selectionLength == 3)
         #expect(store.entry(for: id)?.selection == NSRange(location: 2, length: 3))
+    }
+
+    @Test("A send token keeps a draft the user retyped A→B→A during the await")
+    func sendCommitTokenKeepsRetypedDraft() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        let laterAttachment = makeAttachment("later.pdf")
+        #expect(store.save(
+            text: "A", attachments: [sentAttachment], conversationID: id
+        ) == 1)
+        let token = store.sendCommitToken(for: id)
+        // The user edits while the send is suspended: A → B → A. The string
+        // compares equal again, but the identity must not.
+        #expect(store.save(
+            text: "B", attachments: [sentAttachment],
+            conversationID: id, expectedRevision: 1
+        ) == 2)
+        #expect(store.save(
+            text: "A", attachments: [sentAttachment, laterAttachment],
+            conversationID: id, expectedRevision: 2
+        ) == 3)
+        #expect(store.clearAfterSend(
+            conversationID: id,
+            sentText: "A",
+            sentAttachments: [sentAttachment],
+            sendToken: token
+        ))
+        #expect(store.text(for: id) == "A")
+        #expect(store.attachments(for: id).map(\.id) == [laterAttachment.id])
+    }
+
+    @Test("A send token clears the stored text only while it is unchanged")
+    func sendCommitTokenClearsUnchangedText() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        #expect(store.save(
+            text: "已发送的完整提示词", attachments: [sentAttachment], conversationID: id
+        ) == 1)
+        let token = store.sendCommitToken(for: id)
+        #expect(store.clearAfterSend(
+            conversationID: id,
+            sentText: "已发送的完整提示词",
+            sentAttachments: [sentAttachment],
+            sendToken: token
+        ))
+        #expect(store.entry(for: id) == nil)
+        #expect(store.text(for: id).isEmpty)
+    }
+
+    @Test("Staging an attachment during the await still clears the sent text")
+    func sendCommitTokenClearsTextWhenOnlyAttachmentsChanged() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        let laterAttachment = makeAttachment("later.pdf")
+        #expect(store.save(
+            text: "发送内容", attachments: [sentAttachment], conversationID: id
+        ) == 1)
+        let token = store.sendCommitToken(for: id)
+        // Attachment-only update: the entry revision moves but the text
+        // identity does not, so the sent prompt must still be committed away.
+        #expect(store.save(
+            text: "发送内容",
+            attachments: [sentAttachment, laterAttachment],
+            conversationID: id,
+            expectedRevision: 1
+        ) == 2)
+        #expect(store.clearAfterSend(
+            conversationID: id,
+            sentText: "发送内容",
+            sentAttachments: [sentAttachment],
+            sendToken: token
+        ))
+        #expect(store.text(for: id).isEmpty)
+        #expect(store.attachments(for: id).map(\.id) == [laterAttachment.id])
+    }
+
+    @Test("Caret moves during the await do not invalidate the send token")
+    func sendCommitTokenIgnoresSelectionUpdates() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        #expect(store.save(text: "选中文字", conversationID: id) == 1)
+        let token = store.sendCommitToken(for: id)
+        store.updateSelection(NSRange(location: 2, length: 2), conversationID: id)
+        store.updateSelection(NSRange(location: 0, length: 0), conversationID: id)
+        #expect(store.clearAfterSend(
+            conversationID: id, sentText: "选中文字", sendToken: token
+        ))
+        #expect(store.entry(for: id) == nil)
     }
 
     @Test("A captured caret round-trips through disk for relaunch restore")
@@ -391,6 +484,116 @@ struct ComposerEditingPrimitivesTests {
     }
 }
 
+@Suite("FloeApp.ComposerSendCommit")
+@MainActor
+struct ComposerSendCommitTests {
+
+    @Test("A retyped A→B→A draft survives a successful send")
+    func retypedDraftSurvivesSuccess() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        let laterAttachment = makeAttachment("later.pdf")
+        #expect(store.save(
+            text: "A", attachments: [sentAttachment], conversationID: id
+        ) == 1)
+        // Captured at send start: the live editor generation and the stored
+        // text identity of the sent draft.
+        var generation = 1
+        let commit = ComposerSendCommit(
+            draft: "A", attachments: [sentAttachment],
+            editorGeneration: generation, conversationID: id, store: store
+        )
+        // While the send is suspended the user edits A → B → A and stages a
+        // second file. Both identities move even though the string returns.
+        generation += 1
+        _ = store.save(
+            text: "B", attachments: [sentAttachment],
+            conversationID: id, expectedRevision: 1
+        )
+        generation += 1
+        _ = store.save(
+            text: "A", attachments: [sentAttachment, laterAttachment],
+            conversationID: id, expectedRevision: 2
+        )
+
+        #expect(commit.draftAfterSuccess(
+            currentDraft: "A", currentGeneration: generation
+        ) == "A")
+        #expect(commit.attachmentsAfterSuccess(
+            current: [sentAttachment, laterAttachment]
+        ).map(\.id) == [laterAttachment.id])
+        #expect(commit.commitStore(store: store))
+        #expect(store.text(for: id) == "A")
+        #expect(store.attachments(for: id).map(\.id) == [laterAttachment.id])
+    }
+
+    @Test("An unchanged send clears the field and the stored draft")
+    func unchangedSendClears() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        #expect(store.save(
+            text: "原始草稿", attachments: [sentAttachment], conversationID: id
+        ) == 1)
+        let commit = ComposerSendCommit(
+            draft: "原始草稿", attachments: [sentAttachment],
+            editorGeneration: 4, conversationID: id, store: store
+        )
+        #expect(commit.draftAfterSuccess(
+            currentDraft: "原始草稿", currentGeneration: 4
+        ).isEmpty)
+        #expect(commit.attachmentsAfterSuccess(
+            current: [sentAttachment]
+        ).isEmpty)
+        #expect(commit.commitStore(store: store))
+        #expect(store.entry(for: id) == nil)
+    }
+
+    @Test("Only the sent attachment refs are reconciled away")
+    func onlySentAttachmentsAreConsumed() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let sentAttachment = makeAttachment("sent.pdf")
+        let laterAttachment = makeAttachment("later.pdf")
+        #expect(store.save(text: "内容", conversationID: id) == 1)
+        let commit = ComposerSendCommit(
+            draft: "内容", attachments: [sentAttachment],
+            editorGeneration: 0, conversationID: id, store: store
+        )
+        // A file staged during the send must keep its own identity, and the
+        // send may not erase the draft the user typed next either.
+        let remaining = commit.attachmentsAfterSuccess(
+            current: [laterAttachment]
+        )
+        #expect(remaining.map(\.id) == [laterAttachment.id])
+        #expect(commit.draftAfterSuccess(
+            currentDraft: "下一条", currentGeneration: 1
+        ) == "下一条")
+    }
+
+    @Test("A failed send still restores the full original draft")
+    func failureRestoresFullDraft() {
+        let store = ComposerDraftStore(fileURL: makeTempDraftURL())
+        let id = UUID()
+        let original = "  完整原文，含首尾空白  \n第二行也不能少"
+        let commit = ComposerSendCommit(
+            draft: original, attachments: [],
+            editorGeneration: 1, conversationID: id, store: store
+        )
+        let goal = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Nothing typed while the send was in flight: the whole original
+        // comes back (never the trimmed goal), exactly as before.
+        #expect(commit.draftAfterFailure(
+            trimmedGoal: goal, currentDraft: ""
+        ) == original)
+        // Text typed during the flight still wins over the restore.
+        #expect(commit.draftAfterFailure(
+            trimmedGoal: goal, currentDraft: "新输入"
+        ) == "新输入")
+    }
+}
+
 @Suite("FloeApp.ComposerFullEditor")
 @MainActor
 struct ComposerFullEditorTests {
@@ -460,6 +663,33 @@ struct ComposerFullEditorTests {
         // Without an injected manager each view keeps UIKit's own.
         #expect(HardwareReturnTextView().undoManager !== shared)
         #expect(FullEditorUITextView().undoManager !== shared)
+    }
+
+    @Test("Cmd+Enter sends through the composer guard and is suppressed by IME")
+    func editorSendCommandFollowsComposerGuard() {
+        let controller = FullEditorController()
+        var sends = 0
+        controller.onSend = { sends += 1 }
+        // The composer's live guard is off (no model, blank draft, a send in
+        // flight): the press is not consumed and nothing is sent.
+        #expect(!controller.commandReturnSends(hasMarkedText: false))
+        #expect(!controller.send(hasMarkedText: false))
+        #expect(sends == 0)
+        controller.sendAllowed = true
+        // An unconfirmed input-method candidate can never send.
+        #expect(!controller.send(hasMarkedText: true))
+        #expect(sends == 0)
+        #expect(controller.send(hasMarkedText: false))
+        #expect(sends == 1)
+        // The exact same policy the inline field uses.
+        #expect(ComposerSendKeyPolicy.commandReturnSends(
+            canSend: true, hasMarkedText: false
+        ))
+        // Without a composer action the editor never fires one.
+        controller.onSend = nil
+        controller.sendAllowed = true
+        #expect(!controller.send(hasMarkedText: false))
+        #expect(sends == 1)
     }
 }
 

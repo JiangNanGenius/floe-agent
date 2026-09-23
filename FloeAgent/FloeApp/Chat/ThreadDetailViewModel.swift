@@ -81,8 +81,18 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var earlierEventRunIDs = Set<UUID>()
     @Published private(set) var loadingEventRunIDs = Set<UUID>()
     @Published private(set) var loadingEarlierMessages = false
-    /// Composer draft text.
-    @Published var draft: String = ""
+    /// Composer draft text. Every real change (typing, dictation, a send's
+    /// own clear, a failure restore) advances `draftGeneration`; a successful
+    /// send clears the field only while that generation is unchanged, so a
+    /// user who edits A → B → A during the await keeps the new A.
+    @Published var draft: String = "" {
+        didSet {
+            guard draft != oldValue else { return }
+            draftGeneration &+= 1
+        }
+    }
+    /// Monotonic identity of the live composer text. See `draft`.
+    private(set) var draftGeneration = 0
     /// True from the moment `send` consumes the draft until the send's
     /// outcome is known. The composer keeps the sent content in the draft
     /// store while it is set, so a failure can restore it and a success can
@@ -577,7 +587,23 @@ final class ThreadDetailViewModel: ObservableObject {
         isConsumingDraft = consumesComposerDraft
         defer { isConsumingDraft = false }
         actionError = nil
+        // Identity of this send's claim on the field and on the stored
+        // draft, captured at the entrypoint that consumed it. Text equality
+        // is not identity: the user can edit A → B → A while the send is in
+        // flight, and a success must never erase that new draft.
+        func makeCommit() -> ComposerSendCommit? {
+            guard consumesComposerDraft else { return nil }
+            return ComposerSendCommit(
+                draft: originalDraft,
+                attachments: stagedAttachments,
+                editorGeneration: draftGeneration,
+                conversationID: conversationID
+            )
+        }
         if isRunning, let expectedRunID = selectedRun?.id {
+            // The running-input path keeps the field until the submit lands,
+            // so the identity is captured before the await.
+            let commit = makeCommit()
             do {
                 try await center.submitRunningInput(
                     content: goal,
@@ -589,11 +615,8 @@ final class ThreadDetailViewModel: ObservableObject {
                     executionMode: executionMode,
                     attachments: stagedAttachments
                 )
-                if consumesComposerDraft {
-                    consumeSentDraft(
-                        originalDraft: originalDraft,
-                        stagedAttachments: stagedAttachments
-                    )
+                if let commit {
+                    consumeSentDraft(commit)
                 }
                 pendingInputs = try await center.environment.runningInputStore
                     .pending(conversationID: conversationID)
@@ -603,6 +626,9 @@ final class ThreadDetailViewModel: ObservableObject {
             return
         }
         if consumesComposerDraft { draft = "" }
+        // Captured after the send's own clear: from here only user edits
+        // advance the generation.
+        let commit = makeCommit()
         do {
             let started = try await center.startRun(
                 goal: goal,
@@ -629,25 +655,18 @@ final class ThreadDetailViewModel: ObservableObject {
             case .failure(let error):
                 throw error
             }
-            if consumesComposerDraft {
-                consumeSentDraft(
-                    originalDraft: originalDraft,
-                    stagedAttachments: stagedAttachments
-                )
+            if let commit {
+                consumeSentDraft(commit)
             }
             await load()
         } catch {
-            if consumesComposerDraft {
+            if let commit {
                 // Attachments staged for the failed send come back first,
                 // then the full original text, and only then is the pair
                 // persisted — a relaunch restores prompt and files together.
                 // Text the user typed while the send was in flight wins.
                 if attachments.isEmpty { attachments = stagedAttachments }
-                draft = ComposerDraftSafety.draftAfterSendFailure(
-                    originalDraft: originalDraft,
-                    trimmedGoal: goal,
-                    currentDraft: draft
-                )
+                draft = commit.draftAfterFailure(trimmedGoal: goal, currentDraft: draft)
                 ComposerDraftStore.shared.save(
                     text: draft,
                     attachments: attachments,
@@ -660,22 +679,17 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Clears exactly the draft content a successful send consumed. Text and
     /// attachments staged while the send was in flight stay bound to the
-    /// conversation; the draft store keeps a revision floor so a stale
-    /// async merge can never resurrect the cleared revision.
-    private func consumeSentDraft(
-        originalDraft: String,
-        stagedAttachments: [AttachmentRef]
-    ) {
-        if draft == originalDraft { draft = "" }
-        let sentIDs = Set(stagedAttachments.map(\.id))
-        if !sentIDs.isEmpty {
-            attachments.removeAll { sentIDs.contains($0.id) }
-        }
-        ComposerDraftStore.shared.clearAfterSend(
-            conversationID: conversationID,
-            sentText: originalDraft,
-            sentAttachments: stagedAttachments
+    /// conversation; the field and the draft store each compare the identity
+    /// captured at send start, so a retyped A → B → A is never erased. The
+    /// draft store keeps a revision floor so a stale async merge can never
+    /// resurrect the cleared revision.
+    private func consumeSentDraft(_ commit: ComposerSendCommit) {
+        draft = commit.draftAfterSuccess(
+            currentDraft: draft,
+            currentGeneration: draftGeneration
         )
+        attachments = commit.attachmentsAfterSuccess(current: attachments)
+        commit.commitStore()
     }
 
     func selectAgentMode(_ mode: AgentExecutionMode) {

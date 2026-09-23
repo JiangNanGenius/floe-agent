@@ -35,8 +35,18 @@ final class HomeLaunchpadViewModel: ObservableObject {
 
     // MARK: - Composer state
 
-    /// Draft text. Preserved verbatim across a failed send.
-    @Published var draft: String = ""
+    /// Draft text. Preserved verbatim across a failed send. Every real
+    /// change advances `draftGeneration`; a successful send clears the field
+    /// only while that generation is unchanged, so editing A → B → A while
+    /// the task is being created keeps the new A draft.
+    @Published var draft: String = "" {
+        didSet {
+            guard draft != oldValue else { return }
+            draftGeneration &+= 1
+        }
+    }
+    /// Monotonic identity of the live composer text. See `draft`.
+    private(set) var draftGeneration = 0
     @Published var selectedModelID: UUID?
     @Published var selectedProjectID: UUID?
     @Published var executionTarget: AgentExecutionTarget = .local
@@ -198,6 +208,15 @@ final class HomeLaunchpadViewModel: ObservableObject {
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let stagedAttachments = attachments
         let sentText = draft
+        // Identity of this send's claim on the field and the stored draft.
+        // Text equality is not identity: the user can edit A → B → A while
+        // the task is being created, and the success must keep that draft.
+        let commit = ComposerSendCommit(
+            draft: sentText,
+            attachments: stagedAttachments,
+            editorGeneration: draftGeneration,
+            conversationID: ComposerDraftStore.homeDraftID
+        )
         isSending = true
         isConsumingDraft = true
         defer {
@@ -218,17 +237,13 @@ final class HomeLaunchpadViewModel: ObservableObject {
             // Clear only what this send consumed: text typed while the task
             // was being created (and attachments staged in that window)
             // stays in the launchpad composer.
-            if draft == sentText { draft = "" }
-            let sentIDs = Set(stagedAttachments.map(\.id))
-            if !sentIDs.isEmpty {
-                attachments.removeAll { sentIDs.contains($0.id) }
-            }
-            draftConversationID = UUID()
-            ComposerDraftStore.shared.clearAfterSend(
-                conversationID: ComposerDraftStore.homeDraftID,
-                sentText: sentText,
-                sentAttachments: stagedAttachments
+            draft = commit.draftAfterSuccess(
+                currentDraft: draft,
+                currentGeneration: draftGeneration
             )
+            attachments = commit.attachmentsAfterSuccess(current: attachments)
+            draftConversationID = UUID()
+            commit.commitStore()
             actionError = nil
             await load()
             return conversationID
