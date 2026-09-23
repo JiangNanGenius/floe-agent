@@ -325,8 +325,9 @@ class MockHandler(BaseHTTPRequestHandler):
                 return self._send(200, self._gitee_release_json(release))
             if method == "PATCH":
                 payload = json.loads(self._read_body().decode("utf-8"))
-                if not payload.get("tag_name") or not payload.get("name"):
-                    return self._send(400, {"messages": ["tag_name is missing", "name is missing"]})
+                missing = [field for field in ("tag_name", "name", "body") if payload.get(field) is None]
+                if missing:
+                    return self._send(400, {"messages": ["%s is missing" % field for field in missing]})
                 self.state.patch_payloads.append(payload)
                 for key in ("name", "body", "prerelease", "target_commitish"):
                     if key in payload:
@@ -532,8 +533,19 @@ class MirrorTestCase(unittest.TestCase):
         self.assertEqual("Floe Agent (build 225) rev2", release["name"])
         self.assertEqual(0, summary["gates"]["assets"]["uploaded"])
         self.assertTrue(self.state.patch_payloads, "metadata update must PATCH")
-        self.assertEqual("v1.7.0-beta.82", self.state.patch_payloads[-1]["tag_name"])
-        self.assertEqual("Floe Agent (build 225) rev2", self.state.patch_payloads[-1]["name"])
+        patch = self.state.patch_payloads[-1]
+        self.assertEqual("v1.7.0-beta.82", patch["tag_name"])
+        self.assertEqual("Floe Agent (build 225) rev2", patch["name"])
+        self.assertIn("Updated body", patch["body"])
+        # A prerelease-only change must still carry the required fields.
+        self.state.github_releases["v1.7.0-beta.82"]["prerelease"] = False
+        _, prerelease_only = self.run_mirror("v1.7.0-beta.82")
+        patch = self.state.patch_payloads[-1]
+        self.assertEqual(False, patch["prerelease"])
+        self.assertEqual("v1.7.0-beta.82", patch["tag_name"])
+        self.assertEqual("Floe Agent (build 225) rev2", patch["name"])
+        self.assertIn("Updated body", patch["body"])
+        self.assertIn("prerelease", prerelease_only["gates"]["releaseMetadata"]["updates"])
 
     def test_duplicate_names_are_pruned(self):
         self.seed_app_release()
