@@ -39,6 +39,7 @@
 | [Build 224 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_224.json) | 失败候选的中英文 TestFlight 测试重点（保留） |
 | [TinyEMU Runtime v2](TINYEMU_RUNTIME_V2.md) | 目录归属、CoW、迁移、租约、VM 池、内存与恢复约束 |
 | [Gitee 分片镜像](FLOE_LINUX_GUEST_IMAGE_BUILD.md) | GitHub 主源与 Gitee 九分片镜像、清单/分片 SHA-512、续传与单向同步 |
+| [Gitee 发行版镜像（refs 与资产）](FLOE_GITEE_RELEASE_MIRROR.md) | GitHub 主源的 refs 与 Release 元数据/资产单向镜像：可直接下载的资产、分片重建（不可直装作 IPA）、幂等续传、Actions 触发路径与实测上传带宽限制 |
 | [Build 223 版本说明](RELEASE_NOTES_1.7.0_BUILD_223.md) | 当前已交付内部基线（`v1.7.0-beta.80`）：Runtime v2 首次整合；Build 224 修复其启动回归 |
 | [Build 223 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_223.json) | 已被取代候选的中英文 TestFlight 测试重点（保留） |
 | [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) | 当前内部交付：Build 220 云端编译 14 条诊断的完整修复 + 1 处 Swift 6 并发修复；TestFlight、GitHub 预发布与 Feather 已完成 |
