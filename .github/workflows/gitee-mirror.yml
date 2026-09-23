@@ -121,6 +121,11 @@ on:
         required: false
         type: boolean
         default: false
+      diagnose_download:
+        description: 'Only measure runner -> GitHub asset throughput (read-only, no mirror writes)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -299,8 +304,27 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "GitHub ${TAG} -> ${SHA}"
 
+      - name: Diagnose GitHub asset download throughput (read-only)
+        if: ${{ steps.target.outputs.skip != 'true' && github.event_name == 'workflow_dispatch' && inputs.diagnose_download }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          umask 077
+          HEADER_FILE="$(mktemp "${RUNNER_TEMP}/gh-auth-header.XXXXXX")"
+          trap 'rm -f "$HEADER_FILE"' EXIT
+          printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$HEADER_FILE"
+          URL="$(curl -fsS -H @"$HEADER_FILE" "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | python3 -c 'import json,sys; assets=[a for a in json.load(sys.stdin)["assets"] if a["size"]>1048576]; print(assets[0]["browser_download_url"] if assets else "")')"
+          if [ -z "$URL" ]; then echo "no asset larger than 1 MiB found" >&2; exit 1; fi
+          echo "measuring first 64 MiB of $(basename "$URL") with curl"
+          curl -fsS -o /dev/null --max-time 300 -r 0-67108863 \
+            -w 'curl: http=%{http_code} bytes=%{size_download} seconds=%{time_total} speed_Bps=%{speed_download}\n' "$URL"
+
       - name: Ensure the immutable tag exists on Gitee (one-way, never forced)
-        if: ${{ steps.target.outputs.skip != 'true' }}
+        if: ${{ steps.target.outputs.skip != 'true' && !(github.event_name == 'workflow_dispatch' && inputs.diagnose_download) }}
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           TAG: ${{ steps.target.outputs.tag }}
@@ -333,7 +357,7 @@ jobs:
           echo "refs gate: Gitee ${TAG} == GitHub ${SHA}"
 
       - name: Sync release metadata and assets
-        if: ${{ steps.target.outputs.skip != 'true' }}
+        if: ${{ steps.target.outputs.skip != 'true' && !(github.event_name == 'workflow_dispatch' && inputs.diagnose_download) }}
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
