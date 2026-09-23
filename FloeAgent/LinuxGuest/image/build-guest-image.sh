@@ -121,7 +121,7 @@ share_dir="$work/share9p"
 runner_dir="$work/runner"
 mnt_dir="$work/mnt"
 
-for tool in curl python3 parted e2fsck tune2fs losetup mount dd qemu-img sha512sum sha256sum make gcc zip unzip; do
+for tool in curl python3 parted e2fsck resize2fs tune2fs losetup mount dd qemu-img sha512sum sha256sum make gcc zip unzip; do
     command -v "$tool" >/dev/null 2>&1 || die "missing host tool: $tool"
 done
 [ -f "$pins" ] || die "pinned inputs not found: $pins"
@@ -307,7 +307,25 @@ disk_img="$image_dir/disk.img"
 dd if="$raw" of="$disk_img" bs=512 skip="$rstart" count="$rsize" status=none
 losetup -d "$loop_device"
 trap - EXIT
-e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-disk-image.log" 2>&1 || true
+# The cloud builder installs compilers and document packages before the image
+# is distributed. The Debian nocloud root partition is only ~2.8 GiB, which
+# leaves too little room for APT archives, unpacking and pinned wheels. Grow
+# the partitionless ext4 image sparsely to the same 16 GiB logical capacity
+# used for environment disks. Zero-filled extents do not add 16 GiB of host
+# storage or download bytes after compression.
+logical_disk_bytes=$((16 * 1024 * 1024 * 1024))
+truncate -s "$logical_disk_bytes" "$disk_img"
+e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-disk-image.log" 2>&1 || {
+    rc=$?
+    [ "$rc" -eq 1 ] || die "ext4 check before resize failed (exit $rc)"
+}
+resize2fs "$disk_img" >"$evidence_dir/resize2fs-disk-image.log" 2>&1 \
+    || die "cannot expand the guest ext4 root to 16 GiB"
+e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-resized-disk-image.log" 2>&1 || {
+    rc=$?
+    [ "$rc" -eq 1 ] || die "ext4 check after resize failed (exit $rc)"
+}
+printf 'logical_disk_bytes=%s\n' "$(stat -c %s "$disk_img")" >"$evidence_dir/disk-capacity.txt"
 tune2fs -l "$disk_img" | grep -aE 'Filesystem features|Block size|Filesystem state' >"$evidence_dir/disk-ext4-features.txt"
 rm -f "$raw"
 
