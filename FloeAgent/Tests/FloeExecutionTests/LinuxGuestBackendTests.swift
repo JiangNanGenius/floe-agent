@@ -341,8 +341,16 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
         let second = try await channel.run(argv: ["/bin/echo", "2"], timeout: 5)
         XCTAssertEqual(first.exitCode, 0)
         XCTAssertEqual(second.exitCode, 0)
-        XCTAssertEqual(first.stdout, "T1")
-        XCTAssertEqual(second.stdout, "T2")
+        // The reader demultiplexes by token: each command sees exactly its own
+        // token's reply (the handler echoes the token as stdout) and nothing
+        // of the other's, and both commands share one console reader.
+        let execTokens = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC")
+        XCTAssertEqual(execTokens.count, 2)
+        guard execTokens.count == 2 else { return }
+        XCTAssertEqual(first.stdout, execTokens[0])
+        XCTAssertEqual(second.stdout, execTokens[1])
+        XCTAssertNotEqual(first.stdout, second.stdout)
+        XCTAssertEqual(console.outputCallCount, 1, "sequential commands must share one console reader")
     }
 
     func testRunTimesOutWithTargetedInterruptAndPoisonsOnSilence() async throws {
@@ -366,16 +374,21 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
     }
 
     func testRunTimeoutSurfacesAfterGuestConfirmsReap() async throws {
-        // The guest answers the targeted interrupt with END 130 (reaped):
-        // only then does the timeout surface — never before the proof.
+        // The guest stays silent; after the host's targeted interrupt it
+        // answers END 130 (reaped): only then does the timeout surface —
+        // never before the proof, and the channel is not poisoned.
         let console = TestLinuxGuestConsole()
-        console.setHandler { token in
-            if token.hasPrefix("hello-") { return caps(token) }
-            return [Data("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-END \(token) 130\u{1e}".utf8)]
-        }
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : [] }
         let channel = LinuxGuestCommandChannel(transport: console)
+        let task = Task {
+            try await channel.run(argv: ["sleep", "100"], timeout: 0.3)
+        }
+        guard let signalToken = await awaitSignalToken(console) else {
+            return XCTFail("the timeout never sent the targeted interrupt")
+        }
+        console.push([Data("\u{1e}FLOE-BEGIN \(signalToken)\u{1e}\u{1e}FLOE-END \(signalToken) 130\u{1e}".utf8)])
         do {
-            _ = try await channel.run(argv: ["sleep", "100"], timeout: 0.3)
+            _ = try await task.value
             XCTFail("expected a timeout")
         } catch let error as LinuxGuestError {
             guard case .timedOut = error else { return XCTFail("unexpected error \(error)") }
@@ -386,10 +399,7 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
 
     func testRunCancellationSurfacesAfterGuestConfirmsReap() async throws {
         let console = TestLinuxGuestConsole()
-        console.setHandler { token in
-            if token.hasPrefix("hello-") { return caps(token) }
-            return [Data("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-END \(token) 130\u{1e}".utf8)]
-        }
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : [] }
         let channel = LinuxGuestCommandChannel(transport: console)
         let token = CancellationToken()
         let task = Task {
@@ -397,6 +407,10 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(150))
         token.cancel()
+        guard let signalToken = await awaitSignalToken(console) else {
+            return XCTFail("the cancellation never sent the targeted interrupt")
+        }
+        console.push([Data("\u{1e}FLOE-BEGIN \(signalToken)\u{1e}\u{1e}FLOE-END \(signalToken) 130\u{1e}".utf8)])
         do {
             _ = try await task.value
             XCTFail("expected cancellation")
@@ -405,8 +419,25 @@ final class LinuxGuestCommandChannelTests: XCTestCase {
         }
         let poisoned = await channel.isPoisoned
         XCTAssertFalse(poisoned)
-        let text = String(decoding: console.written, as: UTF8.self)
-        XCTAssertTrue(text.contains("FLOE-SIGNAL"))
+    }
+
+    /// Waits for the host's targeted `FLOE-SIGNAL` frame and returns the
+    /// token it addressed. The console seam delivers SIGNAL to `written` but
+    /// never to the reply handler (only command frames are answered), so the
+    /// caller must observe it here and push the guest's reap proof.
+    private func awaitSignalToken(
+        _ console: TestLinuxGuestConsole, deadline: TimeInterval = 5
+    ) async -> String? {
+        let end = Date().addingTimeInterval(deadline)
+        while Date() < end {
+            let signalTokens = TestLinuxGuestConsole.tokens(in: console.written, name: "SIGNAL")
+            if let token = signalTokens.first {
+                XCTAssertEqual(signalTokens.count, 1, "the interrupt must address exactly one token")
+                return token
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return nil
     }
 
     // MARK: protocol-3 router / transport

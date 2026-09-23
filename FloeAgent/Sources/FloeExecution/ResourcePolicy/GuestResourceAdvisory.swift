@@ -122,6 +122,10 @@ public actor GuestResourceAdvisory {
 
     // MARK: history
 
+    /// Records one finished run. `outcome.shape` MUST be the shape the guest
+    /// was actually GRANTED (the pool's lease), not the requested/planned
+    /// shape: a plan is only advanced by a failure at (or above) its own
+    /// shape, and a stale report from a smaller shape is ignored.
     public func recordOutcome(_ outcome: WorkloadResourceOutcome, for workloadKey: String) {
         var outcomes = history[workloadKey] ?? []
         outcomes.append(outcome)
@@ -144,19 +148,34 @@ public actor GuestResourceAdvisory {
         }
         var recommendation = Self.plan(from: signals)
 
-        // History adjustment: a same-or-smaller shape that previously saw
-        // memory pressure steps RAM up exactly one declared ladder step
-        // (1024 -> 1536 -> 2048), never by arithmetic that could skip a step.
-        if let outcomes = history[signals.workloadKey],
-           outcomes.contains(where: { $0.memoryPressure && $0.shape.memory <= recommendation.shape.memory }),
-           let raised = recommendation.shape.memory.raised() {
-            recommendation = GuestResourceRecommendation(
-                shape: GuestResourceRequest(vcpus: recommendation.shape.vcpus, memory: raised, origin: .recommendation),
-                memoryReason: recommendation.memoryReason + "; earlier runs hit memory pressure",
-                vcpuReason: recommendation.vcpuReason,
-                confidence: recommendation.confidence,
-                evidenceSignals: recommendation.evidenceSignals + ["history:memory-pressure"]
-            )
+        // History adjustment, bounded by what actually ran: callers record
+        // `WorkloadResourceOutcome.shape` as the shape the guest was really
+        // GRANTED, so only a FAILED run at (or above) today's planned shape
+        // that reported memory pressure is evidence the plan is insufficient.
+        // A pressure report from a smaller shape is stale low-shape evidence
+        // and never inflates the plan; a successful run is evidence the plan
+        // worked. The raise is exactly one declared ladder step above the
+        // shape where the workload actually failed (1024 -> 1536 -> 2048,
+        // never arithmetic that invents non-existent steps), so repeating the
+        // same low-tier failure can never inflate the plan further.
+        if let outcomes = history[signals.workloadKey] {
+            let planned = recommendation.shape.memory
+            let pressuredShape = outcomes
+                .filter { !$0.succeeded && $0.memoryPressure && $0.shape.memory >= planned }
+                .map(\.shape.memory)
+                .max()
+            if let pressuredShape {
+                let target = pressuredShape.raised() ?? pressuredShape
+                if target > planned {
+                    recommendation = GuestResourceRecommendation(
+                        shape: GuestResourceRequest(vcpus: recommendation.shape.vcpus, memory: target, origin: .recommendation),
+                        memoryReason: recommendation.memoryReason + "; earlier runs hit memory pressure at \(pressuredShape.mb) MiB",
+                        vcpuReason: recommendation.vcpuReason,
+                        confidence: recommendation.confidence,
+                        evidenceSignals: recommendation.evidenceSignals + ["history:memory-pressure"]
+                    )
+                }
+            }
         }
         return recommendation
     }

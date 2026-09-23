@@ -136,12 +136,26 @@ final class RuntimeVMPoolTests: XCTestCase {
     // MARK: - release + FIFO promotion
 
     func testReleaseReturnsResourcesAndPromotesWaiter() async throws {
+        // The pool is GENUINELY exhausted before the queue forms: a dual plus
+        // two singles commit all 4 vCPUs and all 2048 MiB, so the queued dual
+        // cannot fit until the running dual is released.
         let pool = makePool(quota: 4, memory: 2048, vms: 4)
         let dual = GuestResourceRequest(vcpus: .two, memory: .m1024)
         _ = try await pool.acquire(
             environmentID: "dual", runtimeID: "rt-dual",
             request: dual, imageSMPCapable: true
         )
+        for index in 0..<2 {
+            _ = try await pool.acquire(
+                environmentID: "single-\(index)", runtimeID: "rt-single-\(index)",
+                request: GuestResourceRequest(vcpus: .one, memory: .m512),
+                imageSMPCapable: false
+            )
+        }
+        let full = await pool.status
+        XCTAssertEqual(full.usedVCPUs, 4)
+        XCTAssertEqual(full.reservedMB, 2048)
+
         let queuedTask = Task {
             try await pool.acquire(
                 environmentID: "dual-1", runtimeID: "rt-dual-1",
@@ -149,22 +163,40 @@ final class RuntimeVMPoolTests: XCTestCase {
             )
         }
         try await Task.sleep(for: .milliseconds(30))
+        // FIFO witness: a later single-hart request must not jump the queued
+        // dual; it queues behind it even though less is asked of the pool.
+        let follower = Task {
+            try await pool.acquire(
+                environmentID: "single-2", runtimeID: "rt-single-2",
+                request: Self.single512, imageSMPCapable: false
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
         let queued = await pool.queuedCount
-        XCTAssertEqual(queued, 1)
+        XCTAssertEqual(queued, 2)
 
         await pool.release(runtimeID: "rt-dual")
+        // The first waiter (the dual) is promoted; the release returned its
+        // exact shape and runtimeID.
         let promoted = try await awaitWithTimeout(queuedTask)
         XCTAssertEqual(promoted.runtimeID, "rt-dual-1")
         XCTAssertEqual(promoted.shape.vcpus, .two)
         XCTAssertEqual(promoted.shape.memory, .m1024)
         let status = await pool.status
-        XCTAssertEqual(status.running, 1)
-        XCTAssertEqual(status.usedVCPUs, 2)
-        XCTAssertEqual(status.queued, 0)
+        XCTAssertEqual(status.running, 3)
+        XCTAssertEqual(status.usedVCPUs, 4)
+        XCTAssertEqual(status.reservedMB, 2048)
+        XCTAssertEqual(status.queued, 1)
         let promotedLease = await pool.lease(runtimeID: "rt-dual-1")
         let releasedLease = await pool.lease(runtimeID: "rt-dual")
         XCTAssertNotNil(promotedLease)
         XCTAssertNil(releasedLease)
+        // The follower is still queued, not silently granted (FIFO, no
+        // over-admission of a second guest beyond the released capacity).
+        let followerLease = await pool.lease(runtimeID: "rt-single-2")
+        XCTAssertNil(followerLease)
+        follower.cancel()
+        await assertCancellation(follower)
     }
 
     // MARK: - temporary shortage vs permanent image mismatch
@@ -676,8 +708,11 @@ final class RuntimeVMPoolTests: XCTestCase {
         XCTAssertEqual(GuestMemoryMiB.smallestHolding(1280), .m1536)
     }
 
-    /// History pressure raises to the NEXT declared tier, including across
-    /// the 1 GiB boundary, and never past 2048.
+    /// History is evidence-bounded: only a FAILED run at (or above) the
+    /// planned shape that really reported memory pressure advances the plan,
+    /// and then by exactly one declared tier. Successes and stale low-shape
+    /// pressure reports never inflate it, and repeating one failure record
+    /// does not raise it twice. The outcome shape is the ACTUAL granted shape.
     func testAdvisoryHistoryPressureRaisesToNextTier() async {
         let advisory = GuestResourceAdvisory()
         // A declared JVM command plans 1024 MiB.
@@ -687,34 +722,84 @@ final class RuntimeVMPoolTests: XCTestCase {
         let planned = await advisory.recommend(jvmSignals)
         XCTAssertEqual(planned.shape.memory, .m1024)
 
+        // A successful run at the planned shape is evidence the plan worked.
         await advisory.recordOutcome(
-            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m256), succeeded: false, memoryPressure: true),
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m1024), succeeded: true),
+            for: "w-jvm"
+        )
+        let afterSuccess = await advisory.recommend(jvmSignals)
+        XCTAssertEqual(afterSuccess.shape.memory, .m1024)
+        XCTAssertFalse(afterSuccess.evidenceSignals.contains("history:memory-pressure"))
+
+        // A stale pressure report from a smaller shape (the workload really
+        // ran at 256 MiB) says nothing about the 1024 MiB plan; repeated
+        // low-tier failures must not inflate it.
+        for _ in 0..<3 {
+            await advisory.recordOutcome(
+                WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m256), succeeded: false, memoryPressure: true),
+                for: "w-jvm"
+            )
+        }
+        let stale = await advisory.recommend(jvmSignals)
+        XCTAssertEqual(stale.shape.memory, .m1024)
+        XCTAssertFalse(stale.evidenceSignals.contains("history:memory-pressure"))
+
+        // A real pressure failure at the granted 1024 MiB plan raises exactly
+        // one declared step.
+        await advisory.recordOutcome(
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m1024), succeeded: false, memoryPressure: true),
             for: "w-jvm"
         )
         let raised = await advisory.recommend(jvmSignals)
         XCTAssertEqual(raised.shape.memory, .m1536)
         XCTAssertTrue(raised.evidenceSignals.contains("history:memory-pressure"))
 
-        // A second pressure record raises 1536 -> 2048 and stops there.
+        // Repeating the identical failure record does not raise it again.
         await advisory.recordOutcome(
-            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m256), succeeded: false, memoryPressure: true),
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m1024), succeeded: false, memoryPressure: true),
+            for: "w-jvm"
+        )
+        let repeated = await advisory.recommend(jvmSignals)
+        XCTAssertEqual(repeated.shape.memory, .m1536)
+
+        // A real failure at the raised, actually-granted 1536 MiB advances to
+        // the declared ceiling 2048 and stops there (even for a failure at
+        // 2048 itself).
+        await advisory.recordOutcome(
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m1536), succeeded: false, memoryPressure: true),
             for: "w-jvm"
         )
         let ceiling = await advisory.recommend(jvmSignals)
         XCTAssertEqual(ceiling.shape.memory, .m2048)
+        await advisory.recordOutcome(
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m2048), succeeded: false, memoryPressure: true),
+            for: "w-jvm"
+        )
+        let atCeiling = await advisory.recommend(jvmSignals)
+        XCTAssertEqual(atCeiling.shape.memory, .m2048)
 
-        // A heavy-ML plan already at 1536 also advances to 2048.
+        // A heavy-ML plan already at 1536 also advances to 2048 on a real
+        // 1536 MiB failure...
         let mlSignals = WorkloadResourceSignals(
             workloadKey: "w-ml", declaredImports: ["torch"]
         )
         let mlPlan = await advisory.recommend(mlSignals)
         XCTAssertEqual(mlPlan.shape.memory, .m1536)
         await advisory.recordOutcome(
-            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m256), succeeded: false, memoryPressure: true),
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m1536), succeeded: false, memoryPressure: true),
             for: "w-ml"
         )
         let mlRaised = await advisory.recommend(mlSignals)
         XCTAssertEqual(mlRaised.shape.memory, .m2048)
+
+        // ...while a stale 1024 MiB pressure report leaves the same plan alone.
+        let mlStale = GuestResourceAdvisory()
+        await mlStale.recordOutcome(
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m1024), succeeded: false, memoryPressure: true),
+            for: "w-ml"
+        )
+        let mlStillPlanned = await mlStale.recommend(mlSignals)
+        XCTAssertEqual(mlStillPlanned.shape.memory, .m1536)
     }
 
     /// User override beats both the plan and history.

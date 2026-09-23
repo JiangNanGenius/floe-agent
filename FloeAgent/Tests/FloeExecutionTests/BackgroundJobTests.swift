@@ -219,6 +219,12 @@ struct BackgroundJobTests {
     @Test("Submit runs the tool's workspace preflight before persisting the job")
     func submitPreflightRejectsBeforePersist() async throws {
         let (db, _, run) = try await fixture()
+        // The submit context carries the run's resolved workspace root; the
+        // preflight is only meaningful against that root.
+        let workspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-jobs-preflight-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
         let store = BackgroundJobStore(database: db)
         let registry = ToolRunnerRegistry()
         var runner = AnyAgentTool(descriptor: .init(name: "exec.localService", toolDescription: "test service",
@@ -235,7 +241,10 @@ struct BackgroundJobTests {
         do {
             _ = try await tool.execute(
                 .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py","port":8080}"#),
-                context: .init(runID: run, toolCallID: "call-preflight", cancellation: CancellationToken())
+                context: .init(
+                    runID: run, toolCallID: "call-preflight",
+                    workspaceRootURL: workspace, cancellation: CancellationToken()
+                )
             )
             Issue.record("Expected the preflight failure at submit time")
         } catch {
@@ -250,7 +259,10 @@ struct BackgroundJobTests {
         registry.register(runner)
         let output = try await tool.execute(
             .init(tool: "exec.localService", arguments: #"{"runtime":"node","entry":"server.py","port":8080}"#),
-            context: .init(runID: run, toolCallID: "call-preflight-ok", cancellation: CancellationToken())
+            context: .init(
+                runID: run, toolCallID: "call-preflight-ok",
+                workspaceRootURL: workspace, cancellation: CancellationToken()
+            )
         )
         #expect(output.summary.contains("jobID"))
     }
@@ -259,11 +271,31 @@ struct BackgroundJobTests {
     func localServiceMissingPortFailsFast() async throws {
         let (db, _, run) = try await fixture()
         let registry = ToolRunnerRegistry()
-        registry.register(AnyAgentTool(descriptor: .init(name: "exec.localService", toolDescription: "test service",
-            parametersJSON: #"{"type":"object","properties":{"port":{"type":"integer","description":"Loopback port 1024..65535"}},"required":["port"]}"#,
-            riskLabels: [], isSideEffecting: true)) { _, _ in
-            ToolExecutionOutput(summary: "never", fullOutputSHA256: "never")
-        })
+        let parametersJSON = #"{"type":"object","properties":{"port":{"type":"integer","description":"Loopback port 1024..65535"}},"required":["port"]}"#
+        // The runner mirrors the concrete exec.localService wiring: the same
+        // typed decode of the required fields (so a missing argument names the
+        // field AND its schema description) before the service persists.
+        registry.register(AnyAgentTool(
+            descriptor: .init(name: "exec.localService", toolDescription: "test service",
+                parametersJSON: parametersJSON,
+                riskLabels: [], isSideEffecting: true),
+            run: { _, _ in ToolExecutionOutput(summary: "never", fullOutputSHA256: "never") },
+            validateArguments: { payload in
+                struct Payload: Decodable {
+                    var runtime: String
+                    var entry: String
+                    var cwd: String?
+                    var port: Int
+                }
+                do {
+                    _ = try JSONDecoder().decode(Payload.self, from: payload)
+                } catch let error as DecodingError {
+                    throw FloeError.validationFailed(AnyAgentTool.describeDecodingError(
+                        error, toolName: "exec.localService", parametersJSON: parametersJSON
+                    ))
+                }
+            }
+        ))
         let store = BackgroundJobStore(database: db)
         let service = BackgroundJobService(store: store, registry: registry)
         let tool = JobsSubmitTool(service: service)

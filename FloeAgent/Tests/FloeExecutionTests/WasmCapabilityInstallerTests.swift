@@ -57,10 +57,13 @@ struct WasmCapabilityInstallerTests {
         let installer = makeInstaller(root: root, store: fixture.store)
         let matches = await installer.search("lua")
         #expect(matches.contains { $0.id == "floe/lua" && $0.kind == .wasmCommand && $0.tier == .wasm })
-        // The canonical command name resolves through the merged alias.
+        // The canonical command name resolves through the merged alias, and
+        // the bare command (`lua` for the installed `floe-lua`) is the SAME
+        // verified entry — the shell dispatches both to this store.
         #expect(await installer.show("floe-lua")?.id == "floe/lua")
+        #expect(await installer.show("lua")?.id == "floe/lua")
         // Nothing is invented: an unrelated id stays unknown.
-        #expect(await installer.show("lua") == nil)
+        #expect(await installer.show("lua5.4") == nil)
         #expect(await installer.show("floe/python") == nil)
     }
 
