@@ -455,6 +455,10 @@ jobs:
               def ok(self, message):
                   print("OK: %s" % message, flush=True)
 
+              def fail(self, message):
+                  self.failures.append(message)
+                  print("FAIL: %s" % message, flush=True)
+
               def note(self, message):
                   self.notes.append(message)
                   print("note: %s" % message, flush=True)
@@ -813,6 +817,9 @@ jobs:
               summary = text(os.path.join(root, "SOURCES-MANIFEST.md"))
               check.require("gap_packages=0" in summary, "SOURCES-MANIFEST.md records gap_packages=0")
 
+              # --- staged boot-association provenance (kept per-origin) ------------
+              facts["boot_association"] = verify_boot_association(check, root, evidence, pins)
+
               # --- Debian corresponding sources -------------------------------------
               debian_facts = verify_debian(check, root, os.path.join(root, "debian-sources"),
                                            os.path.join(root, "guest-packages.tsv"))
@@ -963,11 +970,24 @@ jobs:
           # merge (one retained artifact tree into the source assembly root)
           # ---------------------------------------------------------------------------
           def cmd_merge(check, pins, args):
+              renames = {}
+              for item in args.rename:
+                  if "=" not in item:
+                      check.fail("malformed --rename %r (want src-rel=dst-rel)" % item)
+                      continue
+                  src_rel, dst_rel = item.split("=", 1)
+                  renames[src_rel.strip()] = dst_rel.strip()
+              if check.failures:
+                  return check.finish()
               copied, conflicts = 0, 0
               for root, _dirs, files in os.walk(args.source_dir):
                   for name in files:
                       src = os.path.join(root, name)
                       rel = os.path.relpath(src, args.source_dir)
+                      # staged provenance that legitimately exists in several
+                      # bundles is kept per-origin under an explicit rename;
+                      # nothing is silently overwritten or ignored
+                      rel = renames.get(rel, rel)
                       dst = os.path.join(args.root, rel)
                       if os.path.exists(dst):
                           if sha(src) == sha(dst):
@@ -980,6 +1000,61 @@ jobs:
                       copied += 1
               check.ok("merged %s: %d file(s) copied, %d conflict(s)" % (os.path.basename(args.source_dir), copied, conflicts))
               return check.finish()
+
+
+          # ---------------------------------------------------------------------------
+          # staged boot-association provenance (image build vs source collection)
+          # ---------------------------------------------------------------------------
+          def verify_boot_association(check, root, evidence, pins):
+              """Both the image build and the source collection record their own
+              boot-association.json. They are intentional stage evidence with
+              DIFFERENT fields, so they are kept per-origin and cross-checked
+              for a consistent shared identity instead of byte equality."""
+              facts = {}
+              association = {}
+              for origin in ("image-evidence", "source-evidence"):
+                  path = os.path.join(root, origin, "boot-association.json")
+                  check.require(os.path.isfile(path), "%s/boot-association.json is preserved" % origin)
+                  if os.path.isfile(path):
+                      association[origin] = load(path)
+              check.require(not os.path.exists(os.path.join(root, "boot-association.json")),
+                            "no unqualified top-level boot-association.json remains after the renamed merges")
+              if len(association) != 2:
+                  return facts
+              image_assoc = association["image-evidence"]
+              source_assoc = association["source-evidence"]
+              runs = {origin: str(data.get("image_run", "")) for origin, data in association.items()}
+              check.require(runs["image-evidence"] and runs["image-evidence"] == runs["source-evidence"],
+                            "both boot-association records name the same image run")
+              check.require(pins["run_id"] in runs["image-evidence"],
+                            "the boot-association image run is the pinned component CI run %s" % pins["run_id"])
+              check.require(str(image_assoc.get("source_ref", "")) == pins["run_sha"],
+                            "image boot-association source_ref is the image run commit")
+              origins = {str(image_assoc.get("boot_files_origin", "")), str(source_assoc.get("image_boot_files_origin", ""))}
+              check.require(len(origins) == 1 and bool(next(iter(origins))),
+                            "both boot-association records agree on the boot files origin (%s)" % sorted(origins))
+              check.require(isinstance(image_assoc.get("note"), str) and bool(image_assoc.get("note")),
+                            "image boot-association records its note")
+              check.require(isinstance(source_assoc.get("note"), str) and bool(source_assoc.get("note")),
+                            "source boot-association records its note")
+              check.require(isinstance(source_assoc.get("fresh_rebuild_this_run"), bool),
+                            "source boot-association records fresh_rebuild_this_run")
+              image_pins = set(image_assoc.get("bios_kernel_pins") or [])
+              source_pins = set(source_assoc.get("image_pinned_boot_files") or [])
+              check.require(image_pins == source_pins and len(image_pins) == 2,
+                            "both boot-association records pin the same bbl64.bin/kernel-riscv64.bin identities")
+              check.require(all(str(entry).startswith(("bbl64.bin ", "kernel-riscv64.bin ")) for entry in image_pins | source_pins),
+                            "boot-association pins name bbl64.bin and kernel-riscv64.bin")
+              evidence_pins = {}
+              for line in text(os.path.join(evidence, "bios-kernel-pins.txt")).splitlines():
+                  match = re.match(r"^(\S+)\s+bytes=(\d+)\s+sha256=([0-9a-f]{64})$", line.strip())
+                  if match:
+                      evidence_pins["%s bytes=%d sha256=%s" % (match.group(1), int(match.group(2)), match.group(3))] = match.group(1)
+              check.require(set(evidence_pins) == image_pins,
+                            "boot-association pins match the shipped-binary evidence pins")
+              facts = {"image_run": runs["image-evidence"], "boot_files_origin": sorted(origins),
+                       "pins": sorted(image_pins), "source_ref": str(image_assoc.get("source_ref", ""))}
+              return facts
 
 
           # ---------------------------------------------------------------------------
@@ -1124,6 +1199,8 @@ jobs:
               parser.add_argument("--qualification-dir", default="")
               parser.add_argument("--image-dir", default="")
               parser.add_argument("--source-dir", default="")
+              parser.add_argument("--rename", action="append", default=[],
+                                  help="src-rel=dst-rel rename applied while merging (staged provenance)")
               parser.add_argument("--root", default="")
               parser.add_argument("--out-dir", default="")
               parser.add_argument("--report", required=True)
@@ -1198,6 +1275,7 @@ jobs:
           for bundle in source-upstream source-evidence; do
             python3 "$DIST/verify_dist.py" merge --pins "$DIST/pins.json" \
               --source-dir "$DIST/retained/$bundle" --root "$ROOT" --out-dir "$ROOT" \
+              --rename boot-association.json=source-evidence/boot-association.json \
               --report "$DIST/merge-$bundle.json"
           done
           # The Debian artifact uploads one shard directory, so its download root
@@ -1210,8 +1288,11 @@ jobs:
             --report "$DIST/merge-source-debian.json"
           # The license texts, package inventory and build transcripts stay with
           # the source material (the source collector only references them).
+          # boot-association.json also exists in the source-evidence bundle with
+          # stage-specific content, so this copy is kept under its own origin.
           python3 "$DIST/verify_dist.py" merge --pins "$DIST/pins.json" \
             --source-dir "$DIST/retained/image-evidence" --root "$ROOT" --out-dir "$ROOT" \
+            --rename boot-association.json=image-evidence/boot-association.json \
             --report "$DIST/merge-image-evidence.json"
           python3 "$DIST/verify_dist.py" sources --pins "$DIST/pins.json" \
             --root "$ROOT" --evidence-dir "$DIST/retained/image-evidence" \

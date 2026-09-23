@@ -64,6 +64,16 @@ Distribute (`workflow_dispatch` only, never from a failed preflight):
   sha256/size verified, exact cross-glibc `.dsc` files with their
   Checksums-Sha256, runner relink object + toolchain records, kernel/bbl
   upstream pins, license texts);
+- staged boot-file association provenance: the image build and the source
+  collection each record their own `boot-association.json` with different,
+  stage-specific fields. Both are kept per-origin as
+  `image-evidence/boot-association.json` and
+  `source-evidence/boot-association.json` in the merged source tree; the
+  verifier requires a consistent shared identity (same image run, matching
+  boot-file pins against the shipped-binary evidence, source_ref = run commit)
+  instead of byte equality, and any other merge conflict fails closed with an
+  explicit relative path and source bundle (duplicates are never overwritten
+  or ignored).
 - fail-closed release creation (existing tag or foreign release stops the
   run), no asset overwrites, post-upload verification of every asset name,
   size and digest, plus an anonymous public download-URL probe per asset.
