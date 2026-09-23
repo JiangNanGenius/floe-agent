@@ -153,6 +153,29 @@ struct OfficePresentationOpeningTests {
         }
     }
 
+    // MARK: - First frame ownership
+
+    @Test("A preview-to-edit remount never inherits the preview's paint")
+    func remountRequiresItsOwnPaint() {
+        // The preview session painted its file-based surface fine. That frame
+        // is exactly what the edit surface must not be told to be ready on.
+        var preview = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        _ = preview.openSettled()
+        _ = preview.visibleRenderObserved()
+        #expect(preview.isReady)
+        #expect(preview.permitsSave)
+        // The edit entry mounts a new controller, a new open generation and a
+        // new gate; readiness starts over, and only the edit surface's own
+        // post-entry paint (the host's evidence) may settle it ready.
+        var editing = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        #expect(editing.state == .waitingForOpen, "the edit gate must start unrendered")
+        _ = editing.openSettled()
+        #expect(editing.awaitsVisibleRender)
+        #expect(!editing.isReady && !editing.permitsSave)
+        _ = editing.visibleRenderObserved()
+        #expect(editing.isReady && editing.permitsSave)
+    }
+
     // MARK: - Permission report budget
 
     @Test("The permission report wait outlasts the paint-gated report but stays under the open watchdog")

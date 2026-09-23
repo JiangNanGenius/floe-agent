@@ -261,6 +261,12 @@ typedef struct {
     bool tileDecoded;
     bool pixelPainted;
     bool vectorRendering;
+    /// A paint that happened on the part-based edit surface after the edit
+    /// entry: a tile decoded after the entry's baseline, or a repainted
+    /// document canvas. The engine's shared tile map keeps the file-based
+    /// startup's decoded tiles across `_switchToPartBasedView`, so the decoded
+    /// tile count alone is never edit-surface evidence.
+    bool editSurfacePainted;
 } FloeRenderFacts;
 
 static bool FloeRenderFactsSatisfyVisibleRender(FloeRenderFacts facts) {
@@ -290,7 +296,8 @@ static bool FloeDocumentRequiresVisibleRender(NSString *extension) {
 
 // FLOE_RENDER_PROBE_SCRIPT_BEGIN
 // Downsampled document-canvas fingerprint. The probe never returns pixels or
-// document contents, only counters.
+// document contents, only counters, booleans and the edit-surface paint
+// evidence it derives from them (the baseline samples stay in the page).
 static NSString *FloeRenderProbeScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
 (() => {
@@ -307,15 +314,19 @@ static NSString *FloeRenderProbeScript() {
             || null;
         let tiles = 0;
         let decodedTiles = 0;
+        const decodedImages = new Map();
         if (manager && typeof manager.getTiles === 'function') {
             const all = manager.getTiles();
             if (all && typeof all.forEach === 'function') {
-                all.forEach((tile) => {
+                all.forEach((tile, key) => {
                     tiles++;
                     if (!tile) return;
                     const ready = typeof tile.isReadyToDraw === 'function'
                         ? tile.isReadyToDraw() : !!tile.image;
-                    if (ready) decodedTiles++;
+                    if (ready) {
+                        decodedTiles++;
+                        decodedImages.set(String(key), tile.image);
+                    }
                 });
             }
         }
@@ -328,6 +339,7 @@ static NSString *FloeRenderProbeScript() {
                 canvas = candidate;
         }
         let pixels = null;
+        let sampled = null;
         if (canvas) {
             try {
                 const probe = document.createElement('canvas');
@@ -336,6 +348,7 @@ static NSString *FloeRenderProbeScript() {
                 const context = probe.getContext('2d', { willReadFrequently: true });
                 context.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, 24, 16);
                 const data = context.getImageData(0, 0, 24, 16).data;
+                sampled = data;
                 const colours = {};
                 let distinct = 0;
                 let opaque = 0;
@@ -348,15 +361,86 @@ static NSString *FloeRenderProbeScript() {
                     }
                 }
                 pixels = { distinctColours: distinct, samples: data.length / 4, opaque: opaque };
-            } catch (_) { pixels = null; }
+            } catch (_) { pixels = null; sampled = null; }
         }
         const vectorRendering = !!(manager && typeof manager.isVectorRendering === 'function'
             && manager.isVectorRendering());
+        const fileBasedView = file.fileBasedView === true;
+        // FLOE_EDIT_SURFACE_EVIDENCE_BEGIN
+        // Edit-surface paint evidence. The engine's shared tile map keeps the
+        // file-based startup's decoded tiles across
+        // ImpressTileLayer._switchToPartBasedView (pinned engine 27b21dc1: the
+        // switch only flips app.file.fileBasedView, swaps the active layout and
+        // updates the scroll limits), so a decoded tile plus a cleared flag can
+        // be the leftover preview frame. An editable presentation is ready only
+        // after its own surface painted: a tile decoded after the switch (a
+        // different image object for the same tile key, or a tile that was not
+        // decoded before) or a repainted document canvas (downsampled samples
+        // changed). The last file-based frame is the baseline the edit surface
+        // must move away from; the host also arms that baseline with the
+        // session generation immediately before it runs the deferred edit
+        // entry, so the evidence can only describe work done after the entry.
+        const state = window.__floeEditSurfaceState || (window.__floeEditSurfaceState = {
+            baseline: null,
+            painted: false,
+            armedToken: null,
+        });
+        const captureBaseline = (token) => ({
+            token: token || null,
+            at: Date.now(),
+            samples: sampled ? new Uint8ClampedArray(sampled) : null,
+            images: new Map(decodedImages),
+        });
+        window.__floeArmEditSurface = function (token) {
+            try {
+                state.armedToken = String(token);
+                if (fileBasedView) state.baseline = captureBaseline(state.armedToken);
+                return true;
+            } catch (_) { return false; }
+        };
+        let newDecodes = 0;
+        let changedSamples = 0;
+        let canvasRepainted = false;
+        if (fileBasedView) {
+            // The engine's read-only/mobile startup paints the file-based
+            // preview. That is the leftover frame a stale edit surface could
+            // show, so it is the baseline, never the evidence.
+            state.baseline = captureBaseline(state.armedToken);
+        } else if (state.baseline) {
+            const baseline = state.baseline;
+            if (baseline.samples && sampled) {
+                const length = Math.min(baseline.samples.length, sampled.length);
+                for (let i = 0; i + 3 < length; i += 4) {
+                    if (baseline.samples[i] !== sampled[i]
+                        || baseline.samples[i + 1] !== sampled[i + 1]
+                        || baseline.samples[i + 2] !== sampled[i + 2]
+                        || baseline.samples[i + 3] !== sampled[i + 3])
+                        changedSamples++;
+                }
+                // One downsampled sample is a 1/384th of the document canvas;
+                // four changed samples are a real relayout, not a blink or an
+                // anti-aliasing flicker.
+                canvasRepainted = changedSamples >= 4;
+            } else if (!baseline.samples && sampled) {
+                // The document canvas itself appeared after the switch.
+                canvasRepainted = true;
+            }
+            decodedImages.forEach((image, key) => {
+                if (baseline.images.get(key) !== image) newDecodes++;
+            });
+            if (newDecodes > 0 || canvasRepainted) state.painted = true;
+        } else {
+            // No file-based startup frame was observed on this page, so there
+            // is no observed pre-edit frame to mistake for the edit surface;
+            // the visible-render facts remain the only evidence.
+            state.painted = true;
+        }
+        // FLOE_EDIT_SURFACE_EVIDENCE_END
         return {
             stage: 'ready',
             docType: docType || null,
             docLoaded: map._docLoaded === true,
-            fileBasedView: file.fileBasedView === true,
+            fileBasedView: fileBasedView,
             backendReadOnly: file.readOnly === true,
             uiEdit: typeof map.isEditMode === 'function' && map.isEditMode() === true,
             permission: typeof map._permission === 'string' ? map._permission : null,
@@ -370,6 +454,11 @@ static NSString *FloeRenderProbeScript() {
                 clientHeight: canvas.clientHeight,
             } : null,
             pixels: pixels,
+            editSurfacePainted: state.painted,
+            editSurfaceBaseline: state.baseline !== null,
+            editSurfaceArmed: state.armedToken !== null,
+            editSurfaceNewDecodes: newDecodes,
+            editSurfaceChangedSamples: changedSamples,
         };
     } catch (_) {
         return { stage: 'error' };
@@ -377,6 +466,31 @@ static NSString *FloeRenderProbeScript() {
 })()
 )FLOE_JS"];
 }
+// FLOE_RENDER_PROBE_SCRIPT_END
+
+// FLOE_EDIT_SURFACE_ARM_SCRIPT_BEGIN
+// The host evaluates this immediately before it runs the paint-gated edit
+// entry. It pins the edit-surface paint baseline to the frame that is on
+// screen at the entry (the last file-based preview paint) and stamps it with
+// the session id and open generation, so the visible-render report can only
+// come from a paint that happened after this entry — never from the preview
+// tiles the engine's shared tile map keeps across the layout switch. The
+// baseline samples stay in the page; the payload carries the correlation id
+// only.
+static NSString *FloeEditSurfaceArmScript(NSString *token) {
+    NSData *encoded = [NSJSONSerialization dataWithJSONObject:(token ?: @"") options:0 error:nil];
+    NSString *literal = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding] ?: @"\"\"";
+    NSString *source = [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    try {
+        if (typeof window.__floeArmEditSurface !== 'function') return false;
+        return window.__floeArmEditSurface(__FLOE_EDIT_SURFACE_TOKEN__) === true;
+    } catch (_) { return false; }
+})()
+)FLOE_JS"];
+    return [source stringByReplacingOccurrencesOfString:@"__FLOE_EDIT_SURFACE_TOKEN__" withString:literal];
+}
+// FLOE_EDIT_SURFACE_ARM_SCRIPT_END
 // FLOE_RENDER_READINESS_END
 
 // FLOE_READONLY_SCRIPT_BEGIN
@@ -886,15 +1000,30 @@ static void ServerReady() {
 //   presentation startup into the part-based edit layout without building it
 //   on an empty extent;
 // * the session-ready threshold additionally requires the part-based edit
-//   surface for an editable session (fileBasedView cleared): a file-based
-//   startup paint is preview evidence, never edit-surface evidence.
+//   surface for an editable session (fileBasedView cleared) *and* a paint that
+//   happened after the edit entry (`editSurfacePainted`): a file-based startup
+//   paint is preview evidence, never edit-surface evidence, and the engine's
+//   shared tile map keeps the preview's decoded tiles across the layout
+//   switch, so the tile count alone is never edit-surface evidence.
 static bool FloeRenderFactsSatisfyEditEntryTrigger(FloeRenderFacts facts) {
     return FloeRenderFactsSatisfyVisibleRender(facts);
 }
 
 static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readOnly, bool fileBasedView) {
     if (!FloeRenderFactsSatisfyVisibleRender(facts)) return false;
-    return readOnly || !fileBasedView;
+    if (readOnly) return true;
+    if (fileBasedView) return false;
+    // The engine's shared tile map keeps the file-based startup's decoded
+    // tiles across `ImpressTileLayer._switchToPartBasedView` (pinned engine
+    // 27b21dc1: the switch only flips `app.file.fileBasedView`, swaps the
+    // active layout and updates the scroll limits; `BitmapTileManager.tiles`
+    // and the `RenderManager` instance survive — verified against the pinned
+    // sources and the shipped bundle). A decoded tile plus a cleared flag
+    // therefore proves nothing about the edit surface: it can be the leftover
+    // preview frame. An editable session is ready only after its own surface
+    // painted — a tile decoded after the edit entry, or a repainted document
+    // canvas.
+    return facts.editSurfacePainted;
 }
 // FLOE_EDIT_ENTRY_GATE_END
 
@@ -912,6 +1041,12 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 - (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
+/// The open-permission/entry report settled for this open generation. The
+/// deferred edit entry settles it; the visible-render ready must never precede
+/// that acknowledgement (an entry that ends in a password prompt or a refusal
+/// must not have declared the edit surface ready). `reportOpenPermissionOnce`
+/// is the one-shot latch behind it.
+- (BOOL)hasSettledOpenPermission;
 @end
 
 @interface FloeOfficeRenderProbe : NSObject
@@ -923,6 +1058,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// session-ready evidence must come from the part-based edit surface
 /// (fileBasedView cleared), never from the file-based startup view.
 @property (nonatomic, readonly) BOOL readOnlySession;
+/// The session-ready decision additionally requires the edit entry's own
+/// acknowledgement for the paint-gated file-based formats: the ready signal
+/// must never overtake the entry it is evidence for.
+@property (nonatomic, readonly) BOOL expectsDeferredEditEntry;
 @property (nonatomic) NSTimeInterval deadline;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *diagnostics;
 - (instancetype)initWithController:(FloeOfficeNativeViewController *)controller
@@ -956,6 +1095,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         _controller = controller;
         _requiresVisibleRender = FloeDocumentRequiresVisibleRender(workingFile.pathExtension);
         _readOnlySession = readOnly;
+        _expectsDeferredEditEntry = _requiresVisibleRender && !readOnly;
         // A preview of the same presentation shapes is cheaper than an editable
         // session (no edit-mode switch and no part-based relayout), so it gets a
         // smaller bound. Both stay below the App's open watchdog so the honest
@@ -1053,7 +1193,16 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 }
                 BOOL fileBasedView = [facts[@"fileBasedView"] isKindOfClass:NSNumber.class]
                     && [facts[@"fileBasedView"] boolValue];
-                if (FloeRenderFactsSatisfySessionReady(renderFacts, probe.readOnlySession, fileBasedView)) {
+                BOOL ready = FloeRenderFactsSatisfySessionReady(renderFacts, probe.readOnlySession, fileBasedView);
+                // The ready signal for the paint-gated edit entry never
+                // precedes the entry's own acknowledgement: the entry can still
+                // end in a password prompt or a refusal, and the App's
+                // permission report is the acknowledgement the edit path
+                // awaits. The entry settles the one-shot report, so this only
+                // delays readiness by the entry completion.
+                if (ready && probe.expectsDeferredEditEntry && ![probe.controller hasSettledOpenPermission])
+                    ready = NO;
+                if (ready) {
                     [probe finishWithStage:@"visible-render"];
                     [probe.controller renderProbeDidObserveVisibleRender:probe.diagnostics];
                     return;
@@ -1061,7 +1210,8 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 // An editable presentation still shows the file-based startup:
                 // the guarded entry now switches it to the part-based edit
                 // layout. Keep polling, bounded by the deadline, for the edit
-                // surface's own paint — the session is only ready on that.
+                // surface's own paint — the session is only ready on that, and
+                // only after a paint that happened after the entry.
             }
         }
         if (probe->_startedAt && -[probe->_startedAt timeIntervalSinceNow] >= probe.deadline) {
@@ -1087,6 +1237,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     render.canvasSized = canvas != nil && width > 1 && height > 1;
     NSNumber *decoded = [facts[@"decodedTiles"] isKindOfClass:NSNumber.class] ? facts[@"decodedTiles"] : nil;
     render.tileDecoded = decoded != nil && decoded.unsignedIntegerValue > 0;
+    // The edit-surface paint evidence is computed in the page against the
+    // pre-entry baseline; the native side only consumes its boolean.
+    render.editSurfacePainted = [facts[@"editSurfacePainted"] isKindOfClass:NSNumber.class]
+        && [facts[@"editSurfacePainted"] boolValue];
     NSDictionary *pixels = [facts[@"pixels"] isKindOfClass:NSDictionary.class] ? facts[@"pixels"] : nil;
     NSNumber *distinct = [pixels[@"distinctColours"] isKindOfClass:NSNumber.class] ? pixels[@"distinctColours"] : nil;
     NSNumber *opaque = [pixels[@"opaque"] isKindOfClass:NSNumber.class] ? pixels[@"opaque"] : nil;
@@ -1189,6 +1343,13 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 - (void)attemptEngineEditEntryWithCompletion:(void (^)(BOOL readOnly, BOOL pendingPassword))completion;
 /// Settles the open-permission report exactly once for this open generation.
 - (void)reportOpenPermissionOnce:(BOOL)success readOnly:(BOOL)readOnly;
+- (BOOL)hasSettledOpenPermission;
+/// Arms the edit-surface paint baseline in the page immediately before the
+/// paint-gated edit entry runs, stamped with this session and generation. The
+/// visible-render ready can then only describe a paint that happened after
+/// this entry; a missing helper or a page error leaves the evidence to the
+/// probe's own last file-based baseline. Always calls the completion.
+- (void)armEditSurfaceEvidenceWithCompletion:(void (^)(void))completion;
 /// Defers the guarded mobile edit entry until the render probe's first-paint
 /// trigger (file-based presentation formats). Runs it at once when the paint
 /// already happened, and settles without an entry when the probe already
@@ -1500,6 +1661,11 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     FloeOfficeLog(@"visible-render", @{@"session": self.sessionID,
                                        @"generation": @(self.openGeneration),
                                        @"docType": diagnostics[@"docType"] ?: @"",
+                                       @"entrySettled": @(self.openPermissionReported),
+                                       @"editSurfacePainted": diagnostics[@"editSurfacePainted"] ?: @NO,
+                                       @"editSurfaceArmed": diagnostics[@"editSurfaceArmed"] ?: @NO,
+                                       @"newDecodes": diagnostics[@"editSurfaceNewDecodes"] ?: @0,
+                                       @"changedSamples": diagnostics[@"editSurfaceChangedSamples"] ?: @0,
                                        @"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
                                            ? diagnostics[@"elapsed"] : @0});
     if (self.onVisibleRenderReady)
@@ -1643,6 +1809,34 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     self.openPermissionReported = YES;
     if (self.onWorkingCopyOpenedWithPermission) self.onWorkingCopyOpenedWithPermission(success, readOnly);
 }
+- (BOOL)hasSettledOpenPermission {
+    NSAssert(NSThread.isMainThread, @"Office open reports are main-queue owned");
+    return self.openPermissionReported;
+}
+/// Arms the edit-surface paint baseline in the page immediately before the
+/// paint-gated edit entry. The baseline is the frame that is on screen at the
+/// entry (the last file-based preview paint), stamped with the session id and
+/// open generation, so the probe's visible-render evidence can only describe a
+/// paint that happened after this entry. Always calls the completion, even
+/// when the helper is missing or the page errors: the probe's own last
+/// file-based baseline still covers that case, and the guarded entry must not
+/// be blocked forever by an evidence-only step.
+- (void)armEditSurfaceEvidenceWithCompletion:(void (^)(void))completion {
+    NSAssert(NSThread.isMainThread, @"Office edit-surface evidence is main-queue owned");
+    if (!completion) return;
+    if (self.closed || self.closing || !self.editor.webView) { completion(); return; }
+    NSString *token = [NSString stringWithFormat:@"%@:%lu", self.sessionID, (unsigned long)self.openGeneration];
+    __weak FloeOfficeNativeViewController *weakSelf = self;
+    [self.editor.webView evaluateJavaScript:FloeEditSurfaceArmScript(token)
+                          completionHandler:^(id value, NSError *error) {
+        FloeOfficeNativeViewController *host = weakSelf;
+        BOOL armed = !error && [value isKindOfClass:NSNumber.class] && [value boolValue];
+        FloeOfficeLog(@"edit-surface-armed", @{@"session": host.sessionID ?: @"",
+                                               @"generation": host ? @(host.openGeneration) : @0,
+                                               @"armed": @(armed)});
+        completion();
+    }];
+}
 /// Defers the guarded mobile edit entry until the render probe's first-paint
 /// trigger. The file-based presentation startup must paint once before the
 /// layout switch: entering on the open-permission clock built the part-based
@@ -1665,6 +1859,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 }
 /// Runs the guarded edit entry at most once and reports its real outcome.
 /// A close that wins the race owns the outcome; the entry result is dropped.
+/// The file-based presentation formats arm the edit-surface paint baseline
+/// first: every later paint the probe reports is then provably newer than the
+/// entry's own frame, never the preview tiles the engine's shared tile map
+/// keeps across the layout switch. Word/Excel keep their direct timing.
 - (void)runEditEntryAndReport {
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
     if (self.editEntryRunning || self.openPermissionReported) return;
@@ -1673,19 +1871,28 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     FloeOfficeLog(@"edit-entry", @{@"session": self.sessionID,
                                    @"generation": @(self.openGeneration)});
     __weak FloeOfficeNativeViewController *weakSelf = self;
-    [self attemptEngineEditEntryWithCompletion:^(BOOL stillReadOnly, BOOL pendingPassword) {
-        FloeOfficeNativeViewController *entered = weakSelf;
-        if (!entered) return;
-        entered.editEntryRunning = NO;
-        if (entered.closed || entered.closing) return;
-        entered.sessionIsReadOnly = stillReadOnly;
-        FloeOfficeLog(@"edit-entry-result", @{@"session": entered.sessionID,
-                                              @"generation": @(entered.openGeneration),
-                                              @"readOnly": @(stillReadOnly),
-                                              @"pendingPassword": @(pendingPassword)});
-        [entered reportOpenPermissionOnce:YES readOnly:stillReadOnly];
-        [entered beginCloseIfRequested];
-    }];
+    void (^performEntry)(void) = ^{
+        FloeOfficeNativeViewController *host = weakSelf;
+        if (!host || host.closed || host.closing) return;
+        [host attemptEngineEditEntryWithCompletion:^(BOOL stillReadOnly, BOOL pendingPassword) {
+            FloeOfficeNativeViewController *entered = weakSelf;
+            if (!entered) return;
+            entered.editEntryRunning = NO;
+            if (entered.closed || entered.closing) return;
+            entered.sessionIsReadOnly = stillReadOnly;
+            FloeOfficeLog(@"edit-entry-result", @{@"session": entered.sessionID,
+                                                  @"generation": @(entered.openGeneration),
+                                                  @"readOnly": @(stillReadOnly),
+                                                  @"pendingPassword": @(pendingPassword)});
+            [entered reportOpenPermissionOnce:YES readOnly:stillReadOnly];
+            [entered beginCloseIfRequested];
+        }];
+    };
+    if (FloeDocumentRequiresVisibleRender(self.workingFileURL.pathExtension)) {
+        [self armEditSurfaceEvidenceWithCompletion:performEntry];
+    } else {
+        performEntry();
+    }
 }
 /// Settles a still-pending edit entry without forcing an entry: the engine
 /// never proved a paint, so switching the layout could only build the edit

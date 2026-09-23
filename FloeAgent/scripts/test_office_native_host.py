@@ -27,6 +27,12 @@ def host_fragment(text, begin, end):
     return text.split(begin, 1)[1].split(end, 1)[0]
 
 
+def host_raw_literal(text, begin, end):
+    """The JavaScript payload of a shipped `R"FLOE_JS(...)FLOE_JS"` fragment."""
+    body = host_fragment(text, begin, end)
+    return body.split('R"FLOE_JS(', 1)[1].split(')FLOE_JS"', 1)[0]
+
+
 class OfficeEditEntryDeferralTests(unittest.TestCase):
     """The shipped host gates the presentation edit entry on the first paint.
 
@@ -60,6 +66,67 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
         # an editable session; a file-based startup paint is preview evidence.
         self.assertIn('FloeRenderFactsSatisfySessionReady(renderFacts, probe.readOnlySession, fileBasedView)',
                       source)
+
+    def test_edit_surface_paint_evidence_gates_ready_after_the_entry(self):
+        """The shipped gate requires a paint after the edit entry, not a flag."""
+        source = self.source()
+        # The session-ready threshold consumes the edit-surface paint evidence;
+        # the decoded tile count plus the cleared flag are never enough.
+        gate = host_fragment(source, '// FLOE_EDIT_ENTRY_GATE_BEGIN', '// FLOE_EDIT_ENTRY_GATE_END')
+        self.assertIn('return facts.editSurfacePainted;', gate)
+        self.assertNotIn('return readOnly || !fileBasedView;', gate)
+        decision = host_fragment(source, '// FLOE_RENDER_DECISION_BEGIN', '// FLOE_RENDER_DECISION_END')
+        self.assertIn('bool editSurfacePainted;', decision)
+        # The arm runs immediately before the guarded entry for the same
+        # file-based formats, and the probe reads the evidence boolean.
+        run_entry = source.split('- (void)runEditEntryAndReport {', 1)[1] \
+                          .split('- (void)settlePendingEditEntryWithoutEntry {', 1)[0]
+        self.assertIn('if (FloeDocumentRequiresVisibleRender(self.workingFileURL.pathExtension))', run_entry)
+        self.assertIn('[self armEditSurfaceEvidenceWithCompletion:performEntry];', run_entry)
+        # The entry block is handed to the arm completion; the direct call is
+        # the non-file-based (Word/Excel) branch only.
+        lines = [line.strip() for line in run_entry.splitlines()]
+        self.assertEqual(lines.count('performEntry();'), 1)
+        self.assertEqual(lines[lines.index('performEntry();') - 1], '} else {')
+        arm = source.split('- (void)armEditSurfaceEvidenceWithCompletion:(void (^)(void))completion {', 1)[1] \
+                    .split('- (void)deferEditEntryUntilFirstPaint {', 1)[0]
+        self.assertIn('FloeEditSurfaceArmScript(token)', arm)
+        # The entry proceeds only after the arm eval completed (a page error
+        # still calls it; the probe keeps its own last baseline).
+        self.assertLess(arm.index('evaluateJavaScript:FloeEditSurfaceArmScript(token)'),
+                        arm.rindex('completion();'))
+        # The arm script is the token-carrying call into the page helper the
+        # shipped probe installs; a missing helper never blocks the entry.
+        arm_script = host_fragment(source, '// FLOE_EDIT_SURFACE_ARM_SCRIPT_BEGIN',
+                                   '// FLOE_EDIT_SURFACE_ARM_SCRIPT_END')
+        self.assertIn("typeof window.__floeArmEditSurface !== 'function'", arm_script)
+        self.assertIn('window.__floeArmEditSurface(__FLOE_EDIT_SURFACE_TOKEN__)', arm_script)
+        self.assertIn('withString:literal', arm_script)
+        # The probe computes the evidence against the last file-based frame and
+        # tracks the engine's tile image identities, not a cumulative count.
+        self.assertIn('window.__floeArmEditSurface = function (token)', source)
+        self.assertIn('baseline.images.get(key) !== image', source)
+        self.assertIn('canvasRepainted = changedSamples >= 4;', source)
+
+    def test_render_ready_never_precedes_the_edit_entry_ack(self):
+        """The deferred entry's acknowledgement settles before the ready signal."""
+        source = self.source()
+        # The probe holds the ready decision until the entry/one-shot report
+        # settled; an entry that ends in a password prompt or a refusal must
+        # not already have declared the edit surface ready.
+        self.assertIn('expectsDeferredEditEntry', source)
+        self.assertIn('if (ready && probe.expectsDeferredEditEntry && '
+                      '![probe.controller hasSettledOpenPermission])', source)
+        self.assertIn('- (BOOL)hasSettledOpenPermission {', source)
+        settle = source.split('- (BOOL)hasSettledOpenPermission {', 1)[1].split('\n}', 1)[0]
+        self.assertIn('return self.openPermissionReported;', settle)
+        # The acknowledgement is the one-shot report the entry settles; the
+        # ready log records it.
+        self.assertIn('@"entrySettled": @(self.openPermissionReported)', source)
+        # The probe only reads the acknowledgement for the deferred path: a
+        # preview or a Word/Excel session keeps its timing.
+        probe_init = source.split('- (instancetype)initWithController:', 1)[1].split('return self;', 1)[0]
+        self.assertIn('_expectsDeferredEditEntry = _requiresVisibleRender && !readOnly;', probe_init)
 
     def test_open_permission_report_settles_exactly_once(self):
         source = self.source()
@@ -97,13 +164,43 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
         self.assertIn('if (!self.editEntryPending) return;', settle)
         self.assertIn('[self reportOpenPermissionOnce:YES readOnly:self.sessionIsReadOnly];', settle)
 
+    def test_close_and_failure_settle_every_waiter_exactly_once(self):
+        """The close waiters, the render probe and the entry each settle once."""
+        source = self.source()
+        # Close waiters: one drain that copies then empties the list, so a
+        # second close (or a late engine ack) can never resume a waiter twice.
+        begin_close = source.split('- (void)beginClose {', 1)[1] \
+                            .split('- (void)listAttachmentsWithCompletion:', 1)[0]
+        self.assertIn('[self settleCloseWaitersWithError:', begin_close)
+        drain = source.split('- (void)settleCloseWaitersWithError:(NSError *)error {', 1)[1] \
+                      .split('\n}', 1)[0]
+        self.assertIn('NSArray *waiters = [self.closeWaiters copy];', drain)
+        self.assertIn('[self.closeWaiters removeAllObjects];', drain)
+        self.assertIn('completion(error);', drain)
+        # The render probe finishes or cancels exactly once: the poll and the
+        # deadline timer both bail on the terminal flags.
+        probe = source.split('@implementation FloeOfficeRenderProbe {', 1)[1] \
+                      .split('// FLOE_RENDER_PROBE_END', 1)[0]
+        self.assertIn('if (_finished || _cancelled) return;', probe)
+        self.assertIn('if (!probe || probe->_finished || probe->_cancelled) return;', probe)
+        self.assertIn('- (void)finishWithStage:(NSString *)stage {', probe)
+        self.assertIn('- (void)cancel {', probe)
+        # A close also settles the close waiters on the never-opened path, and
+        # the engine ack path settles them through floeCloseCompletion.
+        calls = [line for line in begin_close.splitlines() if '[self settleCloseWaitersWithError:' in line]
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn('[host settleCloseWaitersWithError:success ? nil : OfficeError(10', source)
+        # The edit entry reports through the one-shot latch on every path; the
+        # completion itself cannot double-report (already asserted above).
+        self.assertEqual(source.count('self.onWorkingCopyOpenedWithPermission(success, readOnly)'), 1)
+
     def test_stage_logs_carry_correlation_ids(self):
         source = self.source()
         # open / permission / edit entry / paint / save stages each carry the
         # per-controller session id and open generation, content-free.
         for event in ('@"open"', '@"permission"', '@"edit-entry-deferred"', '@"edit-entry"',
-                      '@"edit-entry-result"', '@"first-paint"', '@"visible-render"',
-                      '@"save-requested"', '@"save-completed"'):
+                      '@"edit-entry-result"', '@"edit-surface-armed"', '@"first-paint"',
+                      '@"visible-render"', '@"save-requested"', '@"save-completed"'):
             self.assertIn(event, source)
         self.assertIn('_sessionID = [[NSUUID UUID] UUIDString];', source)
         self.assertIn('self.openGeneration += 1;', source)
@@ -118,30 +215,40 @@ class OfficeEditEntryGateTests(unittest.TestCase):
     The edit-entry trigger and the session-ready threshold are compiled from
     the actual shipped source and driven with synthetic engine states: a
     decoded tile on the file-based startup triggers the entry but never
-    readies an editable session; only the part-based edit surface does.
+    readies an editable session; only a paint of the part-based edit surface
+    *after* the entry does.
     """
 
     HARNESS = r'''
-static FloeRenderFacts facts(bool type, bool loaded, bool canvas, bool tile) {
+static FloeRenderFacts facts(bool type, bool loaded, bool canvas, bool tile, bool editPainted) {
     FloeRenderFacts value;
     value.docTypeKnown = type; value.docLoaded = loaded; value.canvasSized = canvas;
     value.tileDecoded = tile; value.pixelPainted = false; value.vectorRendering = false;
+    value.editSurfacePainted = editPainted;
     return value;
 }
 int main() { @autoreleasepool {
     // A decoded tile on the file-based startup: the edit entry may run, but an
     // editable session is not ready on preview evidence.
-    assert(FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, true)));
-    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true), false, true));
-    // The part-based edit surface painted: the editable session is ready.
-    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true), false, false));
+    assert(FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, true, false)));
+    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, false), false, true));
+    // The counterexample: the file-based flag was cleared and the preview's
+    // decoded tiles are still in the engine's shared tile map, but the edit
+    // surface itself never painted. This must never read as ready.
+    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, false), false, false));
+    // The edit surface painted after the switch: only now is the session ready.
+    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, true), false, false));
     // A read-only preview is ready on the same file-based paint.
-    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true), true, true));
+    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, false), true, true));
+    // Word/Excel keep their contract: not file-based, no preview frame to
+    // mistake for the edit surface, so the shipped probe reports painted.
+    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, true), false, false));
     // Skeletons, an unloaded document or an unknown type never trigger either.
-    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, false)));
-    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, false, true, true)));
-    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(false, true, true, true)));
-    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, false), false, false));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, false, false)));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, false, true, true, false)));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(false, true, true, true, false)));
+    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, false, true), false, false));
+    assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, true), false, true));
     // The paint gate applies to the file-based presentation formats only.
     assert(FloeDocumentRequiresVisibleRender(@"pptx"));
     assert(FloeDocumentRequiresVisibleRender(@"odp"));
@@ -169,6 +276,171 @@ int main() { @autoreleasepool {
         self.assertIn('edit-entry gate passed', result.stdout)
         # A compiled gate proves nothing about the engine or a device.
         self.assertNotIn('deviceRoundtripPassed', result.stdout)
+
+
+class OfficeEditSurfaceEvidenceTests(unittest.TestCase):
+    """Run the shipped probe + arm scripts across the preview → edit flip.
+
+    The pinned engine keeps the file-based startup's decoded tiles in its
+    shared tile map across `ImpressTileLayer._switchToPartBasedView` (commit
+    27b21dc1: the switch only flips `app.file.fileBasedView`, swaps the active
+    layout and updates the scroll limits; `BitmapTileManager.tiles` and the
+    `RenderManager` instance survive). A decoded tile plus a cleared flag can
+    therefore still be the leftover preview frame. These tests run the real
+    shipped probe and arm scripts against a persistent synthetic page and pin
+    the counterexample the app gate must reject, plus the paints that count.
+    """
+
+    HARNESS = r'''
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const probeSource = PROBE_SOURCE;
+const armSource = ARM_SOURCE;
+function paintData(kind) {
+    const pixels = 24 * 16;
+    const colours = {
+        blank: [255, 255, 255],
+        skeleton: [255, 255, 255, 221, 227, 234],
+        slide: [255, 255, 255, 22, 93, 190, 40, 40, 40],
+        edited: [250, 250, 245, 200, 60, 30, 15, 15, 15, 90, 90, 90],
+    };
+    const opaque = {blank: pixels, skeleton: Math.round(pixels * 0.4),
+                    slide: Math.round(pixels * 0.8), edited: Math.round(pixels * 0.7)};
+    const data = new Uint8ClampedArray(pixels * 4);
+    const palette = colours[kind] || colours.blank;
+    const count = palette.length / 3;
+    for (let i = 0; i < pixels; i++) {
+        const index = (i % count) * 3;
+        data[i * 4] = palette[index];
+        data[i * 4 + 1] = palette[index + 1];
+        data[i * 4 + 2] = palette[index + 2];
+        data[i * 4 + 3] = i < opaque[kind] ? 255 : 0;
+    }
+    return data;
+}
+function makeCanvas() {
+    return {
+        width: 1024, height: 768, clientWidth: 1024, clientHeight: 768, paint: 'blank',
+        getContext: () => ({
+            drawImage(source) { this.paint = source.paint; },
+            getImageData: () => ({data: paintData(this.paint)}),
+        }),
+    };
+}
+function makePage() {
+    const canvases = [makeCanvas()];
+    const document = {
+        readyState: 'complete',
+        querySelectorAll: (selector) => (selector === 'canvas' ? canvases : []),
+        createElement: () => ({width: 0, height: 0, getContext: () => ({
+            paint: 'blank',
+            drawImage(source) { this.paint = source.paint; },
+            getImageData() { return {data: paintData(this.paint)}; },
+        })}),
+    };
+    const state = {tiles: new Map()};
+    const app = {file: {fileBasedView: true, readOnly: false}};
+    const window = {app: app};
+    app.map = {
+        _docLoaded: true,
+        _docLayer: {_docType: 'presentation'},
+        isEditMode: () => false,
+        _permission: 'readonly',
+        getDocType() { return 'presentation'; },
+    };
+    window.RenderManager = {
+        getTiles: () => state.tiles,
+        isVectorRendering: () => false,
+    };
+    const context = vm.createContext({window: window, document: document, console: console});
+    return {
+        state: state,
+        canvases: canvases,
+        window: window,
+        run: () => vm.runInContext(probeSource, context),
+        arm: () => vm.runInContext(armSource, context),
+    };
+}
+function decoded(image) { return {image: image, isReadyToDraw() { return !!this.image; }}; }
+
+// Scenario A: the counterexample. The preview painted a slide, the host armed
+// the evidence through the shipped arm script, then the flag flipped while the
+// old decoded tile and the preview canvas both remain.
+{
+    const page = makePage();
+    page.state.tiles.set('0:0:8:0:0', decoded({id: 'preview-image'}));
+    page.canvases[0].paint = 'slide';
+    let facts = page.run();
+    assert.equal(facts.editSurfacePainted, false, 'a file-based preview frame is never edit evidence');
+    assert.equal(page.arm(), true, 'the shipped arm script must arm the page helper');
+    page.window.app.file.fileBasedView = false;
+    facts = page.run();
+    assert.equal(facts.fileBasedView, false, 'the flag flipped');
+    assert.equal(facts.decodedTiles, 1, 'the old preview tile is still decoded in the shared map');
+    assert.equal(facts.editSurfaceBaseline, true, 'the preview frame is the baseline');
+    assert.equal(facts.editSurfaceArmed, true, 'the edit entry armed the evidence');
+    assert.equal(facts.editSurfacePainted, false,
+                 'old preview tiles plus an unchanged canvas must not read as edit paint');
+    // Real edit-surface paint: the document canvas was repainted after the
+    // switch. Only now may the session read as painted.
+    page.canvases[0].paint = 'edited';
+    facts = page.run();
+    assert.equal(facts.editSurfacePainted, true, 'a repainted document canvas is edit-surface paint');
+}
+// Scenario B: a tile decoded after the switch (a different image object for
+// the same tile key) is edit-surface paint even with an unchanged canvas.
+{
+    const page = makePage();
+    page.state.tiles.set('0:0:8:0:0', decoded({id: 'preview-image'}));
+    page.canvases[0].paint = 'slide';
+    page.run();
+    assert.equal(page.arm(), true);
+    page.window.app.file.fileBasedView = false;
+    assert.equal(page.run().editSurfacePainted, false);
+    page.state.tiles.get('0:0:8:0:0').image = {id: 'edit-image'};
+    const facts = page.run();
+    assert.equal(facts.editSurfaceNewDecodes, 1, 'the same key with a new image object is a new decode');
+    assert.equal(facts.editSurfacePainted, true, 'a tile decoded after the entry is edit-surface paint');
+}
+// Scenario C: no file-based frame was ever observed on this page (a page that
+// starts directly in the part-based view). There is no observed pre-edit frame
+// to mistake for the edit surface, so the visible-render facts remain the
+// evidence, exactly as before this fix.
+{
+    const page = makePage();
+    page.window.app.file.fileBasedView = false;
+    page.state.tiles.set('0:0:8:0:0', decoded({id: 'edit-image'}));
+    page.canvases[0].paint = 'edited';
+    const facts = page.run();
+    assert.equal(facts.editSurfaceBaseline, false);
+    assert.equal(facts.editSurfacePainted, true);
+}
+console.log('edit-surface evidence passed');
+'''
+
+    def source(self):
+        return HOST_SOURCE.read_text()
+
+    def test_shipped_edit_surface_evidence_rejects_the_stale_preview_frame(self):
+        text = self.source()
+        probe = host_raw_literal(text, '// FLOE_RENDER_PROBE_SCRIPT_BEGIN',
+                                 '// FLOE_RENDER_PROBE_SCRIPT_END')
+        arm_template = host_raw_literal(text, '// FLOE_EDIT_SURFACE_ARM_SCRIPT_BEGIN',
+                                        '// FLOE_EDIT_SURFACE_ARM_SCRIPT_END')
+        self.assertIn('__FLOE_EDIT_SURFACE_TOKEN__', arm_template)
+        arm = arm_template.replace('__FLOE_EDIT_SURFACE_TOKEN__', json.dumps('session-1:1'))
+        with tempfile.TemporaryDirectory(prefix='floe-edit-surface-') as folder:
+            harness = Path(folder) / 'evidence.js'
+            harness.write_text('const PROBE_SOURCE = ' + json.dumps(probe) + ';\n'
+                               'const ARM_SOURCE = ' + json.dumps(arm) + ';\n' + self.HARNESS)
+            result = subprocess.run(['node', str(harness)], capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            raise AssertionError('edit-surface harness failed: ' + result.stdout + result.stderr[-2000:])
+        self.assertIn('edit-surface evidence passed', result.stdout)
+        # The probe still reports only engine facts and counters: no document
+        # paths, contents or payload bytes cross the bridge with the evidence.
+        for forbidden in ('file_path', 'file:///', 'EDITED_', 'ROUNDTRIP_'):
+            self.assertNotIn(forbidden, probe)
 
 
 class NativeHostProjectTests(unittest.TestCase):
