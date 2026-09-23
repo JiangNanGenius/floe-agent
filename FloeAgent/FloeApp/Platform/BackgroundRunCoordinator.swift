@@ -2062,12 +2062,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         var snapshots: [LinuxEnvironmentRuntimeSnapshot] = []
         for state in await guestService.runtimeStates() where state.running {
             linuxRuntimeStates[state.environmentID] = state
-            let entry = linuxSurfaceEntries[state.environmentID] ?? LinuxBackgroundSurfaceEntry(
-                environmentID: state.environmentID,
-                title: await linuxSurfaceTitle(environmentID: state.environmentID),
-                state: .running,
-                startedAt: state.startedAt
-            )
+            let entry: LinuxBackgroundSurfaceEntry
+            if let existing = linuxSurfaceEntries[state.environmentID] {
+                entry = existing
+            } else {
+                entry = LinuxBackgroundSurfaceEntry(
+                    environmentID: state.environmentID,
+                    title: await linuxSurfaceTitle(environmentID: state.environmentID),
+                    state: .running,
+                    startedAt: state.startedAt
+                )
+            }
             snapshots.append(
                 makeLinuxEnvironmentRuntimeSnapshot(
                     environmentID: state.environmentID,
