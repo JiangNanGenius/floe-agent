@@ -1338,6 +1338,12 @@ jobs:
           SIZE_PY
 
       - name: Create or resume the component prerelease (never latest, never a draft)
+        env:
+          # The repository caps GITHUB_TOKEN at read (default_workflow_permissions=read),
+          # so release writes use the repo-scoped authorized token when present.
+          # The value is a GitHub secret; it is never logged. Without the secret
+          # this falls back to github.token (works when the repo allows write).
+          GH_TOKEN: ${{ secrets.FLOE_RELEASE_GH_TOKEN || github.token }}
         run: |
           set -euo pipefail
           export DIST="$RUNNER_TEMP/floe-dist" ASSETS="$RUNNER_TEMP/floe-dist/assets"

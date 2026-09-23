@@ -92,6 +92,12 @@ Distribute (`workflow_dispatch` only, never from a failed preflight):
 
 ## Notes
 
+- The repository caps `GITHUB_TOKEN` at read (`default_workflow_permissions:
+  read`), which overrides the workflow's `contents: write` declaration; the
+  release step therefore authenticates with the repo-scoped authorized token
+  from the `FLOE_RELEASE_GH_TOKEN` secret (never logged), falling back to
+  `github.token` where the repository allows write.
+
 - GitHub is the primary distribution; a Gitee mirror is a separate, nonblocking
   long-tail task.
 - The App-side pin table (`RuntimeV2OfficialTemplatePinnedArtifacts`) is filled
