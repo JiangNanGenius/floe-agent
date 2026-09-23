@@ -315,6 +315,23 @@ PHYS_MEM_READ_WRITE(64, uint64_t)
 #define PTE_U_MASK (1 << 4)
 #define PTE_A_MASK (1 << 6)
 #define PTE_D_MASK (1 << 7)
+/* FLOE-SMP: the two bits a page walk sets. Every other bit of a leaf PTE is
+ * mapping/permission state, so only a change confined to these bits may be
+ * merged by a concurrent walker (see riscv_smp_pte_write_bits). */
+#define PTE_AD_MASK (PTE_A_MASK | PTE_D_MASK)
+
+/* FLOE-SMP: bound on page-walk restarts after a concurrent PTE change.
+ * A walk that observed a changed mapping must never translate with the
+ * stale entry, so it re-runs the walk (re-checking every level and
+ * permission) and only reports a translation fault when the table keeps
+ * changing under it; at that point the access genuinely faults, exactly
+ * as a guest would see on hardware with a concurrent PTE replacement
+ * (the RISC-V privileged spec says a page fault caused this way is
+ * spurious and software must retry the access, which is what a real
+ * guest and the qualification payload do). The bound only stops a
+ * theoretical livelock against an adversarial table-writer: it is high
+ * enough that ordinary kernel TLB-shootdown traffic cannot reach it. */
+#define FLOE_SMP_PTE_WALK_RETRIES 256
 
 #define ACCESS_READ  0
 #define ACCESS_WRITE 1
@@ -327,9 +344,10 @@ static int get_phys_addr(RISCVCPUState *s,
                          int access)
 {
     int mode, levels, pte_bits, pte_idx, pte_mask, pte_size_log2, xwr, priv;
-    int need_write, vaddr_shift, i, pte_addr_bits;
-    target_ulong pte_addr, pte, vaddr_mask, paddr;
+    int need_write, vaddr_shift, i, pte_addr_bits, walk_restarts;
+    target_ulong pte_addr, pte, vaddr_mask, paddr, pte_addr_base;
 
+    walk_restarts = 0;
     if ((s->mstatus & MSTATUS_MPRV) && access != ACCESS_CODE) {
         /* use previous priviledge */
         priv = (s->mstatus >> MSTATUS_MPP_SHIFT) & 3;
@@ -375,9 +393,14 @@ static int get_phys_addr(RISCVCPUState *s,
         pte_addr_bits = 44;
     }
 #endif
-    pte_addr = (s->satp & (((target_ulong)1 << pte_addr_bits) - 1)) << PG_SHIFT;
+    pte_addr_base = (s->satp & (((target_ulong)1 << pte_addr_bits) - 1))
+        << PG_SHIFT;
     pte_bits = 12 - pte_size_log2;
     pte_mask = (1 << pte_bits) - 1;
+    /* FLOE-SMP: (re)start of the page walk; a restart re-reads every level
+       and re-runs all checks against the value that is actually present. */
+ walk_restart:
+    pte_addr = pte_addr_base;
     for(i = 0; i < levels; i++) {
         vaddr_shift = PG_SHIFT + pte_bits * (levels - 1 - i);
         pte_idx = (vaddr >> vaddr_shift) & pte_mask;
@@ -412,12 +435,24 @@ static int get_phys_addr(RISCVCPUState *s,
             need_write = !(pte & PTE_A_MASK) ||
                 (!(pte & PTE_D_MASK) && access == ACCESS_WRITE);
             if (need_write) {
-                /* FLOE-SMP: locked RMW; only the entry this walk loaded
-                   may be updated, and only if it is still there. */
+                /* FLOE-SMP: locked RMW of the entry this walk loaded. A
+                   concurrent A/D-only update is merged (never lost); a
+                   mapping/permission replacement is refused and the walk
+                   restarts, so this access is never translated with a
+                   stale entry. */
                 target_ulong ad_bits = PTE_A_MASK |
                     (access == ACCESS_WRITE ? PTE_D_MASK : 0);
-                riscv_smp_pte_write_bits(s, pte_addr, pte, ad_bits,
-                                         pte_size_log2);
+                if (riscv_smp_pte_write_bits(s, pte_addr, pte, ad_bits,
+                                             pte_size_log2)) {
+                    if (walk_restarts < FLOE_SMP_PTE_WALK_RETRIES) {
+                        walk_restarts++;
+                        if (s->smp && s->smp->nb_harts > 1)
+                            __atomic_add_fetch(&s->smp->pte_walk_restarts, 1,
+                                               __ATOMIC_RELAXED);
+                        goto walk_restart;
+                    }
+                    return -1;
+                }
             }
             vaddr_mask = ((target_ulong)1 << vaddr_shift) - 1;
             *ppaddr = (vaddr & vaddr_mask) | (paddr  & ~vaddr_mask);
@@ -736,8 +771,14 @@ static void tlb_init(RISCVCPUState *s)
  *    value (not linearizable).
  *  - Reservations are keyed by HOST address: the same physical guest
  *    memory always maps to the same host pointer, so virtual aliases of
- *    one page cannot evade invalidation. Reservation fields are only
- *    read/written under the lock (no torn reads for DMA).
+ *    one page cannot evade invalidation. _Every_ access to the
+ *    reservation fields (valid/addr/size) happens under the lock: the
+ *    owner sets them in its locked LR and clears them in its locked SC,
+ *    a non-RAM LR clears them in a locked section (after its device
+ *    access returned), and the invalidators (locked store / page-table
+ *    write / DMA) run under the same lock. No lock-free atomic op is
+ *    mixed with those plain accesses, so there is no C11 data race and
+ *    no torn read of addr/size by an invalidator.
  *  - AMOs on guest RAM are read-modify-writes inside the lock; the
  *    individual host accesses are relaxed atomics (single-copy atomic on
  *    the supported hosts), which also keeps the C11 model race-free.
@@ -801,18 +842,32 @@ static void smp_invalidate_others_locked(RISCVCPUState *s, uintptr_t host_addr,
  * the atomic lock. This is the ONLY guest-RAM store path on an SMP
  * machine (every store is linearized here). */
 /* FLOE-SMP: locked A/D read-modify-write on a PTE word (see the
- * declaration in riscv_cpu_priv.h). expect is the value this walk
- * loaded; only that value may be updated, so a concurrent replacement
- * (kernel mapping change) or another hart's update is never clobbered.
- * The store invalidates other harts' LR reservations on the word, like
- * every other guest-RAM store. */
-static void riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
-                                     target_ulong expect, target_ulong bits,
-                                     int pte_size_log2)
+ * declaration in riscv_cpu_priv.h).
+ *
+ * expect is the value this walk loaded and bits are the A/D bits this
+ * access requires. Returns 0 when the caller may use the translation
+ * (the update was stored, merged, or was already satisfied) and 1 when
+ * the mapping/permission bits changed under the walker: applying
+ * expect|bits would clobber the newer entry, so the caller must restart
+ * the walk instead of translating with the stale value.
+ *
+ * A/D updates only ever set bits, so two harts walking the same leaf
+ * must not lose each other's update. Requiring cur == expect (the
+ * earlier behavior) threw away the second hart's update: a store walk
+ * that loaded A=D=0, then watched a read walk set A, skipped its own
+ * update and completed the store with D still 0. Instead, when every
+ * non-A/D bit is unchanged the requested bits are merged into the
+ * *current* value under the lock, which preserves the other hart's A/D
+ * progress without touching the mapping. The store invalidates other
+ * harts' LR reservations on the word, like every other guest-RAM store. */
+static int riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
+                                    target_ulong expect, target_ulong bits,
+                                    int pte_size_log2)
 {
     PhysMemoryRange *pr;
     int need_lock, applied;
     uint8_t *ptr;
+    target_ulong cur, want;
 
     if (!s->smp || s->smp->nb_harts <= 1) {
         /* single hart: keep upstream behavior (no lock, plain store) */
@@ -820,7 +875,7 @@ static void riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
             phys_write_u32(s, pte_addr, (uint32_t)(expect | bits));
         else
             phys_write_u64(s, pte_addr, expect | bits);
-        return;
+        return 0;
     }
     need_lock = !s->in_smp_atomic;
     if (need_lock) {
@@ -829,36 +884,50 @@ static void riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
     }
     applied = 0;
     pr = get_phys_mem_range(s->mem_map, pte_addr);
-    if (pr && pr->is_ram) {
-        ptr = pr->phys_mem + (uintptr_t)(pte_addr - pr->addr);
-        if (pte_size_log2 == 2) {
-            uint32_t cur = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
-            if (cur == (uint32_t)expect) {
-                __atomic_store_n((uint32_t *)ptr, cur | (uint32_t)bits,
-                                 __ATOMIC_RELAXED);
-                smp_invalidate_others_locked(s, (uintptr_t)ptr,
-                                             (size_t)1 << pte_size_log2);
-                applied = 1;
-            }
-        } else {
-            uint64_t cur = __atomic_load_n((uint64_t *)ptr, __ATOMIC_RELAXED);
-            if (cur == (uint64_t)expect) {
-                __atomic_store_n((uint64_t *)ptr, cur | (uint64_t)bits,
-                                 __ATOMIC_RELAXED);
-                smp_invalidate_others_locked(s, (uintptr_t)ptr,
-                                             (size_t)1 << pte_size_log2);
-                applied = 1;
-            }
+    if (!pr || !pr->is_ram) {
+        /* the entry disappeared (or is not RAM): never usable */
+        if (need_lock) {
+            s->in_smp_atomic = FALSE;
+            smp_spin_unlock(s->smp);
         }
+        __atomic_add_fetch(&s->smp->pte_ad_conflicts, 1, __ATOMIC_RELAXED);
+        return 1;
+    }
+    ptr = pr->phys_mem + (uintptr_t)(pte_addr - pr->addr);
+    if (pte_size_log2 == 2)
+        cur = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
+    else
+        cur = __atomic_load_n((uint64_t *)ptr, __ATOMIC_RELAXED);
+    if ((cur & ~PTE_AD_MASK) != ((target_ulong)expect & ~PTE_AD_MASK)) {
+        /* the mapping or permission bits were replaced concurrently
+           (kernel remap / table edit): refuse the stale update and let
+           the walker restart with the value that is actually there. */
+        if (need_lock) {
+            s->in_smp_atomic = FALSE;
+            smp_spin_unlock(s->smp);
+        }
+        __atomic_add_fetch(&s->smp->pte_ad_conflicts, 1, __ATOMIC_RELAXED);
+        return 1;
+    }
+    want = cur | ((target_ulong)bits & ~cur);
+    if (want != cur) {
+        if (pte_size_log2 == 2)
+            __atomic_store_n((uint32_t *)ptr, (uint32_t)want, __ATOMIC_RELAXED);
+        else
+            __atomic_store_n((uint64_t *)ptr, (uint64_t)want, __ATOMIC_RELAXED);
+        smp_invalidate_others_locked(s, (uintptr_t)ptr,
+                                     (size_t)1 << pte_size_log2);
+        applied = 1;
+        if (cur != (target_ulong)expect)
+            __atomic_add_fetch(&s->smp->pte_ad_merges, 1, __ATOMIC_RELAXED);
     }
     if (applied)
         __atomic_add_fetch(&s->smp->pte_ad_updates, 1, __ATOMIC_RELAXED);
-    else
-        __atomic_add_fetch(&s->smp->pte_ad_conflicts, 1, __ATOMIC_RELAXED);
     if (need_lock) {
         s->in_smp_atomic = FALSE;
         smp_spin_unlock(s->smp);
     }
+    return 0;
 }
 
 static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
@@ -1088,9 +1157,19 @@ static int riscv_smp_lr(RISCVCPUState *s, target_ulong addr, uint64_t *pval,
             *pval = v;
         }
         /* no reservation on non-RAM (also covers the guest MMU fault
-         * case): clear it without the atomic lock, atomically, because
-         * another hart's invalidation may clear it concurrently */
-        __atomic_store_n(&s->load_res_valid, FALSE, __ATOMIC_RELEASE);
+         * case): drop any stale reservation of this hart. FLOE-SMP:
+         * every reservation field is read and written under the atomic
+         * lock (other harts' invalidators and the DMA hook read
+         * load_res_valid/addr/size), so this clear must not be a
+         * lock-free store racing those plain accesses. The device
+         * access above already returned (its device lock is released),
+         * so taking the atomic lock here keeps the device -> atomic
+         * order and can never invert it. */
+        smp_spin_lock(s->smp);
+        s->load_res_valid = FALSE;
+        s->load_res_addr = 0;
+        s->load_res_size_log2 = 0;
+        smp_spin_unlock(s->smp);
         return ret;
     }
     smp_spin_lock(s->smp);
@@ -1103,7 +1182,7 @@ static int riscv_smp_lr(RISCVCPUState *s, target_ulong addr, uint64_t *pval,
     }
     s->load_res_addr = (uintptr_t)ptr;
     s->load_res_size_log2 = size_log2;
-    __atomic_store_n(&s->load_res_valid, TRUE, __ATOMIC_RELEASE);
+    s->load_res_valid = TRUE;   /* all fields under the atomic lock */
     s->in_smp_atomic = FALSE;
     smp_spin_unlock(s->smp);
     return 0;
@@ -1128,7 +1207,9 @@ static int riscv_smp_sc(RISCVCPUState *s, target_ulong addr, uint64_t val,
     smp_spin_lock(s->smp);
     s->in_smp_atomic = TRUE;
     if (ptr && !mmu_fault) {
-        if ((__atomic_load_n(&s->load_res_valid, __ATOMIC_ACQUIRE)) &&
+        /* reservation fields are plain accesses: this hart's own fields
+           plus every invalidator run under the same atomic lock */
+        if (s->load_res_valid &&
             s->load_res_addr == (uintptr_t)ptr &&
             s->load_res_size_log2 == size_log2) {
             if (size_log2 == 2)
@@ -1142,7 +1223,7 @@ static int riscv_smp_sc(RISCVCPUState *s, target_ulong addr, uint64_t val,
         }
     }
     /* every SC attempt consumes the reservation (spec) */
-    __atomic_store_n(&s->load_res_valid, FALSE, __ATOMIC_RELEASE);
+    s->load_res_valid = FALSE;
     s->in_smp_atomic = FALSE;
     smp_spin_unlock(s->smp);
     *pstatus = status;

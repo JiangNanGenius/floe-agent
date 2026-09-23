@@ -152,12 +152,18 @@ typedef struct {
      * lock_order_violations must stay 0 (a device-lock acquisition while
      * holding the atomic lock deadlocks against virtio DMA, which takes
      * device -> atomic); pte_ad_updates counts page-walk A/D updates
-     * applied, pte_ad_conflicts the times a walk skipped its update
-     * because the PTE changed under it (a walk must never clobber a
-     * concurrent replacement). */
+     * stored (a walk that skipped its update when the PTE changed under
+     * it could lose another hart's D bit, so the required bits are merged
+     * into the current value); pte_ad_merges counts those stored updates
+     * that merged another hart's A/D progress; pte_ad_conflicts counts
+     * the times the mapping/permission bits changed under a walk (the
+     * stale update is refused, never clobbering a replacement) and
+     * pte_walk_restarts the resulting walk restarts. */
     uint64_t lock_order_violations;
     uint64_t pte_ad_updates;
+    uint64_t pte_ad_merges;
     uint64_t pte_ad_conflicts;
+    uint64_t pte_walk_restarts;
 } FloeVMStats;
 
 /* FLOE-SMP: link-time capability query of this adapter/engine pair.

@@ -237,8 +237,13 @@ struct RISCVCPUState {
        attached by the machine before the first slice) and this hart's
        LR/SC reservation. load_res_addr is the HOST address of the
        reserved guest RAM (same physical memory <=> same host pointer,
-       so virtual aliases of one page are covered); the valid flag is
-       atomic (release on set, CAS on clear from other harts).
+       so virtual aliases of one page are covered). All three
+       reservation fields are only accessed while holding the machine
+       atomic lock: the owner sets them in LR, clears them in SC and in
+       its non-RAM LR path, and the invalidators (locked store,
+       page-walk write, DMA hook) run under the same lock. There is no
+       lock-free atomic reservation access to race those plain reads
+       and writes.
        in_smp_atomic marks that this thread holds the machine atomic
        lock, so nested store paths skip the locked-store/invalidation
        walk (which would self-deadlock). */
@@ -300,14 +305,18 @@ static int riscv_smp_amo(RISCVCPUState *s, target_ulong addr,
 static inline void smp_note_device_lock(RISCVCPUState *s);
 
 /* FLOE-SMP: page-walk A/D update. Sets the A (and D for a write) bits on
- * the PTE this walk loaded with a locked read-modify-write that skips the
- * store when the entry changed under us, and runs under the atomic lock
- * when the walk itself is not already inside it (a plain load + store can
- * lose another hart's D bit and can clobber a concurrent kernel mapping
- * replacement with the stale entry). */
-static void riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
-                                     target_ulong expect, target_ulong bits,
-                                     int pte_size_log2);
+ * the PTE this walk loaded with a locked read-modify-write, running under
+ * the atomic lock when the walk itself is not already inside it (a plain
+ * load + store can both lose another hart's A/D update and clobber a
+ * concurrent kernel mapping replacement with the stale entry).
+ * Returns 1 when the non-A/D (mapping/permission) bits of the entry
+ * changed under the walker: the caller must restart the walk instead of
+ * using expect's translation. Returns 0 when the walk may proceed; in
+ * that case an A/D-only change made by another hart has been merged into
+ * the current value, so no other hart's update is discarded. */
+static int riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
+                                    target_ulong expect, target_ulong bits,
+                                    int pte_size_log2);
 
 /* FLOE-SMP: guest RAM words are shared between the hart host threads, so
  * every RAM access must be a C11 atomic operation to keep the formally

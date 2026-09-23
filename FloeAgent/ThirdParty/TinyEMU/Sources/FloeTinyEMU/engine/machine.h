@@ -153,11 +153,15 @@ struct VirtMachineClass {
                                     int max_exec_cycle);
     /* FLOE-SMP diagnostics (NULL on machines without SMP): counts the
      * forbidden device-lock-under-atomic-lock order and the page-walk A/D
-     * read-modify-write results. See RISCVSMPCpuArray. */
+     * read-modify-write results (stored updates, merged A/D-only updates,
+     * refused mapping replacements and the resulting walk restarts). See
+     * RISCVSMPCpuArray. */
     void (*virt_machine_get_smp_diag)(VirtMachine *s,
                                       uint64_t *lock_order_violations,
                                       uint64_t *pte_ad_updates,
-                                      uint64_t *pte_ad_conflicts);
+                                      uint64_t *pte_ad_merges,
+                                      uint64_t *pte_ad_conflicts,
+                                      uint64_t *pte_walk_restarts);
 };
 
 extern const VirtMachineClass riscv_machine_class;
@@ -202,14 +206,19 @@ static inline struct RISCVCPUState *virt_machine_get_cpu(VirtMachine *s,
 static inline void virt_machine_get_smp_diag(VirtMachine *s,
                                              uint64_t *lock_order_violations,
                                              uint64_t *pte_ad_updates,
-                                             uint64_t *pte_ad_conflicts)
+                                             uint64_t *pte_ad_merges,
+                                             uint64_t *pte_ad_conflicts,
+                                             uint64_t *pte_walk_restarts)
 {
     *lock_order_violations = 0;
     *pte_ad_updates = 0;
+    *pte_ad_merges = 0;
     *pte_ad_conflicts = 0;
+    *pte_walk_restarts = 0;
     if (s->vmc->virt_machine_get_smp_diag)
         s->vmc->virt_machine_get_smp_diag(s, lock_order_violations,
-                                          pte_ad_updates, pte_ad_conflicts);
+                                          pte_ad_updates, pte_ad_merges,
+                                          pte_ad_conflicts, pte_walk_restarts);
 }
 
 static inline void virt_machine_interp_cpu(VirtMachine *s, int cpu_idx,

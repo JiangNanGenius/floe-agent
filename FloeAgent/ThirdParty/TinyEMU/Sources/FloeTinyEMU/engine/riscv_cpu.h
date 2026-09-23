@@ -69,14 +69,19 @@ typedef struct RISCVSMPCpuArray {
      * device) is the documented forbidden one: virtio DMA takes
      * device -> atomic, so the two orders together deadlock. The count
      * must stay 0.
-     * pte_ad_updates counts locked A/D read-modify-writes done by the
-     * page walker; pte_ad_conflicts counts the times a concurrent PTE
-     * replacement was detected and the walker skipped its update instead
-     * of clobbering the newer value (the load+store it replaced was not
-     * an atomic RMW). */
+     * pte_ad_updates counts locked A/D read-modify-writes stored by the
+     * page walker (including merged A/D updates); pte_ad_merges counts the
+     * subset where the entry's A/D bits had advanced since the walk
+     * loaded it while the mapping/permission bits were unchanged (the
+     * other hart's A/D update is preserved and the walker's own bits are
+     * merged in); pte_ad_conflicts counts the times the mapping or
+     * permission bits changed under the walker, so the stale update was
+     * refused and the walk restarted (pte_walk_restarts). */
     uint64_t lock_order_violations;
     uint64_t pte_ad_updates;
+    uint64_t pte_ad_merges;
     uint64_t pte_ad_conflicts;
+    uint64_t pte_walk_restarts;
 } RISCVSMPCpuArray;
 
 typedef struct {

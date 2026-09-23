@@ -1,6 +1,6 @@
 diff -ruN a/iomem.h b/iomem.h
---- a/iomem.h	2026-09-23 11:01:47
-+++ b/iomem.h	2026-09-23 12:20:45
+--- a/iomem.h	2026-09-23 17:12:48
++++ b/iomem.h	2026-09-23 17:12:49
 @@ -77,6 +77,13 @@
      void *opaque;
      void (*flush_tlb_write_range)(void *opaque, uint8_t *ram_addr,
@@ -16,8 +16,8 @@ diff -ruN a/iomem.h b/iomem.h
  
  
 diff -ruN a/machine.h b/machine.h
---- a/machine.h	2026-09-23 11:01:47
-+++ b/machine.h	2026-09-23 14:40:19
+--- a/machine.h	2026-09-23 17:12:48
++++ b/machine.h	2026-09-23 17:12:49
 @@ -23,6 +23,11 @@
   */
  #include "json.h"
@@ -45,7 +45,7 @@ diff -ruN a/machine.h b/machine.h
      /* kernel, bios and other auxiliary files */
      VMFileEntry files[VM_FILE_COUNT];
  } VirtMachineParams;
-@@ -129,6 +140,24 @@
+@@ -129,6 +140,28 @@
      void (*vm_send_mouse_event)(VirtMachine *s1, int dx, int dy, int dz,
                                  unsigned int buttons);
      void (*vm_send_key_event)(VirtMachine *s1, BOOL is_down, uint16_t key_code);
@@ -62,15 +62,19 @@ diff -ruN a/machine.h b/machine.h
 +                                    int max_exec_cycle);
 +    /* FLOE-SMP diagnostics (NULL on machines without SMP): counts the
 +     * forbidden device-lock-under-atomic-lock order and the page-walk A/D
-+     * read-modify-write results. See RISCVSMPCpuArray. */
++     * read-modify-write results (stored updates, merged A/D-only updates,
++     * refused mapping replacements and the resulting walk restarts). See
++     * RISCVSMPCpuArray. */
 +    void (*virt_machine_get_smp_diag)(VirtMachine *s,
 +                                      uint64_t *lock_order_violations,
 +                                      uint64_t *pte_ad_updates,
-+                                      uint64_t *pte_ad_conflicts);
++                                      uint64_t *pte_ad_merges,
++                                      uint64_t *pte_ad_conflicts,
++                                      uint64_t *pte_walk_restarts);
  };
  
  extern const VirtMachineClass riscv_machine_class;
-@@ -155,6 +184,38 @@
+@@ -155,6 +188,43 @@
  static inline void virt_machine_interp(VirtMachine *s, int max_exec_cycle)
  {
      s->vmc->virt_machine_interp(s, max_exec_cycle);
@@ -92,14 +96,19 @@ diff -ruN a/machine.h b/machine.h
 +static inline void virt_machine_get_smp_diag(VirtMachine *s,
 +                                             uint64_t *lock_order_violations,
 +                                             uint64_t *pte_ad_updates,
-+                                             uint64_t *pte_ad_conflicts)
++                                             uint64_t *pte_ad_merges,
++                                             uint64_t *pte_ad_conflicts,
++                                             uint64_t *pte_walk_restarts)
 +{
 +    *lock_order_violations = 0;
 +    *pte_ad_updates = 0;
++    *pte_ad_merges = 0;
 +    *pte_ad_conflicts = 0;
++    *pte_walk_restarts = 0;
 +    if (s->vmc->virt_machine_get_smp_diag)
 +        s->vmc->virt_machine_get_smp_diag(s, lock_order_violations,
-+                                          pte_ad_updates, pte_ad_conflicts);
++                                          pte_ad_updates, pte_ad_merges,
++                                          pte_ad_conflicts, pte_walk_restarts);
 +}
 +
 +static inline void virt_machine_interp_cpu(VirtMachine *s, int cpu_idx,
@@ -110,8 +119,8 @@ diff -ruN a/machine.h b/machine.h
  static inline BOOL vm_mouse_is_absolute(VirtMachine *s)
  {
 diff -ruN a/riscv_cpu.c b/riscv_cpu.c
---- a/riscv_cpu.c	2026-09-23 11:01:47
-+++ b/riscv_cpu.c	2026-09-23 14:41:24
+--- a/riscv_cpu.c	2026-09-23 17:12:48
++++ b/riscv_cpu.c	2026-09-23 17:12:49
 @@ -28,6 +28,7 @@
  #include <inttypes.h>
  #include <assert.h>
@@ -286,7 +295,61 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  }
  
  PHYS_MEM_READ_WRITE(8, uint8_t)
-@@ -274,14 +411,13 @@
+@@ -178,7 +315,24 @@
+ #define PTE_U_MASK (1 << 4)
+ #define PTE_A_MASK (1 << 6)
+ #define PTE_D_MASK (1 << 7)
++/* FLOE-SMP: the two bits a page walk sets. Every other bit of a leaf PTE is
++ * mapping/permission state, so only a change confined to these bits may be
++ * merged by a concurrent walker (see riscv_smp_pte_write_bits). */
++#define PTE_AD_MASK (PTE_A_MASK | PTE_D_MASK)
+ 
++/* FLOE-SMP: bound on page-walk restarts after a concurrent PTE change.
++ * A walk that observed a changed mapping must never translate with the
++ * stale entry, so it re-runs the walk (re-checking every level and
++ * permission) and only reports a translation fault when the table keeps
++ * changing under it; at that point the access genuinely faults, exactly
++ * as a guest would see on hardware with a concurrent PTE replacement
++ * (the RISC-V privileged spec says a page fault caused this way is
++ * spurious and software must retry the access, which is what a real
++ * guest and the qualification payload do). The bound only stops a
++ * theoretical livelock against an adversarial table-writer: it is high
++ * enough that ordinary kernel TLB-shootdown traffic cannot reach it. */
++#define FLOE_SMP_PTE_WALK_RETRIES 256
++
+ #define ACCESS_READ  0
+ #define ACCESS_WRITE 1
+ #define ACCESS_CODE  2
+@@ -190,9 +344,10 @@
+                          int access)
+ {
+     int mode, levels, pte_bits, pte_idx, pte_mask, pte_size_log2, xwr, priv;
+-    int need_write, vaddr_shift, i, pte_addr_bits;
+-    target_ulong pte_addr, pte, vaddr_mask, paddr;
++    int need_write, vaddr_shift, i, pte_addr_bits, walk_restarts;
++    target_ulong pte_addr, pte, vaddr_mask, paddr, pte_addr_base;
+ 
++    walk_restarts = 0;
+     if ((s->mstatus & MSTATUS_MPRV) && access != ACCESS_CODE) {
+         /* use previous priviledge */
+         priv = (s->mstatus >> MSTATUS_MPP_SHIFT) & 3;
+@@ -238,9 +393,14 @@
+         pte_addr_bits = 44;
+     }
+ #endif
+-    pte_addr = (s->satp & (((target_ulong)1 << pte_addr_bits) - 1)) << PG_SHIFT;
++    pte_addr_base = (s->satp & (((target_ulong)1 << pte_addr_bits) - 1))
++        << PG_SHIFT;
+     pte_bits = 12 - pte_size_log2;
+     pte_mask = (1 << pte_bits) - 1;
++    /* FLOE-SMP: (re)start of the page walk; a restart re-reads every level
++       and re-runs all checks against the value that is actually present. */
++ walk_restart:
++    pte_addr = pte_addr_base;
+     for(i = 0; i < levels; i++) {
+         vaddr_shift = PG_SHIFT + pte_bits * (levels - 1 - i);
+         pte_idx = (vaddr >> vaddr_shift) & pte_mask;
+@@ -274,14 +434,25 @@
                  return -1;
              need_write = !(pte & PTE_A_MASK) ||
                  (!(pte & PTE_D_MASK) && access == ACCESS_WRITE);
@@ -298,16 +361,28 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 -                    phys_write_u32(s, pte_addr, pte);
 -                else
 -                    phys_write_u64(s, pte_addr, pte);
-+                /* FLOE-SMP: locked RMW; only the entry this walk loaded
-+                   may be updated, and only if it is still there. */
++                /* FLOE-SMP: locked RMW of the entry this walk loaded. A
++                   concurrent A/D-only update is merged (never lost); a
++                   mapping/permission replacement is refused and the walk
++                   restarts, so this access is never translated with a
++                   stale entry. */
 +                target_ulong ad_bits = PTE_A_MASK |
 +                    (access == ACCESS_WRITE ? PTE_D_MASK : 0);
-+                riscv_smp_pte_write_bits(s, pte_addr, pte, ad_bits,
-+                                         pte_size_log2);
++                if (riscv_smp_pte_write_bits(s, pte_addr, pte, ad_bits,
++                                             pte_size_log2)) {
++                    if (walk_restarts < FLOE_SMP_PTE_WALK_RETRIES) {
++                        walk_restarts++;
++                        if (s->smp && s->smp->nb_harts > 1)
++                            __atomic_add_fetch(&s->smp->pte_walk_restarts, 1,
++                                               __ATOMIC_RELAXED);
++                        goto walk_restart;
++                    }
++                    return -1;
++                }
              }
              vaddr_mask = ((target_ulong)1 << vaddr_shift) - 1;
              *ppaddr = (vaddr & vaddr_mask) | (paddr  & ~vaddr_mask);
-@@ -387,48 +523,37 @@
+@@ -387,48 +558,37 @@
              s->tlb_read[tlb_idx].mem_addend = (uintptr_t)ptr - addr;
              switch(size_log2) {
              case 0:
@@ -368,7 +443,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          }
      }
      *pval = ret;
-@@ -472,50 +597,45 @@
+@@ -472,50 +632,45 @@
              ptr = pr->phys_mem + (uintptr_t)(paddr - pr->addr);
              s->tlb_write[tlb_idx].vaddr = addr & ~PG_MASK;
              s->tlb_write[tlb_idx].mem_addend = (uintptr_t)ptr - addr;
@@ -437,7 +512,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          }
      }
      return 0;
-@@ -531,7 +651,13 @@
+@@ -531,7 +686,13 @@
  #if defined(EMSCRIPTEN)
      return ((uint16_t *)ptr)[0] | (((uint16_t *)ptr)[1] << 16);
  #else
@@ -452,7 +527,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  #endif
  }
  
-@@ -580,7 +706,8 @@
+@@ -580,7 +741,8 @@
          if (target_read_insn_slow(s, &ptr, addr))
              return -1;
      }
@@ -462,7 +537,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
      return 0;
  }
  
-@@ -595,6 +722,506 @@
+@@ -595,6 +757,552 @@
      }
  }
  
@@ -480,8 +555,14 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 + *    value (not linearizable).
 + *  - Reservations are keyed by HOST address: the same physical guest
 + *    memory always maps to the same host pointer, so virtual aliases of
-+ *    one page cannot evade invalidation. Reservation fields are only
-+ *    read/written under the lock (no torn reads for DMA).
++ *    one page cannot evade invalidation. _Every_ access to the
++ *    reservation fields (valid/addr/size) happens under the lock: the
++ *    owner sets them in its locked LR and clears them in its locked SC,
++ *    a non-RAM LR clears them in a locked section (after its device
++ *    access returned), and the invalidators (locked store / page-table
++ *    write / DMA) run under the same lock. No lock-free atomic op is
++ *    mixed with those plain accesses, so there is no C11 data race and
++ *    no torn read of addr/size by an invalidator.
 + *  - AMOs on guest RAM are read-modify-writes inside the lock; the
 + *    individual host accesses are relaxed atomics (single-copy atomic on
 + *    the supported hosts), which also keeps the C11 model race-free.
@@ -545,18 +626,32 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 + * the atomic lock. This is the ONLY guest-RAM store path on an SMP
 + * machine (every store is linearized here). */
 +/* FLOE-SMP: locked A/D read-modify-write on a PTE word (see the
-+ * declaration in riscv_cpu_priv.h). expect is the value this walk
-+ * loaded; only that value may be updated, so a concurrent replacement
-+ * (kernel mapping change) or another hart's update is never clobbered.
-+ * The store invalidates other harts' LR reservations on the word, like
-+ * every other guest-RAM store. */
-+static void riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
-+                                     target_ulong expect, target_ulong bits,
-+                                     int pte_size_log2)
++ * declaration in riscv_cpu_priv.h).
++ *
++ * expect is the value this walk loaded and bits are the A/D bits this
++ * access requires. Returns 0 when the caller may use the translation
++ * (the update was stored, merged, or was already satisfied) and 1 when
++ * the mapping/permission bits changed under the walker: applying
++ * expect|bits would clobber the newer entry, so the caller must restart
++ * the walk instead of translating with the stale value.
++ *
++ * A/D updates only ever set bits, so two harts walking the same leaf
++ * must not lose each other's update. Requiring cur == expect (the
++ * earlier behavior) threw away the second hart's update: a store walk
++ * that loaded A=D=0, then watched a read walk set A, skipped its own
++ * update and completed the store with D still 0. Instead, when every
++ * non-A/D bit is unchanged the requested bits are merged into the
++ * *current* value under the lock, which preserves the other hart's A/D
++ * progress without touching the mapping. The store invalidates other
++ * harts' LR reservations on the word, like every other guest-RAM store. */
++static int riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
++                                    target_ulong expect, target_ulong bits,
++                                    int pte_size_log2)
 +{
 +    PhysMemoryRange *pr;
 +    int need_lock, applied;
 +    uint8_t *ptr;
++    target_ulong cur, want;
 +
 +    if (!s->smp || s->smp->nb_harts <= 1) {
 +        /* single hart: keep upstream behavior (no lock, plain store) */
@@ -564,7 +659,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 +            phys_write_u32(s, pte_addr, (uint32_t)(expect | bits));
 +        else
 +            phys_write_u64(s, pte_addr, expect | bits);
-+        return;
++        return 0;
 +    }
 +    need_lock = !s->in_smp_atomic;
 +    if (need_lock) {
@@ -573,36 +668,50 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 +    }
 +    applied = 0;
 +    pr = get_phys_mem_range(s->mem_map, pte_addr);
-+    if (pr && pr->is_ram) {
-+        ptr = pr->phys_mem + (uintptr_t)(pte_addr - pr->addr);
-+        if (pte_size_log2 == 2) {
-+            uint32_t cur = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
-+            if (cur == (uint32_t)expect) {
-+                __atomic_store_n((uint32_t *)ptr, cur | (uint32_t)bits,
-+                                 __ATOMIC_RELAXED);
-+                smp_invalidate_others_locked(s, (uintptr_t)ptr,
-+                                             (size_t)1 << pte_size_log2);
-+                applied = 1;
-+            }
-+        } else {
-+            uint64_t cur = __atomic_load_n((uint64_t *)ptr, __ATOMIC_RELAXED);
-+            if (cur == (uint64_t)expect) {
-+                __atomic_store_n((uint64_t *)ptr, cur | (uint64_t)bits,
-+                                 __ATOMIC_RELAXED);
-+                smp_invalidate_others_locked(s, (uintptr_t)ptr,
-+                                             (size_t)1 << pte_size_log2);
-+                applied = 1;
-+            }
++    if (!pr || !pr->is_ram) {
++        /* the entry disappeared (or is not RAM): never usable */
++        if (need_lock) {
++            s->in_smp_atomic = FALSE;
++            smp_spin_unlock(s->smp);
 +        }
++        __atomic_add_fetch(&s->smp->pte_ad_conflicts, 1, __ATOMIC_RELAXED);
++        return 1;
++    }
++    ptr = pr->phys_mem + (uintptr_t)(pte_addr - pr->addr);
++    if (pte_size_log2 == 2)
++        cur = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
++    else
++        cur = __atomic_load_n((uint64_t *)ptr, __ATOMIC_RELAXED);
++    if ((cur & ~PTE_AD_MASK) != ((target_ulong)expect & ~PTE_AD_MASK)) {
++        /* the mapping or permission bits were replaced concurrently
++           (kernel remap / table edit): refuse the stale update and let
++           the walker restart with the value that is actually there. */
++        if (need_lock) {
++            s->in_smp_atomic = FALSE;
++            smp_spin_unlock(s->smp);
++        }
++        __atomic_add_fetch(&s->smp->pte_ad_conflicts, 1, __ATOMIC_RELAXED);
++        return 1;
++    }
++    want = cur | ((target_ulong)bits & ~cur);
++    if (want != cur) {
++        if (pte_size_log2 == 2)
++            __atomic_store_n((uint32_t *)ptr, (uint32_t)want, __ATOMIC_RELAXED);
++        else
++            __atomic_store_n((uint64_t *)ptr, (uint64_t)want, __ATOMIC_RELAXED);
++        smp_invalidate_others_locked(s, (uintptr_t)ptr,
++                                     (size_t)1 << pte_size_log2);
++        applied = 1;
++        if (cur != (target_ulong)expect)
++            __atomic_add_fetch(&s->smp->pte_ad_merges, 1, __ATOMIC_RELAXED);
 +    }
 +    if (applied)
 +        __atomic_add_fetch(&s->smp->pte_ad_updates, 1, __ATOMIC_RELAXED);
-+    else
-+        __atomic_add_fetch(&s->smp->pte_ad_conflicts, 1, __ATOMIC_RELAXED);
 +    if (need_lock) {
 +        s->in_smp_atomic = FALSE;
 +        smp_spin_unlock(s->smp);
 +    }
++    return 0;
 +}
 +
 +static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
@@ -832,9 +941,19 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 +            *pval = v;
 +        }
 +        /* no reservation on non-RAM (also covers the guest MMU fault
-+         * case): clear it without the atomic lock, atomically, because
-+         * another hart's invalidation may clear it concurrently */
-+        __atomic_store_n(&s->load_res_valid, FALSE, __ATOMIC_RELEASE);
++         * case): drop any stale reservation of this hart. FLOE-SMP:
++         * every reservation field is read and written under the atomic
++         * lock (other harts' invalidators and the DMA hook read
++         * load_res_valid/addr/size), so this clear must not be a
++         * lock-free store racing those plain accesses. The device
++         * access above already returned (its device lock is released),
++         * so taking the atomic lock here keeps the device -> atomic
++         * order and can never invert it. */
++        smp_spin_lock(s->smp);
++        s->load_res_valid = FALSE;
++        s->load_res_addr = 0;
++        s->load_res_size_log2 = 0;
++        smp_spin_unlock(s->smp);
 +        return ret;
 +    }
 +    smp_spin_lock(s->smp);
@@ -847,7 +966,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 +    }
 +    s->load_res_addr = (uintptr_t)ptr;
 +    s->load_res_size_log2 = size_log2;
-+    __atomic_store_n(&s->load_res_valid, TRUE, __ATOMIC_RELEASE);
++    s->load_res_valid = TRUE;   /* all fields under the atomic lock */
 +    s->in_smp_atomic = FALSE;
 +    smp_spin_unlock(s->smp);
 +    return 0;
@@ -872,7 +991,9 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 +    smp_spin_lock(s->smp);
 +    s->in_smp_atomic = TRUE;
 +    if (ptr && !mmu_fault) {
-+        if ((__atomic_load_n(&s->load_res_valid, __ATOMIC_ACQUIRE)) &&
++        /* reservation fields are plain accesses: this hart's own fields
++           plus every invalidator run under the same atomic lock */
++        if (s->load_res_valid &&
 +            s->load_res_addr == (uintptr_t)ptr &&
 +            s->load_res_size_log2 == size_log2) {
 +            if (size_log2 == 2)
@@ -886,7 +1007,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 +        }
 +    }
 +    /* every SC attempt consumes the reservation (spec) */
-+    __atomic_store_n(&s->load_res_valid, FALSE, __ATOMIC_RELEASE);
++    s->load_res_valid = FALSE;
 +    s->in_smp_atomic = FALSE;
 +    smp_spin_unlock(s->smp);
 +    *pstatus = status;
@@ -969,7 +1090,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  static void tlb_flush_all(RISCVCPUState *s)
  {
      tlb_init(s);
-@@ -786,7 +1413,7 @@
+@@ -786,7 +1494,7 @@
          val = s->stval;
          break;
      case 0x144: /* sip */
@@ -978,7 +1099,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      case 0x180:
          val = s->satp;
-@@ -826,7 +1453,7 @@
+@@ -826,7 +1534,7 @@
          val = s->mtval;
          break;
      case 0x344:
@@ -987,7 +1108,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      case 0xb00: /* mcycle */
      case 0xb02: /* minstret */
-@@ -930,7 +1557,7 @@
+@@ -930,7 +1638,7 @@
          break;
      case 0x144: /* sip */
          mask = s->mideleg;
@@ -996,7 +1117,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      case 0x180:
          /* no ASID implemented */
-@@ -1007,7 +1634,7 @@
+@@ -1007,7 +1715,7 @@
          break;
      case 0x344:
          mask = MIP_SSIP | MIP_STIP;
@@ -1005,7 +1126,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      default:
  #ifdef DUMP_INVALID_CSR
-@@ -1160,7 +1787,7 @@
+@@ -1160,7 +1868,7 @@
  {
      uint32_t pending_ints, enabled_ints;
  
@@ -1014,7 +1135,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
      if (pending_ints == 0)
          return 0;
  
-@@ -1234,7 +1861,7 @@
+@@ -1234,7 +1942,7 @@
      uint64_t timeout;
  
      timeout = s->insn_counter + n_cycles;
@@ -1023,7 +1144,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
             (int)(timeout - s->insn_counter) > 0) {
          n_cycles = timeout - s->insn_counter;
          switch(s->cur_xlen) {
-@@ -1260,30 +1887,36 @@
+@@ -1260,30 +1968,36 @@
  /* Note: the value is not accurate when called in riscv_cpu_interp() */
  static uint64_t glue(riscv_cpu_get_cycles, MAX_XLEN)(RISCVCPUState *s)
  {
@@ -1068,7 +1189,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  }
  
  static RISCVCPUState *glue(riscv_cpu_init, MAX_XLEN)(PhysMemoryMap *mem_map)
-@@ -1332,6 +1965,23 @@
+@@ -1332,6 +2046,23 @@
      return s->misa;
  }
  
@@ -1092,7 +1213,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  const RISCVCPUClass glue(riscv_cpu_class, MAX_XLEN) = {
      glue(riscv_cpu_init, MAX_XLEN),
      glue(riscv_cpu_end, MAX_XLEN),
-@@ -1343,6 +1993,8 @@
+@@ -1343,6 +2074,8 @@
      glue(riscv_cpu_get_power_down, MAX_XLEN),
      glue(riscv_cpu_get_misa, MAX_XLEN),
      glue(riscv_cpu_flush_tlb_write_range_ram, MAX_XLEN),
@@ -1102,9 +1223,9 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  
  #if CONFIG_RISCV_MAX_XLEN == MAX_XLEN
 diff -ruN a/riscv_cpu.h b/riscv_cpu.h
---- a/riscv_cpu.h	2026-09-23 11:01:47
-+++ b/riscv_cpu.h	2026-09-23 14:39:21
-@@ -43,6 +43,42 @@
+--- a/riscv_cpu.h	2026-09-23 17:12:49
++++ b/riscv_cpu.h	2026-09-23 17:12:49
+@@ -43,6 +43,47 @@
  
  typedef struct RISCVCPUState RISCVCPUState;
  
@@ -1134,20 +1255,25 @@ diff -ruN a/riscv_cpu.h b/riscv_cpu.h
 +     * device) is the documented forbidden one: virtio DMA takes
 +     * device -> atomic, so the two orders together deadlock. The count
 +     * must stay 0.
-+     * pte_ad_updates counts locked A/D read-modify-writes done by the
-+     * page walker; pte_ad_conflicts counts the times a concurrent PTE
-+     * replacement was detected and the walker skipped its update instead
-+     * of clobbering the newer value (the load+store it replaced was not
-+     * an atomic RMW). */
++     * pte_ad_updates counts locked A/D read-modify-writes stored by the
++     * page walker (including merged A/D updates); pte_ad_merges counts the
++     * subset where the entry's A/D bits had advanced since the walk
++     * loaded it while the mapping/permission bits were unchanged (the
++     * other hart's A/D update is preserved and the walker's own bits are
++     * merged in); pte_ad_conflicts counts the times the mapping or
++     * permission bits changed under the walker, so the stale update was
++     * refused and the walk restarted (pte_walk_restarts). */
 +    uint64_t lock_order_violations;
 +    uint64_t pte_ad_updates;
++    uint64_t pte_ad_merges;
 +    uint64_t pte_ad_conflicts;
++    uint64_t pte_walk_restarts;
 +} RISCVSMPCpuArray;
 +
  typedef struct {
      RISCVCPUState *(*riscv_cpu_init)(PhysMemoryMap *mem_map);
      void (*riscv_cpu_end)(RISCVCPUState *s);
-@@ -55,6 +91,9 @@
+@@ -55,6 +96,9 @@
      uint32_t (*riscv_cpu_get_misa)(RISCVCPUState *s);
      void (*riscv_cpu_flush_tlb_write_range_ram)(RISCVCPUState *s,
                                                  uint8_t *ram_ptr, size_t ram_size);
@@ -1157,7 +1283,7 @@ diff -ruN a/riscv_cpu.h b/riscv_cpu.h
  } RISCVCPUClass;
  
  typedef struct {
-@@ -113,6 +152,16 @@
+@@ -113,6 +157,16 @@
  {
      const RISCVCPUClass *c = ((RISCVCPUCommonState *)s)->class_ptr;
      c->riscv_cpu_flush_tlb_write_range_ram(s, ram_ptr, ram_size);
@@ -1175,9 +1301,9 @@ diff -ruN a/riscv_cpu.h b/riscv_cpu.h
  
  #endif /* RISCV_CPU_H */
 diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
---- a/riscv_cpu_priv.h	2026-09-23 11:01:47
-+++ b/riscv_cpu_priv.h	2026-09-23 14:44:27
-@@ -231,8 +231,23 @@
+--- a/riscv_cpu_priv.h	2026-09-23 17:12:48
++++ b/riscv_cpu_priv.h	2026-09-23 17:12:49
+@@ -231,8 +231,28 @@
  #endif
      uint32_t scounteren;
  
@@ -1188,8 +1314,13 @@ diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
 +       attached by the machine before the first slice) and this hart's
 +       LR/SC reservation. load_res_addr is the HOST address of the
 +       reserved guest RAM (same physical memory <=> same host pointer,
-+       so virtual aliases of one page are covered); the valid flag is
-+       atomic (release on set, CAS on clear from other harts).
++       so virtual aliases of one page are covered). All three
++       reservation fields are only accessed while holding the machine
++       atomic lock: the owner sets them in LR, clears them in SC and in
++       its non-RAM LR path, and the invalidators (locked store,
++       page-walk write, DMA hook) run under the same lock. There is no
++       lock-free atomic reservation access to race those plain reads
++       and writes.
 +       in_smp_atomic marks that this thread holds the machine atomic
 +       lock, so nested store paths skip the locked-store/invalidation
 +       walk (which would self-deadlock). */
@@ -1202,7 +1333,7 @@ diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
      PhysMemoryMap *mem_map;
  
      TLBEntry tlb_read[TLB_SIZE];
-@@ -248,6 +263,72 @@
+@@ -248,6 +268,76 @@
  DLL_PUBLIC int target_write_slow(RISCVCPUState *s, target_ulong addr,
                                   mem_uint_t val, int size_log2);
  
@@ -1243,14 +1374,18 @@ diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
 +static inline void smp_note_device_lock(RISCVCPUState *s);
 +
 +/* FLOE-SMP: page-walk A/D update. Sets the A (and D for a write) bits on
-+ * the PTE this walk loaded with a locked read-modify-write that skips the
-+ * store when the entry changed under us, and runs under the atomic lock
-+ * when the walk itself is not already inside it (a plain load + store can
-+ * lose another hart's D bit and can clobber a concurrent kernel mapping
-+ * replacement with the stale entry). */
-+static void riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
-+                                     target_ulong expect, target_ulong bits,
-+                                     int pte_size_log2);
++ * the PTE this walk loaded with a locked read-modify-write, running under
++ * the atomic lock when the walk itself is not already inside it (a plain
++ * load + store can both lose another hart's A/D update and clobber a
++ * concurrent kernel mapping replacement with the stale entry).
++ * Returns 1 when the non-A/D (mapping/permission) bits of the entry
++ * changed under the walker: the caller must restart the walk instead of
++ * using expect's translation. Returns 0 when the walk may proceed; in
++ * that case an A/D-only change made by another hart has been merged into
++ * the current value, so no other hart's update is discarded. */
++static int riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
++                                    target_ulong expect, target_ulong bits,
++                                    int pte_size_log2);
 +
 +/* FLOE-SMP: guest RAM words are shared between the hart host threads, so
 + * every RAM access must be a C11 atomic operation to keep the formally
@@ -1275,7 +1410,7 @@ diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
  /* return 0 if OK, != 0 if exception */
  #define TARGET_READ_WRITE(size, uint_type, size_log2)                   \
  static inline __exception int target_read_u ## size(RISCVCPUState *s, uint_type *pval, target_ulong addr)                              \
-@@ -255,7 +336,7 @@
+@@ -255,7 +345,7 @@
      uint32_t tlb_idx;\
      tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);\
      if (likely(s->tlb_read[tlb_idx].vaddr == (addr & ~(PG_MASK & ~((size / 8) - 1))))) { \
@@ -1284,7 +1419,7 @@ diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
      } else {\
          mem_uint_t val;\
          int ret;\
-@@ -273,7 +354,14 @@
+@@ -273,7 +363,14 @@
      uint32_t tlb_idx;\
      tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);\
      if (likely(s->tlb_write[tlb_idx].vaddr == (addr & ~(PG_MASK & ~((size / 8) - 1))))) { \
@@ -1301,8 +1436,8 @@ diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
      } else {\
          return target_write_slow(s, addr, val, size_log2);\
 diff -ruN a/riscv_cpu_template.h b/riscv_cpu_template.h
---- a/riscv_cpu_template.h	2026-09-23 11:01:47
-+++ b/riscv_cpu_template.h	2026-09-23 14:41:09
+--- a/riscv_cpu_template.h	2026-09-23 17:12:49
++++ b/riscv_cpu_template.h	2026-09-23 17:12:49
 @@ -219,7 +219,7 @@
      s->n_cycles = n_cycles1;
  
@@ -1468,8 +1603,8 @@ diff -ruN a/riscv_cpu_template.h b/riscv_cpu_template.h
      printf("done interp %lx int=%x mstatus=%lx prv=%d\n",
             (uint64_t)s->insn_counter, s->mip & s->mie, (uint64_t)s->mstatus,
 diff -ruN a/riscv_machine.c b/riscv_machine.c
---- a/riscv_machine.c	2026-09-23 11:01:47
-+++ b/riscv_machine.c	2026-09-23 14:40:28
+--- a/riscv_machine.c	2026-09-23 17:12:49
++++ b/riscv_machine.c	2026-09-23 17:12:49
 @@ -31,6 +31,7 @@
  #include <errno.h>
  #include <unistd.h>
@@ -2053,7 +2188,7 @@ diff -ruN a/riscv_machine.c b/riscv_machine.c
  static void riscv_vm_send_key_event(VirtMachine *s1, BOOL is_down,
                                      uint16_t key_code)
  {
-@@ -1072,6 +1203,22 @@
+@@ -1072,6 +1203,28 @@
      }
  }
  
@@ -2062,21 +2197,27 @@ diff -ruN a/riscv_machine.c b/riscv_machine.c
 +static void riscv_machine_get_smp_diag(VirtMachine *s,
 +                                       uint64_t *lock_order_violations,
 +                                       uint64_t *pte_ad_updates,
-+                                       uint64_t *pte_ad_conflicts)
++                                       uint64_t *pte_ad_merges,
++                                       uint64_t *pte_ad_conflicts,
++                                       uint64_t *pte_walk_restarts)
 +{
 +    RISCVMachine *m = (RISCVMachine *)s;
 +    *lock_order_violations =
 +        __atomic_load_n(&m->smp.lock_order_violations, __ATOMIC_RELAXED);
 +    *pte_ad_updates =
 +        __atomic_load_n(&m->smp.pte_ad_updates, __ATOMIC_RELAXED);
++    *pte_ad_merges =
++        __atomic_load_n(&m->smp.pte_ad_merges, __ATOMIC_RELAXED);
 +    *pte_ad_conflicts =
 +        __atomic_load_n(&m->smp.pte_ad_conflicts, __ATOMIC_RELAXED);
++    *pte_walk_restarts =
++        __atomic_load_n(&m->smp.pte_walk_restarts, __ATOMIC_RELAXED);
 +}
 +
  const VirtMachineClass riscv_machine_class = {
      "riscv32,riscv64,riscv128",
      riscv_machine_set_defaults,
-@@ -1082,4 +1229,8 @@
+@@ -1082,4 +1235,8 @@
      riscv_vm_mouse_is_absolute,
      riscv_vm_send_mouse_event,
      riscv_vm_send_key_event,
@@ -2086,8 +2227,8 @@ diff -ruN a/riscv_machine.c b/riscv_machine.c
 +    riscv_machine_get_smp_diag,
  };
 diff -ruN a/virtio.c b/virtio.c
---- a/virtio.c	2026-09-23 11:01:47
-+++ b/virtio.c	2026-09-23 12:21:03
+--- a/virtio.c	2026-09-23 17:12:49
++++ b/virtio.c	2026-09-23 17:12:49
 @@ -303,11 +303,14 @@
      ptr = s->get_ram_ptr(s, addr, FALSE);
      if (!ptr)

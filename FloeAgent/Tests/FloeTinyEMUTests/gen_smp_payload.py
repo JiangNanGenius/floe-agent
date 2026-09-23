@@ -358,6 +358,27 @@ AD_DONE = FLAGS + 0x1A4       # u32: producer finished all epochs
 FAIL_WHERE = FLAGS + 0x1A8    # u32: fail-site code for SMP-FAIL diagnostics
 SOLO_BAD = FLAGS + 0x1AC      # u32: mmio_solo SC-status anomalies
 
+# P1 regression phase: concurrent read walk vs store walk on one leaf, then a
+# concurrent PTE replacement storm. See pte_ad2_phase().
+P2_STOP1 = FLAGS + 0x1B4      # u32: hart 1 finished its read-walk loop
+P2_ITER_DONE = FLAGS + 0x1B8  # u32: hart 0 finished the replacement storm
+P2_STOP = FLAGS + 0x1BC       # u32: hart 1 wrote its final leaf and stopped
+P2_D = FLAGS + 0x1C0          # u32: completed store walks whose D update was
+                              #      discarded (same generation, D clear)
+P2_A = FLAGS + 0x1C4          # u32: same, with A clear
+P2_MAP = FLAGS + 0x1C8        # u32: leaf mapping regressions (PPN changed)
+P2_EP = FLAGS + 0x1CC         # u32: stage-A store walks checked
+P2_H0_DONE = FLAGS + 0x1E4    # u32: hart 0 left the stage-A loop (hart 1
+                              #      may start the stage-B replacement storm)
+P2_STALE = FLAGS + 0x1D0      # u32: reserved (0: hart 0 owns the leaf, so
+                              #      no interval needs to be excluded)
+P2_DBG_PRE = FLAGS + 0x1D4    # u32: leaf word of the last lost-update hit
+P2_DBG_POST = FLAGS + 0x1D8   # u32: its post-walk leaf word
+P2_DBG_RESET = FLAGS + 0x1DC  # u32: reserved (kept in the printed report)
+P2_FAULT = FLAGS + 0x1E0      # u32: spurious page faults retried (a legal
+                              #      outcome of a PTE storm; counted, not failed)
+P2_FAULT_MAX = 262144         # give up on a real livelock instead of hanging
+
 PAGE_TEST = 0x80050000        # physical page used by the VA-alias test
 PT_ROOT = 0x80060000
 PT_L1 = 0x80061000
@@ -381,6 +402,17 @@ PAGE_A = 0x80051000           # leaf targets flipped by the PTE A/D phase
 PAGE_B = 0x80052000
 LEAF_A = ((PAGE_A >> 12) << 10) | 0x0F   # V|R|W|X, A/D clear on purpose
 LEAF_B = ((PAGE_B >> 12) << 10) | 0x0F
+# Stage A: hart 0 resets the shared leaf to A/D-clear and store-walks the
+# alias, checking after every walk that the leaf is exactly LEAF_A|A|D;
+# hart 1 read-walks the same alias in a free-running loop, so its A store
+# can land between hart 0's PTE load and its locked RMW. The two loops are
+# deliberately NOT handshaked: a fixed handshake offset misses that window
+# reproducibly (measured: 0 merges in 8000 handshaked epochs, i.e. the
+# whole exercise would be vacuous), while free-running loops drift across
+# each other and enter it hundreds of times per run (pte_ad_merges).
+PTE2_GENS = 30000             # hart 1 read walks (stage A)
+PTE2_H0_ITERS = 200000        # hart 0 hard cap (safety net)
+PTE2_RACE_ITERS = 20000       # leaf replacement storm iterations (stage B)
 
 # per-hart stacks (the reset state has sp == 0; every hart gets its own)
 STACK_TOP = 0x80031000
@@ -768,6 +800,267 @@ def pte_ad_phase(a, is_h0):
     a.ret()
 
 
+def pte_ad2_phase(a, is_h0):
+    """P1 regression: two harts walking ONE leaf at the same time.
+
+    Stage A (concurrent read walk vs store walk): hart 0 owns the leaf.
+    Each iteration it resets the leaf to A/D-clear (its own plain store,
+    so no other hart can move the baseline), then store-walks the alias,
+    then reads the leaf back: a completed store walk must leave exactly
+    A|D on the leaf it loaded. hart 1 read-walks the same alias in a
+    free-running loop (each walk sets A when the leaf is still clear), so
+    the two harts' walks overlap and drift instead of sitting at a fixed
+    handshake offset (measured: a handshaked pair misses the store walk's
+    [PTE load .. locked RMW] window reproducibly, 0 merges in 8000
+    epochs).
+
+    An engine that only applies "expect | bits" when the whole word still
+    equals expect loses exactly that interleaving: hart 1's A lands
+    between the store walk's PTE load and its locked RMW, the RMW is
+    skipped, the store still completes and the leaf is left with A set
+    and D clear. The exact-equality check (post == LEAF_A|A|D) cannot be
+    satisfied by any other ordering, and no reset can be misattributed
+    because only hart 0 writes the leaf baseline.
+
+    Stage B (concurrent replacement storm): hart 1 alternates the leaf
+    between two physical pages while hart 0 walks it with sfence between
+    every access. A walk that sees the mapping change must not write the
+    stale entry back: after hart 1's final deterministic store both harts
+    must agree the leaf is PAGE_B and that the last store walk set A|D.
+    The engine counters (FloeVMStats.pte_ad_merges / pte_walk_restarts)
+    are asserted by the host test so a run where the race window was
+    never entered is visible instead of looking green.
+    """
+    a.label("h0_pte2" if is_h0 else "h1_pte2")
+    a.addi("sp", "sp", -16)          # called routine: preserve ra
+    a.sd("ra", "sp", 0)
+    if not is_h0:
+        # ---- hart 1: read walks on the shared leaf (stage A), then the
+        #      replacement storm (stage B) ----
+        a.call("alias_enable")
+        a.li("s1", PTE2_GENS)
+        a.label("h1_p2_loop")
+        a.sfence_vma("zero", "zero")   # this hart's walk below must really walk
+        a.li("t3", VA1)
+        a.ld("t4", "t3", 0)            # read walk -> sets A when hart 0 reset it
+        a.addi("s1", "s1", -1)
+        a.bne("s1", "zero", "h1_p2_loop")
+        a.li("t0", P2_STOP1)
+        a.li("t1", 1)
+        a.sw("t1", "t0", 0)            # read-walk loop done (stage B follows)
+        # wait until hart 0 has left its stage-A loop: otherwise its last
+        # check could observe our stage-B leaf and look like a lost update
+        a.li("s1", TIMEOUT)
+        a.label("h1_p2_h0done")
+        a.li("t0", P2_H0_DONE)
+        a.lw("t1", "t0", 0)
+        a.bne("t1", "zero", "h1_p2_storm_go")
+        a.addi("s1", "s1", -1)
+        a.bne("s1", "zero", "h1_p2_h0done")
+        a.li("a0", 21)
+        a.call("fail_at")
+        a.label("h1_p2_storm_go")
+        # stage B: replace the leaf as fast as possible until hart 0 stops
+        a.label("h1_p2_storm")
+        a.li("t0", P2_ITER_DONE)
+        a.lw("t1", "t0", 0)
+        a.bne("t1", "zero", "h1_p2_stop")
+        a.li("t1", PT_L2A)
+        a.li("t2", LEAF_A)
+        a.sd("t2", "t1", 0)
+        a.sfence_vma("zero", "zero")
+        a.li("t2", LEAF_B)
+        a.sd("t2", "t1", 0)
+        a.sfence_vma("zero", "zero")
+        a.j("h1_p2_storm")
+        a.label("h1_p2_stop")
+        a.li("t1", PT_L2A)             # final deterministic leaf: PAGE_B
+        a.li("t2", LEAF_B)
+        a.sd("t2", "t1", 0)
+        a.sfence_vma("zero", "zero")
+        a.li("t0", P2_STOP)
+        a.li("t1", 1)
+        a.sw("t1", "t0", 0)
+        a.label("h1_p2_end")
+        a.call("alias_disable")
+        a.ld("ra", "sp", 0)
+        a.addi("sp", "sp", 16)
+        a.ret()
+        return                  # do not emit hart 0's block for hart 1
+    # ---- hart 0: store walk (stage A), walker under replacement (B) ----
+    a.call("alias_enable")
+    a.li("s9", PTE2_H0_ITERS)      # hard cap (safety net, hart 1 stops first)
+    a.label("h0_p2_loop")
+    a.li("t0", P2_STOP1)           # hart 1 done with its read walks?
+    a.lw("t1", "t0", 0)
+    a.bne("t1", "zero", "h0_p2_leave")
+    a.addi("s9", "s9", -1)         # hard cap (safety net, hart 1 stops first)
+    a.li("t0", 0)
+    a.bne("s9", "t0", "h0_p2_run")
+    a.li("a0", 12)
+    a.call("fail_at")
+    a.j("h0_p2_after")
+    a.label("h0_p2_leave")
+    a.li("t0", P2_H0_DONE)         # release hart 1 into stage B only after
+    a.li("t1", 1)                  # this hart left the stage-A loop
+    a.sw("t1", "t0", 0)
+    a.j("h0_p2_race")
+    a.label("h0_p2_run")
+    # reset the leaf baseline: this hart is the only writer of the leaf
+    # word, so the check below cannot be confused by another hart's reset
+    a.li("t1", PT_L2A)
+    a.li("t2", LEAF_A)
+    a.sd("t2", "t1", 0)            # leaf: PAGE_A, A/D clear
+    a.sfence_vma("zero", "zero")   # force a real walk for the store
+    a.li("t3", VA1)
+    a.sd("zero", "t3", 0)          # store walk: must set A|D
+    a.li("t4", PT_L2A)
+    a.ld("t2", "t4", 0)            # post-read
+    a.li("t0", LEAF_A | 0xC0)      # LEAF_A | A | D: a completed store walk
+    a.beq("t2", "t0", "h0_p2_ok")  # must leave exactly this value
+    a.li("t0", P2_EP)
+    a.lw("t1", "t0", 0)
+    a.addi("t1", "t1", 1)
+    a.sw("t1", "t0", 0)
+    a.li("t0", P2_DBG_PRE)         # keep the exact state of this failure
+    a.sw("t2", "t0", 0)
+    a.li("t0", P2_DBG_POST)
+    a.li("t1", LEAF_A | 0xC0)
+    a.sw("t1", "t0", 0)
+    a.srli("t3", "t2", 10)         # not our page at all -> mapping anomaly
+    a.li("t0", PAGE_A >> 12)
+    a.bne("t3", "t0", "h0_p2_lostmap")
+    a.andi("t3", "t2", 0x40)
+    a.bne("t3", "zero", "h0_p2_lostd")
+    a.li("t0", P2_A)
+    a.li("t1", 1)
+    a.amoadd_w("t6", "t1", "t0")
+    a.li("a0", 14)
+    a.call("fail_at")
+    a.j("h0_p2_loop")
+    a.label("h0_p2_lostd")
+    a.li("t0", P2_D)
+    a.li("t1", 1)
+    a.amoadd_w("t6", "t1", "t0")
+    a.li("a0", 15)
+    a.call("fail_at")
+    a.j("h0_p2_loop")
+    a.label("h0_p2_lostmap")
+    a.li("t0", P2_MAP)
+    a.li("t1", 1)
+    a.amoadd_w("t6", "t1", "t0")
+    a.li("a0", 16)
+    a.call("fail_at")
+    a.j("h0_p2_loop")
+    a.label("h0_p2_ok")
+    a.li("t0", P2_EP)              # completed store walks checked
+    a.lw("t1", "t0", 0)
+    a.addi("t1", "t1", 1)
+    a.sw("t1", "t0", 0)
+    a.j("h0_p2_loop")
+    # ---- stage B: walk while hart 1 replaces the leaf at full speed ----
+    a.li("s9", PTE2_RACE_ITERS)
+    a.label("h0_p2_race")
+    a.sfence_vma("zero", "zero")
+    a.li("t3", VA1)
+    a.ld("t4", "t3", 0)            # read walk (may hit a replacement)
+    a.sfence_vma("zero", "zero")
+    a.sd("zero", "t3", 0)          # store walk (may hit a replacement)
+    a.addi("s9", "s9", -1)
+    a.bne("s9", "zero", "h0_p2_race")
+    a.li("t0", P2_ITER_DONE)
+    a.li("t1", 1)
+    a.sw("t1", "t0", 0)
+    a.li("s1", TIMEOUT)
+    a.label("h0_p2_stopw")
+    a.li("t0", P2_STOP)
+    a.lw("t1", "t0", 0)
+    a.bne("t1", "zero", "h0_p2_finld")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "h0_p2_stopw")
+    a.li("a0", 17)
+    a.call("fail_at")
+    a.j("h0_p2_after")
+    a.label("h0_p2_finld")         # wait until the final leaf is visible
+    a.li("s1", TIMEOUT)
+    a.label("h0_p2_finld2")
+    a.li("t4", PT_L2A)
+    a.ld("t2", "t4", 0)
+    a.srli("t3", "t2", 10)
+    a.li("t5", PAGE_B >> 12)
+    a.beq("t3", "t5", "h0_p2_final")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "h0_p2_finld2")
+    a.li("a0", 18)
+    a.call("fail_at")
+    a.j("h0_p2_after")
+    a.label("h0_p2_final")
+    a.sfence_vma("zero", "zero")
+    a.li("t3", VA1)
+    a.sd("zero", "t3", 0)          # final store walk: sets A|D, keeps PAGE_B
+    a.sfence_vma("zero", "zero")
+    a.li("t4", PT_L2A)
+    a.ld("t2", "t4", 0)
+    a.andi("t3", "t2", 0xC0)
+    a.li("t5", 0xC0)
+    a.beq("t3", "t5", "h0_p2_finmap")
+    a.li("t0", P2_D)
+    a.li("t1", 1)
+    a.amoadd_w("t6", "t1", "t0")
+    a.li("a0", 19)
+    a.call("fail_at")
+    a.label("h0_p2_finmap")
+    a.srli("t3", "t2", 10)
+    a.li("t5", PAGE_B >> 12)
+    a.beq("t3", "t5", "h0_p2_after")
+    a.li("t0", P2_MAP)
+    a.li("t1", 1)
+    a.amoadd_w("t6", "t1", "t0")
+    a.li("a0", 20)
+    a.call("fail_at")
+    a.label("h0_p2_after")
+    a.call("alias_disable")
+    # ---- diagnostics + marker: "P2STATS ep d a map stale" ----
+    a.la("a0", "str_p2stats")
+    a.call("puts")
+    for flag in ("P2_EP", "P2_D", "P2_A", "P2_MAP", "P2_STALE"):
+        a.li("t0", {"P2_EP": P2_EP, "P2_D": P2_D, "P2_A": P2_A,
+                    "P2_MAP": P2_MAP, "P2_STALE": P2_STALE}[flag])
+        a.lw("a0", "t0", 0)
+        a.call("puthex8")
+        a.la("a0", "str_sp")
+        a.call("puts")
+    a.la("a0", "str_nl")
+    a.call("puts")
+    a.la("a0", "str_p2dbg")
+    a.call("puts")
+    for flag in ("P2_DBG_PRE", "P2_DBG_POST", "P2_DBG_RESET", "P2_FAULT"):
+        a.li("t0", {"P2_DBG_PRE": P2_DBG_PRE, "P2_DBG_POST": P2_DBG_POST,
+                    "P2_DBG_RESET": P2_DBG_RESET,
+                    "P2_FAULT": P2_FAULT}[flag])
+        a.lw("a0", "t0", 0)
+        a.call("puthex8")
+        a.la("a0", "str_sp")
+        a.call("puts")
+    a.la("a0", "str_nl")
+    a.call("puts")
+    a.li("t0", P2_D)
+    a.lw("t1", "t0", 0)
+    a.li("t0", P2_A)
+    a.lw("t2", "t0", 0)
+    a.or_("t1", "t1", "t2")
+    a.li("t0", P2_MAP)
+    a.lw("t2", "t0", 0)
+    a.or_("t1", "t1", "t2")
+    a.bne("t1", "zero", "h0_p2_ret")
+    a.la("a0", "str_p2_ok")
+    a.call("puts")
+    a.label("h0_p2_ret")
+    a.ld("ra", "sp", 0)
+    a.addi("sp", "sp", 16)
+    a.ret()
+
+
 def fdt_dump(a):
     """Hex-dump the generated device tree (FDT_ADDR) over HTIF.
 
@@ -821,8 +1114,16 @@ def trap_handler(a):
     # the alias window is active), print hart/cause/epc and power off, so a
     # guest bug can never turn into a silent trap loop.
     a.label("trap_handler")
-    a.csrr("s5", 0x341)          # mepc
+    a.csrr("t2", 0x341)          # mepc (t2: scratch in every phase, unlike s*)
     a.csrr("t0", 0x342)          # mcause
+    # A walk that sees the PTE change under it is allowed to fault (spurious
+    # page fault per the privileged spec: the access is retried). The PTE2
+    # storm deliberately drives that window, so retry load/store page faults
+    # instead of failing; everything else is still fatal.
+    a.li("t1", 13)               # load page fault
+    a.beq("t0", "t1", "trap_retry")
+    a.li("t1", 15)               # store page fault
+    a.beq("t0", "t1", "trap_retry")
     a.srli("t1", "t0", 31)
     a.beq("t1", "zero", "trap_bad")
     a.slli("t0", "t0", 1)
@@ -838,6 +1139,16 @@ def trap_handler(a):
     a.li("t0", IPI_DONE1)
     a.li("t1", 1)
     a.sw("t1", "t0", 0)
+    a.mret()
+    a.label("trap_retry")
+    a.li("t0", P2_FAULT)
+    a.lw("t1", "t0", 0)
+    a.addi("t1", "t1", 1)
+    a.sw("t1", "t0", 0)
+    a.li("t2", P2_FAULT_MAX)
+    a.blt("t1", "t2", "trap_retry_mret")
+    a.j("trap_bad")
+    a.label("trap_retry_mret")
     a.mret()
     a.label("trap_bad")
     a.li("t0", (1 << 17))        # mstatus.MPRV = 0 (and MPP = M)
@@ -855,7 +1166,7 @@ def trap_handler(a):
     a.call("puthex8")
     a.li("a0", 32)
     a.call("putc")
-    a.mv("a0", "s5")             # mepc
+    a.mv("a0", "t2")             # mepc
     a.call("puthex8")
     a.li("a0", 10)
     a.call("putc")
@@ -1209,6 +1520,7 @@ def build_smp_test():
     # ---- audit regressions: MMIO atomics/lock order, PTE A/D vs replacement
     a.call("h0_mmio")
     a.call("h0_pte_ad")
+    a.call("h0_pte2")
 
     a.label("h0_fdt")
     a.call("fdt_dump")
@@ -1365,6 +1677,7 @@ def build_smp_test():
     # ---- audit regressions (hart 1 side)
     a.call("h1_mmio")
     a.call("h1_pte_ad")
+    a.call("h1_pte2")
 
     a.label("h1_final")
     a.fence_rw()
@@ -1415,6 +1728,8 @@ def build_smp_test():
     mmio_atomic_phase(a, False)
     pte_ad_phase(a, True)
     pte_ad_phase(a, False)
+    pte_ad2_phase(a, True)
+    pte_ad2_phase(a, False)
     trap_handler(a)
     common_routines(a)
 
@@ -1445,6 +1760,14 @@ def build_smp_test():
     a.asciz("AMOMMIO-OK\n")
     a.dlabel("str_ad_ok")
     a.asciz("PTEAD-OK\n")
+    a.dlabel("str_p2_ok")
+    a.asciz("PTEAD2-OK\n")
+    a.dlabel("str_p2stats")
+    a.asciz("P2STATS ")
+    a.dlabel("str_p2dbg")
+    a.asciz("P2DBG ")
+    a.dlabel("str_sp")
+    a.asciz(" ")
     a.dlabel("str_up_ok")
     a.asciz("UP-OK\n")
     a.dlabel("str_up_bad")

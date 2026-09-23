@@ -244,6 +244,34 @@ static void test_capability(void)
     CHECK(floe_vm_smp_capable() == 1, "floe_vm_smp_capable() != 1");
 }
 
+/* P1 regression evidence from the payload: P2STATS <ep> <d> <a> <map> <stale>
+ * counts completed read-walk/store-walk epochs, the epochs where a
+ * completed store left the PTE's D bit clear (the lost-update bug), the
+ * epochs where A was missing, mapping regressions, and the epochs skipped
+ * because the leaf was replaced after this hart's walk (host store
+ * ordering, not a failure). */
+static void check_p2stats(const char *out)
+{
+    const char *p = strstr(out, "P2STATS ");
+    unsigned long ep = 0, d = 0, a = 0, map = 0, stale = 0;
+    int n = 0;
+
+    CHECK(p != NULL, "P2STATS line missing (P1 phase did not report)");
+    if (!p)
+        return;
+    n = sscanf(p + 8, "%lx %lx %lx %lx %lx", &ep, &d, &a, &map, &stale);
+    CHECK(n == 5, "P2STATS parse n=%d", n);
+    if (n != 5)
+        return;
+    printf("p2stats: epochs=%lu lost_d=%lu lost_a=%lu mapping_bad=%lu "
+           "stale_epochs=%lu\n", ep, d, a, map, stale);
+    /* a green run with zero epochs would prove nothing */
+    CHECK(ep >= 1000, "P2STATS epochs=%lu (phase did not run)", ep);
+    CHECK(d == 0, "P2STATS lost D bit on %lu completed stores", d);
+    CHECK(a == 0, "P2STATS lost A bit on %lu accesses", a);
+    CHECK(map == 0, "P2STATS leaf mapping regressed %lu times", map);
+}
+
 static void test_smp_functional(void)
 {
     RunResult r;
@@ -265,6 +293,11 @@ static void test_smp_functional(void)
           "AMOMMIO-OK missing (MMIO AMO must be one device critical section)");
     CHECK(strstr(out, "PTEAD-OK\n") != NULL,
           "PTEAD-OK missing (page-walk A/D vs concurrent PTE replacement)");
+    CHECK(strstr(out, "PTEAD2-OK\n") != NULL,
+          "PTEAD2-OK missing (concurrent read walk vs store walk on one leaf: "
+          "a store walk must not lose the D bit when another hart set A "
+          "between its PTE load and its locked read-modify-write)");
+    check_p2stats(out);
     CHECK(strstr(out, "TRAP") == NULL, "guest trap: %.80s", out);
     CHECK(strstr(out, "SMP-OK\n") != NULL, "SMP-OK missing (failcnt path)");
     CHECK(strstr(out, "SMP-FAIL") == NULL, "SMP-FAIL in output");
@@ -285,10 +318,26 @@ static void test_smp_functional(void)
           r.stats.lock_order_violations);
     CHECK(r.stats.pte_ad_updates > 0, "pte_ad_updates=%" PRIu64,
           r.stats.pte_ad_updates);
+    /* P1: the merge path must have been entered for real (an A/D-only
+       change observed by a walk that had loaded the old word), and the
+       replacement storm must have forced at least one walk restart.
+       Both are exit conditions of the same race the payload asserts from
+       the guest side; zero here means the window was never entered and
+       the guest checks ran without exercising the fix. */
+    CHECK(r.stats.pte_ad_merges > 0,
+          "pte_ad_merges=0 (concurrent A/D merge never exercised)");
+    CHECK(r.stats.pte_walk_restarts > 0,
+          "pte_walk_restarts=0 (concurrent mapping replacement never "
+          "detected by a walking hart)");
+    CHECK(r.stats.pte_walk_restarts <= r.stats.pte_ad_conflicts,
+          "pte_walk_restarts=%" PRIu64 " > pte_ad_conflicts=%" PRIu64,
+          r.stats.pte_walk_restarts, r.stats.pte_ad_conflicts);
     printf("smp: lock_order_violations=%" PRIu64 " pte_ad_updates=%" PRIu64
-           " pte_ad_conflicts=%" PRIu64 "\n",
+           " pte_ad_merges=%" PRIu64 " pte_ad_conflicts=%" PRIu64
+           " pte_walk_restarts=%" PRIu64 "\n",
            r.stats.lock_order_violations, r.stats.pte_ad_updates,
-           r.stats.pte_ad_conflicts);
+           r.stats.pte_ad_merges, r.stats.pte_ad_conflicts,
+           r.stats.pte_walk_restarts);
 
     /* per-hart stats: both harts retired instructions */
     CHECK(r.stats.vcpu_count == 2, "stats.vcpu_count=%d", r.stats.vcpu_count);

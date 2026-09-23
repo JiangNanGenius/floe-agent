@@ -1208,15 +1208,21 @@ static void riscv_vm_send_mouse_event(VirtMachine *s1, int dx, int dy, int dz,
 static void riscv_machine_get_smp_diag(VirtMachine *s,
                                        uint64_t *lock_order_violations,
                                        uint64_t *pte_ad_updates,
-                                       uint64_t *pte_ad_conflicts)
+                                       uint64_t *pte_ad_merges,
+                                       uint64_t *pte_ad_conflicts,
+                                       uint64_t *pte_walk_restarts)
 {
     RISCVMachine *m = (RISCVMachine *)s;
     *lock_order_violations =
         __atomic_load_n(&m->smp.lock_order_violations, __ATOMIC_RELAXED);
     *pte_ad_updates =
         __atomic_load_n(&m->smp.pte_ad_updates, __ATOMIC_RELAXED);
+    *pte_ad_merges =
+        __atomic_load_n(&m->smp.pte_ad_merges, __ATOMIC_RELAXED);
     *pte_ad_conflicts =
         __atomic_load_n(&m->smp.pte_ad_conflicts, __ATOMIC_RELAXED);
+    *pte_walk_restarts =
+        __atomic_load_n(&m->smp.pte_walk_restarts, __ATOMIC_RELAXED);
 }
 
 const VirtMachineClass riscv_machine_class = {

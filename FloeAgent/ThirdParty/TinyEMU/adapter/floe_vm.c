@@ -929,7 +929,9 @@ int floe_vm_get_stats(FloeVM *vm, FloeVMStats *out)
            single-hart VM) reports zeros via the wrapper. */
         virt_machine_get_smp_diag(vm->m, &out->lock_order_violations,
                                   &out->pte_ad_updates,
-                                  &out->pte_ad_conflicts);
+                                  &out->pte_ad_merges,
+                                  &out->pte_ad_conflicts,
+                                  &out->pte_walk_restarts);
     }
     pthread_mutex_unlock(&vm->api_lock);
     return 0;
