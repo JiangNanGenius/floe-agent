@@ -61,6 +61,18 @@ note "stage1 start utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 note "kernel cmdline: $(cat /proc/cmdline 2>/dev/null)"
 note "runner: $(ls -l /usr/local/bin/floe-exec 2>/dev/null)"
 
+# This cloud image boot exports only /floe (9P), not a separate floe-env
+# data layer. Keep APT and wheel staging on the guest's ext4 system disk;
+# a writable directory created beneath /floe is still 9P and cannot safely
+# serve as APT's temporary-file store.
+mkdir -p /var/tmp/floe-image-build
+chmod 1777 /var/tmp/floe-image-build
+TMPDIR=/var/tmp/floe-image-build
+TMP=/var/tmp/floe-image-build
+TEMP=/var/tmp/floe-image-build
+export TMPDIR TMP TEMP
+note "build temporary filesystem: $(df -T "$TMPDIR" | tail -1)"
+
 # 1. Clock -------------------------------------------------------------------
 # The runner read floe.epoch= from /proc/cmdline as PID 1 and set the clock
 # before accepting this frame; the host wrote the same value to the share.

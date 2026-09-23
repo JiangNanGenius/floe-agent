@@ -1721,7 +1721,12 @@ static void set_default_environment(void) {
         {FLOE_ENV_CACHE_PIP, 0755},
         {FLOE_ENV_CACHE_NPM, 0755},
     };
-    int writable_ready = access("/floe/env", W_OK) == 0;
+    // /floe itself is a writable 9P build share.  If floe-env was not
+    // exported, guest_bring_up can still create /floe/env underneath it;
+    // that directory is not the environment data layer and must not become
+    // TMPDIR (APT's temporary-file operations are not supported by 9P).
+    int writable_ready = floe_path_is_mount("/floe/env")
+        && access("/floe/env", W_OK) == 0;
     if (writable_ready) {
         for (size_t i = 0; i < sizeof writable_dirs / sizeof writable_dirs[0]; i++) {
             if (mkdir_p(writable_dirs[i].path, writable_dirs[i].mode) != 0
