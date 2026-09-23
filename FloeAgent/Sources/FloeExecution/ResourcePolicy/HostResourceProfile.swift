@@ -30,8 +30,8 @@ public struct HostResourceProfile: Sendable, Equatable {
     public var physicalMemoryBytes: UInt64
     /// `ProcessInfo.activeProcessorCount`: cores available to this process.
     public var activeProcessorCount: Int
-    /// `uname` machine identifier ("iPadAir13,2", "iPhone17,1", …), used
-    /// only for explicit device defaults and diagnostics.
+    /// `uname` machine identifier ("iPad13,2", "iPhone17,1", …), used for
+    /// diagnostics only; no default-policy branch matches model numbers.
     public var hardwareIdentifier: String
 
     public init(
@@ -46,13 +46,44 @@ public struct HostResourceProfile: Sendable, Equatable {
         self.hardwareIdentifier = hardwareIdentifier
     }
 
-    /// Production observation: classifies the current device.
+    /// Production observation: classifies the current device from uname
+    /// only. UIKit is deliberately NOT touched here: `UIDevice.current` is
+    /// main-actor isolated, and this path is nonisolated (and compiles for
+    /// hosts without UIKit). Main-actor callers use `currentObservingUI()`
+    /// so the running UI idiom wins when it is available.
     public static var current: HostResourceProfile {
         HostResourceProfile(
             family: detectFamily(hardwareIdentifier: machineIdentifier),
             physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
             activeProcessorCount: ProcessInfo.processInfo.activeProcessorCount,
             hardwareIdentifier: machineIdentifier
+        )
+    }
+
+    /// The UI idiom as observed on the main actor; nil on non-UI platforms.
+    @MainActor
+    public static func uiIdiomFamily() -> HostProductFamily? {
+        #if canImport(UIKit) && !targetEnvironment(macCatalyst)
+        switch UIDevice.current.userInterfaceIdiom {
+        case .phone: return .phone
+        case .pad: return .pad
+        default: return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    /// App-assembly observation: prefers the main-actor UI idiom, falls back
+    /// to the uname classification. Call from the main actor (app startup).
+    @MainActor
+    public static func currentObservingUI() -> HostResourceProfile {
+        let identifier = machineIdentifier
+        return HostResourceProfile(
+            family: uiIdiomFamily() ?? detectFamily(hardwareIdentifier: identifier),
+            physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
+            activeProcessorCount: ProcessInfo.processInfo.activeProcessorCount,
+            hardwareIdentifier: identifier
         )
     }
 
@@ -72,29 +103,24 @@ public struct HostResourceProfile: Sendable, Equatable {
         }
     }
 
-    /// Classifies the family from the UI idiom (when UIKit exists) with a
-    /// uname fallback so mac-style hosts do not depend on UIKit availability.
+    /// Classifies the family from the uname identifier, with the simulator's
+    /// own model variable as the only hint. No UIKit access: this stays
+    /// nonisolated so macOS/CLI hosts and tests can call it directly.
     static func detectFamily(hardwareIdentifier: String) -> HostProductFamily {
-        #if canImport(UIKit) && !targetEnvironment(macCatalyst)
-        switch UIDevice.current.userInterfaceIdiom {
-        case .phone: return .phone
-        case .pad: return .pad
-        case .tv, .carPlay, .vision, .mac, .unspecified: break
-        @unknown default: break
-        }
-        #endif
-        if hardwareIdentifier.hasPrefix("iPhone") { return .phone }
-        if hardwareIdentifier.hasPrefix("iPad") { return .pad }
-        if hardwareIdentifier.hasPrefix("Mac") || hardwareIdentifier == "arm64" { return .mac }
+        let identifier = hardwareIdentifier.isEmpty
+            ? (ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? "")
+            : hardwareIdentifier
+        if identifier.hasPrefix("iPhone") || identifier.hasPrefix("iPod") { return .phone }
+        if identifier.hasPrefix("iPad") { return .pad }
+        if identifier.hasPrefix("Mac") || identifier == "arm64" || identifier == "x86_64" { return .mac }
         #if targetEnvironment(simulator)
-        // Simulator uname reports the host arch; infer from the idiom above
-        // when possible, else fall back to environment hints.
-        if let simulated = ProcessInfo.processInfo.environment["SIMDUCT_PRODUCT_TYPE"] {
-            if simulated.contains("iPad") { return .pad }
-            return .phone
-        }
-        #endif
+        // Simulator uname reports the host architecture; the idiom comes
+        // through `uiIdiomFamily()` on the main actor, so nothing is guessed
+        // here beyond the simulator model identifier above.
         return .unknown
+        #else
+        return .unknown
+        #endif
     }
 
     /// Physical memory bucket used by the quota table. Bucket edges sit at

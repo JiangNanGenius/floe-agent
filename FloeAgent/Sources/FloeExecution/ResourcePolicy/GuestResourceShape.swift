@@ -65,6 +65,13 @@ public enum GuestMemoryMiB: Int, Sendable, CaseIterable, Codable, Comparable {
     public func lowered() -> GuestMemoryMiB? {
         GuestMemoryMiB.largestAtOrBelow(rawValue - 1)
     }
+
+    /// The next LARGER declared ladder step, or nil at the 2 GiB ceiling.
+    /// Deliberately steps by declaration order, never by rawValue + 256: the
+    /// gaps above 1 GiB are 512 MiB, so arithmetic would miss 1536/2048.
+    public func raised() -> GuestMemoryMiB? {
+        GuestMemoryMiB.allCases.sorted().first { $0.rawValue > rawValue }
+    }
 }
 
 /// Where a resource request came from (honest accounting, never authority:

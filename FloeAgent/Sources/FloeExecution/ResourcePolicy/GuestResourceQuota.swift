@@ -18,9 +18,9 @@
 //           ≥16GB → 4 vCPU / 4096 MiB / 4 VM
 //
 // The table is driven only by the ACTUAL family / physical RAM / available
-// cores — there is no speculative model-identifier matching. The user's
-// M-class iPad Air with the 12 GB configuration therefore reaches the
-// 4 vCPU / 3 GiB / 4 VM policy through the generic 12 GB iPad row.
+// cores — there is no model-identifier matching anywhere. A 12 GB iPad
+// (observed as the 12 GB bucket) therefore reaches the 4 vCPU / 3 GiB / 4 VM
+// policy through the generic 12 GB iPad row.
 // CPU totals are additionally clamped to the cores the process can use.
 
 import Foundation

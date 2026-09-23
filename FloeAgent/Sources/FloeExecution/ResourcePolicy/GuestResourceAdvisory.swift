@@ -145,10 +145,11 @@ public actor GuestResourceAdvisory {
         var recommendation = Self.plan(from: signals)
 
         // History adjustment: a same-or-smaller shape that previously saw
-        // memory pressure steps RAM up one ladder step (once).
+        // memory pressure steps RAM up exactly one declared ladder step
+        // (1024 -> 1536 -> 2048), never by arithmetic that could skip a step.
         if let outcomes = history[signals.workloadKey],
            outcomes.contains(where: { $0.memoryPressure && $0.shape.memory <= recommendation.shape.memory }),
-           let raised = GuestMemoryMiB(rawValue: recommendation.shape.memory.rawValue + 256) {
+           let raised = recommendation.shape.memory.raised() {
             recommendation = GuestResourceRecommendation(
                 shape: GuestResourceRequest(vcpus: recommendation.shape.vcpus, memory: raised, origin: .recommendation),
                 memoryReason: recommendation.memoryReason + "; earlier runs hit memory pressure",

@@ -15,7 +15,9 @@ import XCTest
 @testable import FloeExecution
 
 final class RuntimeVMPoolTests: XCTestCase {
-    private let single512 = GuestResourceRequest(vcpus: .one, memory: .m512)
+    /// Static so `Task {}` closures capture the value, never the
+    /// non-Sendable XCTestCase instance (Swift 6 region isolation).
+    private static let single512 = GuestResourceRequest(vcpus: .one, memory: .m512)
 
     private func makePool(
         quota vcpus: Int = 4,
@@ -41,7 +43,7 @@ final class RuntimeVMPoolTests: XCTestCase {
         for index in 0..<4 {
             let lease = try await pool.acquire(
                 environmentID: "env-\(index)", runtimeID: "rt-\(index)",
-                request: single512, imageSMPCapable: false
+                request: Self.single512, imageSMPCapable: false
             )
             XCTAssertEqual(lease.shape.vcpus, .one)
             XCTAssertEqual(lease.shape.memory, .m512)
@@ -55,7 +57,7 @@ final class RuntimeVMPoolTests: XCTestCase {
         let task = Task {
             try await pool.acquire(
                 environmentID: "env-5", runtimeID: "rt-5",
-                request: single512, imageSMPCapable: false
+                request: Self.single512, imageSMPCapable: false
             )
         }
         try await Task.sleep(for: .milliseconds(30))
@@ -121,7 +123,7 @@ final class RuntimeVMPoolTests: XCTestCase {
         let task = Task {
             try await pool.acquire(
                 environmentID: "single-2", runtimeID: "rt-single-2",
-                request: single512, imageSMPCapable: false
+                request: Self.single512, imageSMPCapable: false
             )
         }
         try await Task.sleep(for: .milliseconds(30))
@@ -302,13 +304,13 @@ final class RuntimeVMPoolTests: XCTestCase {
         let pool = makePool()
         _ = try await pool.acquire(
             environmentID: "env-0", runtimeID: "rt-0",
-            request: single512, imageSMPCapable: false
+            request: Self.single512, imageSMPCapable: false
         )
         await pool.reportPressure(.critical)
         let task = Task {
             try await pool.acquire(
                 environmentID: "env-1", runtimeID: "rt-1",
-                request: single512, imageSMPCapable: false
+                request: Self.single512, imageSMPCapable: false
             )
         }
         try await Task.sleep(for: .milliseconds(30))
@@ -334,7 +336,7 @@ final class RuntimeVMPoolTests: XCTestCase {
         let task = Task {
             try await pool.acquire(
                 environmentID: "env-0", runtimeID: "rt-0",
-                request: single512, imageSMPCapable: false
+                request: Self.single512, imageSMPCapable: false
             )
         }
         try await Task.sleep(for: .milliseconds(30))
@@ -350,7 +352,7 @@ final class RuntimeVMPoolTests: XCTestCase {
         let roomyPool = makePool(seams: roomySeams)
         let lease = try await roomyPool.acquire(
             environmentID: "env-0", runtimeID: "rt-0",
-            request: single512, imageSMPCapable: false
+            request: Self.single512, imageSMPCapable: false
         )
         XCTAssertEqual(lease.shape.memory, .m512)
     }
@@ -373,7 +375,7 @@ final class RuntimeVMPoolTests: XCTestCase {
         let task = Task {
             try await pool.acquire(
                 environmentID: "env-0", runtimeID: "rt-0",
-                request: single512, imageSMPCapable: false
+                request: Self.single512, imageSMPCapable: false
             )
         }
         try await Task.sleep(for: .milliseconds(30))
@@ -482,7 +484,7 @@ final class RuntimeVMPoolTests: XCTestCase {
                 hardwareIdentifier: ""
             )
         }
-        // iPad rows, including the user's M-class Air 12 GB.
+        // iPad rows (fixtures; policy never matches model identifiers).
         XCTAssertEqual(HostResourceProfile.memoryBucket(physicalMemoryBytes: UInt64(8 * gib)), .around8GB)
         XCTAssertEqual(
             GuestResourceQuota.defaultQuota(for: profile(.pad, 8, 10)),
@@ -538,36 +540,110 @@ final class RuntimeVMPoolTests: XCTestCase {
         // RAM ceiling stays 3072 MiB.
         XCTAssertEqual(
             GuestResourceQuota.performanceQuota(
-                for: profile(.pad, 12, 10, "iPadAir13,2"),
-                evidence: evidence("iPadAir13,2")
+                for: profile(.pad, 12, 10, "iPadFixtureA,1"),
+                evidence: evidence("iPadFixtureA,1")
             ),
             GuestResourceQuota(totalVCPUs: 6, totalMemoryMiB: 3072, maxVMs: 4, source: .performanceTier)
         )
         XCTAssertEqual(
             GuestResourceQuota.performanceQuota(
-                for: profile(.pad, 12, 4, "iPadAir13,2"),
-                evidence: evidence("iPadAir13,2")
+                for: profile(.pad, 12, 4, "iPadFixtureA,1"),
+                evidence: evidence("iPadFixtureA,1")
             )?.totalVCPUs, 4
         )
         // ≥16 GB iPad may use 4096 MiB, still bound to matching hardware.
         XCTAssertEqual(
             GuestResourceQuota.performanceQuota(
-                for: profile(.pad, 16, 10, "iPad15,1"),
-                evidence: evidence("iPad15,1")
+                for: profile(.pad, 16, 10, "iPadFixtureB,1"),
+                evidence: evidence("iPadFixtureB,1")
             )?.totalMemoryMiB, 4096
         )
         // Wrong hardware: fail closed even with a real qualification record.
         XCTAssertNil(GuestResourceQuota.performanceQuota(
-            for: profile(.pad, 12, 10, "iPadAir13,2"),
-            evidence: evidence("iPad14,1")
+            for: profile(.pad, 12, 10, "iPadFixtureA,1"),
+            evidence: evidence("iPadFixtureC,1")
         ))
         // 8 GB iPad and phones: fail closed regardless of evidence.
         XCTAssertNil(GuestResourceQuota.performanceQuota(
-            for: profile(.pad, 8, 10, "iPad14,1"), evidence: evidence("iPad14,1")
+            for: profile(.pad, 8, 10, "iPadFixtureC,1"), evidence: evidence("iPadFixtureC,1")
         ))
         XCTAssertNil(GuestResourceQuota.performanceQuota(
-            for: profile(.phone, 12, 6, "iPhone18,1"), evidence: evidence("iPhone18,1")
+            for: profile(.phone, 12, 6, "iPhoneFixtureA,1"), evidence: evidence("iPhoneFixtureA,1")
         ))
+    }
+
+    // MARK: - memory ladder + advisory history
+
+    /// The ladder steps are declarative: 1024 -> 1536 -> 2048, never
+    /// rawValue + 256 (which would produce non-existent 1280/1792).
+    func testMemoryLadderStepsByDeclaration() {
+        XCTAssertEqual(GuestMemoryMiB.m256.raised(), .m512)
+        XCTAssertEqual(GuestMemoryMiB.m768.raised(), .m1024)
+        XCTAssertEqual(GuestMemoryMiB.m1024.raised(), .m1536)
+        XCTAssertEqual(GuestMemoryMiB.m1536.raised(), .m2048)
+        XCTAssertNil(GuestMemoryMiB.m2048.raised())
+        XCTAssertEqual(GuestMemoryMiB.m1024.lowered(), .m768)
+        XCTAssertEqual(GuestMemoryMiB.m2048.lowered(), .m1536)
+        XCTAssertEqual(GuestMemoryMiB.largestAtOrBelow(1280), .m1024)
+        XCTAssertEqual(GuestMemoryMiB.smallestHolding(1280), .m1536)
+    }
+
+    /// History pressure raises to the NEXT declared tier, including across
+    /// the 1 GiB boundary, and never past 2048.
+    func testAdvisoryHistoryPressureRaisesToNextTier() async {
+        let advisory = GuestResourceAdvisory()
+        // A declared JVM command plans 1024 MiB.
+        let jvmSignals = WorkloadResourceSignals(
+            workloadKey: "w-jvm", declaredCommands: ["java"]
+        )
+        let planned = await advisory.recommend(jvmSignals)
+        XCTAssertEqual(planned.shape.memory, .m1024)
+
+        await advisory.recordOutcome(
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m256), succeeded: false, memoryPressure: true),
+            for: "w-jvm"
+        )
+        let raised = await advisory.recommend(jvmSignals)
+        XCTAssertEqual(raised.shape.memory, .m1536)
+        XCTAssertTrue(raised.evidenceSignals.contains("history:memory-pressure"))
+
+        // A second pressure record raises 1536 -> 2048 and stops there.
+        await advisory.recordOutcome(
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m256), succeeded: false, memoryPressure: true),
+            for: "w-jvm"
+        )
+        let ceiling = await advisory.recommend(jvmSignals)
+        XCTAssertEqual(ceiling.shape.memory, .m2048)
+
+        // A heavy-ML plan already at 1536 also advances to 2048.
+        let mlSignals = WorkloadResourceSignals(
+            workloadKey: "w-ml", declaredImports: ["torch"]
+        )
+        let mlPlan = await advisory.recommend(mlSignals)
+        XCTAssertEqual(mlPlan.shape.memory, .m1536)
+        await advisory.recordOutcome(
+            WorkloadResourceOutcome(shape: .init(vcpus: .one, memory: .m256), succeeded: false, memoryPressure: true),
+            for: "w-ml"
+        )
+        let mlRaised = await advisory.recommend(mlSignals)
+        XCTAssertEqual(mlRaised.shape.memory, .m2048)
+    }
+
+    /// User override beats both the plan and history.
+    func testAdvisoryUserOverrideWins() async {
+        let advisory = GuestResourceAdvisory()
+        let signals = WorkloadResourceSignals(workloadKey: "w-pin", declaredCommands: ["java"])
+        await advisory.setUserOverride(
+            GuestResourceRequest(vcpus: .two, memory: .m512, origin: .userSpecified),
+            for: "w-pin"
+        )
+        let recommendation = await advisory.recommend(signals)
+        XCTAssertTrue(recommendation.userOverride)
+        XCTAssertEqual(recommendation.shape.vcpus, .two)
+        XCTAssertEqual(recommendation.shape.memory, .m512)
+        await advisory.setUserOverride(nil, for: "w-pin")
+        let unpinned = await advisory.recommend(signals)
+        XCTAssertFalse(unpinned.userOverride)
     }
 
     // MARK: - helpers
