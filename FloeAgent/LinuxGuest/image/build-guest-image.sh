@@ -432,6 +432,10 @@ assert_markers() { # assert_markers <transcript> <token> <markers...>
 }
 
 boot_guest stage1 guest-stage1-install.sh bootA "$boot_max_s" || {
+    # A slow package install can time out before the runner sends its END
+    # frame. Preserve the guest's APT log on this path too; otherwise the
+    # transcript stops at the last progress marker and hides the cause.
+    cp "$share_dir/stage1-install.log" "$evidence_dir/" 2>/dev/null || true
     echo "boot A did not reach its marker (rc above); keeping transcript" >&2
     exit 1
 }
@@ -449,6 +453,7 @@ e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-after-stage1.log" 2>&1 || true
 step "8/9 boot B — verify clock, HTTPS APT, HTTPS and the 13 commands"
 # ---------------------------------------------------------------------------
 boot_guest stage2 guest-stage2-verify.sh bootB "$boot_max_s" || {
+    cp "$share_dir/stage2-verify.log" "$evidence_dir/" 2>/dev/null || true
     echo "boot B did not reach its marker (rc above); keeping transcript" >&2
     exit 1
 }
