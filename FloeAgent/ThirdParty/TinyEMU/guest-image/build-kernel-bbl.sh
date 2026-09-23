@@ -320,19 +320,22 @@ if [ "$rebuild" = 1 ]; then
             # append, then let olddefconfig resolve dependencies/ordering
             cat "$frag" >> .config
         fi
-        # HOSTCC gets -fcommon: the pinned 4.15 tree's dtc lexer/parser both
-        # declare yylloc as a tentative definition, which GCC 10+ (default
-        # -fno-common) rejects as a multiple definition (retained failure).
-        HOSTCC="${HOSTCC:-gcc} -fcommon" \
-            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig
+        # HOSTCC and KCFLAGS get -fcommon: the pinned 4.15 tree has tentative
+        # definitions (dtc's yylloc in the host tools, and similar patterns in
+        # target code) that GCC 10+ rejects because it defaults to -fno-common.
+        # Both must be make command-line variables: the kernel's Makefile
+        # assigns HOSTCC itself, so an environment value would be discarded
+        # (that mistake is retained in the eighth cloud build log).
+        make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
+            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon olddefconfig
         # never hand out a boot pair that claims SMP but was configured
         # single-hart (the whole point of --smp)
         if [ "$smp" = 1 ]; then
             grep -q '^CONFIG_SMP=y$' .config || die "--smp build did not produce CONFIG_SMP=y"
             grep -q '^CONFIG_NR_CPUS=2$' .config || die "--smp build did not produce CONFIG_NR_CPUS=2"
         fi
-        HOSTCC="${HOSTCC:-gcc} -fcommon" \
-            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$jobs"
+        make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
+            HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS=-fcommon -j"$jobs"
     ) >"$out/rebuild-riscv-linux.log" 2>&1 || {
         printf 'build-kernel-bbl: kernel rebuild failed; last lines:\n' >&2
         tail -c 4000 "$out/rebuild-riscv-linux.log" >&2 || true
