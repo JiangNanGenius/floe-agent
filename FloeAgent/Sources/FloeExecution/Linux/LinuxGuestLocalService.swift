@@ -551,9 +551,20 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
     private static func loadPendingTerminalEvents(from url: URL?) -> [LinuxGuestLocalServiceLifecycleEvent] {
         guard let url, let data = try? Data(contentsOf: url) else { return [] }
         guard let records = try? JSONDecoder().decode([PersistedTerminalEvent].self, from: data) else {
+            // A present-but-undecodable store is never read as "nothing was
+            // pending" silently: it is reported, and the records are skipped
+            // rather than interpreted as a different shape.
+            FloeLogger(category: .tools).error(
+                "linuxServiceTerminalStoreUnreadable path=\(url.lastPathComponent)"
+            )
             return []
         }
         let events = records.compactMap(\.event)
+        if events.count != records.count {
+            FloeLogger(category: .tools).error(
+                "linuxServiceTerminalStoreRecordsSkipped count=\(records.count - events.count)"
+            )
+        }
         let bound = maximumPendingTerminalEvents
         return events.count > bound ? Array(events.suffix(bound)) : events
     }

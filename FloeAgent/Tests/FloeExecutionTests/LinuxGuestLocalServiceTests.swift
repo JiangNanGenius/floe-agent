@@ -1210,6 +1210,39 @@ final class LinuxGuestLocalServiceTests: XCTestCase {
         consumer.cancel()
     }
 
+    /// A present-but-unreadable store must never be interpreted as a different
+    /// pending set, and it must not crash the supervisor: the store is
+    /// recovered as empty and the failure is logged.
+    func testUnreadableTerminalStoreIsRecoveredAsEmptyWithoutCrashing() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let storeRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-terminal-store-broken-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: storeRoot, withIntermediateDirectories: true)
+        let storeFile = storeRoot.appendingPathComponent("pending-terminal-events.json")
+        try Data("{not json".utf8).write(to: storeFile)
+
+        let root = try serviceFixtureRoot()
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: environmentID, root: root))
+        host.useTerminalStoreDirectory(storeRoot)
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        let pending = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pending, 0, "an unreadable store is not a fabricated pending set")
+
+        // The supervisor still works and rewrites a valid store.
+        let handle = try await supervisor.startLocalService(
+            environmentID: environmentID,
+            request: serviceRequest(root: root, port: 8700),
+            cancellation: nil
+        )
+        host.markDead()
+        _ = await supervisor.localServiceSnapshot(handle)
+        let afterEnd = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(afterEnd, 1)
+        let data = try Data(contentsOf: storeFile)
+        let records = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        XCTAssertEqual(records?.count, 1)
+    }
+
     // MARK: start crossing an environment stop
 
     /// The mandatory race: a start parked before publishing must be cancelled
