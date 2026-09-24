@@ -94,18 +94,18 @@ vendored files from pristine source).
 - **Not** built or executed locally (disk budget); the cloud App build owns
   compilation, and device/TestFlight acceptance remains with the user.
 
-## Remaining App wiring (main thread)
+## App wiring status
 
-1. In `FloeAgent/Package.swift`, replace the remote `mlx-swift-lm` dependency
-   with `.package(path: "ThirdParty/MLXSwiftLM")` (keep the product names
-   `MLXLLM` / `MLXVLM` / `MLXLMCommon` unchanged).
-2. Re-resolve `FloeAgent/Package.resolved` and run the cloud App build; then
-   qualify Qwen3.5/Qwen3-Next prefill with T > 1 prompts and single-token
-   decode.
-3. Expected: prefill now runs the ops recurrence (slower, crash-free if the
-   hypothesis holds); decode keeps the fused kernel. If the crash persists on
-   prefill, the fused path is exonerated and the next suspect is the conv /
-   mask path in `Qwen35.swift`, not `GatedDelta.swift`.
+- Landed (main thread; observed read-only): `FloeAgent/Package.swift` now
+  depends on `.package(name: "mlx-swift-lm", path: "ThirdParty/MLXSwiftLM")`
+  and its target products reference `package: "mlx-swift-lm"`. The remote
+  `mlx-swift-lm` pin is no longer used.
+- Remaining: resolve/build in cloud CI, then qualify Qwen3.5/Qwen3-Next
+  prefill with T > 1 prompts and single-token decode on device/TestFlight.
+- Expected: prefill runs the ops recurrence (slower, crash-free if the
+  hypothesis holds); decode keeps the fused kernel. If a prefill crash
+  persists, the fused GDN path is exonerated and the next suspect is the
+  conv / mask path in `Qwen35.swift`, not `GatedDelta.swift`.
 
 ## 中文说明
 
@@ -121,4 +121,5 @@ Floe 补丁 `patches/0001-gdn-prefill-t1-ops-route.patch` 只改
 
 重新生成方式见上节命令；只读审计脚本为 `floe_vendor_check.sh`。
 本地仅做了 `swiftc -parse` 语法检查和补丁回放校验，编译与真机验收由主线程
-接线后的云端 App 构建与用户设备验证负责。
+接线后的云端 App 构建与用户设备验证负责。主线程已在 `FloeAgent/Package.swift`
+中以 `.package(name: "mlx-swift-lm", path: "ThirdParty/MLXSwiftLM")` 完成接线。
