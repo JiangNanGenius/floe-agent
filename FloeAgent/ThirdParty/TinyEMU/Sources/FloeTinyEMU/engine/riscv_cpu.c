@@ -1004,8 +1004,18 @@ static uint8_t *riscv_smp_ram_host_ptr(RISCVCPUState *s, target_ulong addr,
             return (uint8_t *)(s->tlb_read[tlb_idx].mem_addend +
                                (uintptr_t)addr);
     }
-    if (get_phys_addr(s, &paddr, addr, is_write ? ACCESS_WRITE : ACCESS_READ))
+    if (get_phys_addr(s, &paddr, addr, is_write ? ACCESS_WRITE : ACCESS_READ)) {
+        /* FLOE-SMP: a failed walk is a genuine guest MMU fault (COW
+           write-protect, invalid PTE, permission), so record it exactly
+           like target_read_slow/target_write_slow do. Without this,
+           riscv_smp_sc saw only the "not RAM" NULL and returned a silent
+           SC failure (status=1, no exception); the guest's LR/SC retry
+           then livelocked at the first fork/exec with two harts. */
+        s->pending_tval = addr;
+        s->pending_exception = is_write ? CAUSE_STORE_PAGE_FAULT
+                                        : CAUSE_LOAD_PAGE_FAULT;
         return NULL;
+    }
     pr = get_phys_mem_range(s->mem_map, paddr);
     if (!pr || !pr->is_ram)
         return NULL;

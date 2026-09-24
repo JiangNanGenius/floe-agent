@@ -1,6 +1,6 @@
 diff -ruN a/iomem.h b/iomem.h
---- a/iomem.h	2026-09-23 17:12:48
-+++ b/iomem.h	2026-09-23 17:12:49
+--- a/iomem.h	2026-09-24 23:07:47
++++ b/iomem.h	2026-09-24 23:07:48
 @@ -77,6 +77,13 @@
      void *opaque;
      void (*flush_tlb_write_range)(void *opaque, uint8_t *ram_addr,
@@ -16,8 +16,8 @@ diff -ruN a/iomem.h b/iomem.h
  
  
 diff -ruN a/machine.h b/machine.h
---- a/machine.h	2026-09-23 17:12:48
-+++ b/machine.h	2026-09-23 17:12:49
+--- a/machine.h	2026-09-24 23:07:47
++++ b/machine.h	2026-09-24 23:07:48
 @@ -23,6 +23,11 @@
   */
  #include "json.h"
@@ -119,8 +119,8 @@ diff -ruN a/machine.h b/machine.h
  static inline BOOL vm_mouse_is_absolute(VirtMachine *s)
  {
 diff -ruN a/riscv_cpu.c b/riscv_cpu.c
---- a/riscv_cpu.c	2026-09-23 17:12:48
-+++ b/riscv_cpu.c	2026-09-23 17:12:49
+--- a/riscv_cpu.c	2026-09-24 23:07:47
++++ b/riscv_cpu.c	2026-09-24 23:07:48
 @@ -28,6 +28,7 @@
  #include <inttypes.h>
  #include <assert.h>
@@ -537,7 +537,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
      return 0;
  }
  
-@@ -595,6 +757,552 @@
+@@ -595,6 +757,562 @@
      }
  }
  
@@ -788,8 +788,18 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
 +            return (uint8_t *)(s->tlb_read[tlb_idx].mem_addend +
 +                               (uintptr_t)addr);
 +    }
-+    if (get_phys_addr(s, &paddr, addr, is_write ? ACCESS_WRITE : ACCESS_READ))
++    if (get_phys_addr(s, &paddr, addr, is_write ? ACCESS_WRITE : ACCESS_READ)) {
++        /* FLOE-SMP: a failed walk is a genuine guest MMU fault (COW
++           write-protect, invalid PTE, permission), so record it exactly
++           like target_read_slow/target_write_slow do. Without this,
++           riscv_smp_sc saw only the "not RAM" NULL and returned a silent
++           SC failure (status=1, no exception); the guest's LR/SC retry
++           then livelocked at the first fork/exec with two harts. */
++        s->pending_tval = addr;
++        s->pending_exception = is_write ? CAUSE_STORE_PAGE_FAULT
++                                        : CAUSE_LOAD_PAGE_FAULT;
 +        return NULL;
++    }
 +    pr = get_phys_mem_range(s->mem_map, paddr);
 +    if (!pr || !pr->is_ram)
 +        return NULL;
@@ -1090,7 +1100,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  static void tlb_flush_all(RISCVCPUState *s)
  {
      tlb_init(s);
-@@ -786,7 +1494,7 @@
+@@ -786,7 +1504,7 @@
          val = s->stval;
          break;
      case 0x144: /* sip */
@@ -1099,7 +1109,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      case 0x180:
          val = s->satp;
-@@ -826,7 +1534,7 @@
+@@ -826,7 +1544,7 @@
          val = s->mtval;
          break;
      case 0x344:
@@ -1108,7 +1118,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      case 0xb00: /* mcycle */
      case 0xb02: /* minstret */
-@@ -930,7 +1638,7 @@
+@@ -930,7 +1648,7 @@
          break;
      case 0x144: /* sip */
          mask = s->mideleg;
@@ -1117,7 +1127,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      case 0x180:
          /* no ASID implemented */
-@@ -1007,7 +1715,7 @@
+@@ -1007,7 +1725,7 @@
          break;
      case 0x344:
          mask = MIP_SSIP | MIP_STIP;
@@ -1126,7 +1136,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
          break;
      default:
  #ifdef DUMP_INVALID_CSR
-@@ -1160,7 +1868,7 @@
+@@ -1160,7 +1878,7 @@
  {
      uint32_t pending_ints, enabled_ints;
  
@@ -1135,7 +1145,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
      if (pending_ints == 0)
          return 0;
  
-@@ -1234,7 +1942,7 @@
+@@ -1234,7 +1952,7 @@
      uint64_t timeout;
  
      timeout = s->insn_counter + n_cycles;
@@ -1144,7 +1154,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
             (int)(timeout - s->insn_counter) > 0) {
          n_cycles = timeout - s->insn_counter;
          switch(s->cur_xlen) {
-@@ -1260,30 +1968,36 @@
+@@ -1260,30 +1978,36 @@
  /* Note: the value is not accurate when called in riscv_cpu_interp() */
  static uint64_t glue(riscv_cpu_get_cycles, MAX_XLEN)(RISCVCPUState *s)
  {
@@ -1189,7 +1199,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  }
  
  static RISCVCPUState *glue(riscv_cpu_init, MAX_XLEN)(PhysMemoryMap *mem_map)
-@@ -1332,6 +2046,23 @@
+@@ -1332,6 +2056,23 @@
      return s->misa;
  }
  
@@ -1213,7 +1223,7 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  const RISCVCPUClass glue(riscv_cpu_class, MAX_XLEN) = {
      glue(riscv_cpu_init, MAX_XLEN),
      glue(riscv_cpu_end, MAX_XLEN),
-@@ -1343,6 +2074,8 @@
+@@ -1343,6 +2084,8 @@
      glue(riscv_cpu_get_power_down, MAX_XLEN),
      glue(riscv_cpu_get_misa, MAX_XLEN),
      glue(riscv_cpu_flush_tlb_write_range_ram, MAX_XLEN),
@@ -1223,8 +1233,8 @@ diff -ruN a/riscv_cpu.c b/riscv_cpu.c
  
  #if CONFIG_RISCV_MAX_XLEN == MAX_XLEN
 diff -ruN a/riscv_cpu.h b/riscv_cpu.h
---- a/riscv_cpu.h	2026-09-23 17:12:49
-+++ b/riscv_cpu.h	2026-09-23 17:12:49
+--- a/riscv_cpu.h	2026-09-24 23:07:48
++++ b/riscv_cpu.h	2026-09-24 23:07:48
 @@ -43,6 +43,47 @@
  
  typedef struct RISCVCPUState RISCVCPUState;
@@ -1301,8 +1311,8 @@ diff -ruN a/riscv_cpu.h b/riscv_cpu.h
  
  #endif /* RISCV_CPU_H */
 diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
---- a/riscv_cpu_priv.h	2026-09-23 17:12:48
-+++ b/riscv_cpu_priv.h	2026-09-23 17:12:49
+--- a/riscv_cpu_priv.h	2026-09-24 23:07:47
++++ b/riscv_cpu_priv.h	2026-09-24 23:07:48
 @@ -231,8 +231,28 @@
  #endif
      uint32_t scounteren;
@@ -1436,8 +1446,8 @@ diff -ruN a/riscv_cpu_priv.h b/riscv_cpu_priv.h
      } else {\
          return target_write_slow(s, addr, val, size_log2);\
 diff -ruN a/riscv_cpu_template.h b/riscv_cpu_template.h
---- a/riscv_cpu_template.h	2026-09-23 17:12:49
-+++ b/riscv_cpu_template.h	2026-09-23 17:12:49
+--- a/riscv_cpu_template.h	2026-09-24 23:07:48
++++ b/riscv_cpu_template.h	2026-09-24 23:07:48
 @@ -219,7 +219,7 @@
      s->n_cycles = n_cycles1;
  
@@ -1603,8 +1613,8 @@ diff -ruN a/riscv_cpu_template.h b/riscv_cpu_template.h
      printf("done interp %lx int=%x mstatus=%lx prv=%d\n",
             (uint64_t)s->insn_counter, s->mip & s->mie, (uint64_t)s->mstatus,
 diff -ruN a/riscv_machine.c b/riscv_machine.c
---- a/riscv_machine.c	2026-09-23 17:12:49
-+++ b/riscv_machine.c	2026-09-23 17:12:49
+--- a/riscv_machine.c	2026-09-24 23:07:48
++++ b/riscv_machine.c	2026-09-24 23:07:48
 @@ -31,6 +31,7 @@
  #include <errno.h>
  #include <unistd.h>
@@ -2227,8 +2237,8 @@ diff -ruN a/riscv_machine.c b/riscv_machine.c
 +    riscv_machine_get_smp_diag,
  };
 diff -ruN a/virtio.c b/virtio.c
---- a/virtio.c	2026-09-23 17:12:49
-+++ b/virtio.c	2026-09-23 17:12:49
+--- a/virtio.c	2026-09-24 23:07:48
++++ b/virtio.c	2026-09-24 23:07:48
 @@ -303,11 +303,14 @@
      ptr = s->get_ram_ptr(s, addr, FALSE);
      if (!ptr)
