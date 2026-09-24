@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       dependency_profile:
-        description: Dependency pin profile (accepted current pins or the frozen historical baseline)
+        description: Dependency pin profile (accepted current profile with the in-repo mlx-swift-lm, or the frozen historical remote baseline)
         type: choice
         options:
           - current
@@ -12,7 +12,7 @@ on:
   workflow_call:
     inputs:
       dependency_profile:
-        description: Dependency pin profile (accepted current pins or the frozen historical baseline)
+        description: Dependency pin profile (accepted current profile with the in-repo mlx-swift-lm, or the frozen historical remote baseline)
         type: string
         default: current
 permissions:
@@ -45,6 +45,20 @@ jobs:
           cp project.yml "$EVIDENCE/FloeAgent-project.yml.original"
           cp Qualification/LocalInference/Package.resolved \
             "$EVIDENCE/LocalInference-Package.resolved.original.json"
+      - name: Verify the committed current MLX declarations
+        run: |
+          set -o pipefail
+          EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
+          # Read-only. The committed manifest must be the accepted current
+          # profile (remote mlx-swift revision + the reviewed in-repo
+          # mlx-swift-lm package) before the historical step may rewrite a
+          # working copy. The vendored manifest name, recorded upstream
+          # revision and patch file are audited here too.
+          python3 scripts/qualify_mlx_candidate.py check --profile current \
+            --package-swift Package.swift | tee "$EVIDENCE/current-declarations.json"
+          # The guard's own tests: declaration audit, historical patch scope and
+          # lock comparison (read-only against the checkout).
+          python3 -m unittest discover -s scripts/tests -p test_qualify_mlx_candidate.py
       - name: Prepare Metal compiler
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Apply frozen historical-baseline pins
@@ -53,14 +67,20 @@ jobs:
           set -o pipefail
           EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
           # The only write to the root manifest, and only in this reproducibility
-          # step. The guard rejects any pin that does not match the accepted
-          # originals and refuses to change anything but those two lines.
+          # step. The guard rejects any declaration that does not match the
+          # accepted current profile (remote mlx-swift revision, reviewed local
+          # mlx-swift-lm path) and refuses to change anything but those two
+          # declaration regions.
           python3 scripts/qualify_mlx_candidate.py apply-patch \
             --package-swift Package.swift \
             --profile "$DEPENDENCY_PROFILE" \
             --diff "$EVIDENCE/baseline-manifest.diff" \
             --manifest "$EVIDENCE/baseline-apply.json"
           cp Package.swift "$EVIDENCE/FloeAgent-Package.swift.baseline"
+          # Independent read-only confirmation of the patched working copy.
+          python3 scripts/qualify_mlx_candidate.py check \
+            --profile "$DEPENDENCY_PROFILE" \
+            --package-swift Package.swift | tee "$EVIDENCE/historical-declarations.json"
       - name: Resolve dependencies with the real SwiftPM
         timeout-minutes: 15
         run: |
@@ -76,9 +96,11 @@ jobs:
             cp Qualification/LocalInference/Package.resolved \
               "$EVIDENCE/LocalInference-Package.resolved.resolved.json"
           fi
-          # Verify the frozen lock even when resolve failed: the accepted pins
-          # must be untouched and a historical-baseline run must show exactly the
-          # two frozen revisions. Any added or drifted pin fails here.
+          # Verify the frozen lock even when resolve failed: the accepted
+          # mlx-swift revision must be untouched and a historical-baseline run
+          # must show exactly the two frozen revisions. A current run may omit
+          # the local mlx-swift-lm pin (SwiftPM does not lock a path package);
+          # any other added, removed or drifted pin fails here.
           set +e
           python3 scripts/qualify_mlx_candidate.py verify-lock --check \
             --profile "$DEPENDENCY_PROFILE" \

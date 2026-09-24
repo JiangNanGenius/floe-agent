@@ -1,45 +1,59 @@
 #!/usr/bin/env python3
 """Isolated MLX dependency-profile diagnostics for the local inference host.
 
-This tool exists so the cloud qualification workflow can verify the accepted MLX
-pin pair, and can still reproduce the *historical* baseline pair, without ever
-changing the dependency declarations that are committed to the product. Nothing
-here builds, downloads, resolves or reaches the network; the real
-``swift package resolve`` is run by the workflow, not by this script.
+This tool exists so the cloud qualification workflow can verify the committed
+production declarations and can still materialize the *historical* baseline
+pair, without ever changing the dependency declarations that are committed to
+the product outside a CI working copy. Nothing here builds, downloads, resolves
+or reaches the network; the real ``swift package resolve`` is run by the
+workflow, not by this script.
 
 Profiles
 --------
 ``current``
-    The accepted production pair (``CURRENT_PINS``): mlx-swift
-    ``ab924c82ead3b970caaa1c0ac11171de23f0305a`` + mlx-swift-lm
-    ``d5d8b290e601ac1bf11f24635f8f811a83b98bf8``. No file is patched.
+    The accepted production declarations. ``mlx-swift`` stays a remote
+    exact-revision dependency (``CURRENT_REMOTE_PINS``). ``mlx-swift-lm`` is the
+    reviewed in-repo package ``FloeAgent/ThirdParty/MLXSwiftLM``
+    (``CURRENT_LOCAL_PACKAGE``): the upstream revision
+    ``d5d8b290e601ac1bf11f24635f8f811a83b98bf8`` plus the Floe gated-delta
+    prefill patch. ``check`` audits that declaration and directory read-only;
+    no file is written.
 
 ``historical-baseline``
     The frozen pre-adoption pair (``HISTORICAL_BASELINE_PINS``): mlx-swift
-    ``0.31.4`` + mlx-swift-lm ``bd4b7434...``. Reproducible on demand so the
-    earlier lifecycle evidence stays comparable. Never the default.
+    ``0.31.4`` + mlx-swift-lm ``bd4b7434...`` as two *remote* declarations.
+    Materialized on demand so the earlier lifecycle evidence stays comparable.
+    Never the default, and only ever written inside a caller-supplied working
+    copy by ``apply-patch``.
 
 Subcommands
 -----------
 ``apply-patch`` (writes)
-    Writes the two ``historical-baseline`` declarations into a caller supplied
-    ``Package.swift``. It refuses unless exactly one declaration exists per
-    target URL, the two original pin states match ``CURRENT_PINS`` exactly, and
-    the resulting file differs from the original in exactly those two lines. On
-    any mismatch the target file is left byte-identical and a failure manifest
-    is still written for recovery evidence.
+    Rewrites the two ``current`` declarations into the two
+    ``historical-baseline`` remote declarations in a caller supplied
+    ``Package.swift``. It refuses unless exactly one accepted ``current``
+    declaration exists per target, the resulting diff changes only those two
+    declaration regions, and the changed and added lines are exactly the
+    expected tokens. On any mismatch the target file is left byte-identical and
+    a failure manifest is still written for recovery evidence. The cloud
+    workflow invokes it only in the ephemeral runner checkout.
 
 ``verify-lock`` (read-only unless ``--output`` is given)
-    Compares a freshly resolved lock against the immutable baseline lock. For
-    the ``historical-baseline`` profile the two target revisions must be exactly
-    the historical values and every other pin must be identical; added, removed
-    or drifted pins fail. An optional XcodeGen project permits only the omission
-    of matching app-only pins from the host graph. ``--check`` prints JSON to
-    stdout and is forbidden from writing any output path.
+    Compares a freshly resolved lock against the committed baseline lock. For
+    ``current`` the ``mlx-swift`` revision must be exact and the local
+    ``mlx-swift-lm`` package is allowed to have no remote pin (SwiftPM does not
+    lock local packages); every other addition, removal or drift fails. For
+    ``historical-baseline`` the two target revisions must be exactly the
+    historical values and every other pin must be identical. An optional
+    XcodeGen project permits only the omission of matching app-only pins from
+    the host graph. ``--check`` prints JSON to stdout and is forbidden from
+    writing any output path.
 
 ``check`` (read-only)
     Reports whether the target declarations in a ``Package.swift`` match the
-    requested profile without writing anything.
+    requested profile without writing anything. For ``current`` it also audits
+    the vendored package directory (manifest name, provenance revision, patch
+    file) that the declaration points at.
 """
 from __future__ import annotations
 
@@ -55,23 +69,35 @@ from resolved_pins import application_pins, resolved_pins
 MLX_SWIFT_URL = "https://github.com/ml-explore/mlx-swift"
 MLX_SWIFT_LM_URL = "https://github.com/ml-explore/mlx-swift-lm.git"
 
-TARGET_IDENTITIES = ("mlx-swift", "mlx-swift-lm")
+LOCAL_IDENTITY = "mlx-swift-lm"
+TARGET_IDENTITIES = ("mlx-swift", LOCAL_IDENTITY)
 _TARGET_URLS = {
     "mlx-swift": MLX_SWIFT_URL,
-    "mlx-swift-lm": MLX_SWIFT_LM_URL,
+    LOCAL_IDENTITY: MLX_SWIFT_LM_URL,
 }
 
 SUPPORTED_PROFILES = ("current", "historical-baseline")
 
-# Accepted production declarations committed in FloeAgent/Package.swift. These
-# are the exact revisions qualified by cloud run 35189276226 (source 43a68eb8)
-# with MLX compiled traces disabled: mlx-swift carries the upstream GPU
-# error-handling fix and mlx-swift-lm keeps the existing prefill-parameter
-# behavior (upstream #389/#381/#488). Changing these constants is a product
-# decision.
-CURRENT_PINS = {
-    "mlx-swift-lm": {"revision": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8"},
+# Accepted production declarations committed in FloeAgent/Package.swift. The
+# mlx-swift revision is the exact upstream GPU error-handling pin qualified by
+# cloud run 35189276226 (source 43a68eb8). Changing these constants is a
+# product decision.
+CURRENT_REMOTE_PINS = {
     "mlx-swift": {"revision": "ab924c82ead3b970caaa1c0ac11171de23f0305a"},
+}
+
+# The reviewed local package the committed manifest points at with
+# `.package(name: "mlx-swift-lm", path: "ThirdParty/MLXSwiftLM")`. The path is
+# relative to FloeAgent/Package.swift; ``revision`` is the upstream revision
+# recorded in the vendored FLOE_VENDOR.md provenance notes and the ``patch`` is
+# the Floe gated-delta prefill hotfix applied to that copy.
+CURRENT_LOCAL_PACKAGE = {
+    "identity": LOCAL_IDENTITY,
+    "name": "mlx-swift-lm",
+    "path": "ThirdParty/MLXSwiftLM",
+    "revision": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
+    "provenance_file": "FLOE_VENDOR.md",
+    "patch": "patches/0001-gdn-prefill-t1-ops-route.patch",
 }
 
 # Frozen pre-adoption pair. Kept only so the historical baseline lifecycle
@@ -80,7 +106,7 @@ CURRENT_PINS = {
 # a production profile. The patch step may only move the committed current
 # declarations to this exact pair, never the reverse direction.
 HISTORICAL_BASELINE_PINS = {
-    "mlx-swift-lm": {"revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"},
+    LOCAL_IDENTITY: {"revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"},
     "mlx-swift": {"exact": "0.31.4"},
 }
 
@@ -88,7 +114,7 @@ HISTORICAL_BASELINE_PINS = {
 # always carries a concrete revision (and the exact-version tag), never the
 # manifest's `exact:` declaration form.
 HISTORICAL_BASELINE_RESOLVED_PINS = {
-    "mlx-swift-lm": {"revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"},
+    LOCAL_IDENTITY: {"revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57"},
     "mlx-swift": {
         "revision": "dc43e62d7055353c7f99fa071a4e71d29dfddc44",
         "version": "0.31.4",
@@ -96,12 +122,25 @@ HISTORICAL_BASELINE_RESOLVED_PINS = {
 }
 
 
-def profile_pins(profile):
+def profile_targets(profile):
     """Return the expected target declarations for a supported profile."""
     if profile == "current":
-        return CURRENT_PINS
+        return {
+            "mlx-swift": {
+                "kind": "remote",
+                "state": dict(CURRENT_REMOTE_PINS["mlx-swift"]),
+            },
+            LOCAL_IDENTITY: {
+                "kind": "local",
+                "name": CURRENT_LOCAL_PACKAGE["name"],
+                "path": CURRENT_LOCAL_PACKAGE["path"],
+            },
+        }
     if profile == "historical-baseline":
-        return HISTORICAL_BASELINE_PINS
+        return {
+            identity: {"kind": "remote", "state": dict(state)}
+            for identity, state in HISTORICAL_BASELINE_PINS.items()
+        }
     raise ValueError("unsupported dependency profile: %r" % (profile,))
 
 
@@ -111,6 +150,24 @@ class PatchError(ValueError):
 
 def normalize_url(url):
     return url.rstrip("/").removesuffix(".git").lower()
+
+
+def _normalize_path(value):
+    return os.path.normpath(value.replace("\\", "/")).replace(os.sep, "/")
+
+
+def _local_path_matches(declared, package_dir=None):
+    """True when a `.package(path:)` declaration points at the vendored copy.
+
+    With ``package_dir`` both paths are resolved against it; without it the
+    normalized relative paths are compared. Never touches the filesystem.
+    """
+    expected = CURRENT_LOCAL_PACKAGE["path"]
+    if package_dir:
+        base = os.path.abspath(package_dir)
+        return (os.path.normpath(os.path.join(base, declared))
+                == os.path.normpath(os.path.join(base, expected)))
+    return _normalize_path(declared) == _normalize_path(expected)
 
 
 def _declaration_spans(text):
@@ -160,6 +217,7 @@ def package_declarations(text):
             "end": end,
             "block": block,
             "url": _string_value(block, "url"),
+            "path": _string_value(block, "path"),
         })
     return declarations
 
@@ -173,15 +231,44 @@ def pin_state(block):
     return state
 
 
-def find_target_declarations(text):
+def declaration_kind(block):
+    has_url = _string_value(block, "url") is not None
+    has_path = _string_value(block, "path") is not None
+    if has_url and has_path:
+        return "mixed"
+    if has_url:
+        return "remote"
+    if has_path:
+        return "local"
+    return "unknown"
+
+
+def local_declaration_state(block):
+    return {
+        "name": _string_value(block, "name"),
+        "path": _string_value(block, "path"),
+    }
+
+
+def find_target_declarations(text, package_dir=None):
+    """Locate the two target declarations by URL or vendored path.
+
+    Remote declarations match the accepted URLs. A `.package(path:)`
+    declaration matches only when it resolves to the reviewed vendored
+    directory.
+    """
     found = {}
     for declaration in package_declarations(text):
-        if not declaration["url"]:
-            continue
-        normalized = normalize_url(declaration["url"])
-        for identity, url in _TARGET_URLS.items():
-            if normalized == normalize_url(url):
-                found.setdefault(identity, []).append(declaration)
+        url = declaration["url"]
+        path = declaration["path"]
+        if url:
+            normalized = normalize_url(url)
+            for identity, target_url in _TARGET_URLS.items():
+                if normalized == normalize_url(target_url):
+                    found.setdefault(identity, []).append(declaration)
+                    break
+        elif path and _local_path_matches(path, package_dir):
+            found.setdefault(LOCAL_IDENTITY, []).append(declaration)
     return found
 
 
@@ -199,17 +286,26 @@ def line_changes(before, after):
     return removed, added
 
 
-def plan_historical_baseline_patch(text):
+def _region_bounds(text, start, end):
+    """Full-line bounds of a declaration span."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end == -1:
+        line_end = len(text)
+    return line_start, line_end
+
+
+def plan_historical_baseline_patch(text, package_dir=None):
     """Return ``(patched_text, changes)`` for the historical baseline or raise.
 
-    Only the committed ``CURRENT_PINS`` declarations may be moved to
-    ``HISTORICAL_BASELINE_PINS``. The original text is never mutated and no
-    file is touched here.
+    Only the committed ``current`` declarations may be moved to
+    ``HISTORICAL_BASELINE_PINS``: the remote mlx-swift revision becomes the
+    frozen exact version and the local mlx-swift-lm path declaration becomes
+    the frozen remote revision declaration. The original text is never mutated
+    and no file is touched here.
     """
-    found = find_target_declarations(text)
+    found = find_target_declarations(text, package_dir)
     replacements = []
-    expected_removed = []
-    expected_added = []
     changes = []
     for identity in TARGET_IDENTITIES:
         declarations = found.get(identity, [])
@@ -217,33 +313,63 @@ def plan_historical_baseline_patch(text):
             raise PatchError(
                 "expected exactly one %s declaration, found %d" % (identity, len(declarations)))
         declaration = declarations[0]
-        state = pin_state(declaration["block"])
-        if state != CURRENT_PINS[identity]:
-            raise PatchError(
-                "%s declaration state %r does not match accepted current %r"
-                % (identity, state, CURRENT_PINS[identity]))
+        block = declaration["block"]
+        kind = declaration_kind(block)
         baseline = HISTORICAL_BASELINE_PINS[identity]
         if len(baseline) != 1:
             raise PatchError("historical baseline pin for %s must be a single key" % identity)
-        old_key = next(iter(state))
-        old_token = '%s: "%s"' % (old_key, state[old_key])
         new_key, new_value = next(iter(baseline.items()))
-        new_token = '%s: "%s"' % (new_key, new_value)
-        if declaration["block"].count(old_token) != 1:
-            raise PatchError("%s current token %r is not unique" % (identity, old_token))
-        new_block = declaration["block"].replace(old_token, new_token, 1)
+        if identity == LOCAL_IDENTITY:
+            if kind != "local":
+                raise PatchError(
+                    "%s must be the committed local path declaration, found %s" % (identity, kind))
+            actual = local_declaration_state(block)
+            expected = {
+                "name": CURRENT_LOCAL_PACKAGE["name"],
+                "path": CURRENT_LOCAL_PACKAGE["path"],
+            }
+            if actual != expected:
+                raise PatchError(
+                    "%s local declaration %r does not match accepted %r"
+                    % (identity, actual, expected))
+            new_block = '.package(url: "%s", %s: "%s")' % (MLX_SWIFT_LM_URL, new_key, new_value)
+            old_text = block
+        else:
+            if kind != "remote":
+                raise PatchError(
+                    "%s must be the committed remote declaration, found %s" % (identity, kind))
+            state = pin_state(block)
+            expected_state = CURRENT_REMOTE_PINS[identity]
+            if state != expected_state:
+                raise PatchError(
+                    "%s declaration state %r does not match accepted current %r"
+                    % (identity, state, expected_state))
+            old_key = next(iter(state))
+            old_token = '%s: "%s"' % (old_key, state[old_key])
+            new_token = '%s: "%s"' % (new_key, new_value)
+            if block.count(old_token) != 1:
+                raise PatchError("%s current token %r is not unique" % (identity, old_token))
+            new_block = block.replace(old_token, new_token, 1)
+            old_text = old_token
         replacements.append((declaration["start"], declaration["end"], new_block))
-        expected_removed.append(old_token)
-        expected_added.append(new_token)
-        changes.append({"identity": identity, "from": old_token, "to": new_token})
+        changes.append({"identity": identity, "kind": kind, "from": old_text, "to": new_block})
     patched = text
     for start, end, new_block in sorted(replacements, reverse=True):
         patched = patched[:start] + new_block + patched[end:]
+    if patched == text:
+        raise PatchError("historical baseline patch produced no change")
+    # The diff of the whole manifest must equal the union of the two
+    # declaration-region diffs: nothing else may change.
+    expected_removed = []
+    expected_added = []
+    for start, end, new_block in replacements:
+        line_start, line_end = _region_bounds(text, start, end)
+        old_region = text[line_start:line_end]
+        new_region = old_region[:start - line_start] + new_block + old_region[end - line_start:]
+        removed, added = line_changes(old_region, new_region)
+        expected_removed += removed
+        expected_added += added
     removed, added = line_changes(text, patched)
-    if len(removed) != 2 or len(added) != 2:
-        raise PatchError(
-            "historical baseline patch must change exactly two lines, got removed=%r added=%r"
-            % (removed, added))
     if sorted(removed) != sorted(expected_removed) or sorted(added) != sorted(expected_added):
         raise PatchError(
             "historical baseline patch changed unexpected lines: removed=%r added=%r"
@@ -261,13 +387,40 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
     baseline = {pin["identity"]: pin for pin in resolved_pins(baseline_document)}
     resolved = {pin["identity"]: pin for pin in resolved_pins(resolved_document)}
     expected = {identity: dict(pin) for identity, pin in baseline.items()}
-    if profile == "historical-baseline":
-        for identity in TARGET_IDENTITIES:
+    if profile == "current":
+        # The target pins are owned by this script, not by the committed lock:
+        # a stale baseline must fail closed instead of defining the expectation.
+        for identity, state in CURRENT_REMOTE_PINS.items():
             if identity not in expected:
                 raise ValueError("baseline lock is missing target dependency %s" % identity)
+            location = expected[identity]["location"]
+            if normalize_url(location) != normalize_url(_TARGET_URLS[identity]):
+                raise ValueError(
+                    "baseline lock pins %s to an unexpected source: %s" % (identity, location))
             expected[identity] = {
                 "identity": identity,
-                "location": expected[identity]["location"],
+                "location": location,
+                "state": dict(state),
+            }
+        local_identity = CURRENT_LOCAL_PACKAGE["identity"]
+        local_state = {"revision": CURRENT_LOCAL_PACKAGE["revision"]}
+        if local_identity in expected:
+            pin = expected[local_identity]
+            if (normalize_url(pin["location"]) != normalize_url(MLX_SWIFT_LM_URL)
+                    or pin["state"] != local_state):
+                raise ValueError(
+                    "baseline lock carries a non-reviewed %s pin" % local_identity)
+            expected[local_identity] = {
+                "identity": local_identity,
+                "location": pin["location"],
+                "state": dict(local_state),
+            }
+    else:
+        for identity in TARGET_IDENTITIES:
+            location = expected.get(identity, {}).get("location") or _TARGET_URLS[identity]
+            expected[identity] = {
+                "identity": identity,
+                "location": location,
                 "state": dict(HISTORICAL_BASELINE_RESOLVED_PINS[identity]),
             }
     # App-only packages (currently WhisperKit) occur in the shared committed
@@ -279,7 +432,14 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
             raise ValueError("application-only pin differs from baseline: %s" % identity)
     added = sorted(set(resolved) - set(expected))
     omitted_app = sorted((set(expected) - set(resolved)) & set(app))
-    removed = sorted((set(expected) - set(resolved)) - set(app))
+    # SwiftPM does not pin a local path package. For the current profile the
+    # reviewed mlx-swift-lm pin may therefore be absent from a fresh lock; any
+    # other removal still fails.
+    omitted_local = []
+    if profile == "current":
+        omitted_local = sorted(
+            (set(expected) - set(resolved)) & {CURRENT_LOCAL_PACKAGE["identity"]})
+    removed = sorted((set(expected) - set(resolved)) - set(app) - set(omitted_local))
     drifted = []
     equivalent_source_urls = []
     for identity in sorted(set(expected) & set(resolved)):
@@ -298,14 +458,17 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
             })
     target_state = {identity: resolved.get(identity, {}).get("state") for identity in TARGET_IDENTITIES}
     expected_target_state = {identity: expected.get(identity, {}).get("state") for identity in TARGET_IDENTITIES}
-    targets_exact = all(target_state[identity] == expected_target_state[identity]
-                        for identity in TARGET_IDENTITIES)
+    targets_exact = all(
+        target_state[identity] == expected_target_state[identity]
+        or (target_state[identity] is None and identity in omitted_local)
+        for identity in TARGET_IDENTITIES)
     return {
         "profile": profile,
         "ok": not added and not removed and not drifted and targets_exact,
         "added": added,
         "removed": removed,
         "omitted_application_pins": omitted_app,
+        "omitted_local_packages": omitted_local,
         "equivalent_source_urls": equivalent_source_urls,
         "drifted": drifted,
         "targets": target_state,
@@ -313,21 +476,95 @@ def verify_lock(profile, baseline_document, resolved_document, app_only=()):
     }
 
 
-def check_declarations(profile, text):
-    """Read-only profile check of the two target declarations."""
-    expected = profile_pins(profile)
-    found = find_target_declarations(text)
+def audit_local_package(package_dir):
+    """Read-only audit of the vendored mlx-swift-lm package.
+
+    Verifies that the declared path exists, that its manifest declares the
+    expected package name, that the provenance notes record the reviewed
+    upstream revision and that the Floe patch file is present. Never writes.
+    """
+    root = os.path.normpath(os.path.join(os.path.abspath(package_dir), CURRENT_LOCAL_PACKAGE["path"]))
+    report = {
+        "path": CURRENT_LOCAL_PACKAGE["path"],
+        "root": root,
+        "manifest": {"path": "Package.swift", "package_name": None},
+        "provenance": {"path": CURRENT_LOCAL_PACKAGE["provenance_file"], "records_revision": False},
+        "patch": {"path": CURRENT_LOCAL_PACKAGE["patch"], "present": False},
+        "errors": [],
+    }
+
+    manifest_path = os.path.join(root, "Package.swift")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest_text = handle.read()
+    except OSError as error:
+        report["errors"].append("cannot read vendored Package.swift: %s" % error)
+    else:
+        match = re.search(r'\bname\s*:\s*"([^"]+)"', manifest_text)
+        name = match.group(1) if match else None
+        report["manifest"]["package_name"] = name
+        if name != CURRENT_LOCAL_PACKAGE["name"]:
+            report["errors"].append(
+                "vendored package name %r does not match %r"
+                % (name, CURRENT_LOCAL_PACKAGE["name"]))
+
+    provenance_path = os.path.join(root, CURRENT_LOCAL_PACKAGE["provenance_file"])
+    try:
+        with open(provenance_path, "r", encoding="utf-8") as handle:
+            provenance_text = handle.read()
+    except OSError as error:
+        report["errors"].append("cannot read vendored provenance notes: %s" % error)
+    else:
+        recorded = CURRENT_LOCAL_PACKAGE["revision"] in provenance_text
+        report["provenance"]["records_revision"] = recorded
+        if not recorded:
+            report["errors"].append(
+                "provenance notes do not record revision %s" % CURRENT_LOCAL_PACKAGE["revision"])
+
+    patch_path = os.path.join(root, CURRENT_LOCAL_PACKAGE["patch"])
+    report["patch"]["present"] = os.path.isfile(patch_path)
+    if not report["patch"]["present"]:
+        report["errors"].append("vendored patch missing: %s" % CURRENT_LOCAL_PACKAGE["patch"])
+
+    report["ok"] = not report["errors"]
+    return report
+
+
+def check_declarations(profile, text, package_dir=None):
+    """Read-only profile check of the two target declarations.
+
+    For the ``current`` profile and a known ``package_dir`` the vendored
+    package directory is audited as well; a missing or mismatched vendored tree
+    fails the check.
+    """
+    targets = profile_targets(profile)
+    found = find_target_declarations(text, package_dir)
     report = {"profile": profile, "ok": True, "declarations": {}}
     for identity in TARGET_IDENTITIES:
         declarations = found.get(identity, [])
-        state = pin_state(declarations[0]["block"]) if len(declarations) == 1 else None
-        report["declarations"][identity] = {
+        actual = None
+        if len(declarations) == 1:
+            block = declarations[0]["block"]
+            kind = declaration_kind(block)
+            if kind == "remote":
+                actual = {"kind": "remote", "state": pin_state(block)}
+            elif kind == "local":
+                actual = {"kind": "local", **local_declaration_state(block)}
+            else:
+                actual = {"kind": kind}
+        expected = targets[identity]
+        entry = {
             "count": len(declarations),
-            "state": state,
-            "expected": expected[identity],
+            "expected": expected,
+            "actual": actual,
+            "ok": len(declarations) == 1 and actual == expected,
         }
-        if len(declarations) != 1 or state != expected[identity]:
-            report["ok"] = False
+        report["declarations"][identity] = entry
+        report["ok"] = report["ok"] and entry["ok"]
+    if profile == "current" and package_dir is not None:
+        audit = audit_local_package(package_dir)
+        report["local_package"] = audit
+        report["ok"] = report["ok"] and audit["ok"]
     return report
 
 
@@ -361,8 +598,9 @@ def command_apply_patch(args):
         return 1
     with open(args.package_swift, "r", encoding="utf-8") as handle:
         original = handle.read()
+    package_dir = os.path.dirname(os.path.abspath(args.package_swift))
     try:
-        patched, changes = plan_historical_baseline_patch(original)
+        patched, changes = plan_historical_baseline_patch(original, package_dir)
     except PatchError as error:
         _write_json(args.manifest, {"profile": args.profile, "applied": False, "error": str(error)})
         print("FAIL: %s" % error, file=sys.stderr)
@@ -381,11 +619,13 @@ def command_apply_patch(args):
         tofile="Package.swift:historical-baseline",
     ))
     _write_text(args.diff, diff)
+    removed, added = line_changes(original, patched)
     _write_json(args.manifest, {
         "profile": args.profile,
         "applied": True,
         "changes": changes,
-        "changed_line_count": 2,
+        "removed_lines": removed,
+        "added_lines": added,
     })
     return 0
 
@@ -414,7 +654,8 @@ def command_verify_lock(args):
 def command_check(args):
     with open(args.package_swift, "r", encoding="utf-8") as handle:
         text = handle.read()
-    report = check_declarations(args.profile, text)
+    package_dir = os.path.dirname(os.path.abspath(args.package_swift))
+    report = check_declarations(args.profile, text, package_dir)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["ok"] else 1
 

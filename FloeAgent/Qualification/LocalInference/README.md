@@ -50,33 +50,61 @@ Both triggers accept `dependency_profile`, defaulting to `current`.
 
 | Profile | Root `FloeAgent/Package.swift` |
 | --- | --- |
-| `current` | Committed production pins; no patch. |
-| `historical-baseline` | In the CI working copy only, restore the two frozen pre-adoption declarations. |
+| `current` | Committed production declarations; no patch: remote `mlx-swift` revision + the reviewed in-repo `mlx-swift-lm` package. |
+| `historical-baseline` | In the CI working copy only, replace those two declarations with the two frozen pre-adoption remote declarations. |
 
-Current pins are `mlx-swift` `ab924c82ead3b970caaa1c0ac11171de23f0305a`
-and `mlx-swift-lm` `d5d8b290e601ac1bf11f24635f8f811a83b98bf8`.
-The historical pair is mlx-swift 0.31.4 (`dc43e62d7055353c7f99fa071a4e71d29dfddc44`)
-and mlx-swift-lm `bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57`.
-The patch guard verifies the original declarations and allows exactly those
-two lines to change. The real SwiftPM resolver then runs; lock verification
-rejects additional, removed or drifted dependencies except the documented
-app-only omission below. Compilation uses `--force-resolved-versions`.
+Current declarations are `mlx-swift`
+`ab924c82ead3b970caaa1c0ac11171de23f0305a` (remote revision) and `mlx-swift-lm`
+`.package(name: "mlx-swift-lm", path: "ThirdParty/MLXSwiftLM")`. The local copy
+is the reviewed upstream tree at
+`d5d8b290e601ac1bf11f24635f8f811a83b98bf8` plus Floe patch
+`patches/0001-gdn-prefill-t1-ops-route.patch`; its provenance notes live in
+`ThirdParty/MLXSwiftLM/FLOE_VENDOR.md`. Before the historical step may touch a
+working copy, the workflow runs `check --profile current`, which read-only
+verifies both declarations and the vendored package (manifest name, recorded
+upstream revision, patch file) and records `current-declarations.json`. Byte
+level vendored-tree hashes remain owned by the separate read-only audit
+`ThirdParty/MLXSwiftLM/floe_vendor_check.sh`.
+
+The historical pair is mlx-swift 0.31.4
+(`dc43e62d7055353c7f99fa071a4e71d29dfddc44`) and mlx-swift-lm
+`bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57`. `apply-patch` may only rewrite the
+committed current declarations into those two remote declarations, refuses any
+other starting state, may change only those two declaration regions, and is
+invoked only in the ephemeral runner checkout. The patched manifest is then
+verified independently with `check --profile historical-baseline` and recorded
+as `historical-declarations.json`.
+
+Lock comparison: SwiftPM does not lock a `.package(path:)` dependency, so
+`verify-lock --profile current` allows the resolved lock to omit the remote
+`mlx-swift-lm` pin (reported as `omitted_local_packages`) while still requiring
+the exact `mlx-swift` revision and rejecting every other added, removed or
+drifted pin. The committed qualification host lock
+`Qualification/LocalInference/Package.resolved` no longer carries that pin; the
+other `Qualification/*/Package.resolved` host locks are outside this change and
+keep the reviewed revision until their next host resolve. Compilation uses
+`--force-resolved-versions`.
 
 The production engine disables compiled traces once, before model loading.
 The workflow clears `MLX_DISABLE_COMPILE` and checks emitted policy metadata,
 so a pass must exercise the API policy itself. Both dependency profiles use
 this policy: the historical profile restores dependency pins, not every aspect
 of the older executable. Reproducing the earlier compile-enabled comparison
-requires its original immutable source/workflow.
+requires its original immutable source/workflow. The historical profile is
+wired and unit-tested locally, but it has not been re-run in cloud CI since the
+vendored-package switch; a failure there is isolated to the diagnostic fallback
+and does not block the `current` profile.
 
 ### Evidence
 
 Artifacts are named `local-inference-diagnostic-<dependency_profile>-<sha>`.
 They retain source SHA, toolchain, original manifest and lock, resolved lock,
-resolver/verification logs, build log and runtime log even on failure. A
-historical-baseline run additionally retains `.baseline`,
-`baseline-manifest.diff` and `baseline-apply.json`. Its identity is the source
-SHA plus that isolated patch; a current run uses the committed manifest.
+resolver/verification logs, build log, runtime log and the declaration checks
+(`current-declarations.json`, plus `historical-declarations.json` for that
+profile) even on failure. A historical-baseline run additionally retains
+`.baseline`, `baseline-manifest.diff` and `baseline-apply.json`. Its identity is
+the source SHA plus that isolated patch; a current run uses the committed
+manifest.
 
 See [the feedback evidence](../../../docs/FLOE_BUILD178_FEEDBACK_REPAIR.md)
 for the original compile-enabled failure and environment-disabled control.
@@ -96,4 +124,13 @@ The chunk count is an estimate from the pinned `prepare` loop: `(inputTokens - 1
 The shared committed lock also contains the app-only WhisperKit dependency.
 The host resolver may omit it only when its immutable pin exactly matches
 `project.yml`; this omission is recorded separately. Other removed, added or
-drifted dependencies still fail verification.
+drifted dependencies still fail verification. The `current` profile separately
+allows the local `mlx-swift-lm` package to have no lock pin, exactly as
+`omitted_local_packages` records; a lock that pins a different `mlx-swift-lm`
+revision fails.
+
+The `check` audit verifies the declaration form, the vendored manifest package
+name, the recorded upstream revision and the patch file. It does not hash every
+vendored byte (`floe_vendor_check.sh` owns that), does not compile or run the
+vendored package, and does not prove that a device build used this exact tree;
+the cloud App build and the user's device qualification own those.
