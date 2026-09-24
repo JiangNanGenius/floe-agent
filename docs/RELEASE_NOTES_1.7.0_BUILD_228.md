@@ -25,3 +25,11 @@ The Office host [cloud run 36000058922](https://github.com/JiangNanGenius/floe-a
 Narrow IDE Git actions use consistent touch targets. The Run sheet offers automatic, one-core and two-core choices and passes the request to Linux startup. Real dual-hart `fork/exec` and 9P passed cloud guest checks; the corrected S5 equal-work `dd` benchmark measured medians of 1.69 seconds on one hart and 1.93 seconds on two, below the 1.10x speedup gate. The shipping single-core gate still refuses explicit two-core requests without silently downgrading them; other workloads need separate measurement. Selecting an on-device model asks to resolve an active Linux conflict before changing selection; cancel keeps the previous model and guests. A pinned local `mlx-swift-lm` patch routes multi-token Qwen prefill through the existing per-step operations while retaining the fused single-token decode path. A macOS cloud host completed a 3,147-token prompt with the same Qwen snapshot, but this does not verify iPad Metal or memory behavior. Office no longer prewarms at app launch and installs its process-wide signal handler before chat. Its MIT notice is included in the existing unified declaration. The MLX device failure remains open until actual loading and chat evidence proves a repair.
 
 Cloud App compilation, native Office host qualification and SMP guest qualification are separate checks. Physical iPad retesting must cover MLX load, benchmark and ordinary/tool chats; DOCX/XLSX/PPTX IDE tabs; PPTX edit, save and reopen in Workspace, Notes and IDE; narrow Git controls; and the Linux conflict prompt at local-model selection. Build, retained unsigned IPA, signed upload, Apple `VALID`, Floe QA availability and device behavior will be recorded separately.
+
+## Build 227 device feedback / 设备反馈截图
+
+The user-supplied iPad screenshots show the issues that motivated this build; they are **Build 227 failure evidence**, not Build 228 acceptance. 用户提供的截图记录上一构建的问题，不表示本构建已在真机修复。
+
+| Git sidebar touch layout / Git 侧栏触控布局 | IDE Office opening wait / IDE Office 打开等待 | IDE Word opening wait / IDE Word 打开等待 |
+| --- | --- | --- |
+| ![Build 227 Git sidebar](images/build-227-feedback-git-sidebar.jpg) | ![Build 227 IDE Office opening](images/build-227-feedback-ide-office-loading.jpg) | ![Build 227 IDE Word opening](images/build-227-feedback-ide-word-loading.jpg) |
