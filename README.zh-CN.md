@@ -40,7 +40,7 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 **Build 224 从未编译成功。** 其不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败的验收 SDK run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留；参见 [Build 224 说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)与 Build 225 说明中的失败记录表。
 
-**源码状态——下一构建（尚未分配新版本号或标签）。** `main` 已在已交付的 225 构建之上加入下一轮集成：原生 IDE 文本/代码编辑器（Web 工作台保留为高级回退）、本机压缩归档的创建/列出/解压、不可变环境模板与私有写时复制磁盘及 CPU/内存资源池、后台/画中画身份修复、本地模型的同任务 Linux 工具继续（自动释放该任务自己的临时客体）、带持久化按会话草稿的展开式提示词编辑器、唯一的第三方许可入口、原生优先媒体路由，以及下一次固定的 Office 宿主。下文对每项都标记**下一构建**。这些内容已集成到源码，并按[使用指南](docs/USER_GUIDE.zh-CN.md)与[下一版状态](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md)中列出的检查验证——模块测试、云端 App/模拟器运行或宿主固定构建——但**不在**已交付的 225 构建中，且均不构成真机验收。
+**源码状态——Build 226 候选（尚未发布）。** 已交付 Build 225 之后的源码加入 iPad 原生 IDE 工作台、压缩归档操作、可复用 Linux 模板、Runtime v2 资源管理、后台与通知修复、本地模型工具续轮、支持自动换行及按会话草稿的输入框、统一许可入口、原生优先媒体路由与固定 Office 宿主。组件和云端检查记录在[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_226.md)；最终 App 构建、TestFlight 可安装和真机效果仍须分别核验。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
@@ -61,7 +61,7 @@ Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 O
 - **在工作区内构建视觉流程。** 每个工作区可打开一个原生无限画布项目，通过自然触控管理内容节点、显式生成任务、产物节点、节点原位 AI 与受限画布助手。
 - **连接标准 MCP。** 普通 Agent 可按需连接 Streamable HTTP 服务器；远程工具始终有独立命名空间、继续经过本地策略检查，并且默认不向画布开放。
 - **在工作区内管理源码。** 轻量原生源码管理可查看更改与差异、初始化仓库、暂存、提交、分支、抓取、快进拉取、推送并连接 GitHub。
-- **使用原生代码工作台编辑代码。** IDE 的文本/代码标签使用原生 Swift 编辑器：多缓冲区、行号、有界语法高亮、查找替换、撤销/重做，以及保留草稿的冲突安全保存；Web 工作台（多光标、折叠与自带文件浏览器）保留为一个开关；当缓冲区预算用尽时，新打开会被拒绝并给出双语说明与**全部保存**，而不是丢弃草稿。**下一构建**：已通过模块与模拟器验证，尚未真机验收。
+- **使用原生代码工作台编辑代码。** IDE 的活动栏、文件/搜索/Git 侧栏、编辑标签、文本及代码编辑、终端面板和状态栏使用原生 SwiftUI/UIKit，不提供 Web 文本编辑切换。编辑器支持多缓冲区、行号、有界高亮、查找替换、撤销/重做、字体缩放与保留草稿的冲突安全保存；Markdown 在同一草稿上提供大纲、格式操作和原生预览。云端 App 编译已通过，但定向 IDE 界面检查发现终端面板可访问性失败，针对性修复正在复测。新工作台尚未进入已交付的 Build 225，也未获得真机验收。
 - **直接转换已有文档。** Markdown、Word、HTML、RTF 和文本互转，并支持 PDF 输入/输出。模型只需提供文件位置，无需重新抄写全文；源文件保留，扫描件及格式限制会明确提示。
 - **创建并修改 Office 文件。** 可在本机生成 DOCX、XLSX 和 PPTX，右侧只读查看，随后使用本地 Office 引擎编辑真实页面、单元格和幻灯片对象。从工作区预览编辑时进入独立全屏编辑器；只有从 IDE 文件树打开才保留内嵌标签。关闭有未保存修改的文档会询问保存、放弃或取消，Command-S 通过同一保存路径就地保存，文档无需上传云端。完整排版保真与高级 Office 功能仍在验收。
 - **任务级权限。** 文件、网络、浏览器、上传、凭据和远程执行权限都有明确上限；敏感操作仍需逐次确认。
@@ -211,7 +211,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 | --- | --- | --- |
 | 产品使用 | [使用指南](docs/USER_GUIDE.zh-CN.md) | [User guide](docs/USER_GUIDE.md) |
 | 下一版状态 | [实施状态与验证边界](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md) | Same document includes a Simplified Chinese summary |
-| 当前状态 | [实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 说明](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) · [Build 220 候选](docs/RELEASE_NOTES_1.7.0_BUILD_220.md) | [Implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) · [Build 219 notes](docs/RELEASE_NOTES_1.7.0_BUILD_219.md) · [Build 220 candidate](docs/RELEASE_NOTES_1.7.0_BUILD_220.md) |
+| 当前状态 | [Build 225 交付](docs/RELEASE_NOTES_1.7.0_BUILD_225.md) · [Build 226 候选](docs/RELEASE_NOTES_1.7.0_BUILD_226.md) | [Build 225 delivery](docs/RELEASE_NOTES_1.7.0_BUILD_225.md) · [Build 226 candidate](docs/RELEASE_NOTES_1.7.0_BUILD_226.md) |
 | 架构 | [架构总览（双语术语）](docs/ARCHITECTURE_OVERVIEW.md) | [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md) |
 | 参与开发 | [贡献指南](CONTRIBUTING.zh-CN.md) | [Contributing](CONTRIBUTING.md) |
 | 安全 | [安全策略](SECURITY.zh-CN.md) | [Security policy](SECURITY.md) |

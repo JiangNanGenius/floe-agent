@@ -4,15 +4,15 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前内部交付：1.7.0（223）**。固定标签 `v1.7.0-beta.80`，源码 `e933305d`；发布 run 35725410528 完成验收 SDK 构建、未签名 IPA 留存、签名上传与 GitHub 预发布。2026-09-22T13:19:54Z 已核实 Apple build `19f9bebc-88f0-437c-8863-b25d76e6b9be` 为 `VALID`、未过期、唯一私有内部 Floe QA 组（无公开链接）及 `IN_BETA_TESTING`。真机行为仍由用户验收。详见 [Build 223 版本说明](RELEASE_NOTES_1.7.0_BUILD_223.md)、[TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)与 [v1.7.0-beta.80 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.80)。
+**当前已交付内部构建：1.7.0（225）**。不可变标签 [`v1.7.0-beta.82`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.82) 固定源码 `fe0852b4`；[发布 run 35773856510](https://github.com/JiangNanGenius/floe-agent/actions/runs/35773856510) 完成验收 SDK 构建、IPA 留存、签名上传与 GitHub 预发布。Apple build `b53b6e02-a0cb-4eba-8d94-921805ff80e1` 已核实 `VALID`、未过期并在私有 Floe QA 组 `IN_BETA_TESTING`（2026-09-22T20:17:32Z）。真机 PPT、MLX 与 Linux 行为按用户后续反馈另行判断，详见 [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md)。
 
-**当前发布候选：1.7.0（225）**。在 Runtime v2 分层（共享基础镜像、Environment CoW、Workspace、缓存、恢复点与临时 VM）与四 VM 池、动态内存预算、Linux/MLX 仲裁之上，Build 225 保留 Build 224 候选的全部修复（Build 223 启动/迁移链、本地模型驻留、PPT/PPTX 编辑入口首帧、GitHub 优先的 Gitee 分片校验续传回退、GitHub→Gitee 单向镜像），并修复阻断 Build 224 验收 SDK App 构建的唯一一处 Swift 6 类型化抛错：App 侧 `LinuxGuestImageDownloader` 对 `URLSession.bytes` 的非穷尽 catch 改为穷尽（非 `URLError` 一律 `.responseInvalid` fail closed），`URLError.cancelled` 只在任务确已取消时归为取消，切源规则不变。Build 224 从未编译成功：不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败 run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留。当前证据为本机 23 项定向 Linux 镜像测试、修复源文件的 Swift 6 iOS SDK 对象码契约编译（同一检查可在 224 原文件上复现 line-101 错误）与元数据校验；云端构建、上传、Apple 处理、TestFlight 可用性、正式发布与真机 PPT/MLX/PiP/Linux 均未宣称，本次准备未创建标签、未触发工作流（计划标签 `v1.7.0-beta.82`）。发布状态见 [Build 225 候选说明](RELEASE_NOTES_1.7.0_BUILD_225.md)、[Runtime v2 架构](TINYEMU_RUNTIME_V2.md)与 [Gitee 分片镜像](FLOE_LINUX_GUEST_IMAGE_BUILD.md)。Build 223（`v1.7.0-beta.80`，`e933305d`）是当前已交付内部基线，其[版本说明](RELEASE_NOTES_1.7.0_BUILD_223.md)保留。
+**下一候选：1.7.0（226）**。[候选说明](RELEASE_NOTES_1.7.0_BUILD_226.md)记录 Runtime v2、原生 IDE、环境模板和专项修复的当前范围。基础 Linux 模板与开发文档模板已分别公开为[基础组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-basic-20260923.1)和[开发文档组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-dev-document-20260924.1)，镜像及对应源码已固定；这不是 Build 226 App、IPA 或 TestFlight 已发布的证据。云端 App 编译、定向 UI、上传、Apple 处理和 Floe QA 可安装状态将分别补记，真机验收仍单列。
 
-**上一内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
+**历史内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
 下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
 
-**Build 221 已交付**：它修复 Build 220 云端验收 SDK 设备编译的全部 14 条诊断，并补一处 Swift 6 非 Sendable 通知负载跨 actor 错误。发布 run [35678610685](https://github.com/JiangNanGenius/floe-agent/actions/runs/35678610685) 完成验收 SDK 构建、工件留存、签名与上传；Apple、Floe QA、GitHub 预发布和 Feather 状态见上方当前交付及 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md)。模拟器 UI 验收按加速发布要求跳过，Linux、PPTX、通知与后台行为仍由用户在真机验收。
+**Build 221 已交付**：它修复 Build 220 云端验收 SDK 设备编译的全部 14 条诊断，并补一处 Swift 6 非 Sendable 通知负载跨 actor 错误。发布 run [35678610685](https://github.com/JiangNanGenius/floe-agent/actions/runs/35678610685) 完成验收 SDK 构建、工件留存、签名与上传；Apple、Floe QA、GitHub 预发布和 Feather 状态见 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md)。模拟器 UI 验收按加速发布要求跳过，Linux、PPTX、通知与后台行为仍由用户在真机验收。
 
 **Build 220 候选元数据（已被 221 取代）**：合并后的 `main` 源码 `9e83fcfa` 在 `codex/build220-release-metadata` 分支上把四个出货目标统一为 1.7.0（220）并重新生成 Xcode 工程，同时加入 [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md)与双语 TestFlight 说明。其云端设备 App 编译失败（rebuild run 35673428023，14 条诊断，无工件、无签名、无上传），修复后的源码即 Build 221。219 之后的源码级改动包括 Linux 持久磁盘／缓存／9P／安装状态修复、显式后台模式与实测指标、任务完成通知、PPTX 可见渲染门禁与宿主重新固定 `f0ca71a7`、模拟器编译守卫 `67a37db3`，以及侧载链接与文档修复。在取得新的构建／TestFlight／预发布证据之前，不宣称 Build 220 已构建、已上传、已被 Apple 处理、可安装、通过真机验收或已发布；构建与云端口禁状态见 [Build 156 反馈修复记录](FLOE_156_FEEDBACK_REPAIR.md) 的 2026-09-22 更新。
 
@@ -32,21 +32,22 @@
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md) | 当前发布候选：Build 224 候选修复面 + 验收 SDK 类型化抛错编译修复（Linux 镜像下载器）；仅有源码/契约证据，云端与真机状态待核实 |
-| [Build 225 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_225.json) | 当前候选的中英文 TestFlight 测试重点 |
+| [Build 226 候选说明](RELEASE_NOTES_1.7.0_BUILD_226.md) | 当前未发布候选；镜像组件、原生 IDE、专项修复与分开的验证边界 |
+| [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md) | 已交付内部 Floe QA：验收 SDK 编译、IPA、签名上传、Apple VALID 与 GitHub 预发布；真机缺陷以设备反馈为准 |
+| [Build 225 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_225.json) | 已交付内部构建的中英文 TestFlight 测试重点 |
 | [下一版实施状态与验证边界](FLOE_1_7_NEXT_RELEASE_STATUS.md) | 整合轮的已实现/已验证项（统一许可入口、原生优先路由）、其他工作包的明确设计与未验收边界、待最终刷新章节与已知阻塞；不预留构建号 |
 | [Build 224 版本说明](RELEASE_NOTES_1.7.0_BUILD_224.md) | 未编译成功的候选：`v1.7.0-beta.81`（`c36b7b24`）在 run 35767875337 因 LinuxGuestImageDownloader.swift:101 类型化抛错失败，记录保留，修复即 Build 225 |
 | [Build 224 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_224.json) | 失败候选的中英文 TestFlight 测试重点（保留） |
 | [TinyEMU Runtime v2](TINYEMU_RUNTIME_V2.md) | 目录归属、CoW、迁移、租约、VM 池、内存与恢复约束 |
 | [Gitee 分片镜像](FLOE_LINUX_GUEST_IMAGE_BUILD.md) | GitHub 主源与 Gitee 九分片镜像、清单/分片 SHA-512、续传与单向同步 |
 | [Gitee 发行版镜像（refs 与资产）](FLOE_GITEE_RELEASE_MIRROR.md) | GitHub 主源的 refs 与 Release 元数据/资产单向镜像：可直接下载的资产、分片重建（不可直装作 IPA）、幂等续传、Actions 触发路径与实测上传带宽限制 |
-| [Build 223 版本说明](RELEASE_NOTES_1.7.0_BUILD_223.md) | 当前已交付内部基线（`v1.7.0-beta.80`）：Runtime v2 首次整合；Build 224 修复其启动回归 |
+| [Build 223 版本说明](RELEASE_NOTES_1.7.0_BUILD_223.md) | 历史内部构建（`v1.7.0-beta.80`）：Runtime v2 首次整合；Build 224 修复其启动回归 |
 | [Build 223 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_223.json) | 已被取代候选的中英文 TestFlight 测试重点（保留） |
-| [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) | 当前内部交付：Build 220 云端编译 14 条诊断的完整修复 + 1 处 Swift 6 并发修复；TestFlight、GitHub 预发布与 Feather 已完成 |
-| [Build 221 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json) | 当前内部构建已保存并读回的中英文 TestFlight 测试说明 |
+| [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) | 历史内部交付：Build 220 云端编译 14 条诊断的完整修复 + 1 处 Swift 6 并发修复；TestFlight、GitHub 预发布与 Feather 已完成 |
+| [Build 221 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json) | 历史内部构建已保存并读回的中英文 TestFlight 测试说明 |
 | [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md) | 已被取代：1.7.0（220）元数据已准备，但云端设备 App 编译失败（run 35673428023，14 条诊断，无工件、无上传） |
 | [Build 220 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json) | Build 220 的中英文 TestFlight 测试说明（该构建未上传） |
-| [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) | 当前内部交付：Linux 首次使用自动准备、客体网络、MLX 内存/快照、IDE Git 刷新与 Office 独立编辑路径；TestFlight、GitHub 预发布与 Feather 已完成 |
+| [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) | 历史内部交付：Linux 首次使用自动准备、客体网络、MLX 内存/快照、IDE Git 刷新与 Office 独立编辑路径；TestFlight、GitHub 预发布与 Feather 已完成 |
 | [Build 219 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_219.json) | 对应构建的中英文 TestFlight 测试说明 |
 | [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md) | 上一内部交付：真机反馈修复；TestFlight、GitHub 预发布和 Feather 已完成 |
 | [Build 216 版本说明](RELEASE_NOTES_1.7.0_BUILD_216.md) | 218 之前的内部交付：Build 215 修复集与发布路径兼容修复 |
@@ -101,11 +102,12 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_225.md](RELEASE_NOTES_1.7.0_BUILD_225.md) — 当前发布候选（1.7.0/225；Build 224 候选修复面 + 验收 SDK 类型化抛错编译修复；仅有源码/契约证据，云端构建、上传、Apple、TestFlight、发布与真机状态待取得）
+- [RELEASE_NOTES_1.7.0_BUILD_226.md](RELEASE_NOTES_1.7.0_BUILD_226.md) — 未发布候选；组件与源码证据、App 和真机验证门槛分别记录
+- [RELEASE_NOTES_1.7.0_BUILD_225.md](RELEASE_NOTES_1.7.0_BUILD_225.md) — 已交付内部 Floe QA；云端构建、上传、Apple 处理、GitHub 预发布和真机待验收边界分开记录
 - [RELEASE_NOTES_1.7.0_BUILD_224.md](RELEASE_NOTES_1.7.0_BUILD_224.md) — 未编译成功的候选（1.7.0/224，`v1.7.0-beta.81`，`c36b7b24`；run 35767875337 因 LinuxGuestImageDownloader.swift:101 类型化抛错失败，无工件无上传；记录保留，修复即 Build 225）
-- [RELEASE_NOTES_1.7.0_BUILD_223.md](RELEASE_NOTES_1.7.0_BUILD_223.md) — 当前已交付内部基线（1.7.0/223，`v1.7.0-beta.80`；VALID、Floe QA、IN_BETA_TESTING；Runtime v2 首次整合）
+- [RELEASE_NOTES_1.7.0_BUILD_223.md](RELEASE_NOTES_1.7.0_BUILD_223.md) — 历史内部构建（1.7.0/223，`v1.7.0-beta.80`；当时 VALID、Floe QA、IN_BETA_TESTING；Runtime v2 首次整合）
 - [RELEASE_NOTES_1.7.0_BUILD_222.md](RELEASE_NOTES_1.7.0_BUILD_222.md) — 已被取代的源码候选（1.7.0/222；验收 SDK App 编译阶段停止；发布与真机状态未取得）
-- [RELEASE_NOTES_1.7.0_BUILD_221.md](RELEASE_NOTES_1.7.0_BUILD_221.md) — 当前内部交付（1.7.0/221，Build 220 云端编译失败的完整修复；云端构建、TestFlight、GitHub 预发布与 Feather 已完成；真机验收待用户执行）
+- [RELEASE_NOTES_1.7.0_BUILD_221.md](RELEASE_NOTES_1.7.0_BUILD_221.md) — 历史内部交付（1.7.0/221，Build 220 云端编译失败的完整修复；云端构建、TestFlight、GitHub 预发布与 Feather 已完成；真机验收待用户执行）
 - [RELEASE_NOTES_1.7.0_BUILD_220.md](RELEASE_NOTES_1.7.0_BUILD_220.md) — 已被 221 取代（1.7.0/220，源码 `9e83fcfa` 加元数据提交；云端设备 App 编译失败 run 35673428023，14 条诊断，无工件、无上传）
 - [RELEASE_NOTES_1.7.0_BUILD_219.md](RELEASE_NOTES_1.7.0_BUILD_219.md) — 上一内部交付（1.7.0/219，`v1.7.0-beta.76`；TestFlight、GitHub 预发布与 Feather 已发布，真机验收由用户完成）
 - [RELEASE_NOTES_1.7.0_BUILD_218.md](RELEASE_NOTES_1.7.0_BUILD_218.md) — 更早内部交付（1.7.0/218，`v1.7.0-beta.75`；已核实 Floe QA 可安装，GitHub 预发布与 Feather 已发布，真机验收由用户完成）
@@ -149,9 +151,9 @@
 
 ## Floe 1.7 当前发布准备
 
-- [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) — 当前内部交付（1.7.0/221）的改动、发布证据、验证边界与真机验收项
+- [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) — 历史内部交付（1.7.0/221）的改动、发布证据、验证边界与真机验收项
 - [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md) — 被取代的候选（云端设备 App 编译失败 run 35673428023，无上传）
-- [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) — 当前内部交付的改动、验证范围与真机验收项
+- [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) — 历史内部交付的改动、验证范围与真机验收项
 - [中英文功能介绍、版本说明及 TestFlight 测试描述](RELEASE_NOTES_1.7.0.md)
 - [手记、动态导图、语音与当前证据](FLOE_1_7_CONTINUATION_STATUS.md)
 - [升级和恢复，包括永久删除与资源回收](FLOE_1_7_MIGRATION.md)

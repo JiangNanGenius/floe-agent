@@ -1,13 +1,15 @@
 # Floe 1.7 next release — implementation status and verification boundaries
 
-Baseline: `main` `ef70a208`; Build 225 (`v1.7.0-beta.82`) is the last delivered
-internal build. The user approved the full next-release plan. This document
-records what is **implemented and verified**, what is **designed but not yet
-verified**, and which chapters must be refreshed when the remaining work
-packages land.
+This is the 2026-09-23 work-package snapshot, based on `main` `ef70a208`.
+Build 225 (`v1.7.0-beta.82`) was the last delivered internal build at that
+point. The current Build 226 candidate and its newer component evidence are
+tracked in [Build 226 candidate notes](RELEASE_NOTES_1.7.0_BUILD_226.md).
+This snapshot distinguishes what was **implemented and verified** from what
+was **designed but not yet verified**; its in-flight table is historical and
+must not be read as the current task queue or release status.
 
-No new build number is reserved. Nothing in this file claims a cloud build,
-an upload, TestFlight availability, or device acceptance.
+Nothing in this snapshot claims a Build 226 IPA, upload, TestFlight
+availability, or device acceptance.
 
 ## 1. Native-first capability routing (work package J) — implemented and verified
 
