@@ -94,9 +94,12 @@ Results:
   records repeats for both hart counts and explicitly claims no speedup until
   an SMP guest kernel lands (job A guest-image scope).
 - **Release state: production/default dual-core (and any SIX-tier enablement)
-  stays OFF until a real SMP guest kernel image passes the `run_smp` S1–S3
-  gates in cloud.** Nothing in this document enables dual-core, and the cloud
-  gates must not be weakened to change that.
+  stays OFF until a real SMP guest kernel image passes the `run_smp` S1–S5
+  gates in cloud.** As of run 36004192418 the real SMP boot path is green
+  through S4; S5's completion/timing methodology was corrected here (see the
+  stage contract below) and still needs a green cloud rerun. Nothing in this
+  document enables dual-core, and the cloud gates must not be weakened to
+  change that.
 
 ## Measured status (2026-09-20, host: Apple Silicon macOS, interpreter)
 
@@ -123,7 +126,7 @@ modern kernel vs. 2018 bbl SBI compatibility (expected blocker, recorded as
 evidence), Debian 13 userland on the old kernel fallback, APT / python3 /
 node / numpy, file-persistence across reboot, PTY/fork/exec/signal checks,
 boot/memory/time measurements, and (opt-in `run_smp=true`) the FLOE-SMP
-stages S1–S3 described below. iPad performance: **pending** — no device
+stages S1–S5 described below. iPad performance: **pending** — no device
 measurements exist yet; never extrapolate from the above.
 
 ### Cloud SMP stage contract (`run_smp=true`)
@@ -141,6 +144,23 @@ measurements exist yet; never extrapolate from the above.
   with per-hart instruction counters and writes `smp-perf-baseline.json`;
   the recorded `speedup_claim` stays `null` for the UP demo kernel. Host
   `nproc` is never used as evidence of dual-hart execution.
+- **S4** boots the freshly built `CONFIG_SMP=y NR_CPUS=2` pair with
+  `--vcpu 1`/`2` and requires the guest's own `/proc/cpuinfo` hart count, the
+  boot pair's kernel ident, both harts retiring instructions and parallel 9p
+  I/O; vcpu=1 is the control.
+- **S5** repeats an equal-work two-worker `dd` workload 3× per hart count
+  plus a stopped run. DONE is assembled at runtime by the same guest shell
+  command that runs the workers and only after `wait`, so it means real
+  completion (the earlier fixed `@50` timer was a measured method error: it
+  made every wall time 50.0 s). The work window is measured in the guest from
+  `/proc/uptime` around the workload, isolating boot/console delay. The gate
+  (`smp_workload_check.py`) requires real per-worker completion, bounded
+  equal work, `host_threads=2` with a non-empty hart 1 (and the inline
+  vcpu=1 control), the stopped-run evidence, and a real median work-window
+  speedup — no speedup is a real failure. Per-hart retired instruction counts
+  are recorded evidence only; equal work retiring roughly equal totals is
+  expected, so a total-instruction ratio is never a success criterion (the
+  retired 1.5× rule failed a run at 393.8 M vs 537.1 M).
 
 ## Cloud results (2026-09-20, ubuntu-latest, raw transcripts kept as artifacts)
 
@@ -235,6 +255,18 @@ exit codes are captured from the command itself (`cmd >log 2>&1; printf
 'RC=%d\n' $?`), never from the tail of a pipeline, and raw apt/dpkg logs are
 exported to the host through the 9p share. Debian stages are opt-in
 (`workflow_dispatch` input `run_debian`), so a push stays a few-minute check.
+
+Focused static/parse checks (no guest run, no build):
+
+```sh
+python3 FloeAgent/Qualification/TinyEMULinux/tests/test_smp_workload_check.py
+```
+
+They run the S5 gate helper against synthetic pass/fail work directories
+(including the exact 393.8 M vs 537.1 M false-failure shape) and parse the
+S5 step of the workflow YAML as the runner executes it (no fixed-timer DONE,
+marker never verbatim in the console input, real `wait` before the
+runtime-assembled marker, bounded equal work, no 1.5× instruction rule).
 
 ## Notes for app integration (phase 2B handoff)
 

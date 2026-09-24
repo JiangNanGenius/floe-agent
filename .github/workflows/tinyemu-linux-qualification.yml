@@ -936,10 +936,26 @@ jobs:
 
       # ------------------------------------------------------------------
       # Stage S5 (opt-in, run_smp): repeated equal-work workload on the real
-      # SMP kernel (1 vs 2 harts) plus a stopped run. Dual-hart use is
-      # asserted from guest-visible CPU count, per-hart retired
-      # instructions and the wall time of the same workload, never from
-      # host nproc.
+      # SMP kernel (1 vs 2 harts) plus a stopped run.
+      #
+      # Honest completion + timing (fixes a measured method error). The old
+      # workload printed DONE on the fixed @50 host timer and the analysis
+      # then required vcpu=2 total retired instructions >= 1.5x vcpu=1 for
+      # the same workload; both were wrong. DONE is now assembled at runtime
+      # by the SAME guest shell command that starts the two dd workers and is
+      # printed only after `wait`, with each worker's completion marker before
+      # it; the work window is measured in the guest from /proc/uptime just
+      # before launch and just after `wait`, isolating boot/startup overhead;
+      # and the work is bounded (two dd bs=64k count=6000 jobs per run,
+      # --max-s 180). Equal work retiring roughly equal instruction totals is
+      # expected and is NOT a success criterion (a 1.5x instruction ratio was
+      # a false failure). The gate now lives in
+      # FloeAgent/Qualification/TinyEMULinux/smp_workload_check.py and
+      # requires real per-worker completion, the measured guest work window,
+      # host_threads=2 with a non-empty hart 1 (and the inline vcpu=1
+      # control), and a real median work-window speedup; no speedup is a real
+      # failure. Raw transcripts, stats, rc files and the stopped-run
+      # evidence are kept and uploaded as before.
       # ------------------------------------------------------------------
       - name: Stage S5 — repeated equal-work SMP workload + stopped-run save check
         if: ${{ always() && inputs.run_smp }}
@@ -949,10 +965,16 @@ jobs:
           BOOT=work/smp/boot
           test -s "$BOOT/bbl64.bin" || { echo "Stage S0 produced no boot pair; S5 cannot run"; exit 1; }
           mkdir -p work/smp2
+          # One guest command carries the whole workload: it records the start
+          # from /proc/uptime, runs the two equal dd workers, waits for BOTH
+          # (each worker prints its own completion marker), records the end,
+          # and only then assembles and prints DONE at runtime. There is no
+          # fixed @N timer, so the marker cannot prove anything but real
+          # completion; the guest-measured T0/T1 window isolates boot and
+          # console delay.
           cat > work/smp2/workload.txt <<'EOF'
           @12 mount -t proc proc /proc
-          @20 sh -c 'dd if=/dev/zero of=/dev/null bs=64k count=6000 & dd if=/dev/zero of=/dev/null bs=64k count=6000 & wait'
-          @50 printf 'FLOE_SMP2PERF_%s\n' DONE
+          @18 sh -c 't0=$(cut -d" " -f1 /proc/uptime); printf "FLOE_SMP2WL_T0 %s\n" "$t0"; (dd if=/dev/zero of=/dev/null bs=64k count=6000 2>/tmp/floe-dd0.log; printf "FLOE_SMP2WL_W%s\n" 1) & (dd if=/dev/zero of=/dev/null bs=64k count=6000 2>/tmp/floe-dd1.log; printf "FLOE_SMP2WL_W%s\n" 2) & wait; t1=$(cut -d" " -f1 /proc/uptime); printf "FLOE_SMP2WL_T1 %s\n" "$t1"; cat /tmp/floe-dd0.log /tmp/floe-dd1.log; printf "FLOE_SMP2%s\n" PERF_DONE'
           EOF
           sed -i 's/^ *//' work/smp2/workload.txt
           for v in 1 2; do
@@ -985,82 +1007,8 @@ jobs:
           echo "stop_run_rc=$?" | tee work/smp2/stop-rc.txt
           set -e
           sha256sum "$BOOT/bbl64.bin" "$BOOT/kernel-riscv64.bin" > work/smp2/boot-pair-sha256.txt
-          python3 - <<'PY'
-          import hashlib, json, os, statistics, sys
-
-          runs, problems = [], []
-          for v in (1, 2):
-              for r in (1, 2, 3):
-                  base = f"work/smp2/wl-vcpu{v}-r{r}"
-                  samples = []
-                  with open(base + "-stats.jsonl", "r", errors="replace") as handle:
-                      for line in handle:
-                          line = line.strip()
-                          if line:
-                              samples.append(json.loads(line))
-                  with open(base + "-transcript.txt", "r", errors="replace") as handle:
-                      transcript = handle.read()
-                  final = [s for s in samples if s.get("event") in ("marker", "poweroff", "timeout")]
-                  last = final[-1] if final else samples[-1]
-                  host_threads = max(s.get("host_threads", 0) for s in samples)
-                  hart0 = max((s.get("hart_insns") or [0, 0])[0] for s in samples)
-                  hart1 = max((s.get("hart_insns") or [0, 0])[1] for s in samples)
-                  booted = "FLOE_SMP2PERF_DONE" in transcript
-                  runs.append({"vcpu": v, "repeat": r, "booted": booted,
-                               "wall_s": last.get("t"), "final_event": last.get("event"),
-                               "host_threads": host_threads, "hart0": hart0, "hart1": hart1})
-                  if not booted:
-                      problems.append(f"vcpu={v} r{r}: workload marker missing")
-                  if v == 2:
-                      if host_threads != 2:
-                          problems.append(f"vcpu=2 r{r}: host_threads={host_threads}")
-                      if hart1 < 100000:
-                          problems.append(f"vcpu=2 r{r}: hart1 retired {hart1} instructions")
-          booted = {v: [r for r in runs if r["vcpu"] == v and r["booted"]] for v in (1, 2)}
-          med = {v: statistics.median([r["wall_s"] for r in booted[v]]) for v in (1, 2) if booted[v]}
-          work = {v: statistics.median([r["hart0"] + r["hart1"] for r in booted[v]]) for v in (1, 2) if booted[v]}
-          ratio = (med[1] / med[2]) if 1 in med and 2 in med and med[2] else None
-          best = max((med[1] / r["wall_s"]) for r in booted[2]) if 1 in med and booted[2] else None
-          report = {
-              "tool": "floe_vm_host --vcpu + FloeVMStats, fresh CONFIG_SMP kernel",
-              "runs": runs,
-              "median_wall_s": med,
-              "median_total_hart_insns": work,
-              "wall_ratio_1hart_over_2hart": ratio,
-              "best_ratio": best,
-              "note": ("Equal guest workload repeated 3x per hart count on the freshly "
-                       "built CONFIG_SMP=y NR_CPUS=2 kernel. Dual-hart use is proven by "
-                       "guest /proc/cpuinfo (== 2), per-hart retired instructions and "
-                       "the wall time, never by host nproc."),
-          }
-          with open("work/smp2/smp-perf.json", "w", encoding="utf-8") as handle:
-              json.dump(report, handle, indent=2)
-              handle.write("\n")
-          print(json.dumps(report, indent=2))
-          if len(booted[1]) < 3 or len(booted[2]) < 3:
-              problems.append("fewer than 3 booted runs per hart count")
-          elif work[2] < 1.5 * work[1]:
-              problems.append(f"2-hart run retired {work[2]} insns vs {work[1]} for 1 hart: "
-                            "the second CPU did not carry work")
-          elif not best or best < 1.05:
-              problems.append(f"no parallel speedup: best ratio {best}")
-          # a stopped run keeps evidence and cannot corrupt the boot pair
-          stop_rc = open("work/smp2/stop-rc.txt").read().strip().split("=")[-1]
-          stop_bytes = os.path.getsize("work/smp2/stop-transcript.txt")
-          print(f"stopped run: rc={stop_rc} transcript_bytes={stop_bytes}")
-          if stop_rc != "2" or stop_bytes == 0:
-              problems.append(f"stopped run did not keep evidence (rc={stop_rc}, {stop_bytes} bytes)")
-          if os.path.getsize("work/smp2/stop-stats.jsonl") == 0:
-              problems.append("stopped run wrote no stats sample")
-          for line in open("work/smp2/boot-pair-sha256.txt"):
-              pass
-          if problems:
-              for item in problems:
-                  print("S5 SMP WORKLOAD GATE FAILED:", item)
-              raise SystemExit(1)
-          print("S5 gate: every 2-hart run executed both CPUs, the same workload "
-                "scale and a stopped run kept its evidence")
-          PY
+          python3 FloeAgent/Qualification/TinyEMULinux/smp_workload_check.py \
+            --work-dir work/smp2 --out work/smp2/smp-perf.json
           python3 -m json.tool work/smp2/smp-perf.json >/dev/null && echo "smp-perf.json valid"
 
       - name: Upload Stage S5 evidence (per-step, immediate)
@@ -1135,7 +1083,10 @@ jobs:
                        "pinned source in the cloud; stage_s4 boots it and asserts the "
                        "guest's own /proc/cpuinfo count, the boot pair's kernel ident "
                        "and both harts executing; stage_s5 repeats the equal-work "
-                       "workload 3x per hart count and keeps a stopped run's evidence."),
+                       "workload 3x per hart count and keeps a stopped run's evidence; "
+                       "its smp-perf.json holds guest-measured work windows and the "
+                       "required speedup (per-hart instruction totals are evidence "
+                       "only, never a cross-hart gate)."),
           }
           summary = {
               "engine_sha256": "be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555",
