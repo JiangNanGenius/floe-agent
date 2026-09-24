@@ -41,6 +41,10 @@ to pristine upstream behavior.
 
 ## Contents and checksums (SHA-256)
 
+`FLOE_SHA256SUMS` covers every vendored source, test and patch file (507 files)
+and can be checked from a clean repository clone without an upstream SwiftPM
+checkout. The four critical input/output hashes are also recorded below.
+
 | File | SHA-256 |
 | --- | --- |
 | pristine `Libraries/MLXLMCommon/GatedDelta.swift` (upstream d5d8b29) | `2e81ef2359b9d28fe850a04b1a45e8881144ebca84276a2d5aeff77f7c683b49` |
@@ -70,7 +74,7 @@ test "$(git -C "$SRC" rev-parse HEAD)" = d5d8b290e601ac1bf11f24635f8f811a83b98bf
 
 rsync -a --delete \
   --exclude='.git' --exclude='.build' --exclude='DerivedData' --exclude='.DS_Store' \
-  --exclude='patches' --exclude='FLOE_VENDOR.md' --exclude='floe_vendor_check.sh' \
+  --exclude='patches' --exclude='FLOE_VENDOR.md' --exclude='floe_vendor_check.sh' --exclude='FLOE_SHA256SUMS' \
   "$SRC/" FloeAgent/ThirdParty/MLXSwiftLM/
 chmod -R u+w FloeAgent/ThirdParty/MLXSwiftLM
 
@@ -78,11 +82,23 @@ chmod -R u+w FloeAgent/ThirdParty/MLXSwiftLM
 for p in FloeAgent/ThirdParty/MLXSwiftLM/patches/*.patch; do
   patch -d FloeAgent/ThirdParty/MLXSwiftLM -p1 < "$p"
 done
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+root = Path('FloeAgent/ThirdParty/MLXSwiftLM')
+skip = {'FLOE_SHA256SUMS', 'FLOE_VENDOR.md', 'floe_vendor_check.sh'}
+files = sorted(p for p in root.rglob('*') if p.is_file()
+               and p.relative_to(root).as_posix() not in skip)
+(root / 'FLOE_SHA256SUMS').write_text(''.join(
+    f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}\n'
+    for p in files))
+PY
 ```
 
-Read-only audit: `bash FloeAgent/ThirdParty/MLXSwiftLM/floe_vendor_check.sh`
-(verifies checkout SHA, file hashes, and that the patch series reproduces the
-vendored files from pristine source).
+Read-only audit: `bash FloeAgent/ThirdParty/MLXSwiftLM/floe_vendor_check.sh`.
+It always checks the complete vendored tree against `FLOE_SHA256SUMS`; when
+the pinned upstream checkout is present, it also verifies its revision and
+replays the patch series byte-for-byte.
 
 ## Verification status
 
