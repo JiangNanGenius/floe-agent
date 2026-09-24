@@ -8,7 +8,7 @@ GitHub Releases is the single trust-bearing primary; Gitee is only an optional *
 
 | 门禁 | 位置 | 覆盖范围 | 验证方式 |
 | --- | --- | --- | --- |
-| refs 门禁 | `.github/workflows/gitee-mirror.yml` 的 `mirror` 作业 | `main`、`v*`、`floe-linux-guest-*` 标签的单向推送 | 推送后比对 Gitee `main` 的 commit SHA 与 GitHub `main`；标签从不强制移动 |
+| refs 门禁 | `.github/workflows/gitee-mirror.yml` 的 `mirror` 作业 | `main`、`v*`、`floe-linux-guest-*`、`floe-linux-template-*` 标签的单向推送 | 推送后比对 Gitee `main` 的 commit SHA 与 GitHub `main`；标签从不强制移动 |
 | 发行版门禁 | 同一工作流的 `release-assets` 作业 + `FloeAgent/scripts/sync_release_to_gitee.py` | 一个已发布 Release 的元数据与全部资产 | 每个文件按大小与 SHA-256 校验；生成并回读 `GITEE-MIRROR-MANIFEST.json` |
 
 refs 同步成功**不**代表资产已同步；两者分别报告，不能互相替代。
@@ -98,7 +98,7 @@ shasum -a 256 Floe-Agent-1.7.0-build225-unsigned.ipa   # 必须等于 parts.json
 
 - `release`（`published` / `released` / `edited`）——人工或 PAT 发布的 Release；
 - `repository_dispatch`，类型 `gitee-release-sync`，payload `tag`；
-- `workflow_run`（App 发布、`linux-guest-distribute`、`linux-guest-runner-update`、`component-image-ci` 完成时，尽力而为）；
+- `workflow_run`（App 发布、`linux-guest-distribute`、`linux-guest-runner-update`、Linux 模板分发完成时，尽力而为）；成功运行的源码分支名不当作发行标签，改查最新已发布 Release；
 - 每周 `schedule` 对最新已发布 Release 做一次幂等对账；
 - `workflow_dispatch`（可指定 `release_tag`、`dry_run`、`include_assets`、`shard_mib`、`verify`、`upload_workers`、`time_budget_minutes` 等）。
 
