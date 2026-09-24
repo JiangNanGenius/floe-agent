@@ -157,7 +157,8 @@ measurements exist yet; never extrapolate from the above.
   (`smp_workload_check.py`) requires real per-worker completion, bounded
   equal work, `host_threads=2` with a non-empty hart 1 (and the inline
   vcpu=1 control), the stopped-run evidence, and a real median work-window
-  speedup — no speedup is a real failure. Per-hart retired instruction counts
+  speedup (gate threshold `--min-speedup 1.10`, explicit in the workflow) —
+  no speedup is a real failure. Per-hart retired instruction counts
   are recorded evidence only; equal work retiring roughly equal totals is
   expected, so a total-instruction ratio is never a success criterion (the
   retired 1.5× rule failed a run at 393.8 M vs 537.1 M).

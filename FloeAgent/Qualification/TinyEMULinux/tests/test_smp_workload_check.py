@@ -372,6 +372,14 @@ class WorkflowStaticTest(unittest.TestCase):
         self.assertIn("--until FLOE_SMP2PERF_DONE", self.s5_run)
         self.assertIn("--max-s 180", self.s5_run)
 
+    def test_gate_thresholds_are_explicit_and_not_weakened(self):
+        self.assertIn("--min-speedup 1.10", self.s5_run)
+        self.assertIn("--max-work-s 180", self.s5_run)
+        match = re.search(r"--min-speedup ([0-9.]+)", self.s5_run)
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(float(match.group(1)), 1.05,
+                                "a speedup gate below 1.05 would not prove parallel use")
+
     def test_old_timed_workload_text_gone_from_whole_workflow(self):
         self.assertNotIn("@50 printf 'FLOE_SMP2PERF_%s\\n' DONE", self.workflow_text)
         self.assertNotIn("work[2] < 1.5 * work[1]", self.workflow_text)

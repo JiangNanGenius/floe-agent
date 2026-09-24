@@ -1007,8 +1007,11 @@ jobs:
           echo "stop_run_rc=$?" | tee work/smp2/stop-rc.txt
           set -e
           sha256sum "$BOOT/bbl64.bin" "$BOOT/kernel-riscv64.bin" > work/smp2/boot-pair-sha256.txt
+          # the gate thresholds are explicit here so a review does not have to
+          # open the helper to see that speedup is required, not optional
           python3 FloeAgent/Qualification/TinyEMULinux/smp_workload_check.py \
-            --work-dir work/smp2 --out work/smp2/smp-perf.json
+            --work-dir work/smp2 --out work/smp2/smp-perf.json \
+            --min-speedup 1.10 --max-work-s 180
           python3 -m json.tool work/smp2/smp-perf.json >/dev/null && echo "smp-perf.json valid"
 
       - name: Upload Stage S5 evidence (per-step, immediate)
