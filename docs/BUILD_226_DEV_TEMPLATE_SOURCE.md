@@ -107,6 +107,28 @@ Local verification before dispatch (2026-09-24, this Mac):
 cross-check of two independently generated gitiles archives identical
 (5293/5293 files).
 
+## Distribution (D6)
+
+`.github/workflows/linux-template-distribute-dev.yml` turns the unchanged image
+candidate and this closed source bundle into one published GitHub component
+prerelease (`floe-linux-template-dev-document-20260924.1`), then the App pins
+the exact released archive. The workflow pins two retained runs, re-verifies
+every artifact id/byte size and digest through the GitHub API before
+downloading, and fails closed on any gap:
+
+- image/templates run 35928029851 (`706413fd…`): image candidate
+  `10780911713`, image evidence `10781270686`, template qualification
+  `10781380423`;
+- corresponding-sources run 35939078878 (`2f4bd52d…`): upstream/relink/
+  toolchain `10784446321`, Debian shards `10783544157` + `10783873015`,
+  source evidence `10783618931`, PyPI sources `10784198490`.
+
+The distribute job re-checks the candidate archive sha512 and every member
+digest, rewrites only the manifest provenance, verifies the complete source
+tree (including the PyPI payload against the recipe pins and
+`PYPI-SOURCES.sha256`), and only then creates the prerelease. The release
+record (tag, run, asset digests) is appended below after publishing.
+
 ## Boundaries
 
 - The image candidate, its manifest, boot files and IDs are unchanged; no
