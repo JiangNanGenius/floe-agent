@@ -385,8 +385,8 @@ jobs:
           pypi_gaps = [line for line in text(os.path.join(evidence, "source", "pypi-sources", "pypi-source-gaps.tsv")).splitlines()
                        if line.strip() and not line.startswith("#")]
           require(not pypi_gaps, "PyPI source map has zero gaps (%d rows)" % len(pypi_gaps))
-          require("gap_packages=0" in text(os.path.join(evidence, "source", "pypi-sources", "PYPI-SOURCES.md")),
-                  "PYPI-SOURCES.md records gap_packages=0")
+          require("is header-only" in text(os.path.join(evidence, "source", "pypi-sources", "PYPI-SOURCES.md")),
+                  "PYPI-SOURCES.md records the header-only gap list")
           manifest_digest = hashlib.sha512(open(os.path.join(evidence, "source", "SOURCES-MANIFEST.md"), "rb").read()).hexdigest()
           sidecar = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(evidence, "source", "SOURCES-MANIFEST.md.sha512")), re.MULTILINE)
           require(sidecar is not None and sidecar.group(1) == manifest_digest, "SOURCES-MANIFEST.md matches its sha512 record")
