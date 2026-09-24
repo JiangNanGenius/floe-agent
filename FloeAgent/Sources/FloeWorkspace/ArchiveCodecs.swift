@@ -8,9 +8,10 @@
 //   * gzip  — gzip member framing around raw DEFLATE (system Compression
 //             framework), CRC32/ISIZE verified on read. Members are located
 //             by decoding, never by scanning compressed bytes for a magic.
-//   * bzip2 — SWCompression (already a FloeWorkspace dependency) compresses;
-//             its decompressor is one-shot and cannot be bounded before it
-//             allocates, so decompression is refused explicitly.
+//   * bzip2 — the SDK's own libbz2 streaming API through the `CFloeArchive`
+//             C shim (`ArchiveBzip2.swift`): bounded decode with
+//             concatenated members located by decoding, and bounded stream
+//             encode. No one-shot buffer exists in either direction.
 //   * xz    — the system Compression framework's LZMA codec emits/consumes a
 //             complete `.xz` stream (liblzma-compatible), so tar.xz and .xz
 //             stay native without a new dependency.
@@ -23,7 +24,6 @@
 
 import Foundation
 import Compression
-import SWCompression
 import FloeCore
 import FloeTools
 
@@ -403,32 +403,6 @@ final class XZArchiveWriter {
 
     func finish() throws {
         try codec.process(Data(), finalize: true, sink: sink)
-    }
-}
-
-// MARK: - BZip2
-
-/// bzip2 is the one format the system codecs do not cover. SWCompression
-/// implements it one-shot in both directions.
-///
-/// * Creation stays supported: the input is the locally scanned plan, already
-///   capped by `ArchiveLimits.maxTotalBytes`, and the engine reports the
-///   buffered path in the summary.
-/// * Decompression is refused: the decoder materializes the whole expanded
-///   payload before it returns, so the only cap possible would be on the
-///   *compressed* size — which does not bound expansion (a few KiB of bzip2
-///   can expand to hundreds of MiB). A bound that cannot be enforced before
-///   allocation is not offered at all.
-enum Bzip2Codec {
-    /// Why the decode direction is refused (see above).
-    static let decompressionUnsupported =
-        "bzip2 decompression cannot be bounded before allocation; use gzip (tar.gz) or xz (tar.xz)"
-
-    static func compress(_ data: Data, limit: Int) throws -> Data {
-        guard data.count <= limit else {
-            throw ArchiveCodecError.limitExceeded("bzip2 buffers the whole payload (\(data.count) bytes > \(limit))")
-        }
-        return BZip2.compress(data: data)
     }
 }
 

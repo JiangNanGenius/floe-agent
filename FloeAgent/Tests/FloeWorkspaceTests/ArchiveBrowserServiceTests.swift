@@ -38,6 +38,10 @@ struct ArchiveBrowserServiceTests {
             try content.write(to: url, atomically: true, encoding: .utf8)
         }
 
+        func read(_ relative: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
+        }
+
         func makeZip(named relative: String, entries: [(String, String)]) throws {
             let url = root.appendingPathComponent(relative)
             try FileManager.default.createDirectory(
@@ -243,16 +247,18 @@ struct ArchiveBrowserServiceTests {
         #expect(listing.entries[2].size == 7)
     }
 
-    @Test("bz2/tbz2 decoding is refused with the reason the capability set states")
-    func bzip2DecodeRefusal() async throws {
+    @Test("bz2/tbz2 decode through the browser with the same bounds as gzip/xz")
+    func bzip2DecodeSupported() async throws {
         let f = try Fixture()
         try f.write("note.txt", "bzip2 payload")
+        try f.write("tree/a.txt", "alpha")
+        try f.write("tree/b.txt", "beta")
         let service = f.service
 
-        // Creation stays available: the engine writes both variants natively.
+        // Creation and decode are both native now.
         _ = try ArchiveEngine.create(
             format: "tbz2",
-            sources: [f.root.appendingPathComponent("note.txt")],
+            sources: [f.root.appendingPathComponent("tree")],
             destination: f.root.appendingPathComponent("pack.tar.bz2"),
             cancellation: f.cancel
         )
@@ -263,60 +269,53 @@ struct ArchiveBrowserServiceTests {
             cancellation: f.cancel
         )
 
-        // The advertised capability matches the behavior: bz2/tbz2 stay in the
-        // create-capable sets but are listed as decode-unsupported.
-        #expect(ArchiveBrowserService.decodeUnsupportedFormats == ["tbz2", "bz2"])
+        // The advertised capability matches the behavior: bz2/tbz2 are in the
+        // native decode sets (no decode-unsupported carve-out remains).
         #expect(ArchiveBrowserService.nativeFormats.contains("tbz2"))
         #expect(ArchiveBrowserService.singleFileFormats.contains("bz2"))
-        #expect(!ArchiveBrowserService.decodeUnsupportedReason.isEmpty)
 
-        // Listing a tar.bz2 has to decode it: refused with the honest reason.
-        do {
-            _ = try await service.listing(relativePath: "pack.tar.bz2", rootURL: f.root, cancellation: f.cancel)
-            Issue.record("tbz2 listing must be refused")
-        } catch let error as ArchiveBrowseError {
-            guard case .unsupportedFormat(let format, let reason) = error else {
-                Issue.record("unexpected error \(error)")
-                return
-            }
-            #expect(format == "tbz2")
-            #expect(reason == ArchiveBrowserService.decodeUnsupportedReason)
-        }
-        // Extraction of the same container is refused too.
-        do {
-            _ = try await service.extract(
-                relativePath: "pack.tar.bz2", destinationDir: "tbz2-out", rootURL: f.root, cancellation: f.cancel
-            )
-            Issue.record("tbz2 extraction must be refused")
-        } catch let error as ArchiveBrowseError {
-            guard case .unsupportedFormat(let format, _) = error else {
-                Issue.record("unexpected error \(error)")
-                return
-            }
-            #expect(format == "tbz2")
-        }
-        // Decompressing a single-file .bz2 is refused as well.
-        do {
-            _ = try await service.decompress(
-                relativePath: "note.txt.bz2", destinationFile: "note-restored.txt", rootURL: f.root, cancellation: f.cancel
-            )
-            Issue.record("bz2 decompression must be refused")
-        } catch let error as ArchiveBrowseError {
-            guard case .unsupportedFormat(let format, let reason) = error else {
-                Issue.record("unexpected error \(error)")
-                return
-            }
-            #expect(format == "bz2")
-            #expect(reason == ArchiveBrowserService.decodeUnsupportedReason)
-        }
-        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("tbz2-out").path))
-        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("note-restored.txt").path))
+        // Listing a tar.bz2 decodes it with the bounded streaming decoder.
+        let containerListing = try await service.listing(relativePath: "pack.tar.bz2", rootURL: f.root, cancellation: f.cancel)
+        #expect(containerListing.format == "tbz2")
+        #expect(containerListing.entries.contains { $0.path.hasSuffix("tree/a.txt") })
+        #expect(containerListing.entries.contains { $0.path.hasSuffix("tree/b.txt") })
 
-        // The single-file listing of .bz2 stays honest: one logical payload,
-        // no decode (so it is not refused).
+        // Extraction writes the real tree.
+        let summary = try await service.extract(
+            relativePath: "pack.tar.bz2", destinationDir: "tbz2-out", rootURL: f.root, cancellation: f.cancel
+        )
+        #expect(summary.contains("entries=2"), "summary was: \(summary)")
+        #expect(try f.read("tbz2-out/tree/a.txt") == "alpha")
+        #expect(try f.read("tbz2-out/tree/b.txt") == "beta")
+
+        // Single-file .bz2 decompresses to a new file.
+        let bz2Summary = try await service.decompress(
+            relativePath: "note.txt.bz2", destinationFile: "note-restored.txt", rootURL: f.root, cancellation: f.cancel
+        )
+        #expect(bz2Summary.contains("entries=1"))
+        #expect(try f.read("note-restored.txt") == "bzip2 payload")
+
+        // The single-file listing of .bz2 stays honest: one logical payload.
         let bz2Listing = try await service.listing(relativePath: "note.txt.bz2", rootURL: f.root, cancellation: f.cancel)
         #expect(bz2Listing.format == "bz2")
         #expect(bz2Listing.entries.count == 1)
+
+        // A corrupted bz2 is rejected with nothing committed.
+        var corrupt = try Data(contentsOf: f.root.appendingPathComponent("note.txt.bz2"))
+        corrupt[corrupt.startIndex + corrupt.count / 2] ^= 0xFF
+        try corrupt.write(to: f.root.appendingPathComponent("corrupt.bz2"))
+        do {
+            _ = try await service.decompress(
+                relativePath: "corrupt.bz2", destinationFile: "corrupt-out.txt", rootURL: f.root, cancellation: f.cancel
+            )
+            Issue.record("corrupted bz2 must be refused")
+        } catch let error as ArchiveBrowseError {
+            guard case .failed = error else {
+                Issue.record("unexpected error \(error)")
+                return
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("corrupt-out.txt").path))
     }
 
     @Test("Format inference matches the archive tool's own extension rules")

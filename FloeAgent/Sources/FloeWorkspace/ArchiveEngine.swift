@@ -17,8 +17,9 @@
 //   * the compressed decoders enforce that cap *while decoding* (before a
 //     produced chunk is appended) and poll cancellation on the same path, so
 //     an expansion bomb fails with bounded memory instead of being buffered
-//     and rejected afterwards; bzip2 decompression is refused entirely
-//     because its one-shot decoder cannot be bounded before allocation
+//     and rejected afterwards; bzip2 uses the SDK's streaming libbz2 through
+//     `CFloeArchive`, so it has the same bounded-decode guarantee and no
+//     one-shot path remains in any direction
 //   * sanitized entry names; absolute paths, `..`, control characters and
 //     backslash smuggling are skipped and counted
 //   * existing outputs are never overwritten; writes are staged beside the
@@ -35,7 +36,6 @@
 
 import Foundation
 import ZIPFoundation
-import SWCompression
 import FloeCore
 import FloeTools
 
@@ -81,22 +81,15 @@ public struct ArchiveLimits: Sendable, Equatable {
     public var maxEntries: Int
     public var maxTotalBytes: Int64
     public var maxListedEntries: Int
-    /// One-shot buffering cap for the bzip2 *creation* paths (SWCompression
-    /// compresses in memory). bzip2 decompression is refused entirely: its
-    /// one-shot decoder cannot be bounded before it allocates, and a
-    /// compressed-size cap would not bound the expansion.
-    public var oneShotBufferLimit: Int
 
     public init(
         maxEntries: Int = 5_000,
         maxTotalBytes: Int64 = 256 * 1_024 * 1_024,
-        maxListedEntries: Int = 500,
-        oneShotBufferLimit: Int = 256 * 1_024 * 1_024
+        maxListedEntries: Int = 500
     ) {
         self.maxEntries = maxEntries
         self.maxTotalBytes = maxTotalBytes
         self.maxListedEntries = maxListedEntries
-        self.oneShotBufferLimit = oneShotBufferLimit
     }
 }
 
@@ -261,9 +254,9 @@ public enum ArchiveEngine {
         case "txz":
             summary = try writeStreamingTar(plan: plan, compressor: .xz, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
         case "tbz2":
-            summary = try writeBufferedTar(plan: plan, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
+            summary = try writeStreamingTar(plan: plan, compressor: .bzip2, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
         default: // gz · bz2 · xz: one file, not a container
-            summary = try writeSingleFileCompressed(plan: plan, format: format, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
+            summary = try writeSingleFileCompressed(plan: plan, format: format, staging: staging, progress: progress, cancellation: cancellation)
         }
         // Sidecars skipped during the scan are part of the honest report.
         summary.skipped += plan.skippedNoise
@@ -395,11 +388,14 @@ public enum ArchiveEngine {
             case "gz":
                 let decoded = try GzipDecodingSource(url: source, budget: budget)
                 try pipe(source: decoded, emit: emit, cancellation: cancellation)
+            case "bz2":
+                let decoded = try Bzip2DecodingSource(url: source, budget: budget)
+                try pipe(source: decoded, emit: emit, cancellation: cancellation)
             case "xz":
                 let verified = try VerifiedXZSource(source: FileByteSource(url: source), budget: budget)
                 try pipe(source: verified, emit: emit, cancellation: cancellation)
             default:
-                throw ArchiveEngineError.resourceBound(Bzip2Codec.decompressionUnsupported)
+                throw ArchiveEngineError.unsupportedFormat(format)
             }
             try sink.close()
         } catch {
@@ -788,6 +784,7 @@ public enum ArchiveEngine {
 
     private enum TarCompressor {
         case gzip
+        case bzip2
         case xz
     }
 
@@ -801,10 +798,13 @@ public enum ArchiveEngine {
     ) throws -> ArchiveOperationSummary {
         let fileSink = try FileByteSink(url: staging)
         var gzipSink: GzipByteSink?
+        var bzip2Sink: BZip2ByteSink?
         var xzSink: XZByteSink?
         switch compressor {
         case .gzip:
             gzipSink = try GzipByteSink(sink: fileSink)
+        case .bzip2:
+            bzip2Sink = try BZip2ByteSink(sink: fileSink)
         case .xz:
             xzSink = try XZByteSink(sink: fileSink)
         case nil:
@@ -813,6 +813,8 @@ public enum ArchiveEngine {
         let sink: ArchiveByteSink
         if let gzipSink {
             sink = gzipSink
+        } else if let bzip2Sink {
+            sink = bzip2Sink
         } else if let xzSink {
             sink = xzSink
         } else {
@@ -822,18 +824,25 @@ public enum ArchiveEngine {
         var summary = try tarWriteItems(plan: plan, writer: &writer, limits: limits, progress: progress, cancellation: cancellation)
         try writer.finish()
         if let gzipSink { try gzipSink.finish() }
+        if let bzip2Sink { try bzip2Sink.finish() }
         if let xzSink { try xzSink.finish() }
         try fileSink.close()
-        summary.format = compressor == .gzip ? "tgz" : (compressor == .xz ? "txz" : "tar")
+        switch compressor {
+        case .gzip: summary.format = "tgz"
+        case .bzip2: summary.format = "tbz2"
+        case .xz: summary.format = "txz"
+        case nil: summary.format = "tar"
+        }
         return summary
     }
 
     /// gzip/bzip2/xz compress exactly one regular file into one output file.
+    /// All three stream the input straight into the compressor, so memory does
+    /// not grow with the file size in either direction.
     private static func writeSingleFileCompressed(
         plan: Plan,
         format: String,
         staging: URL,
-        limits: ArchiveLimits,
         progress: ProgressHandler?,
         cancellation: CancellationToken
     ) throws -> ArchiveOperationSummary {
@@ -845,7 +854,6 @@ public enum ArchiveEngine {
         defer { try? fileSink.close() }
         let source = try FileByteSource(url: item.url)
         var written: Int64 = 0
-        var notes: [String] = []
 
         func pump(_ sink: ArchiveByteSink) throws {
             while let chunk = try source.read(max: 256 * 1_024), !chunk.isEmpty {
@@ -861,23 +869,16 @@ public enum ArchiveEngine {
             let sink = try GzipByteSink(sink: fileSink)
             try pump(sink)
             try sink.finish()
+        case "bz2":
+            let sink = try BZip2ByteSink(sink: fileSink)
+            try pump(sink)
+            try sink.finish()
         case "xz":
             let sink = try XZByteSink(sink: fileSink)
             try pump(sink)
             try sink.finish()
-        default: // bz2
-            var raw = Data()
-            while let chunk = try source.read(max: 256 * 1_024), !chunk.isEmpty {
-                try cancellation.throwIfCancelled()
-                raw.append(chunk)
-                guard raw.count <= limits.oneShotBufferLimit else {
-                    throw ArchiveEngineError.limitExceeded("bzip2 cannot buffer inputs over \(limits.oneShotBufferLimit) bytes")
-                }
-            }
-            let compressed = try Bzip2Codec.compress(raw, limit: limits.oneShotBufferLimit)
-            try fileSink.write(compressed)
-            written = Int64(raw.count)
-            notes.append("bzip2Buffered")
+        default:
+            throw ArchiveEngineError.unsupportedFormat(format)
         }
         return ArchiveOperationSummary(
             action: "create",
@@ -886,25 +887,8 @@ public enum ArchiveEngine {
             skipped: 0,
             uncompressedBytes: written,
             metadataNotices: ["compressionCarriesNoMetadata"],
-            notes: notes
+            notes: []
         )
-    }
-
-    private static func writeBufferedTar(
-        plan: Plan,
-        staging: URL,
-        limits: ArchiveLimits,
-        progress: ProgressHandler?,
-        cancellation: CancellationToken
-    ) throws -> ArchiveOperationSummary {        let buffer = DataByteSink()
-        var writer = TarStreamWriter(sink: buffer)
-        var summary = try tarWriteItems(plan: plan, writer: &writer, limits: limits, progress: progress, cancellation: cancellation)
-        try writer.finish()
-        let compressed = try Bzip2Codec.compress(buffer.data, limit: limits.oneShotBufferLimit)
-        try compressed.write(to: staging, options: .atomic)
-        summary.format = "tbz2"
-        summary.notes.append("bzip2Buffered")
-        return summary
     }
 
     private static func tarWriteItems(
@@ -987,7 +971,10 @@ public enum ArchiveEngine {
                 checkCancellation: checkCancellation
             )
         case "tbz2":
-            throw ArchiveEngineError.resourceBound(Bzip2Codec.decompressionUnsupported)
+            reader = try TarStreamReader(
+                source: try Bzip2DecodingSource(url: source, budget: budget),
+                checkCancellation: checkCancellation
+            )
         default:
             reader = try TarStreamReader(source: FileByteSource(url: source), checkCancellation: checkCancellation)
         }
@@ -1182,7 +1169,10 @@ public enum ArchiveEngine {
                 checkCancellation: checkCancellation
             )
         case "tbz2":
-            throw ArchiveEngineError.resourceBound(Bzip2Codec.decompressionUnsupported)
+            reader = try TarStreamReader(
+                source: try Bzip2DecodingSource(url: source, budget: budget),
+                checkCancellation: checkCancellation
+            )
         default:
             reader = try TarStreamReader(source: FileByteSource(url: source), checkCancellation: checkCancellation)
         }
@@ -1391,6 +1381,23 @@ final class GzipByteSink: ArchiveByteSink {
 
     init(sink: ArchiveByteSink) throws {
         self.writer = try GzipArchiveWriter { try sink.write($0) }
+    }
+
+    func write(_ data: Data) throws {
+        try writer.write(data)
+    }
+
+    func finish() throws {
+        try writer.finish()
+    }
+}
+
+/// Wraps a byte sink in a bzip2 writer (tar.bz2 / bz2 streaming).
+final class BZip2ByteSink: ArchiveByteSink {
+    private let writer: Bzip2StreamWriter
+
+    init(sink: ArchiveByteSink) throws {
+        self.writer = try Bzip2StreamWriter { try sink.write($0) }
     }
 
     func write(_ data: Data) throws {

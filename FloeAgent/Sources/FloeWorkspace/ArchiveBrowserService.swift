@@ -3,13 +3,11 @@
 // The browser reuses the same `WorkspaceArchiveTool` execution path the agent
 // uses, so every bound and protection stays in one place: entry/size limits,
 // path-traversal and symlink rejection, no overwrites, and workspace-relative
-// path validation. Zip, tar, tar.gz, tar.xz, single-file gzip/xz and 7z are
-// read natively on the host. tar.bz2/bzip2 can still be *created* natively but
-// not decoded: the bzip2 decoder is one-shot and cannot honor a bounded memory
-// budget, so decoding is refused with a truthful reason (see
-// `decodeUnsupportedFormats`) instead of exposing an expansion bomb. RAR needs
-// the app's signed decoder and reports that truthfully instead of failing with
-// a generic error or silently starting a Linux guest.
+// path validation. Zip, tar, tar.gz, tar.bz2, tar.xz, single-file gzip/bzip2/xz
+// and 7z are read natively on the host; bzip2 uses the SDK's streaming libbz2
+// through `CFloeArchive`, so its decode is bounded exactly like gzip/xz. RAR
+// needs the app's signed decoder and reports that truthfully instead of failing
+// with a generic error or silently starting a Linux guest.
 
 import Foundation
 import FloeCore
@@ -64,23 +62,13 @@ public enum ArchiveBrowseError: Error, LocalizedError, Equatable {
 
 /// Reads archive structure and extracts one archive for preview.
 public struct ArchiveBrowserService: Sendable {
-    /// Container formats this surface writes natively and reads when decoding
-    /// is bounded (`tar.bz2` is write-only, see `decodeUnsupportedFormats`).
+    /// Container formats this surface writes and reads natively, including the
+    /// bzip2-compressed tar (streaming libbz2 decode).
     public static let nativeFormats: Set<String> = ["zip", "tar", "tgz", "tbz2", "txz", "7z"]
     /// Single-file compression formats (one logical payload).
     public static let singleFileFormats: Set<String> = ["gz", "bz2", "xz"]
     /// RAR needs the app's signed decoder handler and is list/extract only.
     public static let rarFormats: Set<String> = ["rar"]
-    /// Formats this surface can create but not decode on the host. bzip2
-    /// (SWCompression) is one-shot: it materializes the whole expanded payload
-    /// before returning, so a memory budget cannot be enforced before the
-    /// allocation and a compressed-size cap would not bound the expansion.
-    /// Decoding is therefore refused explicitly; creation stays native because
-    /// its input is the locally scanned, already bounded plan.
-    public static let decodeUnsupportedFormats: Set<String> = ["tbz2", "bz2"]
-    /// The truthful reason surfaced for `decodeUnsupportedFormats`.
-    public static let decodeUnsupportedReason =
-        "bzip2 decompression cannot be bounded before allocation; re-create it as tar.gz/tar.xz or open it in the Linux environment"
 
     private let environment: WorkspaceToolEnvironment
 
@@ -131,8 +119,7 @@ public struct ArchiveBrowserService: Sendable {
                 summary: "status=ok action=list format=\(format) source=\(relativePath) entries=\(listing.entries.count) truncated=\(listing.truncated)"
             )
         }
-        // Listing a tar container requires decoding it; refuse before any read.
-        try Self.rejectUnboundedDecode(format)
+        // Listing a tar container requires decoding it.
         let output = try await run(
             arguments: .init(action: "list", source: relativePath),
             rootURL: rootURL,
@@ -166,7 +153,6 @@ public struct ArchiveBrowserService: Sendable {
             }
             throw Self.unsupported(format: format)
         }
-        try Self.rejectUnboundedDecode(format)
         let output = try await run(
             arguments: .init(action: "extract", source: relativePath, destinationDir: destinationDir),
             rootURL: rootURL,
@@ -187,7 +173,6 @@ public struct ArchiveBrowserService: Sendable {
         guard let format = Self.format(for: relativePath), Self.singleFileFormats.contains(format) else {
             throw Self.unsupported(format: Self.format(for: relativePath) ?? "unknown")
         }
-        try Self.rejectUnboundedDecode(format)
         let output = try await run(
             arguments: .init(action: "extract", source: relativePath, destinationFile: destinationFile),
             rootURL: rootURL,
@@ -254,14 +239,6 @@ public struct ArchiveBrowserService: Sendable {
             return .unsupportedFormat(format: format, reason: "RAR archives require the app's signed decoder")
         }
         return .unsupportedFormat(format: format, reason: "this archive format is not supported")
-    }
-
-    /// Refuses a decode path whose decompressor cannot be bounded before it
-    /// allocates (bzip2), with the reason that says what to do instead.
-    static func rejectUnboundedDecode(_ format: String) throws {
-        if Self.decodeUnsupportedFormats.contains(format) {
-            throw ArchiveBrowseError.unsupportedFormat(format: format, reason: Self.decodeUnsupportedReason)
-        }
     }
 
     // MARK: - internals

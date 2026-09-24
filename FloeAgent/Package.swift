@@ -440,12 +440,25 @@ let package = Package(
             ]
         ),
 
+        // Narrow C shim over the SDK's own libbz2 streaming API (iOS and
+        // macOS both ship `usr/lib/libbz2.tbd`). No vendored bzip2 is added;
+        // FloeWorkspace is the only consumer, for bounded bz2/tbz2 decode and
+        // streaming encode.
+        .target(
+            name: "CFloeArchive",
+            dependencies: [],
+            path: "Sources/CFloeArchive",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("bz2")]
+        ),
+
         .target(
             name: "FloeWorkspace",
             dependencies: [
                 "FloeCore",
                 "FloeModels",
                 "FloeTools",
+                "CFloeArchive",
                 .product(name: "SMBClient", package: "SMBClient"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "SWCompression", package: "SWCompression"),

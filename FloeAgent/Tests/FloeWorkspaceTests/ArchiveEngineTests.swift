@@ -8,10 +8,12 @@
 //
 // The adversarial half pins the resource and corruption contracts:
 //   * decompression budgets are enforced *before* output is appended, so an
-//     expansion bomb fails with bounded memory (bzip2 decompression is refused
-//     outright because its one-shot decoder cannot be bounded);
-//   * gzip members are located by decoding (stored blocks containing the gzip
-//     magic, concatenated members, trailing data and truncation all covered);
+//     expansion bomb fails with bounded memory; bzip2 uses the SDK's streaming
+//     libbz2 through `CFloeArchive`, so bz2/tbz2 decode has the same bound;
+//     gzip members are located by decoding (stored blocks containing the gzip
+//     magic, concatenated members, trailing data and truncation all covered)
+//     and bzip2 members the same way (concatenation, trailing garbage,
+//     truncation, mid-stream corruption);
 //   * malformed / truncated tar archives never commit output or leave
 //     staging partials.
 
@@ -267,18 +269,20 @@ struct ArchiveEngineTests {
         }
     }
 
-    @Test("System tar reads our compressed tar output and we read system tar output", arguments: ["tgz", "txz"])
+    @Test("System tar reads our compressed tar output and we read system tar output", arguments: ["tgz", "tbz2", "txz"])
     func tarInterop(format: String) async throws {
         let f = try Fixture()
         try f.write("interop/a.txt", "alpha")
         try f.makeTree()
         let tar = try #require(Fixture.toolPath("tar"))
         let engine = ArchiveEngine.self
-        let name = format == "tgz" ? "ours.tar.gz" : "ours.tar.xz"
+        let name = format == "tgz" ? "ours.tar.gz" : format == "tbz2" ? "ours.tar.bz2" : "ours.tar.xz"
         let ours = f.url(name)
         _ = try engine.create(format: format, sources: [f.url("interop")], destination: ours, cancellation: f.cancel)
 
-        let flag = format == "tgz" ? "-tzf" : "-tJf"
+        // macOS bsdtar: -z gzip, -j bzip2, -J xz. This is macOS tool
+        // interoperability, not a Linux-device result.
+        let flag = format == "tgz" ? "-tzf" : format == "tbz2" ? "-tjf" : "-tJf"
         let (status, listing) = try f.run(tar, [flag, ours.path])
         #expect(status == 0, "system tar failed: \(listing)")
         #expect(listing.contains("interop/a.txt"), "listing was: \(listing)")
@@ -287,7 +291,7 @@ struct ArchiveEngineTests {
         let source = f.url("system")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try f.write("system/b.txt", "beta")
-        let createFlag = format == "tgz" ? "-czf" : "-cJf"
+        let createFlag = format == "tgz" ? "-czf" : format == "tbz2" ? "-cjf" : "-cJf"
         let systemArchive = f.url("system-\(format).tar")
         let (createStatus, createOutput) = try f.run(tar, [createFlag, systemArchive.path, "-C", source.path, "."])
         #expect(createStatus == 0, "\(createOutput)")
@@ -299,85 +303,173 @@ struct ArchiveEngineTests {
         #expect(try f.read("system-out-\(format)/b.txt") == "beta")
     }
 
-    @Test("tar.bz2/bz2 creation stays native while decompression is refused before allocation")
-    func bzip2CreationAndRefusal() async throws {
+    @Test("bzip2 and tar.bz2 create, list, extract and decompress natively with bounded streaming")
+    func bzip2RoundTrip() async throws {
         let f = try Fixture()
-        try f.write("project/a.txt", "alpha")
+        try f.makeTree()
         let engine = ArchiveEngine.self
 
-        // Creation is supported and interoperates with the platform tools.
+        // Container: our writer -> platform bsdtar reads it -> our list/extract.
         let tbz2 = f.url("pack.tar.bz2")
         let created = try engine.create(format: "tbz2", sources: [f.url("project")], destination: tbz2, cancellation: f.cancel)
-        #expect(created.entries == 1)
-        #expect(created.notes.contains("bzip2Buffered"))
+        #expect(created.entries == 3)
+        // The one-shot buffered path is gone: no buffering note remains.
+        #expect(!created.notes.contains("bzip2Buffered"))
         if let tar = Fixture.toolPath("tar") {
+            // macOS bsdtar, not a Linux-device result.
             let (status, listing) = try f.run(tar, ["-tjf", tbz2.path])
             #expect(status == 0, "system tar failed: \(listing)")
-            #expect(listing.contains("project/a.txt"))
+            #expect(listing.contains("project/readme.txt"), "listing was: \(listing)")
         }
-        let bz2 = f.url("a.txt.bz2")
-        let createdSingle = try engine.create(format: "bz2", sources: [f.url("project/a.txt")], destination: bz2, cancellation: f.cancel)
-        #expect(createdSingle.uncompressedBytes == 5)
+        let listing = try engine.list(format: "tbz2", source: tbz2, cancellation: f.cancel)
+        #expect(listing.entries.contains { $0.path.hasSuffix("readme.txt") })
+        let extracted = try engine.extract(format: "tbz2", source: tbz2, destination: f.url("tbz2-out"), cancellation: f.cancel)
+        #expect(extracted.entries == 3)
+        #expect(try f.read("tbz2-out/project/readme.txt") == "hello archive")
+        #expect(try f.read("tbz2-out/project/notes/中文 说明.md") == "中文内容")
+
+        // Single file: our writer -> platform bzip2 reads it -> our decode.
+        let bz2 = f.url("readme.txt.bz2")
+        let createdSingle = try engine.create(format: "bz2", sources: [f.url("project/readme.txt")], destination: bz2, cancellation: f.cancel)
+        #expect(createdSingle.uncompressedBytes == 13)
         if let bzip2 = Fixture.toolPath("bzip2") {
             let (status, output) = try f.run(bzip2, ["-dc", bz2.path])
             #expect(status == 0, "\(bzip2) failed: \(output)")
-            #expect(output == "alpha")
+            #expect(output == "hello archive")
         }
+        let decompressed = try engine.decompress(format: "bz2", source: bz2, destination: f.url("readme-restored.txt"), cancellation: f.cancel)
+        #expect(decompressed.uncompressedBytes == 13)
+        #expect(try f.read("readme-restored.txt") == "hello archive")
 
-        // Decoding is refused: the one-shot decoder cannot be bounded before
-        // it allocates, and a compressed-size cap would not bound expansion.
-        do {
-            _ = try engine.extract(format: "tbz2", source: tbz2, destination: f.url("tbz2-out"), cancellation: f.cancel)
-            Issue.record("tbz2 extraction should be refused")
-        } catch let error as ArchiveEngineError {
-            guard case .resourceBound = error else { Issue.record("unexpected \(error)"); return }
+        // Platform-created bzip2 -> our bounded decode (macOS tool).
+        if let bzip2 = Fixture.toolPath("bzip2") {
+            let systemBz2 = f.url("system.txt.bz2")
+            let (status, output) = try f.run(
+                "/bin/sh",
+                ["-c", "'\(bzip2)' -c '\(f.url("project/readme.txt").path)' > '\(systemBz2.path)'"]
+            )
+            #expect(status == 0, "system bzip2 failed: \(output)")
+            _ = try engine.decompress(format: "bz2", source: systemBz2, destination: f.url("system-restored.txt"), cancellation: f.cancel)
+            #expect(try f.read("system-restored.txt") == "hello archive")
         }
-        do {
-            _ = try engine.list(format: "tbz2", source: tbz2, cancellation: f.cancel)
-            Issue.record("tbz2 listing should be refused")
-        } catch let error as ArchiveEngineError {
-            guard case .resourceBound = error else { Issue.record("unexpected \(error)"); return }
-        }
-        do {
-            _ = try engine.decompress(format: "bz2", source: bz2, destination: f.url("bz2-out"), cancellation: f.cancel)
-            Issue.record("bz2 decompression should be refused")
-        } catch let error as ArchiveEngineError {
-            guard case .resourceBound = error else { Issue.record("unexpected \(error)"); return }
-        }
-        #expect(!f.exists("tbz2-out"))
-        #expect(!f.exists("bz2-out"))
-        #expect(try f.stagingLeftovers().isEmpty)
     }
 
-    @Test("A bzip2 bomb is refused without materializing its expansion")
-    func bzip2BombRefused() throws {
+    @Test("A bzip2 expansion bomb hits the decode budget before output is appended")
+    func bzip2BombBounded() throws {
         let f = try Fixture()
-        // 2 MiB of zeros compresses to a few KiB and would expand again; the
-        // engine refuses the one-shot decode regardless of how small the
-        // declared budget is (nothing is buffered first).
-        try f.writeBytes("bomb.bin", [UInt8](repeating: 0, count: 2 * 1024 * 1024))
+        try f.writeBytes("bomb.bin", [UInt8](repeating: 0, count: 8 * 1024 * 1024))
         let bz2 = f.url("bomb.bin.bz2")
         _ = try ArchiveEngine.create(format: "bz2", sources: [f.url("bomb.bin")], destination: bz2, cancellation: f.cancel)
+
         var limits = ArchiveLimits()
         limits.maxTotalBytes = 64 * 1024
-        limits.oneShotBufferLimit = 128
         do {
-            _ = try ArchiveEngine.decompress(format: "bz2", source: bz2, destination: f.url("bomb.out"), limits: limits, cancellation: f.cancel)
-            Issue.record("bzip2 decompression should be refused")
+            _ = try ArchiveEngine.decompress(
+                format: "bz2",
+                source: bz2,
+                destination: f.url("bomb.out"),
+                limits: limits,
+                cancellation: f.cancel
+            )
+            Issue.record("expected the budget to refuse the expansion")
         } catch let error as ArchiveEngineError {
-            guard case .resourceBound = error else { Issue.record("unexpected \(error)"); return }
+            guard case .limitExceeded = error else { Issue.record("unexpected \(error)"); return }
         }
         #expect(!f.exists("bomb.out"))
         #expect(try f.stagingLeftovers().isEmpty)
+
+        // Codec level: `reserve` runs before the append, so the produced count
+        // can never pass the declared cap — libbz2's own fixed working state is
+        // larger than the budget, which must not matter.
+        let budget = ArchiveDecodeBudget(maxOutputBytes: 64 * 1024, cancellation: nil)
+        let source = try Bzip2DecodingSource(url: bz2, budget: budget)
+        var refused = false
+        do {
+            while let chunk = try source.read(max: 256 * 1024), !chunk.isEmpty {}
+        } catch {
+            refused = true
+        }
+        #expect(refused)
+        #expect(budget.producedBytes > 0)
+        #expect(budget.producedBytes <= 64 * 1024)
+
+        // With room in the budget the same stream decodes to exactly 8 MiB.
+        var roomy = ArchiveLimits()
+        roomy.maxTotalBytes = 32 * 1024 * 1024
+        _ = try ArchiveEngine.decompress(
+            format: "bz2",
+            source: bz2,
+            destination: f.url("bomb-restored.bin"),
+            limits: roomy,
+            cancellation: f.cancel
+        )
+        #expect(try f.readBytes("bomb-restored.bin") == [UInt8](repeating: 0, count: 8 * 1024 * 1024))
     }
 
-    @Test("Single-file gzip/xz round-trip and interoperate with the platform tools")
+    @Test("Concatenated bzip2 members decode in sequence; trailing garbage and truncation are refused")
+    func bzip2MemberBoundaries() throws {
+        let f = try Fixture()
+        let first = Fixture.pseudoRandomBytes(count: 200_000, seed: 11)
+        let second = Fixture.pseudoRandomBytes(count: 33_333, seed: 22)
+        try f.writeBytes("first.bin", first)
+        try f.writeBytes("second.bin", second)
+        _ = try ArchiveEngine.create(format: "bz2", sources: [f.url("first.bin")], destination: f.url("first.bz2"), cancellation: f.cancel)
+        _ = try ArchiveEngine.create(format: "bz2", sources: [f.url("second.bin")], destination: f.url("second.bz2"), cancellation: f.cancel)
+
+        // Concatenated members the way the `bzip2` tool emits them.
+        let joined = try Data(contentsOf: f.url("first.bz2")) + (try Data(contentsOf: f.url("second.bz2")))
+        try joined.write(to: f.url("joined.bz2"))
+
+        _ = try ArchiveEngine.decompress(format: "bz2", source: f.url("joined.bz2"), destination: f.url("joined.bin"), cancellation: f.cancel)
+        #expect(try f.readBytes("joined.bin") == first + second)
+
+        // Codec level: both members are counted, and their boundary comes from
+        // the decoder's consumed byte count, not a magic scan.
+        let budget = ArchiveDecodeBudget(maxOutputBytes: 16 * 1024 * 1024, cancellation: nil)
+        let source = try Bzip2DecodingSource(url: f.url("joined.bz2"), budget: budget)
+        var decoded = Data()
+        while let chunk = try source.read(max: 64 * 1024) { decoded.append(chunk) }
+        #expect(source.membersDecoded == 2)
+        #expect(decoded == Data(first + second))
+
+        // Trailing bytes that are not another stream must be refused, not ignored.
+        var garbage = joined
+        garbage.append(contentsOf: [0x00, 0x01, 0x02, 0x03])
+        try garbage.write(to: f.url("garbage.bz2"))
+        try expectCorrupt(f, destination: "garbage.out", "trailing garbage") {
+            _ = try ArchiveEngine.decompress(format: "bz2", source: f.url("garbage.bz2"), destination: f.url("garbage.out"), cancellation: f.cancel)
+        }
+
+        // A truncated final member is refused before anything is committed.
+        let truncated = joined.prefix(joined.count - 4)
+        try Data(truncated).write(to: f.url("truncated.bz2"))
+        try expectCorrupt(f, destination: "truncated.out", "truncated stream") {
+            _ = try ArchiveEngine.decompress(format: "bz2", source: f.url("truncated.bz2"), destination: f.url("truncated.out"), cancellation: f.cancel)
+        }
+
+        // A byte flipped inside the compressed payload fails the stream/block
+        // integrity checks instead of producing corrupted output.
+        var corrupt = joined
+        corrupt[corrupt.startIndex + corrupt.count / 2] ^= 0xFF
+        try corrupt.write(to: f.url("corrupt.bz2"))
+        try expectCorrupt(f, destination: "corrupt.out", "corrupted stream") {
+            _ = try ArchiveEngine.decompress(format: "bz2", source: f.url("corrupt.bz2"), destination: f.url("corrupt.out"), cancellation: f.cancel)
+        }
+
+        // An empty file is not a valid bzip2 stream.
+        try Data().write(to: f.url("empty.bz2"))
+        try expectCorrupt(f, destination: "empty.out", "empty input") {
+            _ = try ArchiveEngine.decompress(format: "bz2", source: f.url("empty.bz2"), destination: f.url("empty.out"), cancellation: f.cancel)
+        }
+    }
+
+    @Test("Single-file gzip/bzip2/xz round-trip and interoperate with the platform tools")
     func singleFileInterop() async throws {
         let f = try Fixture()
         let payload = String(repeating: "floe compression payload 中文 ", count: 200)
         try f.write("blob.txt", payload)
         let engine = ArchiveEngine.self
-        for (format, cli) in [("gz", "gzip"), ("xz", "xz")] {
+        for (format, cli) in [("gz", "gzip"), ("bz2", "bzip2"), ("xz", "xz")] {
             let archive = f.url("blob.txt.\(format)")
             let created = try engine.create(format: format, sources: [f.url("blob.txt")], destination: archive, cancellation: f.cancel)
             #expect(created.entries == 1)
@@ -557,6 +649,42 @@ struct ArchiveEngineTests {
         do {
             _ = try ArchiveEngine.extract(
                 format: "tgz",
+                source: archive,
+                destination: f.url("bomb-out"),
+                limits: limits,
+                cancellation: f.cancel
+            )
+            Issue.record("expected the budget to refuse the expansion")
+        } catch let error as ArchiveEngineError {
+            guard case .limitExceeded = error else { Issue.record("unexpected \(error)"); return }
+        }
+        #expect(!f.exists("bomb-out"))
+        #expect(try f.stagingLeftovers().isEmpty)
+    }
+
+    @Test("A tar.bz2 bomb is bounded while decoding, before the entry size check can help")
+    func tarBz2BombBounded() throws {
+        let f = try Fixture()
+        // Same construction as the tar.gz bomb: the only entry has a traversal
+        // name, so its payload is skipped by the extractor; the decode budget
+        // for the tar stream is what must stop the expansion.
+        let payloadSize = 8 * 1024 * 1024
+        let buffer = DataByteSink()
+        var writer = TarStreamWriter(sink: buffer)
+        try writer.addFile(name: "../skip.bin", size: Int64(payloadSize), mode: 0o644, mtime: Date()) { _ in } from: {
+            DataByteSource(Data(repeating: 0, count: payloadSize))
+        }
+        try writer.finish()
+        let tar = f.url("bomb.tar")
+        try buffer.data.write(to: tar)
+        let archive = f.url("bomb.tar.bz2")
+        _ = try ArchiveEngine.create(format: "tbz2", sources: [tar], destination: archive, cancellation: f.cancel)
+
+        var limits = ArchiveLimits()
+        limits.maxTotalBytes = 16 * 1024
+        do {
+            _ = try ArchiveEngine.extract(
+                format: "tbz2",
                 source: archive,
                 destination: f.url("bomb-out"),
                 limits: limits,
@@ -803,6 +931,40 @@ struct ArchiveEngineTests {
         do {
             while let chunk = try source.read(max: 64 * 1024) { _ = chunk }
             Issue.record("expected the codec to stop after cancellation")
+        } catch is FloeError {
+            // expected
+        }
+
+        // bzip2 goes through the same contract: engine-level cancellation via
+        // the progress callback, and an in-loop poll at codec level.
+        let bz2 = f.url("big.bin.bz2")
+        _ = try ArchiveEngine.create(format: "bz2", sources: [f.url("big.bin")], destination: bz2, cancellation: f.cancel)
+        let token2 = CancellationToken()
+        do {
+            _ = try ArchiveEngine.decompress(
+                format: "bz2",
+                source: bz2,
+                destination: f.url("big-bz2.out"),
+                progress: { _ in token2.cancel() },
+                cancellation: token2
+            )
+            Issue.record("expected cancellation")
+        } catch is FloeError {
+            // expected
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+        #expect(!f.exists("big-bz2.out"))
+        #expect(try f.stagingLeftovers().isEmpty)
+
+        let bz2Token = CancellationToken()
+        let bz2Budget = ArchiveDecodeBudget(maxOutputBytes: 16 * 1024 * 1024, cancellation: bz2Token)
+        let bz2Source = try Bzip2DecodingSource(url: bz2, budget: bz2Budget)
+        _ = try bz2Source.read(max: 64 * 1024)
+        bz2Token.cancel()
+        do {
+            while let chunk = try bz2Source.read(max: 64 * 1024) { _ = chunk }
+            Issue.record("expected the bzip2 codec to stop after cancellation")
         } catch is FloeError {
             // expected
         }

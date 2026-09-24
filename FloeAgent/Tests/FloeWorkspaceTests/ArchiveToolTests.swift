@@ -312,40 +312,28 @@ struct ArchiveToolTests {
             #expect(try f.read("\(destination)/bundle/deep/b.txt") == "beta")
         }
 
-        // tar.bz2 creation stays native, but decoding it is refused explicitly:
-        // the one-shot bzip2 decoder cannot honor a bounded memory budget, so
-        // no decode path is offered (see ArchiveBrowserService.decodeUnsupportedFormats).
+        // tar.bz2 is decoded natively too (streaming libbz2): create, list
+        // and extract all go through the same bounded engine path.
         let tbz2Created = try await tool.execute(
             .init(action: "create", source: "bundle", destinationFile: "pack.tar.bz2", format: "tbz2"),
             context: f.context
         )
         #expect(tbz2Created.summary.contains("entries=2"), "tbz2 create was: \(tbz2Created.summary)")
         #expect(tbz2Created.summary.contains("format=tbz2"))
-        #expect(tbz2Created.summary.contains("note=bzip2Buffered"))
-        for action in ["list", "extract"] {
-            do {
-                if action == "list" {
-                    _ = try await tool.execute(.init(action: "list", source: "pack.tar.bz2"), context: f.context)
-                } else {
-                    _ = try await tool.execute(
-                        .init(action: "extract", source: "pack.tar.bz2", destinationDir: "out-tbz2"),
-                        context: f.context
-                    )
-                }
-                Issue.record("tbz2 \(action) must be refused, not decoded")
-            } catch let error as ArchiveEngineError {
-                guard case .resourceBound = error else {
-                    Issue.record("unexpected tbz2 \(action) error \(error)")
-                    return
-                }
-            }
-        }
-        #expect(!f.exists("out-tbz2"))
+        #expect(!tbz2Created.summary.contains("note=bzip2Buffered"))
+        let tbz2Listed = try await tool.execute(.init(action: "list", source: "pack.tar.bz2"), context: f.context)
+        #expect(tbz2Listed.summary.contains("bundle/a.txt"), "tbz2 list was: \(tbz2Listed.summary)")
+        let tbz2Extracted = try await tool.execute(
+            .init(action: "extract", source: "pack.tar.bz2", destinationDir: "out-tbz2"),
+            context: f.context
+        )
+        #expect(tbz2Extracted.summary.contains("entries=2"))
+        #expect(try f.read("out-tbz2/bundle/deep/b.txt") == "beta")
 
-        // Single-file gzip/xz: create + decompress through the tool.
+        // Single-file gzip/bzip2/xz: create + decompress through the tool.
         let payload = String(repeating: "single file payload ", count: 64)
         try f.write("note.txt", payload)
-        for (format, name) in [("gz", "note.txt.gz"), ("xz", "note.txt.xz")] {
+        for (format, name) in [("gz", "note.txt.gz"), ("bz2", "note.txt.bz2"), ("xz", "note.txt.xz")] {
             let created = try await tool.execute(
                 .init(action: "create", source: "note.txt", destinationFile: name),
                 context: f.context
@@ -363,25 +351,5 @@ struct ArchiveToolTests {
                 _ = try await tool.execute(.init(action: "list", source: name), context: f.context)
             }
         }
-
-        // bzip2: creation stays native; decompression is refused with no output.
-        let bz2Created = try await tool.execute(
-            .init(action: "create", source: "note.txt", destinationFile: "note.txt.bz2"),
-            context: f.context
-        )
-        #expect(bz2Created.summary.contains("entries=1"), "bz2 create was: \(bz2Created.summary)")
-        do {
-            _ = try await tool.execute(
-                .init(action: "extract", source: "note.txt.bz2", destinationFile: "restored-bz2.txt"),
-                context: f.context
-            )
-            Issue.record("bz2 decompression must be refused, not decoded")
-        } catch let error as ArchiveEngineError {
-            guard case .resourceBound = error else {
-                Issue.record("unexpected bz2 error \(error)")
-                return
-            }
-        }
-        #expect(!f.exists("restored-bz2.txt"))
     }
 }

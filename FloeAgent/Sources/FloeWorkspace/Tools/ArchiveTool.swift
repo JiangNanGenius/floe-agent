@@ -68,15 +68,15 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public static let name = "workspace.archive"
     public static let toolDescription =
-        "Archive operations inside the workspace. create writes a new archive to destinationFile (zip/tar/tar.gz/tar.bz2/tar.xz from one file or directory, or gzip/bzip2/xz for a single file). extract writes zip/tar/tar.gz/tar.xz/7z/rar entries into a new destinationDir, or decompresses gzip/xz into destinationFile. Bzip2 decoding (tar.bz2/bzip2) is deliberately not supported: that decoder is one-shot and cannot honor a bounded memory budget, so only bzip2 creation is native. Pass exactly the matching field; list accepts neither. All supported operations are native and bounded; existing outputs are never overwritten, traversal/symlink escapes and self-inclusion are refused, and the summary reports skipped entries plus metadata the format cannot carry. RAR list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Old destination calls must be replanned, not replayed."
+        "Archive operations inside the workspace. create writes a new archive to destinationFile (zip/tar/tar.gz/tar.bz2/tar.xz from one file or directory, or gzip/bzip2/xz for a single file). extract writes zip/tar/tar.gz/tar.bz2/tar.xz/7z/rar entries into a new destinationDir, or decompresses gzip/bzip2/xz into destinationFile. Every format — including bzip2 — is decoded natively with a bounded streaming decoder (the SDK's libbz2 for bzip2), so no operation materializes a whole archive and expansion bombs hit the byte budget before output is appended. Pass exactly the matching field; list accepts neither. All supported operations are native and bounded; existing outputs are never overwritten, traversal/symlink escapes and self-inclusion are refused, and the summary reports skipped entries plus metadata the format cannot carry. RAR list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Old destination calls must be replanned, not replayed."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
         "action": {"type": "string", "enum": ["create", "extract", "list"]},
         "source": {"type": "string", "description": "Workspace-relative source: file/directory to pack (create) or archive to read (extract/list)"},
-        "destinationDir": {"type": "string", "description": "New output directory, only for extracting zip/tar/7z/rar/tar.gz/tar.xz containers"},
-        "destinationFile": {"type": "string", "description": "New output file, for create or for decompressing gzip/xz"},
+        "destinationDir": {"type": "string", "description": "New output directory, only for extracting zip/tar/7z/rar/tar.gz/tar.bz2/tar.xz containers"},
+        "destinationFile": {"type": "string", "description": "New output file, for create or for decompressing gzip/bzip2/xz"},
         "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z", "rar"], "description": "Archive format; defaults to the destination/source extension"},
       },
       "required": ["action", "source"],
@@ -203,7 +203,7 @@ public struct WorkspaceArchiveTool: AgentTool {
             return WorkspaceToolSupport.output(summary)
         }
         if ["gz", "bz2", "xz"].contains(resolvedFormat), args.action == "list" {
-            throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/7z/tar.gz/tar.xz")
+            throw WorkspaceToolError.invalidArguments("\(resolvedFormat) is a single-file compression format; list applies to zip/tar/7z/tar.gz/tar.bz2/tar.xz")
         }
         return try runNative(
             args,
