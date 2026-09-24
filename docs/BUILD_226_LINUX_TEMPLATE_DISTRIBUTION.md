@@ -80,9 +80,22 @@ Distribute (`workflow_dispatch` only, never from a failed preflight):
 
 ## Evidence retained
 
-- Preflight record artifact: `linux-template-distribution-preflight-<run>`.
-- Package hash record: `linux-template-distribution-package-hash-<run>`.
-- Distribution record: `linux-template-distribution-record-<run>`
+- Distribution workflow run (preflight + distribute success):
+  https://github.com/JiangNanGenius/floe-agent/actions/runs/35935814778
+  (branch `codex/linux-template-distribute`, commit `428b009b`).
+- Release: https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-basic-20260923.1
+  — published prerelease (`draft: false`, `prerelease: true`, never latest),
+  tag target `706413fd816ee6c4197dd7e5184f6fc14fc2f762`, 14 assets; asset sizes
+  and sha256 digests verified against the live release API, and the public
+  image asset URL verified anonymously.
+- Final (repacked) image archive recorded by the run:
+  sha512 `773ea79e613b73024f66269beaf3469c4d997a9ce60cc6666efec02163bd7e019817261a88fce96240dc30cf5f6afff2677f3efbe0d7fba2128bf57403ba8f30`,
+  sha256 `7ed98f62419e1eb7dddd0ca9f83049694661064cefc1f659eecd599e9d769e27`,
+  547070503 bytes (the manifest.json provenance rewrite is the only byte
+  change from the qualified candidate `d5548351…`).
+- Preflight record artifact: `linux-template-distribution-preflight-35935814778`.
+- Package hash record: `linux-template-distribution-package-hash-35935814778`.
+- Distribution record: `linux-template-distribution-record-35935814778`
   (`distribution.json`, `RELEASE-NOTES.md`, `SOURCE-OFFER.md`, `SHA256SUMS`,
   `manifest.json`, image `SHA512SUMS`, `package-hash.json`, `release.json`,
   `image.json`, `sources.json`).
