@@ -9,6 +9,7 @@
 #if canImport(UIKit)
 import Foundation
 import Testing
+import FloeExecution
 @testable import FloeApp
 
 @Suite("FloeApp.IDELanguageRunPolicy")
@@ -353,6 +354,86 @@ struct IDELanguageRunPolicyTests {
                 == .unconfirmed(detail: "exit 1"))
         #expect(IDELanguageRunPolicy.stagingCleanupOutcome(stdout: "unexpected", exitCode: 0)
                 == .unconfirmed(detail: "exit 0"))
+    }
+
+    // MARK: Guest shape (Python/Node script runs)
+
+    @Test func guestShapeAppliesOnlyToGuestBackedInterpreters() {
+        #expect(IDELanguageRunPolicy.runsInLinuxGuest(.python3))
+        #expect(IDELanguageRunPolicy.runsInLinuxGuest(.node))
+        // The native shell and the signed WASI runtime never boot a guest, so
+        // neither may show a guest-core choice.
+        #expect(!IDELanguageRunPolicy.runsInLinuxGuest(.shell))
+        #expect(!IDELanguageRunPolicy.runsInLinuxGuest(.lua))
+    }
+
+    @Test func guestShapeSignalsDeclareOnlyTheInterpreterCommand() {
+        let signals = IDELanguageRunPolicy.guestShapeSignals(
+            relativePath: "scripts/main.py", interpreter: .python3
+        )
+        #expect(signals.workloadKey == "ide-run:scripts/main.py")
+        #expect(signals.declaredCommands == ["python3"])
+        #expect(signals.lockManifests.isEmpty)
+        #expect(signals.declaredImports.isEmpty)
+        // A Node run declares `node`, not the Python command.
+        let node = IDELanguageRunPolicy.guestShapeSignals(
+            relativePath: "scripts/main.js", interpreter: .node
+        )
+        #expect(node.declaredCommands == ["node"])
+        #expect(node.workloadKey == "ide-run:scripts/main.js")
+    }
+
+    @Test func refusedGuestShapeBlocksDispatchBeforeAnyGuestStart() {
+        let plan = IDELanguageRunPolicy.plan(request("main.py", capabilities()))
+        // The shape gate is checked after save/conflict, before the plan gate,
+        // so a refused dual selection can never reach a dispatcher.
+        #expect(IDELanguageRunPolicy.dispatchDecision(
+            plan: plan, snapshotSaved: true, hasUnresolvedConflict: false,
+            guestShapeRunnable: false
+        ) == .blocked(.guestShapeUnavailable))
+        // The default keeps every existing call site behavior unchanged.
+        #expect(IDELanguageRunPolicy.dispatchDecision(
+            plan: plan, snapshotSaved: true, hasUnresolvedConflict: false
+        ) == .dispatch)
+        // A conflict or a failed save still reports its own cause first.
+        #expect(IDELanguageRunPolicy.dispatchDecision(
+            plan: plan, snapshotSaved: true, hasUnresolvedConflict: true,
+            guestShapeRunnable: false
+        ) == .blocked(.conflictUnresolved))
+        #expect(IDELanguageRunPolicy.dispatchDecision(
+            plan: plan, snapshotSaved: false, hasUnresolvedConflict: false,
+            guestShapeRunnable: false
+        ) == .blocked(.snapshotSaveFailed))
+    }
+
+    @Test func explicitDualEntryPlanIsRefusedUnderTheProductionReleaseGate() {
+        // Exactly the plan the run sheet builds for an explicit 2-core choice
+        // with the shipped production release policy and no connected shape
+        // dispatch: it must be refused, never resolved to one hart.
+        let signals = IDELanguageRunPolicy.guestShapeSignals(
+            relativePath: "scripts/train.py", interpreter: .python3
+        )
+        let plan = GuestRunEntryShapePlanner.plan(selection: .dualCore, signals: signals)
+        #expect(plan.refusal == .releaseVCPUUnsupported(requested: 2, maximum: 1))
+        #expect(plan.effectiveRequest == nil)
+        #expect(!plan.isRunnable)
+        #expect(plan.option(for: .dualCore)?.isAvailable == false)
+    }
+
+    @Test func automaticEntryPlanIsTruthfulWhenDualCannotBeDelivered() {
+        // A declared native build command makes the advisory plan two harts;
+        // the shipped release can only deliver one, and the entry says so
+        // instead of presenting the run as dual-core.
+        let signals = WorkloadResourceSignals(
+            workloadKey: "ide-run:build.sh", declaredCommands: ["make"]
+        )
+        let plan = GuestRunEntryShapePlanner.plan(selection: .automatic, signals: signals)
+        #expect(plan.recommendation.shape.vcpus == .two)
+        #expect(plan.effectiveRequest?.vcpus == .one)
+        #expect(plan.effectiveRequest?.origin == .recommendation)
+        #expect(plan.automaticDowngradedFromRecommendation)
+        #expect(plan.isRunnable)
+        #expect(plan.option(for: .dualCore)?.refusal == .releaseVCPUUnsupported(requested: 2, maximum: 1))
     }
 }
 #endif

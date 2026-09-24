@@ -24,6 +24,7 @@
 // still carries this run's token.
 
 import Foundation
+import FloeExecution
 
 // MARK: - Languages
 
@@ -193,6 +194,10 @@ enum IDELanguageRunUnavailableReason: Sendable, Equatable {
     case noRemoteHostConfigured
     case conflictUnresolved
     case snapshotSaveFailed
+    /// The selected guest shape cannot be delivered (release gate, missing
+    /// image SMP proof or an unconnected shape dispatch path). The run is
+    /// blocked before any guest start instead of booting another shape.
+    case guestShapeUnavailable
     /// GitHub Actions target without a connected GitHub account or a selected
     /// repository.
     case gitHubNotConnected
@@ -571,15 +576,52 @@ enum IDELanguageRunPolicy {
 
     /// The single pure gate the controller consults after saving the snapshot.
     /// A dirty/conflicted editor or a failed save must never dispatch.
+    ///
+    /// `guestShapeRunnable` is the run-entry shape decision
+    /// (`GuestRunEntryShapePlan.isRunnable`). It defaults to true so every
+    /// existing call site keeps its behavior; a caller that exposes the shape
+    /// control must pass the plan's value, so a refused dual-core selection
+    /// blocks the run instead of starting a guest at another shape.
     static func dispatchDecision(
         plan: IDELanguageRunPlan,
         snapshotSaved: Bool,
-        hasUnresolvedConflict: Bool
+        hasUnresolvedConflict: Bool,
+        guestShapeRunnable: Bool = true
     ) -> IDELanguageRunDispatchDecision {
         if hasUnresolvedConflict { return .blocked(.conflictUnresolved) }
         if !snapshotSaved { return .blocked(.snapshotSaveFailed) }
+        if !guestShapeRunnable { return .blocked(.guestShapeUnavailable) }
         if case .unavailable(let reason) = plan { return .blocked(reason) }
         return .dispatch
+    }
+
+    // MARK: Guest shape (script runs inside the Linux guest)
+
+    /// Python and Node script runs execute inside the task environment's Linux
+    /// guest, so they carry a guest vCPU shape choice. The shell runs on the
+    /// native substrate and Lua on the signed WASI runtime: neither starts a
+    /// TinyEMU guest and neither exposes a shape.
+    static func runsInLinuxGuest(_ interpreter: IDELanguageLocalInterpreter) -> Bool {
+        switch interpreter {
+        case .python3, .node:
+            return true
+        case .shell, .lua:
+            return false
+        }
+    }
+
+    /// Declared signals for one script-run shape decision. Only the
+    /// interpreter command is declared, so the advisory can never be inflated
+    /// by a source scan or an undeclared claim, and the workload identity is
+    /// the script path (stable across runs without touching the filesystem).
+    static func guestShapeSignals(
+        relativePath: String,
+        interpreter: IDELanguageLocalInterpreter
+    ) -> WorkloadResourceSignals {
+        WorkloadResourceSignals(
+            workloadKey: "ide-run:" + relativePath,
+            declaredCommands: [interpreter.command]
+        )
     }
 
     // MARK: Quoting

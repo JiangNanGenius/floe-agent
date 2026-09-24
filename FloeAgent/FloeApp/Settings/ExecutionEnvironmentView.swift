@@ -43,6 +43,10 @@ struct ExecutionEnvironmentView: View {
     /// or when a probe fails, so an unknown value never renders as a fact.
     @State private var guestKernel: String?
     @State private var guestRuntimes: [String: String] = [:]
+    /// vCPUs the running guest was actually granted, read from the runtime
+    /// owner's session table (never inferred from the image or the quota).
+    /// nil while stopped or when the service cannot answer.
+    @State private var guestVCPUs: Int?
 
     var body: some View {
         Form {
@@ -290,6 +294,12 @@ struct ExecutionEnvironmentView: View {
                 if let node = guestRuntimes["Node"] {
                     LabeledContent("Node", value: node)
                 }
+                if let guestVCPUs {
+                    LabeledContent("客户机 vCPU", value: "\(guestVCPUs)")
+                    Text(guestShapeCapacityNote)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 if let resize = status.diskResizeFailure {
                     Label(resize, systemImage: "wrench.and.screwdriver")
                         .font(.caption2)
@@ -315,6 +325,17 @@ struct ExecutionEnvironmentView: View {
                     .textSelection(.enabled)
             }
         }
+    }
+
+    /// The honest per-release core ceiling for a running guest. The message is
+    /// shown only next to a real granted count, so it never pretends a stopped
+    /// guest was measured.
+    private var guestShapeCapacityNote: String {
+        let maximum = GuestReleaseShapePolicy.production.maximumSupportedVCPUs
+        if maximum <= 1 {
+            return "本版本客户机上限 \(maximum) 核：双 hart 已实现，但真机 SMP 验收未通过（双 hart 在首个 fork/exec 停滞，云端运行 35851127603）。从脚本运行入口选择 2 核会在启动前被拒绝，不会以 1 核静默运行。"
+        }
+        return "本版本客户机上限 \(maximum) 核。"
     }
 
     private func networkLabel(_ status: LinuxGuestNetworkStatus) -> String {
@@ -350,8 +371,22 @@ struct ExecutionEnvironmentView: View {
             linuxEnvironmentTitle = name
         }
         linuxGuestStatus = await FloePlatformServices.shared.linuxGuestStatus(id: linux?.id)
+        await refreshGuestVCPUs(environmentID: linux?.id, running: linuxGuestStatus?.running == true)
         await refreshGuestIdentity(environmentID: linux?.id)
         await linuxImageModel?.refresh(environmentIDHint: linux?.id)
+    }
+
+    /// Reads the granted vCPU count from the runtime owner's session table.
+    /// The value is only kept for a running guest; stopped/unknown states
+    /// leave it nil so the row is hidden instead of showing a guessed number.
+    @MainActor private func refreshGuestVCPUs(environmentID: String?, running: Bool) async {
+        guard let environmentID, running,
+              let service = center.environment.linuxGuestService else {
+            guestVCPUs = nil
+            return
+        }
+        let states = await service.runtimeStates()
+        guestVCPUs = states.first { $0.environmentID == environmentID }?.vcpus
     }
 
     /// Probes kernel + runtime versions from the running guest itself. A

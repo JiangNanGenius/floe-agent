@@ -8,6 +8,7 @@
 
 #if canImport(UIKit)
 import SwiftUI
+import FloeExecution
 
 /// Inline en/zh strings for this surface. The primary agent may move these
 /// keys into `Localizable.xcstrings`; until then the sheet is usable in both
@@ -43,6 +44,9 @@ enum IDELanguageRunText {
             return t("存在未解决的编辑冲突，已取消运行", "An unresolved edit conflict cancelled the run")
         case .snapshotSaveFailed:
             return t("保存当前文件失败，已取消运行", "Saving the current file failed; the run was cancelled")
+        case .guestShapeUnavailable:
+            return t("所选的客户机内核数无法交付，已在启动前阻止运行（不会以 1 核静默替代 2 核）",
+                     "The selected guest core count cannot be delivered; the run was blocked before any guest start (an explicit dual-core request is never silently run on one hart)")
         case .gitHubNotConnected:
             return t("尚未连接 GitHub，请在设置中登录", "GitHub is not connected; sign in under Settings")
         case .noGitHubRepositorySelected:
@@ -142,6 +146,52 @@ enum IDELanguageRunText {
         }
     }
 
+    // MARK: Guest shape
+
+    static func shapeLabel(_ selection: GuestRunEntryShapeSelection) -> String {
+        switch selection {
+        case .automatic: return t("自动（按声明信号）", "Automatic (by declared signals)")
+        case .singleCore: return t("1 个客户机内核", "1 guest core")
+        case .dualCore: return t("2 个客户机内核", "2 guest cores")
+        }
+    }
+
+    /// One typed gate refusal. Every branch names the blocker instead of
+    /// implying a shape will run.
+    static func shapeRefusal(_ refusal: GuestRunEntryShapeRefusal) -> String {
+        switch refusal {
+        case .releaseVCPUUnsupported(let requested, let maximum):
+            return t("本版本最多 \(maximum) 个客户机内核，尚未交付 \(requested) 核：双 hart 已实现，但真机 SMP 验收未通过（首个 fork/exec 停滞，云端运行 35851127603）。选择 2 核会在启动前被拒绝，不会以 1 核静默运行。",
+                     "This release delivers at most \(maximum) guest core; \(requested) cores are not qualified yet. The two-hart engine exists, but real SMP acceptance failed (stalls at the first fork/exec, cloud run 35851127603). Selecting 2 cores is refused before launch — it never silently runs on one hart.")
+        case .imageDoesNotProveSMP(let requested):
+            return t("当前镜像清单没有提供 SMP 证据，资源池会拒绝 \(requested) 核的授权；已在启动前拒绝，不会以 1 核静默运行。",
+                     "The current image manifest does not prove SMP, so the resource pool refuses a \(requested)-core grant; the run is refused before launch and never silently runs on one hart.")
+        case .dispatchNotShapeAware(let requested):
+            return t("运行调度路径尚未接入客户机形状请求，当前无法把 \(requested) 核交给启动流程；已在启动前拒绝，不会以 1 核静默运行。",
+                     "The run dispatch path cannot deliver a guest shape request yet, so \(requested) cores cannot reach the start path; the run is refused before launch and never silently runs on one hart.")
+        }
+    }
+
+    /// The automatic plan's effective shape, stated with its basis. When the
+    /// advisory planned two harts but the gate delivers one, the reason names
+    /// the gate that blocked two instead of leaving a silent downgrade.
+    static func automaticShapeNote(_ plan: GuestRunEntryShapePlan) -> String {
+        guard plan.recommendation.shape.vcpus == .two else {
+            return t("声明信号未要求并行：本次以 1 个客户机内核启动。",
+                     "The declared signals do not ask for parallelism: this run starts with 1 guest core.")
+        }
+        if plan.automaticDeliversRecommendation {
+            return t("声明信号表明可并行：本次将以 2 个客户机内核启动。",
+                     "Declared signals indicate parallel work: this run starts with 2 guest cores.")
+        }
+        var note = t("声明信号推荐 2 核，但当前只能交付 1 核。本次将以 1 个客户机内核启动。",
+                     "The declared signals recommend 2 cores, but only 1 can be delivered. This run starts with 1 guest core.")
+        if let refusal = plan.option(for: .dualCore)?.refusal {
+            note += " " + shapeRefusal(refusal)
+        }
+        return note
+    }
+
     static func mechanism(_ mechanism: IDELanguageRunMechanism) -> String {
         switch mechanism {
         case .localInterpreter:
@@ -203,6 +253,10 @@ struct IDELanguageRunView: View {
     @State private var jobLogRecordID: UUID?
     @State private var jobLogText: String?
     @State private var showingJobLog = false
+    /// The run-entry guest shape choice. Only script runs that actually start
+    /// the Linux guest (Python/Node) show the control.
+    @State private var guestShapeSelection: GuestRunEntryShapeSelection = .automatic
+    @State private var guestShapePlan: GuestRunEntryShapePlan?
 
     private var fileName: String {
         guard let path = state.activePath, let last = path.split(separator: "/").last else {
@@ -221,6 +275,7 @@ struct IDELanguageRunView: View {
             Form {
                 fileSection
                 targetSection
+                if showsGuestShapeSection { guestShapeSection }
                 if case .remote = controller.selection.target { remoteSettingsSection }
                 if case .githubActions = controller.selection.target { gitHubActionsSection }
                 availabilitySection
@@ -247,11 +302,12 @@ struct IDELanguageRunView: View {
                     } label: {
                         Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
                     }
-                    .disabled(!controller.canDispatch)
+                    .disabled(!controller.canDispatch || guestShapeBlocksDispatch)
                     .accessibilityIdentifier("workspace.ide.run.confirm")
                 }
             }
             .task { await controller.prepare() }
+            .task(id: guestShapeTaskKey) { await refreshGuestShapePlan() }
             .onChange(of: controller.selection) { _, _ in
                 Task { await controller.selectionDidChange() }
             }
@@ -355,6 +411,124 @@ struct IDELanguageRunView: View {
                                           "No SSH host is configured. Add one in Host settings."))
                     .font(.caption).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // MARK: Guest shape (Python/Node script runs)
+
+    /// The interpreter whose run boots the Linux guest, when the local target
+    /// is selected and the file is a guest-backed language. nil hides the
+    /// control (remote targets, native shell, WASI Lua).
+    private var guestShapeInterpreter: IDELanguageLocalInterpreter? {
+        guard case .local = controller.selection.target,
+              let path = state.activePath,
+              let definition = IDELanguageRunPolicy.definition(forRelativePath: path),
+              let interpreter = definition.localInterpreter,
+              IDELanguageRunPolicy.runsInLinuxGuest(interpreter) else { return nil }
+        return interpreter
+    }
+
+    private var showsGuestShapeSection: Bool {
+        guard guestShapeInterpreter != nil else { return false }
+        if case .local = controller.plan { return true }
+        return false
+    }
+
+    /// True while a guest-backed local run cannot dispatch with the current
+    /// selection. A refused dual-core choice disables Run: the sheet never
+    /// starts a guest at a shape the user did not choose.
+    private var guestShapeBlocksDispatch: Bool {
+        guard showsGuestShapeSection else { return false }
+        return !(guestShapePlan?.isRunnable ?? false)
+    }
+
+    /// Recomputes the plan whenever the pinned file, the target or the
+    /// selection changes. The plan is rebuilt from the shared advisory so a
+    /// user override or recorded outcome is honored, and the release gate is
+    /// applied at the same time.
+    private var guestShapeTaskKey: String {
+        let target: String
+        switch controller.selection.target {
+        case .local: target = "local"
+        case .remote(let id, _): target = "remote:\(id.uuidString)"
+        case .githubActions: target = "github"
+        }
+        return "\(target)|\(state.activePath ?? "")|\(guestShapeInterpreter?.rawValue ?? "none")|\(guestShapeSelection.rawValue)"
+    }
+
+    @MainActor
+    private func refreshGuestShapePlan() async {
+        guard let interpreter = guestShapeInterpreter, let path = state.activePath else {
+            guestShapePlan = nil
+            return
+        }
+        let signals = IDELanguageRunPolicy.guestShapeSignals(relativePath: path, interpreter: interpreter)
+        let recommendation = await GuestResourceAdvisory.shared.recommend(signals)
+        guestShapePlan = GuestRunEntryShapePlanner.plan(
+            selection: guestShapeSelection,
+            recommendation: recommendation,
+            // Fail closed on both undeliverable claims: this sheet cannot read
+            // the verified image manifest, and this build's run dispatch path
+            // does not carry a typed shape request yet. The frozen release
+            // gate refuses dual before either matters.
+            imageProvesSMP: false,
+            dispatch: .singleHartOnly
+        )
+    }
+
+    private func guestShapeOptionLabel(_ selection: GuestRunEntryShapeSelection) -> String {
+        let label = IDELanguageRunText.shapeLabel(selection)
+        guard let plan = guestShapePlan,
+              let option = plan.option(for: selection),
+              !option.isAvailable else { return label }
+        return label + " · " + IDELanguageRunText.t("不可用", "unavailable")
+    }
+
+    private var guestShapeSection: some View {
+        Section(IDELanguageRunText.t("客户机内核", "Guest cores")) {
+            Picker(selection: $guestShapeSelection) {
+                ForEach(GuestRunEntryShapeSelection.allCases, id: \.self) { selection in
+                    Text(guestShapeOptionLabel(selection)).tag(selection)
+                }
+            } label: {
+                Text("vCPU")
+            }
+            .accessibilityIdentifier("workspace.ide.run.guestShape")
+
+            if let plan = guestShapePlan {
+                switch plan.selection {
+                case .automatic:
+                    Text(IDELanguageRunText.automaticShapeNote(plan))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .singleCore:
+                    Text(IDELanguageRunText.t(
+                        "显式选择 1 个客户机内核；请求按严格模式提交，资源池不会静默减少内核数。",
+                        "An explicit single guest core; the request is strict and the pool never silently reduces the core count."
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                case .dualCore:
+                    if let refusal = plan.refusal {
+                        Label(IDELanguageRunText.shapeRefusal(refusal), systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if plan.effectiveVCPUs == .two {
+                        Text(IDELanguageRunText.t(
+                            "显式选择 2 个客户机内核；请求按严格模式提交。",
+                            "An explicit dual guest cores request; it is submitted strictly."
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Text(IDELanguageRunText.t(
+                "Python/Node 脚本在 Linux 客户机中运行。此选择只影响客户机启动时的内核数；已运行的客户机保持其当前形状（形状变更需要停止并重启客户机）。",
+                "Python/Node scripts run inside the Linux guest. This choice affects the core count at guest start only; an already-running guest keeps its current shape (changing it requires a stop and restart)."
+            ))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
     }
 
