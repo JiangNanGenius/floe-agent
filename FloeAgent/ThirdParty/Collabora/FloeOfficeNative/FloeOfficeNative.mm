@@ -1213,30 +1213,31 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
             // then builds on a real extent, never the empty one of the
             // Build 225 white screen, and the session-ready threshold below
             // still demands the post-entry paint either way.
-            BOOL entryTrigger = FloeRenderFactsSatisfyEditEntryTrigger(renderFacts);
-            NSString *entryTriggerTier = nil;
-            if (!entryTrigger && probe.expectsDeferredEditEntry) {
+            BOOL paintTrigger = FloeRenderFactsSatisfyEditEntryTrigger(renderFacts);
+            BOOL extentBootstrap = NO;
+            if (!paintTrigger && probe.expectsDeferredEditEntry) {
                 BOOL extentProven = renderFacts.docTypeKnown && renderFacts.docLoaded && renderFacts.canvasSized;
                 NSTimeInterval parked = [probe.controller deferredEditEntryParkedSeconds];
                 if (FloeDeferredEditEntryExtentBootstrapEligible([probe.controller hasPendingDeferredEditEntry],
                                                                  probe.controller.editEntryRunning,
                                                                  probe.controller.openPermissionReported,
                                                                  extentProven, parked)) {
-                    entryTrigger = YES;
-                    entryTriggerTier = @"extent-bootstrap";
+                    extentBootstrap = YES;
                     FloeOfficeLog(@"edit-entry-extent-bootstrap", @{@"session": probe.controller.sessionID,
                                                                     @"generation": @(probe.controller.openGeneration),
                                                                     @"parked": @(parked)});
+                    // This only permits the guarded edit entry. No document
+                    // tile has painted, so it must not set firstPaintObserved
+                    // or emit first-paint/visible-render evidence.
+                    [probe.controller renderProbeDidProveExtentForEditEntry];
                 }
             }
-            if (entryTrigger) {
+            if (paintTrigger || extentBootstrap) {
                 // Reported before the session-ready decision, at most once per
                 // session, so a pending edit entry always runs.
-                if (!probe->_firstPaintReported) {
+                if (paintTrigger && !probe->_firstPaintReported) {
                     probe->_firstPaintReported = YES;
-                    NSMutableDictionary *triggerDiagnostics = [probe.diagnostics mutableCopy];
-                    if (entryTriggerTier) triggerDiagnostics[@"trigger"] = entryTriggerTier;
-                    [probe.controller renderProbeDidObserveFirstPaint:triggerDiagnostics];
+                    [probe.controller renderProbeDidObserveFirstPaint:probe.diagnostics];
                 }
                 BOOL fileBasedView = [facts[@"fileBasedView"] isKindOfClass:NSNumber.class]
                     && [facts[@"fileBasedView"] boolValue];
@@ -1411,6 +1412,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// Settles a still-pending edit entry without forcing an entry: the render
 /// gate owns the bounded outcome. Exactly once.
 - (void)settlePendingEditEntryWithoutEntry;
+/// A sized, loaded document can bootstrap the guarded edit entry without
+/// claiming that a decoded tile has painted. Readiness still needs a later
+/// real first paint and edit-surface paint.
+- (void)renderProbeDidProveExtentForEditEntry;
 /// The parked paint-gated edit entry is still awaiting its trigger: pending,
 /// not running, and the one-shot open-permission report has not settled.
 - (BOOL)hasPendingDeferredEditEntry;
@@ -1708,6 +1713,11 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     // once, here: the engine proved a live pipeline and a real document extent,
     // so the part-based edit layout is built from a sized document.
     if (self.editEntryPending) [self runEditEntryAndReport];
+}
+- (void)renderProbeDidProveExtentForEditEntry {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    if (self.closed || self.closing || !self.editEntryPending) return;
+    [self runEditEntryAndReport];
 }
 - (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");

@@ -240,12 +240,14 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
         self.assertIn('FloeDeferredEditEntryExtentBootstrapEligible(', source)
         self.assertIn('static const NSTimeInterval FloeEditEntryExtentBootstrapGraceSeconds = 5.0;',
                       source)
-        # It applies to the deferred (editable file-based) entry only, and the
-        # trigger diagnostics stay honest about which tier fired.
+        # It applies to the deferred (editable file-based) entry only. The
+        # weaker extent proof must never masquerade as a decoded first paint.
         poll = source.split('- (void)poll {', 1)[1].split('(FloeRenderFacts)renderFactsFromDictionary:', 1)[0]
         self.assertIn('probe.expectsDeferredEditEntry', poll)
-        self.assertIn('entryTriggerTier = @"extent-bootstrap";', poll)
-        self.assertIn('triggerDiagnostics[@"trigger"] = entryTriggerTier;', poll)
+        self.assertIn('[probe.controller renderProbeDidProveExtentForEditEntry];', poll)
+        self.assertIn('if (paintTrigger && !probe->_firstPaintReported)', poll)
+        self.assertIn('[probe.controller renderProbeDidObserveFirstPaint:probe.diagnostics];', poll)
+        self.assertIn('- (void)renderProbeDidProveExtentForEditEntry {', source)
         self.assertIn('@"edit-entry-extent-bootstrap"', source)
         # Readiness is unchanged: the shipped session-ready threshold still
         # returns the edit-surface paint evidence, and the ready signal still
