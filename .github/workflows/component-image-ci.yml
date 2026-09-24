@@ -34,7 +34,9 @@
 #   image   — fetch pinned inputs, build engine + image, boot-verify twice,
 #             package the zip + manifest + evidence.
 #   sources — exact kernel/bbl source, runner relink material, cross-toolchain
-#             source and the Debian binary->source corresponding sources.
+#             source, the Debian binary->source corresponding sources and the
+#             recipe-pinned PyPI wheel sources (incl. the bundled pdfium
+#             native source chain for the pypdfium2 riscv64 wheel).
 #   smp-image  — opt-in: fresh kernel+bbl build + image assembly (A hook gate).
 #   templates  — opt-in: basic/dev-document recipe qualification (D gate).
 #
@@ -127,6 +129,7 @@ jobs:
           bash -n FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh
           python3 -c 'import json; json.load(open("FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json"))'
           python3 FloeAgent/LinuxGuest/image/image_id.py --self-test
+          python3 FloeAgent/LinuxGuest/image/collect-pypi-sources.py --self-test
           echo "script lint ok"
 
       - name: Runner clock parser (native pure-function check)
@@ -246,6 +249,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq python3 curl ca-certificates dpkg-dev gcc-riscv64-linux-gnu >/dev/null
 
+      - name: PyPI source collector self-test (offline)
+        run: python3 FloeAgent/LinuxGuest/image/collect-pypi-sources.py --self-test
+
       - name: Download the image evidence (package inventory + runner object)
         uses: actions/download-artifact@v4
         with:
@@ -265,13 +271,21 @@ jobs:
           # The source bundle must name the run that actually built the image,
           # which is not this run when only `sources` was dispatched.
           IMAGE_RUN="${{ (github.event_name == 'workflow_dispatch' && inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}"
+          # The image evidence bundle carries template-recipe.json (the exact
+          # recipe bytes the image was provisioned with); the PyPI part of the
+          # source bundle reads the pinned wheels from it. Older evidence
+          # without the recipe simply skips the PyPI part.
+          PYPI_ARGS=""
+          if [ -f "${{ runner.temp }}/floe-image-evidence/template-recipe.json" ]; then
+            PYPI_ARGS="--pypi-recipe ${{ runner.temp }}/floe-image-evidence/template-recipe.json"
+          fi
           # shellcheck disable=SC2086
           sudo bash FloeAgent/LinuxGuest/image/collect-corresponding-sources.sh \
             --out "${{ runner.temp }}/floe-sources" \
             --packages "${{ runner.temp }}/floe-image-evidence/guest-packages.tsv" \
             --image-evidence "${{ runner.temp }}/floe-image-evidence" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/$IMAGE_RUN" \
-            $EXTRA 2>&1 | tee "${{ runner.temp }}/floe-sources.log"
+            $PYPI_ARGS $EXTRA 2>&1 | tee "${{ runner.temp }}/floe-sources.log"
           # The collector ran under sudo and leaves its output tree root-owned;
           # the boot-association/staging/upload-preparation steps below run as
           # the invoking user and must write into it (run 35923812691 failed
@@ -344,12 +358,24 @@ jobs:
       - name: Show the source bundle summary
         if: always()
         run: |
-          for f in SOURCES-MANIFEST.md debian-source-gaps.tsv debian-index/indexes.tsv; do
+          for f in SOURCES-MANIFEST.md debian-source-gaps.tsv debian-index/indexes.tsv \
+                   pypi-sources/PYPI-SOURCES.md pypi-sources/pypi-source-gaps.tsv; do
             if [ -f "${{ runner.temp }}/floe-sources/$f" ]; then
               echo "--- $f"; head -60 "${{ runner.temp }}/floe-sources/$f"
             fi
           done
           tail -c 2000 "${{ runner.temp }}/floe-sources.log" || true
+
+      # The PyPI wheel sources are small (four sdists + wheels + the pdfium
+      # source archive at the exact pinned commit, ~50 MB total).
+      - name: Upload PyPI wheel corresponding sources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-pypi-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-sources/pypi-sources/
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Upload upstream + relink + toolchain sources
         if: always()
@@ -413,6 +439,12 @@ jobs:
             ${{ runner.temp }}/floe-sources/*.tsv
             ${{ runner.temp }}/floe-sources/*.json
             ${{ runner.temp }}/floe-sources/debian-index/
+            ${{ runner.temp }}/floe-sources/pypi-sources/*.md
+            ${{ runner.temp }}/floe-sources/pypi-sources/*.tsv
+            ${{ runner.temp }}/floe-sources/pypi-sources/*.sha256
+            ${{ runner.temp }}/floe-sources/pypi-sources/pdfium-source/DEPS
+            ${{ runner.temp }}/floe-sources/pypi-sources/pdfium-source/deps-revisions.tsv
+            ${{ runner.temp }}/floe-sources/pypi-sources/pdfium-source/TREE.sha256
             ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.sha256
             ${{ runner.temp }}/floe-sources/debian-sources/SOURCES.tsv
           if-no-files-found: error
