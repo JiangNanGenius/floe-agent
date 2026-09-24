@@ -1,0 +1,199 @@
+// Copyright © 2026 Apple Inc.
+//
+// Floe local regression for the Build227 GDN prefill hotfix: multi-token
+// prefill (T > 1) must take the `gatedDeltaOps` fallback instead of the fused
+// Metal kernel, while single-token decode (T == 1) keeps the fused path
+// (provided Dk is a multiple of 32). Routing is verified by comparing
+// `gatedDeltaUpdate` output elementwise against each internal implementation;
+// a fused-vs-ops numeric parity check and a chunk-boundary check guard the
+// re-routed prefill numerics.
+
+import Foundation
+import MLX
+@testable import MLXLMCommon
+import XCTest
+
+public class GatedDeltaPrefillRouteTests: XCTestCase {
+
+    private struct Inputs {
+        let q, k, v, a, b, aLog, dtBias: MLXArray
+    }
+
+    private let B = 1
+    private let Hk = 1
+    private let Dk = 32
+    private let Hv = 2
+    private let Dv = 8
+
+    /// Deterministic bf16 inputs. Dk = 32 so the `Dk % 32 == 0` fused-kernel
+    /// gate is open: any routing difference is purely due to T.
+    private func makeInputs(T: Int, seed: UInt64 = 227) -> Inputs {
+        MLXRandom.seed(seed)
+        let dtype = DType.bfloat16
+        let q = MLXRandom.normal([B, T, Hk, Dk]).asType(dtype)
+        let k = MLXRandom.normal([B, T, Hk, Dk]).asType(dtype)
+        let v = MLXRandom.normal([B, T, Hv, Dv]).asType(dtype)
+        let a = MLXRandom.normal([B, T, Hv]).asType(dtype)
+        let b = MLXRandom.normal([B, T, Hv]).asType(dtype)
+        let aLog = (MLXRandom.normal([Hv]) * MLXArray(0.1)).asType(dtype)
+        let dtBias = MLXRandom.normal([Hv]).asType(dtype)
+        return Inputs(q: q, k: k, v: v, a: a, b: b, aLog: aLog, dtBias: dtBias)
+    }
+
+    /// Prepare (beta, g, fp32 state) exactly the way `gatedDeltaUpdate` does,
+    /// so a direct call to an internal implementation builds the same graph.
+    private func prepared(_ inputs: Inputs, state: MLXArray? = nil)
+        -> (beta: MLXArray, g: MLXArray, state: MLXArray)
+    {
+        let beta = sigmoid(inputs.b).asType(.float32)
+        let g = computeGatedDeltaG(inputs.aLog, inputs.a, inputs.dtBias)
+        let state = state ?? MLXArray.zeros([B, Hv, Dv, Dk], dtype: .float32)
+        return (beta, g, state.asType(.float32))
+    }
+
+    private func update(_ inputs: Inputs, state: MLXArray? = nil)
+        -> (MLXArray, MLXArray)
+    {
+        gatedDeltaUpdate(
+            q: inputs.q, k: inputs.k, v: inputs.v,
+            a: inputs.a, b: inputs.b,
+            aLog: inputs.aLog, dtBias: inputs.dtBias,
+            state: state
+        )
+    }
+
+    // MARK: - Routing
+
+    /// T == 1 with Dk a multiple of 32 must dispatch the fused Metal kernel.
+    /// Proof: `gatedDeltaUpdate` output is bitwise identical to a direct
+    /// `gatedDeltaKernel` call with the same prepared inputs (and differs from
+    /// no evaluation at all — both arrays are evaluated).
+    func testSingleTokenDecodeRoutesToFusedKernel() throws {
+        let inputs = makeInputs(T: 1)
+        let (beta, g, state) = prepared(inputs)
+
+        let (yUpdate, sUpdate) = update(inputs)
+        let (yKernel, sKernel) = gatedDeltaKernel(
+            q: inputs.q, k: inputs.k, v: inputs.v,
+            g: g, beta: beta, state: state
+        )
+        eval(yUpdate, sUpdate, yKernel, sKernel)
+
+        XCTAssertEqual(yUpdate.shape, [B, 1, Hv, Dv])
+        XCTAssertEqual(yUpdate.dtype, .bfloat16)
+        XCTAssertEqual(sUpdate.dtype, .float32)
+        XCTAssertTrue(
+            arrayEqual(yUpdate, yKernel).item(Bool.self),
+            "T == 1 decode was not routed to the fused Metal kernel."
+        )
+        XCTAssertTrue(
+            arrayEqual(sUpdate, sKernel).item(Bool.self),
+            "T == 1 decode state was not produced by the fused Metal kernel."
+        )
+    }
+
+    /// T > 1 prefill must NOT use the fused kernel; it must run the
+    /// `gatedDeltaOps` per-step recurrence. Proof: the public result is
+    /// bitwise identical to a direct `gatedDeltaOps` call.
+    func testMultiTokenPrefillRoutesToOpsFallback() throws {
+        let T = 8
+        let inputs = makeInputs(T: T)
+        let (beta, g, state) = prepared(inputs)
+
+        let (yUpdate, sUpdate) = update(inputs)
+        let (yOps, sOps) = gatedDeltaOps(
+            q: inputs.q, k: inputs.k, v: inputs.v,
+            g: g, beta: beta, state: state
+        )
+        eval(yUpdate, sUpdate, yOps, sOps)
+
+        XCTAssertEqual(yUpdate.shape, [B, T, Hv, Dv])
+        XCTAssertEqual(sUpdate.dtype, .float32)
+        XCTAssertTrue(
+            arrayEqual(yUpdate, yOps).item(Bool.self),
+            "T > 1 prefill was not routed to gatedDeltaOps (fused kernel still in use?)."
+        )
+        XCTAssertTrue(
+            arrayEqual(sUpdate, sOps).item(Bool.self),
+            "T > 1 prefill state was not produced by gatedDeltaOps."
+        )
+    }
+
+    // MARK: - Numerics across the route boundary
+
+    /// The ops prefill recurrence and the fused kernel must agree when the
+    /// prefill is fed one token at a time (each T == 1 step uses the fused
+    /// path). Locks numerics across the T > 1 / T == 1 route boundary.
+    func testOpsPrefillMatchesStepwiseFusedDecode() throws {
+        let T = 8
+        let inputs = makeInputs(T: T)
+
+        let (yFull, stateFull) = update(inputs)
+
+        var state: MLXArray?
+        var ys = [MLXArray]()
+        for t in 0 ..< T {
+            let step = Inputs(
+                q: inputs.q[0..., t ..< t + 1],
+                k: inputs.k[0..., t ..< t + 1],
+                v: inputs.v[0..., t ..< t + 1],
+                a: inputs.a[0..., t ..< t + 1],
+                b: inputs.b[0..., t ..< t + 1],
+                aLog: inputs.aLog,
+                dtBias: inputs.dtBias
+            )
+            let (yStep, nextState) = update(step, state: state)
+            ys.append(yStep)
+            state = nextState
+        }
+        let ySteps = concatenated(ys, axis: 1)
+        eval(yFull, stateFull, ySteps, state!)
+
+        // The ops path uses plain FP32 MLX reductions while the fused kernel
+        // uses Kahan-compensated summation, so allow small bf16-scale drift.
+        XCTAssertTrue(
+            allClose(
+                yFull.asType(.float32), ySteps.asType(.float32),
+                rtol: 5e-2, atol: 5e-2
+            ).item(Bool.self),
+            "T > 1 ops prefill diverged from stepwise fused decode beyond tolerance."
+        )
+        XCTAssertTrue(
+            allClose(stateFull, state!, rtol: 1e-3, atol: 1e-3).item(Bool.self),
+            "T > 1 ops prefill state diverged from stepwise fused decode state."
+        )
+    }
+
+    /// A second prefill chunk continuing from the first chunk's state must
+    /// agree with the single-call T > 1 result (chunk-boundary regression for
+    /// the re-routed prefill path; both sides now use the ops fallback).
+    func testMultiTokenPrefillChunksMatchSingleCall() throws {
+        let T = 8
+        let inputs = makeInputs(T: T, seed: 228)
+
+        let (yFull, _) = update(inputs)
+
+        let mid = T / 2
+        let first = Inputs(
+            q: inputs.q[0..., ..<mid], k: inputs.k[0..., ..<mid],
+            v: inputs.v[0..., ..<mid], a: inputs.a[0..., ..<mid],
+            b: inputs.b[0..., ..<mid], aLog: inputs.aLog, dtBias: inputs.dtBias
+        )
+        let second = Inputs(
+            q: inputs.q[0..., mid...], k: inputs.k[0..., mid...],
+            v: inputs.v[0..., mid...], a: inputs.a[0..., mid...],
+            b: inputs.b[0..., mid...], aLog: inputs.aLog, dtBias: inputs.dtBias
+        )
+        let (y1, state1) = update(first)
+        let (y2, _) = update(second, state: state1)
+        let yChunks = concatenated([y1, y2], axis: 1)
+        eval(yFull, yChunks)
+
+        let maxDiff = abs(yFull.asType(.float32) - yChunks.asType(.float32)).max()
+        eval(maxDiff)
+        XCTAssertLessThan(
+            maxDiff.item(Float.self), 1e-2,
+            "Chunked T > 1 prefill diverged from the single-call result."
+        )
+    }
+}
