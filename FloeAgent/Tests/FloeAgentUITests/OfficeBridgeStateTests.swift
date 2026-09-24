@@ -224,7 +224,6 @@ struct OfficeIDETabTests {
         #expect(IDEOfficeCloseDecision.decide(readOnly: true, hasUncommittedChanges: false, isReady: false)
             == .closeImmediately)
     }
-
     @Test("Closing an Office tab with edits at stake always asks the user")
     func closeDecisionDirtyAsksUser() {
         // Uncommitted edits, even on a preview that regained read-only.
@@ -422,6 +421,90 @@ struct SourceControlChangeTreeTests {
     @MainActor
     func emptyBuildsEmpty() {
         #expect(SourceControlChangeTree.build([]).isEmpty)
+    }
+}
+
+@Suite("FloeApp.OfficeIDETabOpenContract")
+struct OfficeIDETabOpenContractTests {
+
+    /// Regression for the Build 227 IDE defect: an Office tab owns a fresh
+    /// `OfficeFileSession` that nobody opened, so the embedded surface sat on
+    /// "正在打开文档…" forever (phase `.idle`, no watchdog armed) while the same
+    /// documents opened fine outside the IDE. The loader contract is: a tab
+    /// whose session has no mounted controller must be resolved and opened.
+    @Test("A new office tab's session is never-mounted: the loader decision is openNow")
+    @MainActor
+    func newTabSessionNeedsOpen() throws {
+        let store = IDEWorkspaceTabStore(initialRelativePath: nil)
+        let tab = store.open(relativePath: "docs/报告.docx")
+        #expect(tab?.kind == .office)
+        let session = try #require(tab?.officeSession)
+        #expect(session.controller == nil, "a fresh tab session must be unmounted")
+        #expect(session.phase == .idle, "an unopened session is idle, which the surface renders as an opening spinner")
+        #expect(session.readOnly)
+        #expect(IDEOfficeOpenDecision.decide(controllerMounted: session.controller != nil) == .openNow)
+    }
+
+    @Test("A mounted controller — any settled phase — is loader-owned, never re-opened")
+    @MainActor
+    func mountedControllerIsNeverReOpened() {
+        // The decision keys on the mounted controller alone: readiness, the
+        // open watchdog and recovery are owned elsewhere for loading, ready
+        // and failed-with-retained-copy alike.
+        #expect(IDEOfficeOpenDecision.decide(controllerMounted: true) == .alreadyOwned)
+        #expect(IDEOfficeOpenDecision.decide(controllerMounted: false) == .openNow)
+    }
+
+    /// The exact retry cycle the IDE surface's recovery button drives:
+    /// `recoverFailedSession()` runs first (for a pre-mount failure it re-arms
+    /// the session to `.idle`; for a mounted failure it re-activates the
+    /// retained working copy), then the injected retry re-invokes the loader.
+    /// Either way the outcome is deterministic and bounded — never an idle
+    /// spinner while the tab stays mounted.
+    @Test("Recovery plus the injected loader retry stays settled, never an idle spinner")
+    @MainActor
+    func retryCycleSettlesOffIdle() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-ide-office-open-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("报告.docx")
+        try Data("docx-bytes").write(to: file)
+
+        let session = OfficeFileSession()
+        // In this component environment the pinned native host is compiled
+        // out, so the truthful open outcome is a bounded failed state — the
+        // point is that the session must leave `.idle` at all (the Build 227
+        // IDE bug left it on `.idle` forever, which renders as an unbounded
+        // spinner no watchdog owns).
+        await session.open(file)
+        #expect(session.phase != .idle, "the loader's open must move the session off the idle spinner state")
+        #expect(session.error != nil)
+
+        // The surface's recovery button: session recovery, then the owner's
+        // loader re-drive. Host-less the recovery re-activate also fails
+        // truthfully (bounded); on device it remounts the retained copy and
+        // the loader guard turns the retry into a no-op. Never `.idle`.
+        _ = await session.recoverFailedSession()
+        #expect(session.phase != .idle)
+        await session.open(file)
+        #expect(session.phase != .idle)
+        #expect(session.canRecoverFailedSession)
+    }
+
+    /// A resolve failure reported before any mount stays recoverable and the
+    /// re-armed state is exactly the never-mounted state the loader opens.
+    @Test("A reported resolve failure is recoverable and re-arms to the openNow state")
+    @MainActor
+    func resolveFailureIsRecoverableAndRearms() async {
+        let session = OfficeFileSession()
+        session.reportOpenFailure(CocoaError(.fileReadNoSuchFile))
+        #expect(session.phase == .failed)
+        #expect(session.controller == nil, "a pre-mount failure never mounted a controller")
+        await session.retryPreview()
+        #expect(session.phase == .idle)
+        #expect(session.error == nil)
+        #expect(IDEOfficeOpenDecision.decide(controllerMounted: session.controller != nil) == .openNow)
     }
 }
 #endif

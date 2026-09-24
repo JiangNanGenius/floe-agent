@@ -450,12 +450,89 @@ struct WorkspaceIDEView: View {
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(.bar)
                 }
-                OfficeDocumentSurface(session: session)
+                OfficeDocumentSurface(session: session) {
+                    // Deterministic retry: recovery re-arms a pre-mount failure
+                    // to `.idle` (its task already ran and will not re-run while
+                    // the tab stays mounted), so the loader must be re-driven
+                    // explicitly. A mounted recovery keeps its controller and
+                    // the open guard below turns this into a no-op.
+                    Task { await openOfficeDocument(tab: tab, session: session) }
+                }
                 officeActionBar(session: session)
             }
             // A verified original-file commit from this tab (including the
             // engine's own toolbar save) refreshes every sibling entry.
             .onAppear { session.onCommitted = { onSaved() } }
+            .task {
+                // The tab owns exactly one Office session; resolving and
+                // opening the document here is what moves the surface off the
+                // "opening" spinner. Without this the session never left
+                // `.idle`, so every IDE Word/Excel/PPT tab spun forever while
+                // the same documents opened fine outside the IDE.
+                await openOfficeDocument(tab: tab, session: session)
+            }
+        }
+    }
+
+    /// Opens the tab's document in its shared Office session, mirroring
+    /// `FilePreviewView`'s staging contract: a local path resolves through the
+    /// workspace guard resolver; a cloud/network path is staged into a private
+    /// read-only snapshot that can never masquerade as a remote save. A
+    /// resolution failure is reported to the session as a recoverable failed
+    /// open (the surface then offers recovery), never left as an unowned
+    /// spinner that no watchdog owns.
+    private func openOfficeDocument(tab: IDEWorkspaceTab, session: OfficeFileSession) async {
+        // A mounted controller — loading, ready, or failed-with-a-retained-
+        // working-copy — already owns this tab's document. Re-opening would
+        // tear down a live or recoverable session (and abandon its editing
+        // copy), so only a never-mounted session is opened here; after a clean
+        // release the controller is nil and the open re-arms.
+        guard IDEOfficeOpenDecision.decide(controllerMounted: session.controller != nil) == .openNow else { return }
+        // This task is cancelled when the tab closes or the IDE disappears; a
+        // late resume after `release()` completed must not revive the removed
+        // tab's session (release itself is deferred behind an in-flight open
+        // by the session's own serialization — the exposed race is this
+        // loader's pre-open awaits).
+        func tabAlive() -> Bool {
+            // Object identity, not path identity: closing and immediately
+            // reopening the same path creates a new tab, which must not let
+            // this old tab's loader finish and revive the old released
+            // session.
+            !Task.isCancelled && tabs.tabs.contains { $0 === tab }
+        }
+        guard tabAlive() else { return }
+        guard let service = center.fileService else {
+            session.reportOpenFailure(NSError(
+                domain: "org.floeagent.ide.office",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: IDELanguageRunText.t(
+                    "工作区文件服务不可用，无法打开该文档。",
+                    "The workspace file service is unavailable, so this document cannot be opened.")]))
+            return
+        }
+        do {
+            let remote = center.isCloudWorkspacePath(tab.relativePath)
+                || center.isNetworkWorkspacePath(tab.relativePath)
+            let url: URL
+            if remote {
+                let bytes = try await center.readRemotePreview(relativePath: tab.relativePath)
+                guard tabAlive() else { return }
+                // Per-tab staging store: staging another remote tab must never
+                // delete this tab's active staged snapshot.
+                url = try tab.remotePreview.store(bytes, fileName: tab.title)
+            } else {
+                url = try service.guardResolver.resolve(tab.relativePath)
+                try service.guardResolver.assertReadableSize(url)
+            }
+            guard tabAlive() else { return }
+            session.isRemoteSnapshot = remote
+            await session.open(url)
+            guard tabAlive() else { return }
+            await center.recordRecentFile(relativePath: tab.relativePath, displayName: tab.title)
+        } catch {
+            // A cancelled or removed tab is not a failure the surface must show.
+            guard tabAlive() else { return }
+            session.reportOpenFailure(error)
         }
     }
 

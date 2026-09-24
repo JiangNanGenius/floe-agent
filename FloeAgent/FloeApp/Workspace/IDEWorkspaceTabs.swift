@@ -31,6 +31,36 @@ enum IDEWorkspaceTabKind: String, Equatable {
     }
 }
 
+/// Pure decision for the IDE surface's Office open loader: when must the
+/// owning surface resolve and open the tab's document into its session?
+/// Keeping this pure lets focused tests pin the exact contract that prevents
+/// both failure modes it guards against: mounting a surface without ever
+/// opening the session (the Build 227 endless "正在打开文档…" spinner, where the
+/// session stayed `.idle` and no watchdog was ever armed), and re-opening a
+/// live or recoverable session (which would tear down its controller and
+/// abandon its retained editing copy).
+enum IDEOfficeOpenDecision: Equatable {
+    /// No controller is mounted: the session was never opened, was cleanly
+    /// released, or was re-armed after a pre-mount failure. The loader must
+    /// resolve and open now — nothing else moves this surface off the opening
+    /// state, and no open watchdog exists until a controller mounts.
+    case openNow
+    /// A controller already owns this document: loading, ready, or a failed
+    /// session whose retained working copy the recovery action owns. The
+    /// loader must not re-open — readiness, the open watchdog and recovery
+    /// are already owned elsewhere.
+    case alreadyOwned
+
+    /// The mounted controller is the only truthful owner signal. It exists
+    /// through every settled phase (including `.failed` with a retained
+    /// working copy), while `nil` covers "never opened", "released" and
+    /// "re-armed after a pre-mount failure" — the three states that need the
+    /// loader's open.
+    static func decide(controllerMounted: Bool) -> IDEOfficeOpenDecision {
+        controllerMounted ? .alreadyOwned : .openNow
+    }
+}
+
 /// Pure decision for closing an Office tab (typed outer tab): a clean
 /// read-only preview closes immediately; anything holding user changes hands
 /// the save/discard/cancel decision to the user. Keeping this pure lets
@@ -63,6 +93,11 @@ final class IDEWorkspaceTab: ObservableObject, @MainActor Identifiable {
     /// in-tab editor both read this same object, so there is exactly one
     /// working copy, one save receipt and one conflict baseline per document.
     let officeSession: OfficeFileSession?
+    /// Stages a cloud/network document into a private read-only snapshot for
+    /// this tab's open. Ownership is per tab: `RemoteFilePreviewCopy.store`
+    /// deletes its previous staged directory, so one shared store would let a
+    /// second remote Office tab delete the first tab's active staged file.
+    let remotePreview = RemoteFilePreviewCopy()
 
     var id: String { relativePath }
     var title: String { (relativePath as NSString).lastPathComponent }
@@ -85,6 +120,10 @@ final class IDEWorkspaceTab: ObservableObject, @MainActor Identifiable {
 
     func release() async {
         await officeSession?.release()
+        // The staged cloud/network snapshot only feeds the open; once the
+        // session is released it is dead weight, and keeping per-tab stores
+        // alive after close would leak one temp directory per remote tab.
+        remotePreview.clear()
     }
 }
 

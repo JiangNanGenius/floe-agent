@@ -1870,6 +1870,16 @@ private struct OfficeControllerSurface: UIViewControllerRepresentable {
 
 struct OfficeDocumentSurface: View {
     @ObservedObject var session: OfficeFileSession
+    /// Owning-surface retry, invoked after `recoverFailedSession()` returns.
+    /// A pre-mount open failure only re-arms the session to `.idle`; the
+    /// surface's own open task has already run and will not re-run while the
+    /// surface stays mounted, so the owner must re-drive its resolve+open
+    /// loader or the surface returns to an unowned spinner. Owners whose
+    /// loader re-runs on their own (workspace preview's `task(id:)`, Notes'
+    /// explicit `prepare(force:)`) leave this nil; the IDE tab, whose loader
+    /// runs once per appearance, injects it. A mounted recovery keeps its
+    /// controller, and the loader's open guard makes the retry a no-op there.
+    var retryOpen: (() -> Void)? = nil
     var body: some View {
         ZStack {
             if let controller = session.controller {
@@ -1887,7 +1897,10 @@ struct OfficeDocumentSurface: View {
                         // retained working copy, and re-opens a truthful
                         // preview of it so unsaved edits stay reachable.
                         Button(OfficeInkText.t("恢复文档", "Recover Document")) {
-                            Task { _ = await session.recoverFailedSession() }
+                            Task {
+                                _ = await session.recoverFailedSession()
+                                retryOpen?()
+                            }
                         }
                     }
                 }
