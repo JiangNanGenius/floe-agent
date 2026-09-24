@@ -1,10 +1,10 @@
 # Floe Agent 使用指南
 
-当前内部交付为 **1.7.0（227）**。不可变标签 `v1.7.0-beta.84` 固定源码 `9c756864`；[发布 run 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008) 在签名前保留未签名 IPA（739,368,613 字节，SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`），接受签名上传并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.84)。Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` 已核实 `VALID`、未过期并在唯一私有 Floe QA 组 `IN_BETA_TESTING`（2026-09-24 05:42 UTC，[核验 run 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720)），中英文测试说明均已读回。匹配的未签名 GitHub 开发者 IPA 与 Feather 源条目已发布；Gitee 只镜像小型发行资产，因为仓库附件配额无法容纳约 705 MiB 的 IPA。[Build 227 说明](RELEASE_NOTES_1.7.0_BUILD_227.md) · [交付记录](TESTFLIGHT_1.7.0_BETA.md)。
+当前内部交付为 **1.7.0（228）**。不可变标签 `v1.7.0-beta.85` 固定源码 `ed8f233a`；[发布 run 36009125622](https://github.com/JiangNanGenius/floe-agent/actions/runs/36009125622) 在签名前保留未签名 IPA（739,478,368 字节，SHA-256 `1cfe17ba4e95f869bf962d3a1238f333b6525fddfc1dde1b295f78a262d95076`），上传签名构建并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.85)。[核验 run 36015717443](https://github.com/JiangNanGenius/floe-agent/actions/runs/36015717443)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`；中英文测试说明均已读回。匹配的未签名 GitHub 开发者 IPA 与 Feather 源条目已发布。Gitee 同步源码、标签和小型资源，附件配额不足以容纳约 705 MiB 的 IPA。[Build 228 说明](RELEASE_NOTES_1.7.0_BUILD_228.md) · [交付记录](TESTFLIGHT_1.7.0_BETA.md)。
 
-**源码状态——Build 227 之后的未发布修复（未宣布新构建号）。** `main` 已领先于已交付的 227 构建，包含尚不属于任何已交付构建的在办修复：PPT 编辑入口的有界 extent 引导后备、通过共享文档会话打开 IDE Office 标签、窄宽度下可触控的 IDE Git 侧栏操作，以及 Linux 客体运行形状/核心选择链路。组件检查、云端 App 与模拟器、分发和真机体验是各自独立的门槛；已交付构建承载的功能范围记录在 [Build 226 候选说明](RELEASE_NOTES_1.7.0_BUILD_226.md)与 [Build 227 说明](RELEASE_NOTES_1.7.0_BUILD_227.md)。下文标记“下一构建”的条目描述 Build 227 之后的源码工作，尚未取得真机验收。
+**Build 228 的变化。** IDE Office 标签改用共享文档会话打开；PPT 编辑宿主增加有界进入路径；窄宽度 Git 按钮统一触控尺寸；本地模型与 Linux 的冲突在选择模型时提示。运行面板提供自动、单核、双核请求；修正后的等量负载测试未达到加速门槛，正式版的双核安全门仍关闭。云端 Qwen 预填充和 Office 宿主检查只是组件证据，不等于 iPad 验收。下文写着“下一构建”的条目，除其章节另有说明外，现已包含在 Build 228。
 
-**Build 227 已知真机回归（未通过验收）。** 2026-09-24 在 iPad 上测试该构建时报告：下载的 MLX 本地模型在普通对话与测速中崩溃；PPT/PPTX 预览可以打开，但随后进入编辑的操作会停住；从 IDE 文件树打开的 Word/Excel/PPT 文档一直停留在打开指示。以上作为下一候选的待处理回归跟踪——均未修复、未豁免。本地模型加载与测速、PPT 编辑、画中画、通知、键盘/输入法以及双核客体运行在真机上仍未验收。
+**仍需真机复测。** Build 227 的 iPad 测试报告普通 MLX 对话和测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 228 包含针对性修复，但本地模型加载、测速与工具续轮、PPT 可编辑首帧和保存重开、IDE 内 DOCX/XLSX/PPTX 标签，以及 PiP、通知和键盘触控行为，均仍需在设备上核实。
 
 下方 Build 191/192 说明与截图为历史记录，其中的候选及豁免措辞只描述当时版本，不代表当前可用状态。
 
