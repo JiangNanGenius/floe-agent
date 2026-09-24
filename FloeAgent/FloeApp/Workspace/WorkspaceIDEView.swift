@@ -607,6 +607,10 @@ struct WorkspaceIDEView: View {
         }
         .frame(height: min(280, max(160, availableHeight * 0.42)))
         .background(FloeTheme.readingSurface)
+        // An explicit container keeps the panel discoverable as one element;
+        // without it SwiftUI inherits the identifier into every child and no
+        // `otherElements` query can find the panel itself.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.ide.terminalPanel")
     }
 

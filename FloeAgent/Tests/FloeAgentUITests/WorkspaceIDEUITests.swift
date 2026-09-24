@@ -297,7 +297,9 @@ final class WorkspaceIDEUITests: XCTestCase {
         let rail = app.buttons["workspace.ide.terminal"]
         XCTAssertTrue(rail.waitForExistence(timeout: 10), "the activity rail must expose a terminal control", file: file, line: line)
         XCTAssertTrue(rail.isEnabled, "the terminal rail control must stay enabled", file: file, line: line)
-        let panel = app.otherElements["workspace.ide.terminalPanel"]
+        // The panel may surface as a container of any element type; query the
+        // whole tree rather than only `otherElements`.
+        let panel = app.descendants(matching: .any).matching(identifier: "workspace.ide.terminalPanel").firstMatch
         if !panel.exists { rail.tap() }
         XCTAssertTrue(panel.waitForExistence(timeout: 10), "tapping the rail must open the terminal panel", file: file, line: line)
         capture("ide-terminal-panel")
