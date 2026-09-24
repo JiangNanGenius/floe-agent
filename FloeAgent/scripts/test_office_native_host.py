@@ -208,6 +208,53 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
         self.assertGreaterEqual(source.count('@"session": host.sessionID'), 1)
         self.assertGreaterEqual(source.count('@"generation": @(self.openGeneration)'), 4)
 
+    def test_extent_bootstrap_fallback_is_bounded_and_never_relaxes_readiness(self):
+        """The parked edit entry has a bounded weaker-evidence trigger tier.
+
+        Build 227's distinct Workspace/Notes symptom: the preview paints, but
+        pressing Edit leaves the surface on the opening spinner because the
+        paint-gated entry waited for a decoded tile that never arrived, and
+        only the 25s deadline settled it (without ever building the edit
+        surface). The fallback runs the guarded entry once the engine proved
+        the document extent (type + loaded document + sized canvas — strictly
+        later than the open-permission clock of the Build 225 white screen),
+        after a bounded grace. The session-ready threshold is untouched:
+        readiness still demands the post-entry paint, so the fallback can
+        never ready a session whose edit surface did not really paint.
+        """
+        source = self.source()
+        # The deferral stamps the park time the fallback measures from, and the
+        # run/settle paths clear it with the pending flag.
+        defer = source.split('- (void)deferEditEntryUntilFirstPaint {', 1)[1] \
+                      .split('- (void)runEditEntryAndReport {', 1)[0]
+        self.assertIn('self.editEntryDeferredAt = [NSDate date];', defer)
+        run = source.split('- (void)runEditEntryAndReport {', 1)[1] \
+                    .split('- (void)settlePendingEditEntryWithoutEntry {', 1)[0]
+        self.assertIn('self.editEntryDeferredAt = nil;', run)
+        settle = source.split('- (void)settlePendingEditEntryWithoutEntry {', 1)[1] \
+                       .split('- (BOOL)hasPendingDeferredEditEntry {', 1)[0]
+        self.assertIn('self.editEntryDeferredAt = nil;', settle)
+        # The fallback consults the parked state and a pure, compiled gate.
+        self.assertIn('- (BOOL)hasPendingDeferredEditEntry {', source)
+        self.assertIn('- (NSTimeInterval)deferredEditEntryParkedSeconds {', source)
+        self.assertIn('FloeDeferredEditEntryExtentBootstrapEligible(', source)
+        self.assertIn('static const NSTimeInterval FloeEditEntryExtentBootstrapGraceSeconds = 5.0;',
+                      source)
+        # It applies to the deferred (editable file-based) entry only, and the
+        # trigger diagnostics stay honest about which tier fired.
+        poll = source.split('- (void)poll {', 1)[1].split('(FloeRenderFacts)renderFactsFromDictionary:', 1)[0]
+        self.assertIn('probe.expectsDeferredEditEntry', poll)
+        self.assertIn('entryTriggerTier = @"extent-bootstrap";', poll)
+        self.assertIn('triggerDiagnostics[@"trigger"] = entryTriggerTier;', poll)
+        self.assertIn('@"edit-entry-extent-bootstrap"', source)
+        # Readiness is unchanged: the shipped session-ready threshold still
+        # returns the edit-surface paint evidence, and the ready signal still
+        # waits for the entry's own acknowledgement.
+        gate = host_fragment(source, '// FLOE_EDIT_ENTRY_GATE_BEGIN', '// FLOE_EDIT_ENTRY_GATE_END')
+        self.assertIn('return facts.editSurfacePainted;', gate)
+        self.assertIn('FloeDeferredEditEntryExtentBootstrapEligible(BOOL entryPending,', gate)
+
+
 
 class OfficeEditEntryGateTests(unittest.TestCase):
     """Compile and exercise the shipped two-threshold render decision.
@@ -249,6 +296,17 @@ int main() { @autoreleasepool {
     assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(false, true, true, true, false)));
     assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, false, true), false, false));
     assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, true), false, true));
+    // The extent-bootstrap fallback: a parked entry, a proven document extent
+    // and a wait past the bounded grace may run the guarded entry; anything
+    // less may not, and the fallback never applies once the entry settled.
+    assert(FloeDeferredEditEntryExtentBootstrapEligible(YES, NO, NO, true, 5.0));
+    assert(FloeDeferredEditEntryExtentBootstrapEligible(YES, NO, NO, true, 30.0));
+    assert(!FloeDeferredEditEntryExtentBootstrapEligible(NO, NO, NO, true, 30.0));
+    assert(!FloeDeferredEditEntryExtentBootstrapEligible(YES, YES, NO, true, 30.0));
+    assert(!FloeDeferredEditEntryExtentBootstrapEligible(YES, NO, YES, true, 30.0));
+    assert(!FloeDeferredEditEntryExtentBootstrapEligible(YES, NO, NO, false, 30.0));
+    assert(!FloeDeferredEditEntryExtentBootstrapEligible(YES, NO, NO, true, 4.9));
+    assert(!FloeDeferredEditEntryExtentBootstrapEligible(YES, NO, NO, true, 0.0));
     // The paint gate applies to the file-based presentation formats only.
     assert(FloeDocumentRequiresVisibleRender(@"pptx"));
     assert(FloeDocumentRequiresVisibleRender(@"odp"));

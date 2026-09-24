@@ -1005,8 +1005,32 @@ static void ServerReady() {
 //   paint is preview evidence, never edit-surface evidence, and the engine's
 //   shared tile map keeps the preview's decoded tiles across the layout
 //   switch, so the tile count alone is never edit-surface evidence.
+// * the edit-entry trigger has one bounded, weaker-evidence fallback: an
+//   editable file-based session that already proved its document extent
+//   (document type from the engine's first status, a loaded document and a
+//   sized canvas) but waited `FloeEditEntryExtentBootstrapGraceSeconds`
+//   without decoding any tile may run the guarded entry on the extent proof
+//   alone. The Build 225 white screen came from entering on the open-
+//   permission clock, BEFORE any engine status, where the part-based extent
+//   was still empty; the extent proof excludes exactly that, and nothing here
+//   relaxes the session-ready threshold — readiness below still demands the
+//   post-entry paint, so the fallback can never ready a session whose edit
+//   surface did not really paint.
 static bool FloeRenderFactsSatisfyEditEntryTrigger(FloeRenderFacts facts) {
     return FloeRenderFactsSatisfyVisibleRender(facts);
+}
+
+/// Bounded weaker-evidence fallback for the paint-gated edit entry (see the
+/// gate comment above). Pure and compiled by the qualification harness.
+static const NSTimeInterval FloeEditEntryExtentBootstrapGraceSeconds = 5.0;
+static bool FloeDeferredEditEntryExtentBootstrapEligible(BOOL entryPending,
+                                                         BOOL entryRunning,
+                                                         BOOL openPermissionReported,
+                                                         BOOL extentProven,
+                                                         NSTimeInterval parkedSeconds) {
+    if (!entryPending || entryRunning || openPermissionReported) return false;
+    if (!extentProven) return false;
+    return parkedSeconds >= FloeEditEntryExtentBootstrapGraceSeconds;
 }
 
 static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readOnly, bool fileBasedView) {
@@ -1180,16 +1204,39 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 FloeOfficeLog(@"render-probe-facts", facts);
             }
             FloeRenderFacts renderFacts = [probe renderFactsFromDictionary:facts];
-            if (FloeRenderFactsSatisfyEditEntryTrigger(renderFacts)) {
-                // A decoded document tile proves a live paint pipeline and a
-                // real document extent: the earliest point the guarded mobile
-                // edit entry may switch the file-based startup into the
-                // part-based edit layout without building it on an empty
-                // extent. Reported before the session-ready decision, at most
-                // once per session, so a pending edit entry always runs.
+            // Primary trigger: a decoded document tile proves a live paint
+            // pipeline and a real document extent. Bounded fallback: an
+            // editable file-based startup that proved the same extent from
+            // the engine's first status (document type, loaded document,
+            // sized canvas) but waited the grace without decoding any tile
+            // may run the guarded entry on that extent proof — the switch
+            // then builds on a real extent, never the empty one of the
+            // Build 225 white screen, and the session-ready threshold below
+            // still demands the post-entry paint either way.
+            BOOL entryTrigger = FloeRenderFactsSatisfyEditEntryTrigger(renderFacts);
+            NSString *entryTriggerTier = nil;
+            if (!entryTrigger && probe.expectsDeferredEditEntry) {
+                BOOL extentProven = renderFacts.docTypeKnown && renderFacts.docLoaded && renderFacts.canvasSized;
+                NSTimeInterval parked = [probe.controller deferredEditEntryParkedSeconds];
+                if (FloeDeferredEditEntryExtentBootstrapEligible([probe.controller hasPendingDeferredEditEntry],
+                                                                 probe.controller.editEntryRunning,
+                                                                 probe.controller.openPermissionReported,
+                                                                 extentProven, parked)) {
+                    entryTrigger = YES;
+                    entryTriggerTier = @"extent-bootstrap";
+                    FloeOfficeLog(@"edit-entry-extent-bootstrap", @{@"session": probe.controller.sessionID,
+                                                                    @"generation": @(probe.controller.openGeneration),
+                                                                    @"parked": @(parked)});
+                }
+            }
+            if (entryTrigger) {
+                // Reported before the session-ready decision, at most once per
+                // session, so a pending edit entry always runs.
                 if (!probe->_firstPaintReported) {
                     probe->_firstPaintReported = YES;
-                    [probe.controller renderProbeDidObserveFirstPaint:probe.diagnostics];
+                    NSMutableDictionary *triggerDiagnostics = [probe.diagnostics mutableCopy];
+                    if (entryTriggerTier) triggerDiagnostics[@"trigger"] = entryTriggerTier;
+                    [probe.controller renderProbeDidObserveFirstPaint:triggerDiagnostics];
                 }
                 BOOL fileBasedView = [facts[@"fileBasedView"] isKindOfClass:NSNumber.class]
                     && [facts[@"fileBasedView"] boolValue];
@@ -1323,6 +1370,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// decoded document tile, never on the open-permission clock. The pending
 /// entry is stored here until that trigger (or a settle path) fires.
 @property (nonatomic) BOOL editEntryPending;
+/// Set when the entry was parked; the render probe's bounded
+/// extent-bootstrap fallback measures the wait from this stamp (main-queue
+/// clock). Nil once the entry ran or settled.
+@property (nonatomic, strong) NSDate *editEntryDeferredAt;
 /// The guarded edit entry is running; a second trigger can never start a
 /// concurrent engine switch.
 @property (nonatomic) BOOL editEntryRunning;
@@ -1360,6 +1411,12 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// Settles a still-pending edit entry without forcing an entry: the render
 /// gate owns the bounded outcome. Exactly once.
 - (void)settlePendingEditEntryWithoutEntry;
+/// The parked paint-gated edit entry is still awaiting its trigger: pending,
+/// not running, and the one-shot open-permission report has not settled.
+- (BOOL)hasPendingDeferredEditEntry;
+/// Seconds the parked edit entry has waited for its first-paint trigger
+/// (0 when it was never parked or already ran/settled).
+- (NSTimeInterval)deferredEditEntryParkedSeconds;
 @end
 
 @implementation FloeOfficeEnginePermissionObserver
@@ -1854,6 +1911,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         return;
     }
     self.editEntryPending = YES;
+    self.editEntryDeferredAt = [NSDate date];
     FloeOfficeLog(@"edit-entry-deferred", @{@"session": self.sessionID,
                                             @"generation": @(self.openGeneration)});
 }
@@ -1867,6 +1925,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
     if (self.editEntryRunning || self.openPermissionReported) return;
     self.editEntryPending = NO;
+    self.editEntryDeferredAt = nil;
     self.editEntryRunning = YES;
     FloeOfficeLog(@"edit-entry", @{@"session": self.sessionID,
                                    @"generation": @(self.openGeneration)});
@@ -1902,12 +1961,21 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
     if (!self.editEntryPending) return;
     self.editEntryPending = NO;
+    self.editEntryDeferredAt = nil;
     if (self.closed || self.closing) return;
     FloeOfficeLog(@"edit-entry-settled-without-entry", @{@"session": self.sessionID,
                                                          @"generation": @(self.openGeneration),
                                                          @"readOnly": @(self.sessionIsReadOnly)});
     [self reportOpenPermissionOnce:YES readOnly:self.sessionIsReadOnly];
     [self beginCloseIfRequested];
+}
+- (BOOL)hasPendingDeferredEditEntry {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    return self.editEntryPending && !self.editEntryRunning && !self.openPermissionReported;
+}
+- (NSTimeInterval)deferredEditEntryParkedSeconds {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    return self.editEntryDeferredAt ? -[self.editEntryDeferredAt timeIntervalSinceNow] : 0;
 }
 - (void)insertAttachmentFromFileURL:(NSURL *)fileURL completion:(void (^)(NSError *))completion {
     NSAssert(NSThread.isMainThread, @"Office attachment requests are main-queue owned");

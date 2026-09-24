@@ -153,6 +153,29 @@ struct OfficePresentationOpeningTests {
         }
     }
 
+    @Test("An early edit-entry acknowledgement never readies a presentation without the edit paint")
+    func earlyEditEntryAckNeverReadiesWithoutTheEditPaint() {
+        // The host may run the guarded edit entry on its bounded
+        // extent-bootstrap fallback; the App contract is unchanged by how
+        // early the entry ran. The entry's permission acknowledgement
+        // settles the open, the session still awaits the visible render,
+        // and the bounded outcome without a paint stays recoverable —
+        // the acknowledgement and the first editable frame stay distinct.
+        var policy = Self.policy("pptx", readOnly: false)
+        #expect(policy.openSettled() == .waiting)
+        #expect(policy.renderObserved() == .ready)
+        #expect(policy.warning == nil)
+
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        #expect(gate.openSettled() == .waitingForRender,
+                "the entry acknowledgement settles the open, not readiness")
+        #expect(gate.awaitsVisibleRender)
+        #expect(!gate.isReady && !gate.permitsSave)
+        // No paint by the deadline: the recoverable notice, never ready.
+        #expect(gate.deadlineExceeded() == .failed)
+        #expect(!gate.permitsSave)
+    }
+
     // MARK: - First frame ownership
 
     @Test("A preview-to-edit remount never inherits the preview's paint")
