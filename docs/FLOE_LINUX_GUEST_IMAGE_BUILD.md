@@ -156,6 +156,41 @@ build needs its SHA-512/SHA-256/size and a fresh image run; a new kernel/bbl
 revision needs the matching diff/config and a fresh capability run. Never edit
 a digest to make a check pass.
 
+## Template component prereleases (D4/D6)
+
+The App's optional preinstalled templates are published as immutable GitHub
+component prereleases. A distribution workflow is not a general publishing
+platform: it pins the retained component CI run(s), every artifact id/byte
+size, the candidate archive digest and the component tag, re-verifies all of
+them against the GitHub API (and, for the small evidence artifacts, against
+the actual bytes) and refuses to publish when anything cannot be proven.
+
+- `basic` — tag `floe-linux-template-basic-20260923.1`, published by
+  `.github/workflows/linux-template-distribute.yml` from image/templates run
+  35928017233 (`706413fd…`); pinned in
+  `RuntimeV2OfficialTemplatePinnedArtifacts`.
+- `dev-document` — tag `floe-linux-template-dev-document-20260924.1` (release
+  published 2026-09-24 by distribution run 35941775534; 16 digest-verified
+  assets), published by `.github/workflows/linux-template-distribute-dev.yml`.
+  It pins two retained runs: the image/templates run 35928029851
+  (`706413fd…`, image candidate + evidence + dev-document qualification) and
+  the corresponding-sources run 35939078878 (`2f4bd52d…`,
+  upstream/relink/toolchain + Debian shards 1–2 + source evidence + the PyPI
+  wheel sources), and is pinned in
+  `RuntimeV2OfficialTemplatePinnedArtifacts`. See
+  `docs/BUILD_226_DEV_TEMPLATE_SOURCE.md` for the PyPI/PDFium provenance and
+  the release record.
+
+Both workflows publish a published prerelease (never a draft, never `latest`,
+tag never `v`-prefixed), never overwrite an asset, and keep the shipped
+bbl/kernel/disk bytes unchanged — only `manifest.json` provenance
+(`sourceURL`, `buildConfigurationURL`, `distributionAllowed`) is rewritten.
+The release is created only after the full corresponding-source audit passes:
+Debian mapping gaps 0, the exact cross glibc `.dsc`s verified, the relink
+object and kernel/bbl sources pinned to the shipped binaries, PyPI gaps 0 with
+every wheel matching the recipe pin and the PDFium source tree manifest, and
+the template qualification report clean.
+
 ## Distribution mirror (Gitee, sharded)
 
 The pinned archive (`floe-linux-guest-floe-debian13-riscv64-20260922.2.zip`,

@@ -489,4 +489,63 @@ final class RuntimeV2OfficialTemplateWiringTests: XCTestCase {
         let pin = await integrator.environmentTemplatePin(environmentID: "env-foreign")
         XCTAssertNil(pin)
     }
+
+    // MARK: - compiled-in distribution pins
+
+    /// The published pins are the only source of official template artifacts,
+    /// so each one must be self-consistent and must carry the exact recipe
+    /// bytes checked into the repository:
+    ///
+    ///   * `recipeBase64` decodes and its SHA-512 equals `recipeSHA512`;
+    ///   * the recipe decodes to `RuntimeV2TemplateRecipe` named after the
+    ///     template id;
+    ///   * the bytes are byte-identical to
+    ///     `FloeAgent/LinuxGuest/image/templates/<templateID>.json`;
+    ///   * the archive URL is the release download URL for that template and
+    ///     ends in the pinned image id, with well-formed digests.
+    ///
+    /// This does not download the archives (they are ~0.5–1.1 GB); it pins the
+    /// identity contract the release run and the App share.
+    func testPinnedArtifactsMatchTheRepositoryRecipes() throws {
+        let artifacts = RuntimeV2OfficialTemplatePinnedArtifacts.all
+        XCTAssertEqual(
+            Set(artifacts.map(\.templateID)), Set(RuntimeV2TemplateCatalog.officialTemplateIDs),
+            "every official template id has exactly one published pin"
+        )
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for artifact in artifacts {
+            let data = try XCTUnwrap(
+                artifact.recipeData, "\(artifact.templateID): recipeBase64 must decode"
+            )
+            XCTAssertEqual(
+                FloeDigest.sha512Hex(data), artifact.recipeSHA512.lowercased(),
+                "\(artifact.templateID): embedded recipe digest must match the pin"
+            )
+            let recipe = try JSONDecoder().decode(RuntimeV2TemplateRecipe.self, from: data)
+            XCTAssertEqual(recipe.name, artifact.templateID)
+            let file = repository
+                .appendingPathComponent("LinuxGuest/image/templates/\(artifact.templateID).json")
+            XCTAssertEqual(
+                try Data(contentsOf: file), data,
+                "\(artifact.templateID): the pin must carry the repository recipe bytes"
+            )
+            XCTAssertTrue(
+                artifact.archiveURL.hasPrefix(
+                    "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-template-\(artifact.templateID)"
+                ),
+                "\(artifact.templateID): archive URL must be the component release download URL"
+            )
+            XCTAssertTrue(
+                artifact.archiveURL.hasSuffix("/floe-linux-guest-\(artifact.imageID).zip"),
+                "\(artifact.templateID): archive URL must end in the pinned image archive name"
+            )
+            XCTAssertEqual(artifact.archiveSHA512.count, 128)
+            XCTAssertEqual(artifact.diskSHA512.count, 128)
+            XCTAssertEqual(artifact.diskSHA512, artifact.diskSHA512.lowercased())
+            XCTAssertGreaterThan(artifact.archiveBytes, 0)
+            XCTAssertFalse(artifact.qualificationRunURL.isEmpty)
+            XCTAssertFalse(artifact.sourceRef.isEmpty)
+        }
+    }
 }
