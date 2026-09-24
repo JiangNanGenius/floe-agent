@@ -10,6 +10,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeWorkspace
+import FloeTools
 
 /// The workspace directory tree (lazy) with an inline search field.
 struct FileTreeView: View {
