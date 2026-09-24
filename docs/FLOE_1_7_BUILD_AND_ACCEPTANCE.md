@@ -1,8 +1,8 @@
 # Floe 1.7 构建与验收 / Build and acceptance
 
-Build 225 is the current internal delivery. Immutable tag `v1.7.0-beta.82` binds source `fe0852b4559ab2fb14bef671cf73aec3d7370f03`. Release run 35773856510 completed the accepted-SDK App build, retained the unsigned IPA, signed, validated and uploaded the App, and published the GitHub prerelease. Apple build `b53b6e02-a0cb-4eba-8d94-921805ff80e1` is `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group; prepare run 35779218539 read back both beta-note locales and verify run 35779297843 confirmed availability at 2026-09-22T20:17:32Z. Local evidence covers 23 focused Linux image tests plus a Swift 6 iOS-SDK object compile of the repaired downloader. Build 224 never compiled and its immutable failure record remains unchanged. Real-iPad Linux, PPT, MLX and PiP behavior remains user acceptance. See [Build 225 notes](RELEASE_NOTES_1.7.0_BUILD_225.md).
+Build 227 is the current internal delivery. Immutable tag `v1.7.0-beta.84` binds source `9c756864fa9532d02ba7f7073320f8b48d94dc51`. [Release run 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008) compiled with Xcode 26.6, retained `Floe-Agent-1.7.0-build227-unsigned.ipa` (739,368,613 bytes; SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`) before signing, accepted the signed TestFlight upload and published the GitHub prerelease. Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` is `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group; [verify run 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720) confirmed availability at 2026-09-24T05:42:18Z and [prepare run 35961014056](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961014056) read back both beta-note locales. Build 226 never compiled (missing `FloeTools` import in `FloeApp/Workspace/FileTreeView.swift`; tag `v1.7.0-beta.83`, run 35955220518) and Build 224's typed-throws failure record remains unchanged; neither produced an IPA. Open Build 227 iPad regressions are not acceptance: a downloaded MLX local model crashes in ordinary chat and in the benchmark, a rendered PPT/PPTX preview stalls at the edit entry, and Word/Excel/PPT documents opened from the IDE file tree stay on the opening indicator. The post-227 source repairs on `main` have no App build, upload or device retest. Real-iPad Linux, PPT, MLX, PiP, notification and input behavior remains user acceptance. See [Build 227 notes](RELEASE_NOTES_1.7.0_BUILD_227.md).
 
-本说明适用于 1.7 整合分支；完整验收状态以[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。最低系统为 iOS/iPadOS 26，数据库迁移至 v40。重型 App 构建与归档放在云端，本地仅做定向验证。正式发布不属于本轮自动动作。
+本说明适用于 1.7 整合分支；完整验收状态以[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。最低系统为 iOS/iPadOS 26，数据库迁移至 v44。重型 App 构建与归档放在云端，本地仅做定向验证。正式发布不属于本轮自动动作。
 
 ## 本地准备
 
@@ -53,7 +53,7 @@ Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输
 
 ## 当前描述文件与新链路验收
 
-当前内部交付为 [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md)：固定标签 `v1.7.0-beta.82`、源码 `fe0852b4`，云端验收 SDK 构建与上传成功；Apple build `b53b6e02-a0cb-4eba-8d94-921805ff80e1` 已核实 `VALID`、未过期、唯一私有内部 Floe QA 组和 `IN_BETA_TESTING`。Build 224 的验收 SDK 编译失败记录继续保留。完整交付记录见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)；真机 Linux、PPT、MLX 与 PiP 验收仍由用户执行。1.7.0 系列历史版本文件保留原始结论。
+当前内部交付为 [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md)：固定标签 `v1.7.0-beta.84`、源码 `9c756864`，云端构建（Xcode 26.6）、未签名 IPA 留存（739,368,613 字节，SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`）与签名上传成功；Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` 已核实 `VALID`、未过期、唯一私有内部 Floe QA 组和 `IN_BETA_TESTING`（2026-09-24T05:42:18Z），中英文测试说明已读回。Build 226 云端编译失败与 Build 224 验收 SDK 编译失败记录继续保留，两者均未生成 IPA。Build 227 真机回归仍未修复：MLX 本地模型普通对话与测速崩溃、PPT 预览后可编辑入口停住、从 IDE 文件树打开的 Word/Excel/PPT 停在打开指示；Build 227 之后的源码修复尚未发布，也没有 App 构建或真机复测。完整交付记录见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)；真机 Linux、PPT、MLX、PiP、通知与输入验收仍由用户执行。1.7.0 系列历史版本文件保留原始结论。
 
 ### 192–196 结果（2026-09-19）
 

@@ -1,15 +1,19 @@
 # Floe 1.7 next release — implementation status and verification boundaries
 
+**Current status (2026-09-24):** Build 227 (`v1.7.0-beta.84`, source `9c756864`) is the delivered internal TestFlight — cloud build and upload run 35957256008, Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` verified `VALID` and `IN_BETA_TESTING` in the sole private Floe QA group at 2026-09-24T05:42:18Z. iPad testing of Build 227 reported open regressions: downloaded MLX local models crash in ordinary chat and in the benchmark, a PPT/PPTX preview renders but the edit entry then stalls, Word/Excel/PPT documents opened from the IDE file tree stay on the opening indicator, and narrow Git sidebar actions are not consistently touch-sized. These are unfixed, not passing. `main` also carries unreleased post-227 source repairs (IDE Office tabs through the shared document session, the bounded PPT extent-bootstrap fallback with the Office host rebuilt and pinned by cloud run 36000058922, touch-sized narrow Git actions, and guest run-shape/core-choice plumbing behind the frozen single-core release gate) with no App build, upload or device retest evidence. The [delivery record](TESTFLIGHT_1.7.0_BETA.md) owns the current per-state evidence; the snapshot below is retained history, not the current release status.
+
 This is the 2026-09-23 work-package snapshot, based on `main` `ef70a208`.
 Build 225 (`v1.7.0-beta.82`) was the last delivered internal build at that
-point. The current Build 226 candidate and its newer component evidence are
-tracked in [Build 226 candidate notes](RELEASE_NOTES_1.7.0_BUILD_226.md).
+point. The then-current Build 226 candidate and its newer component evidence
+are tracked in [Build 226 candidate notes](RELEASE_NOTES_1.7.0_BUILD_226.md).
 This snapshot distinguishes what was **implemented and verified** from what
 was **designed but not yet verified**; its in-flight table is historical and
 must not be read as the current task queue or release status.
 
 Nothing in this snapshot claims a Build 226 IPA, upload, TestFlight
-availability, or device acceptance.
+availability, or device acceptance. Build 226 never compiled; its repaired
+source shipped as Build 227, whose own delivery evidence is in
+[the delivery record](TESTFLIGHT_1.7.0_BETA.md).
 
 ## 1. Native-first capability routing (work package J) — implemented and verified
 
@@ -133,8 +137,8 @@ completion. Gates follow `Local/Private/active/next-release/release-gates.md`
 | C — templates | Immutable installed views plus private delta, APFS clone, pinned base, migration/GC reference checks | Real clone/disk measurement and recovery reference |
 | D — packages | Cloud-built image recipes with real package versions/imports and a safe shared cache | Package inventory and cache behaviour from the guest, not a static list |
 | E — archives | Native create/list/extract with progress, cancellation and path safety; optional negotiated guest bridge | Linux interoperability and no dependency deadlock |
-| F — MLX | Load/benchmark/multiturn coordination, staged desensitized diagnostics, engine lease | Cloud macOS host load + multi-chunk generation passed for one frozen snapshot (run 35810169983, source `8be254c0`); the Build 225 iPad load root cause is still unresolved without a failure log |
-| G / G2 — PPT | First-paint edit gate, generation/save guards, stale-preview rejection | New pinned host artifact in the IPA and a real paint/edit/save/reopen round trip |
+| F — MLX | Load/benchmark/multiturn coordination, staged desensitized diagnostics, engine lease | Cloud macOS host load + multi-chunk generation passed for one frozen snapshot (run 35810169983, source `8be254c0`); the Build 225 iPad load root cause is still unresolved without a failure log. **2026-09-24 update:** on the delivered Build 227, iPad testing still reports local-model crashes in ordinary chat and in the benchmark; no root cause or device pass exists |
+| G / G2 — PPT | First-paint edit gate, generation/save guards, stale-preview rejection | New pinned host artifact in the IPA and a real paint/edit/save/reopen round trip. **2026-09-24 update:** Build 227 ships a preview that renders but the edit entry then stalls on iPad; post-227 source adds a bounded extent-bootstrap fallback and a rebuilt host pinned by cloud run 36000058922 — unverified on device |
 | H — states | Shared runtime snapshot, PiP rotation, valid CPU sampling, terminal names, cold-launch notification routing | Device snapshots and notification cold routing |
 | I / I2 — composer | Multi-line composer, per-instance editor state, per-conversation drafts | 100k input, IME, wrap, draft isolation and iPad/iPhone visuals on device |
 | K — cloud | New SMP firmware/kernel consumed by the image build; template qualification | Exact source/hash of the actual image, built in cloud |
@@ -179,14 +183,24 @@ Refresh, at minimum, when the packages above are integrated and verified:
   licenses) and is not bundled into the app.
 - The Build 225 iPad MLX load failure root cause remains unproven; only the
   cloud macOS host run is verified. Do not describe device loading as fixed.
+  Build 227 iPad testing adds open regressions of its own: MLX crashes in
+  ordinary chat and in the benchmark, a PPT preview that never reaches the
+  edit entry, Office documents opened from the IDE file tree stuck on the
+  opening indicator, and uneven narrow Git sidebar touch targets.
 - Pre-existing runtime test failures at HEAD (unchanged by this work):
   four `HarnessPlanning` compaction tests, five `ConversationTools` long-item
   tests and one `ToolLoopHardening` skill-read test — 12 issues in total.
 
 ## 7. 简体中文摘要
 
-基线为 `main` `ef70a208`，Build 225（`v1.7.0-beta.82`）是最近一次内部交付。
-本文件只记录状态，不预留构建号，也不宣称任何云端构建、上传、TestFlight 或真机结果。
+以下是 2026-09-23 快照：基线为 `main` `ef70a208`，当时最近一次内部交付是
+Build 225（`v1.7.0-beta.82`）。**当前（2026-09-24）已交付内部构建为
+Build 227（`v1.7.0-beta.84` / `9c756864`）**，Apple 已核实 `VALID` 与
+Floe QA `IN_BETA_TESTING`（2026-09-24T05:42:18Z）。Build 227 真机回归仍未
+修复：MLX 本地模型普通对话与测速崩溃、PPT 预览后可编辑入口停住、从 IDE 文件
+树打开的 Office 文档停在打开指示、窄宽度 Git 侧栏触控目标不均。Build 227
+之后的源码修复尚未发布，也没有 App 构建、上传或真机复测证据。本快照不预留
+构建号，也不宣称当时尚未发生的云端构建、上传、TestFlight 或真机结果。
 
 **已实现并验证（J）**：设置中只保留一个第三方开源许可入口，完整保留
 TinyEMU/slirp 全文与其他随包声明；原生媒体（图像/视频/音频/PDF/OCR）优先路由，
@@ -196,7 +210,8 @@ TinyEMU/slirp 全文与其他随包声明；原生媒体（图像/视频/音频/
 
 **已设计、未验收**：SMP 双核、资源池、Linux/MLX 仲裁、模板、包、归档、MLX、
 PPT、PiP、长输入、云端流水线等按第 4 节矩阵记录，均不得标记为已通过。MLX 仅有
-云端 macOS 主机证据，iPad Build 225 加载根因仍未证实。
+云端 macOS 主机证据，iPad Build 225 加载根因仍未证实；Build 227 真机上 MLX
+普通对话与测速仍崩溃，属未修复回归。
 
 **待最终刷新章节**：见第 5 节（README、用户指南第 12/13/17 节、架构总览、
 实施状态与资格矩阵、构建验收与文档索引、发布说明）。
