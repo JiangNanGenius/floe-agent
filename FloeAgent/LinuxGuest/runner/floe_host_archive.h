@@ -6,7 +6,7 @@
  *
  *   HELLO:   host → guest  \x1eFLOE-HELLO <token> archive=create,extract,list,decompress\x1e
  *   CAPS:    guest → host  \x1eFLOE-CAPS <token> … hostArchive=create,extract,list,decompress\x1e
- *   request: guest → host  \x1eFLOE-HOSTREQ <token> <payloadBytes> <chunkCount>\x1e + CHUNK… + RUN
+ *   request: guest → host  \x1eFLOE-HOSTREQ <token> <base64 control payload>\x1e
  *   reply:   host → guest  \x1eFLOE-HOSTREPLY <token> <base64 small reply>\x1e
  *
  * Only small control messages cross the channel. Paths name shared-directory

@@ -38,6 +38,7 @@ typedef struct {
     FloeVMShare shares[FLOE_VM_MAX_SHARES];
     int share_count;
     int net_enable;
+    int vcpu_count;
 } FloeVMConfig;
 
 typedef void (*FloeVMConsoleOutFn)(void *opaque, const uint8_t *data, int len);

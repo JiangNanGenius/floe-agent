@@ -71,6 +71,7 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
     var ramMB: Int?
     var networkEnabled: Bool
     var serviceForwards: [LinuxGuestServiceForward]
+    var vcpus: Int? = nil
 }
 
 public struct LinuxGuestLimits: Sendable {
@@ -103,6 +104,9 @@ public struct LinuxGuestSessionHandle: Sendable {
     var isRunning: @Sendable () async -> Bool
     var addForward: @Sendable (LinuxGuestServiceForward) throws -> Void
     var removeForward: @Sendable (LinuxGuestServiceForward) throws -> Void
+    var emulatorCPUSample: @Sendable () -> LinuxGuestEmulatorCPUSample?
+    var setRAMMB: @Sendable (Int) -> Void
+    var setVCPUs: @Sendable (Int) throws -> Void
 }
 
 // MARK: - recorder

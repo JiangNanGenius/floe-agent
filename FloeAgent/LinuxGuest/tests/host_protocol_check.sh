@@ -40,9 +40,10 @@ error_src="$guest_root/../Sources/FloeCore/FloeError.swift"
 token_src="$guest_root/../Sources/FloeTools/ToolContext.swift"
 result_src="$guest_root/../Sources/FloeExecution/Packages/LinuxCommandService.swift"
 runtime_src="$guest_root/../Sources/FloeExecution/Linux/TinyEMUGuestRuntime.swift"
+resource_shape_src="$guest_root/../Sources/FloeExecution/ResourcePolicy/GuestResourceShape.swift"
 runtime_stub_dir="$here/runtime_stub"
 
-for source in "$runner_src" "$framing_src" "$service_src" "$error_src" "$token_src" "$result_src" "$runtime_src"; do
+for source in "$runner_src" "$framing_src" "$service_src" "$error_src" "$token_src" "$result_src" "$runtime_src" "$resource_shape_src"; do
   if [ ! -f "$source" ]; then
     echo "missing source: $source" >&2
     exit 2
@@ -134,6 +135,10 @@ done
   "$runtime_stub_dir/floe_tinyemu_stub.c" -o "$scratch/floe_stub.o"
 grep -v '^import FloeCore$' "$runtime_src" | grep -v '^import FloeTools$' \
   > "$scratch/TinyEMUGuestRuntime.swift"
+{
+  echo 'import Foundation'
+  sed -n '/^public struct LinuxGuestEmulatorCPUSample/,/^}$/p' "$service_src"
+} > "$scratch/RuntimeSample.swift"
 if ! grep -q 'public final class TinyEMUGuestMachine' "$scratch/TinyEMUGuestRuntime.swift"; then
   echo "failed to extract TinyEMUGuestRuntime (source moved?)" >&2
   exit 2
@@ -142,6 +147,7 @@ fi
 echo "==> compiling runtime lifecycle harness with swiftc"
 swiftc -swift-version 6 -o "$scratch/runtime-lifecycle-check" \
   "$here/RuntimeLifecycleCheck.swift" "$scratch/TinyEMUGuestRuntime.swift" \
+  "$scratch/RuntimeSample.swift" "$resource_shape_src" \
   -I "$runtime_stub_dir" "$scratch/floe_stub.o"
 
 echo "==> running runtime lifecycle checks"
