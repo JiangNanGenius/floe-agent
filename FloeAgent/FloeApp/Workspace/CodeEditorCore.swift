@@ -190,6 +190,7 @@ struct StructuredCodeTextView: UIViewRepresentable {
         let view = LineNumberTextView()
         view.backgroundColor = .clear
         view.applyEditorFont(size: fontSize)
+        context.coordinator.appliedFontSize = fontSize
         view.autocorrectionType = .no
         view.autocapitalizationType = .none
         view.smartDashesType = .no
@@ -208,9 +209,14 @@ struct StructuredCodeTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: LineNumberTextView, context: Context) {
+        context.coordinator.parent = self
         if context.coordinator.appliedFontSize != fontSize {
             context.coordinator.appliedFontSize = fontSize
             view.applyEditorFont(size: fontSize)
+            // UITextView's attributed storage keeps its own font. Refresh it
+            // together with the gutter, including already highlighted text.
+            // highlight defers while an IME composition is active.
+            context.coordinator.highlight(view)
         }
         context.coordinator.applyModelText(text, to: view)
         if context.coordinator.lastCommandRevision != command.revision {
@@ -304,7 +310,7 @@ struct StructuredCodeTextView: UIViewRepresentable {
             let selection = view.selectedRange
             let full = NSRange(location: 0, length: (source as NSString).length)
             let baseAttributes: [NSAttributedString.Key: Any] = [
-                .font: EditorTheme.font,
+                .font: EditorTheme.font(size: parent.fontSize),
                 .foregroundColor: UIColor.label
             ]
             // Keep typing responsive for unusually large source files. They
@@ -369,7 +375,7 @@ struct StructuredCodeTextView: UIViewRepresentable {
                   let font = storage.attribute(.font, at: length - 1, effectiveRange: nil) as? UIFont else {
                 return false
             }
-            return color == UIColor.label && font == EditorTheme.font
+            return color == UIColor.label && font == EditorTheme.font(size: parent.fontSize)
         }
     }
 }
@@ -459,8 +465,8 @@ final class LineNumberTextView: UITextView {
     private func recomputeGutterWidth() {
         let digits = max(2, String(currentLineCount).count)
         let digitWidth = ("0" as NSString).size(withAttributes: [.font: currentGutterFont]).width
-        let required = CGFloat(digits) * digitWidth + 22
-        guard required > gutterWidth + 0.5 else { return }
+        let required = max(44, CGFloat(digits) * digitWidth + 22)
+        guard abs(required - gutterWidth) > 0.5 else { return }
         gutterWidth = required
         textContainerInset = UIEdgeInsets(top: 12, left: gutterWidth + 8, bottom: 12, right: 12)
         setNeedsDisplay()

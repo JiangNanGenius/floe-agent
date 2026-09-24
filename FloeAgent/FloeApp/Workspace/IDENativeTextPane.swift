@@ -152,7 +152,7 @@ struct IDENativeTextPane: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .frame(minHeight: 36)
+                .frame(minHeight: FloeTheme.minimumTarget)
                 .background(active ? FloeTheme.primary.opacity(0.14) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
@@ -164,7 +164,7 @@ struct IDENativeTextPane: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2)
-                    .frame(width: 28, height: 28)
+                    .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
