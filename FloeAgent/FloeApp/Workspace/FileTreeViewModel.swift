@@ -195,6 +195,92 @@ final class FileTreeViewModel: ObservableObject {
         return url
     }
 
+    // MARK: - Compression (multi-select Compress)
+
+    /// Root of the current task workspace; nil before a workspace is open.
+    var workspaceRootURL: URL? {
+        center.fileService?.guardResolver.rootURL ?? center.currentRootURL
+    }
+
+    /// Host URL for one tree node — files and directories alike — inside the
+    /// current task workspace. Cloud/network paths keep refusing, exactly like
+    /// every other local tree mutation.
+    func workspaceURL(_ node: FileTreeNode) throws -> URL {
+        guard !center.isCloudWorkspacePath(node.relativePath),
+              !center.isNetworkWorkspacePath(node.relativePath),
+              let service = center.fileService else {
+            throw CocoaError(.featureUnsupported)
+        }
+        return try service.guardResolver.resolve(node.relativePath)
+    }
+
+    /// Whether a workspace-relative path already exists (archive destination
+    /// conflict probe). Cloud/network paths answer true so a local archive can
+    /// never overwrite a linked workspace entry.
+    func pathExists(_ relativePath: String) -> Bool {
+        guard !center.isCloudWorkspacePath(relativePath),
+              !center.isNetworkWorkspacePath(relativePath),
+              let root = workspaceRootURL else { return true }
+        return FileManager.default.fileExists(atPath: root.appendingPathComponent(relativePath).path)
+    }
+
+    /// Collapses a selection to its top-most paths: a selected folder already
+    /// includes its selected descendants, and the engine would otherwise
+    /// refuse the duplicate entry names.
+    static func selectionRoots(_ paths: Set<String>) -> [String] {
+        paths.filter { path in !paths.contains { other in path.hasPrefix(other + "/") } }.sorted()
+    }
+
+    /// Progress of the in-flight Compress action, driven by the engine's own
+    /// bounded scan/write callbacks.
+    @Published private(set) var compressProgress: ArchiveProgress?
+
+    /// Compresses the selected workspace items into one new archive at the
+    /// workspace root through the shared `ArchiveBrowserService` — the same
+    /// native engine every other archive operation uses, no second service.
+    /// The destination must already be conflict-free (the surface resolves it
+    /// with `WorkspaceArchiveCompression.uniqueName`); the tree is reloaded
+    /// after a successful create.
+    func compress(
+        paths: Set<String>,
+        destinationName: String,
+        format: String,
+        cancellation: CancellationToken
+    ) async throws -> String {
+        let roots = Self.selectionRoots(paths)
+        guard !roots.isEmpty else {
+            throw ArchiveBrowseError.failed("Select at least one item to compress.")
+        }
+        guard let root = workspaceRootURL else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        for path in roots where center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) {
+            throw CocoaError(.featureUnsupported)
+        }
+        compressProgress = nil
+        let service = ArchiveBrowserService(rootProvider: { root })
+        do {
+            let summary = try await service.createArchive(
+                sources: roots,
+                destinationFile: destinationName,
+                format: format,
+                rootURL: root,
+                cancellation: cancellation,
+                progress: { [weak self] value in
+                    Task { @MainActor in
+                        self?.compressProgress = value
+                    }
+                }
+            )
+            compressProgress = nil
+            await loadRoot()
+            return summary
+        } catch {
+            compressProgress = nil
+            throw error
+        }
+    }
+
     func deleteBatch(_ paths: Set<String>) async -> [String: String] {
         // Selecting a folder already includes its descendants. Avoid reporting
         // their successful recursive removal as separate missing-file errors.

@@ -377,6 +377,19 @@ final class AppEnvironment: ObservableObject {
             artifactRoot: try? FloeArtifactStore.root()
         )
         self.linuxGuestService = linuxGuests
+        // Optional guest → host archive bridge: a `floe-host archive …`
+        // command inside an environment's guest delegates to the host's
+        // native archive engine over bounded console control frames. The
+        // capability is advertised in the HELLO handshake only while this
+        // factory is installed, and every request is scoped to the
+        // environment's own 9p share table (`linuxGuestPathMap`); a guest
+        // path outside those shares is refused before any host filesystem
+        // access. Installing it here — before any guest can start — keeps the
+        // handshake truthful; an environment with no shares simply never
+        // advertises it.
+        linuxGuests.installHostRequestHandlerFactory { environmentID, pathMap in
+            ArchiveHostBridgeFactory.makeHandler(environmentID: environmentID, pathMap: pathMap)
+        }
 
         // Build 222 heavy-runtime arbitration wiring. One process-wide arbiter
         // owns the boundary between on-device MLX inference and TinyEMU Linux:

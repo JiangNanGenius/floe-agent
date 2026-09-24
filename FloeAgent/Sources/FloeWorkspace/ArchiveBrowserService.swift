@@ -184,13 +184,15 @@ public struct ArchiveBrowserService: Sendable {
 
     /// Compresses one or more workspace items into a new archive. The
     /// workspace multi-select surface defaults to zip; the engine also
-    /// supports tar and the compressed tar variants.
+    /// supports tar and the compressed tar variants. `progress` receives the
+    /// engine's bounded scan/write callbacks (never file bytes).
     public func createArchive(
         sources: [String],
         destinationFile: String,
         format: String = "zip",
         rootURL: URL,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        progress: ArchiveEngine.ProgressHandler? = nil
     ) async throws -> String {
         guard !sources.isEmpty else {
             throw ArchiveBrowseError.failed("Select at least one item to compress.")
@@ -213,6 +215,7 @@ public struct ArchiveBrowserService: Sendable {
                 sources: urls,
                 destination: destination,
                 limits: WorkspaceArchiveTool.limits,
+                progress: progress,
                 cancellation: cancellation
             )
             return summary.line(source: sources.joined(separator: ","), destination: destinationFile)

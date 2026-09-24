@@ -121,6 +121,12 @@ public struct LinuxGuestLimits: Sendable, Equatable {
     public var commandTimeout: TimeInterval
     /// How long to wait after an interrupt for the guest runner to close out.
     public var interruptGrace: TimeInterval
+    /// How long the host serves one optional guest control request
+    /// (`floe-host` bridge) before cancelling it and answering with a bounded
+    /// timeout error. Deliberately shorter than the runner's own
+    /// HOST_ARCHIVE_TIMEOUT_MS (300s) so the guest learns the truth from the
+    /// host instead of timing out blind.
+    public var hostRequestTimeout: TimeInterval
     /// Host forwarding table limit (engine FLOE_VM_MAX_HOSTFWD).
     public var maxServiceForwards: Int
     /// Upper bound on simultaneously running guest commands (guest table
@@ -168,6 +174,7 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         maxCommandTimeout: TimeInterval = 1800,
         commandTimeout: TimeInterval = 300,
         interruptGrace: TimeInterval = 2,
+        hostRequestTimeout: TimeInterval = 240,
         maxServiceForwards: Int = 16,
         maxConcurrentCommands: Int = 8,
         maxConcurrentSessions: Int = 4,
@@ -185,6 +192,7 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         self.maxCommandTimeout = maxCommandTimeout
         self.commandTimeout = commandTimeout
         self.interruptGrace = interruptGrace
+        self.hostRequestTimeout = max(1, min(600, hostRequestTimeout))
         self.maxServiceForwards = maxServiceForwards
         self.maxConcurrentCommands = max(1, min(32, maxConcurrentCommands))
         self.maxConcurrentSessions = max(1, min(8, maxConcurrentSessions))

@@ -39,9 +39,22 @@ struct FileTreeView: View {
     @State private var movingNode: FileTreeNode?
     @State private var destinationPath = ""
     @State private var exportedURL: URL?
+    // Multi-select Compress: the sheet collects a format + name, resolves the
+    // destination conflict up front, then runs through the view model's
+    // shared archive service with live progress and a real cancel.
+    @State private var showingCompress = false
+    @State private var compressFormatID = WorkspaceArchiveCompression.Format.default.id
+    @State private var compressName = ""
+    @State private var compressNotice: String?
+    @State private var compressing = false
+    @State private var compressCancellation: CancellationToken?
+    @State private var compressBanner: String?
 
     var body: some View {
         VStack(spacing: 0) {
+            if let compressBanner {
+                compressBannerView(compressBanner)
+            }
             searchField
             Divider()
             content
@@ -54,6 +67,8 @@ struct FileTreeView: View {
                     }
                     if selecting {
                         Button("全选") { selection = Set(viewModel.visibleNodes.map { $0.node.relativePath }) }
+                        Button("files.compress.action", systemImage: "doc.zipper") { beginCompress() }
+                            .disabled(selection.isEmpty || compressing)
                         Button("删除 \(selection.count) 项", systemImage: "trash", role: .destructive) { deletingBatch = true }
                             .disabled(selection.isEmpty)
                     }
@@ -64,7 +79,11 @@ struct FileTreeView: View {
         .disabled(busy)
         .overlay { if busy { ProgressView() } }
         .onChange(of: viewModel.query) { _, _ in selection.removeAll(); selecting = false }
+        .onChange(of: compressFormatID) { oldValue, newValue in
+            updateCompressNameExtension(from: oldValue, to: newValue)
+        }
         .sheet(item: $exportedURL) { url in FileTreeShareSheet(url: url) }
+        .sheet(isPresented: $showingCompress) { compressSheet }
         .confirmationDialog("删除所选文件？", isPresented: $deletingBatch, titleVisibility: .visible) {
             Button("删除", role: .destructive) {
                 Task {
@@ -214,6 +233,11 @@ struct FileTreeView: View {
             Label("重命名", systemImage: "pencil")
         }
         Button("移动", systemImage: "folder") { movingNode = node; destinationPath = node.relativePath }
+        Button("files.compress.action", systemImage: "doc.zipper") {
+            selection = [node.relativePath]
+            selecting = true
+            beginCompress()
+        }
         if !node.isDirectory {
             Button("导出", systemImage: "square.and.arrow.up") {
                 do { exportedURL = try viewModel.exportURL(node) } catch { operationError = error.localizedDescription }
@@ -253,6 +277,197 @@ struct FileTreeView: View {
         } catch {
             operationError = error.localizedDescription
         }
+    }
+
+    // MARK: - multi-select compress
+
+    private var selectedCompressFormat: WorkspaceArchiveCompression.Format {
+        WorkspaceArchiveCompression.Format.format(id: compressFormatID)
+    }
+
+    private func compressBannerView(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(FloeTheme.success)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(FloeTheme.Typography.metadata)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button {
+                compressBanner = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel("inspector.search.clear")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    /// The sheet: name + format, then live progress and a real cancel. The
+    /// destination conflict is resolved before the engine runs, so an
+    /// existing archive is never overwritten.
+    private var compressSheet: some View {
+        NavigationStack {
+            Form {
+                Section("files.compress.name") {
+                    TextField("files.compress.name.placeholder", text: $compressName)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .disabled(compressing)
+                }
+                Section("files.compress.format") {
+                    Picker("files.compress.format", selection: $compressFormatID) {
+                        ForEach(WorkspaceArchiveCompression.Format.all) { format in
+                            Text(format.title).tag(format.id)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    .disabled(compressing)
+                    if compressFormatID == WorkspaceArchiveCompression.Format.tarballBzip2.id {
+                        Text("files.compress.format.tbz2_note")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if compressing {
+                    Section {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(compressProgressText)
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button("files.compress.cancel", role: .destructive) { cancelCompress() }
+                    }
+                } else if let compressNotice {
+                    Section {
+                        Text(compressNotice)
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("files.compress.title")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(compressing)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("action.cancel") { showingCompress = false }
+                        .disabled(compressing)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("files.compress.confirm") { startCompress() }
+                        .disabled(compressing || compressName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+
+    private var compressProgressText: String {
+        guard let progress = viewModel.compressProgress else {
+            return String(localized: "files.compress.preparing")
+        }
+        let phase: String
+        switch progress.phase {
+        case .scanning: phase = String(localized: "files.compress.phase.scanning")
+        case .writing: phase = String(localized: "files.compress.phase.writing")
+        case .reading: phase = String(localized: "files.compress.phase.reading")
+        }
+        if let total = progress.totalBytes, total > 0 {
+            let percent = Int((Double(progress.completedBytes) / Double(total) * 100).rounded())
+            return "\(phase) \(percent)%"
+        }
+        return "\(phase) · \(progress.completedEntries)"
+    }
+
+    private func beginCompress() {
+        guard !selection.isEmpty else { return }
+        compressName = defaultCompressName(format: selectedCompressFormat)
+        compressNotice = nil
+        showingCompress = true
+    }
+
+    /// Default name for the current selection: a single directory keeps its
+    /// name, a single file drops its own extension, several items become
+    /// `Archive`. The lookup only needs visible rows: every selection the UI
+    /// can build comes from them.
+    private func defaultCompressName(format: WorkspaceArchiveCompression.Format) -> String {
+        let roots = FileTreeViewModel.selectionRoots(selection)
+        if roots.count == 1,
+           let node = viewModel.visibleNodes.first(where: { $0.node.relativePath == roots[0] })?.node {
+            return WorkspaceArchiveCompression.defaultName(
+                singleSourceName: node.name,
+                singleSourceIsDirectory: node.isDirectory,
+                format: format
+            )
+        }
+        return WorkspaceArchiveCompression.defaultName(
+            singleSourceName: nil,
+            singleSourceIsDirectory: false,
+            format: format
+        )
+    }
+
+    /// Keeps the file extension in step with the chosen format without
+    /// discarding a name the user already edited.
+    private func updateCompressNameExtension(from oldID: String, to newID: String) {
+        guard !compressing else { return }
+        let oldFormat = WorkspaceArchiveCompression.Format.format(id: oldID)
+        let newFormat = WorkspaceArchiveCompression.Format.format(id: newID)
+        if compressName.isEmpty || compressName == defaultCompressName(format: oldFormat) {
+            compressName = defaultCompressName(format: newFormat)
+        } else if compressName.hasSuffix(".\(oldFormat.fileExtension)") {
+            compressName = String(compressName.dropLast(oldFormat.fileExtension.count + 1))
+                + ".\(newFormat.fileExtension)"
+        }
+    }
+
+    private func startCompress() {
+        let name = compressName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let format = selectedCompressFormat
+        // Never overwrite: a taken name resolves to "name 2.ext" before the
+        // engine runs, and the sheet says which name will be used.
+        let resolved = WorkspaceArchiveCompression.uniqueName(name) { viewModel.pathExists($0) }
+        compressNotice = resolved == name ? nil : String(localized: "files.compress.conflict_note") + resolved
+        let cancellation = CancellationToken()
+        compressCancellation = cancellation
+        compressing = true
+        let paths = selection
+        Task { @MainActor in
+            do {
+                _ = try await viewModel.compress(
+                    paths: paths,
+                    destinationName: resolved,
+                    format: format.id,
+                    cancellation: cancellation
+                )
+                compressing = false
+                compressCancellation = nil
+                showingCompress = false
+                selection.removeAll()
+                selecting = false
+                compressBanner = String(localized: "files.compress.done") + resolved
+            } catch {
+                compressing = false
+                let wasCancelled = cancellation.isCancelled
+                compressCancellation = nil
+                showingCompress = false
+                // A user cancel is not an error; anything else surfaces with
+                // its real reason.
+                operationError = wasCancelled ? nil : error.localizedDescription
+            }
+        }
+    }
+
+    private func cancelCompress() {
+        compressCancellation?.cancel()
     }
 
     private var searchResults: some View {

@@ -19,13 +19,43 @@
 //   \x1eFLOE-FAILED <token> <reason>\x1e   (process abandoned alive; never END)
 //
 // Capability negotiation (protocol 3): the host sends
-//   \x1eFLOE-HELLO <token>\x1e
+//   \x1eFLOE-HELLO <token> [archive=<actions>]\x1e
 // and the runner answers
-//   \x1eFLOE-CAPS <token> runner=<version> protocol=3 maxCommands=N maxSessions=M[ net=<state>]\x1e
+//   \x1eFLOE-CAPS <token> runner=<version> protocol=3 maxCommands=N maxSessions=M[ net=<state>][ hostArchive=<actions>]\x1e
 //   \x1eFLOE-END <token> 0\x1e
 // The channel refuses guests whose runner predates protocol 3 with
 // LinuxGuestError.runnerUpgradeRequired — concurrent tokens are only safe
 // when the guest really routes them.
+//
+// Optional guest → host control requests (the `floe-host` bridge):
+//
+//   request: guest → host  \x1eFLOE-HOSTREQ <token> <base64 payload>\x1e
+//   reply:   host → guest  \x1eFLOE-HOSTREPLY <token> <base64 reply>\x1e\n
+//
+// The guest runner emits a HOSTREQ for a live command token and waits for the
+// reply instead of starting a child process. The host half is installed by the
+// owner (the app layer) as a `LinuxGuestHostRequestHandler`; the obligation is
+// deliberately small and safe:
+//
+//   * the capability is advertised in HELLO only while a handler is
+//     installed, so a guest never sees `archive=…` before the host can serve
+//     it (and an old runner that ignores the field is unaffected);
+//   * only a command token this channel is currently running is accepted —
+//     unknown, session or stale (post-reboot) tokens are dropped without a
+//     reply and without side effects;
+//   * the handler runs detached from the console router and never holds a
+//     VM/pool slot, so a guest waiting for the reply cannot starve the
+//     reader (or itself) and no deadlock is possible;
+//   * request and reply stay bounded single lines (see
+//     `LinuxGuestHostRequestCodec`); file bytes never travel through the
+//     console;
+//   * END/FAILED, a targeted interrupt, a router reset (guest reboot) and
+//     channel close all cancel in-flight work; a reply whose router
+//     generation no longer matches is dropped, never written into a later
+//     boot;
+//   * an uninstalled handler, a malformed frame or an oversized reply fails
+//     explicitly with a small `status=error` reply instead of hanging the
+//     guest until its own deadline.
 //
 // Interactive PTY sessions (shell.*) are concurrent too (protocol 3):
 //   \x1eFLOE-OPEN <id> <payloadBytes> <chunkCount>\x1e\n + CHUNKs + RUN
@@ -71,7 +101,7 @@ enum LinuxGuestFraming {
     static let markerByte: UInt8 = 0x1e
     /// Guest→host frame names the router accepts. Anything else after a
     /// 0x1e marker is section payload, not a frame.
-    static let guestFrameNames: Set<String> = ["BEGIN", "OUT", "ERR", "END", "FAILED", "PID", "CAPS"]
+    static let guestFrameNames: Set<String> = ["BEGIN", "OUT", "ERR", "END", "FAILED", "PID", "CAPS", "HOSTREQ"]
     /// Longest accepted token (guest MAX_TOKEN). Tokens are printable ASCII
     /// without spaces, so a frame header is unambiguous.
     static let maxTokenBytes = 96
@@ -880,6 +910,99 @@ public enum LinuxGuestSessionSignal: String, Sendable {
     case window = "WINCH"
 }
 
+// MARK: - optional guest → host control requests
+
+/// One bounded guest control request (currently the runner's optional
+/// `floe-host archive …` bridge). `payload` is the decoded protocol line the
+/// guest encoded; `token` is the live command token the reply must address.
+public struct LinuxGuestHostRequest: Sendable, Equatable {
+    /// The guest command token this request belongs to. Replies are only
+    /// accepted by a guest still waiting on this token.
+    public let token: String
+    /// Decoded bounded payload (`HostArchiveProtocol` line for the archive
+    /// bridge). Never larger than `LinuxGuestHostRequestCodec.maxPayloadBytes`.
+    public let payload: String
+
+    public init(token: String, payload: String) {
+        self.token = token
+        self.payload = payload
+    }
+}
+
+/// Host half of the optional guest bridge: the HELLO advertisement plus the
+/// responder. Installing one is what makes the capability real — nothing is
+/// advertised before a handler exists, and no request is served after it is
+/// removed.
+public struct LinuxGuestHostRequestHandler: Sendable {
+    /// HELLO argument advertising the capability, e.g.
+    /// `archive=create,extract,list,decompress`. Empty means nothing is
+    /// advertised.
+    public let helloArgument: String
+    /// Serves one request and returns a bounded single-line reply. Runs
+    /// detached from the console router; cancellation is cooperative and is
+    /// also asked for on END/FAILED, targeted interrupt, reboot and close.
+    public let handle: @Sendable (LinuxGuestHostRequest, CancellationToken) async -> String
+
+    public init(
+        helloArgument: String,
+        handle: @escaping @Sendable (LinuxGuestHostRequest, CancellationToken) async -> String
+    ) {
+        self.helloArgument = helloArgument
+        self.handle = handle
+    }
+}
+
+/// Bounded wire codec for the guest → host control frames. The bounds mirror
+/// the runner's own constants (`FLOE_HOST_PAYLOAD_MAX` / `FLOE_HOST_REPLY_MAX`
+/// in `LinuxGuest/runner/floe_host_archive.h`); the frame stays a single
+/// console line far below the guest tty's 4096-byte canonical buffer.
+public enum LinuxGuestHostRequestCodec {
+    /// Largest accepted decoded request payload (`FLOE_HOST_PAYLOAD_MAX`).
+    public static let maxPayloadBytes = 2048
+    /// Largest accepted decoded reply. The runner rejects a reply at or above
+    /// its own 2048-byte buffer; 1024 keeps the base64 frame bounded with
+    /// margin and well above the bridge's real replies.
+    public static let maxReplyBytes = 1024
+
+    /// Decodes the base64 request payload. Strict on purpose: non-canonical
+    /// base64, padding/truncation damage and non-UTF-8 bytes all answer nil
+    /// (never a partial payload, never a replacement-character string), so a
+    /// corrupt frame becomes an explicit bounded failure instead of work on a
+    /// silently altered request.
+    public static func decodePayload(_ encoded: String) -> String? {
+        guard encoded.utf8.count <= ((maxPayloadBytes + 2) / 3) * 4 + 4,
+              encoded.utf8.count % 4 == 0 else {
+            return nil
+        }
+        guard let data = Data(base64Encoded: encoded, options: []),
+              !data.isEmpty, data.count <= maxPayloadBytes,
+              let payload = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return payload
+    }
+
+    /// A reply that always fits the reply bound. An oversized handler reply
+    /// is replaced by a small explicit failure: truncation would corrupt the
+    /// protocol line, and silence would hang the guest until its deadline.
+    public static func boundedReply(_ reply: String) -> String {
+        guard reply.utf8.count > maxReplyBytes else { return reply }
+        return "status=error code=reply-too-large detail=the host reply exceeded \(maxReplyBytes) bytes"
+    }
+
+    /// One host → guest reply frame.
+    public static func replyFrame(token: String, reply: String) -> Data {
+        Data("\u{1e}FLOE-HOSTREPLY \(token) \(Data(reply.utf8).base64EncodedString())\u{1e}\n".utf8)
+    }
+}
+
+/// Small explicit failure the host sends when it cannot even start the
+/// handler (malformed/oversized frame). The guest maps a non-ok status to
+/// exit 125 and prints the detail instead of waiting out its own deadline.
+public enum LinuxGuestHostRequestFailure {
+    public static let reply = "status=error code=malformed-request detail=the host could not decode the control request"
+}
+
 /// Concurrent command/session channel over one guest console (protocol 3).
 /// One router task demultiplexes the console byte stream into per-token
 /// bounded streams; commands, sessions and control exchanges consume their
@@ -904,6 +1027,28 @@ public actor LinuxGuestCommandChannel {
     private var pendingInterrupts: [String: any Error & Sendable] = [:]
     private var poisoned = false
     private var closed = false
+    /// Installed responder for the optional guest → host control bridge. nil
+    /// keeps the capability unadvertised and every HOSTREQ unserved.
+    private var hostRequestHandler: LinuxGuestHostRequestHandler?
+    /// One in-flight host request. The `id` is the request's identity: a
+    /// timeout, a late handler return or a client reset may race with a later
+    /// request on the same live command token, and only the state whose id
+    /// still matches may clean up or write a reply.
+    private struct HostRequestState {
+        let id: UInt64
+        let generation: UInt64
+        let cancellation: CancellationToken
+        var work: Task<Void, Never>?
+        var watchdog: Task<Void, Never>?
+    }
+
+    /// In-flight host work keyed by live command token.
+    private var hostRequests: [String: HostRequestState] = [:]
+    private var hostRequestCounter: UInt64 = 0
+    /// Bumped by `resetRouterState()` (guest reboot boundary). A reply whose
+    /// captured generation is stale is dropped instead of written into the
+    /// new boot's console.
+    private var routerGeneration: UInt64 = 0
 
     public init(transport: any LinuxGuestConsoleTransport, limits: LinuxGuestLimits = .standard) {
         self.transport = transport
@@ -942,6 +1087,22 @@ public actor LinuxGuestCommandChannel {
     }
 
     // MARK: capability negotiation
+
+    /// Installs (or clears, with nil) the optional guest → host control
+    /// responder. The HELLO advertisement follows the installed state: with a
+    /// handler the next negotiation advertises its `helloArgument`; without
+    /// one nothing is advertised and inbound HOSTREQ frames are ignored. The
+    /// owner calls this before the first HELLO on the channel.
+    public func installHostRequestHandler(_ handler: LinuxGuestHostRequestHandler?) {
+        hostRequestHandler = handler
+    }
+
+    /// The HELLO argument the next negotiation advertises, nil when no
+    /// handler is installed (or its argument is empty).
+    var advertisedHostRequestArgument: String? {
+        guard let argument = hostRequestHandler?.helloArgument, !argument.isEmpty else { return nil }
+        return argument
+    }
 
     /// In-flight HELLO negotiation shared by concurrent callers, so N
     /// simultaneous run() calls produce one probe, not N.
@@ -982,7 +1143,12 @@ public actor LinuxGuestCommandChannel {
         registerToken(token, stream: tokenStream)
         defer { unregisterToken(token) }
         try await ensureRouter()
-        try await send([LinuxGuestFraming.controlLine("HELLO", token: token)])
+        // The optional bridge advertisement is part of the same handshake:
+        // the guest records the actions the host will serve and only then
+        // accepts `floe-host archive …` commands. No handler installed means
+        // no argument, and the guest fails the command closed.
+        let helloArguments = advertisedHostRequestArgument.map { [$0] } ?? []
+        try await send([LinuxGuestFraming.controlLine("HELLO", token: token, arguments: helloArguments)])
 
         var parser = LinuxGuestFraming.ControlParser(token: token)
         // Monotonic deadline: a wall-clock jump must never extend or cut the
@@ -1281,10 +1447,138 @@ public actor LinuxGuestCommandChannel {
             sectionOwner = token
             await forwardMarker(name, token: token)
         case "END", "FAILED", "PID", "CAPS":
-            if name == "END" || name == "FAILED" { sectionOwner = nil }
+            if name == "END" || name == "FAILED" {
+                sectionOwner = nil
+                // The guest command is over (reaped or quarantined): its
+                // pending host work is no longer wanted.
+                cancelHostRequest(token: token)
+            }
             await forwardMarker(name, token: token, arguments: arguments)
+        case "HOSTREQ":
+            // Served off the router: the guest may cancel, keep printing on
+            // other tokens, or reboot while the host work is in flight, so
+            // the console reader must never wait for the handler.
+            receiveHostRequest(token: token, encodedPayload: arguments)
         default:
             break
+        }
+    }
+
+    // MARK: optional guest → host control requests
+
+    /// Router-side entry for one HOSTREQ frame. Refusals never touch the
+    /// filesystem and never block the router; the handler's reply is written
+    /// when it completes, if the token is still live, the request identity
+    /// still matches and the router generation still matches.
+    private func receiveHostRequest(token: String, encodedPayload: String) {
+        guard let handler = hostRequestHandler else { return }
+        guard runningCommands.contains(token) else { return }
+        // One request per live command token. A later HOSTREQ while a request
+        // is in flight is refused; after a timeout the token is free again
+        // for the retry the guest may send, and the identity below keeps the
+        // abandoned handler from touching the new state.
+        guard hostRequests[token] == nil else { return }
+        guard let payload = LinuxGuestHostRequestCodec.decodePayload(encodedPayload) else {
+            // The guest holds a live command token and is waiting: answer
+            // with a bounded failure instead of letting it time out.
+            sendHostReply(token: token, reply: LinuxGuestHostRequestFailure.reply, generation: routerGeneration)
+            return
+        }
+        hostRequestCounter &+= 1
+        let id = hostRequestCounter
+        let cancellation = CancellationToken()
+        let generation = routerGeneration
+        let timeout = limits.hostRequestTimeout
+        let work = Task { [weak self] in
+            let reply = await handler.handle(
+                LinuxGuestHostRequest(token: token, payload: payload), cancellation
+            )
+            guard let self else { return }
+            await self.completeHostRequest(token: token, requestID: id, reply: reply)
+        }
+        let watchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled else { return }
+            await self?.abandonHostRequest(token: token, requestID: id)
+        }
+        hostRequests[token] = HostRequestState(
+            id: id,
+            generation: generation,
+            cancellation: cancellation,
+            work: work,
+            watchdog: watchdog
+        )
+    }
+
+    /// Host-side deadline: the handler did not finish inside the configured
+    /// window. Cancel it and fail the guest's command explicitly, so the
+    /// guest does not have to wait out its own longer deadline. Only the
+    /// request whose identity still matches may do this.
+    private func abandonHostRequest(token: String, requestID: UInt64) async {
+        guard let state = hostRequests[token], state.id == requestID else { return }
+        hostRequests.removeValue(forKey: token)
+        state.watchdog?.cancel()
+        state.cancellation.cancel()
+        state.work?.cancel()
+        sendHostReply(
+            token: token,
+            reply: "status=error code=host-timeout detail=the host did not finish the request in time",
+            generation: state.generation
+        )
+    }
+
+    /// The handler returned. A completion for a request that was already
+    /// abandoned (timeout), cancelled (END/interrupt/reboot) or superseded
+    /// must not write a second reply or remove the newer request's state.
+    private func completeHostRequest(token: String, requestID: UInt64, reply: String) async {
+        guard let state = hostRequests[token], state.id == requestID else { return }
+        hostRequests.removeValue(forKey: token)
+        state.watchdog?.cancel()
+        sendHostReply(token: token, reply: reply, generation: state.generation)
+    }
+
+    /// Writes one bounded HOSTREPLY for a live command token. Dropped when
+    /// the channel is closed, the command token is gone, or the router
+    /// generation changed (the guest rebooted, so the reply belongs to an
+    /// earlier boot's token). The checks are repeated inside the send task
+    /// and again after the writer slot is acquired, because the actor can
+    /// suspend between scheduling the write and actually writing.
+    private func sendHostReply(token: String, reply: String, generation: UInt64) {
+        guard generation == routerGeneration, !closed, runningCommands.contains(token) else { return }
+        let frame = LinuxGuestHostRequestCodec.replyFrame(
+            token: token, reply: LinuxGuestHostRequestCodec.boundedReply(reply)
+        )
+        Task { [weak self] in
+            await self?.deliverHostReply(frame, token: token, generation: generation)
+        }
+    }
+
+    private func deliverHostReply(_ frame: Data, token: String, generation: UInt64) async {
+        guard generation == routerGeneration, !closed, runningCommands.contains(token) else { return }
+        await acquireSend()
+        defer { releaseSend() }
+        // Re-check after the suspension: a router reset, close or END may
+        // have landed while this task waited for the console writer.
+        guard generation == routerGeneration, !closed, runningCommands.contains(token) else { return }
+        try? await transport.write(Array(frame))
+    }
+
+    /// Cancels pending host work for one token (guest command END/FAILED or a
+    /// targeted interrupt). Idempotent; tokens without host work are ignored.
+    private func cancelHostRequest(token: String) {
+        guard let state = hostRequests.removeValue(forKey: token) else { return }
+        state.watchdog?.cancel()
+        state.cancellation.cancel()
+        state.work?.cancel()
+    }
+
+    private func cancelAllHostRequests() {
+        let states = hostRequests
+        hostRequests.removeAll()
+        for (_, state) in states {
+            state.watchdog?.cancel()
+            state.cancellation.cancel()
+            state.work?.cancel()
         }
     }
 
@@ -1756,6 +2050,12 @@ public actor LinuxGuestCommandChannel {
     func resetRouterState() async {
         routerPending.removeAll(keepingCapacity: false)
         sectionOwner = nil
+        // Reboot boundary: host work captured before the reset belongs to the
+        // old boot's tokens and its reply must never be written into the new
+        // runner's console. The generation bump makes a completion that is
+        // already in flight drop instead of sending.
+        routerGeneration &+= 1
+        cancelAllHostRequests()
         let streams = tokenStreams
         tokenStreams.removeAll()
         for (_, tokenStream) in streams {
@@ -1775,6 +2075,8 @@ public actor LinuxGuestCommandChannel {
     public func close() async {
         guard !closed else { return }
         closed = true
+        routerGeneration &+= 1
+        cancelAllHostRequests()
         failSendWaiters()
         consoleReader?.cancel()
         consoleReader = nil
@@ -1812,6 +2114,10 @@ public actor LinuxGuestCommandChannel {
     private func requestInterrupt(token: String, error: any Error & Sendable) async {
         guard runningCommands.contains(token), pendingInterrupts[token] == nil else { return }
         pendingInterrupts[token] = error
+        // A command waiting on host work cannot finish it after an interrupt:
+        // cancel the handler now so it stops touching the share instead of
+        // running to completion for a reply nobody will read.
+        cancelHostRequest(token: token)
         try? await send([LinuxGuestFraming.sessionSignalLine(
             sessionID: token, signal: "INT", rows: nil, columns: nil
         )])
@@ -1829,6 +2135,7 @@ public actor LinuxGuestCommandChannel {
     private func failUnresponsiveToken(_ token: String) async {
         guard pendingInterrupts[token] != nil, let stream = tokenStreams[token] else { return }
         poisoned = true
+        cancelHostRequest(token: token)
         await stream.fail(LinuxGuestError.consoleUnavailable(
             "guest did not confirm the interrupted command stopped within the stop-recovery window; the process state is unknown and the guest must be reset"
         ))
@@ -1840,6 +2147,7 @@ public actor LinuxGuestCommandChannel {
     private func failSilentStartup(_ token: String) async {
         guard runningCommands.contains(token), let stream = tokenStreams[token] else { return }
         poisoned = true
+        cancelHostRequest(token: token)
         await stream.fail(LinuxGuestError.consoleUnavailable(
             "guest produced no response to an accepted command within 30s; the process state is unknown and the guest must be reset"
         ))

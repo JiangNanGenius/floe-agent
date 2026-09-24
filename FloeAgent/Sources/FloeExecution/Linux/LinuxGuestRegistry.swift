@@ -78,6 +78,38 @@ public protocol LinuxGuestSessionCreating: Sendable {
 
 extension TinyEMUGuestSessionFactory: LinuxGuestSessionCreating {}
 
+/// App-registered builder for the optional guest → host control bridge
+/// (`floe-host`). The app closes over its own bridge implementation and
+/// returns the handler, including the HELLO advertisement, for one
+/// environment's declared 9p share table. Returning nil leaves the
+/// capability unadvertised for that environment; the registry never invents
+/// a handler of its own.
+public typealias LinuxGuestHostRequestHandlerFactory = @Sendable (
+    _ environmentID: String,
+    _ pathMap: LinuxGuestPathMap
+) -> LinuxGuestHostRequestHandler?
+
+/// Registration cell shared by the command service (writer) and the registry
+/// actor (reader at each session start). A lock, not actor state, so the app
+/// can install the factory during its synchronous assembly and every existing
+/// service copy sees the same value.
+final class LinuxGuestHostRequestHandlerRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var factory: LinuxGuestHostRequestHandlerFactory?
+
+    func install(_ factory: LinuxGuestHostRequestHandlerFactory?) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.factory = factory
+    }
+
+    func current() -> LinuxGuestHostRequestHandlerFactory? {
+        lock.lock()
+        defer { lock.unlock() }
+        return factory
+    }
+}
+
 /// Shape admission result for one guest start: the granted RAM tier and vCPU
 /// count plus honest downgrade reporting. This is the B2-side seam consumed by
 /// `TinyEMULinuxGuestRegistry.start`; the Runtime v2 integrator overrides
@@ -336,6 +368,9 @@ public actor TinyEMULinuxGuestRegistry {
     private var lifecycleLocks: [String: LifecycleLock] = [:]
     private var lifecycleOperationTokenCounter: UInt64 = 0
     private var sessionGenerationCounter: UInt64 = 0
+    /// App-installed factory for the optional guest → host control bridge.
+    /// Read once per session start; see `LinuxGuestHostRequestHandlerRegistry`.
+    private let hostRequestHandlerRegistry = LinuxGuestHostRequestHandlerRegistry()
 
     /// One interactive guest terminal plus its buffered output.
     private struct TerminalSession {
@@ -365,6 +400,17 @@ public actor TinyEMULinuxGuestRegistry {
     /// or not. Native environments (and unknown ids) answer false.
     public func owns(environmentID: String) async -> Bool {
         await environments.linuxGuestEnvironment(id: environmentID) != nil
+    }
+
+    /// Installs (or clears, with nil) the app's builder for the optional
+    /// guest → host control bridge. Nonisolated and synchronous by design:
+    /// the app assembles its services before any guest can start, and the
+    /// builder is only invoked at session start — so nothing is advertised
+    /// to a guest before a handler for its own shares exists.
+    public nonisolated func installHostRequestHandlerFactory(
+        _ factory: LinuxGuestHostRequestHandlerFactory?
+    ) {
+        hostRequestHandlerRegistry.install(factory)
     }
 
     /// True only when the owned guest is actually running.
@@ -1046,6 +1092,18 @@ public actor TinyEMULinuxGuestRegistry {
         }
 
         let channel = LinuxGuestCommandChannel(transport: handle.transport, limits: limits)
+        // Optional guest → host control bridge: install the app's handler for
+        // this environment's final share table BEFORE the first HELLO. The
+        // channel only advertises the capability while a handler is
+        // installed, so the handshake truthfully tells the guest what the
+        // host will serve (and an environment without shares upgrades or
+        // starts with the capability unadvertised).
+        if let factory = hostRequestHandlerRegistry.current() {
+            let pathMap = LinuxGuestPathMap(shares: bootDescriptor.shares)
+            if !pathMap.isEmpty, let handler = factory(environmentID, pathMap) {
+                await channel.installHostRequestHandler(handler)
+            }
+        }
         // The channel the session will use. A runner upgrade reboots the guest
         // and returns a fresh channel over the renewed console stream; without
         // an upgrade the probed channel itself is the live one.
@@ -1257,8 +1315,9 @@ public actor TinyEMULinuxGuestRegistry {
             try await channel.acceptExternalNegotiation(capabilities: capabilities)
             // Keep the ledger truthful for diagnostics, but it is written
             // only because the live runner answered; it is never read as
-            // proof that the runner is current.
-            if let expected, expected == capabilities {
+            // proof that the runner is current. The host-advertised echo is
+            // excluded from the identity comparison (see runnerIdentity).
+            if let expected, runnerIdentity(of: expected) == runnerIdentity(of: capabilities) {
                 await recordRunnerLedger(
                     capabilities,
                     descriptor: descriptor
@@ -1342,7 +1401,7 @@ public actor TinyEMULinuxGuestRegistry {
                 found: "the guest rebooted but the runner still does not answer protocol 3"
             )
         }
-        guard capabilities == expected else {
+        guard runnerIdentity(of: capabilities) == runnerIdentity(of: expected) else {
             throw LinuxGuestError.startFailed(
                 "runner upgraded but reports '\(capabilities)', manifest expects '\(expected)'"
             )
@@ -1660,6 +1719,18 @@ public actor TinyEMULinuxGuestRegistry {
             }
         }
         return false
+    }
+
+    /// Runner-owned fields of a CAPS payload, for identity comparison. The
+    /// `hostArchive=` field is the runner echoing whatever the host
+    /// advertised in HELLO: it changes when this host starts or stops
+    /// advertising the optional guest bridge, so comparing it verbatim would
+    /// reject a manifest recorded against a different host advertisement even
+    /// though the runner is exactly the expected one.
+    private func runnerIdentity(of capabilities: String) -> String {
+        capabilities.split(separator: " ")
+            .filter { !$0.hasPrefix("hostArchive=") }
+            .joined(separator: " ")
     }
 
     public func run(
@@ -2501,6 +2572,18 @@ public actor TinyEMULinuxGuestRegistry {
 }
 
 extension TinyEMULinuxGuestRegistry: LinuxGuestLocalServiceHosting {}
+
+extension TinyEMULinuxCommandService {
+    /// Installs (or clears, with nil) the app's builder for the optional
+    /// guest → host control bridge. Forwarded to the one registry every copy
+    /// of this service shares; a guest started after this call advertises the
+    /// capability in its HELLO handshake, and one started before it does not.
+    public func installHostRequestHandlerFactory(
+        _ factory: LinuxGuestHostRequestHandlerFactory?
+    ) {
+        registry.installHostRequestHandlerFactory(factory)
+    }
+}
 
 extension TinyEMULinuxCommandService: LinuxGuestPathMapping {
     public func linuxGuestPathMap(environmentID: String) async -> LinuxGuestPathMap? {
