@@ -7,7 +7,8 @@
 #
 # Two separately visible gates:
 #   * refs gate   — `mirror` job: the main branch (every push) and release tags
-#                   (v*, floe-linux-guest-*), with a Gitee-main SHA check.
+#                   (v*, floe-linux-guest-*, floe-linux-template-*), with a
+#                   Gitee-main SHA check.
 #   * release gate — `release-assets` job: one published GitHub release's
 #                   metadata and every asset, mirrored by
 #                   FloeAgent/scripts/sync_release_to_gitee.py. That script
@@ -50,6 +51,7 @@ on:
     tags:
       - 'v*'
       - 'floe-linux-guest-*'
+      - 'floe-linux-template-*'
   release:
     # `edited` keeps the Gitee release body/name in sync when a published
     # release is corrected; draft edits are skipped by the resolve step.
@@ -63,7 +65,8 @@ on:
       - TestFlight and Unsigned IPA Release
       - linux-guest-distribute
       - linux-guest-runner-update
-      - component-image-ci
+      - linux-template-distribute
+      - linux-template-distribute-dev
     types: [completed]
   schedule:
     # Weekly reconciliation: latest published release, idempotent repair.
@@ -152,7 +155,7 @@ concurrency:
 jobs:
   mirror:
     name: mirror refs to Gitee
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mirror_refs) }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.mirror_refs) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -164,6 +167,7 @@ jobs:
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           BOOTSTRAP_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_force || 'false' }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
         run: |
           set -euo pipefail
           : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
@@ -198,14 +202,22 @@ jobs:
           case "${GITHUB_REF_TYPE:-}" in
             tag) ggit push $FORCE_FLAGS gitee "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" ;;
           esac
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ] && [ -n "${DISPATCH_TAG:-}" ]; then
+            case "$DISPATCH_TAG" in
+              v[0-9A-Za-z._-]*|floe-linux-guest-[0-9A-Za-z._-]*|floe-linux-template-[0-9A-Za-z._-]*) ;;
+              *) echo "refusing suspicious release tag: $DISPATCH_TAG" >&2; exit 1 ;;
+            esac
+            git rev-parse -q --verify "refs/tags/${DISPATCH_TAG}^{commit}" >/dev/null
+            ggit push $FORCE_FLAGS gitee "refs/tags/${DISPATCH_TAG}:refs/tags/${DISPATCH_TAG}"
+          fi
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             git for-each-ref --format='%(refname:strip=2)' refs/tags | while read -r tag; do
-              case "$tag" in v*|floe-linux-guest-*) ggit push $FORCE_FLAGS gitee "refs/tags/$tag:refs/tags/$tag" ;; esac
+              case "$tag" in v*|floe-linux-guest-*|floe-linux-template-*) ggit push $FORCE_FLAGS gitee "refs/tags/$tag:refs/tags/$tag" ;; esac
             done
           fi
 
       - name: Verify Gitee main matches GitHub main
-        if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'main' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' || github.ref_name == 'main' }}
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
@@ -275,7 +287,12 @@ jobs:
                 echo "skip=true" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              TAG="$RUN_BRANCH"
+              # A successful workflow_run usually reports the *source branch*
+              # (for example codex/d5-dev-pypi-sources), not a release tag.
+              # Resolve the latest published release in that case below.
+              case "$RUN_BRANCH" in
+                v[0-9A-Za-z._-]*|floe-linux-guest-[0-9A-Za-z._-]*|floe-linux-template-[0-9A-Za-z._-]*) TAG="$RUN_BRANCH" ;;
+              esac
               ;;
             workflow_dispatch)
               TAG="$INPUT_TAG"
@@ -299,7 +316,7 @@ jobs:
             exit 1
           fi
           case "$TAG" in
-            v[0-9A-Za-z._-]*|floe-linux-guest-[0-9A-Za-z._-]*) ;;
+            v[0-9A-Za-z._-]*|floe-linux-guest-[0-9A-Za-z._-]*|floe-linux-template-[0-9A-Za-z._-]*) ;;
             *) echo "refusing suspicious release tag: $TAG" >&2; exit 1 ;;
           esac
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
