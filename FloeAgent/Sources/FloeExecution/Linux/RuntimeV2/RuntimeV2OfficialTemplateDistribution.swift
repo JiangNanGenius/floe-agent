@@ -96,7 +96,25 @@ public enum RuntimeV2OfficialTemplateDistribution {
 /// integration commit that adds a cloud-verified artifact is small and its
 /// evidence (run URL, digests) is explicit.
 public enum RuntimeV2OfficialTemplatePinnedArtifacts {
-    public static let all: [RuntimeV2OfficialTemplateArtifact] = []
+    // The basic template was published as an immutable component prerelease
+    // after both TinyEMU boot checks and the corresponding-source audit. The
+    // final archive digest differs from the image-build input because the
+    // published manifest adds its release provenance; the disk bytes do not.
+    public static let all: [RuntimeV2OfficialTemplateArtifact] = [
+        RuntimeV2OfficialTemplateArtifact(
+            templateID: "basic",
+            version: 1,
+            imageID: "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b35928017233",
+            archiveURL: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-template-basic-20260923.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b35928017233.zip",
+            archiveSHA512: "773ea79e613b73024f66269beaf3469c4d997a9ce60cc6666efec02163bd7e019817261a88fce96240dc30cf5f6afff2677f3efbe0d7fba2128bf57403ba8f30",
+            archiveBytes: 547_070_503,
+            diskSHA512: "34952a2d0cfc147a08a0f21eb4632e6e90560792084250f8d980a0da371ba47b9029e096972b2cfb92598ee0ce893ec6df338033c7a7d7bb9737a6aa0ad65039",
+            recipeSHA512: "c66ac0502f050424dee5524698621b936929cc3d09a15c21e103374d5d0c9f460c2d1c72b5464d2a446d49d9b7b1c4c485d9515a05348106b51116284f3216e6",
+            recipeBase64: "ewogICJzY2hlbWEiOiAxLAogICJuYW1lIjogImJhc2ljIiwKICAiZGVzY3JpcHRpb24iOiAiRmxvZSBiYXNpYyBMaW51eCBndWVzdDogdGhlIDEzIHVzZXItZmFjaW5nIHNoZWxsIGNvbW1hbmRzIGZyb20gdGhlIEJ1aWxkIDIyNSBmZWVkYmFjayByZXBvcnQgcGx1cyBQeXRob24gMyAocGlwL3ZlbnYvbnVtcHkpLCBOb2RlLmpzL25wbSBhbmQgSFRUUFMgdHJ1c3QuIFRoaXMgaXMgdGhlIHBhY2thZ2Ugc2V0IEZsb2VBZ2VudC9MaW51eEd1ZXN0L2ltYWdlL2d1ZXN0LXN0YWdlMS1pbnN0YWxsLnNoIGluc3RhbGxzIGZvciB0aGUgZGVmYXVsdCBpbWFnZTsgZXZlcnkgcmVxdWlyZW1lbnQgaXMgaW5kZXBlbmRlbnRseSByZS12ZXJpZmllZCBhZ2FpbnN0IHRoZSBsaXZlIGRwa2cgZGF0YWJhc2UgZHVyaW5nIGJvb3QgQiBvZiB0aGUgaW1hZ2UgYnVpbGQuIiwKICAicGFja2FnZXMiOiB7CiAgICAicHJvY3BzIjogbnVsbCwKICAgICJ1dGlsLWxpbnV4IjogbnVsbCwKICAgICJjb3JldXRpbHMiOiBudWxsLAogICAgImJhc2giOiBudWxsLAogICAgInpzaCI6IG51bGwsCiAgICAiemlwIjogbnVsbCwKICAgICJ1bnppcCI6IG51bGwsCiAgICAicDd6aXAtZnVsbCI6IG51bGwsCiAgICAieHotdXRpbHMiOiBudWxsLAogICAgImJ6aXAyIjogbnVsbCwKICAgICJzcWxpdGUzIjogbnVsbCwKICAgICJvcGVuc3NoLWNsaWVudCI6IG51bGwsCiAgICAicHl0aG9uMyI6IHsibWluX3ZlcnNpb24iOiAiMy4xMyJ9LAogICAgInB5dGhvbjMtcGlwIjogbnVsbCwKICAgICJweXRob24zLXZlbnYiOiBudWxsLAogICAgInB5dGhvbjMtbnVtcHkiOiBudWxsLAogICAgIm5vZGVqcyI6IG51bGwsCiAgICAibnBtIjogbnVsbCwKICAgICJjYS1jZXJ0aWZpY2F0ZXMiOiBudWxsCiAgfSwKICAicmVxdWlyZV9zb3VyY2VfbWFwcGluZyI6IHRydWUKfQo=",
+            qualificationRunURL: "https://github.com/JiangNanGenius/floe-agent/actions/runs/35928017233",
+            sourceRef: "706413fd816ee6c4197dd7e5184f6fc14fc2f762"
+        ),
+    ]
 }
 
 // MARK: - Status
