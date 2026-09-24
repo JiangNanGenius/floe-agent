@@ -52,8 +52,10 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import tarfile
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -351,132 +353,136 @@ def build_pypi_bundle(recipe_path, out_dir, github_run=""):
             gaps.add(distribution, wheel_name, "no pypdfium2_raw/version.json in wheel")
             continue
 
-        sdist_dir = out / ("sdist-tree-" + distribution.replace(".", "_"))
-        with tarfile.open(str(sdist_dest), "r:gz") as archive:
-            for member in archive.getmembers():
-                target = os.path.realpath(os.path.join(str(sdist_dir), member.name))
-                if not target.startswith(os.path.realpath(str(sdist_dir)) + os.sep):
-                    raise RuntimeError("unsafe path in sdist %s: %s"
-                                       % (sdist_dest.name, member.name))
-            archive.extractall(str(sdist_dir))
-        roots = [p for p in sdist_dir.iterdir() if p.is_dir()]
-        base_py = roots[0] / "setupsrc" / "base.py"
-        pin_match = re.search(r"^SBUILD_NATIVE_PIN\s*=\s*(\d+)\s*$",
-                              quote_file(str(base_py)), flags=re.MULTILINE)
-        sbuild_pin = int(pin_match.group(1)) if pin_match else None
-        if sbuild_pin != pdfium_build:
-            gaps.add(distribution, wheel_name,
-                     "wheel pdfium build %s != sdist SBUILD_NATIVE_PIN %s"
-                     % (pdfium_build, sbuild_pin))
+        sdist_dir = Path(tempfile.mkdtemp(prefix="pypi-sdist-tree-", dir=str(out)))
+        try:
+            with tarfile.open(str(sdist_dest), "r:gz") as archive:
+                for member in archive.getmembers():
+                    target = os.path.realpath(os.path.join(str(sdist_dir), member.name))
+                    if not target.startswith(os.path.realpath(str(sdist_dir)) + os.sep):
+                        raise RuntimeError("unsafe path in sdist %s: %s"
+                                           % (sdist_dest.name, member.name))
+                archive.extractall(str(sdist_dir))
+            roots = [p for p in sdist_dir.iterdir() if p.is_dir()]
+            base_py = roots[0] / "setupsrc" / "base.py"
+            pin_match = re.search(r"^SBUILD_NATIVE_PIN\s*=\s*(\d+)\s*$",
+                                  quote_file(str(base_py)), flags=re.MULTILINE)
+            sbuild_pin = int(pin_match.group(1)) if pin_match else None
+            if sbuild_pin != pdfium_build:
+                gaps.add(distribution, wheel_name,
+                         "wheel pdfium build %s != sdist SBUILD_NATIVE_PIN %s"
+                         % (pdfium_build, sbuild_pin))
 
-        upload_iso = next((u["upload_time"] for u in pypi_data.get("urls", [])
-                           if u.get("filename") == wheel_name), None)
-        upload_time = datetime.datetime.strptime(upload_iso, "%Y-%m-%dT%H:%M:%S") \
-            .replace(tzinfo=datetime.timezone.utc)
+            upload_iso = next((u["upload_time"] for u in pypi_data.get("urls", [])
+                               if u.get("filename") == wheel_name), None)
+            upload_time = datetime.datetime.strptime(upload_iso, "%Y-%m-%dT%H:%M:%S") \
+                .replace(tzinfo=datetime.timezone.utc)
 
-        branch = "chromium/%d" % pdfium_build
-        log = gitiles_json("%s/+log/refs/heads/%s?format=JSON&n=1"
-                           % (REPO_PDFIUM_GITILES, branch))
-        tip = log["log"][0]
-        tip_commit = tip["commit"]
-        tip_time = parse_gitiles_time(tip["committer"]["time"])
+            branch = "chromium/%d" % pdfium_build
+            log = gitiles_json("%s/+log/refs/heads/%s?format=JSON&n=1"
+                               % (REPO_PDFIUM_GITILES, branch))
+            tip = log["log"][0]
+            tip_commit = tip["commit"]
+            tip_time = parse_gitiles_time(tip["committer"]["time"])
 
-        pdfium_dir = out / "pdfium-source"
-        pdfium_dir.mkdir(exist_ok=True)
-        archive_url = "%s/+archive/%s.tar.gz" % (REPO_PDFIUM_GITILES, tip_commit)
-        archive_dest = pdfium_dir / ("pdfium-%s.tar.gz" % tip_commit)
-        archive_bytes = fetch(archive_url, str(archive_dest))
-        archive_sha = sha256_file(str(archive_dest))
-        # gitiles generates archives on demand: the gzip bytes differ between
-        # requests, so the commit is the tree identifier, not the archive
-        # hash. Record per-file hashes so the tree is verifiable anyway.
-        tree_hashes = []
-        with tarfile.open(str(archive_dest), "r:gz") as archive:
-            for member in archive.getmembers():
-                if member.isfile():
-                    digest = hashlib.sha256(archive.extractfile(member).read())
-                    tree_hashes.append("%s  %s" % (digest.hexdigest(), member.name))
-        tree_hashes.sort(key=lambda line: line.split("  ", 1)[1])
-        with open(pdfium_dir / "TREE.sha256", "w", encoding="utf-8") as handle:
-            handle.write("\n".join(tree_hashes) + "\n")
-        rows.append(("pdfium", "%d @ %s" % (pdfium_build, tip_commit[:12]),
-                     archive_dest.name, "native-source (archive bytes vary per "
-                     "generation; per-file hashes in TREE.sha256)",
-                     archive_url, archive_sha, archive_bytes))
+            pdfium_dir = out / "pdfium-source"
+            pdfium_dir.mkdir(exist_ok=True)
+            archive_url = "%s/+archive/%s.tar.gz" % (REPO_PDFIUM_GITILES, tip_commit)
+            archive_dest = pdfium_dir / ("pdfium-%s.tar.gz" % tip_commit)
+            archive_bytes = fetch(archive_url, str(archive_dest))
+            archive_sha = sha256_file(str(archive_dest))
+            # gitiles generates archives on demand: the gzip bytes differ between
+            # requests, so the commit is the tree identifier, not the archive
+            # hash. Record per-file hashes so the tree is verifiable anyway.
+            tree_hashes = []
+            with tarfile.open(str(archive_dest), "r:gz") as archive:
+                for member in archive.getmembers():
+                    if member.isfile():
+                        digest = hashlib.sha256(archive.extractfile(member).read())
+                        tree_hashes.append("%s  %s" % (digest.hexdigest(), member.name))
+            tree_hashes.sort(key=lambda line: line.split("  ", 1)[1])
+            with open(pdfium_dir / "TREE.sha256", "w", encoding="utf-8") as handle:
+                handle.write("\n".join(tree_hashes) + "\n")
+            rows.append(("pdfium", "%d @ %s" % (pdfium_build, tip_commit[:12]),
+                         archive_dest.name, "native-source (archive bytes vary per "
+                         "generation; per-file hashes in TREE.sha256)",
+                         archive_url, archive_sha, archive_bytes))
 
-        deps_raw = fetch("%s/+/%s/DEPS?format=TEXT" % (REPO_PDFIUM_GITILES, tip_commit),
-                         str(pdfium_dir / "DEPS"))
-        deps_text = base64.b64decode(Path(pdfium_dir / "DEPS").read_text().strip()) \
-            .decode("utf-8")
-        Path(pdfium_dir / "DEPS").write_text(deps_text, encoding="utf-8")
-        revisions = parse_deps_revisions(deps_text)
-        with open(pdfium_dir / "deps-revisions.tsv", "w", encoding="utf-8") as handle:
-            handle.write("#dependency\trevision (pdfium DEPS @ %s)\n" % tip_commit)
-            for name, revision in revisions:
-                handle.write("%s\t%s\n" % (name, revision))
-        rows.append(("pdfium", tip_commit[:12], "DEPS", "native-deps-map",
-                     "%s/+/%s/DEPS" % (REPO_PDFIUM_GITILES, tip_commit),
-                     hashlib.sha256(deps_text.encode()).hexdigest(),
-                     len(deps_text)))
+            deps_raw = fetch("%s/+/%s/DEPS?format=TEXT" % (REPO_PDFIUM_GITILES, tip_commit),
+                             str(pdfium_dir / "DEPS"))
+            deps_text = base64.b64decode(Path(pdfium_dir / "DEPS").read_text().strip()) \
+                .decode("utf-8")
+            Path(pdfium_dir / "DEPS").write_text(deps_text, encoding="utf-8")
+            revisions = parse_deps_revisions(deps_text)
+            with open(pdfium_dir / "deps-revisions.tsv", "w", encoding="utf-8") as handle:
+                handle.write("#dependency\trevision (pdfium DEPS @ %s)\n" % tip_commit)
+                for name, revision in revisions:
+                    handle.write("%s\t%s\n" % (name, revision))
+            rows.append(("pdfium", tip_commit[:12], "DEPS", "native-deps-map",
+                         "%s/+/%s/DEPS" % (REPO_PDFIUM_GITILES, tip_commit),
+                         hashlib.sha256(deps_text.encode()).hexdigest(),
+                         len(deps_text)))
 
-        frozen = frozen_tip_check(tip_time, upload_time)
-        if not frozen:
-            gaps.add(distribution, wheel_name,
-                     "pdfium branch %s moved after the wheel was built "
-                     "(tip %s %s > upload %s); exact build commit unresolved"
-                     % (branch, tip_commit[:12], tip_time.isoformat(),
-                        upload_time.isoformat()))
+            frozen = frozen_tip_check(tip_time, upload_time)
+            if not frozen:
+                gaps.add(distribution, wheel_name,
+                         "pdfium branch %s moved after the wheel was built "
+                         "(tip %s %s > upload %s); exact build commit unresolved"
+                         % (branch, tip_commit[:12], tip_time.isoformat(),
+                            upload_time.isoformat()))
 
-        pyproject = quote_file(str(roots[0] / "pyproject.toml"))
-        build_env_lines = []
-        in_linux_env = False
-        for line in pyproject.splitlines():
-            if line.strip() == "[tool.cibuildwheel.linux.environment]":
-                in_linux_env = True
-                continue
-            if in_linux_env:
-                if line.startswith("["):
-                    break
-                build_env_lines.append(line)
-        build_env = "\n".join(l for l in build_env_lines if l.strip())
+            pyproject = quote_file(str(roots[0] / "pyproject.toml"))
+            build_env_lines = []
+            in_linux_env = False
+            for line in pyproject.splitlines():
+                if line.strip() == "[tool.cibuildwheel.linux.environment]":
+                    in_linux_env = True
+                    continue
+                if in_linux_env:
+                    if line.startswith("["):
+                        break
+                    build_env_lines.append(line)
+            build_env = "\n".join(l for l in build_env_lines if l.strip())
 
-        summary_lines += [
-            "- bundled native: `%s` (sha256 in SOURCES.tsv)" % ", ".join(native_libs),
-            "- wheel pdfium identity: `%d.%d.%d` origin `%s`"
-              % (wheel_info["major"], wheel_info["minor"], wheel_info["build"],
-                 wheel_info.get("origin")),
-            "- pypdfium2 sourcebuild pin: `SBUILD_NATIVE_PIN = %s` (sdist setupsrc/base.py)"
-              % sbuild_pin,
-            "- pdfium source: branch `%s`, tip `%s` (committer %s)"
-              % (branch, tip_commit, tip_time.isoformat()),
-            "- frozen-branch proof: tip commit predates the wheel upload (%s): `%s`"
-              % (upload_time.isoformat(), "yes" if frozen else "NO — GAP"),
-            "- pdfium archive: `%s` (%d bytes; gitiles regenerates gzip bytes per\n"
-              "  request, so the tree is verified by `TREE.sha256` per-file hashes,\n"
-              "  not the archive digest)" % (archive_dest.name, archive_bytes),
-            "- pdfium DEPS: `%d` pinned dependency revisions -> deps-revisions.tsv"
-              % len(revisions),
-            "- build scripts: pypdfium2 sdist `setupsrc/` + `patches/` "
-              "(build_native.py clones each DEPS revision)",
-            "- recorded CI build environment (pyproject [tool.cibuildwheel.linux]):",
-            "",
-            "```toml",
-            build_env or "(not found in sdist pyproject.toml)",
-            "```",
-            "",
-            "Rebuild recipe (manylinux riscv64, from the collected sdist):",
-            "",
-            "```sh",
-            "tar -xzf %s" % sdist_dest.name,
-            "cd %s" % roots[0].name,
-            "PDFIUM_PLATFORM=sourcebuild-native \\",
-            "BUILD_PARAMS=\"--vendor all --no-vendor libc++\" \\",
-            "PDFIUM_VER=%d python3 setup.py bdist_wheel" % pdfium_build,
-            "```",
-            "",
-            "pdfium license: BSD-3-Clause (BUILD_LICENSES/pdfium.txt in the sdist).",
-            "",
-        ]
+            sdist_root_name = roots[0].name
+            summary_lines += [
+                "- bundled native: `%s` (sha256 in SOURCES.tsv)" % ", ".join(native_libs),
+                "- wheel pdfium identity: `%d.%d.%d` origin `%s`"
+                  % (wheel_info["major"], wheel_info["minor"], wheel_info["build"],
+                     wheel_info.get("origin")),
+                "- pypdfium2 sourcebuild pin: `SBUILD_NATIVE_PIN = %s` (sdist setupsrc/base.py)"
+                  % sbuild_pin,
+                "- pdfium source: branch `%s`, tip `%s` (committer %s)"
+                  % (branch, tip_commit, tip_time.isoformat()),
+                "- frozen-branch proof: tip commit predates the wheel upload (%s): `%s`"
+                  % (upload_time.isoformat(), "yes" if frozen else "NO — GAP"),
+                "- pdfium archive: `%s` (%d bytes; gitiles regenerates gzip bytes per\n"
+                  "  request, so the tree is verified by `TREE.sha256` per-file hashes,\n"
+                  "  not the archive digest)" % (archive_dest.name, archive_bytes),
+                "- pdfium DEPS: `%d` pinned dependency revisions -> deps-revisions.tsv"
+                  % len(revisions),
+                "- build scripts: pypdfium2 sdist `setupsrc/` + `patches/` "
+                  "(build_native.py clones each DEPS revision)",
+                "- recorded CI build environment (pyproject [tool.cibuildwheel.linux]):",
+                "",
+                "```toml",
+                build_env or "(not found in sdist pyproject.toml)",
+                "```",
+                "",
+                "Rebuild recipe (manylinux riscv64, from the collected sdist):",
+                "",
+                "```sh",
+                "tar -xzf %s" % sdist_dest.name,
+                "cd %s" % sdist_root_name,
+                "PDFIUM_PLATFORM=sourcebuild-native \\",
+                "BUILD_PARAMS=\"--vendor all --no-vendor libc++\" \\",
+                "PDFIUM_VER=%d python3 setup.py bdist_wheel" % pdfium_build,
+                "```",
+                "",
+                "pdfium license: BSD-3-Clause (BUILD_LICENSES/pdfium.txt in the sdist).",
+                "",
+            ]
+        finally:
+            shutil.rmtree(str(sdist_dir), ignore_errors=True)
 
     _write_outputs(out, gaps, rows, summary_lines)
     return 3 if gaps.rows else 0
