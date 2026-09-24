@@ -62,17 +62,11 @@ let package = Package(
         // SWCompression supplies read-only 7z/RAR container decoding for
         // workspace.archive; archive creation stays zip/tar only.
         .package(url: "https://github.com/tsolomko/SWCompression.git", exact: "4.9.1"),
-        // Accepted production pair, qualified with MLX compiled traces
-        // disabled; evidence in
-        // ../docs/FLOE_BUILD178_FEEDBACK_REPAIR.md (run
-        // 35189276226, source 43a68eb8). Disabling compiled traces removes
-        // graph specialization/fusion only, not inference. Advance only with
-        // host lifecycle evidence for both revisions.
-        .package(
-            url: "https://github.com/ml-explore/mlx-swift-lm.git",
-            revision: "d5d8b290e601ac1bf11f24635f8f811a83b98bf8"
-        ),
-        // Transitive MLX runtime pinned to the same qualified pair.
+        // Reviewed local copy of mlx-swift-lm d5d8b290 with Floe's bounded
+        // gated-delta prefill fallback. Provenance and the minimal patch live
+        // beside the vendored package; no build-cache checkout is patched.
+        .package(name: "mlx-swift-lm", path: "ThirdParty/MLXSwiftLM"),
+        // Keep the separately qualified MLX array runtime at its exact pin.
         .package(
             url: "https://github.com/ml-explore/mlx-swift.git",
             revision: "ab924c82ead3b970caaa1c0ac11171de23f0305a"
