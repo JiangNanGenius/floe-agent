@@ -154,7 +154,10 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(branch.exists, "the branch row must stay reachable")
         XCTAssertGreaterThanOrEqual(branch.frame.height, 44, "the branch row must keep a 44pt target")
         XCTAssertGreaterThanOrEqual(app.buttons["sourceControl.commit.stageAll"].frame.height, 44)
-        XCTAssertTrue(app.textFields["sourceControl.commit.message"].exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(identifier: "sourceControl.commit.message").firstMatch.exists,
+            "the multiline commit field must remain reachable"
+        )
         capture("ide-git-sidebar-compact-sync-row")
     }
 
