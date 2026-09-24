@@ -22,6 +22,10 @@ import Testing
 @testable import FloeWorkspace
 import FloeCore
 import FloeTools
+import CFloeArchive
+#if canImport(Darwin)
+import Darwin
+#endif
 
 @Suite("FloeWorkspace.ArchiveEngine")
 struct ArchiveEngineTests {
@@ -462,6 +466,173 @@ struct ArchiveEngineTests {
             _ = try ArchiveEngine.decompress(format: "bz2", source: f.url("empty.bz2"), destination: f.url("empty.out"), cancellation: f.cancel)
         }
     }
+
+    // MARK: - bzip2 lifecycle
+
+    /// Drives the `CFloeArchive` shim directly: returns the terminal status and
+    /// whether libbz2's block state was still owned when the terminal status
+    /// was reached. `destroy` is then called on every path.
+    private func driveDecoder(_ data: Data) -> (status: Int32, stateHeld: Int32) {
+        guard let decoder = floe_bz2_decoder_create() else {
+            return (FLOE_BZ2_MEMORY, 0)
+        }
+        var window = [UInt8](repeating: 0, count: 4096)
+        var offset = 0
+        var status: Int32 = FLOE_BZ2_OK
+        while status == FLOE_BZ2_OK {
+            var consumed = 0
+            var produced = 0
+            status = data.withUnsafeBytes { raw -> Int32 in
+                let source = raw.baseAddress.map {
+                    $0.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+                }
+                return window.withUnsafeMutableBufferPointer { destination -> Int32 in
+                    floe_bz2_decoder_process(
+                        decoder, source, data.count - offset,
+                        destination.baseAddress, destination.count,
+                        &consumed, &produced
+                    )
+                }
+            }
+            offset += consumed
+            if status == FLOE_BZ2_OK && consumed == 0 && produced == 0 && offset >= data.count {
+                status = FLOE_BZ2_ERROR
+            }
+        }
+        let held = floe_bz2_decoder_state_active(decoder)
+        floe_bz2_decoder_destroy(decoder)
+        return (status, held)
+    }
+
+    /// Same for the encoder: streams `data`, finishes, and reports whether the
+    /// encoder state was released by the terminal `FLOE_BZ2_FINISHED`.
+    private func driveEncoder(_ data: Data) -> (status: Int32, stateHeld: Int32) {
+        guard let encoder = floe_bz2_encoder_create(9) else {
+            return (FLOE_BZ2_MEMORY, 0)
+        }
+        var window = [UInt8](repeating: 0, count: 4096)
+        var offset = 0
+        var status: Int32 = FLOE_BZ2_OK
+        while true {
+            let finish: Int32 = offset >= data.count ? 1 : 0
+            var consumed = 0
+            var produced = 0
+            status = data.withUnsafeBytes { raw -> Int32 in
+                let source = raw.baseAddress.map {
+                    $0.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+                }
+                return window.withUnsafeMutableBufferPointer { destination -> Int32 in
+                    floe_bz2_encoder_process(
+                        encoder, source, data.count - offset,
+                        destination.baseAddress, destination.count,
+                        finish, &consumed, &produced
+                    )
+                }
+            }
+            offset += consumed
+            if status != FLOE_BZ2_OK { break }
+            if finish == 1 && consumed == 0 && produced == 0 { break }
+        }
+        let held = floe_bz2_encoder_state_active(encoder)
+        floe_bz2_encoder_destroy(encoder)
+        return (status, held)
+    }
+
+    /// libbz2 lifecycle contract, read from the shim itself: a stream that ends
+    /// successfully releases its multi-MiB block state at the terminal
+    /// transition (the pre-fix code skipped `BZ2_bz*End` there and leaked it
+    /// until the handle was freed), while error/abandoned streams still own the
+    /// state that `destroy` releases. A coarse heap-growth guard repeats full
+    /// create/process/destroy cycles through the Swift wrappers: the old code
+    /// retained ~11 MiB per completed stream, >200 MiB over the rounds below.
+    @Test("bzip2 stream lifecycles release libbz2 state on every terminal path")
+    func bzip2LifecycleReleasesState() throws {
+        let f = try Fixture()
+        let payload = Fixture.pseudoRandomBytes(count: 300_000, seed: 7)
+        try f.writeBytes("life.bin", payload)
+        _ = try ArchiveEngine.create(
+            format: "bz2",
+            sources: [f.url("life.bin")],
+            destination: f.url("life.bz2"),
+            cancellation: f.cancel
+        )
+        let compressed = try Data(contentsOf: f.url("life.bz2"))
+        var corrupt = compressed
+        corrupt[corrupt.startIndex + corrupt.count / 2] ^= 0xFF
+        try corrupt.write(to: f.url("corrupt.bz2"))
+        let truncated = Data(compressed.prefix(compressed.count / 2))
+        try truncated.write(to: f.url("truncated.bz2"))
+
+        // Successful decode: state must already be released at STREAM_END.
+        let good = driveDecoder(compressed)
+        #expect(good.status == FLOE_BZ2_STREAM_END)
+        #expect(good.stateHeld == 0, "decoder kept libbz2 state after a successful stream end")
+
+        // Corrupt stream: detected as an error, and destroy releases the state.
+        let bad = driveDecoder(corrupt)
+        #expect(bad.status == FLOE_BZ2_ERROR)
+        #expect(bad.stateHeld == 1, "corrupt stream should still own its state for destroy to release")
+
+        // Abandoned/truncated stream: same held-until-destroy contract.
+        let partial = driveDecoder(truncated)
+        #expect(partial.status == FLOE_BZ2_ERROR)
+        #expect(partial.stateHeld == 1)
+
+        // Successful encode: state must already be released at FINISHED.
+        let encoded = driveEncoder(Data(payload))
+        #expect(encoded.status == FLOE_BZ2_FINISHED)
+        #expect(encoded.stateHeld == 0, "encoder kept libbz2 state after a successful finish")
+
+        // Repeat full wrapper lifecycles and guard against heap growth.
+        func wrapperRound() throws {
+            let budget = ArchiveDecodeBudget(maxOutputBytes: 16 * 1024 * 1024, cancellation: nil)
+            let source = try Bzip2DecodingSource(url: f.url("life.bz2"), budget: budget)
+            var decoded = Data()
+            while let chunk = try source.read(max: 64 * 1024) { decoded.append(chunk) }
+            #expect(decoded == Data(payload))
+            #expect(source.membersDecoded == 1)
+            do {
+                let errorBudget = ArchiveDecodeBudget(maxOutputBytes: 16 * 1024 * 1024, cancellation: nil)
+                let badSource = try Bzip2DecodingSource(url: f.url("corrupt.bz2"), budget: errorBudget)
+                while let chunk = try badSource.read(max: 64 * 1024) { _ = chunk }
+                Issue.record("corrupted stream decoded")
+            } catch is ArchiveCodecError {
+                // expected
+            }
+            let partialBudget = ArchiveDecodeBudget(maxOutputBytes: 16 * 1024 * 1024, cancellation: nil)
+            let partialSource = try Bzip2DecodingSource(url: f.url("truncated.bz2"), budget: partialBudget)
+            do {
+                _ = try partialSource.read(max: 1024)
+            } catch is ArchiveCodecError {
+                // Expected: the abandoned decoder is destroyed on release.
+            }
+            var encodedOut = Data()
+            let writer = try Bzip2StreamWriter { encodedOut.append($0) }
+            try writer.write(Data(payload))
+            try writer.finish()
+            #expect(!encodedOut.isEmpty)
+        }
+
+        #if canImport(Darwin)
+        try wrapperRound() // warm-up
+        let before = mallocInUseBytes()
+        for _ in 0..<20 { try wrapperRound() }
+        let delta = mallocInUseBytes() - before
+        // 20 leaked stream states would be >200 MiB; allocator/test noise stays
+        // well under this bound.
+        #expect(delta < 128 * 1024 * 1024, "libbz2 state retained \(delta) bytes over 20 rounds")
+        #endif
+    }
+
+    #if canImport(Darwin)
+    /// Bytes currently allocated in the default malloc zone; used only by the
+    /// libbz2 lifecycle leak guard above.
+    private func mallocInUseBytes() -> Int {
+        var stats = malloc_statistics_t()
+        malloc_zone_statistics(malloc_default_zone(), &stats)
+        return stats.size_in_use
+    }
+    #endif
 
     @Test("Single-file gzip/bzip2/xz round-trip and interoperate with the platform tools")
     func singleFileInterop() async throws {

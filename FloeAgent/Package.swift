@@ -696,7 +696,7 @@ let package = Package(
 
         .testTarget(
             name: "FloeWorkspaceTests",
-            dependencies: ["FloeWorkspace", "FloeTools", "FloeModels", "FloeTestSupport"],
+            dependencies: ["FloeWorkspace", "FloeTools", "FloeModels", "FloeTestSupport", "CFloeArchive"],
             path: "Tests/FloeWorkspaceTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

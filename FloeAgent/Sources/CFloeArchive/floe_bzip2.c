@@ -6,6 +6,10 @@
  *   destroys and re-creates it at member boundaries. `*consumed` is derived
  *   from the `avail_in` delta, which libbz2 updates byte-exactly, so the byte
  *   after a member is the first byte of the next member.
+ * * Lifecycle: `initialized` tracks the libbz2 state that `*End` must release.
+ *   A successful stream end releases it immediately (at the `BZ_STREAM_END`
+ *   transition), every error path keeps it for `destroy`, and neither path can
+ *   call `*End` twice or leak the (multi-MiB) block state.
  * * Caller buffers are detached after every call (`next_in/next_out = NULL`,
  *   capacities 0) so no pointer into Swift-owned memory can outlive the call.
  * * No allocation happens per call; libbz2's working state is created once in
@@ -22,7 +26,10 @@
 
 struct floe_bz2_decoder {
     bz_stream stream;
-    int active;
+    /* libbz2 state is allocated: `*_End` is owed exactly once. */
+    int initialized;
+    /* BZ_STREAM_END was returned; no further processing is allowed. */
+    int finished;
 };
 
 floe_bz2_decoder *floe_bz2_decoder_create(void) {
@@ -35,19 +42,32 @@ floe_bz2_decoder *floe_bz2_decoder_create(void) {
         free(decoder);
         return NULL;
     }
-    decoder->active = 1;
+    decoder->initialized = 1;
     return decoder;
+}
+
+/* Releases libbz2 state once; safe to call after a successful stream end. */
+static void floe_bz2_decoder_release(floe_bz2_decoder *decoder) {
+    if (decoder->initialized) {
+        BZ2_bzDecompressEnd(&decoder->stream);
+        decoder->initialized = 0;
+    }
 }
 
 void floe_bz2_decoder_destroy(floe_bz2_decoder *decoder) {
     if (decoder == NULL) {
         return;
     }
-    if (decoder->active) {
-        BZ2_bzDecompressEnd(&decoder->stream);
-        decoder->active = 0;
-    }
+    floe_bz2_decoder_release(decoder);
     free(decoder);
+}
+
+/* Test/diagnostic accessor; the handle must still be alive. */
+int floe_bz2_decoder_state_active(const floe_bz2_decoder *decoder) {
+    if (decoder == NULL) {
+        return 0;
+    }
+    return decoder->initialized ? 1 : 0;
 }
 
 int floe_bz2_decoder_process(floe_bz2_decoder *decoder,
@@ -60,7 +80,7 @@ int floe_bz2_decoder_process(floe_bz2_decoder *decoder,
     if (produced != NULL) {
         *produced = 0;
     }
-    if (decoder == NULL || !decoder->active) {
+    if (decoder == NULL || !decoder->initialized || decoder->finished) {
         return FLOE_BZ2_PARAM;
     }
     if (src_len > 0xFFFFFFFFu || dst_capacity == 0 || dst_capacity > 0xFFFFFFFFu) {
@@ -96,7 +116,10 @@ int floe_bz2_decoder_process(floe_bz2_decoder *decoder,
         case BZ_OK:
             return FLOE_BZ2_OK;
         case BZ_STREAM_END:
-            decoder->active = 0;
+            /* Terminal success: release the block state now instead of
+             * holding it until the caller destroys the handle. */
+            decoder->finished = 1;
+            floe_bz2_decoder_release(decoder);
             return FLOE_BZ2_STREAM_END;
         case BZ_MEM_ERROR:
             return FLOE_BZ2_MEMORY;
@@ -113,7 +136,10 @@ int floe_bz2_decoder_process(floe_bz2_decoder *decoder,
 
 struct floe_bz2_encoder {
     bz_stream stream;
-    int active;
+    /* libbz2 state is allocated: `*_End` is owed exactly once. */
+    int initialized;
+    /* BZ_STREAM_END was returned; no further processing is allowed. */
+    int finished;
 };
 
 floe_bz2_encoder *floe_bz2_encoder_create(int block_size_100k) {
@@ -129,19 +155,32 @@ floe_bz2_encoder *floe_bz2_encoder_create(int block_size_100k) {
         free(encoder);
         return NULL;
     }
-    encoder->active = 1;
+    encoder->initialized = 1;
     return encoder;
+}
+
+/* Releases libbz2 state once; safe to call after a successful stream end. */
+static void floe_bz2_encoder_release(floe_bz2_encoder *encoder) {
+    if (encoder->initialized) {
+        BZ2_bzCompressEnd(&encoder->stream);
+        encoder->initialized = 0;
+    }
 }
 
 void floe_bz2_encoder_destroy(floe_bz2_encoder *encoder) {
     if (encoder == NULL) {
         return;
     }
-    if (encoder->active) {
-        BZ2_bzCompressEnd(&encoder->stream);
-        encoder->active = 0;
-    }
+    floe_bz2_encoder_release(encoder);
     free(encoder);
+}
+
+/* Test/diagnostic accessor; the handle must still be alive. */
+int floe_bz2_encoder_state_active(const floe_bz2_encoder *encoder) {
+    if (encoder == NULL) {
+        return 0;
+    }
+    return encoder->initialized ? 1 : 0;
 }
 
 int floe_bz2_encoder_process(floe_bz2_encoder *encoder,
@@ -155,7 +194,7 @@ int floe_bz2_encoder_process(floe_bz2_encoder *encoder,
     if (produced != NULL) {
         *produced = 0;
     }
-    if (encoder == NULL || !encoder->active) {
+    if (encoder == NULL || !encoder->initialized || encoder->finished) {
         return FLOE_BZ2_PARAM;
     }
     if (src_len > 0xFFFFFFFFu || dst_capacity == 0 || dst_capacity > 0xFFFFFFFFu) {
@@ -204,7 +243,9 @@ int floe_bz2_encoder_process(floe_bz2_encoder *encoder,
         case BZ_FINISH_OK:
             return FLOE_BZ2_OK;
         case BZ_STREAM_END:
-            encoder->active = 0;
+            /* Terminal success: release the block state now. */
+            encoder->finished = 1;
+            floe_bz2_encoder_release(encoder);
             return FLOE_BZ2_FINISHED;
         case BZ_MEM_ERROR:
             return FLOE_BZ2_MEMORY;

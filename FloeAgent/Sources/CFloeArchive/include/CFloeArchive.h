@@ -63,6 +63,15 @@ floe_bz2_decoder *floe_bz2_decoder_create(void);
 void floe_bz2_decoder_destroy(floe_bz2_decoder *decoder);
 
 /*
+ * 1 while the decoder still owns libbz2's (multi-MiB) block state, 0 once it
+ * has been released. The state is released at the `FLOE_BZ2_STREAM_END`
+ * transition, and by `destroy` on every other path; this accessor exists so a
+ * caller/test can assert that contract directly. Never dereferences a freed
+ * handle.
+ */
+int floe_bz2_decoder_state_active(const floe_bz2_decoder *decoder);
+
+/*
  * Feeds up to `src_len` input bytes and writes at most `dst_capacity` output
  * bytes. `*consumed` / `*produced` report the exact byte counts (both are set
  * even on error). Returns one of the FLOE_BZ2_* status codes:
@@ -89,6 +98,9 @@ typedef struct floe_bz2_encoder floe_bz2_encoder;
 /* `block_size_100k` must be 1...9. Returns NULL on invalid size or memory. */
 floe_bz2_encoder *floe_bz2_encoder_create(int block_size_100k);
 void floe_bz2_encoder_destroy(floe_bz2_encoder *encoder);
+
+/* Same contract as `floe_bz2_decoder_state_active`, for the encoder. */
+int floe_bz2_encoder_state_active(const floe_bz2_encoder *encoder);
 
 /*
  * Compresses input into the caller's buffer. With `finish == 0` the encoder is
