@@ -50,6 +50,124 @@ public struct LinuxGuestRuntimeIdentity: Sendable, Hashable {
     }
 }
 
+/// Whether a metrics sample may be attributed to the live runtime state.
+/// This is the production compatibility gate: a sample that cannot be proven
+/// to belong to the live boot must never contribute numbers or identity to a
+/// newer VM.
+public enum LinuxGuestRuntimeIdentityMatch: Sendable, Equatable {
+    /// Every identity field that is known on both sides agrees, and at least
+    /// one field is known on both sides: the sample belongs to the live boot.
+    case sameBoot
+    /// A field known on both sides contradicts: the sample is from another
+    /// boot (a restart happened since it was taken).
+    case differentBoot
+    /// Not enough known identity to attribute the sample — including a live
+    /// identity that is fully unknown. Consumers must treat this
+    /// conservatively: no measured data, no fabricated zero.
+    case unverifiable
+}
+
+public extension LinuxGuestRuntimeIdentity {
+    /// Compares a sample's identity with the live runtime state's identity.
+    /// Unknown fields are never treated as equal evidence: two unknown
+    /// identities prove nothing about the boot, so they answer
+    /// `.unverifiable` rather than pretending a stale sample is current.
+    static func match(
+        sample: LinuxGuestRuntimeIdentity,
+        live: LinuxGuestRuntimeIdentity
+    ) -> LinuxGuestRuntimeIdentityMatch {
+        var agreedKnownField = false
+        if let sampleRuntime = sample.runtimeID, let liveRuntime = live.runtimeID {
+            guard sampleRuntime == liveRuntime else { return .differentBoot }
+            agreedKnownField = true
+        }
+        if let sampleGeneration = sample.launchGeneration, let liveGeneration = live.launchGeneration {
+            guard sampleGeneration == liveGeneration else { return .differentBoot }
+            agreedKnownField = true
+        }
+        return agreedKnownField ? .sameBoot : .unverifiable
+    }
+}
+
+/// What one metrics sample may contribute to a surface projection of the live
+/// boot. One production decision point shared by the metrics application path
+/// (`applyLinuxMetrics`) and the snapshot assembly, so a delayed sample from a
+/// previous boot can never attach its numbers (or its identity) to a newer VM:
+///
+///  * identity is always the live runtime state's own identity, never the
+///    sample's — the sample can only contribute when it is proven to be the
+///    same boot's;
+///  * measured values are present only for a fresh sample that matched the
+///    live identity; otherwise every measured field stays nil (rendered as
+///    "暂无"), never zero.
+public struct LinuxGuestRuntimeMetricsProjection: Sendable, Equatable {
+    public var identity: LinuxGuestRuntimeIdentity
+    public var match: LinuxGuestRuntimeIdentityMatch
+    /// True only when a fresh sample belongs to the live boot.
+    public var sampleIsFresh: Bool
+    public var sampledAt: Date?
+    public var kernelVersion: String?
+    public var coreCount: Int?
+    public var guestCPUFraction: Double?
+    public var hostThreadCPUFraction: Double?
+    public var guestMemoryUsedMB: Int?
+    public var guestMemoryTotalMB: Int?
+
+    public init(
+        identity: LinuxGuestRuntimeIdentity,
+        match: LinuxGuestRuntimeIdentityMatch,
+        sampleIsFresh: Bool = false,
+        sampledAt: Date? = nil,
+        kernelVersion: String? = nil,
+        coreCount: Int? = nil,
+        guestCPUFraction: Double? = nil,
+        hostThreadCPUFraction: Double? = nil,
+        guestMemoryUsedMB: Int? = nil,
+        guestMemoryTotalMB: Int? = nil
+    ) {
+        self.identity = identity
+        self.match = match
+        self.sampleIsFresh = sampleIsFresh
+        self.sampledAt = sampledAt
+        self.kernelVersion = kernelVersion
+        self.coreCount = coreCount
+        self.guestCPUFraction = guestCPUFraction
+        self.hostThreadCPUFraction = hostThreadCPUFraction
+        self.guestMemoryUsedMB = guestMemoryUsedMB
+        self.guestMemoryTotalMB = guestMemoryTotalMB
+    }
+
+    /// Resolves the projection for one environment. `liveIdentity` is read
+    /// from the runtime owner's session table at projection time; `sample` is
+    /// the latest in-flight/published sample, which may be stale.
+    public static func resolve(
+        sample: LinuxGuestRuntimeSample?,
+        liveIdentity: LinuxGuestRuntimeIdentity,
+        now: Date = Date(),
+        validity: TimeInterval = LinuxGuestMetricsSampler.sampleValidity
+    ) -> LinuxGuestRuntimeMetricsProjection {
+        let match = sample.map {
+            LinuxGuestRuntimeIdentity.match(sample: $0.runtimeIdentity, live: liveIdentity)
+        } ?? .unverifiable
+        guard match == .sameBoot, let sample,
+              sample.isFresh(now: now, validity: validity) else {
+            return LinuxGuestRuntimeMetricsProjection(identity: liveIdentity, match: match)
+        }
+        return LinuxGuestRuntimeMetricsProjection(
+            identity: liveIdentity,
+            match: .sameBoot,
+            sampleIsFresh: true,
+            sampledAt: sample.sampledAt,
+            kernelVersion: sample.kernelVersion,
+            coreCount: sample.guestCoreCount,
+            guestCPUFraction: sample.guestCPUFraction,
+            hostThreadCPUFraction: sample.emulatorCPUFraction,
+            guestMemoryUsedMB: sample.guestMemoryUsedMB,
+            guestMemoryTotalMB: sample.guestMemoryTotalMB
+        )
+    }
+}
+
 /// One unified runtime sample for a Linux environment: guest truth, host
 /// proxy, runtime identity and freshness in one value. Text rendering is the
 /// App layer's job; this type stays locale-neutral.

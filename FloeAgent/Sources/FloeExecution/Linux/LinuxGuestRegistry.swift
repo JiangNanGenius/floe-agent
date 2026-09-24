@@ -2573,6 +2573,24 @@ public actor TinyEMULinuxGuestRegistry {
 
 extension TinyEMULinuxGuestRegistry: LinuxGuestLocalServiceHosting {}
 
+extension TinyEMULinuxGuestRegistry {
+    /// The service supervisor's acknowledged pending-terminal store lives in
+    /// the app's own support directory, following the same convention as the
+    /// other FloeExecution stores. The store is a bounded hand-off: events
+    /// stay there only until the app's durable notification pipeline accepts
+    /// and acknowledges them. `nonisolated`: the path is a pure function of
+    /// the process's support directory, no actor state involved.
+    public nonisolated var localServiceTerminalStoreDirectory: URL? {
+        let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        return base?.appendingPathComponent("FloeAgent/LinuxServiceTerminal", isDirectory: true)
+    }
+}
+
 extension TinyEMULinuxCommandService {
     /// Installs (or clears, with nil) the app's builder for the optional
     /// guest → host control bridge. Forwarded to the one registry every copy
@@ -2646,6 +2664,9 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
         // instead of trusting paths resolved before the layer was remounted.
         await localServices.stopLocalServices(environmentID: environmentID)
         await registry.stop(environmentID: environmentID)
+        // The stop owns the environment: a service start that still crossed it
+        // is released as an explicit host stop, never kept as a live handle.
+        await localServices.environmentDidStop(environmentID: environmentID)
         await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
         await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
     }
@@ -2664,6 +2685,7 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     public func deleteGuest(environmentID: String) async {
         await localServices.stopLocalServices(environmentID: environmentID)
         await registry.stop(environmentID: environmentID)
+        await localServices.environmentDidStop(environmentID: environmentID)
         await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
         await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
     }
@@ -2731,10 +2753,16 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     public func stopGuests(taskID: String) async {
-        for environmentID in await registry.environments(taskID: taskID) {
+        let environmentIDs = await registry.environments(taskID: taskID)
+        for environmentID in environmentIDs {
             await localServices.stopLocalServices(environmentID: environmentID)
         }
         await registry.stop(taskID: taskID)
+        // Nothing above can restart these guests; release any start that still
+        // crossed the stop as an explicit host stop instead of a dead handle.
+        for environmentID in environmentIDs {
+            await localServices.environmentDidStop(environmentID: environmentID)
+        }
     }
 
     public func forwardService(environmentID: String, forward: LinuxGuestServiceForward) async throws {
@@ -2829,11 +2857,18 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     /// Bounded lifecycle stream of the owned local-service supervisor: the
-    /// app's durable terminal pipeline consumes it to surface an observed
-    /// service end exactly once (explicit stops are marked as such and must
-    /// not be alerted). See `LinuxGuestLocalServiceLifecycleReporting`.
+    /// app's durable terminal pipeline consumes it and acknowledges every
+    /// accepted observed end, so a slow or restarted consumer can never lose
+    /// one (explicit stops are transient notices and must not be alerted).
+    /// See `LinuxGuestLocalServiceLifecycleReporting`.
     public func localServiceLifecycleEvents() async -> AsyncStream<LinuxGuestLocalServiceLifecycleEvent> {
         await localServices.localServiceLifecycleEvents()
+    }
+
+    public func acknowledgeLocalServiceLifecycleEvent(
+        _ event: LinuxGuestLocalServiceLifecycleEvent
+    ) async {
+        await localServices.acknowledgeLocalServiceLifecycleEvent(event)
     }
 
     /// Interactive sessions currently open inside one environment's guest;

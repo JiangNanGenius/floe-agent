@@ -111,6 +111,7 @@ private actor ServiceEventCollector {
     var count: Int { events.count }
     func append(_ event: LinuxGuestLocalServiceLifecycleEvent) { events.append(event) }
     func reasons() -> [LinuxGuestLocalServiceStopReason] { events.map(\.reason) }
+    func tokens() -> [String] { events.map(\.handle.token) }
     func first() -> LinuxGuestLocalServiceLifecycleEvent? { events.first }
 }
 
@@ -124,11 +125,14 @@ private final class ScriptedServiceHost: LinuxGuestLocalServiceHosting, @uncheck
     private var supportsGuest = true
     private var probeError: Error?
     private var parkNextProbe = false
+    private var parkNextForward = false
     private var killCount = 0
     private var addedForwards: [LinuxGuestServiceForward] = []
     private var removedForwards: [LinuxGuestServiceForward] = []
+    private var storeDirectory: URL?
     let descriptor: LinuxGuestEnvironmentDescriptor
     let probeGate = ServiceProbeGate()
+    let forwardGate = ServiceProbeGate()
 
     init(descriptor: LinuxGuestEnvironmentDescriptor) {
         self.descriptor = descriptor
@@ -136,11 +140,14 @@ private final class ScriptedServiceHost: LinuxGuestLocalServiceHosting, @uncheck
 
     var forwardCount: Int { lock.withLock { addedForwards.count - removedForwards.count } }
     var killed: Int { lock.withLock { killCount } }
+    var localServiceTerminalStoreDirectory: URL? { lock.withLock { storeDirectory } }
 
     func markDead() { lock.withLock { alive = false } }
     func setSupportsGuest(_ value: Bool) { lock.withLock { supportsGuest = value } }
     func failNextProbe(_ error: Error) { lock.withLock { probeError = error } }
     func parkNextProbeCall() { lock.withLock { parkNextProbe = true } }
+    func parkNextForwardCall() { lock.withLock { parkNextForward = true } }
+    func useTerminalStoreDirectory(_ url: URL?) { lock.withLock { storeDirectory = url } }
 
     func supports(environmentID: String) async -> Bool { lock.withLock { supportsGuest } }
     func ownsLinuxEnvironment(environmentID: String) async -> Bool { true }
@@ -196,6 +203,12 @@ private final class ScriptedServiceHost: LinuxGuestLocalServiceHosting, @uncheck
     }
 
     func guestEnsureForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
+        let shouldPark = lock.withLock {
+            let value = parkNextForward
+            parkNextForward = false
+            return value
+        }
+        if shouldPark { await forwardGate.arriveAndWait() }
         lock.withLock { addedForwards.append(forward) }
     }
 
@@ -412,6 +425,30 @@ final class LinuxGuestLocalServiceTests: XCTestCase {
         let forwards = host.forwardCount
         XCTAssertEqual(forwards, 1, "a started service publishes exactly one forward")
         return (supervisor, host, handle)
+    }
+
+    /// One supervisor with `count` started services, so the delivery paths can
+    /// be driven past the old 32-event buffer bound deterministically.
+    private func makeStartedServices(
+        environmentID: String,
+        count: Int
+    ) async throws -> (
+        supervisor: LinuxGuestLocalServiceSupervisor,
+        host: ScriptedServiceHost,
+        handles: [LinuxGuestLocalServiceHandle]
+    ) {
+        let root = try serviceFixtureRoot()
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: environmentID, root: root))
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        var handles: [LinuxGuestLocalServiceHandle] = []
+        for index in 0..<count {
+            handles.append(try await supervisor.startLocalService(
+                environmentID: environmentID,
+                request: serviceRequest(root: root, port: 8200 + index),
+                cancellation: nil
+            ))
+        }
+        return (supervisor, host, handles)
     }
 
     private func makeIdentityRegistry(
@@ -735,5 +772,522 @@ final class LinuxGuestLocalServiceTests: XCTestCase {
         XCTAssertEqual(owned, 0, "an owned environment with no terminal session is a real zero")
         let unknown = await registry.activeSessionCount(environmentID: "env-unknown")
         XCTAssertNil(unknown, "an unowned environment is unknown, never a fabricated zero")
+    }
+
+    // MARK: runtime identity compatibility (restart-before-sample / delayed sample)
+
+    /// The production compatibility gate. Unknown fields never count as
+    /// agreement, and a known contradiction is a different boot.
+    func testIdentityMatchIsConservativeAboutUnknownFields() {
+        typealias Identity = LinuxGuestRuntimeIdentity
+        func match(_ sample: Identity, _ live: Identity) -> LinuxGuestRuntimeIdentityMatch {
+            LinuxGuestRuntimeIdentity.match(sample: sample, live: live)
+        }
+        // Same boot: a known field agrees on both sides.
+        XCTAssertEqual(match(Identity(runtimeID: "r1", launchGeneration: 1),
+                             Identity(runtimeID: "r1", launchGeneration: 1)), .sameBoot)
+        XCTAssertEqual(match(Identity(launchGeneration: 7), Identity(launchGeneration: 7)), .sameBoot)
+        XCTAssertEqual(match(Identity(runtimeID: "r1", launchGeneration: 1),
+                             Identity(runtimeID: "r1")), .sameBoot)
+        // A known contradiction is always a different boot.
+        XCTAssertEqual(match(Identity(runtimeID: "r1", launchGeneration: 1),
+                             Identity(runtimeID: "r2", launchGeneration: 1)), .differentBoot)
+        XCTAssertEqual(match(Identity(runtimeID: "r1", launchGeneration: 1),
+                             Identity(runtimeID: "r1", launchGeneration: 2)), .differentBoot)
+        // No field known on both sides proves nothing: conservative unknown.
+        XCTAssertEqual(match(Identity(), Identity()), .unverifiable)
+        XCTAssertEqual(match(Identity(runtimeID: "r1"), Identity()), .unverifiable)
+        XCTAssertEqual(match(Identity(), Identity(launchGeneration: 3)), .unverifiable)
+        XCTAssertEqual(match(Identity(runtimeID: "r1", launchGeneration: 1),
+                             Identity(launchGeneration: 1)), .sameBoot)
+    }
+
+    /// Delayed old sample after the new boot: the production projection must
+    /// keep the new boot's identity and contribute no measured value from the
+    /// previous boot — not even a zero.
+    func testDelayedSampleFromAPreviousBootNeverProjectsItsNumbersOrIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-projection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let (registry, _) = try makeIdentityRegistry(environmentIDs: ["env-projection"], root: root)
+        _ = try await registry.start(environmentID: "env-projection", taskID: nil)
+        let firstIdentity = await registry.runtimeIdentity(environmentID: "env-projection")
+        XCTAssertNotNil(firstIdentity.runtimeID)
+
+        let runner = ScriptedProcRunner(coreCount: 2, busy: 100, idle: 800)
+        let sampler = LinuxGuestMetricsSampler(
+            environmentID: "env-projection",
+            commandRunner: runner,
+            runtimeIdentityProvider: { id in
+                await registry.runtimeIdentity(environmentID: id)
+            }
+        )
+        let staleSample = await sampler.sampleRuntime()
+        XCTAssertEqual(staleSample.runtimeIdentity, firstIdentity)
+        XCTAssertEqual(staleSample.guestMemoryUsedMB, 1000, "a real read produced measured memory")
+        XCTAssertEqual(staleSample.guestCoreCount, 2)
+
+        // Restart: a new runtimeID + launch generation.
+        await registry.stop(environmentID: "env-projection")
+        _ = try await registry.start(environmentID: "env-projection", taskID: nil)
+        let liveIdentity = await registry.runtimeIdentity(environmentID: "env-projection")
+        XCTAssertNotEqual(liveIdentity, firstIdentity)
+
+        // The delayed sample is rejected by the production gate...
+        XCTAssertEqual(
+            LinuxGuestRuntimeIdentity.match(sample: staleSample.runtimeIdentity, live: liveIdentity),
+            .differentBoot
+        )
+        // ...and the projection never attaches its numbers or its identity to
+        // the new VM.
+        let projection = LinuxGuestRuntimeMetricsProjection.resolve(
+            sample: staleSample,
+            liveIdentity: liveIdentity,
+            now: Date(),
+            validity: 30
+        )
+        XCTAssertEqual(projection.match, .differentBoot)
+        XCTAssertFalse(projection.sampleIsFresh)
+        XCTAssertEqual(projection.identity, liveIdentity, "the live boot owns the projected identity")
+        XCTAssertNil(projection.guestMemoryUsedMB)
+        XCTAssertNil(projection.guestMemoryTotalMB)
+        XCTAssertNil(projection.guestCPUFraction)
+        XCTAssertNil(projection.hostThreadCPUFraction)
+        XCTAssertNil(projection.coreCount)
+        XCTAssertNil(projection.kernelVersion)
+        XCTAssertNil(projection.sampledAt)
+
+        // A sample taken after the restart belongs to the new boot and does
+        // project (the positive control that the gate is not just always off).
+        runner.advance(busy: 400, idle: 1200)
+        let freshSample = await sampler.sampleRuntime()
+        XCTAssertEqual(freshSample.runtimeIdentity, liveIdentity)
+        let freshProjection = LinuxGuestRuntimeMetricsProjection.resolve(
+            sample: freshSample,
+            liveIdentity: liveIdentity,
+            now: Date(),
+            validity: 30
+        )
+        XCTAssertEqual(freshProjection.match, .sameBoot)
+        XCTAssertTrue(freshProjection.sampleIsFresh)
+        XCTAssertEqual(freshProjection.identity, liveIdentity)
+        XCTAssertEqual(freshProjection.guestMemoryUsedMB, 1000)
+        XCTAssertEqual(freshProjection.coreCount, 2)
+    }
+
+    /// Restart before the sampler's first read: the sample must carry the new
+    /// boot's identity (never the stopped boot's), so the projection has
+    /// nothing stale to reject.
+    func testRestartBeforeSampleCarriesOnlyTheLiveBootIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-restart-sample-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let (registry, _) = try makeIdentityRegistry(environmentIDs: ["env-restart"], root: root)
+        _ = try await registry.start(environmentID: "env-restart", taskID: nil)
+        let stoppedIdentity = await registry.runtimeIdentity(environmentID: "env-restart")
+        await registry.stop(environmentID: "env-restart")
+        let identityWhileStopped = await registry.runtimeIdentity(environmentID: "env-restart")
+        XCTAssertEqual(identityWhileStopped, LinuxGuestRuntimeIdentity())
+        _ = try await registry.start(environmentID: "env-restart", taskID: nil)
+        let liveIdentity = await registry.runtimeIdentity(environmentID: "env-restart")
+        XCTAssertNotEqual(liveIdentity, stoppedIdentity)
+
+        let runner = ScriptedProcRunner(coreCount: 2, busy: 10, idle: 20)
+        let sampler = LinuxGuestMetricsSampler(
+            environmentID: "env-restart",
+            commandRunner: runner,
+            runtimeIdentityProvider: { id in
+                await registry.runtimeIdentity(environmentID: id)
+            }
+        )
+        let sample = await sampler.sampleRuntime()
+        XCTAssertEqual(sample.runtimeIdentity, liveIdentity, "the first sample belongs to the live boot")
+        XCTAssertEqual(
+            LinuxGuestRuntimeIdentity.match(sample: sample.runtimeIdentity, live: liveIdentity),
+            .sameBoot
+        )
+        // An in-flight read that lost the race with the restart is rejected.
+        XCTAssertEqual(
+            LinuxGuestRuntimeIdentity.match(sample: stoppedIdentity, live: liveIdentity),
+            .differentBoot
+        )
+    }
+
+    /// Unknown live identity (no session, or a runtime that cannot prove the
+    /// boot): the projection stays conservative — no measured data, no fake 0.
+    func testUnknownLiveIdentityProjectsNoMeasuredDataAndNoFakeZero() {
+        let measuredSample = LinuxGuestRuntimeSample(
+            environmentID: "env-unknown",
+            runtimeIdentity: LinuxGuestRuntimeIdentity(),
+            guestReadSucceeded: true,
+            guestCPUFraction: 0.5,
+            guestCoreCount: 4,
+            emulatorCPUFraction: 0.25,
+            guestMemoryUsedMB: 512,
+            guestMemoryTotalMB: 2048,
+            kernelVersion: "Linux 6.1.0-test"
+        )
+        let projection = LinuxGuestRuntimeMetricsProjection.resolve(
+            sample: measuredSample,
+            liveIdentity: LinuxGuestRuntimeIdentity(),
+            now: Date(),
+            validity: 30
+        )
+        XCTAssertEqual(projection.match, .unverifiable)
+        XCTAssertFalse(projection.sampleIsFresh)
+        XCTAssertNil(projection.guestMemoryUsedMB)
+        XCTAssertNil(projection.guestMemoryTotalMB)
+        XCTAssertNil(projection.guestCPUFraction)
+        XCTAssertNil(projection.hostThreadCPUFraction)
+        XCTAssertNil(projection.coreCount)
+        XCTAssertNil(projection.kernelVersion)
+        XCTAssertNil(projection.identity.runtimeID)
+        XCTAssertNil(projection.identity.launchGeneration)
+
+        // The same sample under the boot it was measured on is a real
+        // measurement (the gate is about identity, not about hiding data).
+        let known = LinuxGuestRuntimeIdentity(runtimeID: "r1", launchGeneration: 3)
+        let matched = LinuxGuestRuntimeMetricsProjection.resolve(
+            sample: LinuxGuestRuntimeSample(
+                environmentID: "env-unknown",
+                runtimeIdentity: known,
+                guestReadSucceeded: true,
+                guestMemoryUsedMB: 512,
+                guestMemoryTotalMB: 2048
+            ),
+            liveIdentity: known,
+            now: Date(),
+            validity: 30
+        )
+        XCTAssertTrue(matched.sampleIsFresh)
+        XCTAssertEqual(matched.guestMemoryUsedMB, 512)
+        XCTAssertEqual(matched.guestMemoryTotalMB, 2048)
+    }
+
+    // MARK: acknowledged bounded lifecycle delivery
+
+    /// A slow consumer that holds the first event while more than the old
+    /// 32-event buffer worth of observed ends arrive must still receive every
+    /// one of them, and nothing may be silently dropped.
+    func testSlowConsumerReceivesEveryUnexpectedEndBeyondTheOldBufferBound() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let count = 40
+        let (supervisor, host, handles) = try await makeStartedServices(
+            environmentID: environmentID, count: count
+        )
+        let collector = ServiceEventCollector()
+        let gate = ServiceProbeGate()
+        let stream = await supervisor.localServiceLifecycleEvents()
+        let consumer = Task {
+            for await event in stream {
+                await gate.arriveAndWait()
+                await collector.append(event)
+                await supervisor.acknowledgeLocalServiceLifecycleEvent(event)
+            }
+        }
+        defer { consumer.cancel() }
+
+        host.markDead()
+        let firstProbe = Task { await supervisor.localServiceSnapshot(handles[0]) }
+        await gate.awaitArrival()
+        // The consumer is parked on the first event: every further end is
+        // stored, acknowledged one at a time, and never silently discarded.
+        for handle in handles.dropFirst() {
+            _ = await supervisor.localServiceSnapshot(handle)
+        }
+        _ = await firstProbe.value
+        let pendingBefore = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(
+            pendingBefore, count,
+            "every end stays acknowledged-pending until the slow consumer accepts it"
+        )
+        XCTAssertGreaterThan(
+            pendingBefore, 32,
+            "the burst exceeds the old 32-event broadcast bound, which used to drop silently"
+        )
+        let handedOutBefore = await collector.count
+        XCTAssertEqual(
+            handedOutBefore, 0,
+            "exactly one event is in flight to the parked consumer; nothing else was handed out"
+        )
+        let emitted = await supervisor.emittedLifecycleEventCount
+        XCTAssertEqual(emitted, count)
+
+        gate.open()
+        let delivered = await waitUntil(timeout: .seconds(20)) { await collector.count == count }
+        XCTAssertTrue(delivered, "all \(count) observed ends must be delivered, not truncated at the old bound")
+        let tokens = Set(await collector.tokens())
+        XCTAssertEqual(tokens, Set(handles.map(\.token)))
+        let reasons = await collector.reasons()
+        XCTAssertTrue(reasons.allSatisfy { $0 == .processExited })
+        let pendingAfter = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pendingAfter, 0, "acknowledged events leave the store")
+        let dropped = await supervisor.droppedTerminalEventCount
+        XCTAssertEqual(dropped, 0, "nothing may be dropped while the consumer is only slow")
+    }
+
+    /// A burst of explicit host stops must never displace a real observed end
+    /// nor consume its delivery slot: the expected ends stay transient
+    /// notices, the unexpected ends are all delivered.
+    func testExplicitStopBurstNeverDisplacesOrLosesUnexpectedEnds() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let count = 40
+        let (supervisor, host, handles) = try await makeStartedServices(
+            environmentID: environmentID, count: count
+        )
+        let dead = Array(handles.prefix(count / 2))
+        let stopped = Array(handles.suffix(count / 2))
+        let collector = ServiceEventCollector()
+        let gate = ServiceProbeGate()
+        let stream = await supervisor.localServiceLifecycleEvents()
+        let consumer = Task {
+            for await event in stream {
+                await gate.arriveAndWait()
+                await collector.append(event)
+                await supervisor.acknowledgeLocalServiceLifecycleEvent(event)
+            }
+        }
+        defer { consumer.cancel() }
+
+        host.markDead()
+        let firstProbe = Task { await supervisor.localServiceSnapshot(dead[0]) }
+        await gate.awaitArrival()
+        for handle in dead.dropFirst() {
+            _ = await supervisor.localServiceSnapshot(handle)
+        }
+        _ = await firstProbe.value
+        // Explicit stops land while the real observed ends are unacknowledged.
+        for handle in stopped {
+            await supervisor.stopLocalService(handle)
+        }
+        let emitted = await supervisor.emittedLifecycleEventCount
+        XCTAssertEqual(emitted, count, "all transitions are observed exactly once")
+        let pendingBeforeDrain = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(
+            pendingBeforeDrain, dead.count,
+            "the expected stops add no pending entry and displace none"
+        )
+
+        gate.open()
+        let delivered = await waitUntil(timeout: .seconds(20)) { await collector.count == dead.count }
+        XCTAssertTrue(delivered, "every unexpected end is delivered once the consumer drains")
+        let reasons = await collector.reasons()
+        XCTAssertTrue(
+            reasons.allSatisfy { $0 == .processExited },
+            "an explicit stop is never an error notification and never displaces an observed end"
+        )
+        let tokens = Set(await collector.tokens())
+        XCTAssertEqual(tokens, Set(dead.map(\.token)))
+        let pendingAfter = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pendingAfter, 0)
+        let dropped = await supervisor.droppedTerminalEventCount
+        XCTAssertEqual(dropped, 0)
+        let last = await supervisor.lastLifecycleEvent?.reason
+        XCTAssertEqual(last, .hostStopRequested, "the expected stops are still recorded as diagnostics")
+    }
+
+    /// An observer that stops consuming (cancel/restart) must not lose an
+    /// unacknowledged end: it is replayed to the next observer, and repeated
+    /// acknowledgement stays idempotent.
+    func testPendingUnexpectedEndsReplayAfterObserverRestartAndDeduplicate() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let (supervisor, host, handles) = try await makeStartedServices(
+            environmentID: environmentID, count: 3
+        )
+        // Ends observed with no observer at all: startup/observer-absent case.
+        host.markDead()
+        for handle in handles {
+            _ = await supervisor.localServiceSnapshot(handle)
+        }
+        let pendingBeforeObserver = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pendingBeforeObserver, 3)
+
+        // First observer receives all three, acknowledges only the first two.
+        let firstCollector = ServiceEventCollector()
+        let firstStream = await supervisor.localServiceLifecycleEvents()
+        let firstConsumer = Task {
+            for await event in firstStream {
+                await firstCollector.append(event)
+                if await firstCollector.count <= 2 {
+                    await supervisor.acknowledgeLocalServiceLifecycleEvent(event)
+                }
+            }
+        }
+        let firstDelivered = await waitUntil { await firstCollector.count == 3 }
+        XCTAssertTrue(firstDelivered)
+        firstConsumer.cancel()
+        let released = await waitUntil { await supervisor.lifecycleObserverCount == 0 }
+        XCTAssertTrue(released)
+        let pendingAfterFirst = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pendingAfterFirst, 1, "the unacknowledged end stays pending")
+
+        // Second observer gets exactly the unacknowledged one (replay, no
+        // duplicate of the accepted events).
+        let secondCollector = ServiceEventCollector()
+        let secondStream = await supervisor.localServiceLifecycleEvents()
+        let secondConsumer = Task {
+            for await event in secondStream {
+                await secondCollector.append(event)
+                await supervisor.acknowledgeLocalServiceLifecycleEvent(event)
+            }
+        }
+        let secondDelivered = await waitUntil { await secondCollector.count == 1 }
+        XCTAssertTrue(secondDelivered)
+        let replayed = await secondCollector.first()
+        XCTAssertEqual(replayed?.handle.token, handles[2].token, "the replayed event keeps its real identity")
+        XCTAssertEqual(replayed?.handle.environmentID, environmentID)
+        XCTAssertEqual(replayed?.reason, .processExited)
+        let pendingAfterSecond = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pendingAfterSecond, 0)
+
+        // Repeated acknowledgement is a no-op, and a later observer sees
+        // nothing.
+        if let replayed {
+            await supervisor.acknowledgeLocalServiceLifecycleEvent(replayed)
+        }
+        secondConsumer.cancel()
+        _ = await waitUntil { await supervisor.lifecycleObserverCount == 0 }
+        let thirdCollector = ServiceEventCollector()
+        let thirdStream = await supervisor.localServiceLifecycleEvents()
+        let thirdConsumer = Task { for await event in thirdStream { await thirdCollector.append(event) } }
+        try? await Task.sleep(for: .milliseconds(50))
+        let thirdCount = await thirdCollector.count
+        XCTAssertEqual(thirdCount, 0)
+        thirdConsumer.cancel()
+        let pendingFinal = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pendingFinal, 0)
+    }
+
+    /// A persisted store replays an unacknowledged end to a fresh supervisor
+    /// (app relaunch), keeping the observed handle identity and dropping the
+    /// record only after acknowledgement.
+    func testPendingUnexpectedEndsSurviveSupervisorRelaunchFromThePersistentStore() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let storeRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-terminal-store-\(UUID().uuidString)", isDirectory: true)
+        let root = try serviceFixtureRoot()
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: environmentID, root: root))
+        host.useTerminalStoreDirectory(storeRoot)
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        let handle = try await supervisor.startLocalService(
+            environmentID: environmentID,
+            request: serviceRequest(root: root, port: 8400),
+            cancellation: nil
+        )
+        host.markDead()
+        _ = await supervisor.localServiceSnapshot(handle)
+        let pendingBeforeRelaunch = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pendingBeforeRelaunch, 1)
+
+        // Relaunch: a new supervisor with the same store directory replays the
+        // event instead of losing it.
+        let relaunchedHost = ScriptedServiceHost(
+            descriptor: serviceDescriptor(id: environmentID, root: root)
+        )
+        relaunchedHost.useTerminalStoreDirectory(storeRoot)
+        let relaunched = LinuxGuestLocalServiceSupervisor(host: relaunchedHost)
+        let pendingAfterRelaunch = await relaunched.pendingTerminalEventCount
+        XCTAssertEqual(pendingAfterRelaunch, 1, "an unacknowledged end survives the relaunch")
+
+        let collector = ServiceEventCollector()
+        let stream = await relaunched.localServiceLifecycleEvents()
+        let consumer = Task {
+            for await event in stream {
+                await collector.append(event)
+                await relaunched.acknowledgeLocalServiceLifecycleEvent(event)
+            }
+        }
+        let delivered = await waitUntil { await collector.count == 1 }
+        XCTAssertTrue(delivered)
+        let replayed = await collector.first()
+        XCTAssertEqual(replayed?.handle.token, handle.token)
+        XCTAssertEqual(replayed?.handle.environmentID, environmentID)
+        XCTAssertEqual(replayed?.handle.port, 8400)
+        XCTAssertEqual(replayed?.handle.runtime, .node)
+        XCTAssertEqual(replayed?.reason, .processExited)
+        let pendingFinal = await relaunched.pendingTerminalEventCount
+        XCTAssertEqual(pendingFinal, 0)
+        consumer.cancel()
+    }
+
+    // MARK: start crossing an environment stop
+
+    /// The mandatory race: a start parked before publishing must be cancelled
+    /// by an environment stop — no active handle, no fabricated unexpected
+    /// end, no orphaned forward or spawned process.
+    func testStartPausedBeforePublishIsCancelledByEnvironmentStopWithoutOrphans() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let root = try serviceFixtureRoot()
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: environmentID, root: root))
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        let collector = ServiceEventCollector()
+        let stream = await supervisor.localServiceLifecycleEvents()
+        let consumer = Task {
+            for await event in stream {
+                await collector.append(event)
+                await supervisor.acknowledgeLocalServiceLifecycleEvent(event)
+            }
+        }
+        defer { consumer.cancel() }
+
+        host.parkNextForwardCall()
+        let start = Task {
+            try await supervisor.startLocalService(
+                environmentID: environmentID,
+                request: serviceRequest(root: root, port: 8500),
+                cancellation: nil
+            )
+        }
+        await host.forwardGate.awaitArrival()
+
+        let stop = Task { await supervisor.stopLocalServices(environmentID: environmentID) }
+        let claimed = await waitUntil { await supervisor.serviceStartEpoch(environmentID: environmentID) == 1 }
+        XCTAssertTrue(claimed, "the environment stop claims the environment before the start resumes")
+        host.forwardGate.open()
+        await stop.value
+
+        let active = await supervisor.activeServiceCount
+        XCTAssertEqual(active, 0, "no dead handle may be published")
+        do {
+            let handle = try await start.value
+            XCTFail("a start that crossed the stop must fail, got \(handle)")
+        } catch let error as LinuxGuestError {
+            guard case .notRunning = error else {
+                return XCTFail("the start must fail as not running, got \(error)")
+            }
+        }
+        XCTAssertEqual(host.killed, 1, "the spawned process is killed")
+        XCTAssertEqual(host.forwardCount, 0, "the just-added forward is withdrawn")
+        let emitted = await supervisor.emittedLifecycleEventCount
+        XCTAssertEqual(emitted, 0, "an explicit environment stop is not an unexpected service end")
+        let count = await collector.count
+        XCTAssertEqual(count, 0)
+        let pending = await supervisor.pendingTerminalEventCount
+        XCTAssertEqual(pending, 0, "no unexpected terminal may be fabricated for the stopped start")
+        let starts = await supervisor.pendingServiceStartCount(environmentID: environmentID)
+        XCTAssertEqual(starts, 0, "the stop waited for the start to settle")
+    }
+
+    /// A normal start/stop after the race guard still publishes and stops
+    /// exactly one handle (no over-blocking from the epoch guard).
+    func testStartAfterACompletedStopStillPublishesAndStopsCleanly() async throws {
+        let environmentID = "env-service-\(UUID().uuidString)"
+        let root = try serviceFixtureRoot()
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: environmentID, root: root))
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        await supervisor.stopLocalServices(environmentID: environmentID)
+
+        let handle = try await supervisor.startLocalService(
+            environmentID: environmentID,
+            request: serviceRequest(root: root, port: 8600),
+            cancellation: nil
+        )
+        let active = await supervisor.activeServiceCount
+        XCTAssertEqual(active, 1)
+        XCTAssertEqual(handle.port, 8600)
+        await supervisor.stopLocalService(handle)
+        XCTAssertEqual(host.forwardCount, 0)
+        let afterStop = await supervisor.activeServiceCount
+        XCTAssertEqual(afterStop, 0)
     }
 }

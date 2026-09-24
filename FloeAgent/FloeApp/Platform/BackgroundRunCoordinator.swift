@@ -1776,13 +1776,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     // MARK: - Linux guest service lifecycle observation
 
-    /// Starts the single app-lifetime observation of the supervisor's bounded
-    /// service lifecycle stream. Called once from `AppEnvironment.bootstrap`
-    /// after the environment is fully initialized; a second call is a no-op
-    /// and no view ever creates its own monitor. Explicit host stops are
-    /// ignored here — their own stop paths write the terminal record — while
-    /// an observed end without a stop order is surfaced once with the real
-    /// environment/service identity through the durable terminal pipeline.
+    /// Starts the single app-lifetime observation of the supervisor's
+    /// acknowledged service lifecycle stream. Called once from
+    /// `AppEnvironment.bootstrap` after the environment is fully initialized;
+    /// a second call is a no-op and no view ever creates its own monitor.
+    /// Explicit host stops are ignored here (their own stop paths write the
+    /// terminal record), while an observed end without a stop order is
+    /// surfaced once with the real environment/service identity through the
+    /// durable terminal pipeline. Every event is acknowledged only after the
+    /// durable pipeline accepted it, so an unacknowledged observed end stays
+    /// in the supervisor's bounded store and is replayed to a later
+    /// observation instead of being lost.
     func startLinuxGuestServiceLifecycleObservation() {
         guard linuxServiceLifecycleTask == nil else { return }
         guard let service = environment.linuxGuestService else { return }
@@ -1791,6 +1795,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 if Task.isCancelled { return }
                 guard let self else { return }
                 await self.linuxGuestServiceLifecycleObserved(event)
+                await service.acknowledgeLocalServiceLifecycleEvent(event)
             }
         }
         FloeLogger(category: .app).info("linuxServiceLifecycleObservationStarted")
@@ -1816,6 +1821,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// early (never a crash alert). An observed end is recorded and surfaced
     /// exactly once per service start token; the token is minted once per
     /// start, so the bounded dedupe set can never suppress a future service.
+    /// The caller acknowledges the event only after this handler returned —
+    /// i.e. after `linuxEnvironmentServiceDidFail` durably enqueued the
+    /// terminal notification — so an unacknowledged end is replayed rather
+    /// than lost, and a replay is idempotent through this dedupe set and the
+    /// outbox's replace-by-identifier.
     private func linuxGuestServiceLifecycleObserved(
         _ event: LinuxGuestLocalServiceLifecycleEvent
     ) async {
@@ -1905,6 +1915,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // the runtime still owns replaces the cached state; a runtime
             // without a session clears it so a stopped VM never keeps a
             // stale identity that would falsely pair with a new boot.
+            let previousRuntimeState = linuxRuntimeStates[environmentID]
             if let state = statesByEnvironment[environmentID] {
                 linuxRuntimeStates[environmentID] = state
             } else {
@@ -1968,6 +1979,27 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             entry.portForwardCount = linuxPortCenter.enabledRuleCount(environmentID: environmentID)
             linuxPortCounts[environmentID] = entry.portForwardCount
             linuxSurfaceEntries[environmentID] = entry
+            // A restart rotates the runtime identity. Measured values (and the
+            // last published sample) belong to the boot that produced them, so
+            // they are cleared here: neither the surface entry nor the durable
+            // work record may keep attaching the previous boot's numbers to
+            // the new VM. The live snapshot projection enforces the same rule
+            // independently; this keeps the durable projection honest too.
+            if let previousRuntimeState, let state = statesByEnvironment[environmentID],
+               LinuxGuestRuntimeIdentity.match(
+                   sample: previousRuntimeState.identity, live: state.identity
+               ) == .differentBoot {
+                linuxLastRuntimeSamples.removeValue(forKey: environmentID)
+                entry.emulatorCPUFraction = nil
+                entry.guestCPUFraction = nil
+                entry.memoryUsedMB = nil
+                entry.memoryTotalMB = nil
+                linuxSurfaceEntries[environmentID] = entry
+                await publishLinuxSurfaceWork(environmentID: environmentID)
+                FloeLogger(category: .app).info(
+                    "linuxRuntimeGenerationRotated environment=\(environmentID) metricsCleared=true"
+                )
+            }
         }
         publishLinuxSurfacePager()
     }
@@ -2097,48 +2129,47 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         return "Linux 环境"
     }
 
-    /// Single assembly point for the unified snapshot. A fresh sample is
-    /// internally consistent — its identity and its measured values belong to
-    /// the same read — so it wins. Without a fresh sample the live runtime
-    /// state supplies the identity while every measured value renders
-    /// unknown: a stale number is never shown under a newer boot's identity.
+    /// Single assembly point for the unified snapshot. Measured values come
+    /// from the shared production projection: a sample may only contribute
+    /// when its runtime identity proves it belongs to the live boot
+    /// (`LinuxGuestRuntimeMetricsProjection.resolve`). Without such a sample
+    /// the live runtime state supplies the identity while every measured
+    /// value renders unknown — a delayed sample from a previous boot is never
+    /// shown under a newer boot's identity, and an unknown identity never
+    /// yields fabricated numbers (nil renders "暂无", never 0).
     private func makeLinuxEnvironmentRuntimeSnapshot(
         environmentID: String,
         entry: LinuxBackgroundSurfaceEntry,
         runtimeState: LinuxGuestRuntimeState?,
         now: Date
     ) -> LinuxEnvironmentRuntimeSnapshot {
-        let sample = linuxLastRuntimeSamples[environmentID]
-        let fresh = sample?.isFresh(
-            now: now, validity: Self.linuxMetricsSampleValidity
-        ) == true
-        let identity: LinuxGuestRuntimeIdentity
-        if fresh, let sample {
-            identity = sample.runtimeIdentity
-        } else {
-            identity = runtimeState?.identity ?? LinuxGuestRuntimeIdentity()
-        }
+        let projection = LinuxGuestRuntimeMetricsProjection.resolve(
+            sample: linuxLastRuntimeSamples[environmentID],
+            liveIdentity: runtimeState?.identity ?? LinuxGuestRuntimeIdentity(),
+            now: now,
+            validity: Self.linuxMetricsSampleValidity
+        )
         return LinuxEnvironmentRuntimeSnapshot(
             environmentID: environmentID,
             title: entry.title,
             state: entry.state,
             startedAt: entry.startedAt ?? runtimeState?.startedAt,
-            kernelVersion: sample?.kernelVersion,
-            coreCount: sample?.guestCoreCount,
+            kernelVersion: projection.kernelVersion,
+            coreCount: projection.coreCount,
             allocatedVCPUs: runtimeState?.vcpus,
-            memoryUsedMB: fresh ? sample?.guestMemoryUsedMB : nil,
-            memoryTotalMB: fresh ? sample?.guestMemoryTotalMB : nil,
+            memoryUsedMB: projection.guestMemoryUsedMB,
+            memoryTotalMB: projection.guestMemoryTotalMB,
             ramConfiguredMB: runtimeState?.ramMB ?? entry.memoryTotalMB,
             commandCount: entry.activeCommandCount,
             terminalCount: linuxTerminalCounts[environmentID],
             serviceCount: entry.activeServiceCount,
             portCount: entry.portForwardCount,
-            guestCPUFraction: fresh ? sample?.guestCPUFraction : nil,
-            hostThreadCPUFraction: fresh ? sample?.emulatorCPUFraction : nil,
-            sampledAt: sample?.sampledAt,
-            sampleIsFresh: fresh,
-            runtimeID: identity.runtimeID,
-            launchGeneration: identity.launchGeneration
+            guestCPUFraction: projection.guestCPUFraction,
+            hostThreadCPUFraction: projection.hostThreadCPUFraction,
+            sampledAt: projection.sampledAt,
+            sampleIsFresh: projection.sampleIsFresh,
+            runtimeID: projection.identity.runtimeID,
+            launchGeneration: projection.identity.launchGeneration
         )
     }
 
@@ -2262,19 +2293,49 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    /// Applies one sampler result. The live runtime state is re-read first:
+    /// a sample whose runtime identity does not prove it belongs to the live
+    /// boot (a delayed in-flight read that crossed a restart, or one taken
+    /// when the runtime had no verifiable identity) is discarded entirely —
+    /// it must not overwrite the new boot's metrics, identity or durable work
+    /// record, and it is dropped from the last-sample cache so the snapshot
+    /// projection cannot pick it up either.
     private func applyLinuxMetrics(_ sample: LinuxGuestRuntimeSample, workID: UUID) async {
-        let existing = await BackgroundWorkRegistry.shared.snapshot(id: workID)
-        guard var snapshot = existing else { return }
+        guard let existing = await BackgroundWorkRegistry.shared.snapshot(id: workID) else { return }
+        guard let environmentID = existing.deepLink.environmentID else { return }
+        var liveState: LinuxGuestRuntimeState?
+        if let guestService = environment.linuxGuestService {
+            liveState = await guestService.runtimeStates().first {
+                $0.environmentID == environmentID
+            }
+        }
+        let liveIdentity = liveState?.identity ?? LinuxGuestRuntimeIdentity()
+        guard LinuxGuestRuntimeIdentity.match(sample: sample.runtimeIdentity, live: liveIdentity) == .sameBoot else {
+            if let cached = linuxLastRuntimeSamples[environmentID],
+               LinuxGuestRuntimeIdentity.match(sample: cached.runtimeIdentity, live: liveIdentity) != .sameBoot {
+                linuxLastRuntimeSamples.removeValue(forKey: environmentID)
+            }
+            FloeLogger(category: .app).info(
+                "linuxMetricsSampleDiscarded environment=\(environmentID) reason=runtimeIdentityUnverified"
+            )
+            return
+        }
+        if let liveState {
+            // Keep the cached live state (identity + granted shape) in step
+            // with the sample that was just proven to belong to it, so the
+            // snapshot never pairs a rotated sample with an ageing identity.
+            linuxRuntimeStates[environmentID] = liveState
+        }
+        var snapshot = existing
         snapshot.metrics = sample.metrics
         await BackgroundWorkRegistry.shared.register(snapshot)
-        guard let environmentID = existing?.deepLink.environmentID else { return }
         // The unified sample is the single source of truth; a failed guest
         // read keeps the last identity values but its freshness gate expires.
         linuxLastRuntimeSamples[environmentID] = sample
         var entry = linuxSurfaceEntries[environmentID] ?? LinuxBackgroundSurfaceEntry(
             environmentID: environmentID,
-            title: existing?.title ?? "Linux 环境",
-            startedAt: existing?.startedAt
+            title: existing.title,
+            startedAt: existing.startedAt
         )
         if sample.guestReadSucceeded {
             entry.emulatorCPUFraction = sample.emulatorCPUFraction ?? entry.emulatorCPUFraction
