@@ -78,7 +78,7 @@
     {
       "identity": "mlx-swift-lm",
       "license": "MIT",
-      "evidence": ".build/checkouts/mlx-swift-lm/LICENSE",
+      "evidence": "ThirdParty/MLXSwiftLM/LICENSE",
       "sha256": "7b1d86acac816ce8192209d7e01141c129b4d48d474c15cc5fb4af62f497c323",
       "revision": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
       "source": "https://github.com/ml-explore/mlx-swift-lm.git"

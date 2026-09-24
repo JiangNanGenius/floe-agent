@@ -421,6 +421,19 @@
       "kindKey": "settings.licenses.kind.grant",
       "required": false,
       "section": "fonts"
+    },
+    {
+      "id": "mlx-swift-lm",
+      "repositoryPath": "FloeApp/Resources/Licenses/MLXSwiftLM-LICENSE.txt",
+      "bundlePath": "Licenses/MLXSwiftLM-LICENSE.txt",
+      "titleKey": "settings.licenses.document.mlx_swift_lm.title",
+      "titleFallback": "mlx-swift-lm",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": "settings.licenses.note.mlx_vendor"
     }
   ],
   "components": [
@@ -504,15 +517,6 @@
       "section": "swift",
       "noteKey": null,
       "evidence": ".build/checkouts/mlx-swift/LICENSE"
-    },
-    {
-      "name": "mlx-swift-lm",
-      "version": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
-      "license": "MIT",
-      "source": "https://github.com/ml-explore/mlx-swift-lm.git",
-      "section": "swift",
-      "noteKey": null,
-      "evidence": ".build/checkouts/mlx-swift-lm/LICENSE"
     },
     {
       "name": "smbclient",
@@ -720,6 +724,15 @@
       "section": "swift",
       "noteKey": null,
       "evidence": ".build/checkouts/zipfoundation/LICENSE"
+    },
+    {
+      "name": "mlx-swift-lm",
+      "version": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
+      "license": "MIT",
+      "source": "https://github.com/ml-explore/mlx-swift-lm/tree/d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.mlx_vendor",
+      "evidence": "ThirdParty/MLXSwiftLM/LICENSE"
     },
     {
       "name": "TinyEMU / FloeTinyEMU engine",
@@ -2484,11 +2497,16 @@
       "id": "verification",
       "textKey": "settings.licenses.note.verification",
       "fallback": "Every Swift package license was read from the resolved checkout at the exact revision declared in the lock; scripts/license-evidence.json records the file, its sha256 and the pin revision+source, and this generator re-verifies them whenever a checkout is present."
+    },
+    {
+      "id": "mlx_vendor",
+      "textKey": "settings.licenses.note.mlx_vendor",
+      "fallback": "mlx-swift-lm is vendored at ThirdParty/MLXSwiftLM from upstream commit d5d8b290e601ac1bf11f24635f8f811a83b98bf8 with a minimal Floe prefill-stability patch; the complete MIT text ships in the app as Licenses/MLXSwiftLM-LICENSE.txt."
     }
   ],
   "counts": {
     "components": 226,
-    "documents": 28,
+    "documents": 29,
     "pins": 33
   }
 }

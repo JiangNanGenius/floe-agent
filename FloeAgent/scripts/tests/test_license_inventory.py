@@ -136,7 +136,7 @@ class LicenseInventoryTests(unittest.TestCase):
             li.MANIFEST,
             li.EVIDENCE,
             ROOT / "FloeApp/Resources" / li.LIBGIT2_COPYING_BUNDLE_PATH,
-        ]
+        ] + [ROOT / path for path in self.result["vendored_copies"]]
         before = {path: (path.stat().st_mtime_ns, path.stat().st_size) for path in artifacts}
         completed = subprocess.run(
             [sys.executable, str(SCRIPTS / "license_inventory.py"), "--check"],
@@ -158,6 +158,10 @@ class LicenseInventoryTests(unittest.TestCase):
                 (ROOT / "FloeApp/Resources" / li.LIBGIT2_COPYING_BUNDLE_PATH).read_bytes(),
                 self.result["libgit2_bytes"],
             )
+        for repository_path, expected in self.result["vendored_copies"].items():
+            copied = ROOT / repository_path
+            self.assertTrue(copied.is_file(), repository_path)
+            self.assertEqual(copied.read_bytes(), expected, repository_path)
 
     def test_packaged_manifest_counts_match_its_lists(self):
         counts = self.manifest["counts"]
@@ -195,14 +199,54 @@ class LicenseInventoryTests(unittest.TestCase):
                 pin = next(pin for pin in li.load_pins() if pin["identity"] == "swift-system")
         self.assertEqual(pin["location"], canonical_source)
 
-    def test_committed_evidence_binds_every_pin_revision_and_source(self):
-        pins = {pin["identity"]: pin for pin in li.load_pins()}
+    def test_committed_evidence_binds_every_declared_dependency(self):
+        resolved = li.load_pins()
+        pins = {pin["identity"]: pin for pin in resolved}
+        vendored = {
+            row["identity"]: row
+            for row in li.resolve_vendored_packages(resolved, [])["evidence"]
+        }
         evidence = li.load_evidence()
-        self.assertEqual(set(pins), set(evidence))
+        self.assertEqual(set(evidence), set(pins) | set(vendored))
         self.assertEqual(self.result["evidence"]["schemaVersion"], 2)
         for identity, pin in pins.items():
             self.assertEqual(evidence[identity]["revision"], pin["revision"], identity)
             self.assertEqual(evidence[identity]["source"], pin["location"], identity)
+        for identity, row in vendored.items():
+            self.assertEqual(evidence[identity]["revision"], row["revision"], identity)
+            self.assertEqual(evidence[identity]["source"], row["source"], identity)
+            self.assertEqual(evidence[identity]["evidence"], row["evidence"], identity)
+            copied = ROOT / evidence[identity]["evidence"]
+            self.assertTrue(copied.is_file(), evidence[identity]["evidence"])
+            self.assertEqual(li.sha256_file(copied), evidence[identity]["sha256"], identity)
+
+    def test_vendored_lock_switch_is_declared_consistently(self):
+        resolved = li.load_pins()
+        original = next(spec for spec in li.VENDORED_PACKAGES
+                        if spec["identity"] == "mlx-swift-lm")
+        vendored = li.resolve_vendored_packages(resolved, [])
+        swift = [c for c in self.manifest["components"] if c["section"] == "swift"]
+        if any(pin["identity"] == "mlx-swift-lm" for pin in resolved):
+            # Remote pin still declared: the vendored copy must not appear twice.
+            self.assertEqual(vendored["components"], [])
+            self.assertFalse(any(c["name"] == "mlx-swift-lm" for c in swift))
+            return
+        self.assertEqual([c["name"] for c in vendored["components"]], ["mlx-swift-lm"])
+        component = next(c for c in swift if c["name"] == "mlx-swift-lm")
+        self.assertEqual(component["license"], "MIT")
+        self.assertIn(original["revision"], component["source"])
+        document = next(d for d in self.manifest["documents"] if d["id"] == "mlx-swift-lm")
+        self.assertTrue(document["required"])
+        self.assertEqual(document["bundlePath"], "Licenses/MLXSwiftLM-LICENSE.txt")
+        vendored_license = ROOT / original["path"] / "LICENSE"
+        copied = ROOT / "FloeApp/Resources" / "Licenses/MLXSwiftLM-LICENSE.txt"
+        self.assertTrue(copied.is_file())
+        self.assertEqual(copied.read_bytes(), vendored_license.read_bytes())
+        row = next(r for r in self.result["evidence"]["licenses"]
+                   if r["identity"] == "mlx-swift-lm")
+        self.assertEqual(row["revision"], original["revision"])
+        self.assertEqual(row["evidence"], f"{original['path']}/LICENSE")
+        self.assertEqual(li.sha256_file(vendored_license), row["sha256"])
 
 
 class EvidenceRevisionBindingTests(unittest.TestCase):
@@ -385,12 +429,13 @@ class EvidenceRevisionBindingTests(unittest.TestCase):
         self.assertIn("recorded evidence file changed", problems[0])
 
     def test_check_mode_succeeds_without_any_checkout(self):
+        vendored = li.resolve_vendored_packages(li.load_pins(), [])["copies"]
         artifacts = [
             li.MARKDOWN,
             li.MANIFEST,
             li.EVIDENCE,
             ROOT / "FloeApp/Resources" / li.LIBGIT2_COPYING_BUNDLE_PATH,
-        ]
+        ] + [ROOT / path for path in vendored]
         before = {path: (path.stat().st_mtime_ns, path.stat().st_size) for path in artifacts}
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(li, "CHECKOUTS", self.checkouts):
@@ -401,6 +446,135 @@ class EvidenceRevisionBindingTests(unittest.TestCase):
         self.assertIn("recorded reuse", stdout.getvalue())
         for path in artifacts:
             self.assertEqual(before[path], (path.stat().st_mtime_ns, path.stat().st_size), path)
+
+
+class VendoredPackageTests(unittest.TestCase):
+    """The vendored mlx-swift-lm copy must be stable across the lock switch.
+
+    Fixture roots exercise both states directly, so these assertions hold before
+    and after Package.resolved drops the remote pin.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.spec = next(spec for spec in li.VENDORED_PACKAGES
+                         if spec["identity"] == "mlx-swift-lm")
+        self.license_path = self.root / self.spec["path"] / li.VENDORED_LICENSE_NAME
+
+    def write_license(self, text=MIT_TEXT):
+        self.license_path.parent.mkdir(parents=True, exist_ok=True)
+        self.license_path.write_text(text, encoding="utf-8")
+
+    def pin(self):
+        return {
+            "identity": self.spec["identity"],
+            "location": self.spec["upstream"],
+            "revision": self.spec["revision"],
+            "version": self.spec["revision"],
+        }
+
+    def test_remote_pin_stays_the_single_declaration(self):
+        self.write_license()
+        problems = []
+        result = li.resolve_vendored_packages([self.pin()], problems, root=self.root)
+        self.assertEqual(problems, [])
+        self.assertEqual(result["components"], [])
+        self.assertEqual(result["documents"], [])
+        self.assertEqual(result["evidence"], [])
+        self.assertEqual(result["copies"], {})
+        self.assertEqual(result["notes"], [])
+
+    def test_local_package_replaces_the_pin_with_the_full_license(self):
+        self.write_license()
+        problems = []
+        result = li.resolve_vendored_packages([], problems, root=self.root)
+        self.assertEqual(problems, [])
+        component = result["components"][0]
+        self.assertEqual(component["name"], "mlx-swift-lm")
+        self.assertEqual(component["license"], "MIT")
+        self.assertEqual(component["section"], "swift")
+        self.assertEqual(component["noteKey"], "settings.licenses.note.mlx_vendor")
+        self.assertIn(self.spec["revision"], component["source"])
+        document = result["documents"][0]
+        self.assertEqual(document["id"], self.spec["document"]["id"])
+        self.assertEqual(document["bundlePath"], "Licenses/MLXSwiftLM-LICENSE.txt")
+        self.assertEqual(document["kindKey"], li.KINDS["full_text"])
+        self.assertTrue(document["required"])
+        self.assertEqual(
+            result["copies"][document["repositoryPath"]], self.license_path.read_bytes()
+        )
+        evidence = result["evidence"][0]
+        self.assertEqual(evidence["identity"], "mlx-swift-lm")
+        self.assertEqual(evidence["revision"], self.spec["revision"])
+        self.assertEqual(evidence["source"], self.spec["upstream"])
+        self.assertEqual(evidence["evidence"], f"{self.spec['path']}/{li.VENDORED_LICENSE_NAME}")
+        self.assertEqual(evidence["sha256"], li.sha256_file(self.license_path))
+        self.assertEqual([note[0] for note in result["notes"]], [self.spec["note"][0]])
+
+    def test_document_bundle_path_is_declared_by_project_yml(self):
+        # No project.yml edit: the Licenses folder resource already maps it.
+        self.write_license()
+        document = li.resolve_vendored_packages([], [], root=self.root)["documents"][0]
+        rules = li.bundle_rules(li.PROJECT_YML.read_text())
+        self.assertEqual(
+            li.bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"]),
+            document["bundlePath"],
+        )
+
+    def test_missing_vendored_copy_is_a_problem_not_a_silent_drop(self):
+        problems = []
+        result = li.resolve_vendored_packages([], problems, root=self.root)
+        self.assertEqual(result["components"], [])
+        self.assertEqual(result["copies"], {})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("vendored", problems[0])
+        self.assertIn(self.spec["path"], problems[0])
+
+    def test_unexpected_vendored_license_is_flagged(self):
+        self.write_license("Apache License\nVersion 2.0\n")
+        problems = []
+        li.resolve_vendored_packages([], problems, root=self.root)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("expected MIT", problems[0])
+
+    def test_check_detects_a_missing_or_changed_bundled_copy(self):
+        relative = "FloeApp/Resources/Licenses/MLXSwiftLM-LICENSE.txt"
+        copies = {relative: b"complete MIT license text\n"}
+        drift = li.vendored_copy_drift(copies, self.root)
+        self.assertEqual(len(drift), 1)
+        self.assertIn("missing", drift[0][1])
+        target = self.root / relative
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"stale text\n")
+        drift = li.vendored_copy_drift(copies, self.root)
+        self.assertEqual(len(drift), 1)
+        self.assertIn("differs", drift[0][1])
+        target.write_bytes(copies[relative])
+        self.assertEqual(li.vendored_copy_drift(copies, self.root), [])
+
+    def test_manifest_and_localization_accept_the_vendored_document(self):
+        self.write_license()
+        result = li.resolve_vendored_packages([], [], root=self.root)
+        components = li.build_components([], [], [], result["components"])
+        manifest = li.build_manifest(components, result["documents"], result["notes"])
+        self.assertEqual(li.localization_problems(manifest, li.XSTRINGS), [])
+        violations, _ = li.license_gate(manifest["components"])
+        self.assertEqual(violations, [])
+        self.assertIn("mlx_vendor", {note["id"] for note in manifest["notes"]})
+        self.assertEqual(manifest["counts"]["pins"], 1)
+
+    def test_catalog_value_matches_the_generated_note_and_title(self):
+        catalog = json.loads(li.XSTRINGS.read_text(encoding="utf-8"))["strings"]
+        note_id, note_text = self.spec["note"]
+        note = catalog[f"settings.licenses.note.{note_id}"]["localizations"]
+        self.assertEqual(note["en"]["stringUnit"]["value"], note_text)
+        self.assertTrue(note["zh-Hans"]["stringUnit"]["value"].strip())
+        document = self.spec["document"]
+        title = catalog[document["titleKey"]]["localizations"]
+        self.assertEqual(title["en"]["stringUnit"]["value"], document["titleFallback"])
+        self.assertTrue(title["zh-Hans"]["stringUnit"]["value"].strip())
 
 
 if __name__ == "__main__":

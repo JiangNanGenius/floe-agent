@@ -17090,6 +17090,23 @@
         }
       }
     },
+    "settings.licenses.document.mlx_swift_lm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mlx-swift-lm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mlx-swift-lm"
+          }
+        }
+      }
+    },
     "settings.licenses.document.monaco.title": {
       "extractionState": "manual",
       "localizations": {
@@ -17515,6 +17532,24 @@
         }
       }
     },
+    "settings.licenses.note.mlx_vendor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mlx-swift-lm is vendored at ThirdParty/MLXSwiftLM from upstream commit d5d8b290e601ac1bf11f24635f8f811a83b98bf8 with a minimal Floe prefill-stability patch; the complete MIT text ships in the app as Licenses/MLXSwiftLM-LICENSE.txt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mlx-swift-lm 内置固定于 ThirdParty/MLXSwiftLM，来源为上游提交 d5d8b290e601ac1bf11f24635f8f811a83b98bf8，并附带最小的 Floe 预填充稳定性补丁；完整 MIT 文本随 App 以 Licenses/MLXSwiftLM-LICENSE.txt 提供。"
+          }
+        }
+      }
+    },
+
     "settings.licenses.note.occt": {
       "extractionState": "manual",
       "localizations": {

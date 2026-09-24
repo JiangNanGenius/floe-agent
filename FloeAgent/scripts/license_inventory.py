@@ -9,6 +9,9 @@ generator reads, in this order:
   pins in ``project.yml``) for every Swift package;
 * the resolved checkout license files under ``.build/checkouts`` for the
   license text itself — never a hand-maintained table;
+* the tracked LICENSE of a repository-vendored package (``ThirdParty/**``)
+  that replaced a formerly resolved remote pin, bound to the declared upstream
+  commit and copied into the app bundle for the full notice text;
 * repository pins for the vendored engines and runtimes (``ThirdParty/**``
   locks, font manifest, conversion inventory, office engine lock);
 * ``project.yml`` resources to prove that every notice declared here really is
@@ -104,6 +107,42 @@ CHECKOUT_EVIDENCE_PREFIX = ".build/checkouts/"
 APP_ONLY_NOTICES = {
     "whisperkit": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
 }
+
+# Packages vendored under ThirdParty/ that replaced a formerly resolved remote
+# pin (Package.swift now uses a path dependency, so Package.resolved no longer
+# declares the identity). While the lock still declares the identity, the
+# resolved pin remains the single declaration and the generated artifacts do not
+# change. Once it is gone, the repository copy is declared from its tracked
+# LICENSE: the evidence row binds the copy to the exact upstream commit it was
+# taken from, and the complete notice text is copied into the app bundle at the
+# declared document path (compared byte for byte by --check).
+VENDORED_PACKAGES = (
+    {
+        "identity": "mlx-swift-lm",
+        "path": "ThirdParty/MLXSwiftLM",
+        "revision": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
+        "upstream": "https://github.com/ml-explore/mlx-swift-lm.git",
+        "license": "MIT",
+        "note": (
+            "mlx_vendor",
+            "mlx-swift-lm is vendored at ThirdParty/MLXSwiftLM from upstream "
+            "commit d5d8b290e601ac1bf11f24635f8f811a83b98bf8 with a minimal Floe "
+            "prefill-stability patch; the complete MIT text ships in the app as "
+            "Licenses/MLXSwiftLM-LICENSE.txt.",
+        ),
+        "document": {
+            "id": "mlx-swift-lm",
+            "repositoryPath": "FloeApp/Resources/Licenses/MLXSwiftLM-LICENSE.txt",
+            "bundlePath": "Licenses/MLXSwiftLM-LICENSE.txt",
+            "titleKey": "settings.licenses.document.mlx_swift_lm.title",
+            "titleFallback": "mlx-swift-lm",
+            "kind": "full_text",
+            "required": True,
+            "section": "swift",
+        },
+    },
+)
+VENDORED_LICENSE_NAME = "LICENSE"
 
 LICENSE_FILE_CANDIDATES = (
     "LICENSE",
@@ -1242,6 +1281,96 @@ def resolve_pins(
     return rows, evidence, stats
 
 
+def resolve_vendored_packages(
+    pins: list[dict],
+    problems: list[str],
+    root: Path | None = None,
+) -> dict:
+    """Declare repository-vendored packages that replaced a resolved remote pin.
+
+    A spec is active only while the lock no longer declares its identity, so the
+    generator produces identical artifacts before and after the switch: with the
+    pin present the resolved checkout stays the single declaration, and after the
+    pin is removed the vendored copy is declared instead. The vendored LICENSE is
+    repository-tracked, so its text and sha256 are read on every run rather than
+    reused from the recorded evidence file.
+    """
+    if root is None:
+        root = ROOT
+    declared = {pin["identity"] for pin in pins}
+    result: dict = {
+        "components": [],
+        "documents": [],
+        "evidence": [],
+        "copies": {},
+        "notes": [],
+    }
+    for spec in VENDORED_PACKAGES:
+        identity = spec["identity"]
+        if identity in declared:
+            continue
+        relative = f"{spec['path']}/{VENDORED_LICENSE_NAME}"
+        license_path = root / spec["path"] / VENDORED_LICENSE_NAME
+        if not license_path.is_file():
+            problems.append(
+                f"{identity}: the lock no longer declares this pin and the vendored "
+                f"copy {spec['path']} has no {VENDORED_LICENSE_NAME}; restore the "
+                "vendored package (or the pin) before regenerating"
+            )
+            continue
+        license_bytes = license_path.read_bytes()
+        license_name = classify_license(license_bytes.decode("utf-8", errors="replace"))
+        if license_name != spec["license"]:
+            problems.append(
+                f"{identity}: vendored license {relative} reads as "
+                f"{license_name or 'UNKNOWN'}, expected {spec['license']}"
+            )
+        note_id, note_text = spec["note"]
+        note_key = f"settings.licenses.note.{note_id}"
+        document = spec["document"]
+        if document["repositoryPath"] in result["copies"]:
+            raise ValueError(f"duplicate vendored document path: {document['repositoryPath']}")
+        result["copies"][document["repositoryPath"]] = license_bytes
+        result["components"].append(
+            {
+                "name": identity,
+                "version": spec["revision"],
+                "license": license_name or spec["license"],
+                "source": f"{spec['upstream'].removesuffix('.git')}/tree/{spec['revision']}",
+                "section": "swift",
+                "noteKey": note_key,
+                "evidence": relative,
+            }
+        )
+        result["documents"].append(
+            {
+                "id": document["id"],
+                "repositoryPath": document["repositoryPath"],
+                "bundlePath": document["bundlePath"],
+                "titleKey": document["titleKey"],
+                "titleFallback": document["titleFallback"],
+                "titleArgument": None,
+                "license": license_name or spec["license"],
+                "kindKey": KINDS[document["kind"]],
+                "required": document["required"],
+                "section": document["section"],
+                "noteKey": note_key,
+            }
+        )
+        result["evidence"].append(
+            {
+                "identity": identity,
+                "license": license_name or spec["license"],
+                "evidence": relative,
+                "sha256": sha256_file(license_path),
+                "revision": spec["revision"],
+                "source": spec["upstream"],
+            }
+        )
+        result["notes"].append((note_id, note_text))
+    return result
+
+
 PIN_NOTES = {
     "libgit2": "settings.licenses.note.libgit2",
 }
@@ -1292,7 +1421,12 @@ STATIC_EVIDENCE = {
 }
 
 
-def build_components(pin_rows: list[dict], font_families: list[dict], npm_packages: list[dict]):
+def build_components(
+    pin_rows: list[dict],
+    font_families: list[dict],
+    npm_packages: list[dict],
+    vendored_components: list[dict] | None = None,
+):
     components = []
     for row in pin_rows:
         pin = row["pin"]
@@ -1307,6 +1441,9 @@ def build_components(pin_rows: list[dict], font_families: list[dict], npm_packag
                 "evidence": row["evidence"],
             }
         )
+    # A vendored package took over a formerly resolved pin; it keeps the Swift
+    # package section so the dependency stays in its original inventory place.
+    components.extend(vendored_components or [])
     for name, version, license_name, source, section, note_key in STATIC_COMPONENTS:
         components.append(
             {
@@ -1415,7 +1552,7 @@ def build_documents(font_families: list[dict]):
     return documents
 
 
-def build_manifest(components, documents):
+def build_manifest(components, documents, extra_notes=()):
     counts = {
         "components": len(components),
         "documents": len(documents),
@@ -1443,7 +1580,7 @@ def build_manifest(components, documents):
                 "textKey": f"settings.licenses.note.{note_id}",
                 "fallback": text,
             }
-            for note_id, text in NOTES
+            for note_id, text in tuple(NOTES) + tuple(extra_notes)
         ],
         "counts": counts,
     }
@@ -1636,7 +1773,8 @@ def license_gate(components) -> tuple[list[str], list[str]]:
     return violations, notices
 
 
-def validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings):
+def validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings, vendored=None):
+    vendored = vendored or {}
     rules = bundle_rules(PROJECT_YML.read_text())
     for document in manifest["documents"]:
         expected = bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"])
@@ -1654,8 +1792,13 @@ def validate(pins, manifest, evidence_document, libgit2_bytes, problems, warning
     expected_libgit2 = bundle_path_for(rules, "FloeAgent/FloeApp/Resources/Licenses/libgit2-COPYING.txt")
     if expected_libgit2 != LIBGIT2_COPYING_BUNDLE_PATH:
         problems.append(f"libgit2 notice is not a declared resource: {expected_libgit2!r}")
+    generated_copies = set(vendored.get("copies", {}))
     for document in manifest["documents"]:
-        if document["required"] and not (ROOT / document["repositoryPath"]).is_file():
+        if (
+            document["required"]
+            and not (ROOT / document["repositoryPath"]).is_file()
+            and document["repositoryPath"] not in generated_copies
+        ):
             warnings.append(f"required notice is not staged in this checkout: {document['repositoryPath']}")
     # Every recorded evidence row must stay bound to the exact declared pin, so
     # a later pin edit can never silently inherit another revision's license.
@@ -1671,6 +1814,23 @@ def validate(pins, manifest, evidence_document, libgit2_bytes, problems, warning
                 f"({row.get('revision')} / {row.get('source')} != "
                 f"{pin['revision']} / {pin['location']})"
             )
+    # A vendored package is bound to its declared upstream revision and
+    # repository copy instead of a lock pin. The LICENSE text is tracked, so the
+    # freshly generated row always reflects the current file and --check catches
+    # a changed copy or a stale recorded evidence path as drift.
+    for row in vendored.get("evidence", ()):
+        identity = row["identity"]
+        recorded_row = evidence_by_identity.get(identity)
+        if recorded_row is None:
+            problems.append(f"missing license evidence row: {identity} (vendored package)")
+            continue
+        for field in ("license", "evidence", "sha256", "revision", "source"):
+            if recorded_row.get(field) != row[field]:
+                problems.append(
+                    f"{identity}: vendored evidence is not bound to "
+                    f"{row['evidence']} at {row['revision']} "
+                    f"({field}: {recorded_row.get(field)!r} != {row[field]!r})"
+                )
     libgit2_record = next(
         (row for row in evidence_document["licenses"] if row["identity"] == "libgit2"), None
     )
@@ -1693,11 +1853,12 @@ def build():
     problems: list[str] = []
     warnings: list[str] = []
     pin_rows, evidence_rows, stats = resolve_pins(pins, recorded, problems)
+    vendored = resolve_vendored_packages(pins, problems)
     font_families = json.loads(FONTS_MANIFEST.read_text())["families"]
     npm_packages = json.loads(CONVERSION_INVENTORY.read_text())["packages"]
-    components = build_components(pin_rows, font_families, npm_packages)
-    documents = build_documents(font_families)
-    manifest = build_manifest(components, documents)
+    components = build_components(pin_rows, font_families, npm_packages, vendored["components"])
+    documents = build_documents(font_families) + vendored["documents"]
+    manifest = build_manifest(components, documents, vendored["notes"])
     evidence_document = {
         "schemaVersion": 2,
         "generatedBy": "scripts/license_inventory.sh",
@@ -1708,13 +1869,13 @@ def build():
             "checkout may only reuse a row whose revision and source still match, "
             "and --check never checks out or resets a dependency."
         ),
-        "licenses": sorted(evidence_rows, key=lambda row: row["identity"]),
+        "licenses": sorted(evidence_rows + vendored["evidence"], key=lambda row: row["identity"]),
     }
     libgit2_bytes = None
     source = ROOT / LIBGIT2_EVIDENCE
     if source.is_file():
         libgit2_bytes = source.read_bytes()
-    validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings)
+    validate(pins, manifest, evidence_document, libgit2_bytes, problems, warnings, vendored)
     return {
         "manifest": manifest,
         "evidence": evidence_document,
@@ -1723,9 +1884,22 @@ def build():
         "manifest_text": render_json(manifest),
         "evidence_text": render_json(evidence_document),
         "libgit2_bytes": libgit2_bytes,
+        "vendored_copies": vendored["copies"],
         "problems": problems,
         "warnings": warnings,
     }
+
+
+def vendored_copy_drift(copies: dict[str, bytes], root: Path) -> list[tuple[Path, str]]:
+    """Report generated notice copies that are missing or stale under ``root``."""
+    drift = []
+    for repository_path, expected in copies.items():
+        target = root / repository_path
+        if not target.is_file():
+            drift.append((target, "missing generated artifact"))
+        elif target.read_bytes() != expected:
+            drift.append((target, "committed artifact differs from the generator"))
+    return drift
 
 
 def report_drift(path: Path) -> int:
@@ -1752,6 +1926,7 @@ def main(argv: list[str] | None = None) -> int:
     evidence_text = result["evidence_text"]
     markdown = result["markdown"]
     libgit2_bytes = result["libgit2_bytes"]
+    vendored_copies = result["vendored_copies"]
 
     if args.check:
         # Tracked artifacts must exist and match byte for byte.
@@ -1788,6 +1963,9 @@ def main(argv: list[str] | None = None) -> int:
                 report_drift(LIBGIT2_COPYING)
         elif not LIBGIT2_COPYING.is_file():
             problems.append(f"missing generated artifact: {LIBGIT2_COPYING.relative_to(REPO)}")
+        for target, message in vendored_copy_drift(vendored_copies, ROOT):
+            problems.append(f"{message}: {target.relative_to(REPO)}")
+            report_drift(target)
     else:
         MANIFEST.parent.mkdir(parents=True, exist_ok=True)
         MANIFEST.write_text(manifest_text, encoding="utf-8")
@@ -1801,6 +1979,11 @@ def main(argv: list[str] | None = None) -> int:
                 "libgit2 COPYING is neither in the checkout nor committed; "
                 "resolve the package before generating"
             )
+        for repository_path, expected in vendored_copies.items():
+            target = ROOT / repository_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.is_file() or target.read_bytes() != expected:
+                target.write_bytes(expected)
         print(
             "license_inventory wrote "
             f"{MARKDOWN.relative_to(REPO)}, {MANIFEST.relative_to(REPO)} and "
@@ -1820,11 +2003,13 @@ def main(argv: list[str] | None = None) -> int:
         f"{stats['checkout']} verified checkouts, {stats['notice']} repository notices, "
         f"{stats['recorded']} recorded reuse, {stats['unknown']} unknown"
     )
+    if vendored_copies:
+        binding += f", {len(vendored_copies)} vendored package notices"
     if args.check:
         print(
             "license_inventory --check OK: "
             f"{counts['components']} components, {counts['documents']} bundled notices, "
-            f"{counts['pins']} resolved Swift pins ({binding})"
+            f"{counts['pins']} Swift package rows ({binding})"
         )
     else:
         print(
