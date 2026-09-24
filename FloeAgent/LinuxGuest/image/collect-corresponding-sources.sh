@@ -12,7 +12,12 @@
 #   3. cross-toolchain source packages from the distribution archive
 #      (Ubuntu for the CI build; recorded, best effort, never silently skipped);
 #   4. Debian userland: binary package -> source package -> .dsc/orig/debian
-#      file mapping for the exact installed set, with SHA-256 verification.
+#      file mapping for the exact installed set, with SHA-256 verification;
+#   5. PyPI wheels pinned by the template recipe: wheel bytes (recipe-pin
+#      verified), PyPI sdists (PyPI-digest verified) with a file-level
+#      correspondence proof, and — for the pypdfium2 riscv64 wheel — the full
+#      source chain of the bundled libpdfium.so (exact pdfium commit via the
+#      frozen-branch proof, source archive, DEPS revision table).
 #
 # It does not publish anything. Its outputs are component artifacts + digests
 # a reviewer (or the final distribution step) can re-check.
@@ -20,7 +25,8 @@
 # Usage (Linux; root is recommended so the Ubuntu deb-src step can run):
 #   bash collect-corresponding-sources.sh --out DIR --packages guest-packages.tsv \
 #        --image-evidence DIR_WITH_RUNNER_EVIDENCE [--repo DIR] [--pins FILE]
-#        [--skip-upstream] [--skip-debian] [--rebuild-kernel]
+#        [--pypi-recipe RECIPE_JSON] [--skip-upstream] [--skip-debian]
+#        [--rebuild-kernel]
 set -euo pipefail
 
 die() {
@@ -34,6 +40,7 @@ repo=""
 pins=""
 packages=""
 image_evidence=""
+pypi_recipe=""
 run_url=""
 skip_upstream=0
 skip_debian=0
@@ -47,6 +54,7 @@ while [ $# -gt 0 ]; do
         --pins) pins="${2:-}"; shift 2 ;;
         --packages) packages="${2:-}"; shift 2 ;;
         --image-evidence) image_evidence="${2:-}"; shift 2 ;;
+        --pypi-recipe) pypi_recipe="${2:-}"; shift 2 ;;
         --run-url) run_url="${2:-}"; shift 2 ;;
         --shard-bytes) shard_bytes="${2:-}"; shift 2 ;;
         --skip-upstream) skip_upstream=1; shift ;;
@@ -257,6 +265,39 @@ if [ "$skip_debian" = 0 ]; then
     } >>"$summary"
 fi
 
+# ---------------------------------------------------------------------------
+# 5. PyPI wheels pinned by the template recipe
+# ---------------------------------------------------------------------------
+if [ -n "$pypi_recipe" ]; then
+    [ -f "$pypi_recipe" ] || die "pypi recipe not found: $pypi_recipe"
+    log "PyPI wheel corresponding sources ($pypi_recipe)"
+    set +e
+    python3 "$script_dir/collect-pypi-sources.py" --recipe "$pypi_recipe" \
+        --out "$out/pypi-sources" --github-run "$run_url"
+    pypi_rc=$?
+    set -e
+    if [ "$pypi_rc" = 3 ]; then
+        log "WARNING: some pinned wheels have corresponding-source gaps (see pypi-sources/pypi-source-gaps.tsv); recording the gap and continuing"
+    elif [ "$pypi_rc" != 0 ]; then
+        die "pypi source collection failed with rc=$pypi_rc"
+    fi
+    {
+        printf '## 5. PyPI wheel corresponding sources\n\n'
+        if [ -f "$out/pypi-sources/PYPI-SOURCES.md" ]; then
+            printf 'Details: `pypi-sources/PYPI-SOURCES.md`; checksums: `pypi-sources/PYPI-SOURCES.sha256`.\n\n'
+            printf '```\n'
+            printf 'gap_packages=%s\n' "$(grep -cve '^#' "$out/pypi-sources/pypi-source-gaps.tsv" || true)"
+            printf '```\n\n'
+        else
+            printf 'NOT COLLECTED in this run (hard failure).\n\n'
+        fi
+        if [ "$(grep -cve '^#' "$out/pypi-sources/pypi-source-gaps.tsv" 2>/dev/null || true)" != "0" ]; then
+            printf 'The PyPI gap list is a real distribution gap (same rule as the Debian\n'
+            printf 'gaps); resolve every row before the image is offered publicly.\n\n'
+        fi
+    } >>"$summary"
+fi
+
 {
     printf '## License mapping (summary)\n\n'
     printf '| Component | License | Source in this bundle |\n'
@@ -265,7 +306,8 @@ fi
     printf '| riscv-pk / bbl | BSD-3-Clause | `upstream/riscv-pk-*-src.tar.gz` + LICENSE |\n'
     printf '| Floe runner | MPL-2.0 | `runner-relink/` |\n'
     printf '| glibc (static in runner) | LGPL-2.1 | `toolchain-source/` + `runner-relink/RELINK.md` |\n'
-    printf '| Debian userland packages | per package (mostly GPL/LGPL/BSD/MIT) | `debian-sources/` + `guest-copyrights.tar.gz` (image evidence) |\n\n'
+    printf '| Debian userland packages | per package (mostly GPL/LGPL/BSD/MIT) | `debian-sources/` + `guest-copyrights.tar.gz` (image evidence) |\n'
+    printf '| PyPI wheels (python-pptx MIT, pdfplumber MIT, pdfminer.six MIT, pypdfium2 Apache-2.0 OR BSD-3-Clause, pdfium BSD-3-Clause) | per project | `pypi-sources/` |\n\n'
     printf 'Distribution is still gated by the primary release decision: this bundle is an\n'
     printf 'artifact, not a published source offer, and `distributionAllowed` stays false in\n'
     printf 'the image manifest until the offer is actually published.\n'
