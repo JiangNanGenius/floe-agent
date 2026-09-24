@@ -12,6 +12,8 @@ TinyEMU 已加入无 JIT 双 hart 的源码实现、设备 CPU/内存池与资�
 
 IDE 候选改用 iPad 原生 SwiftUI 工作台布局：左侧活动栏切换文件、搜索与源码管理；保留多标签编辑区、底部终端和状态栏。Git 面板显示变更目录树并沿用仓库操作服务。文本与代码仅使用原生编辑器，不提供 Web 文本编辑切换；Markdown 使用同一编辑缓冲区提供大纲、格式操作与原生预览，代码字体可缩放。Office 继续使用现有 WebKit 宿主及打开方式；PPT 编辑入口改为先取得演示文稿绘制证据，再进入编辑布局，并要求编辑后的新首帧。**PPT 可编辑、保存和重开仍需在 iPad 真机验收。**
 
+原生 IDE 的[定向云端 App 与界面运行 35947162133](https://github.com/JiangNanGenius/floe-agent/actions/runs/35947162133) 整体通过：iPad mini 的四项用例通过；iPhone 的 DXF 预览断言首次失败、自动重试通过，最终结果仍保留该次失败记录。原生保存与冷启动重开已有模拟器证据，真机键盘、输入法和触控体验尚未验收。
+
 本候选还包括多行输入与完整提示词编辑、按会话保存草稿、原生归档操作、环境运行状态与 PiP/通知修复，以及统一的第三方许可证入口。GitHub 是主要发布源；Gitee 的源码与可容纳资产以独立流程同步，镜像状态不会阻塞 GitHub 和 TestFlight 交付。
 
 发布记录待填：不可变源码 SHA、标签、云端构建运行、IPA 摘要与 Bundle 版本、签名上传、Apple `VALID` 状态、Floe QA 分组与可安装状态。真机 MLX、PPT、PiP、通知和输入体验证据须逐项记录；未取得时维持“待验收”。
@@ -25,6 +27,8 @@ Earlier cloud runs timed out while unpacking packages in TinyEMU. Cloud-host-ass
 The source now includes a no-JIT dual-hart TinyEMU implementation, device CPU and memory pools, and admission control. The shipping default remains behind the single-core safety gate until a real dual-core Guest passes concurrency, I/O, shutdown, disk flush, and recovery checks. Linux and MLX use shared resource arbitration; local-model work adds staged load diagnostics and tool continuation handling. Source checks and cloud hosts do not establish successful MLX load, benchmark, or multi-turn tool use on the user's iPad.
 
 The IDE candidate adopts a native SwiftUI iPad workbench: an activity bar for files, search, and source control, with editor tabs, a bottom terminal panel, and a status bar. The Git pane shows a directory tree of changes and uses the existing repository service. Text and code use the native editor exclusively, with no Web text-editor switch. Markdown adds an outline, formatting actions, and native preview over the same edit buffer; code text can be zoomed. Office retains its existing WebKit host and opening flow. The PPT edit entry now waits for presentation paint evidence before changing to the edit layout and requires a fresh post-entry frame. **Editable PPT content, save, and reopen still require physical iPad acceptance.**
+
+The [targeted cloud App/UI run 35947162133](https://github.com/JiangNanGenius/floe-agent/actions/runs/35947162133) succeeded overall: all four iPad mini cases passed; an iPhone DXF preview assertion failed on its first attempt and passed on automatic retry, with the initial failure retained in the result. Native save and cold reopen have simulator evidence. Physical-device keyboard, IME, and touch behavior remain unverified.
 
 The candidate also contains a multiline composer and full prompt editor, per-conversation drafts, native archive operations, runtime/PiP/notification repairs, and a single third-party license entry. GitHub remains the primary release source. Gitee source and eligible asset synchronization run separately and do not block GitHub or TestFlight delivery.
 
