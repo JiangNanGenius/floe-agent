@@ -469,7 +469,7 @@ struct OfficeIDETabOpenContractTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("报告.docx")
-        try Data("docx-bytes").write(to: file)
+        try Data("docx-bytes".utf8).write(to: file)
 
         let session = OfficeFileSession()
         // In this component environment the pinned native host is compiled
