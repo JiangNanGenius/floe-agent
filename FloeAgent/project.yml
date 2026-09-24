@@ -483,6 +483,7 @@ targets:
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
+      - path: Tests/FloeAppTests/ExternalWorkspaceTemplateAccessTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift

@@ -300,6 +300,7 @@ jobs:
             -only-testing:FloeAppTests/LuaShellInstallTests \
             -only-testing:FloeAppTests/IDEGitHubActionsTests \
             -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+            -only-testing:FloeAppTests/ExternalWorkspaceTemplateAccessTests \
             -only-testing:FloeAppTests/IDELanguageRunPolicyTests \
             -only-testing:FloeAppTests/IDERunSourceStagingTests \
             -only-testing:FloeAgentUITests/NotesWorkspaceImportUITests \
@@ -371,6 +372,7 @@ jobs:
               -only-testing:FloeAppTests/LuaShellInstallTests \
               -only-testing:FloeAppTests/IDEGitHubActionsTests \
               -only-testing:FloeAppTests/EnvironmentLanguagePackageTests \
+              -only-testing:FloeAppTests/ExternalWorkspaceTemplateAccessTests \
               -only-testing:FloeAppTests/IDELanguageRunPolicyTests \
               -only-testing:FloeAppTests/IDERunSourceStagingTests \
               -test-timeouts-enabled YES \

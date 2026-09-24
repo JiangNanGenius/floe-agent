@@ -22,6 +22,7 @@ import Foundation
 import FloeCore
 import FloeEnvironments
 import FloeExecution
+import FloePersistence
 import FloeTools
 
 /// Maps Floe environment records onto Linux guest descriptors. Only
@@ -34,15 +35,23 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     /// (its immutable template's root base image). nil/absent keeps the
     /// configured default image, exactly as before.
     let pinnedImageID: (@Sendable (String) async -> String?)?
+    /// Durable workspace access (WorkspaceRecord/security-scoped bookmarks),
+    /// injected at assembly time from the app's database. Injected rather
+    /// than read from a lazily created UI center: a cold-start background
+    /// guest start must be able to resolve an external workspace before any
+    /// window has touched the workspace UI.
+    let workspaceStore: any WorkspaceStore
 
     init(
         registry: EnvironmentRegistry,
         defaultImageID: String,
-        pinnedImageID: (@Sendable (String) async -> String?)? = nil
+        pinnedImageID: (@Sendable (String) async -> String?)? = nil,
+        workspaceStore: any WorkspaceStore
     ) {
         self.registry = registry
         self.defaultImageID = defaultImageID
         self.pinnedImageID = pinnedImageID
+        self.workspaceStore = workspaceStore
     }
 
     func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor? {
@@ -75,6 +84,33 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             networkEnabled: true,
             serviceForwards: []
         )
+    }
+
+    /// Durable access for the workspace 9P share. The registry only stores a
+    /// plain path, and an iOS external Files folder is only reachable while a
+    /// security-scoped grant is held; without this, a guest booted after a
+    /// relaunch (Settings resume, package job, terminal) would export a
+    /// workspace the host cannot read. The environment's own layer/data dirs
+    /// stay app-owned and need no lease. An external workspace whose grant
+    /// cannot be re-established throws the registry's typed failure so the VM
+    /// never boots against an unreadable share.
+    func acquireShareAccess(
+        environmentID: String,
+        descriptor: LinuxGuestEnvironmentDescriptor
+    ) async throws -> LinuxGuestShareAccessLease? {
+        guard let workspace = descriptor.shares.first(where: { $0.tag == LinuxGuestShare.workspaceTag })
+        else { return nil }
+        do {
+            return try await WorkspaceCenter.acquireExternalWorkspaceAccess(
+                forCanonicalPath: workspace.hostDirectory.path,
+                store: workspaceStore
+            )
+        } catch let error as ExternalWorkspaceAccessError {
+            throw LinuxGuestError.shareAccessUnavailable(
+                environmentID: environmentID,
+                detail: error.localizedDescription
+            )
+        }
     }
 }
 
@@ -128,7 +164,16 @@ enum LinuxGuestBackendAssembly {
 
     /// Keep environment ownership available even when durable image storage is
     /// unavailable, so a Linux-selected request cannot fall back to native.
-    static func makeService(registry: EnvironmentRegistry, artifactRoot: URL?) -> TinyEMULinuxCommandService {
+    /// `workspaceStore` is the app's workspace database: the provider resolves
+    /// durable access to external workspace 9P shares from it. It is injected
+    /// here (not read from a lazily created UI center) so a cold-start guest
+    /// start — background job, Settings resume, terminal — can re-establish
+    /// the security scope before any window has opened the workspace UI.
+    static func makeService(
+        registry: EnvironmentRegistry,
+        artifactRoot: URL?,
+        workspaceStore: any WorkspaceStore
+    ) -> TinyEMULinuxCommandService {
         let images: any LinuxGuestImageResolving
         let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
         var pinnedImageID: (@Sendable (String) async -> String?)?
@@ -205,7 +250,8 @@ enum LinuxGuestBackendAssembly {
             environments: AppLinuxGuestEnvironmentProvider(
                 registry: registry,
                 defaultImageID: defaultImageID,
-                pinnedImageID: pinnedImageID
+                pinnedImageID: pinnedImageID,
+                workspaceStore: workspaceStore
             ),
             images: images,
             limits: .standard,

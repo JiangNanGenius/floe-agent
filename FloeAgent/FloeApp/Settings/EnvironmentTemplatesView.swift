@@ -53,16 +53,23 @@ import FloeTools
         Task { await FloePlatformServices.shared.cancelPrepareOfficialTemplate(templateID: templateID) }
     }
 
-    func create(templateID: String, workspaceRootURL: URL, name: String?) async throws -> EnvironmentRegistry.PinnedEnvironmentCreation {
+    func create(
+        templateID: String,
+        workspaceRootURL: URL,
+        name: String?,
+        rememberWorkspaceAccess: @MainActor @Sendable (URL, String?) async throws -> Void
+    ) async throws -> EnvironmentRegistry.PinnedEnvironmentCreation {
         creating.insert(templateID)
         defer { creating.remove(templateID); revision += 1 }
         return try await FloePlatformServices.shared.createPinnedEnvironment(
-            templateID: templateID, workspaceRootURL: workspaceRootURL, name: name
+            templateID: templateID, workspaceRootURL: workspaceRootURL, name: name,
+            rememberWorkspaceAccess: rememberWorkspaceAccess
         )
     }
 }
 
 struct EnvironmentTemplatesView: View {
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var availabilities: [RuntimeV2OfficialTemplateAvailability] = []
     @State private var loading = false
     @State private var error: String?
@@ -103,7 +110,23 @@ struct EnvironmentTemplatesView: View {
         )) {
             if let template = creationTemplate {
                 EnvironmentTemplateCreationSheet(template: template) { root, name in
-                    try await jobs.create(templateID: template.templateID, workspaceRootURL: root, name: name)
+                    // Persist durable access to the picked external folder
+                    // first, through the same WorkspaceRecord/bookmark
+                    // mechanism the Files workspace flow uses. The
+                    // fileImporter's security scope only lives for this
+                    // submit; the bookmark is what keeps the workspace
+                    // resolvable after relaunch, and an existing record for
+                    // the folder is reused instead of duplicated.
+                    try await jobs.create(
+                        templateID: template.templateID,
+                        workspaceRootURL: root,
+                        name: name
+                    ) { url, recordName in
+                        _ = try await environment.workspaceCenter.ensureWorkspaceRecord(
+                            forDirectory: url,
+                            name: recordName
+                        )
+                    }
                 }
             }
         }
@@ -226,7 +249,9 @@ struct EnvironmentTemplatesView: View {
 
 private struct EnvironmentTemplateCreationSheet: View {
     let template: RuntimeV2OfficialTemplateAvailability
-    let create: (URL, String?) async throws -> EnvironmentRegistry.PinnedEnvironmentCreation
+    /// Main-actor because the durable-access step reaches the app-lifetime
+    /// `WorkspaceCenter` (WorkspaceRecord/bookmark store).
+    let create: @MainActor (URL, String?) async throws -> EnvironmentRegistry.PinnedEnvironmentCreation
     @Environment(\.dismiss) private var dismiss
     @State private var workspaceURL: URL?
     @State private var name = ""

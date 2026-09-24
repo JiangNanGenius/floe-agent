@@ -323,10 +323,24 @@ final class FloePlatformServices: @unchecked Sendable {
     /// version, then records the durable Runtime v2 row and pin so the first
     /// boot materializes a clone of that install. An existing environment for
     /// the same workspace is never modified (no rebase, no mapping move).
+    ///
+    /// `rememberWorkspaceAccess` runs first, while the caller still holds the
+    /// fileImporter's security scope, and must persist durable access to the
+    /// workspace root through the existing WorkspaceRecord/bookmark mechanism
+    /// (see `WorkspaceCenter.ensureWorkspaceRecord`). It receives the URL the
+    /// picker handed out, unchanged: deriving a symlink-resolved URL before
+    /// creating the bookmark can lose the security-scoped authorization
+    /// identity. Path normalization below is only for the registry identity.
+    /// The registry stores a path, so without this step an external Files
+    /// folder would lose access after relaunch while the environment record
+    /// claims it. A failure here aborts before any environment record exists,
+    /// so the v2 registration rollback below is never entered; the rollback
+    /// itself is unchanged.
     func createPinnedEnvironment(
         templateID: String,
         workspaceRootURL: URL,
-        name: String?
+        name: String?,
+        rememberWorkspaceAccess: @MainActor @Sendable (URL, String?) async throws -> Void
     ) async throws -> EnvironmentRegistry.PinnedEnvironmentCreation {
         let registry = lock.withLock { self.registry }
         let runtime = lock.withLock { linuxOfficialTemplateRuntime }
@@ -334,6 +348,7 @@ final class FloePlatformServices: @unchecked Sendable {
             throw FloeError.invalidConfiguration("官方软件模板服务不可用 / Official software template service unavailable")
         }
         let template = try await officialTemplateRegistration(templateID: templateID)
+        try await rememberWorkspaceAccess(workspaceRootURL, name)
         let root = workspaceRootURL.resolvingSymlinksInPath().standardizedFileURL
         let workspaceID = FloeDigest.sha256Hex(Data(root.path.utf8))
         let creation = try await registry.createPinnedEnvironment(

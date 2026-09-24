@@ -65,6 +65,12 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     /// error instead of booting a different shape silently; only an
     /// explicitly authorized auto plan may fall back to one hart, recorded.
     case releaseShapeUnsupported(requested: Int, maximum: Int)
+    /// A *known* external workspace root could not re-establish its durable
+    /// security-scoped access when the guest was about to export it. The VM
+    /// is not booted: a scope-free 9P share of an unreadable folder would
+    /// surface as silent I/O errors inside the guest, so the start fails
+    /// closed with this actionable reason instead.
+    case shareAccessUnavailable(environmentID: String, detail: String)
 
     public var errorDescription: String? {
         switch self {
@@ -101,6 +107,8 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
             return "This device cannot run the requested guest shape: \(detail)"
         case .releaseShapeUnsupported(let requested, let maximum):
             return "This release supports at most \(maximum) guest core; a \(requested)-core guest is not qualified (dual-core boot stalls at fork/exec, cloud run 35851127603). Choose a single-core guest."
+        case .shareAccessUnavailable(let id, let detail):
+            return "Linux guest \(id) was not started: its external workspace is no longer accessible (\(detail)); re-authorize the folder in Files"
         }
     }
 }
@@ -398,12 +406,63 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
     }
 }
 
+/// A held host-side access lease for a descriptor's 9P shares. The app
+/// implements this with iOS security-scoped bookmarks: an external workspace
+/// folder is only reachable while its scope is held, and a plain path is not
+/// durable across relaunches. The registry holds one lease per boot for
+/// exactly as long as the VM may touch the shares and releases it after the
+/// VM is confirmed stopped (and its runtime disk/slot work finished).
+///
+/// A reference type on purpose: copies all refer to the same hold, and
+/// `release()` runs the underlying stop exactly once. Transfer, failure and
+/// quarantine paths may each call it without risking an unbalanced second
+/// `stopAccessingSecurityScopedResource`.
+public final class LinuxGuestShareAccessLease: @unchecked Sendable {
+    private let lock = NSLock()
+    private var releaseAction: (@Sendable () -> Void)?
+
+    public init(release: @escaping @Sendable () -> Void) {
+        self.releaseAction = release
+    }
+
+    /// Ends the hold once; later calls are no-ops.
+    public func release() {
+        lock.lock()
+        let action = releaseAction
+        releaseAction = nil
+        lock.unlock()
+        action?()
+    }
+}
+
 /// App-injected source of Linux guest descriptors. Returning nil means the
 /// environment is not a Linux guest this service owns (native environments
 /// stay native). Implementations must keep returning the descriptor while the
 /// guest is stopped: the shell relies on ownership to avoid host-layer writes.
 public protocol LinuxGuestEnvironmentProviding: Sendable {
     func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor?
+
+    /// Optional durable access for the descriptor's shares, acquired by the
+    /// registry once per boot before the shares are first used and released
+    /// only after the VM is confirmed stopped. The app returns a lease when a
+    /// share is an external, security-scoped folder (iOS resolves those
+    /// through a bookmark; a bare path has no authority after relaunch).
+    /// Throwing is reserved for a *known* external workspace whose durable
+    /// grant cannot be re-established: booting anyway would export a folder
+    /// the host cannot read, so the start fails with that typed error instead.
+    /// A provider without durable share access — focused tests, host tools —
+    /// keeps the nil default and the previous behavior.
+    func acquireShareAccess(
+        environmentID: String,
+        descriptor: LinuxGuestEnvironmentDescriptor
+    ) async throws -> LinuxGuestShareAccessLease?
+}
+
+public extension LinuxGuestEnvironmentProviding {
+    func acquireShareAccess(
+        environmentID: String,
+        descriptor: LinuxGuestEnvironmentDescriptor
+    ) async throws -> LinuxGuestShareAccessLease? { nil }
 }
 
 /// A guest image manifest. `qualified` alone is never trusted: a startable

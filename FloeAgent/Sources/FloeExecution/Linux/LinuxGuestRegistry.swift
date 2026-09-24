@@ -287,6 +287,11 @@ public actor TinyEMULinuxGuestRegistry {
         /// session's capability handshake. nil when the boot path did not
         /// negotiate (unknown, never assumed ready).
         var networkStatus: LinuxGuestNetworkStatus?
+        /// Held host-side access for this boot's 9P shares (iOS
+        /// security-scoped bookmark lease for an external workspace folder).
+        /// Released once the VM is confirmed stopped; a quarantined session
+        /// keeps it for the later recovery stop.
+        var shareAccessLease: LinuxGuestShareAccessLease?
         /// Identity of this owned session, minted every time a handle becomes
         /// the environment's owned guest (registration, replacement, confirmed
         /// removal, quarantine). A lifecycle operation suspended across an
@@ -783,6 +788,7 @@ public actor TinyEMULinuxGuestRegistry {
         var sessionRegistered = false
         var quarantinedByFailure = false
         var admissionOwned = false
+        var shareAccessLease: LinuxGuestShareAccessLease?
         defer {
             startingEnvironments.remove(environmentID)
             pendingStops.remove(environmentID)
@@ -796,7 +802,21 @@ public actor TinyEMULinuxGuestRegistry {
                 guestReservations[environmentID] = nil
                 clearReservation(environmentID: environmentID)
             }
+            // The lease is a one-shot reference: whoever transferred it to a
+            // session must have cleared this local, and releasing here is
+            // idempotent even when a race already released it.
+            shareAccessLease?.release()
+            shareAccessLease = nil
         }
+        // Durable 9P share access: acquired once per boot, before any share is
+        // prepared, and owned by the session that registers (or by a
+        // quarantined survivor). A known external workspace whose grant can
+        // no longer be established throws here — the VM must not boot with a
+        // scope-free share of a folder the host cannot read.
+        shareAccessLease = try await environments.acquireShareAccess(
+            environmentID: environmentID,
+            descriptor: descriptor
+        )
         // Linux and the on-device MLX runtime share one heavy-memory budget:
         // the arbiter admits this start atomically with its idle check (a
         // racing local-model probe sees the pending start, never an empty
@@ -886,6 +906,7 @@ public actor TinyEMULinuxGuestRegistry {
                 taskID: taskID,
                 admission: admission,
                 grantedVCPUs: grantedVCPUs,
+                shareAccessLease: &shareAccessLease,
                 sessionRegistered: &sessionRegistered,
                 quarantinedByFailure: &quarantinedByFailure
             )
@@ -977,6 +998,7 @@ public actor TinyEMULinuxGuestRegistry {
         taskID: String?,
         admission: RuntimeV2Admission?,
         grantedVCPUs: Int?,
+        shareAccessLease: inout LinuxGuestShareAccessLease?,
         sessionRegistered: inout Bool,
         quarantinedByFailure: inout Bool
     ) async throws {
@@ -1086,6 +1108,7 @@ public actor TinyEMULinuxGuestRegistry {
                 channel: nil,
                 taskID: taskID,
                 error: error,
+                shareAccessLease: &shareAccessLease,
                 runtimeID: admission?.runtimeID
             )
             throw error
@@ -1156,6 +1179,7 @@ public actor TinyEMULinuxGuestRegistry {
                     channel: channel,
                     taskID: taskID,
                     error: error,
+                    shareAccessLease: &shareAccessLease,
                     runtimeID: admission?.runtimeID
                 )
                 throw error
@@ -1172,6 +1196,7 @@ public actor TinyEMULinuxGuestRegistry {
                 channel: sessionChannel,
                 taskID: taskID,
                 error: stopError,
+                shareAccessLease: &shareAccessLease,
                 runtimeID: admission?.runtimeID
             )
             throw stopError
@@ -1187,6 +1212,7 @@ public actor TinyEMULinuxGuestRegistry {
             forwards: [],
             runtimeID: admission?.runtimeID,
             networkStatus: LinuxGuestNetworkStatus.from(capabilities: negotiatedCapabilities),
+            shareAccessLease: shareAccessLease,
             generation: nextSessionGeneration()
         )
         do {
@@ -1211,12 +1237,15 @@ public actor TinyEMULinuxGuestRegistry {
                 channel: channel,
                 taskID: taskID,
                 error: error,
+                shareAccessLease: &shareAccessLease,
                 runtimeID: admission?.runtimeID
             )
             throw error
         }
         sessions[environmentID] = session
         sessionRegistered = true
+        // The registered session now owns the boot's durable share access.
+        shareAccessLease = nil
         lastErrors[environmentID] = nil
         FloeLogger(category: .tools).info(
             "Linux guest started environment=\(environmentID) image=\(image.id) ramMB=\(limits.clampedRAMMB(bootDescriptor.ramMB)) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB) network=\(session.networkStatus?.rawValue ?? "unknown")"
@@ -1812,6 +1841,7 @@ public actor TinyEMULinuxGuestRegistry {
         channel: LinuxGuestCommandChannel?,
         taskID: String?,
         error: Error,
+        shareAccessLease: inout LinuxGuestShareAccessLease?,
         runtimeID: String? = nil
     ) async -> Bool {
         if let channel { await channel.close() }
@@ -1830,8 +1860,12 @@ public actor TinyEMULinuxGuestRegistry {
             taskID: taskID,
             forwards: [],
             runtimeID: runtimeID,
+            shareAccessLease: shareAccessLease,
             generation: nextSessionGeneration()
         )
+        // The quarantined survivor may still touch its 9P shares; it owns the
+        // lease until a later confirmed stop releases it.
+        shareAccessLease = nil
         quarantinedEnvironments.insert(environmentID)
         lastErrors[environmentID] =
             "the guest failed to start (\(error.localizedDescription)) and is still running; retry stopGuest (the persistent disk is preserved and no new guest will start on it)"
@@ -1970,6 +2004,13 @@ public actor TinyEMULinuxGuestRegistry {
             )
             await runtimeV2.releaseSlot(environmentID: environmentID, runtimeID: runtimeID)
         }
+        // The VM stopped AND its runtime disk/slot work is done: nothing can
+        // touch the 9P shares again, so the boot's durable share access ends
+        // here. A quarantined session (returned above) keeps its lease until a
+        // later stop really succeeds. The lease releases exactly once even if
+        // a failure path also ran.
+        session.shareAccessLease?.release()
+        session.shareAccessLease = nil
         if stopSavedCleanly {
             // The disk and shares are untouched; only runtime state was dropped.
             lastImpacts[environmentID] =

@@ -209,6 +209,80 @@ final class WorkspaceCenter: ObservableObject {
         return record
     }
 
+    /// Persists durable access to an external directory picked for a template
+    /// environment, reusing the WorkspaceRecord/security-scoped bookmark
+    /// mechanism `addWorkspace` already establishes for Files workspaces. The
+    /// fileImporter's scope only lives for the submit call; the bookmark is
+    /// what lets a relaunched process resolve the folder and start
+    /// security-scoped access again.
+    ///
+    /// Idempotent by canonical folder: a project record whose bookmark
+    /// already resolves to this directory keeps its id, name, target and
+    /// conversation ownership (only a stale bookmark is refreshed in place),
+    /// and no duplicate record is created. The folder itself is never copied,
+    /// moved or modified.
+    @discardableResult
+    func ensureWorkspaceRecord(forDirectory url: URL, name: String? = nil) async throws -> WorkspaceRecord {
+        let record = try await Self.ensureWorkspaceRecord(
+            forDirectory: url,
+            name: name,
+            store: store
+        )
+        await reload()
+        return record
+    }
+
+    /// Store-injected variant of `ensureWorkspaceRecord(forDirectory:name:)`
+    /// so the durable-access contract is testable without the app-lifetime
+    /// environment graph. Matching goes through the resolved bookmark, not
+    /// the raw path string: a picker can return a different spelling of a
+    /// folder an existing project record already owns, and a duplicate record
+    /// would split that folder's ownership.
+    nonisolated static func ensureWorkspaceRecord(
+        forDirectory url: URL,
+        name: String?,
+        store: any WorkspaceStore
+    ) async throws -> WorkspaceRecord {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let canonical = canonicalWorkspacePath(url)
+
+        for existing in try await store.workspaces() {
+            guard existing.kind == .project else { continue }
+            var isStale = false
+            guard let resolved = try? URL(
+                resolvingBookmarkData: existing.rootBookmark,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) else { continue }
+            guard canonicalWorkspacePath(resolved) == canonical else { continue }
+            guard isStale,
+                  let refreshed = try? resolved.bookmarkData(
+                      options: [],
+                      includingResourceValuesForKeys: nil,
+                      relativeTo: nil
+                  ) else { return existing }
+            var updated = existing
+            updated.rootBookmark = refreshed
+            updated.updatedAt = Date()
+            try await store.saveWorkspace(updated)
+            return updated
+        }
+
+        let bookmark = try url.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        let record = WorkspaceRecord(
+            name: (name?.isEmpty == false ? name : nil) ?? url.lastPathComponent,
+            rootBookmark: bookmark
+        )
+        try await store.saveWorkspace(record)
+        return record
+    }
+
     /// Deletes a workspace record. User-selected project directories are never
     /// touched; app-owned private task directories are removed with the record.
     func deleteWorkspace(id: UUID) async throws {
@@ -1238,6 +1312,107 @@ final class WorkspaceCenter: ObservableObject {
     /// The root provider handed to `registerWorkspaceTools`.
     static var toolRootProvider: @Sendable () -> URL? {
         { sharedRootOverride }
+    }
+
+    // MARK: - Durable workspace access for guests
+
+    /// Resolves durable, security-scoped access to an external workspace root
+    /// by its canonical path, for callers that only carry the environment
+    /// registry's plain path (the TinyEMU workspace 9P share). The caller
+    /// injects the app's `WorkspaceStore` — the guest backend receives it at
+    /// assembly time, so a cold-start guest start never depends on the
+    /// lazily created UI center.
+    ///
+    /// Returns nil when the root is app-owned (inside the sandbox or app
+    /// group): those paths are always reachable and need no lease. Throws
+    /// `ExternalWorkspaceAccessError` when a *remembered external* workspace
+    /// cannot re-establish its scope, or when an external path has no durable
+    /// record at all — the guest must fail closed instead of exporting a
+    /// folder the host cannot read.
+    nonisolated static func acquireExternalWorkspaceAccess(
+        forCanonicalPath path: String,
+        store: any WorkspaceStore,
+        startScope: (URL) -> Bool = { $0.startAccessingSecurityScopedResource() },
+        stopScope: @escaping @Sendable (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }
+    ) async throws -> LinuxGuestShareAccessLease? {
+        let canonical = canonicalWorkspacePath(URL(fileURLWithPath: path))
+        for existing in (try? await store.workspaces()) ?? [] {
+            guard existing.kind == .project else { continue }
+            var isStale = false
+            guard let resolved = try? URL(
+                resolvingBookmarkData: existing.rootBookmark,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) else { continue }
+            guard canonicalWorkspacePath(resolved) == canonical else { continue }
+            if isStale, let refreshed = try? resolved.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            ) {
+                var updated = existing
+                updated.rootBookmark = refreshed
+                updated.updatedAt = Date()
+                try? await store.saveWorkspace(updated)
+            }
+            // A matching project record is a known external workspace: the
+            // scope must actually start. A refusal is a typed failure, never
+            // a silent scope-free boot.
+            guard startScope(resolved) else {
+                throw ExternalWorkspaceAccessError(path: canonical)
+            }
+            return LinuxGuestShareAccessLease {
+                stopScope(resolved)
+            }
+        }
+        // No project record covers the path. An app-owned root (private task
+        // or scratch directory inside the sandbox) is always reachable and
+        // needs no grant. Anything else is an external Files folder without a
+        // durable grant — it must fail closed, because a scope-free 9P export
+        // of an unreadable folder would only surface as silent guest I/O
+        // errors.
+        if isAppOwnedWorkspacePath(canonical) { return nil }
+        throw ExternalWorkspaceAccessError(path: canonical)
+    }
+
+    /// True when the root lives inside an app-owned container (the sandbox
+    /// home or the shared app group): those paths need no security-scoped
+    /// lease. An external Files folder never lives here.
+    nonisolated static func isAppOwnedWorkspacePath(_ path: String) -> Bool {
+        let canonical = canonicalWorkspacePath(URL(fileURLWithPath: path))
+        var roots = [NSHomeDirectory()]
+        if let group = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupIdentifier
+        ) {
+            roots.append(group.path)
+        }
+        return roots.contains { root in
+            let canonicalRoot = canonicalWorkspacePath(URL(fileURLWithPath: root))
+            return canonical == canonicalRoot || canonical.hasPrefix(canonicalRoot + "/")
+        }
+    }
+
+    /// Shared app group (same value as the widget/Shortcuts suites). Only used
+    /// to classify an already-resolved path as app-owned.
+    nonisolated private static let appGroupIdentifier = "group.org.floeagent.ios"
+
+    /// One canonical comparison form for workspace root identity: both the
+    /// picker URL and the bookmark-resolved URL go through it.
+    nonisolated static func canonicalWorkspacePath(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+}
+
+/// A remembered external workspace root exists but its durable grant can no
+/// longer be re-established (the security-scoped bookmark no longer opens).
+/// Guest starts fail closed on this: a scope-free 9P export of an unreadable
+/// folder would only surface as silent I/O errors inside the guest.
+struct ExternalWorkspaceAccessError: Error, LocalizedError, Sendable {
+    let path: String
+
+    var errorDescription: String? {
+        "无法重新访问外部工作区（安全作用域授权失败）：\(path) / Cannot re-open the external workspace (security-scoped access failed): \(path)"
     }
 }
 #endif

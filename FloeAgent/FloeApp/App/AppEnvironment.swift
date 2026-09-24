@@ -374,7 +374,11 @@ final class AppEnvironment: ObservableObject {
         // (`ownsLinuxEnvironment` is false without `executionBackend .linuxVM`).
         let linuxGuests = LinuxGuestBackendAssembly.makeService(
             registry: environmentRegistry,
-            artifactRoot: try? FloeArtifactStore.root()
+            artifactRoot: try? FloeArtifactStore.root(),
+            // Injected here, not read from the lazy workspace center: a
+            // cold-start guest start must resolve an external workspace's
+            // security scope before any UI object exists.
+            workspaceStore: SQLiteWorkspaceStore(database: database)
         )
         self.linuxGuestService = linuxGuests
         // Optional guest → host archive bridge: a `floe-host archive …`
