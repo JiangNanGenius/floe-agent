@@ -163,8 +163,8 @@ enum IDELanguageRunText {
     static func shapeRefusal(_ refusal: GuestRunEntryShapeRefusal) -> String {
         switch refusal {
         case .releaseVCPUUnsupported(let requested, let maximum):
-            return t("本版本最多 \(maximum) 个客户机内核，尚未交付 \(requested) 核：双 hart 已实现，但真机 SMP 验收未通过（首个 fork/exec 停滞，云端运行 35851127603）。选择 2 核会在启动前被拒绝，不会以 1 核静默运行。",
-                     "This release delivers at most \(maximum) guest core; \(requested) cores are not qualified yet. The two-hart engine exists, but real SMP acceptance failed (stalls at the first fork/exec, cloud run 35851127603). Selecting 2 cores is refused before launch — it never silently runs on one hart.")
+            return t("本版本最多 \(maximum) 个客户机内核，尚未交付 \(requested) 核：双核尚未完成发布资格和真机验证。选择 2 核会在启动前被拒绝，不会以 1 核静默运行。",
+                     "This release delivers at most \(maximum) guest core; \(requested) cores are not yet qualified for release and device use. Selecting 2 cores is refused before launch; it never silently runs on one hart.")
         case .imageDoesNotProveSMP(let requested):
             return t("当前镜像清单没有提供 SMP 证据，资源池会拒绝 \(requested) 核的授权；已在启动前拒绝，不会以 1 核静默运行。",
                      "The current image manifest does not prove SMP, so the resource pool refuses a \(requested)-core grant; the run is refused before launch and never silently runs on one hart.")
