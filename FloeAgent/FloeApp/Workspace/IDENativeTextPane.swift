@@ -265,7 +265,7 @@ private struct IDENativeEditorTabView: View {
     private func markdownButton(
         _ title: String? = nil,
         icon: String? = nil,
-        label: String,
+        label: String = "",
         identifier: String,
         active: Bool = false,
         action: @escaping () -> Void
