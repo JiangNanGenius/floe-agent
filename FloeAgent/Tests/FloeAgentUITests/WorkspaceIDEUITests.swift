@@ -101,6 +101,63 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
 
+    /// The Git sidebar stays usable at the workbench's narrow split width:
+    /// fetch/pull/push render as one row of equal icon buttons (never
+    /// single-character columns), each keeping a >=44pt target inside the
+    /// pane, and the branch/commit controls keep theirs too. The shared
+    /// fixture workspace starts as a plain folder, so the product's own
+    /// initialize action turns it into the repository this test inspects.
+    func testGitSidebarCompactSyncRow() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launch()
+        defer { app.terminate() }
+        try openWorkbench(app, ipad: ipad)
+        app.buttons["workspace.ide.sourceControl"].tap()
+        let sidebar = app.descendants(matching: .any).matching(identifier: "workspace.ide.sidebar").firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "the source-control sidebar must open")
+        // Only a repository exposes the sync row; the not-a-repository state
+        // is initialized through the product button, never a test hook.
+        let initialize = app.buttons["sourceControl.initialize"]
+        if initialize.waitForExistence(timeout: 8), initialize.isHittable {
+            initialize.tap()
+        }
+        XCTAssertTrue(
+            app.buttons["sourceControl.sync.fetch"].waitForExistence(timeout: 30),
+            "the source-control sidebar must expose its sync actions"
+        )
+        for (identifier, label) in [
+            ("sourceControl.sync.fetch", "抓取"),
+            ("sourceControl.sync.pull", "拉取"),
+            ("sourceControl.sync.push", "推送"),
+        ] {
+            let control = app.buttons[identifier]
+            XCTAssertTrue(control.exists, "\(identifier) must exist")
+            XCTAssertTrue(control.isHittable, "\(identifier) must stay tappable")
+            XCTAssertTrue(control.label.contains(label), "\(identifier) must carry its action name")
+            XCTAssertGreaterThanOrEqual(control.frame.height, 44, "\(identifier) must keep a 44pt touch target")
+            XCTAssertGreaterThanOrEqual(control.frame.width, 44, "\(identifier) must keep a 44pt touch target")
+            XCTAssertGreaterThan(
+                control.frame.width, control.frame.height,
+                "\(identifier) must not wrap back into a vertical character column"
+            )
+            XCTAssertLessThanOrEqual(
+                control.frame.maxX, sidebar.frame.maxX + 1,
+                "\(identifier) must stay inside the Git pane"
+            )
+        }
+        let branch = app.buttons["sourceControl.branch.open"]
+        XCTAssertTrue(branch.exists, "the branch row must stay reachable")
+        XCTAssertGreaterThanOrEqual(branch.frame.height, 44, "the branch row must keep a 44pt target")
+        XCTAssertGreaterThanOrEqual(app.buttons["sourceControl.commit.stageAll"].frame.height, 44)
+        XCTAssertTrue(app.textFields["sourceControl.commit.message"].exists)
+        capture("ide-git-sidebar-compact-sync-row")
+    }
+
     func testEngineeringDrawingInlineAndFullScreen() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

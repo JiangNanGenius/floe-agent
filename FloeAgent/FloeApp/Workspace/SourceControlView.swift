@@ -55,6 +55,27 @@ enum SourceControlChangeTree {
     }
 }
 
+/// Compact IDE-sidebar metrics. A source-control pane is scanned, not read
+/// like a settings form: default iPad list rows (~64pt) leave whole screens of
+/// empty space and push the change tree below the fold, so every row gets
+/// explicit tighter insets. Interactive rows still carry a 44pt target
+/// through their content frame (`minHeight`), which keeps touch use safe while
+/// the surrounding whitespace stays restrained.
+private enum SourceControlLayout {
+    static let rowInsets = EdgeInsets(top: 3, leading: 14, bottom: 3, trailing: 14)
+    /// Floor for non-interactive rows (metadata, section content).
+    static let minRowHeight: CGFloat = 32
+    static let sectionSpacing: CGFloat = 12
+}
+
+private extension View {
+    /// Applies the source-control pane's compact row insets. SwiftUI has no
+    /// list-wide row-inset modifier, so every row opts in explicitly.
+    func sourceControlRowInsets() -> some View {
+        listRowInsets(SourceControlLayout.rowInsets)
+    }
+}
+
 /// The ordinary source-control surface: staged/unstaged changes with
 /// per-file stage, unstage and discard (recovery copy kept), working-tree and
 /// staged diffs, commits, branch switch/create, fetch/pull (fast-forward and
@@ -127,6 +148,7 @@ struct SourceControlView: View {
                     Button(IDELanguageRunText.t("初始化仓库", "Initialize Repository")) { run { try await center.initializeRepository() } }
                         .buttonStyle(.borderedProminent)
                         .disabled(center.isBusy)
+                        .accessibilityIdentifier("sourceControl.initialize")
                 }
             }
         }
@@ -254,32 +276,60 @@ struct SourceControlView: View {
                 // the workspace (a nested checkout or a linked worktree), so
                 // the tree is truthful about which repository it inspects.
                 if center.isNestedRepository, let root = center.repositoryRoot {
-                    LabeledContent(IDELanguageRunText.t("仓库", "Repository")) {
-                        Label(root.path, systemImage: "folder")
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                    infoRow(
+                        icon: "folder",
+                        iconTint: .secondary,
+                        title: IDELanguageRunText.t("仓库", "Repository"),
+                        value: root.path
+                    )
                 }
                 Button { showBranches = true } label: {
-                    LabeledContent(IDELanguageRunText.t("分支", "Branch")) {
-                        Label(center.snapshot.branch ?? IDELanguageRunText.t("游离 HEAD", "detached HEAD"), systemImage: "arrow.triangle.branch")
-                    }
+                    infoRow(
+                        icon: "arrow.triangle.branch",
+                        iconTint: FloeTheme.primary,
+                        title: IDELanguageRunText.t("分支", "Branch"),
+                        value: center.snapshot.branch ?? IDELanguageRunText.t("游离 HEAD", "detached HEAD"),
+                        valueEmphasized: true,
+                        showsChevron: true,
+                        minHeight: FloeTheme.minimumTarget
+                    )
                 }
                 .buttonStyle(.plain)
-                if let remote = center.snapshot.remoteURL {
-                    LabeledContent(IDELanguageRunText.t("远程", "Remote")) { Text(remote).lineLimit(1).truncationMode(.middle) }
-                } else {
-                    LabeledContent(IDELanguageRunText.t("远程", "Remote")) { Text(IDELanguageRunText.t("未绑定", "Not configured")).foregroundStyle(.secondary) }
-                }
+                .accessibilityIdentifier("sourceControl.branch.open")
+                infoRow(
+                    icon: "network",
+                    iconTint: .secondary,
+                    title: IDELanguageRunText.t("远程", "Remote"),
+                    value: center.snapshot.remoteURL ?? IDELanguageRunText.t("未绑定", "Not configured"),
+                    valueSecondary: center.snapshot.remoteURL == nil
+                )
             }
 
             Section(IDELanguageRunText.t("同步", "Sync")) {
-                HStack {
-                    sourceButton(IDELanguageRunText.t("抓取", "Fetch"), icon: "arrow.down.circle") { try await center.fetch() }
-                    sourceButton(IDELanguageRunText.t("拉取", "Pull"), icon: "arrow.down.to.line") { try await center.pull() }
-                    sourceButton(IDELanguageRunText.t("推送", "Push"), icon: "arrow.up.to.line") { try await center.push() }
+                // Three equal buttons instead of bordered `Label`s: a bordered
+                // label title wraps its two CJK characters one per line in
+                // this pane's 280–330pt width, which turned fetch/pull/push
+                // into unreadable circles. A glyph over a short single-line
+                // label keeps the action readable, never wraps, keeps a
+                // >=44pt target, and stays VS Code-like in density.
+                HStack(spacing: 6) {
+                    syncButton(
+                        IDELanguageRunText.t("抓取", "Fetch"),
+                        icon: "arrow.down.circle",
+                        identifier: "sourceControl.sync.fetch"
+                    ) { try await center.fetch() }
+                    syncButton(
+                        IDELanguageRunText.t("拉取", "Pull"),
+                        icon: "arrow.down.to.line",
+                        identifier: "sourceControl.sync.pull"
+                    ) { try await center.pull() }
+                    syncButton(
+                        IDELanguageRunText.t("推送", "Push"),
+                        icon: "arrow.up.to.line",
+                        identifier: "sourceControl.sync.push"
+                    ) { try await center.push() }
                 }
-                .buttonStyle(.bordered)
+                .sourceControlRowInsets()
                 Button {
                     run {
                         let outcome = try await center.pullMerge()
@@ -288,9 +338,16 @@ struct SourceControlView: View {
                             : outcome.message
                     }
                 } label: {
-                    Label(IDELanguageRunText.t("拉取并合并", "Pull and Merge"), systemImage: "arrow.triangle.merge")
+                    actionRow(
+                        icon: "arrow.triangle.merge",
+                        title: IDELanguageRunText.t("拉取并合并", "Pull and Merge"),
+                        disabled: center.isBusy
+                    )
                 }
+                .buttonStyle(.plain)
                 .disabled(center.isBusy)
+                .accessibilityIdentifier("sourceControl.sync.pullMerge")
+                .sourceControlRowInsets()
             }
 
             if !conflictedChanges.isEmpty {
@@ -301,30 +358,56 @@ struct SourceControlView: View {
                         } label: {
                             Label(change.path, systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(FloeTheme.destructive)
+                                .frame(maxWidth: .infinity, minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .sourceControlRowInsets()
                     }
-                    Button(IDELanguageRunText.t("中止合并", "Abort Merge"), role: .destructive) { run { try await center.abortMerge() } }
-                        .disabled(center.isBusy)
+                    Button(role: .destructive) {
+                        run { try await center.abortMerge() }
+                    } label: {
+                        Text(IDELanguageRunText.t("中止合并", "Abort Merge"))
+                            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(center.isBusy)
+                    .sourceControlRowInsets()
                 }
             }
 
             Section(IDELanguageRunText.t("提交", "Commit")) {
                 TextField(IDELanguageRunText.t("说明这次修改", "Describe this change"), text: $commitMessage, axis: .vertical)
                     .lineLimit(2...5)
-                HStack {
-                    Button(IDELanguageRunText.t("暂存全部", "Stage All")) { run { try await center.stageAll() } }
-                    Spacer()
-                    Button(IDELanguageRunText.t("提交", "Commit")) {
+                    .font(.subheadline)
+                    .accessibilityIdentifier("sourceControl.commit.message")
+                    .sourceControlRowInsets()
+                HStack(spacing: 8) {
+                    Button {
+                        run { try await center.stageAll() }
+                    } label: {
+                        Text(IDELanguageRunText.t("暂存全部", "Stage All"))
+                            .frame(minHeight: FloeTheme.minimumTarget)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(center.isBusy)
+                    .accessibilityIdentifier("sourceControl.commit.stageAll")
+                    Spacer(minLength: 0)
+                    Button {
                         let message = commitMessage
                         run {
                             try await center.commit(message: message)
                             commitMessage = ""
                         }
+                    } label: {
+                        Text(IDELanguageRunText.t("提交", "Commit"))
+                            .frame(minHeight: FloeTheme.minimumTarget)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.isBusy)
+                    .accessibilityIdentifier("sourceControl.commit.submit")
                 }
+                .sourceControlRowInsets()
             }
 
             if !stagedChanges.isEmpty {
@@ -337,7 +420,10 @@ struct SourceControlView: View {
 
             Section(String(format: IDELanguageRunText.t("更改（%lld）", "Changes (%lld)"), Int64(unstagedChanges.count))) {
                 if unstagedChanges.isEmpty {
-                    Text(IDELanguageRunText.t("工作区干净", "Working tree clean")).foregroundStyle(.secondary)
+                    Text(IDELanguageRunText.t("工作区干净", "Working tree clean"))
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
+                        .sourceControlRowInsets()
                 } else {
                     OutlineGroup(SourceControlChangeTree.build(unstagedChanges), children: \.outlineChildren) { node in
                         changeNodeRow(node, staged: false)
@@ -348,7 +434,7 @@ struct SourceControlView: View {
             if !center.snapshot.recentCommits.isEmpty {
                 Section(IDELanguageRunText.t("最近提交", "Recent Commits")) {
                     ForEach(center.snapshot.recentCommits.prefix(20)) { commit in
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(commit.message).lineLimit(2)
                             HStack {
                                 Text(commit.shortOID).font(.caption.monospaced())
@@ -359,11 +445,15 @@ struct SourceControlView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         }
+                        .frame(minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
+                        .sourceControlRowInsets()
                     }
                 }
             }
         }
         .listStyle(.plain)
+        .environment(\.defaultMinListRowHeight, SourceControlLayout.minRowHeight)
+        .listSectionSpacing(SourceControlLayout.sectionSpacing)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await center.refreshRepository() } } label: { Image(systemName: "arrow.clockwise") }
@@ -380,6 +470,8 @@ struct SourceControlView: View {
         } else {
             Label(node.name, systemImage: "folder")
                 .foregroundStyle(.primary)
+                .frame(minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
+                .sourceControlRowInsets()
         }
     }
 
@@ -390,7 +482,7 @@ struct SourceControlView: View {
                     .font(.caption.monospaced().bold())
                     .foregroundStyle(change.kind.color)
                     .frame(width: 20)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text((change.path as NSString).lastPathComponent).lineLimit(1)
                     Text(change.path).lineLimit(1).truncationMode(.middle)
                         .font(.caption2).foregroundStyle(.tertiary)
@@ -398,6 +490,8 @@ struct SourceControlView: View {
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
+            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing) {
@@ -410,6 +504,7 @@ struct SourceControlView: View {
             }
             Button(IDELanguageRunText.t("放弃修改", "Discard Changes"), role: .destructive) { discardRequest = change }
         }
+        .sourceControlRowInsets()
     }
 
     private var stagedChanges: [GitFileChange] {
@@ -476,13 +571,92 @@ struct SourceControlView: View {
         }
     }
 
-    private func sourceButton(
+    /// One compact metadata row (repository root, branch, remote). The value
+    /// truncates in the middle so a long path/remote never pushes the label
+    /// out or wraps at the pane's narrow width.
+    private func infoRow(
+        icon: String,
+        iconTint: Color,
+        title: String,
+        value: String,
+        valueEmphasized: Bool = false,
+        valueSecondary: Bool = false,
+        showsChevron: Bool = false,
+        minHeight: CGFloat = SourceControlLayout.minRowHeight
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(iconTint)
+                .frame(width: 18)
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .fontWeight(valueEmphasized ? .medium : .regular)
+                .foregroundStyle(valueSecondary ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if showsChevron {
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.subheadline)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    /// A full-row action (pull and merge, conflict rows): icon + label, a
+    /// >=44pt target and a plain style so it keeps the pane's density.
+    private func actionRow(icon: String, title: String, disabled: Bool = false) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(disabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(FloeTheme.primary))
+                .frame(width: 18)
+            Text(title)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+        }
+        .font(.subheadline)
+        .foregroundStyle(disabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(FloeTheme.primary))
+        .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    /// One sync action. Three of these share the row equally: a glyph over a
+    /// short single-line label keeps fetch/pull/push readable in the pane's
+    /// 280–330pt width, where a bordered `Label` wrapped its two CJK
+    /// characters one per line into an unreadable circle. Every button keeps
+    /// a >=44pt target and carries the action's name for VoiceOver.
+    private func syncButton(
         _ title: String,
         icon: String,
+        identifier: String,
         operation: @escaping @MainActor () async throws -> Void
     ) -> some View {
-        Button { run(operation) } label: { Label(title, systemImage: icon) }
-            .disabled(center.isBusy)
+        Button { run(operation) } label: {
+            VStack(spacing: 1) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .frame(height: 20)
+                Text(title)
+                    .font(.caption2.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity)
+            }
+            .foregroundStyle(FloeTheme.primary)
+            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(FloeTheme.fieldSurface)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(center.isBusy)
+        .opacity(center.isBusy ? 0.5 : 1)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
     }
 
     private func run(_ operation: @escaping @MainActor () async throws -> Void) {
