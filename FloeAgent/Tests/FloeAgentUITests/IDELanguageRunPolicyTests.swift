@@ -435,5 +435,137 @@ struct IDELanguageRunPolicyTests {
         #expect(plan.isRunnable)
         #expect(plan.option(for: .dualCore)?.refusal == .releaseVCPUUnsupported(requested: 2, maximum: 1))
     }
+
+    // MARK: Guest run shape handoff (entry → guest start)
+
+    @Test func productionReleaseGateStillAnswersOneHartWithVerifiedImageSMPAndShapeAwareDispatch() {
+        // Weaker evidence can never widen the release: even with the verified
+        // image proving SMP and this build carrying a typed shape request, the
+        // frozen production policy answers one hart, so an automatic plan is
+        // delivered at one hart and an explicit dual selection stays refused.
+        let signals = WorkloadResourceSignals(
+            workloadKey: "ide-run:build.sh", declaredCommands: ["make"]
+        )
+        let automatic = GuestRunEntryShapePlanner.plan(
+            selection: .automatic, signals: signals,
+            imageProvesSMP: true, dispatch: .shapeAware
+        )
+        #expect(automatic.effectiveRequest?.vcpus == .one)
+        #expect(automatic.automaticDowngradedFromRecommendation)
+        #expect(automatic.option(for: .dualCore)?.refusal ==
+                .releaseVCPUUnsupported(requested: 2, maximum: 1))
+
+        let dual = GuestRunEntryShapePlanner.plan(
+            selection: .dualCore, signals: signals,
+            imageProvesSMP: true, dispatch: .shapeAware
+        )
+        #expect(!dual.isRunnable)
+        #expect(dual.effectiveRequest == nil)
+        // A refused selection registers no handoff intent at all, so the start
+        // path can never boot one hart and label it as the user's choice.
+        #expect(ShellGuestRunShapeIntent.from(
+            plan: dual, environmentID: "env", runID: "run"
+        ) == nil)
+    }
+
+    @Test func fullyQualifiedAutomaticPlanCarriesItsTypedRequestIntoTheStartIntent() {
+        // The propagation channel is real: with the release gate, the verified
+        // image SMP proof and the shape-aware dispatch path all open (the
+        // synthetic policy is an explicit test-only opt-in), the accepted
+        // automatic plan becomes a typed two-hart `.recommendation` intent with
+        // the entry's authorized single-hart floor — exactly what the guest
+        // start claims under that same policy.
+        let signals = WorkloadResourceSignals(
+            workloadKey: "ide-run:build.sh", declaredCommands: ["make"]
+        )
+        let plan = GuestRunEntryShapePlanner.plan(
+            selection: .automatic, signals: signals,
+            releasePolicy: .internalSyntheticTesting(
+                maximumSupportedVCPUs: 2,
+                provenance: "IDELanguageRunPolicyTests shape handoff"
+            ),
+            imageProvesSMP: true,
+            dispatch: .shapeAware
+        )
+        #expect(plan.effectiveRequest?.vcpus == .two)
+        let intent = ShellGuestRunShapeIntent.from(
+            plan: plan, environmentID: "env-qualified", runID: "run-qualified"
+        )
+        #expect(intent?.request.vcpus == .two)
+        #expect(intent?.request.origin == .recommendation)
+        #expect(intent?.downgrade == .authorized(vcpuFloor: .one, memoryFloor: .m256))
+        #expect(intent?.environmentID == "env-qualified")
+        #expect(intent?.runID == "run-qualified")
+    }
+
+    @Test func pickerSelectionResolvesToTheSamePlanDispatchUses() {
+        // The sheet binds its Picker directly to `controller.guestShapeSelection`
+        // and renders `controller.guestShapePlan`, which is built by exactly
+        // this planner call (same recommendation, same verified-image SMP
+        // evidence, same `.shapeAware` dispatch) the controller uses at
+        // dispatch time. Every selectable row therefore resolves to the plan
+        // the run actually consumes: automatic and single-core are runnable at
+        // one hart under this release, and an explicit dual selection is
+        // refused with no effective request (nothing can start).
+        let signals = WorkloadResourceSignals(
+            workloadKey: "ide-run:train.py", declaredCommands: ["python3"]
+        )
+        for selection in GuestRunEntryShapeSelection.allCases {
+            let plan = GuestRunEntryShapePlanner.plan(
+                selection: selection,
+                signals: signals,
+                imageProvesSMP: true,
+                dispatch: .shapeAware
+            )
+            #expect(plan.selection == selection)
+            switch selection {
+            case .automatic:
+                #expect(plan.isRunnable)
+                #expect(plan.effectiveRequest?.vcpus == .one)
+                #expect(plan.effectiveRequest?.origin == .recommendation)
+            case .singleCore:
+                #expect(plan.isRunnable)
+                #expect(plan.effectiveRequest?.vcpus == .one)
+                #expect(plan.effectiveRequest?.origin == .userSpecified)
+                #expect(plan.downgrade == .strict)
+            case .dualCore:
+                #expect(!plan.isRunnable)
+                #expect(plan.effectiveRequest == nil)
+                #expect(ShellGuestRunShapeIntent.from(
+                    plan: plan, environmentID: "env", runID: "run"
+                ) == nil)
+            }
+        }
+    }
+
+    @Test func platformServiceRegistersAndClearsTheRunShapeHandoff() {
+        let services = FloePlatformServices.shared
+        let environmentID = "test-env-\(UUID().uuidString.lowercased())"
+        let runID = UUID()
+        let plan = GuestRunEntryShapePlanner.plan(
+            selection: .singleCore,
+            signals: IDELanguageRunPolicy.guestShapeSignals(
+                relativePath: "scripts/main.py", interpreter: .python3
+            )
+        )
+        guard let intent = ShellGuestRunShapeIntent.from(
+            plan: plan, environmentID: environmentID, runID: runID.uuidString
+        ) else {
+            Issue.record("the accepted single-core plan produced no handoff intent")
+            return
+        }
+        services.registerLinuxGuestRunShapeIntent(intent)
+        #expect(services.runShapeCenter.intent(
+            environmentID: environmentID, runID: runID.uuidString
+        ) == intent)
+        // Nothing is armed until a start claims it for the same run.
+        #expect(services.runShapeCenter.armedIntent(environmentID: environmentID) == nil)
+        services.clearLinuxGuestRunShapeIntent(
+            environmentID: environmentID, runID: runID.uuidString
+        )
+        #expect(services.runShapeCenter.intent(
+            environmentID: environmentID, runID: runID.uuidString
+        ) == nil)
+    }
 }
 #endif

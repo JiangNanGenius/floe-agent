@@ -89,6 +89,8 @@ enum IDELanguageRunText {
             return t("无法探测远端可执行文件，未发送运行命令", "Could not probe the remote executable; no run command was sent")
         case .terminalUnavailable:
             return t("本地终端无法启动", "The local terminal could not start")
+        case .guestShapeRefused(let refusal):
+            return Self.guestShapeStartRefusal(refusal)
         case .projectToolEnvironmentUnavailable:
             return t("无法解析本工作区的执行环境，已取消本地运行（未打开终端）", "Could not resolve this workspace's execution environment; the local run was not started")
         case .remoteHostUnavailable:
@@ -169,6 +171,23 @@ enum IDELanguageRunText {
         case .dispatchNotShapeAware(let requested):
             return t("运行调度路径尚未接入客户机形状请求，当前无法把 \(requested) 核交给启动流程；已在启动前拒绝，不会以 1 核静默运行。",
                      "The run dispatch path cannot deliver a guest shape request yet, so \(requested) cores cannot reach the start path; the run is refused before launch and never silently runs on one hart.")
+        }
+    }
+
+    /// One typed start-path refusal: the environment's guest could not take the
+    /// requested shape. The running guest is never reshaped or restarted, and
+    /// nothing executed at another shape.
+    static func guestShapeStartRefusal(_ refusal: ShellGuestRunShapeError) -> String {
+        switch refusal {
+        case .startAlreadyInProgress:
+            return t("该环境已有另一次客户机启动正在进行；本次运行未启动任何东西，请等它结束后重试。",
+                     "Another guest start is already in progress for this environment; nothing was started for this run. Wait for it to finish and run again.")
+        case .runningGuestShapeMismatch(_, let requested, let running):
+            return t("该环境的客户机正在以 \(running) 个内核运行，与请求的 \(requested) 个内核不一致；已拒绝本次请求，未重启或改变正在运行的客户机。请先停止该客户机，再以新形状启动。",
+                     "This environment's guest is already running with \(running) core(s), which does not match the requested \(requested); the request was refused and the running guest was not restarted or reshaped. Stop the guest to start it at the new shape.")
+        case .runningGuestShapeUnknown(_, let requested):
+            return t("该环境已有客户机在运行，但无法读取其已授予的内核数；为确保不静默按其他形状运行，请求 \(requested) 个内核的本次运行已被拒绝。",
+                     "A guest is already running for this environment but its granted core count could not be read; to avoid running at an unrequested shape, this \(requested)-core run was refused.")
         }
     }
 
@@ -253,10 +272,11 @@ struct IDELanguageRunView: View {
     @State private var jobLogRecordID: UUID?
     @State private var jobLogText: String?
     @State private var showingJobLog = false
-    /// The run-entry guest shape choice. Only script runs that actually start
-    /// the Linux guest (Python/Node) show the control.
-    @State private var guestShapeSelection: GuestRunEntryShapeSelection = .automatic
-    @State private var guestShapePlan: GuestRunEntryShapePlan?
+    /// The run-entry guest shape choice and its resolved plan are BOTH owned by
+    /// the controller: the picker writes `controller.guestShapeSelection` and
+    /// the sheet renders `controller.guestShapePlan`, so the visible plan, the
+    /// Run button gate and the dispatched typed request can never diverge.
+    private var guestShapePlan: GuestRunEntryShapePlan? { controller.guestShapePlan }
 
     private var fileName: String {
         guard let path = state.activePath, let last = path.split(separator: "/").last else {
@@ -307,7 +327,7 @@ struct IDELanguageRunView: View {
                 }
             }
             .task { await controller.prepare() }
-            .task(id: guestShapeTaskKey) { await refreshGuestShapePlan() }
+            .task(id: guestShapeTaskKey) { await controller.refreshGuestShapePlan() }
             .onChange(of: controller.selection) { _, _ in
                 Task { await controller.selectionDidChange() }
             }
@@ -443,9 +463,10 @@ struct IDELanguageRunView: View {
     }
 
     /// Recomputes the plan whenever the pinned file, the target or the
-    /// selection changes. The plan is rebuilt from the shared advisory so a
-    /// user override or recorded outcome is honored, and the release gate is
-    /// applied at the same time.
+    /// selection changes. The controller rebuilds it from the shared advisory
+    /// (honoring a user override or recorded outcome), the verified image's SMP
+    /// proof and the release gate, so the sheet never displays a plan that
+    /// differs from the one dispatch consumes.
     private var guestShapeTaskKey: String {
         let target: String
         switch controller.selection.target {
@@ -453,27 +474,7 @@ struct IDELanguageRunView: View {
         case .remote(let id, _): target = "remote:\(id.uuidString)"
         case .githubActions: target = "github"
         }
-        return "\(target)|\(state.activePath ?? "")|\(guestShapeInterpreter?.rawValue ?? "none")|\(guestShapeSelection.rawValue)"
-    }
-
-    @MainActor
-    private func refreshGuestShapePlan() async {
-        guard let interpreter = guestShapeInterpreter, let path = state.activePath else {
-            guestShapePlan = nil
-            return
-        }
-        let signals = IDELanguageRunPolicy.guestShapeSignals(relativePath: path, interpreter: interpreter)
-        let recommendation = await GuestResourceAdvisory.shared.recommend(signals)
-        guestShapePlan = GuestRunEntryShapePlanner.plan(
-            selection: guestShapeSelection,
-            recommendation: recommendation,
-            // Fail closed on both undeliverable claims: this sheet cannot read
-            // the verified image manifest, and this build's run dispatch path
-            // does not carry a typed shape request yet. The frozen release
-            // gate refuses dual before either matters.
-            imageProvesSMP: false,
-            dispatch: .singleHartOnly
-        )
+        return "\(target)|\(state.activePath ?? "")|\(guestShapeInterpreter?.rawValue ?? "none")|\(controller.guestShapeSelection.rawValue)"
     }
 
     private func guestShapeOptionLabel(_ selection: GuestRunEntryShapeSelection) -> String {
@@ -486,7 +487,7 @@ struct IDELanguageRunView: View {
 
     private var guestShapeSection: some View {
         Section(IDELanguageRunText.t("客户机内核", "Guest cores")) {
-            Picker(selection: $guestShapeSelection) {
+            Picker(selection: $controller.guestShapeSelection) {
                 ForEach(GuestRunEntryShapeSelection.allCases, id: \.self) { selection in
                     Text(guestShapeOptionLabel(selection)).tag(selection)
                 }

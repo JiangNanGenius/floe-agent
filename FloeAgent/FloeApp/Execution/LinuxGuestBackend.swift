@@ -41,17 +41,24 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     /// guest start must be able to resolve an external workspace before any
     /// window has touched the workspace UI.
     let workspaceStore: any WorkspaceStore
+    /// The run shape armed by `FloePlatformServices` for the start currently
+    /// in flight (an accepted IDE script-run shape), or nil for every ordinary
+    /// start. Read-only during descriptor build: a concurrent status probe must
+    /// not consume what the start in flight still needs.
+    let armedRunShape: (@Sendable (String) -> ShellGuestRunShapeIntent?)?
 
     init(
         registry: EnvironmentRegistry,
         defaultImageID: String,
         pinnedImageID: (@Sendable (String) async -> String?)? = nil,
-        workspaceStore: any WorkspaceStore
+        workspaceStore: any WorkspaceStore,
+        armedRunShape: (@Sendable (String) -> ShellGuestRunShapeIntent?)? = nil
     ) {
         self.registry = registry
         self.defaultImageID = defaultImageID
         self.pinnedImageID = pinnedImageID
         self.workspaceStore = workspaceStore
+        self.armedRunShape = armedRunShape
     }
 
     func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor? {
@@ -70,6 +77,13 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         }
 
         let imageID = await pinnedImageID?(record.id) ?? defaultImageID
+        // An accepted IDE script-run shape armed for the start in flight is
+        // what this descriptor must carry: the typed vCPU/RAM request travels
+        // to the registry's typed admission (and from there to the pool) as an
+        // explicit environment-policy request, never as a hardcoded one-hart
+        // default. With no armed shape the descriptor keeps its previous
+        // nil values (worker default: one hart, the configured RAM default).
+        let armed = armedRunShape?(record.id)
         return LinuxGuestEnvironmentDescriptor(
             id: record.id,
             ownerID: record.ownerID,
@@ -77,7 +91,8 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             writableDirectory: layer,
             shares: Array(shares.prefix(LinuxGuestShare.maximumShares)),
             imageID: imageID,
-            ramMB: nil,
+            ramMB: armed?.request.memory.mb,
+            vcpus: armed?.request.vcpus.count,
             // Linux environments need apt/pip to install python3 and packages.
             // Each admitted guest owns its network instance; the registry
             // controls concurrent VM admission and lifecycle.
@@ -141,6 +156,10 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// `RuntimeV2Layout.expandedImagesDirectory`: the rebuildable view that
     /// carries the verbatim legacy manifest as `manifest.json`.
     let expandedImagesRoot: URL
+    /// SMP capability PROVEN by the verified image manifest (never the
+    /// engine's capability query and never a loose manifest claim). Answers
+    /// false for a missing/unverified image or an absent/false declaration.
+    let smpCapability: @Sendable (String) async -> Bool
 
     /// The verified legacy manifest of an already-migrated image, or nil when
     /// the v2 store does not hold this image verified.
@@ -202,7 +221,13 @@ enum LinuxGuestBackendAssembly {
                         isVerified: { imageID in
                             await integrator.isImageVerifiedWithoutMigration(imageID: imageID)
                         },
-                        expandedImagesRoot: layout.expandedImagesDirectory
+                        expandedImagesRoot: layout.expandedImagesDirectory,
+                        // The verified manifest's own SMP declaration is the
+                        // only image evidence; the engine query is never
+                        // consulted (see RuntimeV2ImageStore.smpCapability).
+                        smpCapability: { imageID in
+                            await integrator.imageSMPCapable(imageID: imageID)
+                        }
                     )
                 )
                 // C5: a pinned environment boots the immutable template's own
@@ -251,14 +276,30 @@ enum LinuxGuestBackendAssembly {
                 registry: registry,
                 defaultImageID: defaultImageID,
                 pinnedImageID: pinnedImageID,
-                workspaceStore: workspaceStore
+                workspaceStore: workspaceStore,
+                // The shape claimed for the start in flight (an accepted IDE
+                // script run): the descriptor it builds carries the typed
+                // request so the registry/pool admit that shape explicitly.
+                armedRunShape: { environmentID in
+                    FloePlatformServices.shared.runShapeCenter.armedIntent(environmentID: environmentID)
+                }
             ),
             images: images,
             limits: .standard,
             factory: TinyEMUGuestSessionFactory(),
             runtimeV2: runtimeV2
         )
-        return TinyEMULinuxCommandService(registry: guestRegistry)
+        let service = TinyEMULinuxCommandService(registry: guestRegistry)
+        // The runtime's own session table is the authoritative source for the
+        // core count an already-running guest was granted; the run-shape claim
+        // compares an explicit request against it instead of guessing.
+        FloePlatformServices.shared.setLinuxRunningGuestVCPUProbe { environmentID in
+            let states = await service.runtimeStates()
+            guard let state = states.first(where: { $0.environmentID == environmentID }),
+                  state.running else { return nil }
+            return state.vcpus
+        }
+        return service
     }
 
     /// Verified image storage on the same artifact root as the resolver: it
@@ -307,13 +348,21 @@ struct RoutingLocalShellBackend: LocalShellBackend {
     /// start records it as the guest's owner so a later local-model
     /// continuation of the SAME run can release its own transient guest
     /// without asking the user to stop a VM it just used.
+    ///
+    /// `guestRunID` is the shell session's run identity. A guest-backed IDE
+    /// script run has registered its accepted shape under exactly that run, so
+    /// the start claims it (release-gated) while a terminal or another run
+    /// keeps the worker default.
     private func activateWithPreparation(
         environmentID: String,
         taskID: String?,
+        guestRunID: UUID?,
         cancellation: CancellationToken?
     ) async throws {
         do {
-            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID, taskID: taskID)
+            try await FloePlatformServices.shared.activateLinuxGuest(
+                id: environmentID, taskID: taskID, runID: guestRunID
+            )
         } catch let error as LinuxGuestError {
             guard case .imageNotQualified = error else { throw error }
             guard let prepareLinux else { throw error }
@@ -321,7 +370,9 @@ struct RoutingLocalShellBackend: LocalShellBackend {
             _ = try await prepareLinux(
                 LinuxPreparationRequest(environmentID: environmentID, cancellation: token)
             )
-            try await FloePlatformServices.shared.activateLinuxGuest(id: environmentID, taskID: taskID)
+            try await FloePlatformServices.shared.activateLinuxGuest(
+                id: environmentID, taskID: taskID, runID: guestRunID
+            )
         }
     }
 
@@ -334,6 +385,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
             try await activateWithPreparation(
                 environmentID: environmentID,
                 taskID: request.runID?.uuidString,
+                guestRunID: request.runID,
                 cancellation: cancellation
             )
         } catch {
@@ -349,9 +401,13 @@ struct RoutingLocalShellBackend: LocalShellBackend {
         }
         // An interactive terminal is user-driven work: it never claims the
         // run-owned transient status (and an open terminal protects the guest
-        // from scoped release anyway).
+        // from scoped release anyway). The run identity is still passed so a
+        // registered IDE run shape is claimed for exactly that run.
         try await activateWithPreparation(
-            environmentID: environmentID, taskID: nil, cancellation: cancellation
+            environmentID: environmentID,
+            taskID: nil,
+            guestRunID: request.runID,
+            cancellation: cancellation
         )
         let result = try await guestBackend.openSession(request, cancellation: cancellation)
         guestSessions.insert(request.sessionID)
