@@ -4,9 +4,9 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前已交付内部构建：1.7.0（225）**。不可变标签 [`v1.7.0-beta.82`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.82) 固定源码 `fe0852b4`；[发布 run 35773856510](https://github.com/JiangNanGenius/floe-agent/actions/runs/35773856510) 完成验收 SDK 构建、IPA 留存、签名上传与 GitHub 预发布。Apple build `b53b6e02-a0cb-4eba-8d94-921805ff80e1` 已核实 `VALID`、未过期并在私有 Floe QA 组 `IN_BETA_TESTING`（2026-09-22T20:17:32Z）。真机 PPT、MLX 与 Linux 行为按用户后续反馈另行判断，详见 [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md)。
+**当前已交付内部构建：1.7.0（227）**。不可变标签 [`v1.7.0-beta.84`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.84) 固定源码 `9c756864`；[发布 run 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008) 完成云端构建、未签名 IPA 留存（739,368,613 字节，SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`）与签名上传，并发布 GitHub 预发布。Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` 已核实 `VALID`、未过期并在私有 Floe QA 组 `IN_BETA_TESTING`（2026-09-24T05:42:18Z，[核验 run 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720)），中英文测试说明均已读回。真机方面：Build 227 上已报告 MLX 本地模型普通对话与测速崩溃、PPT 预览后可编辑入口停住、从 IDE 文件树打开的 Word/Excel/PPT 停留在打开指示——这些是未修复的待处理回归，不代表通过。详见 [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md) 与 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)。
 
-**下一候选：1.7.0（226）**。[候选说明](RELEASE_NOTES_1.7.0_BUILD_226.md)记录 Runtime v2、原生 IDE、环境模板和专项修复的当前范围。基础 Linux 模板与开发文档模板已分别公开为[基础组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-basic-20260923.1)和[开发文档组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-dev-document-20260924.1)，镜像及对应源码已固定；这不是 Build 226 App、IPA 或 TestFlight 已发布的证据。云端 App 编译、定向 UI、上传、Apple 处理和 Floe QA 可安装状态将分别补记，真机验收仍单列。
+**源码状态——Build 227 之后的未发布修复（未宣布新构建号）**：PPT 编辑入口的有界 extent 引导后备、通过共享文档会话打开 IDE Office 标签、窄宽度 IDE Git 侧栏操作与 Linux 客体运行形状/核心选择链路仍在 `main` 上开发，不属于任何已交付构建。基础 Linux 模板与开发文档模板已分别公开为[基础组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-basic-20260923.1)和[开发文档组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-dev-document-20260924.1)，镜像及对应源码已固定；两种模板仍须通过 App 构建与安装路径检查，才可作为用户可下载项提供。这不是新 App、IPA 或 TestFlight 已发布的证据；云端 App 编译、定向 UI、上传、Apple 处理和 Floe QA 可安装状态将分别补记，真机验收仍单列。
 
 **历史内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
@@ -32,9 +32,11 @@
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 226 候选说明](RELEASE_NOTES_1.7.0_BUILD_226.md) | 当前未发布候选；镜像组件、原生 IDE、专项修复与分开的验证边界 |
-| [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md) | 已交付内部 Floe QA：验收 SDK 编译、IPA、签名上传、Apple VALID 与 GitHub 预发布；真机缺陷以设备反馈为准 |
-| [Build 225 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_225.json) | 已交付内部构建的中英文 TestFlight 测试重点 |
+| [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md) | 当前交付内部 Floe QA：云端构建、未签名 IPA、签名上传、Apple VALID、GitHub 预发布与设备回归边界 |
+| [Build 227 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_227.json) | 已交付内部构建的中英文 TestFlight 测试重点 |
+| [Build 226 候选说明](RELEASE_NOTES_1.7.0_BUILD_226.md) | 失败候选（云端编译缺少 `FloeTools` 导入，无 IPA、无上传）；镜像组件、原生 IDE 与专项修复的范围记录，修复即 Build 227 |
+| [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md) | 上一内部交付：验收 SDK 编译、IPA、签名上传、Apple VALID 与 GitHub 预发布；真机缺陷以设备反馈为准 |
+| [Build 225 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_225.json) | 上一已交付内部构建的中英文 TestFlight 测试重点 |
 | [下一版实施状态与验证边界](FLOE_1_7_NEXT_RELEASE_STATUS.md) | 整合轮的已实现/已验证项（统一许可入口、原生优先路由）、其他工作包的明确设计与未验收边界、待最终刷新章节与已知阻塞；不预留构建号 |
 | [Build 224 版本说明](RELEASE_NOTES_1.7.0_BUILD_224.md) | 未编译成功的候选：`v1.7.0-beta.81`（`c36b7b24`）在 run 35767875337 因 LinuxGuestImageDownloader.swift:101 类型化抛错失败，记录保留，修复即 Build 225 |
 | [Build 224 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_224.json) | 失败候选的中英文 TestFlight 测试重点（保留） |
@@ -77,7 +79,7 @@
 | 文档 | 内容 |
 |---|---|
 | [../AGENTS.md](../AGENTS.md) | Repository instructions for coding agents: architecture, focused checks, release recovery and cleanup |
-| [../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md) | 项目门面：能力总览与当前候选版本 |
+| [../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md) | 项目门面：能力总览与当前交付版本 |
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
 | [FEATHER_SOURCE.md](FEATHER_SOURCE.md) | Feather/AltStore 安装源：稳定源地址、官网深层链接、发布校验与手动添加步骤 |
 | [FLOE_156_FEEDBACK_REPAIR.md](FLOE_156_FEEDBACK_REPAIR.md) | 反馈修复记录、PPTX 可见渲染门禁与 2026-09-22 宿主重建/重新固定更新 |
@@ -102,8 +104,9 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_226.md](RELEASE_NOTES_1.7.0_BUILD_226.md) — 未发布候选；组件与源码证据、App 和真机验证门槛分别记录
-- [RELEASE_NOTES_1.7.0_BUILD_225.md](RELEASE_NOTES_1.7.0_BUILD_225.md) — 已交付内部 Floe QA；云端构建、上传、Apple 处理、GitHub 预发布和真机待验收边界分开记录
+- [RELEASE_NOTES_1.7.0_BUILD_227.md](RELEASE_NOTES_1.7.0_BUILD_227.md) — 当前交付（1.7.0/227，`v1.7.0-beta.84`，`9c756864`；云端构建、未签名 IPA、签名上传、Apple VALID、Floe QA 可安装、GitHub 预发布与真机回归边界分别记录）
+- [RELEASE_NOTES_1.7.0_BUILD_226.md](RELEASE_NOTES_1.7.0_BUILD_226.md) — 未编译成功的候选（1.7.0/226，`v1.7.0-beta.83`，`b2b2fd75`；文件树压缩入口缺少 `FloeTools` 导入，无 IPA、无上传；记录保留，修复即 Build 227）
+- [RELEASE_NOTES_1.7.0_BUILD_225.md](RELEASE_NOTES_1.7.0_BUILD_225.md) — 上一内部交付；云端构建、上传、Apple 处理、GitHub 预发布和真机待验收边界分开记录
 - [RELEASE_NOTES_1.7.0_BUILD_224.md](RELEASE_NOTES_1.7.0_BUILD_224.md) — 未编译成功的候选（1.7.0/224，`v1.7.0-beta.81`，`c36b7b24`；run 35767875337 因 LinuxGuestImageDownloader.swift:101 类型化抛错失败，无工件无上传；记录保留，修复即 Build 225）
 - [RELEASE_NOTES_1.7.0_BUILD_223.md](RELEASE_NOTES_1.7.0_BUILD_223.md) — 历史内部构建（1.7.0/223，`v1.7.0-beta.80`；当时 VALID、Floe QA、IN_BETA_TESTING；Runtime v2 首次整合）
 - [RELEASE_NOTES_1.7.0_BUILD_222.md](RELEASE_NOTES_1.7.0_BUILD_222.md) — 已被取代的源码候选（1.7.0/222；验收 SDK App 编译阶段停止；发布与真机状态未取得）
@@ -149,7 +152,7 @@
 
 - [Floe 1.7 图像编辑器：来源、使用与验证边界](FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md)
 
-## Floe 1.7 当前发布准备
+## Floe 1.7 发布材料（含历史记录）
 
 - [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) — 历史内部交付（1.7.0/221）的改动、发布证据、验证边界与真机验收项
 - [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md) — 被取代的候选（云端设备 App 编译失败 run 35673428023，无上传）

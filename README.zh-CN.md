@@ -34,13 +34,15 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（225）**。9 月 22 日 20:17 UTC 已核实 Apple `VALID`、未过期、唯一私有内部 Floe QA 组及 `IN_BETA_TESTING`。验收 SDK 发布作业在签名上传前保留了未签名 IPA，对应 GitHub 预发布已公开；真机行为仍由用户验收。[Build 225 说明](docs/RELEASE_NOTES_1.7.0_BUILD_225.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md) · [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.82)。
+**当前内部 TestFlight：1.7.0（227）**。不可变标签 `v1.7.0-beta.84` 固定源码 `9c756864`；[发布 run 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008) 使用 Xcode 26.6 完成云端构建，在签名前保留未签名 IPA（739,368,613 字节，SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`），接受签名上传并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.84)。Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` 已核实 `VALID`、未过期并在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`（2026-09-24 05:42 UTC，[核验 run 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720)），中英文测试说明均已读回。[Build 227 说明](docs/RELEASE_NOTES_1.7.0_BUILD_227.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
-**Build 225 是当前内部交付版本。** 它承载 Build 224 候选的全部内容——Build 223 Runtime v2 启动/迁移修复（全新注册表和旧 Linux 安装都能再次启动，已验证内容不会被误报为未安装，需要修复的环境安全中止）、任务保留空闲间隙的 MLX 模型驻留、PPT/PPTX 编辑入口首个可编辑渲染，以及 GitHub 优先的分片 Gitee 回退和 GitHub→Gitee 单向仓库镜像——并修复阻断 Build 224 验收 SDK App 构建的唯一一处 Swift 6 类型化抛错（Linux 镜像下载器），不改变 fail-closed 镜像切换与取消语义。本机 23 项定向 Linux 镜像测试、Swift 6 iOS SDK 对象码编译、云端验收 SDK 构建和分发门槛均已通过；Linux、本地模型、PPT 与 PiP 的真机行为仍由用户验收。[版本说明](docs/RELEASE_NOTES_1.7.0_BUILD_225.md)。
+**Build 227 是当前内部交付版本。** 它承载[Build 226 候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_226.md)记录的功能范围——iPad 原生 IDE 工作台、压缩归档操作、可复用 Linux 模板与私有磁盘（已发布的模板镜像仍须通过本构建的安装路径检查，才可描述为用户可下载）、Runtime v2 资源管理、后台/PiP 与通知修复、本地模型工具续轮、支持自动换行及按会话草稿的输入框、统一许可入口、原生优先媒体路由与固定 Office 宿主。Build 226 本身没有产出 IPA：其云端构建因文件树压缩入口缺少 `FloeTools` 导入而停止，Build 227 从新的不可变源码修复了该问题。云端构建、未签名 IPA 留存、签名上传、Apple 处理和测试组可安装各自独立取证，均不代表真机行为。
+
+**Build 227 已知真机回归（未通过验收）。** 2026-09-24 在 iPad 上测试该构建时报告：下载的 MLX 本地模型在普通对话与测速中崩溃（与是否使用工具无关）；PPT/PPTX 预览可以打开，但随后进入编辑的操作会停住；从 IDE 文件树打开的 Word/Excel/PPT 文档一直停留在打开指示。窄宽度下 Git 侧栏布局也需要修复。以上作为下一候选的待处理回归跟踪——均未修复、未豁免、不属于任何通过结论。PPT 编辑、本地模型加载与测速、画中画、通知、键盘/输入法以及双核客体运行在真机上仍未验收。
 
 **Build 224 从未编译成功。** 其不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败的验收 SDK run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留；参见 [Build 224 说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)与 Build 225 说明中的失败记录表。
 
-**源码状态——Build 226 候选（尚未发布）。** 已交付 Build 225 之后的源码加入 iPad 原生 IDE 工作台、压缩归档操作、可复用 Linux 模板、Runtime v2 资源管理、后台与通知修复、本地模型工具续轮、支持自动换行及按会话草稿的输入框、统一许可入口、原生优先媒体路由与固定 Office 宿主。组件和云端检查记录在[候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_226.md)；最终 App 构建、TestFlight 可安装和真机效果仍须分别核验。
+**源码状态——Build 227 之后的未发布修复（未宣布新构建号）。** `main` 已领先于已交付的 Build 227，包含尚不属于任何已交付构建的在办修复：PPT 编辑入口的有界 extent 引导后备、通过共享文档会话打开 IDE Office 标签、窄宽度下可触控的 IDE Git 侧栏操作，以及 Linux 客体运行形状/核心选择链路。组件检查不能替代云端 App 构建、TestFlight 可安装与真机验收；在后续构建通过这些门槛之前，上述 Build 227 真机回归均不算修复。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
@@ -61,7 +63,7 @@ Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 O
 - **在工作区内构建视觉流程。** 每个工作区可打开一个原生无限画布项目，通过自然触控管理内容节点、显式生成任务、产物节点、节点原位 AI 与受限画布助手。
 - **连接标准 MCP。** 普通 Agent 可按需连接 Streamable HTTP 服务器；远程工具始终有独立命名空间、继续经过本地策略检查，并且默认不向画布开放。
 - **在工作区内管理源码。** 轻量原生源码管理可查看更改与差异、初始化仓库、暂存、提交、分支、抓取、快进拉取、推送并连接 GitHub。
-- **使用原生代码工作台编辑代码。** IDE 的活动栏、文件/搜索/Git 侧栏、编辑标签、文本及代码编辑、终端面板和状态栏使用原生 SwiftUI/UIKit，不提供 Web 文本编辑切换。编辑器支持多缓冲区、行号、有界高亮、查找替换、撤销/重做、字体缩放与保留草稿的冲突安全保存；Markdown 在同一草稿上提供大纲、格式操作和原生预览。[定向云端 App 与界面运行](https://github.com/JiangNanGenius/floe-agent/actions/runs/35947162133) 在 iPad mini 和 iPhone 模拟器上通过，包含原生保存和冷启动重开；iPhone 的 DXF 预览断言首次失败、自动重试通过。新工作台尚未进入已交付的 Build 225，也未获得真机验收。
+- **使用原生代码工作台编辑代码。** IDE 的活动栏、文件/搜索/Git 侧栏、编辑标签、文本及代码编辑、终端面板和状态栏使用原生 SwiftUI/UIKit，不提供 Web 文本编辑切换。编辑器支持多缓冲区、行号、有界高亮、查找替换、撤销/重做、字体缩放与保留草稿的冲突安全保存；Markdown 在同一草稿上提供大纲、格式操作和原生预览。[定向云端 App 与界面运行](https://github.com/JiangNanGenius/floe-agent/actions/runs/35947162133) 在 iPad mini 和 iPhone 模拟器上通过，包含原生保存和冷启动重开；iPhone 的 DXF 预览断言首次失败、自动重试通过。新工作台已随 Build 227 交付；真机键盘、输入法与触控体验仍待验收，上文 Build 227 的 IDE Office 标签打开回归仍是未解决项。
 - **直接转换已有文档。** Markdown、Word、HTML、RTF 和文本互转，并支持 PDF 输入/输出。模型只需提供文件位置，无需重新抄写全文；源文件保留，扫描件及格式限制会明确提示。
 - **创建并修改 Office 文件。** 可在本机生成 DOCX、XLSX 和 PPTX，右侧只读查看，随后使用本地 Office 引擎编辑真实页面、单元格和幻灯片对象。从工作区预览编辑时进入独立全屏编辑器；只有从 IDE 文件树打开才保留内嵌标签。关闭有未保存修改的文档会询问保存、放弃或取消，Command-S 通过同一保存路径就地保存，文档无需上传云端。完整排版保真与高级 Office 功能仍在验收。
 - **任务级权限。** 文件、网络、浏览器、上传、凭据和远程执行权限都有明确上限；敏感操作仍需逐次确认。
@@ -91,7 +93,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.0（build 225）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`，2026-09-22 20:17 UTC 从不可变标签 `v1.7.0-beta.82` 验证）。[TestFlight 交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)保留精确的源码、构建、上传、测试说明与测试组证据，以及此前版本的交付历史。Build 192 与 193 从未编译成功；Build 194 与 195 被 Apple 接受但从未发布——[192](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)、[193](docs/RELEASE_NOTES_1.7.0_BUILD_193.md)、[194](docs/RELEASE_NOTES_1.7.0_BUILD_194.md)、[195](docs/RELEASE_NOTES_1.7.0_BUILD_195.md) 记录。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
+Floe Agent **1.7.0（build 227）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`，2026-09-24 05:42 UTC 从不可变标签 `v1.7.0-beta.84`、源码 `9c756864` 验证，核验 run 35961062720）。[TestFlight 交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)保留精确的源码、构建、上传、测试说明与测试组证据，以及此前版本的交付历史。Build 192 与 193 从未编译成功；Build 194 与 195 被 Apple 接受但从未发布——[192](docs/RELEASE_NOTES_1.7.0_BUILD_192.md)、[193](docs/RELEASE_NOTES_1.7.0_BUILD_193.md)、[194](docs/RELEASE_NOTES_1.7.0_BUILD_194.md)、[195](docs/RELEASE_NOTES_1.7.0_BUILD_195.md) 记录。此前 1.5.3 的证据保留在[历史验证记录](docs/RELEASE_VERIFICATION_1.5.3.md)。
 
 ### 未签名 IPA
 
@@ -107,7 +109,7 @@ GitHub 预发布版本为高级测试者和下游打包者提供未签名 IPA：
 
 ### Gitee 中国镜像
 
-面向 GitHub 较慢的网络，公开单向镜像发布在 [`gitee.com/JiangNanGenius/floe-agent`](https://gitee.com/JiangNanGenius/floe-agent)。GitHub 始终是唯一承担信任的主源，且镜像明确是**部分镜像**：[gitee-mirror](.github/workflows/gitee-mirror.yml) 工作流把 `main` 与发布标签单向从 GitHub 推送到 Gitee 并校验两边 `main` 一致（它从不从 Gitee 拉取，因此 Gitee 永远不能覆盖 GitHub）；发行资产另有独立门禁，逐文件按大小与 SHA-256 校验后复制。Gitee 的发行附件受配额限制：仓库级附件配额实测为 1 GiB，因此 712 MiB 的未签名 IPA **不**托管在 Gitee，也不存在 Gitee 直装包或 Feather/AltStore 源——只镜像小型发行资产，并在 `GITEE-MIRROR-MANIFEST.json` 中逐资产记录状态。约 573 MB 的 Linux 镜像以一份清单加九个 64 MiB 分片发布（64 MiB 是镜像脚本的分片大小，并非已测定的平台上限）；每个分片按大小与 SHA-512 固定，整包按与目录一致的摘要固定。Linux 客体下载器总是先尝试 GitHub Releases，仅在主源出现有界可用性失败（断网、5xx、408/429）后才联系 Gitee 镜像；明确 4xx、无效响应、本地拒绝或取消一律安全中止；已验证分片保留在稳定暂存目录，中断后可断点续传，重组归档在导入前再次比对整包 SHA-512。详见[镜像限制](docs/FLOE_GITEE_RELEASE_MIRROR.md)与[镜像分发说明](docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md#distribution-mirror-gitee-sharded)。
+面向 GitHub 较慢的网络，公开单向镜像发布在 [`gitee.com/JiangNanGenius/floe-agent`](https://gitee.com/JiangNanGenius/floe-agent)。GitHub 始终是唯一承担信任的主源，且镜像明确是**部分镜像**：[gitee-mirror](.github/workflows/gitee-mirror.yml) 工作流把 `main` 与发布标签单向从 GitHub 推送到 Gitee 并校验两边 `main` 一致（它从不从 Gitee 拉取，因此 Gitee 永远不能覆盖 GitHub）；发行资产另有独立门禁，逐文件按大小与 SHA-256 校验后复制。Gitee 的发行附件受配额限制：仓库级附件配额实测为 1 GiB，因此 Build 227 约 705 MiB 的未签名 IPA **不**托管在 Gitee，也不存在 Gitee 直装包或 Feather/AltStore 源——只镜像小型发行资产，并在 `GITEE-MIRROR-MANIFEST.json` 中逐资产记录状态。约 573 MB 的 Linux 镜像以一份清单加九个 64 MiB 分片发布（64 MiB 是镜像脚本的分片大小，并非已测定的平台上限）；每个分片按大小与 SHA-512 固定，整包按与目录一致的摘要固定。Linux 客体下载器总是先尝试 GitHub Releases，仅在主源出现有界可用性失败（断网、5xx、408/429）后才联系 Gitee 镜像；明确 4xx、无效响应、本地拒绝或取消一律安全中止；已验证分片保留在稳定暂存目录，中断后可断点续传，重组归档在导入前再次比对整包 SHA-512。详见[镜像限制](docs/FLOE_GITEE_RELEASE_MIRROR.md)与[镜像分发说明](docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md#distribution-mirror-gitee-sharded)。
 
 ### Feather 安装源
 
@@ -116,7 +118,7 @@ GitHub 预发布版本为高级测试者和下游打包者提供未签名 IPA：
 - Feather：`https://www.floe-agent.com/add/feather` → `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
 - AltStore：`https://www.floe-agent.com/add/altstore` → `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
 
-也可以把源地址直接粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此 README 徽章指向官方 HTTPS 入口：由官网完成自定义 scheme 启动，并在无法打开时显示清晰的手动回退，而不是死链。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)；GitHub 提供未签名 IPA、校验文件和来源证明，TestFlight 为独立分发渠道。2026-09-23 只读复核：两个入口均返回 HTTP 200，包含精确深链与手动回退内容；GitHub Markdown API 仍会把两种链接写法都过滤为纯文本——GitHub 本身无法承载 add-source 动作，HTTPS 入口仍是唯一可点击的快速添加路径。
+也可以把源地址直接粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此 README 徽章指向官方 HTTPS 入口：由官网完成自定义 scheme 启动，并在无法打开时显示清晰的手动回退，而不是死链。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)；GitHub 提供未签名 IPA、校验文件和来源证明，TestFlight 为独立分发渠道。2026-09-24 只读复核：两个入口均返回 HTTP 200，包含精确深链与手动回退内容；已发布 feed 的最新条目为 1.7.0（227），其未签名 IPA SHA-256 与 GitHub 预发布一致；GitHub Markdown API 仍会把两种链接写法都过滤为纯文本——GitHub 本身无法承载 add-source 动作，HTTPS 入口仍是唯一可点击的快速添加路径。
 
 ### 从源码构建
 
@@ -166,7 +168,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 ### 工作区、Git 与审批
 
-私有任务工作区会与首条消息原子创建并绑定；项目工作区继续使用用户明确选择的 Files 范围。文件检查器新增轻量源码管理标签；ZIP、TAR 与 7z 压缩包也在同一检查器中有界浏览，支持条目预览与暂存解压。**下一构建**增加本机 tar.gz/tar.xz 与单文件 gzip/xz 处理，以及归档创建——可创建 ZIP、TAR、tar.gz、tar.xz、tar.bz2 及单文件 gzip/bzip2/xz，可列出或解压 ZIP、TAR、tar.gz、tar.xz 与 7z——全程无需启动 Linux 客体；bzip2 解压与 RAR 浏览改为说明具体原因（RAR 解压可通过 Agent 的已签名解码器完成）。**设置 → GitHub 与源码管理**支持 GitHub 官方设备授权直接登录和细粒度 Token 后备入口，凭据只保存在设备钥匙串，并可列出、克隆和创建仓库。已打开的源码管理面板会在仓库初始化或任何 Git 变更后立即刷新，并在回到前台时重新读取，因此 Agent 工具创建的仓库无需手动刷新即可显示。
+私有任务工作区会与首条消息原子创建并绑定；项目工作区继续使用用户明确选择的 Files 范围。文件检查器新增轻量源码管理标签；ZIP、TAR 与 7z 压缩包也在同一检查器中有界浏览，支持条目预览与暂存解压。**Build 227** 增加本机 tar.gz/tar.xz 与单文件 gzip/xz 处理，以及归档创建——可创建 ZIP、TAR、tar.gz、tar.xz、tar.bz2 及单文件 gzip/bzip2/xz，可列出或解压 ZIP、TAR、tar.gz、tar.xz 与 7z——全程无需启动 Linux 客体；bzip2 解压与 RAR 浏览改为说明具体原因（RAR 解压可通过 Agent 的已签名解码器完成）。**设置 → GitHub 与源码管理**支持 GitHub 官方设备授权直接登录和细粒度 Token 后备入口，凭据只保存在设备钥匙串，并可列出、克隆和创建仓库。已打开的源码管理面板会在仓库初始化或任何 Git 变更后立即刷新，并在回到前台时重新读取，因此 Agent 工具创建的仓库无需手动刷新即可显示。
 
 有界只读、本地工作区操作、生图/识图、OCR、PDF 只读和局域网发现不等待审批模型。任务权限在聊天输入框下方选择后自动保存，也可在任务运行中切换。用户明确要求安装、部署、环境修复或更新 Floe 守护程序后，完成该目标所需的常规系统包、换源、依赖修复和守护程序原子更新不会逐条重复询问。删除、凭据、上传、付款、目标不明的宽泛远程命令，以及强制推送/历史改写仍会被阻止或要求明确复核。“帮我测试一下所有工具”这类宽泛请求可以授权安全诊断，但不会静默扩展为删除、凭据或破坏性测试。
 
@@ -174,7 +176,7 @@ OpenAI 生图与图片编辑默认使用 `gpt-image-2`；Google Gemini Images �
 
 TinyEMU/Linux 是解释器、CLI、软件包与服务类工作的主要本地运行环境。本地 Python、Node.js、Shell 和服务运行在所选环境的 Linux 客体中；首次出现 Linux 需求（Shell、`exec.localPython`、Node/npm、`apt`/`dpkg`、后台服务或语言包）时，会先执行同一套可取消的“准备 → 下载 → 校验 → 安装 → 启动”流程，然后继续执行原命令。**设置 → 执行环境**与终端提供同一份组件状态，以及明确的下载、更新、启动、停止入口和客体上报的网络状态。Shell 与直接 Python 共享该环境的文件、软件包和唯一 venv；客体 apt/dpkg 安装 Linux 包，Python 使用 pip/venv，Node 使用客体的 npm。iOS 原生 Python/Node 的源码与构建配方已封存，其运行时载荷（包括原生 Ruby 解释器）不再随本版 App 分发；需要客体的语言或工具会如实提示，而不会回退到已移除的进程内运行时。二进制包须匹配 Linux 客体 ABI，iOS wheel 不会作为 Linux 二进制复用。签名 WASI 目录（如 Lua 5.4.8、Ruby 3.4.1、PHP 8.2.33 与 `floe-text`）仍是独立的 WebAssembly 沙箱能力，通过已验证目录安装，而不是 Debian 软件包。
 
-**下一构建**——图像、视频、音频、PDF 与 OCR 任务原生优先：这类任务交给 App 自带的专用工具——设备侧的 Apple 框架（Vision、CoreImage、AVFoundation/VideoToolbox、CoreML、PDFKit）或生成类任务已配置的模型通道——客体解释器不是它们的默认路径；不会因为 Linux 客体已安装就把视频/图片/音频/PDF 请求交给它。只有当前任务的操作没有可用的原生工具覆盖，或用户明确要求脚本/命令行时，才使用 Linux 客体处理媒体。路由只依据当前任务真实启用并配置好的能力：工具名字本身不代表该操作可用，未被提供的能力会如实说明，而不是被静默模拟；工具按任务精选，不会把完整全局目录交给本地小模型。路由契约、测试与剩余真机验证边界见[下一版状态文档](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md)。
+**Build 227**——图像、视频、音频、PDF 与 OCR 任务原生优先：这类任务交给 App 自带的专用工具——设备侧的 Apple 框架（Vision、CoreImage、AVFoundation/VideoToolbox、CoreML、PDFKit）或生成类任务已配置的模型通道——客体解释器不是它们的默认路径；不会因为 Linux 客体已安装就把视频/图片/音频/PDF 请求交给它。只有当前任务的操作没有可用的原生工具覆盖，或用户明确要求脚本/命令行时，才使用 Linux 客体处理媒体。路由只依据当前任务真实启用并配置好的能力：工具名字本身不代表该操作可用，未被提供的能力会如实说明，而不是被静默模拟；工具按任务精选，不会把完整全局目录交给本地小模型。路由契约、测试与剩余真机验证边界见[下一版状态文档](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md)。
 
 技能可以附带受限的 `.py` 文件和锁定版本的纯 Python 依赖。Floe 在创建或安装技能时验证脚本路径与源码、解析并检查通用 wheel，并记录获准的脚本和依赖指纹。后续运行只能复用这份完全相同的已审计代码，变化的任务数据通过 JSON 单独传入；修改脚本或依赖、提权、危险文件改动、凭据和外部副作用仍回到正常审批流程。
 
@@ -211,7 +213,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 | --- | --- | --- |
 | 产品使用 | [使用指南](docs/USER_GUIDE.zh-CN.md) | [User guide](docs/USER_GUIDE.md) |
 | 下一版状态 | [实施状态与验证边界](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md) | Same document includes a Simplified Chinese summary |
-| 当前状态 | [Build 225 交付](docs/RELEASE_NOTES_1.7.0_BUILD_225.md) · [Build 226 候选](docs/RELEASE_NOTES_1.7.0_BUILD_226.md) | [Build 225 delivery](docs/RELEASE_NOTES_1.7.0_BUILD_225.md) · [Build 226 candidate](docs/RELEASE_NOTES_1.7.0_BUILD_226.md) |
+| 当前状态 | [Build 227 交付](docs/RELEASE_NOTES_1.7.0_BUILD_227.md) · [Build 225 上一交付](docs/RELEASE_NOTES_1.7.0_BUILD_225.md) | [Build 227 delivery](docs/RELEASE_NOTES_1.7.0_BUILD_227.md) · [Build 225 previous delivery](docs/RELEASE_NOTES_1.7.0_BUILD_225.md) |
 | 架构 | [架构总览（双语术语）](docs/ARCHITECTURE_OVERVIEW.md) | [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md) |
 | 参与开发 | [贡献指南](CONTRIBUTING.zh-CN.md) | [Contributing](CONTRIBUTING.md) |
 | 安全 | [安全策略](SECURITY.zh-CN.md) | [Security policy](SECURITY.md) |
@@ -233,7 +235,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 
 准备进行大型或安全敏感改动前，请阅读[贡献指南](CONTRIBUTING.zh-CN.md)，并先创建 Issue 说明用户问题、范围、安全影响和验证方法。安全漏洞请按[安全策略](SECURITY.zh-CN.md)私下报告。
 
-Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。App 只保留一个法律入口：**设置 → 诊断与关于 → 第三方开源许可**，其中完整呈现 TinyEMU/slirp 全文及其他所有随包声明，并附带版本与来源的构件摘要；仓库中由脚本生成的记录仍为 [`FloeAgent/LICENSES-THIRD-PARTY.md`](FloeAgent/LICENSES-THIRD-PARTY.md)。**下一构建**把原先单独的 TinyEMU 页面合并进这一入口。
+Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。App 只保留一个法律入口：**设置 → 诊断与关于 → 第三方开源许可**，其中完整呈现 TinyEMU/slirp 全文及其他所有随包声明，并附带版本与来源的构件摘要；仓库中由脚本生成的记录仍为 [`FloeAgent/LICENSES-THIRD-PARTY.md`](FloeAgent/LICENSES-THIRD-PARTY.md)。**Build 227** 把原先单独的 TinyEMU 页面合并进这一入口。
 
 1.7 界面更新加入「通用 → 自动/日间/夜间」外观、项目与会话容器管理，以及可折叠的思考与工具调用组。功能可用性和测试版验收进展见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 
