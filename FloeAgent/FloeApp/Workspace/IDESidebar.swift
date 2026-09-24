@@ -153,6 +153,9 @@ struct IDESidebar: View {
             }
         }
         .background(FloeTheme.readingSurface)
+        // An explicit container keeps the sidebar itself discoverable; without
+        // it SwiftUI inherits the identifier into every child.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.ide.sidebar")
     }
 

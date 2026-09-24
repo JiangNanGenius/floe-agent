@@ -75,8 +75,11 @@ final class WorkspaceIDEUITests: XCTestCase {
         // Explorer: regular widths open with the Files sidebar visible; the
         // fixture file row opens the native editor for that path.
         if ipad {
-            XCTAssertTrue(app.otherElements["workspace.ide.sidebar"].waitForExistence(timeout: 10),
-                          "regular widths must open with the Explorer sidebar visible")
+            XCTAssertTrue(
+                app.descendants(matching: .any).matching(identifier: "workspace.ide.sidebar").firstMatch
+                    .waitForExistence(timeout: 10),
+                "regular widths must open with the Explorer sidebar visible"
+            )
             capture("ide-ipad-explorer")
         } else {
             app.buttons["workspace.ide.files"].tap()
