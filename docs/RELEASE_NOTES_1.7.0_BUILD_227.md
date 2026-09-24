@@ -1,6 +1,6 @@
 # Floe 1.7.0 (227) — candidate / 候选说明
 
-**Status / 状态：尚未发布。** This document records the candidate scope. Build, IPA, upload, Apple processing, Floe QA availability, and physical-device behavior must be recorded separately after they occur. / 本页先记录候选范围；构建、IPA、上传、Apple 处理、Floe QA 可安装及真机行为须取得各自证据后分别补记。
+**Status / 状态：已交付现有内部 Floe QA 测试组。** 云端构建、IPA、上传、Apple 处理和测试组可安装均已有独立证据；真机功能体验仍待用户验收。 / Delivered to the existing internal Floe QA group, with separate build, IPA, upload, Apple processing and availability evidence. Physical-device behavior remains for user acceptance.
 
 ## 简体中文
 
@@ -21,7 +21,7 @@ IDE 候选改用 iPad 原生 SwiftUI 工作台布局：左侧活动栏切换文�
 
 本候选还包括多行输入与完整提示词编辑、按会话保存草稿、原生归档操作、环境运行状态与 PiP/通知修复，以及统一的第三方许可证入口。GitHub 是主要发布源；Gitee 的源码与可容纳资产以独立流程同步，镜像状态不会阻塞 GitHub 和 TestFlight 交付。
 
-发布记录待填：不可变源码 SHA、标签、云端构建运行、IPA 摘要与 Bundle 版本、签名上传、Apple `VALID` 状态、Floe QA 分组与可安装状态。真机 MLX、PPT、PiP、通知和输入体验证据须逐项记录；未取得时维持“待验收”。
+交付记录：不可变源码 `9c756864fa9532d02ba7f7073320f8b48d94dc51`，标签 `v1.7.0-beta.84`，[云端构建及上传运行 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008)，Xcode 26.6，Bundle `org.floeagent.ios`，版本 1.7.0 (227)。unsigned IPA 为 739,368,613 字节，SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`，已发布到 [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.84)。Apple 构建 `640e39a2-001b-4672-9b17-b4a378d9eb6a` 已 `VALID`、未过期，Floe QA 状态 `IN_BETA_TESTING`，见[独立核验运行 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720)。真机 MLX、PPT、PiP、通知和输入体验继续待验收。Gitee 源码与六个小资产已同步；IPA 因仓库 1 GiB 附件配额不足未同步。
 
 ## English
 
@@ -42,4 +42,4 @@ The [targeted cloud App/UI run 35947162133](https://github.com/JiangNanGenius/fl
 
 The candidate also contains a multiline composer and full prompt editor, per-conversation drafts, native archive operations, runtime/PiP/notification repairs, and a single third-party license entry. GitHub remains the primary release source. Gitee source and eligible asset synchronization run separately and do not block GitHub or TestFlight delivery.
 
-Delivery evidence to add: immutable source SHA, tag, cloud build run, IPA hash and bundle version, signed upload, Apple `VALID` processing, and Floe QA group/installability. Physical-device MLX, PPT, PiP, notification, and input behavior must be recorded individually and remain pending without evidence.
+Delivery evidence: immutable source `9c756864fa9532d02ba7f7073320f8b48d94dc51`, tag `v1.7.0-beta.84`, [cloud build and upload run 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008), Xcode 26.6, bundle `org.floeagent.ios`, version 1.7.0 (227). The unsigned IPA is 739,368,613 bytes with SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`, published in the [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.84). Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` is `VALID`, unexpired, and `IN_BETA_TESTING` in Floe QA per [independent verification run 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720). Physical-device MLX, PPT, PiP, notification, and input behavior remain pending. Gitee mirrored the source and six small assets; its 1 GiB repository attachment quota prevented the IPA mirror.
