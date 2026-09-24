@@ -169,14 +169,17 @@ the actual bytes) and refuses to publish when anything cannot be proven.
   `.github/workflows/linux-template-distribute.yml` from image/templates run
   35928017233 (`706413fd…`); pinned in
   `RuntimeV2OfficialTemplatePinnedArtifacts`.
-- `dev-document` — tag `floe-linux-template-dev-document-20260924.1`,
-  published by `.github/workflows/linux-template-distribute-dev.yml`. It pins
-  two retained runs: the image/templates run
-  35928029851 (`706413fd…`, image candidate + evidence + dev-document
-  qualification) and the corresponding-sources run 35939078878
-  (`2f4bd52d…`, upstream/relink/toolchain + Debian shards 1–2 + source
-  evidence + the PyPI wheel sources). See
-  `docs/BUILD_226_DEV_TEMPLATE_SOURCE.md` for the PyPI/PDFium provenance.
+- `dev-document` — tag `floe-linux-template-dev-document-20260924.1` (release
+  published 2026-09-24 by distribution run 35941775534; 16 digest-verified
+  assets), published by `.github/workflows/linux-template-distribute-dev.yml`.
+  It pins two retained runs: the image/templates run 35928029851
+  (`706413fd…`, image candidate + evidence + dev-document qualification) and
+  the corresponding-sources run 35939078878 (`2f4bd52d…`,
+  upstream/relink/toolchain + Debian shards 1–2 + source evidence + the PyPI
+  wheel sources), and is pinned in
+  `RuntimeV2OfficialTemplatePinnedArtifacts`. See
+  `docs/BUILD_226_DEV_TEMPLATE_SOURCE.md` for the PyPI/PDFium provenance and
+  the release record.
 
 Both workflows publish a published prerelease (never a draft, never `latest`,
 tag never `v`-prefixed), never overwrite an asset, and keep the shipped

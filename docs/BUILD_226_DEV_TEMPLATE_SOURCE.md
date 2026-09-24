@@ -1,9 +1,12 @@
 # Build 226 dev-document template — PyPI corresponding-source closure (D5)
 
-Status: **gap closed** — sources-only CI run (see `Collector evidence` below)
-produced a complete, verified corresponding-source bundle for all four PyPI
-wheels pinned by the dev-document template, including the bundled native
-PDFium binary of the riscv64 `pypdfium2` wheel. The dev-document image
+Status: **gap closed and distributed** — sources-only CI run (see `Collector
+evidence` below) produced a complete, verified corresponding-source bundle for
+all four PyPI wheels pinned by the dev-document template, including the
+bundled native PDFium binary of the riscv64 `pypdfium2` wheel; the unchanged
+candidate was then published as the
+`floe-linux-template-dev-document-20260924.1` component prerelease with the
+full source bundle (see `Distribution record` below). The dev-document image
 candidate from image/templates run
 [35928029851](https://github.com/JiangNanGenius/floe-agent/actions/runs/35928029851)
 (source `706413fd`) is unchanged; this document closes its source-distribution
@@ -126,8 +129,38 @@ downloading, and fails closed on any gap:
 The distribute job re-checks the candidate archive sha512 and every member
 digest, rewrites only the manifest provenance, verifies the complete source
 tree (including the PyPI payload against the recipe pins and
-`PYPI-SOURCES.sha256`), and only then creates the prerelease. The release
-record (tag, run, asset digests) is appended below after publishing.
+`PYPI-SOURCES.sha256`), and only then creates the prerelease.
+
+### Distribution record (D6)
+
+- Release:
+  [floe-linux-template-dev-document-20260924.1](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-dev-document-20260924.1)
+  — published prerelease (not a draft, not `latest`), tag target
+  `3680d77a`; published 2026-09-24T01:18:06Z by distribution run
+  [35941775534](https://github.com/JiangNanGenius/floe-agent/actions/runs/35941775534)
+  (preflight + distribute both succeeded).
+- 16 assets; every `SHA256SUMS` entry was re-checked against the platform-side
+  sha256 digest at upload, and the two files not in that list
+  (`SHA256SUMS`, `distribution.json`) are covered by `distribution.json`.
+  Image archive: `floe-linux-guest-…-dev-document-…zip`, 1,077,342,227 bytes,
+  sha512 `47f08bada3…c70aa13`, sha256 `456b48a3…` (repacked with the
+  provenance-only manifest change; input candidate 1,078,159,186 bytes, sha512
+  `0a37a282…`). Sources: Debian shards 1–2, upstream/relink/toolchain, PyPI
+  wheel sources (43,714,560 bytes, 15/15 files verified, PDFium tree 5293
+  files), image evidence, template qualification, source index and the
+  manifest/sums/notes.
+- Release-content audit: Debian gaps 0 (3508 mapped rows, 2528/2528 files
+  verified, 777/777 installed packages mapped with matching source versions),
+  PyPI gaps 0 (all four wheel sha256 equal the recipe pins), template
+  `dev-document` qualified (49/49), manifest `qualified: true`,
+  `distributionAllowed: true`, disk sha512 `fa969a4a…` unchanged,
+  recipe sha512 `99016057…` == the repository recipe digest.
+- App pin: `RuntimeV2OfficialTemplatePinnedArtifacts` `dev-document` v1 with
+  the archive URL/sha512/bytes above, disk sha512, recipe sha512 and
+  `sourceRef` `3680d77a`; contract covered by
+  `RuntimeV2OfficialTemplateWiringTests.testPinnedArtifactsMatchTheRepositoryRecipes`.
+  This is host-level module evidence only — no App installation or iPad
+  behavior is claimed.
 
 ## Boundaries
 
