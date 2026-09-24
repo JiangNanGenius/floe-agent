@@ -364,6 +364,33 @@ public actor LocalModelRuntime {
         return resident.key.modelID
     }
 
+    /// Selection-time heavy-runtime admission for a local MLX model. Runs at
+    /// the actual user selection entry — before any model-selection
+    /// persistence, preload, benchmark or chat call — so the confirmation
+    /// precedes any memory mapping. When Linux guests/services are active the
+    /// arbiter reports them through the app-facing decision interface (the
+    /// single app-wide conflict center, never a second modal) describing the
+    /// affected environments and services; it stops them only after the user
+    /// confirms. On cancel it throws `deferredByCaller` and the caller keeps
+    /// the prior model selection and the running guests untouched. The
+    /// preload/benchmark/chat paths still perform their own arbiter
+    /// admission afterwards, so a guest that starts later is caught there
+    /// instead of becoming a duplicate prompt here.
+    public func admitLocalModelSelection(modelID: String) async throws {
+        do {
+            _ = try await arbiter.beginLocalInferenceSession(requestingRunID: nil)
+            arbiter.endLocalInferenceSession()
+            FloeLogger(category: .providers).info(
+                "localModelSelectionAdmitted model=\(modelID)"
+            )
+        } catch let error as HeavyRuntimeArbiter.ArbiterError {
+            FloeLogger(category: .providers).info(
+                "localModelSelectionDeferred model=\(modelID) reason=\(error)"
+            )
+            throw error
+        }
+    }
+
     /// Maps the model into memory without generating tokens. The settings UI
     /// can invoke this explicitly, while task launch invokes it automatically
     /// during the visible preparing phase.

@@ -1346,16 +1346,25 @@ final class AppEnvironment: ObservableObject {
             // Explicit stops are filtered by the coordinator; no view owns a
             // monitor of its own.
             backgroundRunCoordinator.startLinuxGuestServiceLifecycleObservation()
-            // Office engine prewarm. cok_init_2 blocks its calling thread for
-            // seconds, so run it at a quiet moment after launch instead of on
-            // the first document open. Device-only framework; skipped in Low
-            // Power Mode and via the office.prewarm.disabled default.
+            // Office engine prewarm — intentionally removed from launch.
+            // `cok_init_2` installs LibreOffice's process-wide signal handler
+            // as a side effect, and that handler converts any later async
+            // fault on any thread (including an MLX inference fault) into a
+            // process abort, masking the original exception in crash reports
+            // (Build 227 MLX prefill abort symbolicated through it). The
+            // engine now initializes on the first document open instead —
+            // `OfficeDocumentEditorView.prepareNativeRuntime`, bounded by a
+            // 30s deadline with a visible spinner — so chat-only usage never
+            // installs the handler. Office on-demand prepare is unchanged.
             #if canImport(FloeOfficeNative)
             if !ProcessInfo.processInfo.isLowPowerModeEnabled,
-               !UserDefaults.standard.bool(forKey: "office.prewarm.disabled") {
+               UserDefaults.standard.bool(forKey: "office.prewarm.enabled") {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     guard !Task.isCancelled else { return }
+                    FloeLogger(category: .app).info(
+                        "officeEnginePrewarmStarted source=launchOptIn"
+                    )
                     FloeOfficeNativeRuntime.shared.prepare { _ in }
                 }
             }

@@ -1117,6 +1117,21 @@ struct ThreadComposerView: View {
             return
         }
         Task { @MainActor in
+            // Selection-time heavy-runtime interlock: when Linux guests or
+            // services are running, the single app-wide conflict confirmation
+            // is presented before any selection persistence or preload. Only a
+            // user cancel keeps the prior selection and the running guests
+            // silently; a failed or incomplete guest stop is surfaced.
+            do {
+                try await environment.localModelsCenter.admitLocalModelSelection(
+                    modelID: model.remoteModelID
+                )
+            } catch HeavyRuntimeArbiter.ArbiterError.deferredByCaller {
+                return
+            } catch {
+                attachmentError = presentableComposerError(error, operation: "切换本地模型")
+                return
+            }
             let residentModelID = await environment.localModelRuntime.residentModelID()
             switch LocalModelResidencyPolicy.decision(
                 residentModelID: residentModelID,

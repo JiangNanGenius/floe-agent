@@ -163,6 +163,20 @@ final class LocalModelsCenter: ObservableObject {
         }
     }
 
+    /// Selection-time heavy-runtime interlock for a local MLX model. Runs
+    /// before any model-selection persistence, preload, benchmark or chat
+    /// call. When Linux guests/services are active it presents the single
+    /// app-wide conflict confirmation (through the shared arbiter's decision
+    /// handler, never a second modal) describing the affected environments
+    /// and services; on confirm the arbiter stops and flushes them, on
+    /// cancel it throws and the caller keeps the prior model selection and
+    /// the running guests untouched. The preload/benchmark/chat paths still
+    /// perform their own arbiter admission afterwards, so a guest that
+    /// starts later is caught there instead of being a duplicate prompt here.
+    func admitLocalModelSelection(modelID: String) async throws {
+        try await runtime.admitLocalModelSelection(modelID: modelID)
+    }
+
     func load(_ entry: LocalModelCatalogEntry) {
         FloeLogger(category: .providers).info(
             "localModelLoadRequested model=\(entry.id) installedSnapshot=\(installedIDs.contains(entry.id))"
@@ -176,8 +190,16 @@ final class LocalModelsCenter: ObservableObject {
                 )
                 return
             }
-            do { try await prepareForTask(modelID: entry.id) }
-            catch { errorMessage = error.localizedDescription }
+            do {
+                // Confirm before any preload when Linux guests/services are
+                // active; a cancel keeps the resident model and the guests.
+                try await admitLocalModelSelection(modelID: entry.id)
+                try await prepareForTask(modelID: entry.id)
+            } catch HeavyRuntimeArbiter.ArbiterError.deferredByCaller {
+                // User declined at the conflict confirmation: nothing changed.
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -194,6 +216,9 @@ final class LocalModelsCenter: ObservableObject {
         errorMessage = nil
         Task {
             do {
+                // Confirm before any benchmark when Linux guests/services are
+                // active; a cancel keeps the resident model and the guests.
+                try await admitLocalModelSelection(modelID: entry.id)
                 runtimeState = .loading(entry.id)
                 let result = try await runtime.benchmark(modelID: entry.id)
                 benchmarkResults[entry.id] = result
@@ -201,6 +226,8 @@ final class LocalModelsCenter: ObservableObject {
                 FloeLogger(category: .providers).info(
                     "localModelBenchmarkFinished model=\(entry.id) outputTokens=\(result.outputTokens) durationMs=\(result.totalDurationMs) ttftMs=\(result.timeToFirstTokenMs ?? -1) tokensPerSecond=\(result.tokensPerSecond ?? -1) recommendedConcurrency=\(result.recommendedConcurrentTasks)"
                 )
+            } catch HeavyRuntimeArbiter.ArbiterError.deferredByCaller {
+                // User declined at the conflict confirmation: nothing changed.
             } catch {
                 runtimeState = .failed(entry.id, error.localizedDescription)
                 errorMessage = error.localizedDescription
