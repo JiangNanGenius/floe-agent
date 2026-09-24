@@ -1071,6 +1071,15 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// must not have declared the edit surface ready). `reportOpenPermissionOnce`
 /// is the one-shot latch behind it.
 - (BOOL)hasSettledOpenPermission;
+// The probe implementation appears before the controller's private class
+// extension, so expose only the observations it needs at this boundary.
+- (BOOL)hasPendingDeferredEditEntry;
+- (BOOL)isDeferredEditEntryRunning;
+- (BOOL)hasReportedOpenPermission;
+- (NSTimeInterval)deferredEditEntryParkedSeconds;
+- (NSString *)renderProbeSessionID;
+- (NSUInteger)renderProbeOpenGeneration;
+- (void)renderProbeDidProveExtentForEditEntry;
 @end
 
 @interface FloeOfficeRenderProbe : NSObject
@@ -1219,12 +1228,12 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 BOOL extentProven = renderFacts.docTypeKnown && renderFacts.docLoaded && renderFacts.canvasSized;
                 NSTimeInterval parked = [probe.controller deferredEditEntryParkedSeconds];
                 if (FloeDeferredEditEntryExtentBootstrapEligible([probe.controller hasPendingDeferredEditEntry],
-                                                                 probe.controller.editEntryRunning,
-                                                                 probe.controller.openPermissionReported,
+                                                                 [probe.controller isDeferredEditEntryRunning],
+                                                                 [probe.controller hasReportedOpenPermission],
                                                                  extentProven, parked)) {
                     extentBootstrap = YES;
-                    FloeOfficeLog(@"edit-entry-extent-bootstrap", @{@"session": probe.controller.sessionID,
-                                                                    @"generation": @(probe.controller.openGeneration),
+                    FloeOfficeLog(@"edit-entry-extent-bootstrap", @{@"session": [probe.controller renderProbeSessionID],
+                                                                    @"generation": @([probe.controller renderProbeOpenGeneration]),
                                                                     @"parked": @(parked)});
                     // This only permits the guarded edit entry. No document
                     // tile has painted, so it must not set firstPaintObserved
@@ -1983,6 +1992,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
     return self.editEntryPending && !self.editEntryRunning && !self.openPermissionReported;
 }
+- (BOOL)isDeferredEditEntryRunning { return self.editEntryRunning; }
+- (BOOL)hasReportedOpenPermission { return self.openPermissionReported; }
+- (NSString *)renderProbeSessionID { return self.sessionID; }
+- (NSUInteger)renderProbeOpenGeneration { return self.openGeneration; }
 - (NSTimeInterval)deferredEditEntryParkedSeconds {
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
     return self.editEntryDeferredAt ? -[self.editEntryDeferredAt timeIntervalSinceNow] : 0;
