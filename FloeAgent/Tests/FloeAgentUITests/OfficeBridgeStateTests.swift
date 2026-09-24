@@ -199,24 +199,22 @@ struct OfficeIDETabTests {
         #expect(store.activeTab?.kind == .code)
     }
 
-    @Test("An Office initial path stays an internal CodeBlitz tab, never a native outer tab")
+    @Test("An Office initial path opens its typed IDE tab")
     @MainActor
     func initialOfficePathOpensEmbedded() {
         let store = IDEWorkspaceTabStore(initialRelativePath: "docs/deck.pptx")
-        // The native strip keeps only its code container; the IDE view
-        // forwards the Office path to the workbench's internal document tab
-        // (native overlay) once the engine is ready.
-        #expect(store.activeTab?.kind == .code)
-        #expect(store.tabs.count == 1)
-        #expect(store.tabs.allSatisfy { $0.kind != .office })
+        #expect(store.activeTab?.kind == .office)
+        #expect(store.activeTab?.relativePath == "docs/deck.pptx")
+        #expect(store.tabs.count == 2)
     }
 
-    @Test("A PDF initial path also stays an internal CodeBlitz tab")
+    @Test("A PDF initial path opens its typed IDE tab")
     @MainActor
     func initialPDFPathOpensEmbedded() {
         let store = IDEWorkspaceTabStore(initialRelativePath: "docs/spec.pdf")
-        #expect(store.activeTab?.kind == .code)
-        #expect(store.tabs.count == 1)
+        #expect(store.activeTab?.kind == .document)
+        #expect(store.activeTab?.relativePath == "docs/spec.pdf")
+        #expect(store.tabs.count == 2)
     }
 
     @Test("Closing a clean read-only Office tab needs no user decision")
