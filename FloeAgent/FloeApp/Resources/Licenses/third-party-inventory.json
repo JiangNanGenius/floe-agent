@@ -289,84 +289,6 @@
       "noteKey": null
     },
     {
-      "id": "ide-notice",
-      "repositoryPath": "FloeApp/Resources/IDE/NOTICE.md",
-      "bundlePath": "IDE/NOTICE.md",
-      "titleKey": "settings.licenses.document.ide.title",
-      "titleFallback": "CodeBlitz IDE",
-      "titleArgument": null,
-      "license": "MIT",
-      "kindKey": "settings.licenses.kind.notices",
-      "required": false,
-      "section": "ide",
-      "noteKey": null
-    },
-    {
-      "id": "ide-vendor",
-      "repositoryPath": "FloeApp/Resources/IDE/vendor/LICENSE",
-      "bundlePath": "IDE/vendor/LICENSE",
-      "titleKey": "settings.licenses.document.ide_vendor.title",
-      "titleFallback": "CodeBlitz bundled dependencies",
-      "titleArgument": null,
-      "license": null,
-      "kindKey": "settings.licenses.kind.notices",
-      "required": false,
-      "section": "ide",
-      "noteKey": null
-    },
-    {
-      "id": "monaco",
-      "repositoryPath": "FloeApp/Resources/IDE/vendor/MONACO-LICENSE",
-      "bundlePath": "IDE/vendor/MONACO-LICENSE",
-      "titleKey": "settings.licenses.document.monaco.title",
-      "titleFallback": "OpenSumi Monaco",
-      "titleArgument": null,
-      "license": "MIT",
-      "kindKey": "settings.licenses.kind.full_text",
-      "required": false,
-      "section": "ide",
-      "noteKey": null
-    },
-    {
-      "id": "oniguruma",
-      "repositoryPath": "FloeApp/Resources/IDE/vendor/ONIGURUMA-LICENSE",
-      "bundlePath": "IDE/vendor/ONIGURUMA-LICENSE",
-      "titleKey": "settings.licenses.document.oniguruma.title",
-      "titleFallback": "vscode-oniguruma",
-      "titleArgument": null,
-      "license": "MIT and Oniguruma notices",
-      "kindKey": "settings.licenses.kind.full_text",
-      "required": false,
-      "section": "ide",
-      "noteKey": null
-    },
-    {
-      "id": "codicons",
-      "repositoryPath": "FloeApp/Resources/IDE/vendor/CODICONS-LICENSE",
-      "bundlePath": "IDE/vendor/CODICONS-LICENSE",
-      "titleKey": "settings.licenses.document.codicons.title",
-      "titleFallback": "Microsoft Codicons",
-      "titleArgument": null,
-      "license": "CC-BY-4.0",
-      "kindKey": "settings.licenses.kind.full_text",
-      "required": false,
-      "section": "ide",
-      "noteKey": null
-    },
-    {
-      "id": "codeblitz-bundle",
-      "repositoryPath": "FloeApp/Resources/IDE/vendor/codeblitz.global-with-react.min.js.LICENSE.txt",
-      "bundlePath": "IDE/vendor/codeblitz.global-with-react.min.js.LICENSE.txt",
-      "titleKey": "settings.licenses.document.codeblitz_bundle.title",
-      "titleFallback": "CodeBlitz bundle notices",
-      "titleArgument": null,
-      "license": null,
-      "kindKey": "settings.licenses.kind.notices",
-      "required": false,
-      "section": "ide",
-      "noteKey": null
-    },
-    {
       "id": "zlimageeditor",
       "repositoryPath": "FloeApp/Resources/ZLImageEditor-LICENSE.txt",
       "bundlePath": "ZLImageEditor-LICENSE.txt",
@@ -1302,42 +1224,6 @@
       "section": "engineering",
       "noteKey": "settings.licenses.note.occt",
       "evidence": "FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt"
-    },
-    {
-      "name": "OpenSumi CodeBlitz",
-      "version": "2.4.6",
-      "license": "MIT",
-      "source": "https://github.com/opensumi/codeblitz",
-      "section": "ide",
-      "noteKey": null,
-      "evidence": "FloeApp/Resources/IDE/vendor/LICENSE and manifest.json"
-    },
-    {
-      "name": "OpenSumi Monaco",
-      "version": "3.6.5-next-1766394426.0",
-      "license": "MIT",
-      "source": "https://github.com/opensumi/monaco-editor",
-      "section": "ide",
-      "noteKey": null,
-      "evidence": "FloeApp/Resources/IDE/vendor/MONACO-LICENSE"
-    },
-    {
-      "name": "vscode-oniguruma",
-      "version": "1.5.1",
-      "license": "MIT and Oniguruma notices",
-      "source": "https://github.com/microsoft/vscode-oniguruma",
-      "section": "ide",
-      "noteKey": null,
-      "evidence": "FloeApp/Resources/IDE/vendor/ONIGURUMA-LICENSE"
-    },
-    {
-      "name": "Microsoft Codicons",
-      "version": "0.0.35",
-      "license": "CC-BY-4.0",
-      "source": "https://github.com/microsoft/vscode-codicons",
-      "section": "ide",
-      "noteKey": null,
-      "evidence": "FloeApp/Resources/IDE/vendor/CODICONS-LICENSE"
     },
     {
       "name": "ZLImageEditor",
@@ -2601,8 +2487,8 @@
     }
   ],
   "counts": {
-    "components": 230,
-    "documents": 34,
+    "components": 226,
+    "documents": 28,
     "pins": 33
   }
 }

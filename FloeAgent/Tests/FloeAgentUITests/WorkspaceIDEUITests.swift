@@ -4,9 +4,10 @@ import UIKit
 
 @MainActor
 final class WorkspaceIDEUITests: XCTestCase {
-    /// The IDE defaults to the native Swift/UIKit editor for verified
-    /// text/code files. This is the reachability proof: real buffer, real
-    /// save, disk readback after a cold App launch.
+    /// The IDE's text/code editor is native Swift/UIKit only (no Web/Monaco
+    /// text kernel and no switch entry). This is the reachability proof: real
+    /// keystrokes into the real UITextView, real save, disk readback after a
+    /// cold App launch. No test-injection controls exist in the product UI.
     func testNativeEditorSaveAndColdReopen() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -16,23 +17,20 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
         defer { app.terminate() }
-        try openWorkbench(app, ipad: ipad, expectWebKernel: false)
+        try openWorkbench(app, ipad: ipad)
         let editor = app.textViews["workspace.ide.nativeEditor"]
         XCTAssertTrue(editor.waitForExistence(timeout: 30), "the native editor must be reachable by default")
-        let insert = app.buttons["workspace.ide.nativeInsertTestText"]
-        XCTAssertTrue(insert.waitForExistence(timeout: 10))
-        wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: insert)], timeout: 60)
-        insert.tap()
-        let inserted = expectation(for: NSPredicate(format: "value BEGINSWITH %@", "inserted:"), evaluatedWith: insert)
-        wait(for: [inserted], timeout: 30)
-        guard let published = insert.value as? String, published.hasPrefix("inserted:") else {
-            XCTFail("native insert action did not publish its marker"); return
-        }
-        let marker = String(published.dropFirst("inserted:".count))
+        XCTAssertFalse(app.buttons["workspace.ide.insertTestText"].exists, "no web test-injection control may exist")
+        XCTAssertFalse(app.buttons["workspace.ide.nativeInsertTestText"].exists, "no native test-injection control may exist")
+        XCTAssertFalse(app.buttons["workspace.ide.editorMode"].exists, "there must be no editor-kernel switch entry")
+        // Real typing through the native UITextView; the marker is generated
+        // here so the cold readback can require exactly this string.
+        let marker = "saved-" + UUID().uuidString.prefix(8)
+        editor.tap()
+        editor.typeText("\n\(marker)\n")
         // The native status bar reports the unsaved state before the save and
-        // the saved state after it, so the assertion is about the buffer, not
-        // the button.
-        XCTAssertTrue(app.staticTexts["未保存"].waitForExistence(timeout: 5))
+        // the saved state after it, so the assertion is about the buffer.
+        XCTAssertTrue(app.staticTexts["未保存"].waitForExistence(timeout: 10))
         let save = app.buttons["workspace.ide.save"]
         XCTAssertTrue(save.isEnabled)
         save.tap()
@@ -44,16 +42,18 @@ final class WorkspaceIDEUITests: XCTestCase {
         // A cold App + a fresh native model must read the committed bytes.
         app.terminate()
         app.launch()
-        try openWorkbench(app, ipad: ipad, expectedSavedText: String(marker), expectWebKernel: false)
+        try openWorkbench(app, ipad: ipad, expectedSavedText: String(marker))
         XCTAssertTrue(app.textViews["workspace.ide.nativeEditor"].waitForExistence(timeout: 30))
         capture("ide-native-cold-reopen")
         app.buttons["workspace.ide.close"].tap()
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
 
-    /// The Web workbench stays an explicit fallback. Switching kernels keeps
-    /// the native buffer and the Monaco workbench still owns its own model.
-    func testWebFallbackEditorRemainsAvailable() throws {
+    /// Native-only IDE chrome: the persistent left activity rail exposes
+    /// files/search/source control/terminal, the Explorer opens files into the
+    /// native editor, and a typed edit saves through the toolbar. There is no
+    /// Web workbench to reach.
+    func testNativeExplorerAndActivityRail() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
@@ -62,53 +62,41 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launch()
         defer { app.terminate() }
-        try openWorkbench(app, ipad: ipad, expectWebKernel: false)
-        switchEditorKernelToWeb(app)
-        XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 30), "the Web workbench must remain reachable")
-        // XCTest keystrokes never reach Monaco's hidden textarea, the editor
-        // suppresses the system edit menu, and the simulator pasteboard is not
-        // shared with the test runner. The action generates and publishes the
-        // marker it inserted; the readback below requires exactly that string.
-        let insert = app.buttons["workspace.ide.insertTestText"]
-        XCTAssertTrue(insert.waitForExistence(timeout: 20))
-        wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: insert)], timeout: 60)
-        insert.tap()
-        let inserted = expectation(for: NSPredicate(format: "value BEGINSWITH %@", "inserted:"), evaluatedWith: insert)
-        wait(for: [inserted], timeout: 30)
-        guard let published = insert.value as? String, published.hasPrefix("inserted:") else {
-            XCTFail("web insert action did not publish its marker"); return
+        try openWorkbench(app, ipad: ipad)
+        // The rail is present on both idioms; tapping Source Control opens the
+        // pinned workspace's Git surface (or its truthful not-a-repository
+        // state for this fixture workspace).
+        for identifier in ["workspace.ide.files", "workspace.ide.search", "workspace.ide.sourceControl", "workspace.ide.terminal"] {
+            let control = app.buttons[identifier]
+            XCTAssertTrue(control.waitForExistence(timeout: 10), "the activity rail must expose \(identifier)")
+            XCTAssertTrue(control.isEnabled, "\(identifier) must be enabled")
         }
-        let save = app.buttons["workspace.ide.save"]
-        XCTAssertTrue(save.isEnabled)
-        save.tap()
-        wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: save)], timeout: 20)
-        capture("ide-web-fallback-saved")
-        // Compact widths collapse the trailing toolbar items into the system
-        // overflow menu; assert the same two actions through whichever
-        // surface actually renders them instead of weakening the check.
-        let richEditor = app.buttons["workspace.ide.richEditor"]
-        let terminal = app.buttons["workspace.ide.terminal"]
-        if richEditor.waitForExistence(timeout: 5) {
-            XCTAssertTrue(richEditor.isEnabled)
-            XCTAssertTrue(terminal.isEnabled)
+        assertTerminalRailAndPanel(app)
+        // Explorer: regular widths open with the Files sidebar visible; the
+        // fixture file row opens the native editor for that path.
+        if ipad {
+            XCTAssertTrue(
+                app.descendants(matching: .any).matching(identifier: "workspace.ide.sidebar").firstMatch
+                    .waitForExistence(timeout: 10),
+                "regular widths must open with the Explorer sidebar visible"
+            )
+            capture("ide-ipad-explorer")
         } else {
-            let overflow = app.buttons["OverflowBarButtonItem"]
-            XCTAssertTrue(overflow.waitForExistence(timeout: 5))
-            overflow.tap()
-            // The app is forced to zh-Hans above; overflow menu items carry
-            // only their localized labels, not the button identifiers.
-            let richItem = overflowedAction(app, label: "用专用编辑器打开")
-            let terminalItem = overflowedAction(app, label: "终端")
-            XCTAssertTrue(richItem.exists)
-            XCTAssertTrue(terminalItem.exists)
-            XCTAssertTrue(richItem.isEnabled)
-            XCTAssertTrue(terminalItem.isEnabled)
-            capture("ide-web-fallback-overflow")
-            // Dismiss the menu through its own dismissal layer before the
-            // close step below; the tap must not reach the editor.
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
-            wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: richItem)], timeout: 5)
+            app.buttons["workspace.ide.files"].tap()
+            XCTAssertTrue(app.otherElements["workspace.ide.sidebar.drawer"].waitForExistence(timeout: 10),
+                          "compact widths must open the Explorer drawer from the rail")
+            capture("ide-iphone-explorer-drawer")
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
         }
+        let editor = app.textViews["workspace.ide.nativeEditor"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 30), "the native editor must be the default for a verified text file")
+        let marker = "edited-" + UUID().uuidString.prefix(8)
+        editor.tap()
+        editor.typeText("\n\(marker)\n")
+        XCTAssertTrue(app.staticTexts["未保存"].waitForExistence(timeout: 10))
+        app.buttons["workspace.ide.save"].tap()
+        XCTAssertTrue(app.staticTexts["已保存"].waitForExistence(timeout: 20))
+        capture("ide-native-rail-saved")
         app.buttons["workspace.ide.close"].tap()
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
@@ -211,53 +199,26 @@ final class WorkspaceIDEUITests: XCTestCase {
     private func openWorkbench(
         _ app: XCUIApplication,
         ipad: Bool,
-        expectedSavedText: String? = nil,
-        expectWebKernel: Bool = true
+        expectedSavedText: String? = nil
     ) throws {
         try openFile(app, ipad: ipad, name: "IDE验收.txt")
         if let expectedSavedText {
             // Read through Floe's independent native preview after a cold
-            // launch; Monaco's textarea exposes only its current input range.
+            // launch, which renders the committed bytes.
             let savedText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", expectedSavedText)).firstMatch
             XCTAssertTrue(savedText.waitForExistence(timeout: 30))
             capture("ide-native-disk-readback")
         }
         let expand = app.buttons["file.preview.openIDE"]
         XCTAssertTrue(expand.waitForExistence(timeout: 10)); expand.tap()
-        if expectWebKernel {
-            let save = app.buttons["workspace.ide.save"]
-            XCTAssertTrue(save.waitForExistence(timeout: 20))
-            wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: save)], timeout: 45)
-            XCTAssertTrue(app.webViews.firstMatch.exists)
-        } else {
-            XCTAssertTrue(
-                app.textViews["workspace.ide.nativeEditor"].waitForExistence(timeout: 30),
-                "the native editor must be the default for a verified text file"
-            )
-            // The native insert hook is enabled only after the buffer loaded,
-            // which makes it a deterministic readiness probe (the editor view
-            // itself already exists while the load is in flight).
-            let insert = app.buttons["workspace.ide.nativeInsertTestText"]
-            XCTAssertTrue(insert.waitForExistence(timeout: 15))
-            wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: insert)], timeout: 45)
-        }
+        // Text editing is native-only: the editor view is the readiness probe
+        // (the buffer load finishes before the first keystroke assertions).
+        XCTAssertTrue(
+            app.textViews["workspace.ide.nativeEditor"].waitForExistence(timeout: 30),
+            "the native editor must be the only text editor for a verified text file"
+        )
+        XCTAssertFalse(app.webViews.firstMatch.exists, "no Web text workbench may be mounted")
         capture("ide-native-workbench")
-    }
-
-    /// Switches the visible kernel to the Web workbench through whichever
-    /// surface renders the action (toolbar button or compact overflow menu).
-    private func switchEditorKernelToWeb(_ app: XCUIApplication) {
-        let button = app.buttons["workspace.ide.editorMode"]
-        if button.waitForExistence(timeout: 10), button.isHittable {
-            button.tap()
-            return
-        }
-        let overflow = app.buttons["OverflowBarButtonItem"]
-        XCTAssertTrue(overflow.waitForExistence(timeout: 10))
-        overflow.tap()
-        let item = overflowedAction(app, label: "Web 编辑器")
-        XCTAssertTrue(item.exists, "the editor-kernel switch must be reachable")
-        item.tap()
     }
 
     private func capture(_ name: String) {
@@ -280,5 +241,88 @@ final class WorkspaceIDEUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         return item
+    }
+
+    /// Asserts one toolbar action is reachable and enabled through either the
+    /// bar itself or the compact overflow menu, and leaves the menu dismissed
+    /// so the next probe starts from the normal workbench.
+    private func assertToolbarAction(
+        _ app: XCUIApplication,
+        identifier: String,
+        overflowLabel: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let direct = app.buttons[identifier]
+        if direct.waitForExistence(timeout: 5), direct.isHittable {
+            XCTAssertTrue(direct.isEnabled, "\(identifier) must stay enabled", file: file, line: line)
+            return
+        }
+        let overflow = app.buttons["OverflowBarButtonItem"]
+        XCTAssertTrue(
+            overflow.waitForExistence(timeout: 5),
+            "neither the toolbar nor the overflow menu renders \(identifier)",
+            file: file, line: line
+        )
+        overflow.tap()
+        // The app is forced to zh-Hans above; overflow menu items carry only
+        // their localized labels, not the button identifiers.
+        let item = overflowedAction(app, label: overflowLabel, timeout: 10)
+        XCTAssertTrue(item.exists && item.isEnabled, "\(identifier) must stay enabled", file: file, line: line)
+        capture("ide-web-fallback-overflow-\(identifier)")
+        // Dismiss the menu through its own dismissal layer; the tap must not
+        // reach the editor. The dismissal assertion is scoped to the presented
+        // menu itself: `app.buttons[overflowLabel]` can also match a toolbar
+        // button that survives the probe (and a slow snapshot must not fail
+        // the reachability assertion above).
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)).tap()
+        XCTAssertTrue(overflowMenuClosed(app, timeout: 10), "the overflow menu must close", file: file, line: line)
+    }
+
+    /// True once the presented overflow menu is gone. Scoped to the menu
+    /// container's `menuItems` so a toolbar button that happens to share the
+    /// item's localized label can never keep this check open.
+    private func overflowMenuClosed(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let menu = app.menuItems.firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !menu.exists { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        return !menu.exists
+    }
+
+    /// Verifies the terminal lives in the persistent left activity rail and
+    /// drives the collapsible bottom panel: the rail control is enabled,
+    /// tapping it reveals the panel, and the panel's collapse button hides
+    /// it without recreating the session. Runs on iPad and iPhone.
+    private func assertTerminalRailAndPanel(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let rail = app.buttons["workspace.ide.terminal"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 10), "the activity rail must expose a terminal control", file: file, line: line)
+        XCTAssertTrue(rail.isEnabled, "the terminal rail control must stay enabled", file: file, line: line)
+        // The panel may surface as a container of any element type; query the
+        // whole tree rather than only `otherElements`.
+        let panel = app.descendants(matching: .any).matching(identifier: "workspace.ide.terminalPanel").firstMatch
+        if !panel.exists { rail.tap() }
+        XCTAssertTrue(panel.waitForExistence(timeout: 10), "tapping the rail must open the terminal panel", file: file, line: line)
+        capture("ide-terminal-panel")
+        let collapse = app.buttons["workspace.ide.panel.close"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5), "the panel must offer a collapse control", file: file, line: line)
+        collapse.tap()
+        XCTAssertTrue(
+            elementGone(panel, timeout: 10),
+            "the panel collapse control must hide the panel", file: file, line: line
+        )
+    }
+
+    /// Polls until the element leaves the hierarchy (the panel collapse
+    /// animation makes a plain expectation racy).
+    private func elementGone(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !element.exists { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        return !element.exists
     }
 }

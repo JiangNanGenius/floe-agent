@@ -85,7 +85,6 @@ XSTRINGS = ROOT / "FloeApp/Resources/Localizable.xcstrings"
 PROJECT_YML = ROOT / "project.yml"
 FONTS_MANIFEST = HERE / "fonts/manifest.json"
 CONVERSION_INVENTORY = ROOT / "ThirdParty/DocumentConversion/inventory.json"
-IDE_NOTICE = ROOT / "FloeApp/Resources/IDE/NOTICE.md"
 LIBGIT2_COPYING = ROOT / "FloeApp/Resources/Licenses/libgit2-COPYING.txt"
 CHECKOUTS = ROOT / ".build/checkouts"
 PACKAGE_RESOLVED = ROOT / "Package.resolved"
@@ -697,39 +696,6 @@ STATIC_COMPONENTS = (
         "engineering",
         "settings.licenses.note.occt",
     ),
-    # Offline IDE distributions.
-    (
-        "OpenSumi CodeBlitz",
-        "2.4.6",
-        "MIT",
-        "https://github.com/opensumi/codeblitz",
-        "ide",
-        None,
-    ),
-    (
-        "OpenSumi Monaco",
-        "3.6.5-next-1766394426.0",
-        "MIT",
-        "https://github.com/opensumi/monaco-editor",
-        "ide",
-        None,
-    ),
-    (
-        "vscode-oniguruma",
-        "1.5.1",
-        "MIT and Oniguruma notices",
-        "https://github.com/microsoft/vscode-oniguruma",
-        "ide",
-        None,
-    ),
-    (
-        "Microsoft Codicons",
-        "0.0.35",
-        "CC-BY-4.0",
-        "https://github.com/microsoft/vscode-codicons",
-        "ide",
-        None,
-    ),
     # Media.
     (
         "ZLImageEditor",
@@ -954,78 +920,6 @@ DOCUMENTS = (
         "full_text",
         False,
         "speech",
-    ),
-    (
-        "ide-notice",
-        "FloeApp/Resources/IDE/NOTICE.md",
-        "IDE/NOTICE.md",
-        "settings.licenses.document.ide.title",
-        "CodeBlitz IDE",
-        None,
-        "MIT",
-        "notices",
-        False,
-        "ide",
-    ),
-    (
-        "ide-vendor",
-        "FloeApp/Resources/IDE/vendor/LICENSE",
-        "IDE/vendor/LICENSE",
-        "settings.licenses.document.ide_vendor.title",
-        "CodeBlitz bundled dependencies",
-        None,
-        None,
-        "notices",
-        False,
-        "ide",
-    ),
-    (
-        "monaco",
-        "FloeApp/Resources/IDE/vendor/MONACO-LICENSE",
-        "IDE/vendor/MONACO-LICENSE",
-        "settings.licenses.document.monaco.title",
-        "OpenSumi Monaco",
-        None,
-        "MIT",
-        "full_text",
-        False,
-        "ide",
-    ),
-    (
-        "oniguruma",
-        "FloeApp/Resources/IDE/vendor/ONIGURUMA-LICENSE",
-        "IDE/vendor/ONIGURUMA-LICENSE",
-        "settings.licenses.document.oniguruma.title",
-        "vscode-oniguruma",
-        None,
-        "MIT and Oniguruma notices",
-        "full_text",
-        False,
-        "ide",
-    ),
-    (
-        "codicons",
-        "FloeApp/Resources/IDE/vendor/CODICONS-LICENSE",
-        "IDE/vendor/CODICONS-LICENSE",
-        "settings.licenses.document.codicons.title",
-        "Microsoft Codicons",
-        None,
-        "CC-BY-4.0",
-        "full_text",
-        False,
-        "ide",
-    ),
-    (
-        "codeblitz-bundle",
-        "FloeApp/Resources/IDE/vendor/codeblitz.global-with-react.min.js.LICENSE.txt",
-        "IDE/vendor/codeblitz.global-with-react.min.js.LICENSE.txt",
-        "settings.licenses.document.codeblitz_bundle.title",
-        "CodeBlitz bundle notices",
-        None,
-        None,
-        "notices",
-        False,
-        "ide",
     ),
     (
         "zlimageeditor",
@@ -1393,10 +1287,6 @@ STATIC_EVIDENCE = {
     "gerber-to-svg": "FloeApp/Resources/EngineeringViewers/gerber-to-svg.min.js.LICENSE.txt",
     "Open CASCADE Technology (OCCT)": "FloeApp/Resources/EngineeringViewers/license.occt.txt",
     "occt-import-js": "FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt",
-    "OpenSumi CodeBlitz": "FloeApp/Resources/IDE/vendor/LICENSE and manifest.json",
-    "OpenSumi Monaco": "FloeApp/Resources/IDE/vendor/MONACO-LICENSE",
-    "vscode-oniguruma": "FloeApp/Resources/IDE/vendor/ONIGURUMA-LICENSE",
-    "Microsoft Codicons": "FloeApp/Resources/IDE/vendor/CODICONS-LICENSE",
     "ZLImageEditor": "FloeApp/Resources/ZLImageEditor-LICENSE.txt",
     "FloeDocumentSans (modified Noto Sans SC)": "FloeApp/Resources/DocumentConversion/FONT-LICENSE.txt",
 }
@@ -1593,9 +1483,6 @@ def render_markdown(manifest) -> str:
     for note_id, text in NOTES:
         lines.append(f"- **{note_id}.** {text}")
     lines.append("")
-    if IDE_NOTICE.is_file():
-        lines.append(IDE_NOTICE.read_text().rstrip())
-        lines.append("")
     return "\n".join(lines)
 
 

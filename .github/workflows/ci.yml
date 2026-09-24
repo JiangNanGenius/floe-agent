@@ -237,9 +237,7 @@ jobs:
 
       - name: Verify bundled assets and pinned tools
         run: |
-          python3 scripts/check_ide_assets.py
           python3 scripts/check_engineering_viewer_assets.py
-          node --test scripts/tests/ide_filesystem.test.cjs
           python3 -m unittest discover -s scripts/tests -p test_pdfium_linkage.py
           python3 scripts/test_http_workflow.py
 
@@ -495,9 +493,13 @@ jobs:
         # build-for-testing step actually produced; real UI failures after a
         # successful build are still reported and never retried into passes.
         if: ${{ !cancelled() && steps.app_regression_build.outcome == 'success' }}
-        # Two device legs, each rebuilding the drawing engine; a slow snapshot
-        # window once pushed the phase past fifteen minutes despite passing.
-        timeout-minutes: 25
+        # Two device legs, each booting its simulator and running the full
+        # four-test WorkspaceIDEUITests class (native save/cold-reopen, native
+        # Explorer/Git, DXF preview, DWG edit). Slow runners have spent almost
+        # seven minutes before the first test and over fifteen minutes per
+        # leg, so the phase budget covers a worst-case boot plus leg per
+        # device; a stalled leg is still bounded by the runner's total cap.
+        timeout-minutes: 50
         run: |
           set -o pipefail
           status=0
@@ -522,17 +524,20 @@ jobs:
               # A passing run also reached the startup sampling threshold.
               # Allow a separate bounded startup margin (420s), collecting
               # xcodebuild stacks rather than assuming a quiet launch is
-              # healthy. Tests keep their 210s quiet limit and 900s total cap.
+              # healthy. Tests keep their 210s quiet limit; the total cap
+              # covers a slow simulator boot plus the whole four-test class
+              # (a fully passing leg has taken 664s, a slow one needed ~1100s
+              # before the previous 900s cap killed the last test).
               diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/ide-$name-attempt-$leg_attempt"
               python3 scripts/run_test_with_diagnostics.py \
                 --output-dir "$diag_dir" \
-                --timeout 900 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
+                --timeout 1500 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
                 xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
                 -destination "platform=iOS Simulator,id=$test_device" \
                 -resultBundlePath "FloeAgent-IDE-$name.xcresult" \
                 -collect-test-diagnostics never -only-testing:FloeAgentUITests/WorkspaceIDEUITests \
                 -parallel-testing-enabled NO -test-timeouts-enabled YES \
-                -maximum-test-execution-time-allowance 300 \
+                -maximum-test-execution-time-allowance 420 \
                 -retry-tests-on-failure -test-iterations 2 \
                 CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name-attempt-$leg_attempt.log" || leg_code=$?
               # One retry only when the runner stalled before any test started.

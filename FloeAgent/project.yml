@@ -80,9 +80,10 @@ targets:
       - path: FloeApp/Resources/EngineeringViewers
         type: folder
         buildPhase: resources
-      - path: FloeApp/Resources/IDE
-        type: folder
-        buildPhase: resources
+      # Resources/IDE is intentionally NOT packaged: the CodeBlitz/Monaco web
+      # workbench was retired when IDE text editing became native-only. The
+      # NOTICE and vendor license files stay in the tree as attribution only
+      # and must not ship as installed-package licenses.
       - path: ThirdParty/RoyalVNCKit/LICENSE
         buildPhase: resources
     info:
@@ -479,6 +480,8 @@ targets:
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
+      - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
+      - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift

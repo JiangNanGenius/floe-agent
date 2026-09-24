@@ -11,8 +11,8 @@ import FloeWorkspace
 /// surface while falling back to an unnumbered text view in another.
 ///
 /// The extension tables live in `WorkspaceTextPolicy` (FloeWorkspace) because
-/// the IDE bridge applies the same decision natively before any byte reaches
-/// Monaco. This type is only the App-facing spelling of that shared policy.
+/// the IDE applies the same decision natively before any byte reaches the
+/// editor. This type is only the App-facing spelling of that shared policy.
 enum WorkspaceFileType {
     static func pathExtension(for relativePath: String) -> String {
         (relativePath as NSString).pathExtension.lowercased()

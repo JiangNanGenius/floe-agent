@@ -13,7 +13,7 @@ def verify(summary, tree):
     # the whole WorkspaceIDEUITests class and the count checks stay exact.
     expected = {
         "WorkspaceIDEUITests/testNativeEditorSaveAndColdReopen",
-        "WorkspaceIDEUITests/testWebFallbackEditorRemainsAvailable",
+        "WorkspaceIDEUITests/testNativeExplorerAndActivityRail",
         "WorkspaceIDEUITests/testEngineeringDrawingInlineAndFullScreen",
         "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen",
     }
@@ -23,8 +23,8 @@ def verify(summary, tree):
             or summary.get("skippedTests") != 0 or summary.get("expectedFailures") != 0
             or len(cases) != len(expected) or found != expected
             or any(case.get("result") != "Passed" for case in cases)):
-        raise ValueError("Native IDE save/reopen, Web fallback and engineering preview did not all pass")
-    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-web-fallback-and-engineering-preview"}
+        raise ValueError("Native IDE save/reopen, native rail/Explorer and engineering preview did not all pass")
+    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-rail-explorer-and-engineering-preview"}
 
 
 

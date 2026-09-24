@@ -2,18 +2,15 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// The IDE is one workbench with two editor kernels behind the `code` tab: the
-// native Swift/UIKit editor pane (default for verified text/code files) and
-// the Web CodeBlitz workbench (explicit fallback). The Web workbench's
-// internal editor tabs still own text/code AND PDF/Office documents (custom
-// document component, native overlay clipped to the reported rectangle) while
-// it is the visible kernel; the native kernel shows PDF/Office in these typed
-// outer tabs instead, and text/code in its own buffer strip. The strip also
-// hosts the typed viewers for the remaining routed kinds
-// (CAD/image/media/Quick Look).
+// The IDE has one native Swift/UIKit text editor behind the `code` tab
+// (there is no Web/Monaco text kernel). Text/code files live as native
+// buffers of that single code tab; PDF/Office and the remaining routed kinds
+// (CAD/image/media/Quick Look) get their own typed outer tabs, so an
+// Office/PDF initial path lands directly in its typed surface instead of a
+// transient empty code page.
 //
 // Text routing stays authoritative: an Office/PDF/CAD/image path can never
-// become a code tab, so neither editor kernel ever sees bytes it would decode
+// become a code tab, so the native editor never sees bytes it would decode
 // and write back as UTF-8.
 
 #if canImport(SwiftUI) && canImport(UIKit)
@@ -34,11 +31,10 @@ enum IDEWorkspaceTabKind: String, Equatable {
     }
 }
 
-/// Pure decision for closing an Office tab (native strip tab or an internal
-/// CodeBlitz document tab): a clean read-only preview closes immediately;
-/// anything holding user changes hands the save/discard/cancel decision to
-/// the user. Keeping this pure lets focused tests pin the close policy
-/// without an engine or a simulator.
+/// Pure decision for closing an Office tab (typed outer tab): a clean
+/// read-only preview closes immediately; anything holding user changes hands
+/// the save/discard/cancel decision to the user. Keeping this pure lets
+/// focused tests pin the close policy without an engine or a simulator.
 enum IDEOfficeCloseDecision: Equatable {
     /// No changes at stake — close (release the session) right away.
     case closeImmediately
@@ -105,14 +101,14 @@ final class IDEWorkspaceTabStore: ObservableObject {
             return
         }
         switch WorkspaceFileRouter.destination(for: initialRelativePath) {
-        case .codeEditor, .officeEditor:
-            // Office documents are internal CodeBlitz tabs; the IDE view
-            // forwards the initial path once the workbench is ready.
-            activeTabID = Self.codeTabID
-        case .documentViewer where WorkspaceTextPolicy.isPDFPath(initialRelativePath):
-            // PDFs are internal CodeBlitz tabs as well.
+        case .codeEditor:
+            // Text/code opens a native buffer in the single code tab when the
+            // IDE view appears; the outer tab is only the container.
             activeTabID = Self.codeTabID
         default:
+            // Office, PDF and every other typed document opens its own typed
+            // outer tab immediately: there is no Web workbench to forward to,
+            // and the first frame must never be a transient empty code page.
             _ = open(relativePath: initialRelativePath)
         }
     }
@@ -133,10 +129,8 @@ final class IDEWorkspaceTabStore: ObservableObject {
         let kind: IDEWorkspaceTabKind
         switch WorkspaceFileRouter.destination(for: relativePath) {
         case .codeEditor:
-            // A text file stays inside the code tab's editor kernel: the
-            // native pane opens a buffer for it while the native kernel is
-            // selected, and the Web workbench's own tab strip holds it in Web
-            // mode. Either way this outer tab is only the container.
+            // A text file stays inside the code tab's native editor: the pane
+            // opens a buffer for it, so this outer tab is only the container.
             activeTabID = Self.codeTabID
             return tabs.first { $0.id == Self.codeTabID }
         case .officeEditor:

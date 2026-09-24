@@ -181,12 +181,16 @@ struct StructuredCodeTextView: UIViewRepresentable {
     /// nil keeps the line-numbered editor without language coloring.
     let language: CodeLanguage?
     @Binding var command: CodeEditorCommand
+    /// Editor zoom in points; nil uses the Dynamic Type baseline. Text and
+    /// gutter are always set together.
+    var fontSize: CGFloat? = nil
     var accessibilityIdentifier: String? = nil
 
     func makeUIView(context: Context) -> LineNumberTextView {
         let view = LineNumberTextView()
         view.backgroundColor = .clear
-        view.font = EditorTheme.font
+        view.applyEditorFont(size: fontSize)
+        context.coordinator.appliedFontSize = fontSize
         view.autocorrectionType = .no
         view.autocapitalizationType = .none
         view.smartDashesType = .no
@@ -205,6 +209,15 @@ struct StructuredCodeTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: LineNumberTextView, context: Context) {
+        context.coordinator.parent = self
+        if context.coordinator.appliedFontSize != fontSize {
+            context.coordinator.appliedFontSize = fontSize
+            view.applyEditorFont(size: fontSize)
+            // UITextView's attributed storage keeps its own font. Refresh it
+            // together with the gutter, including already highlighted text.
+            // highlight defers while an IME composition is active.
+            context.coordinator.highlight(view)
+        }
         context.coordinator.applyModelText(text, to: view)
         if context.coordinator.lastCommandRevision != command.revision {
             context.coordinator.lastCommandRevision = command.revision
@@ -227,6 +240,7 @@ struct StructuredCodeTextView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: StructuredCodeTextView
+        var appliedFontSize: CGFloat?
         var isHighlighting = false
         var lastCommandRevision = 0
         /// Programmatic updates requested while an IME composition was active.
@@ -296,7 +310,7 @@ struct StructuredCodeTextView: UIViewRepresentable {
             let selection = view.selectedRange
             let full = NSRange(location: 0, length: (source as NSString).length)
             let baseAttributes: [NSAttributedString.Key: Any] = [
-                .font: EditorTheme.font,
+                .font: EditorTheme.font(size: parent.fontSize),
                 .foregroundColor: UIColor.label
             ]
             // Keep typing responsive for unusually large source files. They
@@ -361,18 +375,63 @@ struct StructuredCodeTextView: UIViewRepresentable {
                   let font = storage.attribute(.font, at: length - 1, effectiveRange: nil) as? UIFont else {
                 return false
             }
-            return color == UIColor.label && font == EditorTheme.font
+            return color == UIColor.label && font == EditorTheme.font(size: parent.fontSize)
         }
     }
 }
 
 enum EditorTheme {
-    static var font: UIFont { .monospacedSystemFont(ofSize: 15, weight: .regular) }
-    static var gutterFont: UIFont { .monospacedSystemFont(ofSize: 11, weight: .regular) }
+    static var font: UIFont { font(size: nil) }
+    static var gutterFont: UIFont { gutterFont(size: nil) }
+
+    /// The editor's monospaced font at an explicit point size. `nil` uses the
+    /// Dynamic Type body baseline, so the default follows accessibility text
+    /// size and the zoom preference only overrides within safe bounds.
+    static func font(size: CGFloat?) -> UIFont {
+        .monospacedSystemFont(ofSize: resolvedSize(size), weight: .regular)
+    }
+
+    /// The gutter scales with the editor so line numbers, cursor geometry and
+    /// text stay synchronized at every zoom level.
+    static func gutterFont(size: CGFloat?) -> UIFont {
+        .monospacedSystemFont(ofSize: max(9, resolvedSize(size) * 0.73), weight: .regular)
+    }
+
+    static func resolvedSize(_ size: CGFloat?) -> CGFloat {
+        let requested = size ?? UIFont.preferredFont(forTextStyle: .body).pointSize
+        return min(max(requested, IDEEditorFontSize.bounds.lowerBound), IDEEditorFontSize.bounds.upperBound)
+    }
+}
+
+/// Persisted editor text-zoom preference. 0 means "follow Dynamic Type"; an
+/// explicit value is clamped to a readable 12...28pt range.
+enum IDEEditorFontSize {
+    static let bounds: ClosedRange<CGFloat> = 12...28
+    static let step: CGFloat = 1
+    static let automatic: CGFloat = 0
+
+    static func resolved(_ stored: CGFloat) -> CGFloat {
+        stored > 0 ? min(max(stored, bounds.lowerBound), bounds.upperBound) : EditorTheme.resolvedSize(nil)
+    }
+
+    static func increased(_ stored: CGFloat) -> CGFloat {
+        min(resolved(stored) + step, bounds.upperBound)
+    }
+
+    static func decreased(_ stored: CGFloat) -> CGFloat {
+        max(resolved(stored) - step, bounds.lowerBound)
+    }
+
+    static func canIncrease(_ stored: CGFloat) -> Bool { resolved(stored) < bounds.upperBound }
+    static func canDecrease(_ stored: CGFloat) -> Bool { resolved(stored) > bounds.lowerBound }
 }
 
 final class LineNumberTextView: UITextView {
     private var gutterWidth: CGFloat = 44
+    /// The gutter font follows the editor zoom so line numbers, cursor
+    /// geometry and text never drift apart.
+    private var currentGutterFont: UIFont = EditorTheme.gutterFont(size: nil)
+    private var currentLineCount = 1
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
@@ -390,12 +449,24 @@ final class LineNumberTextView: UITextView {
         textContainer.size = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     }
 
+    /// Applies the persisted zoom to text, gutter and inset together.
+    func applyEditorFont(size: CGFloat?) {
+        font = EditorTheme.font(size: size)
+        currentGutterFont = EditorTheme.gutterFont(size: size)
+        recomputeGutterWidth()
+    }
+
     /// Keeps four-digit line numbers visible; the gutter only grows.
     func updateGutterWidth(for text: String) {
-        let lines = IDENativeTextEditing.lineCount(in: text)
-        let digits = max(2, String(lines).count)
-        let required = CGFloat(digits) * 7 + 22
-        guard required > gutterWidth + 1 else { return }
+        currentLineCount = IDENativeTextEditing.lineCount(in: text)
+        recomputeGutterWidth()
+    }
+
+    private func recomputeGutterWidth() {
+        let digits = max(2, String(currentLineCount).count)
+        let digitWidth = ("0" as NSString).size(withAttributes: [.font: currentGutterFont]).width
+        let required = max(44, CGFloat(digits) * digitWidth + 22)
+        guard abs(required - gutterWidth) > 0.5 else { return }
         gutterWidth = required
         textContainerInset = UIEdgeInsets(top: 12, left: gutterWidth + 8, bottom: 12, right: 12)
         setNeedsDisplay()
@@ -422,7 +493,7 @@ final class LineNumberTextView: UITextView {
             let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
             let value = "\(line)" as NSString
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: EditorTheme.gutterFont,
+                .font: currentGutterFont,
                 .foregroundColor: UIColor.secondaryLabel
             ]
             let size = value.size(withAttributes: attributes)

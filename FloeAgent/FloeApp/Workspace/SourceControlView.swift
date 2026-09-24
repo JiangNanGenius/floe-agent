@@ -64,6 +64,14 @@ enum SourceControlChangeTree {
 /// scannable.
 struct SourceControlView: View {
     @ObservedObject var center: SourceControlCenter
+    /// Directly observed so a workspace switch that does not publish through
+    /// the source-control center still redraws the pane and flips the lock.
+    @ObservedObject private var workspaceCenter: WorkspaceCenter
+    /// When non-nil, the whole surface is bound to this workspace root: every
+    /// write action is disabled and no refresh is run while the app's current
+    /// workspace points elsewhere, so a pinned IDE/inspector pane can never
+    /// initialize, stage, commit or switch a different repository.
+    var pinnedRootURL: URL? = nil
     @State private var commitMessage = ""
     @State private var diffRequest: DiffRequest?
     @State private var diffText = ""
@@ -75,6 +83,20 @@ struct SourceControlView: View {
     @State private var mergeNotice: String?
     @State private var discardRequest: GitFileChange?
     @State private var discardRecovery: String?
+
+    /// True when this pane may operate on the repository the global center
+    /// currently resolves to. nil pin keeps the pre-existing global behavior
+    /// (FileInspectorView), and a center that has not discovered a root yet
+    /// stays interactive while the first snapshot loads.
+    private var identityMatches: Bool {
+        SourceControlRootIdentity.matches(current: workspaceCenter.currentRootURL, pinned: pinnedRootURL)
+    }
+
+    init(center: SourceControlCenter, pinnedRootURL: URL? = nil) {
+        self.center = center
+        self.pinnedRootURL = pinnedRootURL
+        _workspaceCenter = ObservedObject(wrappedValue: center.boundWorkspaceCenter)
+    }
 
     private struct DiffRequest: Identifiable {
         let path: String
@@ -89,7 +111,9 @@ struct SourceControlView: View {
 
     var body: some View {
         Group {
-            if center.snapshot.isRepository {
+            if pinnedRootURL != nil && !identityMatches {
+                identityMismatch
+            } else if center.snapshot.isRepository {
                 repositoryContent
             } else {
                 // Intentional not-a-repository state: discovery already
@@ -106,11 +130,18 @@ struct SourceControlView: View {
                 }
             }
         }
+        .disabled(pinnedRootURL != nil && !identityMatches)
         .overlay {
             if center.isBusy { ProgressView().controlSize(.large) }
         }
-        .task { await center.refreshRepository() }
-        .refreshable { await center.refreshRepository() }
+        .task {
+            // A mismatched pane must not refresh the global center: that
+            // snapshot belongs to whatever workspace the app switched to.
+            if pinnedRootURL == nil || identityMatches { await center.refreshRepository() }
+        }
+        .refreshable {
+            if pinnedRootURL == nil || identityMatches { await center.refreshRepository() }
+        }
         .alert(IDELanguageRunText.t("源码管理错误", "Source Control Error"), isPresented: Binding(
             get: { center.errorMessage != nil },
             set: { if !$0 { center.errorMessage = nil } }
@@ -455,7 +486,7 @@ struct SourceControlView: View {
     }
 
     private func run(_ operation: @escaping @MainActor () async throws -> Void) {
-        Task { await center.perform(operation) }
+        Task { await center.perform(pinnedRoot: pinnedRootURL, operation) }
     }
 
     private func loadDiff(_ path: String, staged: Bool) {
@@ -481,6 +512,24 @@ struct SourceControlView: View {
                 conflictFile = GitConflictFile(path: path)
             } catch { center.errorMessage = error.localizedDescription }
         }
+    }
+
+    /// Read-only lock shown when the pane's pinned workspace is no longer
+    /// the app's current one: every write would otherwise target the global
+    /// center's repository, which can belong to a different workspace.
+    private var identityMismatch: some View {
+        ContentUnavailableView {
+            Label(
+                IDELanguageRunText.t("工作区已切换", "Workspace Switched"),
+                systemImage: "exclamationmark.lock"
+            )
+        } description: {
+            Text(IDELanguageRunText.t(
+                "此处的源码管理属于打开此面板时的工作区。当前已切换到其他工作区，为避免提交或暂存错误的仓库，本面板已锁定。请重新打开该工作区的 IDE。",
+                "This source-control panel belongs to the workspace it was opened for. The app is now on a different workspace, so the panel is locked to avoid staging or committing the wrong repository. Reopen the IDE for that workspace."
+            ))
+        }
+        .accessibilityIdentifier("workspace.ide.scm.identityLock")
     }
 }
 
