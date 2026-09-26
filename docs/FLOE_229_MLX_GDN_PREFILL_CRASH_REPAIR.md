@@ -108,6 +108,29 @@ disabled): 8/8 new vendored tests, 15/15 GDN-related vendored tests
   logged, bounded diagnostic and one automatic retry instead of an app
   abort; prefill throughput and model output are unchanged on success.
 
+## iPad-simulator feasibility (recorded blocker)
+
+An iPad-simulator executable was assessed and is not a useful gate for this
+repair, for two concrete reasons:
+
+- The device trigger is memory margin. The iOS Simulator runs on the Mac's
+  GPU and shares the Mac's unified memory, so the ~280 MB-headroom Metal
+  allocation/command-buffer failure that precedes the crash cannot be
+  reproduced there; a simulator run can only re-prove the throw-vs-trap
+  behavior already covered by the macOS host tests above.
+- Building an App simulator test host locally requires the full committed
+  Xcode project's package-graph resolve and a multi-GB DerivedData build —
+  the heavy App build this machine avoids per the repo rules; the vendored
+  `MLXLMTests` are SPM-only and are not wired into the app project's
+  simulator test targets, and no existing cloud workflow runs them on an
+  iPad simulator. The cloud App build compiles the iOS slice, and the
+  macOS-host real-weight qualification run covers behavior.
+
+If a future slice wants simulator coverage of the vendored tests, the cheap
+path is a small `Package.swift` qualification host built with
+`-destination 'generic/platform=iOS Simulator'` in cloud CI, reusing the
+office-simulator-stage boot/run pattern.
+
 ## Remaining risks / follow-ups
 
 - If the device prefill still cannot fit its transient footprint in the
