@@ -65,12 +65,24 @@ jobs:
           python3 scripts/office_simulator_guard.py > "$RUNNER_TEMP/office-simulator-guard.json"
           python3 scripts/office_render_readiness.py > "$RUNNER_TEMP/office-render-readiness.json"
 
-      - name: Prepare and build the App simulator test host
-        id: build
+      - name: Prepare pinned native components and generate the project
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
           brew install xcodegen
+          python3 scripts/test_office_host_bootstrap.py
+          python3 scripts/test_office_app_load_chain.py
+          python3 scripts/bootstrap_pdfium.py
+          python3 scripts/bootstrap_libarchive.py
+          python3 scripts/bootstrap_office_host.py
+          python3 scripts/audit_native_runtime_free.py --project
           xcodegen generate
+
+      - name: Build the App simulator test host
+        id: build
+        run: |
+          set -o pipefail
           xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/OfficeSimulatorStageBuild" \
