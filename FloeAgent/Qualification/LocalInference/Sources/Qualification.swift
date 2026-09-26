@@ -1,6 +1,9 @@
 import Foundation
 import FloeLocalModels
 import FloeLocalModelCatalog
+import FloeCore
+import FloeModels
+import FloeProviders
 import MLX
 import Darwin
 import Synchronization
@@ -470,6 +473,93 @@ import Synchronization
         record("profile-complete", profileCase.fields)
     }
 
+    /// Exercise actual weights through the production adapter and a controlled
+    /// read-only workspace tool. A text-only completion is a failure here.
+    static func runActualToolRoundtrip(_ entry: LocalModelCatalogEntry, store: LocalModelStore) async throws {
+        let marker = "FLOE_TOOL_PROBE_7B42"
+        let fixture = store.root.appendingPathComponent("qualification-probe.txt")
+        try Data(marker.utf8).write(to: fixture, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let runtime = LocalModelRuntime(store: store)
+        let adapter = LocalProviderAdapter(runtime: runtime, store: store)
+        let model = ModelProfile(
+            providerID: LocalProviderAdapter.providerProfile.id,
+            remoteModelID: entry.id,
+            displayName: "Qwen tool qualification",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 256),
+            capabilities: [.text, .tools]
+        )
+        let schema = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read the UTF-8 text of one file in the current workspace",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+        )
+        let first = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: model,
+            messages: [
+                (role: "system", content: "A workspace is available. Use workspace.readFile when asked to read a file. Never guess file contents."),
+                (role: "user", content: "Call workspace.readFile with path qualification-probe.txt. After the tool result, report its exact contents.")
+            ],
+            toolSchemas: [schema],
+            allToolNames: [schema.name]
+        )
+        record("tool-roundtrip-start", ["model": entry.id])
+        var calls: [ToolCall] = []
+        for try await event in adapter.stream(request: first, credentials: ProviderCredentials()) {
+            switch event {
+            case .toolRequest(let call): calls.append(call)
+            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 10,
+                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            default: break
+            }
+        }
+        guard calls.count == 1, let call = calls.first,
+              call.toolName == schema.name,
+              let arguments = try JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
+              arguments["path"] as? String == fixture.lastPathComponent else {
+            throw NSError(domain: "Qualification.Tool", code: 11,
+                userInfo: [NSLocalizedDescriptionKey: "Actual model did not request the offered fixture read tool exactly once"])
+        }
+        let output = try String(contentsOf: fixture, encoding: .utf8)
+        let result = ToolResult(callID: call.id, status: .ok, outputSummary: output,
+                                outputDigest: FloeDigest.sha256Hex(Data(output.utf8)))
+        record("tool-executed", ["model": entry.id, "tool": call.toolName,
+                                  "callID": call.id, "receiptDigest": result.outputDigest])
+
+        let followup = ProviderStreamRequest(
+            provider: first.provider,
+            model: model,
+            messages: first.messages,
+            toolResults: [(callID: call.id, output: result.outputSummary)],
+            pendingToolCalls: [call],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
+            toolSchemas: [schema],
+            allToolNames: [schema.name]
+        )
+        var answer = ""
+        var completed = false
+        for try await event in adapter.stream(request: followup, credentials: ProviderCredentials()) {
+            switch event {
+            case .textDelta(let delta): answer += delta.text
+            case .completed(let info): completed = info.stopReason == .endTurn
+            case .toolRequest: throw NSError(domain: "Qualification.Tool", code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "Model requested an extra tool after the read receipt"])
+            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 13,
+                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            default: break
+            }
+        }
+        guard completed, answer.contains(marker) else {
+            throw NSError(domain: "Qualification.Tool", code: 14,
+                userInfo: [NSLocalizedDescriptionKey: "Tool continuation did not report the executed read result"])
+        }
+        record("tool-roundtrip-complete", ["model": entry.id, "callID": call.id,
+                                           "answerContainsReceipt": true])
+        await runtime.unload(modelID: entry.id)
+    }
+
     /// Original optional baseline: the three prompts from the first cloud run.
     static func runBaseline(_ entry: LocalModelCatalogEntry, using profileCase: ProfileCase,
                             directory: URL) async throws {
@@ -567,5 +657,6 @@ import Synchronization
                 try await runActualProfile(entry, using: profileCase, directory: directory)
             }
         }
+        try await runActualToolRoundtrip(entry, store: store)
     }
 }

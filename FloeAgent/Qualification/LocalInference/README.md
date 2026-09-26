@@ -30,6 +30,13 @@ physicalMemoryBytes:)`; the product policy and engine are not modified. The
      cover per-turn teardown and a cold reload at the same profile.
 3. The optional original baseline (batch 32) is **not** run by default. Pass
    `--include-baseline` to add the first cloud run's three prompts once.
+4. After both profiles have shut down, load the same pinned weights through
+   `LocalProviderAdapter`, request `workspace.readFile`, execute that one
+   read against a synthetic UTF-8 fixture, pass its call ID and receipt into
+   the continuation, and require the final answer to contain the fixture's
+   marker. `tool-executed` and `tool-roundtrip-complete` are separate gates.
+   This is a real model/tool-protocol host test, not an iPad simulator or
+   physical-device result.
 
 Per-profile JSON events carry `profile`, `tier`, `batchSize`, `contextSize`,
 `kvBits`, `model`, MLX active/peak/cache bytes, `mlxProcessPeakIncreaseBytes`
