@@ -1,10 +1,10 @@
 # Floe Agent 使用指南
 
-当前内部交付为 **1.7.0（228）**。不可变标签 `v1.7.0-beta.85` 固定源码 `ed8f233a`；[发布 run 36009125622](https://github.com/JiangNanGenius/floe-agent/actions/runs/36009125622) 在签名前保留未签名 IPA（739,478,368 字节，SHA-256 `1cfe17ba4e95f869bf962d3a1238f333b6525fddfc1dde1b295f78a262d95076`），上传签名构建并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.85)。[核验 run 36015717443](https://github.com/JiangNanGenius/floe-agent/actions/runs/36015717443)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`；中英文测试说明均已读回。匹配的未签名 GitHub 开发者 IPA 与 Feather 源条目已发布。Gitee 同步源码、标签和小型资源，附件配额不足以容纳约 705 MiB 的 IPA。[Build 228 说明](RELEASE_NOTES_1.7.0_BUILD_228.md) · [交付记录](TESTFLIGHT_1.7.0_BETA.md)。
+当前内部交付为 **1.7.0（229）**。不可变标签 `v1.7.0-beta.86` 固定源码 `b06b0b0e`；[发布 run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) 在签名前保留未签名 IPA（739,485,403 字节，SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`），上传签名构建并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)。[核验 run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`；中英文测试说明均已读回。匹配的未签名 GitHub 开发者 IPA 与 Feather 源条目已发布；Gitee 镜像另行核对。[Build 229 说明](RELEASE_NOTES_1.7.0_BUILD_229.md) · [交付记录](TESTFLIGHT_1.7.0_BETA.md)。
 
-**Build 228 的变化。** IDE Office 标签改用共享文档会话打开；PPT 编辑宿主增加有界进入路径；窄宽度 Git 按钮统一触控尺寸；本地模型与 Linux 的冲突在选择模型时提示。运行面板提供自动、单核、双核请求；修正后的等量负载测试未达到加速门槛，正式版的双核安全门仍关闭。云端 Qwen 预填充和 Office 宿主检查只是组件证据，不等于 iPad 验收。下文写着“下一构建”的条目，除其章节另有说明外，现已包含在 Build 228。
+**Build 229 的变化。** Office 打开、退出及保存回执只结算一次；迟到的真实 PPT 页面绘制可恢复等待中的会话，原文件写回失败时保留编辑副本。本地模型下一轮不再复用不健康的 MLX 容器。IDE 运行面板仍提供自动、单核、双核请求；正式版双核安全门仍关闭。组件检查不等于 iPad 验收。
 
-**仍需真机复测。** Build 227 的 iPad 测试报告普通 MLX 对话和测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 228 包含针对性修复，但本地模型加载、测速与工具续轮、PPT 可编辑首帧和保存重开、IDE 内 DOCX/XLSX/PPTX 标签，以及 PiP、通知和键盘触控行为，均仍需在设备上核实。
+**仍需真机复测。** 此前 iPad 测试报告普通 MLX 对话和测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 229 包含针对性修复，但本地模型加载、测速及连续对话与工具续轮、PPT 可编辑首帧和保存重开、Office 退出状态、IDE 内 DOCX/XLSX/PPTX 标签，以及 PiP、通知和键盘触控行为，均仍需在设备上核实。
 
 下方 Build 191/192 说明与截图为历史记录，其中的候选及豁免措辞只描述当时版本，不代表当前可用状态。
 

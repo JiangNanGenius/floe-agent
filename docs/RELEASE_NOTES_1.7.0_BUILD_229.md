@@ -1,6 +1,6 @@
 # Floe 1.7.0 (229) — release notes / 发布说明
 
-**Status / 状态：源码候选；云端构建、TestFlight 和真机验收待核实。** 本文只记录本轮源码变化；不能据此推断 PPT 或本地模型已在 iPad 上恢复。
+**Status / 状态：云端构建、GitHub 预发布、TestFlight 上传及 Floe QA 内部可安装状态已核实；真机功能待验收。** 不可变标签 `v1.7.0-beta.86` 固定源码 `b06b0b0e42008e8ea5c6b402ab146c99e2bcf328`。[发布运行 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) 使用 Xcode 26.6 构建并保留未签名 IPA（739,485,403 字节；SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`），随后完成签名上传及 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)。Apple Build ID `3aecdb89-1cca-4192-9b32-1493d72ad3fe` 为 `VALID`；[测试说明运行 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863) 回读中英文本，[测试组核验运行 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) 确认未过期、仅在私有 Floe QA 组且为 `IN_BETA_TESTING`。这些交付证据不能据此推断 PPT 或本地模型已在 iPad 上恢复。
 
 ## 简体中文
 
