@@ -1081,7 +1081,7 @@ final class OfficeFileSession: ObservableObject {
         if hostReadOnly == nil {
             // The engine never confirmed an editable grant. Never leave a
             // writable claim on an unverified session (a false save/close
-            // state): restore the truthful read-only preview, settle the
+            // state): restore the truthful read-only claim, settle the
             // surface onto the mounted controller, and stop the open watchdog,
             // which would otherwise turn this recoverable "unknown" into a
             // misleading hard failure after its timeout.
@@ -1090,7 +1090,17 @@ final class OfficeFileSession: ObservableObject {
                 "编辑器尚未确认可编辑状态；若仍只读，请稍后重试或解除文档限制。",
                 "The editor has not confirmed an editable state yet; retry shortly, or remove the document restriction.")
             cancelOpenWatchdog()
-            phase = .ready
+            if renderGate?.requirement == .visibleRenderRequired {
+                // A presentation may never claim a bare ready on an engine
+                // that never confirmed: it gets the same recoverable,
+                // banner-backed outcome as a bounded render miss (the gate
+                // itself stays unready, so saving stays refused until a real
+                // paint arrives). Word/Excel keep their historical open-only
+                // readiness, which never waited on a render signal.
+                markRenderUnverified()
+            } else {
+                phase = .ready
+            }
             return
         }
         if hostReadOnly == true {

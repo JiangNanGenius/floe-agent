@@ -375,21 +375,42 @@ static NSString *FloeRenderProbeScript() {
         // be the leftover preview frame. An editable presentation is ready only
         // after its own surface painted: a tile decoded after the switch (a
         // different image object for the same tile key, or a tile that was not
-        // decoded before) or a repainted document canvas (downsampled samples
-        // changed). The last file-based frame is the baseline the edit surface
-        // must move away from; the host also arms that baseline with the
-        // session generation immediately before it runs the deferred edit
-        // entry, so the evidence can only describe work done after the entry.
+        // decoded before), a repainted document canvas (downsampled samples
+        // changed), or — the layout-swap receipt below — a real layout swap
+        // followed by painted canvas content. The last file-based frame is the
+        // baseline the edit surface must move away from; the host also arms
+        // that baseline with the session generation immediately before it runs
+        // the deferred edit entry, so the evidence can only describe work done
+        // after the entry.
         const state = window.__floeEditSurfaceState || (window.__floeEditSurfaceState = {
             baseline: null,
             painted: false,
             armedToken: null,
         });
+        // The shipped engine tags its view layouts with a stable string
+        // (`app.activeDocument.activeLayout.type`, e.g. "ViewLayoutFileBased"
+        // vs "ViewLayoutImpress"); verified against the pinned bundle. The
+        // layout swap is the engine-protocol receipt that the guarded entry
+        // rebuilt the edit surface: when the engine then shows painted canvas
+        // content, the edit surface provably repainted even if its pixels are
+        // identical to the preview (tile-cache reuse with an unchanged
+        // downsampled fingerprint otherwise reads as "never painted" and the
+        // session would be failed on a healthy, painted editor).
+        const activeLayoutType = () => {
+            try {
+                const doc = window.app && window.app.activeDocument;
+                const layout = doc && doc.activeLayout;
+                return layout && typeof layout.type === 'string' ? layout.type : null;
+            } catch (_) { return null; }
+        };
+        const contentPainted = pixels !== null && pixels.distinctColours >= 2
+            && pixels.samples > 0 && pixels.opaque * 8 >= pixels.samples;
         const captureBaseline = (token) => ({
             token: token || null,
             at: Date.now(),
             samples: sampled ? new Uint8ClampedArray(sampled) : null,
             images: new Map(decodedImages),
+            layout: activeLayoutType(),
         });
         window.__floeArmEditSurface = function (token) {
             try {
@@ -401,6 +422,7 @@ static NSString *FloeRenderProbeScript() {
         let newDecodes = 0;
         let changedSamples = 0;
         let canvasRepainted = false;
+        let layoutChanged = false;
         if (fileBasedView) {
             // The engine's read-only/mobile startup paints the file-based
             // preview. That is the leftover frame a stale edit surface could
@@ -408,6 +430,9 @@ static NSString *FloeRenderProbeScript() {
             state.baseline = captureBaseline(state.armedToken);
         } else if (state.baseline) {
             const baseline = state.baseline;
+            const currentLayout = activeLayoutType();
+            layoutChanged = baseline.layout !== null && currentLayout !== null
+                && baseline.layout !== currentLayout;
             if (baseline.samples && sampled) {
                 const length = Math.min(baseline.samples.length, sampled.length);
                 for (let i = 0; i + 3 < length; i += 4) {
@@ -428,7 +453,8 @@ static NSString *FloeRenderProbeScript() {
             decodedImages.forEach((image, key) => {
                 if (baseline.images.get(key) !== image) newDecodes++;
             });
-            if (newDecodes > 0 || canvasRepainted) state.painted = true;
+            if (newDecodes > 0 || canvasRepainted
+                || (layoutChanged && contentPainted)) state.painted = true;
         } else {
             // No file-based startup frame was observed on this page, so there
             // is no observed pre-edit frame to mistake for the edit surface;
@@ -459,6 +485,8 @@ static NSString *FloeRenderProbeScript() {
             editSurfaceArmed: state.armedToken !== null,
             editSurfaceNewDecodes: newDecodes,
             editSurfaceChangedSamples: changedSamples,
+            editSurfaceLayoutChanged: layoutChanged,
+            editSurfaceLayout: activeLayoutType(),
         };
     } catch (_) {
         return { stage: 'error' };
@@ -1045,8 +1073,11 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     // sources and the shipped bundle). A decoded tile plus a cleared flag
     // therefore proves nothing about the edit surface: it can be the leftover
     // preview frame. An editable session is ready only after its own surface
-    // painted — a tile decoded after the edit entry, or a repainted document
-    // canvas.
+    // painted — a tile decoded after the edit entry, a repainted document
+    // canvas, or the layout-swap receipt (a real file->part layout change
+    // followed by painted canvas content, which also covers a repaint whose
+    // pixels are identical to the preview because the engine reused its tile
+    // cache entries).
     return facts.editSurfacePainted;
 }
 // FLOE_EDIT_ENTRY_GATE_END
