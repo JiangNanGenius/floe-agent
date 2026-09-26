@@ -26,6 +26,14 @@ private final class OfficeCloseAck {
             if let settledResult {
                 continuation.resume(returning: settledResult)
             } else {
+                // Defensive only: this acknowledgement admits one waiter. A
+                // second concurrent wait must never orphan the earlier
+                // continuation — the exact wedge a lost close callback could
+                // otherwise leave behind — so the stale waiter is settled
+                // with the bounded outcome and the new wait continues.
+                if let stale = self.continuation {
+                    stale.resume(returning: .timedOut)
+                }
                 self.continuation = continuation
             }
         }
@@ -85,30 +93,38 @@ final class OfficeSaveReceipt {
 
     func wait() async throws {
         if settled {
-            let result = settledResult ?? .success(())
-            settledResult = nil
-            switch result {
+            // The settled result is replayed verbatim, never consumed and
+            // never degraded to a fabricated success: every caller observes
+            // the one real outcome (a timeout failure keeps failing late
+            // waiters, so a bounded save can never read as an unverified
+            // commit).
+            switch settledResult ?? .success(()) {
             case .success: return
             case .failure(let error): throw error
             }
         }
-        return try await withCheckedThrowingContinuation { continuation = $0 }
+        return try await withCheckedThrowingContinuation { continuation in
+            // Defensive only: this receipt admits one waiter. A second
+            // concurrent wait must never orphan the earlier continuation —
+            // the wedge a lost engine receipt would otherwise leave behind —
+            // so the stale waiter fails fast and the new wait continues.
+            if let stale = self.continuation {
+                stale.resume(throwing: CocoaError(.coderInvalidValue))
+            }
+            self.continuation = continuation
+        }
     }
 
-    /// Settles the receipt exactly once; later resolutions are ignored.
+    /// Settles the receipt exactly once; later resolutions are ignored. The
+    /// result is retained whether or not a waiter is attached, so a `wait()`
+    /// that starts after the settle replays the real outcome.
     func resolve(_ result: Result<Void, Error>) {
         guard !settled else { return }
+        settled = true
+        settledResult = result
         if let continuation {
-            settled = true
             self.continuation = nil
-            switch result {
-            case .success: continuation.resume()
-            case .failure(let error): continuation.resume(throwing: error)
-            }
-        } else {
-            // No waiter yet: retain the result for the first `wait()`.
-            settled = true
-            settledResult = result
+            continuation.resume(with: result)
         }
     }
 }
@@ -184,9 +200,14 @@ struct OfficeVisibleRenderGate: Equatable {
     }
 
     /// The host observed a decoded document tile on a sized document canvas.
+    /// A real paint always wins, including over the bounded failure: the
+    /// deadline outcome means "no paint yet", never "this surface can never
+    /// paint", so a genuinely slow render repairs the session instead of
+    /// staying failed (the same "a late observation always wins" contract
+    /// `OfficeOpeningPolicy.renderObserved` documents).
     @discardableResult
     mutating func visibleRenderObserved() -> State {
-        if state == .waitingForOpen || state == .waitingForRender { state = .ready }
+        if state != .ready { state = .ready }
         return state
     }
 
@@ -795,7 +816,10 @@ final class OfficeFileSession: ObservableObject {
             guard !Task.isCancelled, let self, let native, self.controller === native,
                   self.phase == .loading, !self.runtimeFailed else { return }
             self.runtimeFailed = true
-            self.openingPolicy?.openingDeadlineElapsed()
+            if var policy = self.openingPolicy {
+                _ = policy.openingDeadlineElapsed()
+                self.openingPolicy = policy
+            }
             self.error = self.openingPolicy?.warning.map { OfficeInkText.t($0.detailZh, $0.detailEn) }
                 ?? (readOnly
                     ? "文档引擎未能在限定时间内打开预览；原文件未被修改。"
@@ -1655,13 +1679,27 @@ final class OfficeFileSession: ObservableObject {
             // exactly once; neither is an open or save event.
             let ready: @convention(block) (NSString?, TimeInterval) -> Void = { [weak self, weak native] _, _ in
                 Task { @MainActor in
+                    // Reachability of this repair, per watchdog state: the
+                    // render watchdog and the host's bounded render failure
+                    // both settle into `markRenderUnverified()` and never set
+                    // `runtimeFailed`, so a late real paint passes this guard
+                    // and `visibleRenderObserved()` repairs the gate from
+                    // `.failed`. The open watchdog, a runtime-death notice
+                    // and an unexpected engine close set `runtimeFailed` and
+                    // are terminal by design (the only outcomes with explicit
+                    // recovery, never an auto-revive); a dead runtime cannot
+                    // produce a paint, so the guard never blocks a repair
+                    // that could actually arrive.
                     guard let self, let native, self.controller === native,
                           self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
                     self.cancelRenderWatchdog()
                     guard self.renderGate?.visibleRenderObserved() == .ready else { return }
                     // A real paint always wins, including after a bounded
                     // unverified outcome: a slow render is never a failure.
-                    self.openingPolicy?.renderObserved()
+                    if var policy = self.openingPolicy {
+                        _ = policy.renderObserved()
+                        self.openingPolicy = policy
+                    }
                     self.renderUnverified = false
                     self.phase = .ready
                 }
@@ -1729,7 +1767,10 @@ final class OfficeFileSession: ObservableObject {
             // loading until the host's painted-surface signal arrives, bounded
             // by the host deadline and this session's render watchdog; the
             // bounded outcome is the recoverable notice, never a dead end.
-            self.openingPolicy?.openSettled()
+            if var policy = self.openingPolicy {
+                _ = policy.openSettled()
+                self.openingPolicy = policy
+            }
             let state = self.renderGate?.openSettled() ?? .ready
             if state == .ready {
                 self.cancelOpenWatchdog()
@@ -2340,8 +2381,36 @@ struct OfficeDocumentEditorView: View {
         // Keep the native editor mounted until that owner confirms success,
         // so a conflict/error leaves a usable editor and export path.
         let saved = onSaved == nil ? await session.saveAndReturn() : await session.saveInPlace()
-        guard saved else { return }
-        if await onSaved?() ?? true { dismissEditor() }
+        if saved {
+            if await onSaved?() ?? true { dismissEditor() }
+            return
+        }
+        // The save was refused before it could start — a still-read-only
+        // session, a presentation whose render stayed unverified, or a
+        // transient operating lock — rather than failing with an error. The
+        // primary exit must never dead-end on that refusal. A real save
+        // failure already sets `session.error` and keeps the editor mounted
+        // so the user can retry, compare versions or export.
+        guard session.error == nil else { return }
+        if onSaved != nil, !session.readOnly {
+            // An owning surface (Notes) still owes its original-document
+            // commit after an editable session. Auto-dismissing here would
+            // read as "saved" while the immutable resource was never
+            // updated, so the retained-copy outcome is surfaced instead and
+            // the editor stays mounted for the owner's retry ("重试保存到
+            // 手记") or an explicit keep/export through the save alert.
+            if session.phase == .ready {
+                session.error = OfficeInkText.t(
+                    "暂时无法保存；编辑副本已保留，未写回原文件。",
+                    "Saving is unavailable right now. Your editing copy was retained; nothing was written back to the original file.")
+            }
+            return
+        }
+        // Standalone workspace editor, or a read-only session with no owner
+        // commit pending: the bounded persist-and-leave path is truthful —
+        // the retained working copy keeps any edits, the original file stays
+        // untouched, and nothing claims a save that did not run.
+        if await session.keepChangesAndReturn() { dismissEditor() }
     }
 }
 

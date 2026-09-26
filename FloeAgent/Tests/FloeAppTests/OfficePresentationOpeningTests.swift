@@ -153,6 +153,42 @@ struct OfficePresentationOpeningTests {
         }
     }
 
+    // MARK: - Late paint repairs the bounded outcome
+
+    @Test("A late paint after the App render deadline repairs the presentation to ready and savable")
+    func latePaintAfterRenderDeadlineRepairsSession() {
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        #expect(gate.openSettled() == .waitingForRender)
+        #expect(gate.deadlineExceeded() == .failed)
+        #expect(!gate.permitsSave, "the bounded-outcome session must not save before a real paint")
+        // The engine painted after the deadline: the bounded outcome means
+        // "no paint yet", never "can never paint", so the real first frame
+        // repairs the session (the editable first-frame transition).
+        #expect(gate.visibleRenderObserved() == .ready)
+        #expect(gate.isReady && gate.permitsSave)
+    }
+
+    @Test("A late paint after the host's bounded render failure repairs the session to ready and savable")
+    func latePaintAfterHostFailureRepairsSession() {
+        var gate = OfficeVisibleRenderGate(requirement: .visibleRenderRequired)
+        _ = gate.openSettled()
+        #expect(gate.hostFailed() == .failed)
+        #expect(!gate.permitsSave)
+        #expect(gate.visibleRenderObserved() == .ready)
+        #expect(gate.isReady && gate.permitsSave)
+    }
+
+    @Test("A late paint after the bounded outcome clears the user-facing notice through the policy")
+    func latePaintClearsTheRecoverableNotice() {
+        var policy = OfficeOpeningPolicy(requiresVisibleRender: true, readOnly: false)
+        #expect(policy.openSettled() == .waiting)
+        #expect(policy.renderDeadlineElapsed() == .renderUnverified)
+        #expect(policy.warning != nil)
+        #expect(policy.renderObserved() == .ready)
+        #expect(policy.warning == nil)
+        #expect(policy.outcome == .ready)
+    }
+
     @Test("An early edit-entry acknowledgement never readies a presentation without the edit paint")
     func earlyEditEntryAckNeverReadiesWithoutTheEditPaint() {
         // The host may run the guarded edit entry on its bounded
