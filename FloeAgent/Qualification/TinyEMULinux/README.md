@@ -101,6 +101,70 @@ Results:
   document enables dual-core, and the cloud gates must not be weakened to
   change that.
 
+## SMP gate investigation (2026-09-26, host: M1 8GB macOS + cloud CI)
+
+Why Build228 shows only one core: the typed 1/2-core launch path is fully
+connected (IDE picker → `GuestRunEntryShapePlan.effectiveRequest` → run-shape
+intent → registry `acquireShape` → boot descriptor → C `FloeVMConfig.vcpu_count`;
+the app plans with `dispatch: .shapeAware`). What refuses the second hart is
+the frozen **`GuestReleaseShapePolicy.production.maximumSupportedVCPUs = 1`**,
+enforced independently at planner, intent claim, pool, registry, machine and C
+boundaries. An explicit 2-core selection is therefore refused pre-start with
+`.releaseVCPUUnsupported(2,1)` and never silently boots one hart. This gate was
+intentional: cloud S0–S4 dual-hart correctness (boot, `/proc/cpuinfo`, fork/exec,
+parallel 9P) passed, but the corrected equal-work S5 benchmark was slower (run
+36009075837: median work window 1.69 s on one hart vs 1.93 s on two; below the
+1.10× gate).
+
+Bottleneck measured, not guessed. Instrumenting the pristine+patches build
+during the S5 workload showed the global atomic spin lock is the cost:
+
+- `122,590,610` lock acquisitions with `478,079,405` failed exchange spins
+  (~3.9 spins per acquisition) — pure lock cache-line ping-pong between the
+  two hart host threads;
+- the per-MMIO device mutex was acquired 31.0 M times but only 631 were
+  contended — it is not the bottleneck.
+
+Fast-path experiment, rejected. A candidate patch
+(`Local`-tracked branch `codex/tinyemu-smp-fastpath-20260926`, exploratory
+patch `0011`) let an ordinary store skip the lock while a SEQ_CST count of
+live LR reservations was zero. Locally this cut the dual work window
+3.61 s → 1.98 s and `smp_host_test` stayed 19/19, but review proved two
+correctness defects and cloud run 36240219437 was cancelled:
+
+1. **Stale SC interleaving.** SEQ_CST orders only the counter operations, not
+   the store's later data write. Schedule: fast-store counter check sees 0 →
+   hart B LR loads the old word and publishes the reservation → the fast
+   store then writes the reserved word → hart B's SC still succeeds. The
+   conflicting store never invalidated the reservation; an LR/SC mutex could
+   be held by two harts. The deterministic model regression
+   `tests/test_smp_fastpath_interleaving.py` forces this exact schedule and
+   shows the candidate SC succeeding where the locked protocol fails.
+2. **Data race.** Two invalidation paths used plain `live_reservations--`
+   writes while the fast path reads the same field atomically — C11 UB. Any
+   unlocked design must use `__atomic_*` for every counter mutation.
+
+Release state and exact remaining blocker. The production gate stays at one
+hart; the Settings note now states this bilingually and truthfully (S0–S4
+correct, S5 slower). Bounded safe follow-up for a future attempt:
+
+1. redesign synchronization so a store's *address-keyed* reservation check is
+   atomic with the data write — e.g. fine-grained per-cache-line reservation
+   locks (stores and LRs contend on the same line; no global ping-pong and no
+   stale-SC window), not a machine-wide counter;
+2. keep LR/SC, DMA invalidation and trap-clears correct by construction, with
+   the forced interleaving regression kept red;
+3. re-run the full cloud S0–S5 contract: 2-hart correctness, lease cleanup
+   and stop/restart, plus a repeatable **≥1.10×** equal-work speedup. Without
+   all three, `maximumSupportedVCPUs` must remain 1.
+
+Focused static checks (no guest run, no build):
+
+```sh
+python3 FloeAgent/Qualification/TinyEMULinux/tests/test_smp_fastpath_interleaving.py
+python3 FloeAgent/Qualification/TinyEMULinux/tests/test_smp_workload_check.py
+```
+
 ## Measured status (2026-09-20, host: Apple Silicon macOS, interpreter)
 
 Observed with the embeddable API host + TinyEMU 2018 RV64 demo image

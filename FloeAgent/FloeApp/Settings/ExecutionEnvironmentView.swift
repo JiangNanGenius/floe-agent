@@ -286,7 +286,7 @@ struct ExecutionEnvironmentView: View {
                     LabeledContent("environment.backend.network", value: networkLabel(network))
                 }
                 if let kernel = guestKernel {
-                    LabeledContent("内核", value: kernel)
+                    LabeledContent(ExecutionEnvironmentText.t("内核", "Kernel"), value: kernel)
                 }
                 if let python = guestRuntimes["Python"] {
                     LabeledContent("Python", value: python)
@@ -295,7 +295,8 @@ struct ExecutionEnvironmentView: View {
                     LabeledContent("Node", value: node)
                 }
                 if let guestVCPUs {
-                    LabeledContent("客户机 vCPU", value: "\(guestVCPUs)")
+                    LabeledContent(ExecutionEnvironmentText.t("客户机 vCPU", "Guest vCPUs"),
+                                   value: "\(guestVCPUs)")
                     Text(guestShapeCapacityNote)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -333,9 +334,13 @@ struct ExecutionEnvironmentView: View {
     private var guestShapeCapacityNote: String {
         let maximum = GuestReleaseShapePolicy.production.maximumSupportedVCPUs
         if maximum <= 1 {
-            return "本版本客户机上限 \(maximum) 核：双 hart 已实现，但真机 SMP 验收未通过（双 hart 在首个 fork/exec 停滞，云端运行 35851127603）。从脚本运行入口选择 2 核会在启动前被拒绝，不会以 1 核静默运行。"
+            return ExecutionEnvironmentText.t(
+                "本版本客户机上限 \(maximum) 核：双 hart 已可启动，fork/exec 与 9P 正确（云端 S0–S4 通过），但等量双进程基准双核更慢（中位 1.93s，单核 1.69s，未达 1.10× 门槛，运行 36009075837）；实验性 store 快速路径因 LR→store→SC 失效交错已否决。从脚本运行入口选择 2 核会在启动前被拒绝，不会以 1 核静默运行。",
+                "This release caps guests at \(maximum) core: dual-hart boot, fork/exec and 9P are correct (cloud S0–S4 passed), but an equal-work two-process benchmark was slower on two harts (median 1.93s vs 1.69s on one hart; below the 1.10× gate, run 36009075837); an experimental store fast path was rejected for an LR→store→SC invalidation interleaving. Choosing 2 cores from the script-run entry is refused before start; it never silently runs on one hart."
+            )
         }
-        return "本版本客户机上限 \(maximum) 核。"
+        return ExecutionEnvironmentText.t("本版本客户机上限 \(maximum) 核。",
+                                          "This release caps guests at \(maximum) cores.")
     }
 
     private func networkLabel(_ status: LinuxGuestNetworkStatus) -> String {
@@ -545,5 +550,14 @@ struct ExecutionEnvironmentView: View {
         case .component: return String(localized: "settings.exec.runtime.source.component")
         }
     }
+}
+
+/// Inline en/zh strings for the core-count honesty note. Same pattern as
+/// `IDELanguageRunText`: usable in both languages without depending on an
+/// unmerged `Localizable.xcstrings` entry; a later change may move these
+/// keys into the catalog.
+enum ExecutionEnvironmentText {
+    static var isChinese: Bool { Locale.current.identifier.hasPrefix("zh") }
+    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
 }
 #endif
