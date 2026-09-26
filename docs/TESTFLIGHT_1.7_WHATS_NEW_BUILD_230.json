@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 230 candidate: Qwen prefill now surfaces MLX errors instead of continuing into the observed indexing crash, and local short-chat context is bounded. A cloud host completed two real-weight tool turns; iPad memory behavior still needs your test. The rebuilt PPT host recognizes a painted edit surface after layout change, and IDE Office tabs reload when switched. Please test local-model load, benchmark, an ordinary reply and two tool turns; PPT edit/save/reopen in Workspace, Notes and IDE; and DOCX/XLSX open/save. The Linux guest is still single-core.",
+  "zh-Hans": "Build 230 候选：Qwen 分段预填充会及时返回 MLX 错误，避免继续执行后发生已观察到的越界闪退；本地短消息上下文已限量。云端实权重完成两轮工具调用，iPad 内存表现仍需你实测。重建的 PPT 宿主可识别布局切换后的真实编辑画面，IDE 切换 Office 标签会重新加载。请测试本地模型加载、测速、普通回复及两轮工具调用；工作区、手记和 IDE 的 PPT 编辑保存重开，以及 DOCX/XLSX 打开保存。Linux Guest 目前仍为单核。"
+}
