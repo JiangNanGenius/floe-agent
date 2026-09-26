@@ -460,15 +460,21 @@ struct WorkspaceIDEView: View {
                 }
                 officeActionBar(session: session)
             }
-            // A verified original-file commit from this tab (including the
-            // engine's own toolbar save) refreshes every sibling entry.
-            .onAppear { session.onCommitted = { onSaved() } }
-            .task {
-                // The tab owns exactly one Office session; resolving and
-                // opening the document here is what moves the surface off the
-                // "opening" spinner. Without this the session never left
-                // `.idle`, so every IDE Word/Excel/PPT tab spun forever while
-                // the same documents opened fine outside the IDE.
+            // The tab owns exactly one Office session; resolving and opening
+            // the document here is what moves the surface off the "opening"
+            // spinner. The trigger is keyed on the active tab identity because
+            // consecutive Office tabs keep the same structural view identity:
+            // an id-less `.task` (with the commit binding only on `.onAppear`)
+            // never re-fired for the newly active tab, whose session stayed
+            // `.idle` with no controller and no watchdog — the reported IDE
+            // DOCX/XLSX/PPTX endless "正在打开文档…".
+            .task(id: IDEOfficeLoadTrigger.identity(activeTab: tab)) {
+                // A verified original-file commit from this tab (including the
+                // engine's own toolbar save) refreshes every sibling entry.
+                // Re-bound with the loader so the binding tracks the active tab.
+                session.onCommitted = { onSaved() }
+                session.recordOwnerStage("ide.office.tabActivated",
+                                         ["surface": "ide-office-tab"])
                 await openOfficeDocument(tab: tab, session: session)
             }
         }
@@ -487,7 +493,10 @@ struct WorkspaceIDEView: View {
         // tear down a live or recoverable session (and abandon its editing
         // copy), so only a never-mounted session is opened here; after a clean
         // release the controller is nil and the open re-arms.
-        guard IDEOfficeOpenDecision.decide(controllerMounted: session.controller != nil) == .openNow else { return }
+        let decision = IDEOfficeOpenDecision.decide(controllerMounted: session.controller != nil)
+        session.recordOwnerStage("ide.office.loader",
+                                 ["decision": decision == .openNow ? "openNow" : "alreadyOwned"])
+        guard decision == .openNow else { return }
         // This task is cancelled when the tab closes or the IDE disappears; a
         // late resume after `release()` completed must not revive the removed
         // tab's session (release itself is deferred behind an in-flight open

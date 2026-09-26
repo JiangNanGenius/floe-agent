@@ -589,13 +589,35 @@ supply a simulator first frame.
   the pinned host's own bounded render facts (docType, tile/canvas counters,
   edit-surface paint evidence) into the trace instead of leaving the selector
   unused.
-- **Cloud simulator run.** `office-simulator-stage.yml` builds the real App for
-  the simulator, generates real PPTX/DOCX fixtures through the product OOXML
-  builders, opens them through the Notes library, Workspace preview and IDE
-  Office tab, retains screenshots, xcresult, the pulled `office-stage.jsonl`
+- **IDE Office tab open-trigger repair.** The Build 229 device pass showed the
+  IDE's embedded Office surface on its opening spinner for DOCX/XLSX as well as
+  PPTX. The owner loader was a bare SwiftUI `.task` (with the commit binding
+  only on `.onAppear`) inside `WorkspaceIDEView.officeSurface(_:)`: consecutive
+  Office tabs keep the same structural view identity, so switching from one
+  Office tab to another never re-ran the loader and the newly active tab's
+  session stayed `.idle` with no controller and no watchdog. The loader is now
+  keyed on `IDEOfficeLoadTrigger.identity(activeTab:)` (the tab id) with the
+  commit binding re-bound inside that task, so consecutive tabs open and a
+  switch back to an already-open tab keeps its live session. The focused
+  `scripts/tests/test_office_ide_office_trigger.py` fails on the old binding
+  (observed) and passes on the fix; `IDEOfficeLoadTriggerTests` pins the
+  distinct/stable identity contract. No Office product flow changed.
+- **Cloud simulator runs.** `office-simulator-stage.yml` rebuilds the real App
+  for the simulator, generates real PPTX/DOCX fixtures through the product
+  OOXML builders, opens them through the Notes library, Workspace preview and
+  IDE Office tab, retains screenshots, xcresult, the pulled `office-stage.jsonl`
   and console log, and fails unless every path recorded the honest
-  `engine.unavailable` stage with no engine success claim. See
-  [the qualification record](qualification/office-simulator-stage/README.md).
+  `engine.unavailable` stage with no engine success claim. Runs
+  [36245810244](https://github.com/JiangNanGenius/floe-agent/actions/runs/36245810244)
+  and
+  [36246400751](https://github.com/JiangNanGenius/floe-agent/actions/runs/36246400751)
+  proved the pinned-host blocker in cloud (`platform IOS`, `arm64`,
+  simulator link refused with the exact `ld: building for 'iOS-simulator' …`
+  diagnostic, pinned executable hash matched) and passed the 15 focused harness
+  tests; the full-App stage execution itself stopped on gitignored CI build
+  inputs (dash slices, Xcode Metal toolchain, bundled fonts). The workflow now
+  bootstraps all three; the stage execution remains pending a future bounded
+  run. See [the qualification record](qualification/office-simulator-stage/README.md).
 - **Not claimed:** no simulator or component result here proves an iPad PPT
   first frame, edit, save, close or write-back. The pinned host's
   `capabilityQualification` flags stay false. The smallest device evidence path

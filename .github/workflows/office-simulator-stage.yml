@@ -7,14 +7,10 @@ name: Office PPT simulator stage diagnostics
 # screenshots and xcresult. It never claims a first frame, edit, save or
 # device result; those remain the separate device gate.
 on:
+  # Manual dispatch only: the run is a bounded diagnostic, deliberately not an
+  # auto-trigger on every push (the simulator can never produce a PPT first
+  # frame; the device-only blocker proof and the stage trace are the value).
   workflow_dispatch:
-  push:
-    branches: ['codex/office-simulator-stage']
-    paths:
-      - '.github/workflows/office-simulator-stage.yml'
-      - 'FloeAgent/scripts/check_office_simulator_blocker.py'
-      - 'FloeAgent/scripts/verify_office_simulator_stage_trace.py'
-      - 'FloeAgent/Tests/FloeAgentUITests/OfficeSimulatorStageUITests.swift'
 permissions:
   contents: read
   actions: read
@@ -60,8 +56,7 @@ jobs:
           set -o pipefail
           FLOE_OFFICE_HOST_FRAMEWORK="$RUNNER_TEMP/pinned-host/extracted/OfficeNativeHost/FloeOfficeNative.framework" \
           FLOE_OFFICE_HOST_EXECUTABLE_SHA256="$(python3 -c 'import json;print(json.load(open("ThirdParty/Collabora/engine.lock.json"))["qualifiedHostArtifact"]["executableSHA256"])')" \
-            python3 -m unittest discover -s scripts/tests -p 'test_office_simulator_*.py' 2>&1 | tee "$RUNNER_TEMP/office-simulator-harness.log"
-          python3 -m unittest discover -s scripts/tests -p 'test_office_edit_entry_bounds.py'
+            python3 -m unittest discover -s scripts/tests -p 'test_office_*.py' 2>&1 | tee "$RUNNER_TEMP/office-simulator-harness.log"
           python3 scripts/office_simulator_guard.py > "$RUNNER_TEMP/office-simulator-guard.json"
           python3 scripts/office_render_readiness.py > "$RUNNER_TEMP/office-render-readiness.json"
 
@@ -79,6 +74,28 @@ jobs:
           python3 scripts/test_office_app_load_chain.py
           bash scripts/bootstrap_native_components.sh
           python3 scripts/audit_native_runtime_free.py --project
+
+      # The bundled CJK font set is a gitignored, release-blocking build input:
+      # without it CpResource "Bundled" fails while copying the App resources.
+      # Same pinned fetch/verify path as ci.yml and release-unsigned-ipa.yml.
+      - name: Restore bundled font cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            FloeAgent/Vendor/Fonts/downloads
+            FloeAgent/FloeApp/Resources/Fonts/Bundled
+          key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
+
+      - name: Fetch and verify bundled fonts
+        run: |
+          python3 scripts/fonts/fetch_fonts.py --check || {
+            python3 scripts/fonts/fetch_fonts.py
+            python3 scripts/fonts/fetch_fonts.py --check
+          }
+
+      - name: Generate the simulator project
+        run: |
+          set -o pipefail
           xcodegen generate
 
       - name: Build the App simulator test host

@@ -278,3 +278,42 @@ struct OfficeStageRecorderTests {
         #expect(secondResult.readOnly == false, "the live waiter keeps the real resolution")
     }
 }
+
+/// The IDE Office tab loader trigger. The Build 229 device pass showed the IDE
+/// embedded Office surface on its opening spinner for DOCX/XLSX as well as
+/// PPTX: consecutive Office tabs keep the same structural SwiftUI identity, so
+/// the loader must be keyed on the active tab identity or the newly active
+/// tab's session never opens.
+@Suite("FloeApp.IDEOfficeLoadTrigger")
+@MainActor
+struct IDEOfficeLoadTriggerTests {
+
+    @Test("Consecutive Office tabs produce distinct loader identities")
+    func consecutiveOfficeTabsAreDistinct() {
+        let store = IDEWorkspaceTabStore(initialRelativePath: nil)
+        let first = store.open(relativePath: "工作区/办公一.docx")
+        let second = store.open(relativePath: "工作区/办公二.pptx")
+        #expect(first != nil)
+        #expect(second != nil)
+        let firstIdentity = IDEOfficeLoadTrigger.identity(activeTab: first)
+        let secondIdentity = IDEOfficeLoadTrigger.identity(activeTab: second)
+        #expect(firstIdentity != secondIdentity,
+                "the active tab identity must change so the keyed loader re-runs")
+        #expect(store.activeTab?.id == second?.id)
+    }
+
+    @Test("Re-opening a path keeps its existing tab identity")
+    func samePathKeepsItsIdentity() {
+        let store = IDEWorkspaceTabStore(initialRelativePath: nil)
+        let first = store.open(relativePath: "工作区/办公一.docx")
+        let again = store.open(relativePath: "工作区/办公一.docx")
+        #expect(first === again, "the same path must activate its existing tab")
+        #expect(IDEOfficeLoadTrigger.identity(activeTab: first)
+                == IDEOfficeLoadTrigger.identity(activeTab: again))
+    }
+
+    @Test("No active tab yields the empty identity")
+    func noActiveTabIsEmpty() {
+        #expect(IDEOfficeLoadTrigger.identity(activeTab: nil) == "")
+    }
+}

@@ -59,6 +59,31 @@ the one focused XCTest case passed. The receipt always keeps
 `realEngineOpened`, `pptFirstFrameObserved`, `officeEditSessionObserved` and
 `officeSaveOrCloseObserved` false.
 
+## Cloud runs
+
+| Run | Result |
+| --- | --- |
+| [36245115825](https://github.com/JiangNanGenius/floe-agent/actions/runs/36245115825) | Blocker step passed; App build stopped on the missing untracked `dash*.xcframework` (workflow bootstrap omission, not a simulator-slice limitation). |
+| [36245268353](https://github.com/JiangNanGenius/floe-agent/actions/runs/36245268353) | Same bootstrap omission before the dash build was added. |
+| [36245810244](https://github.com/JiangNanGenius/floe-agent/actions/runs/36245810244) | Blocker step and 15 focused harness tests passed; App build stopped at mlx-swift Metal kernels (`xcodebuild -downloadComponent MetalToolchain` missing). |
+| [36246400751](https://github.com/JiangNanGenius/floe-agent/actions/runs/36246400751) | Blocker step and 15 focused harness tests passed; App build reached resource copying, then failed on the gitignored `FloeApp/Resources/Fonts/Bundled` input (`error: The file “Bundled” couldn’t be opened because there is no such file`). |
+
+Both blocker receipts are retained (`simulator-blocker.json` in
+`office-simulator-stage-*` artifacts; local copies under
+`Local/Artifacts/office-simulator-stage-36245810244` and
+`Local/Artifacts/office-simulator-stage-36246400751`) and state
+`platform: IOS`, `architectures: [arm64]`, `simulatorLinkRefused: true`,
+`matchesPinnedExecutable: true`, `simulatorHostBlockerProven: true`,
+`realEngineInSimulator: false`.
+
+The workflow now bootstraps all three gitignored build inputs before the App
+build: the dash simulator slices (`bootstrap_native_components.sh`), the Xcode
+Metal toolchain, and the pinned bundled fonts
+(`scripts/fonts/fetch_fonts.py --check || fetch_fonts.py`); the full-App
+simulator stage execution remains pending a future bounded run. The pinned
+engine still has no simulator slice, so that run can only prove the blocker and
+the host-less entry surfaces — never a PPT first frame.
+
 ## Smallest real-device evidence path
 
 The same stage trace, the host's own `[FloeOffice]` lines
