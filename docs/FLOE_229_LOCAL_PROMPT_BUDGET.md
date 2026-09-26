@@ -75,12 +75,25 @@ set on a compact local run:
   workspace name, selected file, execution target, attachment trust notes,
   and the adapter-handoff sentence — the state Build 222 was about.
 - **Each data section** (workspace links, listing, project instructions,
-  workflow guides, remembered context, interaction style, profile, plan,
-  goal) is head/tail-clipped to an equal share of the envelope budget
+  workflow guides, remembered context, interaction style, profile) is
+  head/tail-clipped to an equal share of the envelope budget
   (`LocalEnvelopeBounds`: ~20% of the model window, capped at 2,048
   heuristic tokens, per-section share capped at 640) with an explicit
   `[local envelope: section clipped]` marker. Sections stay present —
   bounded, never dropped silently.
+- **Plan and goal layers are enumerated contracts** (their own text
+  demands every requirement and acceptance check be preserved), so they
+  do not receive the prose head/tail clip. When over the per-section
+  share they switch to an item-preserving projection
+  (`AgentPromptComposer.localPlanLayer` / `localGoalLayer`): every
+  section/step title renders complete (capped at 64 characters), every
+  criterion/assumption/risk/blocker text keeps at least a 24-character
+  identifying prefix even at a zero per-item budget, and an explicit
+  marker states that the full revision/goal remains stored in the app —
+  the full-content read path — so a clipped item can never read as
+  nonexistent to the model. The bounded identity floor may overshoot the
+  nominal share slightly; the adapter's prepared-token guard remains the
+  final admission decision.
 - **Cloud runs and callers that omit the window keep verbatim behaviour**
   (parameter defaults to `nil`; the three call sites pass it only for
   `provider.kind == .local`).
@@ -120,12 +133,17 @@ measured, output-preserving one.
 
 ## Tests
 
-New `FloeAgentRuntimeTests/LocalEnvelopeBoundsTests` (6): the synthetic
+New `FloeAgentRuntimeTests/LocalEnvelopeBoundsTests` (8): the synthetic
 workspace reproduces the Build229 envelope scale at base; the bounded
-envelope keeps every section (head/tail + marker) within the 8K window
-share; a 12-char first chat with a real-sized AGENTS.md stays small; the
-no-optional-state floor is ~850 heuristic tokens; cloud envelopes stay
-verbatim; plan/goal state survives bounding.
+envelope keeps every prose section (head/tail + marker) within the 8K
+window share; a 12-char first chat with a real-sized AGENTS.md stays
+small; the no-optional-state floor is ~850 heuristic tokens; cloud
+envelopes stay verbatim; plan/goal state survives bounding; and an
+over-budget accepted plan (24 sections + 12 criteria + assumptions and
+risks) and an over-budget goal (15 steps + 10 criteria + blockers/stops)
+each keep **every item's identity** in the bounded projection (measured
+3,642 → 817 heuristic tokens for the plan) with the full-content read
+path marker — the review pin for the enumerated-contract layers.
 
 New `FloeLocalModelsTests/LocalFirstChatBudgetTests` (3), end-to-end
 through the production `LocalProviderAdapter.buildPrompt`: the 12-character
@@ -147,16 +165,30 @@ all reproduced identically at `HEAD~1`, none touching the changed code).
 
 ## Cloud verification (recorded per run)
 
-- `local-inference-qualification` real-weight run on this branch:
-  recorded below once complete. It re-exercises the vendored fail-fast
-  patch and the production adapter with actual Qwen3.8-4B weights
-  (multi-chunk prefill plus two consecutive `workspace.readFile` turns).
-  Evidence limit: the diagnostic host composes its own minimal system
-  envelope (it does not depend on `FloeAgentRuntime`), so real-weight
-  evidence covers the engine+adapter+patch stack; the new runtime bounding
-  is covered by the unit tests above and by the cloud App compile.
-- `ci.yml` build-test on this branch: recorded below once complete;
-  compiles `FloeAgentRuntime` for the cloud iOS/macOS slices.
+- `local-inference-qualification` real-weight run **36254087479** on this
+  branch (SHA d60a86d4, which includes the envelope bound): **passed** —
+  the vendored fail-fast patch and the production adapter ran with actual
+  Qwen3.8-4B weights: both constrained-batch48 and balanced-batch96
+  profiles completed their multi-chunk prefills, and two consecutive
+  `workspace.readFile` tool turns executed with real receipts
+  (`answerContainsReceipt:true`, `conversationTurns:2`,
+  `qualification-complete`). Evidence limit: the diagnostic host composes
+  its own minimal system envelope (it does not depend on
+  `FloeAgentRuntime`), so real-weight evidence covers the
+  engine+adapter+patch stack; the new runtime bounding is covered by the
+  unit tests above.
+- `ci.yml` run 36254096876 on this branch: `FloeAgentRuntime` (including
+  `LocalEnvelopeBounds.swift` and the composer changes) **compiled
+  successfully** for the iOS 26.5 simulator (Xcode 26.6, Release) and the
+  package graph built under Xcode 27. The run then failed at a
+  **pre-existing, unrelated** error: `FloeApp/Workspace/
+  IDEWorkspaceTabs.swift:76` (`IDEOfficeLoadTrigger.identity` referencing
+  the MainActor-isolated `IDEWorkspaceTab.id`), introduced by the
+  office-simulator-stage merge (`96391092`) before this work. That file
+  is outside this task's declared scopes (Office/IDE), so it is recorded
+  here as a branch-level blocker for full-App cloud builds rather than
+  repaired under this task.
+- `spm-linux-build` on this branch: **passed**.
 
 ## Boundaries and remaining risks
 
