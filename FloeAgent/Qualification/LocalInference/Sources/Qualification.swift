@@ -475,11 +475,12 @@ import Synchronization
 
     /// Exercise actual weights through the production adapter and a controlled
     /// read-only workspace tool. A text-only completion is a failure here.
-    static func runActualToolRoundtrip(_ entry: LocalModelCatalogEntry, store: LocalModelStore) async throws {
+    static func runActualToolRoundtrip(_ entry: LocalModelCatalogEntry, store: LocalModelStore,
+                                       fixtureRoot: URL) async throws {
         let marker = "FLOE_TOOL_PROBE_7B42"
-        let fixture = store.root.appendingPathComponent("qualification-probe.txt")
+        let fixture = fixtureRoot.appendingPathComponent("qualification-probe.txt")
         let secondMarker = "FLOE_SECOND_TOOL_PROBE_92F1"
-        let secondFixture = store.root.appendingPathComponent("qualification-probe-2.txt")
+        let secondFixture = fixtureRoot.appendingPathComponent("qualification-probe-2.txt")
         try Data(marker.utf8).write(to: fixture, options: .atomic)
         try Data(secondMarker.utf8).write(to: secondFixture, options: .atomic)
         defer {
@@ -735,6 +736,6 @@ import Synchronization
                 try await runActualProfile(entry, using: profileCase, directory: directory)
             }
         }
-        try await runActualToolRoundtrip(entry, store: store)
+        try await runActualToolRoundtrip(entry, store: store, fixtureRoot: root)
     }
 }
