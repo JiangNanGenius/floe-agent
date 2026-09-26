@@ -43,7 +43,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/pinned-host"
-          gh run download 36000058922 -n office-native-host-unsigned -D "$RUNNER_TEMP/pinned-host"
+          gh run download 36248761459 -n office-native-host-unsigned -D "$RUNNER_TEMP/pinned-host"
           ditto -x -k "$RUNNER_TEMP/pinned-host/OfficeNativeHost.zip" "$RUNNER_TEMP/pinned-host/extracted"
           expected="$(python3 -c 'import json;print(json.load(open("ThirdParty/Collabora/engine.lock.json"))["qualifiedHostArtifact"]["executableSHA256"])')"
           python3 scripts/check_office_simulator_blocker.py \
