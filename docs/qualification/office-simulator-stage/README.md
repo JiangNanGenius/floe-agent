@@ -19,6 +19,16 @@ slide first frame, an editing session, a save or a device result.
   Floe never configured that. A simulator host would require a fresh engine
   build, new packaging/hashes and a separate App linkage, not a relink.
 
+At the pinned engine commit `27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc` the
+upstream `ios/README.md` states the engine "cannot run in a simulator, because
+the engine is built for an `iOS` target while the simulator is
+`iOS-simulator`", and `configure.ac` exposes no `--enable-ios-simulator` (or
+equivalent) switch — a real simulator host needs a fresh LibreOffice core
+cross-build for `iphonesimulator` (every static dependency included), then a
+new host framework build, packaging, and a separate simulator pin. That is a
+dedicated engine-toolchain effort; this record keeps the exact build/link
+evidence instead of faking a stub.
+
 `FloeAgent/scripts/check_office_simulator_blocker.py` reproduces all of the
 above as a receipt:
 
