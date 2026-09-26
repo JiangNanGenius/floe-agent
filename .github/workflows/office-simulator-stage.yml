@@ -85,6 +85,9 @@ jobs:
         id: build
         run: |
           set -o pipefail
+          # The SwiftPM graph compiles mlx-swift Metal kernels for the
+          # simulator; Xcode 27 needs the separately downloaded toolchain.
+          xcodebuild -downloadComponent MetalToolchain
           xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/OfficeSimulatorStageBuild" \
