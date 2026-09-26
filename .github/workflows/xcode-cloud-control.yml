@@ -485,6 +485,15 @@ jobs:
             > "$RUNNER_TEMP/crash-feedback-app.json"
           app_id="$(jq -r '.data.id // empty' "$RUNNER_TEMP/crash-feedback-app.json")"
           test -n "$app_id"
+          # TestFlight crash-feedback submissions are separate from the
+          # automatic crash metric. A tester who also belongs to a group with
+          # feedback disabled may not see the in-app feedback affordance.
+          api_get "/v1/apps/$app_id/betaGroups" \
+            --data-urlencode 'limit=200' \
+            --data-urlencode 'fields[betaGroups]=name,feedbackEnabled' \
+            > "$RUNNER_TEMP/feedback-beta-groups.json"
+          jq -r '"beta-group-count=\(.data | length) feedback-disabled-group-count=\([.data[] | select(.attributes.feedbackEnabled == false)] | length)"' \
+            "$RUNNER_TEMP/feedback-beta-groups.json"
           api_get "/v1/apps/$app_id/betaFeedbackCrashSubmissions" \
             --data-urlencode "filter[build]=$BUILD_ID" \
             --data-urlencode 'limit=200' \
@@ -493,6 +502,7 @@ jobs:
             > "$RUNNER_TEMP/crash-submissions.json"
           count="$(jq '.data | length' "$RUNNER_TEMP/crash-submissions.json")"
           echo "crash-submission-count=$count"
+          echo "This counts tester crash-feedback submissions, not the automatic TestFlight crash metric."
           jq -r '.data[] | "crash-feedback date=\(.attributes.createdDate // "unknown") device=\(.attributes.deviceModel // "unknown") family=\(.attributes.deviceFamily // "unknown") platform=\(.attributes.devicePlatform // "unknown") os=\(.attributes.osVersion // "unknown")"' \
             "$RUNNER_TEMP/crash-submissions.json"
           while IFS= read -r submission_id; do
