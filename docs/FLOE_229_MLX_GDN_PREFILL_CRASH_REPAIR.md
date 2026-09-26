@@ -99,10 +99,19 @@ disabled): 8/8 new vendored tests, 15/15 GDN-related vendored tests
 
 - macOS host evidence (above) validates code behavior only. It is **not**
   device acceptance.
-- Cloud real-weight two-tool-turn qualification with this patch is tracked
-  under the `local-inference-qualification` workflow on this branch; the
-  earlier two-turn evidence (source SHA 11471d41, run 36245411220) predates
-  this patch and does not clear the iPad crash.
+- Cloud real-weight two-tool-turn qualification **with this patch**:
+  `local-inference-qualification` run 36250191878 on branch
+  `codex/mlx-gdn-prefill-crash-repair` (SHA 37239f90, which includes fix
+  commit dc528428) — **passed**. It exercised the production
+  `LocalProviderAdapter` with actual Qwen3.8-4B weights: the
+  constrained-batch48 and balanced-batch96 profiles both completed their
+  multi-chunk prefills (3,147-token prompts, TTFT ~114s/~96s, prefill
+  ended cleanly), then two consecutive chat turns each executed a distinct
+  `workspace.readFile` tool call (`local-71712A6E-…`,
+  `local-C9C7DA35-…`) with real receipts, `answerContainsReceipt:true`,
+  `conversationTurns:2`, `qualification-complete`. This is new-patch host
+  evidence; the earlier two-turn evidence (SHA 11471d41, run 36245411220)
+  predates the patch and never cleared the iPad crash.
 - Physical iPad acceptance remains with the user. Expected post-fix device
   behavior if the memory margin is still exceeded: the turn fails with a
   logged, bounded diagnostic and one automatic retry instead of an app
