@@ -218,21 +218,25 @@ jobs:
 
       - name: Verify Gitee main matches GitHub main
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' || github.ref_name == 'main' }}
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
-          : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
-          umask 077
-          # Header file: mode 0600, removed on step exit; argv carries only
-          # the file path, never the token.
-          HEADER_FILE="$(mktemp "${RUNNER_TEMP}/gitee-auth-header.XXXXXX")"
-          trap 'rm -f "$HEADER_FILE"' EXIT
-          printf 'Authorization: token %s\n' "$GITEE_TOKEN" > "$HEADER_FILE"
           GITHUB_SHA=$(git rev-parse refs/heads/main)
-          GITEE_SHA=$(curl -fsS -H @"$HEADER_FILE" \
-            "https://gitee.com/api/v5/repos/JiangNanGenius/floe-agent/branches/main" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')
+          # Verify the Git ref we just pushed. Gitee's REST branch endpoint
+          # can hang during TLS negotiation even when Git push succeeded;
+          # a bounded public ls-remote avoids making API availability a
+          # false source-mirror failure. No credential is needed for this
+          # public ref read and none is placed in a URL or process arguments.
+          GITEE_SHA=""
+          for attempt in 1 2 3; do
+            if GITEE_SHA=$(GIT_TERMINAL_PROMPT=0 timeout 45 git ls-remote \
+              https://gitee.com/JiangNanGenius/floe-agent.git refs/heads/main \
+              | awk '$2 == "refs/heads/main" {print $1}'); then
+              if [ -n "$GITEE_SHA" ]; then break; fi
+            fi
+            echo "Gitee ref read attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 3))
+          done
+          [ -n "$GITEE_SHA" ]
           echo "github main: $GITHUB_SHA"
           echo "gitee main:  $GITEE_SHA"
           [ "$GITHUB_SHA" = "$GITEE_SHA" ]
