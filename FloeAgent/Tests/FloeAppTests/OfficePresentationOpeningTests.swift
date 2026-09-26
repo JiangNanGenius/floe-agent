@@ -153,6 +153,26 @@ struct OfficePresentationOpeningTests {
         }
     }
 
+    @Test("An edit attempt the engine never confirmed gets the recoverable render notice, never a bare ready")
+    func unconfirmedEditAttemptNeverClaimsBareReadyOnPresentations() {
+        // Mirrors the shipped `acknowledgeEditPermission` nil-permission branch:
+        // a presentation whose engine never reported its permission settles as
+        // `renderUnverified` (banner, save refused until a real paint), while
+        // Word/Excel keep their historical open-only readiness. First-frame
+        // evidence is never weakened into a silent ready claim.
+        for entry in Self.entryPaths where !entry.readOnly {
+            var policy = Self.policy("pptx", readOnly: entry.readOnly)
+            #expect(policy.requiresVisibleRender, Comment(rawValue: entry.name))
+            #expect(policy.renderDeadlineElapsed() == .renderUnverified, Comment(rawValue: entry.name))
+            #expect(policy.warning?.actions.contains(.retryPreview) == true, Comment(rawValue: entry.name))
+        }
+        for path in ["report.docx", "budget.xlsx"] {
+            var policy = Self.policy((path as NSString).pathExtension, readOnly: false)
+            #expect(policy.renderDeadlineElapsed() == .ready, Comment(rawValue: path))
+            #expect(policy.warning == nil, Comment(rawValue: path))
+        }
+    }
+
     // MARK: - Late paint repairs the bounded outcome
 
     @Test("A late paint after the App render deadline repairs the presentation to ready and savable")

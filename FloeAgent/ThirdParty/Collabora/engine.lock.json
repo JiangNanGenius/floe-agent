@@ -3,22 +3,22 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "36000058922",
+    "runID": "36248761459",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 10807927842,
-    "workflowCommit": "42b46ce7556ef2c623cd2553093f7ea9b5f95b67",
-    "archiveSHA256": "7b6a4c8f519009ddc51db5183fd0e05e9f4a617de51b3777582412c48d93d4d3",
-    "executableSHA256": "37167e935892c26cb0e0746dc9eb5af605d66f622730eb4bcb7ef44605870afd",
+    "artifactID": 10907773600,
+    "workflowCommit": "c966b831f57b4ad12b799139b9965d8ea492bacd",
+    "archiveSHA256": "2c61088415dee7ee8fc0b6c59a53bfe06cfb167f6768bd4ea051770e03992ffe",
+    "executableSHA256": "4de49bd1774c22c52f56e60f404bee98f4dccf7efbb909fcbd646c2bad3bcff2",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "fa20177d8c6147079c0e79f3d4991c757e4d07302803f66787c78aa167435b57",
-      "FloeOfficeNative.mm": "f2ec92404dffa08885d07686fbb6cda091a9a9f893f6d3ec4beb89ff4e79add6",
+      "FloeOfficeNative.mm": "8323bf453cd6cade41d76886e13fd7bc65b16aa8bb87b2c101a30ebdaf4f1391",
       "FloeOfficeAttachment.cpp": "281c55eb6ccb6ae85092ade38a7debe30cd2d010e76e0cbbcd3d88bcc42bfde8",
       "FloeOfficeAttachment.hxx": "0fe8268cd8bb8355593d662b1cd19e707a8ea5a03068d359c0ef1edfb67b8a76"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "2f86529a8e168767a7e64d8a38f49976178e1f741e7ce947f1d78f7c61313b5c",
+    "manifestSHA256": "c0f6fd96df64a477460e2f79eb6e0dac980a7863d2d8cc92266421f1cd1f5bee",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "fa20177d8c6147079c0e79f3d4991c757e4d07302803f66787c78aa167435b57",
       "Info.plist": "2eb182ee435d827e9eec83734faeaebb32a1589bf45615c646d402d818eb73a9",
@@ -31,7 +31,7 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Build 228 cloud-compiled PPT edit-entry extent bootstrap; device edit/save qualification pending",
+    "note": "Build 229+ cloud-compiled edit-surface layout-swap evidence repair; device edit/save qualification pending",
     "filterOverlay": {
       "patchSHA256": "4d426890632f0fc72996917f3af268af9c81bb211ff85937999d951c5e341989",
       "sourceFiles": {
@@ -100,17 +100,17 @@
           "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
         }
       },
-      "archiveSHA256": "17e3e4af526157ce76440f1e163df0338e5fba42b642697fa39ddf79211365c8",
+      "archiveSHA256": "2ba5ff10bc13065db950ff4d7e0b05394436e8f8898af13e6fa9c10fb72e3f9f",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "17e3e4af526157ce76440f1e163df0338e5fba42b642697fa39ddf79211365c8",
+      "selectedArchiveSHA256": "2ba5ff10bc13065db950ff4d7e0b05394436e8f8898af13e6fa9c10fb72e3f9f",
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "17e3e4af526157ce76440f1e163df0338e5fba42b642697fa39ddf79211365c8",
-        "libooxlo.a": "3e7c804ec88a89afcd1cc90f7f80ce39e86e04852c4cd3df111f0a9749249a98"
+        "libscfiltlo.a": "2ba5ff10bc13065db950ff4d7e0b05394436e8f8898af13e6fa9c10fb72e3f9f",
+        "libooxlo.a": "c5f34bbc7f2dce6f2b0e945972149dea8461209054739525ad72390e5612e582"
       },
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "3e7c804ec88a89afcd1cc90f7f80ce39e86e04852c4cd3df111f0a9749249a98",
+          "archiveSHA256": "c5f34bbc7f2dce6f2b0e945972149dea8461209054739525ad72390e5612e582",
           "objectSHA256ByMember": {
             "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77",
             "chartexport.o": "af7da7bb40ebc0af6204c5980be4b5963f96d642f1c37276674b463b4f237168"

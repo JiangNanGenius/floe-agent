@@ -623,3 +623,71 @@ supply a simulator first frame.
   `capabilityQualification` flags stay false. The smallest device evidence path
   (same trace plus the host's `[FloeOffice]` stages on a physical iPad) is
   recorded in the qualification README.
+
+## PPT edit-stall root cause and edit-surface readiness repair (2026-09-26)
+
+The Build 227/229 device reports ("PPT preview works; entering edit stays on
+正在打开文档 / never becomes usable") had two already-merged causes — the IDE
+Office-tab loader that never re-armed across tabs, and the `OfficeEditEntryAck`
+stale-waiter wedge that could keep `operating` set forever — plus one remaining
+provable readiness defect in the pinned host's own edit-surface evidence, which
+this slice repairs.
+
+- **Root cause (source-proven).** An editable presentation is session-ready
+  only when the host's render probe observes that the part-based edit surface
+  painted *after* the guarded mobile edit entry. The shipped probe required a
+  new tile image object or a changed 24×16 canvas fingerprint. The pinned
+  engine keeps its shared tile map across
+  `ImpressTileLayer._switchToPartBasedView`, and after the layout switch it can
+  serve the part-based view from the *same* tile image objects with an
+  unchanged downsampled fingerprint (single-slide decks are the clean case).
+  The probe then reads a healthy, painted, editable editor as "never painted":
+  its deadline hard-fails the session-ready threshold, the editor is left on
+  the permanent render-unverified outcome with **saving refused**
+  (`OfficeVisibleRenderGate.permitsSave` stays false and the finished probe
+  never polls again), and every retry reproduces it. That is the device "edit
+  stall" that no retry escapes. A sequence-level harness drives the *actual
+  shipped probe script* through multi-poll engine lifecycles and proves the
+  false negative (`FloeAgent/scripts/tests/test_office_edit_surface_evidence.py`);
+  the pre-fix probe returns `editSurfacePainted: false` on the painted-editor
+  lifecycle (observed).
+- **Fix (host, minimal, evidence-adding only).** The probe now records the
+  engine's own layout-swap receipt — `app.activeDocument.activeLayout.type`
+  (`"ViewLayoutFileBased"` → `"ViewLayoutImpress"`, a stable string verified in
+  the shipped pinned bundle) — in the armed baseline, and accepts a real
+  file→part layout change followed by painted canvas content as edit-surface
+  evidence. Strictness is unchanged where the receipt is absent: tile reuse
+  without the swap, and any blank canvas, still never qualify, and the
+  tile-decode/canvas-repaint paths are untouched. `FloeOfficeNative.mm`
+  (`FLOE_EDIT_SURFACE_EVIDENCE`) carries the change; diagnostics expose
+  `editSurfaceLayoutChanged`/`editSurfaceLayout`.
+- **Fix (App, evidence integrity).** `acknowledgeEditPermission`'s
+  unconfirmed-engine branch (`hostReadOnly == nil`) no longer claims a bare
+  `ready` for render-required sessions: it presents the same recoverable,
+  banner-backed render-unverified outcome as a bounded render miss (save stays
+  refused until a real paint). Word/Excel keep their open-only readiness.
+  `OfficePresentationOpeningTests` pins the composed contract.
+- **Repin.** The pinned framework predates these host sources; the lock check
+  fails closed with `SOURCE AHEAD OF ARTIFACT` until the cloud host rebuild
+  (`.github/workflows/office-native-host.yml`) repins the artifact hashes.
+  Run `36248761459` (branch `codex/ppt-edit-stall-repair`) rebuilt and
+  re-qualified the host from the new sources; the repin records the new
+  artifact identity in `engine.lock.json`.
+- **Simulator host (immutable blocker, exact evidence).** The pinned framework
+  and every qualified engine input are iphoneos-arm64 only: `LC_BUILD_VERSION
+  platform IOS`, one `arm64` slice, `CFBundleSupportedPlatforms = [iPhoneOS]`,
+  and a simulator link is refused (`ld: building for 'iOS-simulator', but
+  linking in dylib … built for 'iOS'` — retained in
+  `simulator-blocker.json`). At the pinned engine commit `27b21dc1`,
+  `configure.ac` has **no** `--enable-ios-simulator` (or equivalent) option and
+  the upstream `ios/README.md` states the engine "cannot run in a simulator,
+  because the engine is built for an `iOS` target while the simulator is
+  `iOS-simulator`". A real simulator host therefore needs a fresh LibreOffice
+  core cross-build for `iphonesimulator` (all static deps rebuilt), a new host
+  framework build, packaging, and a separate simulator pin — a dedicated
+  engine-toolchain effort, not a relink. Until then the PPT edit path is
+  qualified only on a physical device.
+- **Not claimed.** No simulator or component result here proves an iPad PPT
+  editable first frame, edit, save, close or write-back. The device evidence
+  path (stage trace + host `[FloeOffice]` stages + `renderDiagnostics`
+  `editSurfaceLayoutChanged` on a physical iPad) remains the acceptance gate.

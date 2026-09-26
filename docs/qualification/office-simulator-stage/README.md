@@ -19,6 +19,16 @@ slide first frame, an editing session, a save or a device result.
   Floe never configured that. A simulator host would require a fresh engine
   build, new packaging/hashes and a separate App linkage, not a relink.
 
+At the pinned engine commit `27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc` the
+upstream `ios/README.md` states the engine "cannot run in a simulator, because
+the engine is built for an `iOS` target while the simulator is
+`iOS-simulator`", and `configure.ac` exposes no `--enable-ios-simulator` (or
+equivalent) switch — a real simulator host needs a fresh LibreOffice core
+cross-build for `iphonesimulator` (every static dependency included), then a
+new host framework build, packaging, and a separate simulator pin. That is a
+dedicated engine-toolchain effort; this record keeps the exact build/link
+evidence instead of faking a stub.
+
 `FloeAgent/scripts/check_office_simulator_blocker.py` reproduces all of the
 above as a receipt:
 
@@ -67,6 +77,9 @@ the one focused XCTest case passed. The receipt always keeps
 | [36245268353](https://github.com/JiangNanGenius/floe-agent/actions/runs/36245268353) | Same bootstrap omission before the dash build was added. |
 | [36245810244](https://github.com/JiangNanGenius/floe-agent/actions/runs/36245810244) | Blocker step and 15 focused harness tests passed; App build stopped at mlx-swift Metal kernels (`xcodebuild -downloadComponent MetalToolchain` missing). |
 | [36246400751](https://github.com/JiangNanGenius/floe-agent/actions/runs/36246400751) | Blocker step and 15 focused harness tests passed; App build reached resource copying, then failed on the gitignored `FloeApp/Resources/Fonts/Bundled` input (`error: The file “Bundled” couldn’t be opened because there is no such file`). |
+| [36250288391](https://github.com/JiangNanGenius/floe-agent/actions/runs/36250288391) | Failed closed by design: the edit-surface host-source repair landed before the repin, so `bootstrap_office_host.py` refused with "Native host must be rebuilt for its changed public or implementation source". |
+| [36248761459](https://github.com/JiangNanGenius/floe-agent/actions/runs/36248761459) | Cloud host rebuild of the repaired sources (`codex/ppt-edit-stall-repair` @ `c966b831`): compile/link/Swift-import qualification passed; artifact repinned in `engine.lock.json` (`archiveSHA256 2c610884…`, `executableSHA256 4de49bd1…`). The rebuilt framework is still device-only (`platform IOS`, `arm64`, simulator link refused, hash matched — local receipt `Local/Artifacts/office-host-36248761459/simulator-blocker.json`). |
+| [36251954157](https://github.com/JiangNanGenius/floe-agent/actions/runs/36251954157) | Full honest stage run at the repin head `78e6f3b0`: blocker proof, all focused harness checks, the complete App simulator build, and `OfficeSimulatorStageUITests.testRealOfficeEntryPathsReachTheExactSimulatorHostBlocker` passed against real PPTX/DOCX fixtures on the iPad simulator; the stage trace records 4 `engine.unavailable` events, one ordered session chain, no forbidden stage and no engine success claim (`realEngineOpened`, `pptFirstFrameObserved`, `officeEditSessionObserved`, `officeSaveOrCloseObserved` all false). Receipt: `Local/Artifacts/office-simulator-stage-36251954157/office-simulator-receipt.json`. |
 
 Both blocker receipts are retained (`simulator-blocker.json` in
 `office-simulator-stage-*` artifacts; local copies under
