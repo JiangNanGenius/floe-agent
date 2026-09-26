@@ -545,3 +545,81 @@ Apple build `387e2282-0814-4384-88a8-5a756d46a5ef` is VALID, unexpired and
 IN_BETA_TESTING in the sole private internal Floe QA group (verify 35682374446).
 Physical-device behavior remains for user acceptance. Detail:
 [Build 221 release notes](RELEASE_NOTES_1.7.0_BUILD_221.md).
+
+## PPT simulator stage diagnostics and simulator-host blocker (2026-09-26)
+
+The Build 229 device report ("PPT cannot open/edit", preview works, edit stalls)
+still had no durable App-side trace: the pinned host logs bounded
+`[FloeOffice]` stages, but nothing persisted the App chain
+(edit intent → working copy → native controller → engine init → document import
+→ permission → first painted slide → exit interlock) under one correlation
+identity. This slice adds that trace and proves why the real engine cannot
+supply a simulator first frame.
+
+- **Simulator-host blocker (build/link evidence).** The pinned framework in
+  `engine.lock.json` (`qualifiedHostArtifact` run `36000058922`) is hash-verified
+  (`executableSHA256 37167e93…`) and is device-only: `LC_BUILD_VERSION platform
+  IOS`, one `arm64` slice, `CFBundleSupportedPlatforms = [iPhoneOS]`. Linking it
+  into an `arm64-apple-ios26.0-simulator` target is refused with
+  `ld: building for 'iOS-simulator', but linking in dylib (…) built for 'iOS'`.
+  `scripts/check_office_simulator_blocker.py` records this receipt;
+  `scripts/tests/test_office_simulator_blocker.py` pins the parsing and runs the
+  real probe when the framework is provided. A simulator host would need a fresh
+  engine build (`--enable-ios-simulator`), new packaging/hashes and App linkage,
+  not a relink.
+- **Durable stage diagnostics with correlation identity.** `OfficeStageRecorder`
+  (`FloeAgent/FloeApp/Workspace/OfficeStageDiagnostics.swift`) records bounded,
+  content-free stages per session UUID plus the monotonic open generation into
+  the unified log (`[FloeOfficeStage]`) and
+  `Library/Application Support/FloeAgent/OfficeDiagnostics/office-stage.jsonl`
+  (512 events / 256 KiB bounds). `OfficeFileSession` records intent, working
+  copy, engine runtime, controller mount, host render contract, open permission,
+  visible render, host `renderDiagnostics`, edit entry, save, close and the
+  exit-interlock decisions; `NotesOfficeView` records the Notes staging,
+  commit and leave-guard stages under the same identity; `FilePreviewView`
+  records the host-less fallback. The trace never carries document text, paths
+  or bytes.
+- **Narrow repair.** `OfficeEditEntryAck` was the only one of the three
+  one-shot acknowledgements that could orphan a stale waiter's continuation
+  (the close and save receipts already defend against it): a second concurrent
+  `wait()` overwrote the first continuation, which could then never resume and
+  would keep `operating` set forever. A stale waiter now settles as
+  unverified-read-only (never an editing grant) and the live waiter continues;
+  `OfficeEditEntryAckTests` covers it. `hostRenderDiagnostics(_:)` also reads
+  the pinned host's own bounded render facts (docType, tile/canvas counters,
+  edit-surface paint evidence) into the trace instead of leaving the selector
+  unused.
+- **IDE Office tab open-trigger repair.** The Build 229 device pass showed the
+  IDE's embedded Office surface on its opening spinner for DOCX/XLSX as well as
+  PPTX. The owner loader was a bare SwiftUI `.task` (with the commit binding
+  only on `.onAppear`) inside `WorkspaceIDEView.officeSurface(_:)`: consecutive
+  Office tabs keep the same structural view identity, so switching from one
+  Office tab to another never re-ran the loader and the newly active tab's
+  session stayed `.idle` with no controller and no watchdog. The loader is now
+  keyed on `IDEOfficeLoadTrigger.identity(activeTab:)` (the tab id) with the
+  commit binding re-bound inside that task, so consecutive tabs open and a
+  switch back to an already-open tab keeps its live session. The focused
+  `scripts/tests/test_office_ide_office_trigger.py` fails on the old binding
+  (observed) and passes on the fix; `IDEOfficeLoadTriggerTests` pins the
+  distinct/stable identity contract. No Office product flow changed.
+- **Cloud simulator runs.** `office-simulator-stage.yml` rebuilds the real App
+  for the simulator, generates real PPTX/DOCX fixtures through the product
+  OOXML builders, opens them through the Notes library, Workspace preview and
+  IDE Office tab, retains screenshots, xcresult, the pulled `office-stage.jsonl`
+  and console log, and fails unless every path recorded the honest
+  `engine.unavailable` stage with no engine success claim. Runs
+  [36245810244](https://github.com/JiangNanGenius/floe-agent/actions/runs/36245810244)
+  and
+  [36246400751](https://github.com/JiangNanGenius/floe-agent/actions/runs/36246400751)
+  proved the pinned-host blocker in cloud (`platform IOS`, `arm64`,
+  simulator link refused with the exact `ld: building for 'iOS-simulator' …`
+  diagnostic, pinned executable hash matched) and passed the 15 focused harness
+  tests; the full-App stage execution itself stopped on gitignored CI build
+  inputs (dash slices, Xcode Metal toolchain, bundled fonts). The workflow now
+  bootstraps all three; the stage execution remains pending a future bounded
+  run. See [the qualification record](qualification/office-simulator-stage/README.md).
+- **Not claimed:** no simulator or component result here proves an iPad PPT
+  first frame, edit, save, close or write-back. The pinned host's
+  `capabilityQualification` flags stay false. The smallest device evidence path
+  (same trace plus the host's `[FloeOffice]` stages on a physical iPad) is
+  recorded in the qualification README.

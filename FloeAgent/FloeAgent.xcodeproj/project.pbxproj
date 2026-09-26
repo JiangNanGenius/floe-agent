@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		00D36F86084F1651934DAB00 /* BrowserSessionCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C72C2A24D117C574C0444C /* BrowserSessionCenter.swift */; };
 		022DCFD99F85967EC9162972 /* NotesSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C6C6EF70E9F50E66B502984 /* NotesSession.swift */; };
+		055638376ECC9A707A9821B8 /* OfficeStageDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE65014636ACB54B9D39D3A4 /* OfficeStageDiagnostics.swift */; };
 		05635906778159CE3C3DEA14 /* EngineeringReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4944CFBAEA7D26E2EB1FF8C0 /* EngineeringReviewSheet.swift */; };
 		05825834C3827B7ED11B314B /* EnvironmentLanguagePackageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A809A3D1E4CFC7C591315E2A /* EnvironmentLanguagePackageService.swift */; };
 		0698EEE9614E076C9AFEED3A /* FeedbackReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */; };
@@ -170,6 +171,7 @@
 		6746445A87576F1AE979702A /* SkillsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583BB494E657BD1BC7481C75 /* SkillsView.swift */; };
 		67E0B11F77FD1726248D939B /* ArchiveCompressedBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F760D84DCB71D5B59F7EAB6A /* ArchiveCompressedBridge.swift */; };
 		6973F414B96F2DD9372BF007 /* LinuxGuestImageDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56FD58BBA3D4A7B8FB00AE0F /* LinuxGuestImageDownloader.swift */; };
+		69FAA600F280DC8AA5A9808A /* OfficeSimulatorStageUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6C522E2812A592828A4CF4 /* OfficeSimulatorStageUITests.swift */; };
 		6A4EFEB1B24839C707E5B097 /* BundledFontRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17C3D097583898D825656EEA /* BundledFontRegistrar.swift */; };
 		6B01443783BF0E45C2801A47 /* OfficeDocumentModeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB629E3247119A05E28AD018 /* OfficeDocumentModeStore.swift */; };
 		6B0D3A07EB93CDB1FF10B326 /* FloeSecurity in Frameworks */ = {isa = PBXBuildFile; productRef = 87B8E278FC454AFE6AF6C9E9 /* FloeSecurity */; };
@@ -584,6 +586,7 @@
 		5DC88801BD9F456C4B11FB97 /* OfficeExplicitSaveBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeExplicitSaveBridge.swift; sourceTree = "<group>"; };
 		5EEAF75750C99418C2B3183E /* LinuxBackgroundSurfaceProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxBackgroundSurfaceProbe.swift; sourceTree = "<group>"; };
 		5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesLinkedMindMaps.swift; sourceTree = "<group>"; };
+		5F6C522E2812A592828A4CF4 /* OfficeSimulatorStageUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeSimulatorStageUITests.swift; sourceTree = "<group>"; };
 		605587D767C978B8023F0DE2 /* SSHSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSessionOwner.swift; sourceTree = "<group>"; };
 		615A8177FD0D62C875B5688B /* CanvasGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasGeometry.swift; sourceTree = "<group>"; };
 		630C1894EB108ABA12D07047 /* NotePencilView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotePencilView.swift; sourceTree = "<group>"; };
@@ -719,6 +722,7 @@
 		BACF0650EC6E172999FEB4EC /* ThreadEventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadEventView.swift; sourceTree = "<group>"; };
 		BD21A10D592EBFDF538C2C85 /* FloeShellBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FloeShellBridge.h; sourceTree = "<group>"; };
 		BE522C8BF30B54FAD939C53C /* AuxiliaryModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuxiliaryModelsView.swift; sourceTree = "<group>"; };
+		BE65014636ACB54B9D39D3A4 /* OfficeStageDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeStageDiagnostics.swift; sourceTree = "<group>"; };
 		BE65485FC8E0E948FC57BB93 /* CanvasAgentToolContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasAgentToolContractTests.swift; sourceTree = "<group>"; };
 		C06D262BD6B80363EE7587F7 /* DocumentConversion */ = {isa = PBXFileReference; lastKnownFileType = folder; name = DocumentConversion; path = FloeApp/Resources/DocumentConversion; sourceTree = SOURCE_ROOT; };
 		C249A312D3F94BF9CBA98F76 /* CrashAndFeedbackRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashAndFeedbackRegressionTests.swift; sourceTree = "<group>"; };
@@ -956,6 +960,7 @@
 				93F493C62CCACF635880C8F7 /* MailConnectorTests.swift */,
 				156627FF0150D4176301C505 /* NotesWorkspaceImportUITests.swift */,
 				5A0C8DC34EA8FFD317063D3E /* OfficeBridgeStateTests.swift */,
+				5F6C522E2812A592828A4CF4 /* OfficeSimulatorStageUITests.swift */,
 				018CC35BB4F14DEF5E4C0E48 /* RARFixtures.generated.swift */,
 				26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */,
 				183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */,
@@ -1041,6 +1046,7 @@
 				393B747B75EAB72521DE73D6 /* OfficeEditIntentQueue.swift */,
 				5DC88801BD9F456C4B11FB97 /* OfficeExplicitSaveBridge.swift */,
 				09F2199DBD6A16038C3468C7 /* OfficeInkPreferences.swift */,
+				BE65014636ACB54B9D39D3A4 /* OfficeStageDiagnostics.swift */,
 				4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */,
 				FC62543B8E16BD9E21CD6C00 /* SourceControlCenter.swift */,
 				1BED50B2B524010095D18E24 /* SourceControlView.swift */,
@@ -2127,6 +2133,7 @@
 				D0042252D95C6E898FB31CEA /* OfficeEditIntentQueue.swift in Sources */,
 				CB7295DE2A5C7C6004B32A6D /* OfficeExplicitSaveBridge.swift in Sources */,
 				FD72275932E31EB1A35C2D45 /* OfficeInkPreferences.swift in Sources */,
+				055638376ECC9A707A9821B8 /* OfficeStageDiagnostics.swift in Sources */,
 				108B2AB067E26680B33DC7CC /* OfficeWorkspaceAttachmentPicker.swift in Sources */,
 				9F178F696416A4E7191F56FB /* OnboardingView.swift in Sources */,
 				5D9232A405C85062BDDB69D8 /* OnboardingViewModel.swift in Sources */,
@@ -2221,6 +2228,7 @@
 			files = (
 				5E947BB83381A4621C72C7F6 /* HomeChatVoiceUITests.swift in Sources */,
 				FC96C3B20BEFAC8E513A2A43 /* NotesWorkspaceImportUITests.swift in Sources */,
+				69FAA600F280DC8AA5A9808A /* OfficeSimulatorStageUITests.swift in Sources */,
 				912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */,
 				6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */,
 				61AD095E7C541FFF41F7DBD8 /* WorkspaceIDEUITests.swift in Sources */,

@@ -680,6 +680,19 @@ struct FilePreviewView: View {
             } catch is CancellationError {} catch { loadError = error.localizedDescription }
             return
         }
+        if isOfficeDocument, !OfficeFileSession.available {
+            // The real engine host is not linked into this build (iOS
+            // Simulator). The Workspace preview falls back to the system
+            // renderer below; record the exact first missing stage so one
+            // durable trace explains the surface instead of a silent
+            // substitution.
+            OfficeStageRecorder.shared.record(
+                session: "workspace-preview-\(UUID().uuidString)",
+                generation: 0,
+                stage: "engine.unavailable",
+                detail: ["surface": "workspace-preview",
+                         "format": (relativePath as NSString).pathExtension.lowercased()])
+        }
         if isOfficeDocument, OfficeFileSession.available, let service = center.fileService {
             do {
                 // A cloud/network document is staged into a private temporary

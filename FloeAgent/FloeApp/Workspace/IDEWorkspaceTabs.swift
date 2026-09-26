@@ -61,6 +61,22 @@ enum IDEOfficeOpenDecision: Equatable {
     }
 }
 
+/// Pure identity for the IDE Office surface's loader task.
+///
+/// The loader is a SwiftUI `.task`; keying it on the active tab's identity is
+/// what makes it re-run when the IDE switches between two Office tabs.
+/// Consecutive Office tabs keep the same structural view identity, so an
+/// id-less `.task`/`.onAppear` never re-fired: the newly active tab's session
+/// stayed `.idle` with no controller and no watchdog — the endless
+/// "正在打开文档…" the Build 229 device pass reported for IDE DOCX/XLSX/PPTX.
+/// A stable identity per tab also keeps a switch back to an already-open tab
+/// from re-opening (and tearing down) its live session.
+enum IDEOfficeLoadTrigger {
+    static func identity(activeTab: IDEWorkspaceTab?) -> String {
+        activeTab?.id ?? ""
+    }
+}
+
 /// Pure decision for closing an Office tab (typed outer tab): a clean
 /// read-only preview closes immediately; anything holding user changes hands
 /// the save/discard/cancel decision to the user. Keeping this pure lets
