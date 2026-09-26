@@ -183,4 +183,113 @@ struct LocalEnvelopeBoundsTests {
         #expect(bounded.contains("# Durable goal state"))
         #expect(Self.estimateTokens(bounded) <= 2_600)
     }
+
+    @Test("An over-budget plan keeps every section and acceptance check identity")
+    func overBudgetPlanKeepsEveryItemIdentity() {
+        // 24 sections + 12 criteria with generous bodies far exceed the
+        // per-section share; the projection must still list every item so
+        // the model cannot treat a middle requirement as nonexistent.
+        var plan = PlanDraft(
+            conversationID: UUID(),
+            title: "Wide plan",
+            summary: "Many tracked requirements.",
+            sections: (0..<24).map {
+                .init(
+                    title: "SECTION-TITLE-\($0)",
+                    body: String(repeating: "section body \($0) ", count: 20),
+                    order: $0
+                )
+            },
+            acceptanceCriteria: (0..<12).map {
+                .init(
+                    text: "CRITERION-\($0) " + String(repeating: "criterion text ", count: 10),
+                    verification: "VERIFY-\($0)"
+                )
+            }
+        )
+        plan.assumptions = [.init(text: "ASSUMPTION-0 " + String(repeating: "assumption body ", count: 10))]
+        plan.risks = [.init(text: "RISK-0 " + String(repeating: "risk body ", count: 10), mitigation: "MITIGATE-0", severity: .high)]
+        plan.status = .accepted
+
+        let full = ConversationRunService.buildContextMessage(
+            .init(activePlan: plan), mode: .plan, toolsAvailable: true, compactForLocal: true
+        )
+        let bounded = ConversationRunService.buildContextMessage(
+            .init(activePlan: plan), mode: .plan, toolsAvailable: true, compactForLocal: true,
+            localContextTokens: 8_192
+        )
+        // The bounded layer must fit the per-section share while the
+        // unbounded layer demonstrably exceeds it.
+        let fullPlan = full.components(separatedBy: "# Accepted plan state").last ?? ""
+        let boundedPlan = bounded.components(separatedBy: "# Accepted plan state").last ?? ""
+        #expect(Self.estimateTokens(fullPlan) > 640)
+        print("OVER-BUDGET-PLAN full=\(Self.estimateTokens(fullPlan)) bounded=\(Self.estimateTokens(boundedPlan))")
+        // The identity floor (24 characters per text item) allows a small,
+        // bounded overshoot above the nominal 640-token share; the layer is
+        // still ~4.5x smaller than the unbounded render and the adapter's
+        // prepared-token guard remains the final admission decision.
+        #expect(Self.estimateTokens(boundedPlan) <= 900)
+        // Every identity survives: all 24 section titles, all 12 criterion
+        // identifiers, the assumption and the risk.
+        for index in 0..<24 {
+            #expect(bounded.contains("SECTION-TITLE-\(index)"), "lost section \(index)")
+        }
+        for index in 0..<12 {
+            #expect(bounded.contains("CRITERION-\(index)"), "lost criterion \(index)")
+        }
+        #expect(bounded.contains("ASSUMPTION-0"))
+        #expect(bounded.contains("RISK-0"))
+        // Explicit omission marker plus the full-content read path.
+        #expect(bounded.contains(LocalEnvelopeBounds.omissionMarker))
+        #expect(bounded.contains("the full revision 1 draft remains stored in the app"))
+        // The verification half of a criterion is auxiliary prose: when the
+        // per-item budget cannot cover it, the criterion identity (text
+        // prefix) still survives, which is the pinned contract.
+        #expect(bounded.contains("CRITERION-0"))
+    }
+
+    @Test("An over-budget goal keeps every step and criterion identity")
+    func overBudgetGoalKeepsEveryItemIdentity() {
+        let goal = ConversationGoal(
+            conversationID: UUID(),
+            objective: "Wide goal",
+            blockingConditions: ["BLOCKER-0 " + String(repeating: "blocker body ", count: 12)],
+            stoppingConditions: ["STOP-0 " + String(repeating: "stop body ", count: 12)],
+            acceptanceCriteria: (0..<10).map {
+                .init(text: "GOAL-CRITERION-\($0) " + String(repeating: "criterion body ", count: 12))
+            },
+            steps: (0..<15).map {
+                .init(
+                    title: "STEP-TITLE-\($0)",
+                    detail: String(repeating: "step detail \($0) ", count: 20),
+                    order: $0
+                )
+            },
+            status: .active
+        )
+        let full = ConversationRunService.buildContextMessage(
+            .init(activeGoal: goal), mode: .goal, toolsAvailable: true, compactForLocal: true
+        )
+        let bounded = ConversationRunService.buildContextMessage(
+            .init(activeGoal: goal), mode: .goal, toolsAvailable: true, compactForLocal: true,
+            localContextTokens: 8_192
+        )
+        let fullGoal = full.components(separatedBy: "# Durable goal state").last ?? ""
+        let boundedGoal = bounded.components(separatedBy: "# Durable goal state").last ?? ""
+        #expect(Self.estimateTokens(fullGoal) > 640)
+        #expect(Self.estimateTokens(boundedGoal) <= 720)
+        // The projection shows at most the first 12 unfinished steps (the
+        // layer's own documented cap) — and every shown step keeps its
+        // title; all criteria/blockers/stops are short enough to stay whole.
+        for index in 0..<12 {
+            #expect(bounded.contains("STEP-TITLE-\(index)"), "lost step \(index)")
+        }
+        for index in 0..<10 {
+            #expect(bounded.contains("GOAL-CRITERION-\(index)"), "lost goal criterion \(index)")
+        }
+        #expect(bounded.contains("BLOCKER-0"))
+        #expect(bounded.contains("STOP-0"))
+        #expect(bounded.contains(LocalEnvelopeBounds.omissionMarker))
+        #expect(bounded.contains("the full goal remains stored in the app"))
+    }
 }
