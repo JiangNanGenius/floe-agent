@@ -34,15 +34,15 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（229）**。不可变标签 `v1.7.0-beta.86` 固定源码 `b06b0b0e`；[发布 run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) 使用 Xcode 26.6 完成云端构建，在签名前保留未签名 IPA（739,485,403 字节，SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`），完成签名上传并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)。[准备 run 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863)已读回中英文测试说明；[核验 run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`。[Build 229 说明](docs/RELEASE_NOTES_1.7.0_BUILD_229.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+**当前内部 TestFlight：1.7.0（230）**。不可变标签 `v1.7.0-beta.87` 固定源码 `06c15e35`；[发布 run 36256360563](https://github.com/JiangNanGenius/floe-agent/actions/runs/36256360563) 使用 Xcode 26.6 完成云端构建，在签名前保留未签名 IPA（739,518,631 字节，SHA-256 `1dc9a10bdaaf1fd5ea9022cc5ceee9249d196cccf2202258e28e195383bc16b9`），完成签名上传并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87)。[准备 run 36259276773](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259276773)已读回中英文测试说明；[核验 run 36259380555](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259380555)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`。[Build 230 说明](docs/RELEASE_NOTES_1.7.0_BUILD_230.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
-**Build 229 针对最新设备反馈。** Office 打开、退出及保存回执只结算一次；迟到的真实 PPT 页面绘制可恢复等待中的会话，原文件写回失败时保留编辑副本。本地模型下一轮不再复用不健康的 MLX 容器。双核启动路径已存在，但正式版仍限单核，直到 Guest 正确性和可重复性能通过资格门。构建和上传证据不等于真机功能验收。
+**Build 230 针对已捕获的 iPad MLX 崩溃与 PPT 加载回归。** 本地提示词预算及 MLX 预填充错误检查针对普通对话崩溃路径；云端实权重验证完成两次独立文件工具调用、回执和模型续答。Office 宿主就绪判断与 IDE 标签加载已修复，固定宿主已嵌入 IPA。Linux 正式版仍是单核。云端与打包证据不等于真机功能验收。
 
-**真机验收尚未完成。** 此前 iPad 测试报告了普通 MLX 对话与测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 229 包含针对性源码修复，但 PPT 可编辑首帧、保存重开及 Office 退出，本地模型加载、测速和连续工具对话，PiP、通知及键盘触控体验仍待真机确认。
+**真机验收尚未完成。** 此前 iPad 测试报告了普通 MLX 对话与测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 230 包含针对性源码修复，但 PPT 可编辑首帧、保存重开及 Office 退出，本地模型加载、测速和连续工具对话，PiP、通知及键盘触控体验仍待真机确认。
 
 **Build 224 从未编译成功。** 其不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败的验收 SDK run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留；参见 [Build 224 说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)与 Build 225 说明中的失败记录表。
 
-**各分发渠道分开核验。** GitHub 已发布 Build 229 预发布和未签名 IPA，Apple 验证及 Floe QA 分组核验均已通过。[Gitee 源码同步 run 36243056531](https://github.com/JiangNanGenius/floe-agent/actions/runs/36243056531)已核对主分支；[发布同步 run 36242058529](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242058529)创建了对应的 [Gitee 预发布](https://gitee.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)，并校验 6 个小型附件。约 705.2 MiB 的 IPA 因仓库附件 1 GiB 配额仅剩 28.9 MiB 而未能上传，请从 GitHub 获取。
+**各分发渠道分开核验。** GitHub 已发布 Build 230 预发布和未签名 IPA，Apple 验证及 Floe QA 分组核验均已通过。[Gitee 发布同步 run 36258647317](https://github.com/JiangNanGenius/floe-agent/actions/runs/36258647317)创建了对应的 [Gitee 预发布](https://gitee.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87)，并上传 6 个小型附件与清单。约 705.3 MiB 的 IPA 因仓库附件 1 GiB 配额仅剩 28.9 MiB 而未能上传，请从 GitHub 获取。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
