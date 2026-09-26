@@ -31,10 +31,12 @@ physicalMemoryBytes:)`; the product policy and engine are not modified. The
 3. The optional original baseline (batch 32) is **not** run by default. Pass
    `--include-baseline` to add the first cloud run's three prompts once.
 4. After both profiles have shut down, load the same pinned weights through
-   `LocalProviderAdapter`, request `workspace.readFile`, execute that one
-   read against a synthetic UTF-8 fixture, pass its call ID and receipt into
-   the continuation, and require the final answer to contain the fixture's
-   marker. `tool-executed` and `tool-roundtrip-complete` are separate gates.
+   `LocalProviderAdapter`. In the first user turn the model must request
+   `workspace.readFile`; the host executes it against a synthetic UTF-8
+   fixture, returns the matching call ID and receipt, and checks the answer.
+   In a second user turn the model must request a different file with a new
+   call ID, then consume that receipt and answer again. Two `tool-executed`
+   events and `tool-roundtrip-complete` are separate gates.
    This is a real model/tool-protocol host test, not an iPad simulator or
    physical-device result.
 

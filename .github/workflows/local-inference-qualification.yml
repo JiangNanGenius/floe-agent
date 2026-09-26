@@ -149,8 +149,9 @@ jobs:
           grep -q '"event":"profile-complete".*"profile":"balanced-batch96"' "$EVIDENCE/run.log"
           test "$(grep -c '"event":"multi-chunk-verified"' "$EVIDENCE/run.log")" -eq 2
           grep -q '"event":"shutdown-complete"' "$EVIDENCE/run.log"
-          grep -q '"event":"tool-executed".*"tool":"workspace.readFile"' "$EVIDENCE/run.log"
+          test "$(grep -c '"event":"tool-executed".*"tool":"workspace.readFile"' "$EVIDENCE/run.log")" -eq 2
           grep -q '"answerContainsReceipt":true.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
+          grep -q '"conversationTurns":2.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
           grep -q '"event":"qualification-complete"' "$EVIDENCE/run.log"
           # Truthful compile-policy metadata: the process starts unapplied, the
           # engine applies the policy, and the environment switch stays absent.

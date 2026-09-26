@@ -478,8 +478,14 @@ import Synchronization
     static func runActualToolRoundtrip(_ entry: LocalModelCatalogEntry, store: LocalModelStore) async throws {
         let marker = "FLOE_TOOL_PROBE_7B42"
         let fixture = store.root.appendingPathComponent("qualification-probe.txt")
+        let secondMarker = "FLOE_SECOND_TOOL_PROBE_92F1"
+        let secondFixture = store.root.appendingPathComponent("qualification-probe-2.txt")
         try Data(marker.utf8).write(to: fixture, options: .atomic)
-        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Data(secondMarker.utf8).write(to: secondFixture, options: .atomic)
+        defer {
+            try? FileManager.default.removeItem(at: fixture)
+            try? FileManager.default.removeItem(at: secondFixture)
+        }
 
         let runtime = LocalModelRuntime(store: store)
         let adapter = LocalProviderAdapter(runtime: runtime, store: store)
@@ -555,7 +561,79 @@ import Synchronization
             throw NSError(domain: "Qualification.Tool", code: 14,
                 userInfo: [NSLocalizedDescriptionKey: "Tool continuation did not report the executed read result"])
         }
-        record("tool-roundtrip-complete", ["model": entry.id, "callID": call.id,
+        record("tool-first-turn-complete", ["model": entry.id, "callID": call.id,
+                                            "answerContainsReceipt": true])
+
+        // A fresh user turn after the first completed answer must still retain
+        // the schema and the settled first call/result pair. This specifically
+        // catches the reported second-turn failure and tool-schema eviction.
+        let nextTurn = ProviderStreamRequest(
+            provider: first.provider,
+            model: model,
+            messages: first.messages + [
+                (role: "assistant", content: answer),
+                (role: "user", content: "Now call workspace.readFile with path qualification-probe-2.txt. Report its exact contents only after the tool responds.")
+            ],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
+            toolSchemas: [schema],
+            allToolNames: [schema.name]
+        )
+        var secondCalls: [ToolCall] = []
+        for try await event in adapter.stream(request: nextTurn, credentials: ProviderCredentials()) {
+            switch event {
+            case .toolRequest(let toolCall): secondCalls.append(toolCall)
+            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 15,
+                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            default: break
+            }
+        }
+        guard secondCalls.count == 1, let secondCall = secondCalls.first,
+              secondCall.id != call.id, secondCall.toolName == schema.name,
+              let arguments = try JSONSerialization.jsonObject(with: secondCall.argumentsJSON) as? [String: Any],
+              arguments["path"] as? String == secondFixture.lastPathComponent else {
+            throw NSError(domain: "Qualification.Tool", code: 16,
+                userInfo: [NSLocalizedDescriptionKey: "Second user turn did not request the second fixture read with a new call ID"])
+        }
+        let secondOutput = try String(contentsOf: secondFixture, encoding: .utf8)
+        let secondResult = ToolResult(callID: secondCall.id, status: .ok, outputSummary: secondOutput,
+                                      outputDigest: FloeDigest.sha256Hex(Data(secondOutput.utf8)))
+        record("tool-executed", ["model": entry.id, "tool": secondCall.toolName,
+                                  "callID": secondCall.id, "receiptDigest": secondResult.outputDigest,
+                                  "conversationTurn": 2])
+
+        let secondFollowup = ProviderStreamRequest(
+            provider: nextTurn.provider,
+            model: model,
+            messages: nextTurn.messages,
+            toolResults: [(callID: secondCall.id, output: secondResult.outputSummary)],
+            pendingToolCalls: [secondCall],
+            replayedToolPairs: [
+                ReplayedToolPair(call: call, result: result),
+                ReplayedToolPair(call: secondCall, result: secondResult)
+            ],
+            toolSchemas: [schema],
+            allToolNames: [schema.name]
+        )
+        var secondAnswer = ""
+        var secondCompleted = false
+        for try await event in adapter.stream(request: secondFollowup, credentials: ProviderCredentials()) {
+            switch event {
+            case .textDelta(let delta): secondAnswer += delta.text
+            case .completed(let info): secondCompleted = info.stopReason == .endTurn
+            case .toolRequest: throw NSError(domain: "Qualification.Tool", code: 17,
+                userInfo: [NSLocalizedDescriptionKey: "Second tool continuation requested an unexpected extra tool"])
+            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 18,
+                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            default: break
+            }
+        }
+        guard secondCompleted, secondAnswer.contains(secondMarker) else {
+            throw NSError(domain: "Qualification.Tool", code: 19,
+                userInfo: [NSLocalizedDescriptionKey: "Second tool continuation did not report the second read result"])
+        }
+        record("tool-roundtrip-complete", ["model": entry.id, "firstCallID": call.id,
+                                           "secondCallID": secondCall.id,
+                                           "conversationTurns": 2,
                                            "answerContainsReceipt": true])
         await runtime.unload(modelID: entry.id)
     }
