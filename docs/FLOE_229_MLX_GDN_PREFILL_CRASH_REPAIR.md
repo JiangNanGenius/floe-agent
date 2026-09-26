@@ -142,6 +142,13 @@ office-simulator-stage boot/run pattern.
 
 ## Remaining risks / follow-ups
 
+- **Prompt size (the memory-margin trigger) repaired separately**: the
+  Build229 turn sent 5,314 real tokens for a 12-character greeting because
+  the runtime envelope was injected verbatim (~12 KB system message). The
+  source-side envelope bounding and its measured effect are documented in
+  [FLOE_229_LOCAL_PROMPT_BUDGET](FLOE_229_LOCAL_PROMPT_BUDGET.md); the
+  fail-fast patch below stays the crash containment for any prompt that
+  still exceeds the device margin.
 - If the device prefill still cannot fit its transient footprint in the
   constrained-tier headroom, the turn may still fail (gracefully) on very
   long prompts; a measured follow-up could synchronize per window or tune
