@@ -71,6 +71,7 @@ enum IDEOfficeOpenDecision: Equatable {
 /// "正在打开文档…" the Build 229 device pass reported for IDE DOCX/XLSX/PPTX.
 /// A stable identity per tab also keeps a switch back to an already-open tab
 /// from re-opening (and tearing down) its live session.
+@MainActor
 enum IDEOfficeLoadTrigger {
     static func identity(activeTab: IDEWorkspaceTab?) -> String {
         activeTab?.id ?? ""
