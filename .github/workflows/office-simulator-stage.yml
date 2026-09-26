@@ -70,12 +70,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
-          brew install xcodegen
+          # dash/ios_system.xcframework is an untracked build product: without
+          # this bootstrap the App test host fails to build on the missing
+          # dash*.xcframework (a bootstrap omission, not a simulator-slice
+          # limitation; build_dash_ios.sh builds the simulator slices).
+          brew install xcodegen automake cmake
           python3 scripts/test_office_host_bootstrap.py
           python3 scripts/test_office_app_load_chain.py
-          python3 scripts/bootstrap_pdfium.py
-          python3 scripts/bootstrap_libarchive.py
-          python3 scripts/bootstrap_office_host.py
+          bash scripts/bootstrap_native_components.sh
           python3 scripts/audit_native_runtime_free.py --project
           xcodegen generate
 
