@@ -473,6 +473,175 @@ struct LocalSequentialToolCallsTests {
     }
 }
 
+// MARK: - Three-turn history preservation (Build 228 second-turn regression)
+
+/// The Build 228 device report was "a second message in the same conversation
+/// still fails". These tests pin the two app-facing shapes of a same-conversation
+/// continuation at the prompt boundary: an ordinary three-turn chat and a
+/// three-turn tool flow. They assert the second and third turns still carry
+/// the earlier turns, the chat template boundary (system + one user message)
+/// is unchanged, and a tool call keeps its exact id/schema/result across
+/// turns — including a failed receipt that must never read as success.
+@Suite("Local three-turn history preservation")
+struct LocalThreeTurnHistoryTests {
+    @Test("An ordinary second and third turn keep the earlier exchanges")
+    @available(macOS 15.4, iOS 26.0, *)
+    func ordinaryHistorySurvivesThreeTurns() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = localModel(remoteModelID: "qwen3.8-4b-heretic-mlx4")
+        let envelope = "Run context: synthetic workspace. Current runtime time: fixed."
+        let user1 = "第一轮：你好呀"
+        let answer1 = "第一轮回复：你好！有什么可以帮你的？"
+        let user2 = "第二轮：那我们继续聊聊方案"
+        let answer2 = "第二轮回复：好的，方案要点是保持历史不丢。"
+        let user3 = "第三轮：把它整理成两句话"
+
+        let turn1 = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider, model: model,
+            messages: [(role: "system", content: envelope), (role: "user", content: user1)],
+            toolSchemas: [readFileSchema], allToolNames: [readFileSchema.name]
+        ))
+        #expect(turn1.text.contains("USER: \(user1)"))
+
+        let turn2 = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider, model: model,
+            messages: [
+                (role: "system", content: envelope),
+                (role: "user", content: user1),
+                (role: "assistant", content: answer1),
+                (role: "user", content: user2)
+            ],
+            toolSchemas: [readFileSchema], allToolNames: [readFileSchema.name]
+        ))
+        // The second turn must carry the first exchange, in order, and the
+        // latest request stays protected at the end of the transcript.
+        let secondOrder = [user1, answer1, user2].map { needle in
+            turn2.text.range(of: needle)?.lowerBound
+        }
+        #expect(secondOrder.allSatisfy { $0 != nil })
+        if let first = secondOrder[0], let second = secondOrder[1], let third = secondOrder[2] {
+            #expect(first < second && second < third)
+        }
+        #expect(turn2.text.contains("ASSISTANT: \(answer1)"))
+
+        let turn3 = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider, model: model,
+            messages: [
+                (role: "system", content: envelope),
+                (role: "user", content: user1),
+                (role: "assistant", content: answer1),
+                (role: "user", content: user2),
+                (role: "assistant", content: answer2),
+                (role: "user", content: user3)
+            ],
+            toolSchemas: [readFileSchema], allToolNames: [readFileSchema.name]
+        ))
+        for needle in [user1, answer1, user2, answer2, user3] {
+            #expect(turn3.text.contains(needle), "third turn dropped \(needle)")
+        }
+        let thirdOrder = [user1, answer1, user2, answer2, user3].map { needle in
+            turn3.text.range(of: needle)?.lowerBound
+        }
+        for index in 1..<thirdOrder.count {
+            #expect(thirdOrder[index - 1] != nil && thirdOrder[index] != nil)
+            if let prior = thirdOrder[index - 1], let next = thirdOrder[index] {
+                #expect(prior < next)
+            }
+        }
+        // The template boundary is stable across turns: the runtime envelope
+        // stays in the system instructions, the model-visible transcript is a
+        // single flattened user message, and the Qwen bounded protocol still
+        // hands the chat template no native schemas.
+        for build in [turn1, turn2, turn3] {
+            #expect(build.systemInstructions.contains(envelope))
+            #expect(!build.text.contains(envelope))
+            #expect(build.nativeToolSchemas.isEmpty)
+        }
+    }
+
+    @Test("A tool call keeps its id, schema and result across three turns")
+    @available(macOS 15.4, iOS 26.0, *)
+    func toolContinuationKeepsIdentityAcrossThreeTurns() throws {
+        let provider = LocalProviderAdapter.providerProfile
+        let model = localModel(remoteModelID: "qwen3.8-4b-heretic-mlx4")
+        let envelope = "Run context: synthetic workspace. Current runtime time: fixed."
+        let user1 = "读取 a.md 告诉我写了什么"
+        let answer1 = "我先读取 a.md。"
+        let call = try ToolCall(
+            id: "call-A",
+            toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":"a.md"}"#.utf8),
+            scope: .local
+        )
+        let result = ToolResult(
+            callID: "call-A",
+            status: .ok,
+            outputSummary: "a.md 内容：历史必须保留。",
+            outputDigest: "digest"
+        )
+
+        // Turn 2 is the tool follow-up dispatch: the pending batch crosses the
+        // provider boundary with the settled receipt.
+        let turn2 = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider, model: model,
+            messages: [
+                (role: "system", content: envelope),
+                (role: "user", content: user1),
+                (role: "assistant", content: answer1)
+            ],
+            toolResults: [(callID: call.id, output: result.outputSummary)],
+            pendingToolCalls: [call],
+            toolSchemas: [readFileSchema], allToolNames: [readFileSchema.name]
+        ))
+        #expect(turn2.text.contains("ASSISTANT TOOL REQUEST \(call.id): workspace.readFile"))
+        #expect(turn2.text.contains("TOOL RESULT \(call.id):"))
+        #expect(turn2.text.contains(result.outputSummary))
+        #expect(turn2.selectedTools.contains { $0.name == "workspace.readFile" })
+
+        // Turn 3: the pair is no longer pending; it must replay with the same
+        // id and schema instead of disappearing.
+        let user3 = "把它总结成一句话"
+        let turn3 = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider, model: model,
+            messages: [
+                (role: "system", content: envelope),
+                (role: "user", content: user1),
+                (role: "assistant", content: answer1),
+                (role: "user", content: user3)
+            ],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
+            toolSchemas: [readFileSchema], allToolNames: [readFileSchema.name]
+        ))
+        #expect(turn3.text.contains("EARLIER TOOL CALL workspace.readFile id=\(call.id)"))
+        #expect(turn3.text.contains("EARLIER TOOL RESULT id=\(call.id) status=ok"))
+        #expect(turn3.text.contains(user3))
+        #expect(turn3.selectedTools.contains { $0.name == "workspace.readFile" })
+
+        // A failed receipt must stay visibly failed on the later turn — never
+        // rewritten into success.
+        let failedResult = ToolResult(
+            callID: "call-A",
+            status: .failed,
+            outputSummary: "status=failed exitCode=3",
+            outputDigest: "digest",
+            exitStatus: 3
+        )
+        let failedTurn = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
+            provider: provider, model: model,
+            messages: [
+                (role: "system", content: envelope),
+                (role: "user", content: user1),
+                (role: "assistant", content: answer1),
+                (role: "user", content: "刚才为什么失败？")
+            ],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: failedResult)],
+            toolSchemas: [readFileSchema], allToolNames: [readFileSchema.name]
+        ))
+        #expect(failedTurn.text.contains("EARLIER TOOL RESULT id=call-A status=failed"))
+        #expect(failedTurn.text.contains("status=failed"))
+    }
+}
+
 // MARK: - Idle unload
 
 @Suite("Local model idle unload")

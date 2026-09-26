@@ -106,6 +106,14 @@ public actor LocalModelRuntime {
         let key: EngineKey
         let engine: any LocalModelTextEngine
         let profile: LocalInferenceResourceProfile
+        /// Set when a turn failed while another claim or a durable task kept
+        /// the mapping resident. The mapping is not yanked from a concurrent
+        /// operation, but it must never be handed to a later generation: the
+        /// next same-key request tears it down and recreates from the pinned
+        /// snapshot instead of reusing the container that just produced an
+        /// error (the Build 228 second-message regression: a retained failed
+        /// engine was reported ready and reused inside the idle window).
+        var failed = false
     }
     /// iOS cannot safely keep several multi-gigabyte model mappings alive.
     /// One FIFO slot also prevents actor reentrancy from swapping an engine
@@ -240,6 +248,41 @@ public actor LocalModelRuntime {
             "localInferenceTaskReleased run=\(taskID.uuidString) reason=\(reason) activeTasks=\(taskResidency.activeTaskCount) shouldUnload=\(shouldUnload)"
         )
         guard shouldUnload else { return }
+        // A mapping that failed, or that delivered its answer but observed a
+        // queued MLX error while draining (unclean teardown), earns no idle
+        // window. Clean it up as soon as the last claim drops so the
+        // conversation's next turn cannot reuse the engine that errored behind
+        // a successful answer, and the settings surface stops reporting a
+        // broken model as resident.
+        let failed = activeEngine?.failed == true
+        let unclean = activeEngine?.engine.requiresCleanReload == true
+        if failed || unclean {
+            cancelIdleUnload()
+            // A benchmark or preload may still hold a transient lease after
+            // this durable run ends. Wait for the inference slot and recheck
+            // both claims before touching the shared container; the last
+            // transient lease schedules immediate cleanup below if it wins
+            // the race instead.
+            await acquireInferenceSlot()
+            defer { releaseInferenceSlot() }
+            guard taskResidency.activeTaskCount == 0, engineLeaseCount == 0 else {
+                scheduleIdleUnload(reason: "failedEngineStillLeased:\(reason)")
+                return
+            }
+            guard activeEngine?.failed == true || activeEngine?.engine.requiresCleanReload == true else {
+                scheduleIdleUnload(reason: "failedEngineAlreadyReplaced:\(reason)")
+                return
+            }
+            let reasonTag = failed ? "taskReleasedAfterFailure" : "taskReleasedAfterUncleanTeardown"
+            if let released = await releaseResidentEngine(
+                reason: "\(reasonTag):\(reason)"
+            ) {
+                FloeLogger(category: .providers).info(
+                    "localInferenceEngineReleasedBeforeIdle run=\(taskID.uuidString) reason=\(reason) failed=\(failed) uncleanTeardown=\(unclean) model=\(released)"
+                )
+            }
+            return
+        }
         guard activeEngine != nil else {
             loadState = .unloaded
             return
@@ -268,7 +311,10 @@ public actor LocalModelRuntime {
             return
         }
         let generation = activityGeneration
-        let interval = idleUnloadInterval
+        // A failed/unclean mapping must be released as soon as the final
+        // transient lease ends. A clean model keeps the normal idle window.
+        let interval: Duration = activeEngine?.failed == true || activeEngine?.engine.requiresCleanReload == true
+            ? .zero : idleUnloadInterval
         let residentModel = activeEngine?.key.modelID ?? "none"
         idleUnloadTask = Task { [weak self] in
             try? await Task.sleep(for: interval)
@@ -464,7 +510,8 @@ public actor LocalModelRuntime {
             prompt: prompt,
             images: images,
             tools: tools,
-            maxTokens: maxTokens
+            maxTokens: maxTokens,
+            ownerRunID: ownerRunID
         )
     }
 
@@ -478,7 +525,8 @@ public actor LocalModelRuntime {
         prompt: String,
         images: [Data],
         tools: [ToolSchemaDescriptor],
-        maxTokens: Int
+        maxTokens: Int,
+        ownerRunID: UUID?
     ) async throws -> LocalRuntimeCompletion {
         await acquireInferenceSlot()
         defer { releaseInferenceSlot() }
@@ -594,7 +642,8 @@ public actor LocalModelRuntime {
                             modelID: modelID,
                             startedAt: startedAt,
                             availableBeforeInference: availableBeforeInference,
-                            traceID: traceID
+                            traceID: traceID,
+                            ownerRunID: ownerRunID
                         )
                         throw error
                     }
@@ -605,7 +654,8 @@ public actor LocalModelRuntime {
                     modelID: modelID,
                     startedAt: startedAt,
                     availableBeforeInference: availableBeforeInference,
-                    traceID: traceID
+                    traceID: traceID,
+                    ownerRunID: ownerRunID
                 )
                 throw error
             }
@@ -747,7 +797,8 @@ public actor LocalModelRuntime {
         modelID: String,
         startedAt: Date,
         availableBeforeInference: UInt64,
-        traceID: String
+        traceID: String,
+        ownerRunID: UUID?
     ) async {
         let engineStillClaimed = engineLeaseCount > 1 || taskResidency.activeTaskCount > 0
         if let prepared, activeEngine?.key == prepared.key, !engineStillClaimed {
@@ -766,14 +817,35 @@ public actor LocalModelRuntime {
             }
         } else if let prepared, activeEngine?.key == prepared.key {
             // Another lease or a durable task still claims this engine. The
-            // failure is recorded below, but the shared model stays mapped
-            // and the settings surface keeps reporting it as ready.
-            loadState = .ready(
-                modelID: prepared.key.modelID,
-                includesVisionProjector: prepared.key.includesVisionProjector
-            )
+            // shared model stays mapped so a genuinely concurrent operation is
+            // not yanked mid-flight. Only a failure of the durable run that
+            // owns this turn poisons the mapping: that run's next message must
+            // start from a recreated container (the Build 228 second-message
+            // regression), while a benchmark/auxiliary failure (no owner run)
+            // must not degrade a chat task's shared engine.
+            if !(error is CancellationError), ownerRunID != nil {
+                activeEngine?.failed = true
+                if engineLeaseCount > 1 {
+                    // A concurrent load/benchmark/chat still holds it; keep the
+                    // surface stable until that operation releases its claim.
+                    loadState = .ready(
+                        modelID: prepared.key.modelID,
+                        includesVisionProjector: prepared.key.includesVisionProjector
+                    )
+                } else {
+                    loadState = .failed(
+                        modelID: modelID,
+                        message: String(error.localizedDescription.prefix(300))
+                    )
+                }
+            } else {
+                loadState = .ready(
+                    modelID: prepared.key.modelID,
+                    includesVisionProjector: prepared.key.includesVisionProjector
+                )
+            }
             FloeLogger(category: .providers).info(
-                "localInferenceEngineRetainedDespiteFailure trace=\(traceID) model=\(modelID) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount)"
+                "localInferenceEngineRetainedDespiteFailure trace=\(traceID) model=\(modelID) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) cancelled=\(error is CancellationError) failedRun=\(ownerRunID != nil)"
             )
         }
         lifecycle.recordTurnFailed(
@@ -843,15 +915,31 @@ public actor LocalModelRuntime {
         // are loaded only when an actual image arrives.
         let key = EngineKey(modelID: modelID, includesVisionProjector: wantsVision)
         if let cached = activeEngine, cached.key == key {
-            loadState = .ready(
-                modelID: modelID,
-                includesVisionProjector: cached.key.includesVisionProjector
-            )
-            lifecycle.recordEngineReused()
-            FloeLogger(category: .providers).debug(
-                "localInferenceEngineReused trace=\(traceID) model=\(modelID) requestedVision=\(wantsVision) loadedVision=\(cached.key.includesVisionProjector)"
-            )
-            return cached
+            // Two reasons a resident container must never serve a new
+            // generation: the previous turn failed (failed flag), or its
+            // teardown observed a queued MLX error (`requiresCleanReload`)
+            // after the turn's text was delivered. Both tear the mapping down
+            // — draining the GPU stream and clearing the allocator cache — so
+            // the load below starts from a known-good baseline.
+            let uncleanTeardown = cached.engine.requiresCleanReload
+            if cached.failed || uncleanTeardown {
+                activeEngine = nil
+                await cached.engine.shutdown()
+                lifecycle.recordEngineShutdown()
+                FloeLogger(category: .providers).info(
+                    "localInferenceFailedEngineEvicted trace=\(traceID) model=\(modelID) reason=\(cached.failed ? "previousTurnFailed" : "uncleanTeardown")"
+                )
+            } else {
+                loadState = .ready(
+                    modelID: modelID,
+                    includesVisionProjector: cached.key.includesVisionProjector
+                )
+                lifecycle.recordEngineReused()
+                FloeLogger(category: .providers).debug(
+                    "localInferenceEngineReused trace=\(traceID) model=\(modelID) requestedVision=\(wantsVision) loadedVision=\(cached.key.includesVisionProjector)"
+                )
+                return cached
+            }
         }
         if let cached = activeEngine,
            cached.key.modelID == modelID,

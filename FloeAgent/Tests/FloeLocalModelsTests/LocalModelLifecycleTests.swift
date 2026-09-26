@@ -26,6 +26,20 @@ struct LocalModelLifecycleTests {
         }
     }
 
+    /// Fire-once latch for scripted behaviors (fail the first call, succeed the
+    /// next) without changing the engine identity under test.
+    private final class OnceFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fired = false
+        func fire() -> Bool {
+            lock.withLock {
+                if fired { return false }
+                fired = true
+                return true
+            }
+        }
+    }
+
     /// Scripted on-device engine. Records shutdown and the exact inputs so
     /// vision retention and ownership are directly observable.
     private final class FakeEngine: LocalModelTextEngine, @unchecked Sendable {
@@ -35,8 +49,15 @@ struct LocalModelLifecycleTests {
         private let lock = NSLock()
         private var _shutdownCount = 0
         private var _receivedImages: [Data] = []
+        private var _receivedPrompts: [String] = []
+        private var _requiresCleanReload = false
         var shutdownCount: Int { lock.withLock { _shutdownCount } }
         var receivedImages: [Data] { lock.withLock { _receivedImages } }
+        var receivedPrompts: [String] { lock.withLock { _receivedPrompts } }
+        var requiresCleanReload: Bool { lock.withLock { _requiresCleanReload } }
+        /// Simulates the production engine observing a queued MLX error while
+        /// draining a completed turn (the text was still delivered).
+        func markUncleanForTesting() { lock.withLock { _requiresCleanReload = true } }
 
         static func success(text: String = "synthetic answer") -> Behavior {
             { _ in
@@ -58,7 +79,10 @@ struct LocalModelLifecycleTests {
             maxTokens: Int,
             diagnosticTraceID: String?
         ) async throws -> LocalGenerationResult {
-            lock.withLock { _receivedImages = images }
+            lock.withLock {
+                _receivedImages = images
+                _receivedPrompts.append(prompt)
+            }
             return try behavior(self)
         }
 
@@ -328,8 +352,307 @@ struct LocalModelLifecycleTests {
         #expect(lifecycle.consecutiveFailureCount == 0)
     }
 
-    // MARK: 4. Memory-pressure lifecycle
+    // MARK: 3b. Failed-turn cleanup (Build 228 second-message regression)
 
+    @Test("A failed retained turn is recreated for the next turn, never reused")
+    @available(macOS 15.4, iOS 26.0, *)
+    func failedRetainedEngineIsNotReused() async throws {
+        // The app retains the durable run BEFORE dispatch, so a turn failure
+        // happens with `taskResidency.activeTaskCount > 0`. The repaired
+        // cleanup keeps the mapping claimed (a concurrent operation must not
+        // be yanked) but marks it failed; the conversation's next message must
+        // get a clean container instead of the engine that just errored.
+        let harness = Harness(memorySamples: [4_000_000_000])
+        let factory = harness.factory
+        let taskID = UUID()
+        await harness.runtime.retainForTask(taskID: taskID, modelID: modelID)
+        let decodeFailure: FakeEngine.Behavior = { _ in
+            throw LocalInferenceError.decodeFailed
+        }
+        // Turn one: first engine plus its one transparent decode retry fail.
+        factory.scheduleBehavior(decodeFailure, forMakeIndex: 1)
+        factory.scheduleBehavior(decodeFailure, forMakeIndex: 2)
+        await #expect(throws: LocalInferenceError.self) {
+            try await harness.runtime.completeMeasured(
+                modelID: modelID, instructions: "i", prompt: "turn one",
+                images: [], tools: [], maxTokens: 32, ownerRunID: taskID
+            )
+        }
+        #expect(factory.created.count == 2)
+        // The failed mapping is still claimed, but the state must be honest:
+        // failed, never ready, while no other operation is in flight.
+        guard case .failed = await harness.runtime.currentLoadState() else {
+            Issue.record("A retained failed engine must report failed, not ready")
+            return
+        }
+        #expect(factory.created[1].shutdownCount == 0)
+
+        // Turn two in the same conversation: the failed container must be torn
+        // down and replaced by a fresh one. Reusing it would repeat turn one's
+        // failure — the Build 228 second-message regression.
+        factory.scheduleBehavior(FakeEngine.success(text: "clean second turn"), forMakeIndex: 3)
+        let second = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "turn two",
+            images: [], tools: [], maxTokens: 32, ownerRunID: taskID
+        )
+        #expect(second.text == "clean second turn")
+        #expect(factory.created.count == 3)
+        #expect(factory.created[1].shutdownCount == 1)
+        #expect(factory.liveCount == 1)
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the recreated engine to be ready")
+            return
+        }
+        await harness.runtime.releaseForTask(taskID: taskID, reason: "finished")
+    }
+
+    @Test("Releasing the last task after a failure drops the failed mapping immediately")
+    @available(macOS 15.4, iOS 26.0, *)
+    func failedEngineIsReleasedWithoutIdleWindow() async throws {
+        // A failed mapping earns no two-minute idle window: once the last
+        // durable claim releases, failure cleanup unloads it immediately so a
+        // new conversation turn cannot reuse a broken engine and the settings
+        // surface stops reporting it as resident.
+        let harness = Harness(memorySamples: [4_000_000_000])
+        let factory = harness.factory
+        let taskID = UUID()
+        await harness.runtime.retainForTask(taskID: taskID, modelID: modelID)
+        let decodeFailure: FakeEngine.Behavior = { _ in
+            throw LocalInferenceError.decodeFailed
+        }
+        factory.scheduleBehavior(decodeFailure, forMakeIndex: 1)
+        factory.scheduleBehavior(decodeFailure, forMakeIndex: 2)
+        await #expect(throws: LocalInferenceError.self) {
+            try await harness.runtime.completeMeasured(
+                modelID: modelID, instructions: "i", prompt: "turn one",
+                images: [], tools: [], maxTokens: 32, ownerRunID: taskID
+            )
+        }
+        #expect(factory.created[1].shutdownCount == 0)
+        await harness.runtime.releaseForTask(taskID: taskID, reason: "runFailed")
+        #expect(factory.created[1].shutdownCount == 1)
+        #expect(factory.liveCount == 0)
+        #expect(await harness.runtime.currentLoadState() == .unloaded)
+    }
+
+    @Test("A cancelled turn keeps its claim and reuses the mapping")
+    @available(macOS 15.4, iOS 26.0, *)
+    func cancelledTurnDoesNotPoisonTheEngine() async throws {
+        // Cancellation is not a model failure: the retained engine must stay
+        // fully reusable, with no failure marking and no recreate.
+        let harness = Harness(memorySamples: [4_000_000_000])
+        let factory = harness.factory
+        let taskID = UUID()
+        await harness.runtime.retainForTask(taskID: taskID, modelID: modelID)
+        let firstCall = OnceFlag()
+        factory.scheduleBehavior({ _ in
+            if firstCall.fire() { throw CancellationError() }
+            return LocalGenerationResult(
+                text: "clean after cancel", inputTokens: 8, outputTokens: 4,
+                timeToFirstTokenMs: 5, generationDurationMs: 10
+            )
+        }, forMakeIndex: 1)
+        await #expect(throws: CancellationError.self) {
+            try await harness.runtime.completeMeasured(
+                modelID: modelID, instructions: "i", prompt: "turn one",
+                images: [], tools: [], maxTokens: 32, ownerRunID: taskID
+            )
+        }
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("A cancelled turn must keep the engine ready")
+            return
+        }
+        let second = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "turn two",
+            images: [], tools: [], maxTokens: 32, ownerRunID: taskID
+        )
+        #expect(second.text == "clean after cancel")
+        #expect(factory.created.count == 1)
+        #expect(factory.created[0].shutdownCount == 0)
+        await harness.runtime.releaseForTask(taskID: taskID, reason: "finished")
+    }
+
+    // MARK: 3c. Successful first turn → second message (the observed sequence)
+
+    @Test("A successful first turn is reused for the longer second message")
+    @available(macOS 15.4, iOS 26.0, *)
+    func successfulFirstTurnReusedForLongerSecondMessage() async throws {
+        // The user-visible sequence under repair: the first answer succeeds and
+        // the second message in the same conversation must reach the resident
+        // engine with the accumulated history, without a reload and without a
+        // cross-turn failure. The second prompt is deliberately longer (the
+        // folded USER/ASSISTANT transcript) so a length-sensitive regression
+        // cannot pass by accident.
+        let harness = Harness(memorySamples: [4_000_000_000])
+        let factory = harness.factory
+        let firstRun = UUID()
+        await harness.runtime.retainForTask(taskID: firstRun, modelID: modelID)
+        let first = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "你好",
+            images: [], tools: [], maxTokens: 32
+        )
+        #expect(first.text == "synthetic answer")
+        #expect(factory.created.count == 1)
+        await harness.runtime.releaseForTask(taskID: firstRun, reason: "completed")
+        #expect(factory.created[0].shutdownCount == 0)
+
+        let secondRun = UUID()
+        await harness.runtime.retainForTask(taskID: secondRun, modelID: modelID)
+        let longerPrompt = "USER: 你好\nASSISTANT: 你好！有什么可以帮你的？\nUSER: 那我们继续刚才的话题"
+        let second = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: longerPrompt,
+            images: [], tools: [], maxTokens: 32
+        )
+        #expect(second.text == "synthetic answer")
+        // Same container: no second load, no shutdown between turns.
+        #expect(factory.created.count == 1)
+        #expect(factory.created[0].shutdownCount == 0)
+        // Both exact prompts reached the engine in order, so the second turn
+        // kept the earlier exchange instead of starting from empty history.
+        #expect(factory.created[0].receivedPrompts == ["你好", longerPrompt])
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the shared engine to stay ready after turn two")
+            return
+        }
+        await harness.runtime.releaseForTask(taskID: secondRun, reason: "completed")
+    }
+
+    @Test("A success then a second-turn failure still gives the third turn a clean engine")
+    @available(macOS 15.4, iOS 26.0, *)
+    func successThenSecondTurnFailureThenRecovery() async throws {
+        // First turn succeeds; the second message fails inside the resident
+        // engine (both the attempt and its transparent decode retry). The
+        // failure is reported honestly, and the third turn must never reuse
+        // the failed mapping: it is torn down and recreated.
+        let harness = Harness(memorySamples: [4_000_000_000])
+        let factory = harness.factory
+        let firstRun = UUID()
+        await harness.runtime.retainForTask(taskID: firstRun, modelID: modelID)
+        let firstCall = OnceFlag()
+        factory.scheduleBehavior({ _ in
+            if firstCall.fire() {
+                return LocalGenerationResult(
+                    text: "first answer", inputTokens: 8, outputTokens: 4,
+                    timeToFirstTokenMs: 5, generationDurationMs: 10
+                )
+            }
+            throw LocalInferenceError.decodeFailed
+        }, forMakeIndex: 1)
+        factory.scheduleBehavior(
+            { _ in throw LocalInferenceError.decodeFailed }, forMakeIndex: 2
+        )
+        let first = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "turn one",
+            images: [], tools: [], maxTokens: 32
+        )
+        #expect(first.text == "first answer")
+        await harness.runtime.releaseForTask(taskID: firstRun, reason: "completed")
+
+        let secondRun = UUID()
+        await harness.runtime.retainForTask(taskID: secondRun, modelID: modelID)
+        await #expect(throws: LocalInferenceError.self) {
+            try await harness.runtime.completeMeasured(
+                modelID: modelID, instructions: "i", prompt: "turn two (longer history)",
+                images: [], tools: [], maxTokens: 32, ownerRunID: secondRun
+            )
+        }
+        // Attempt 1 reused the successful engine (which then failed), the
+        // transparent retry built a second one and failed too; that second,
+        // failed mapping is the one kept claimed and must report failed.
+        #expect(factory.created.count == 2)
+        #expect(factory.created[0].shutdownCount == 1)
+        #expect(factory.created[1].shutdownCount == 0)
+        guard case .failed = await harness.runtime.currentLoadState() else {
+            Issue.record("A retained failed engine must report failed, not ready")
+            return
+        }
+
+        factory.scheduleBehavior(FakeEngine.success(text: "third turn"), forMakeIndex: 3)
+        let third = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "turn three",
+            images: [], tools: [], maxTokens: 32, ownerRunID: secondRun
+        )
+        #expect(third.text == "third turn")
+        #expect(factory.created.count == 3)
+        #expect(factory.created[1].shutdownCount == 1)
+        #expect(factory.liveCount == 1)
+        guard case .ready = await harness.runtime.currentLoadState() else {
+            Issue.record("Expected the recreated engine to be ready")
+            return
+        }
+        await harness.runtime.releaseForTask(taskID: secondRun, reason: "completed")
+    }
+
+    @Test("A successful turn with an unclean MLX teardown is recreated for the next message")
+    @available(macOS 15.4, iOS 26.0, *)
+    func uncleanTeardownForcesCleanReload() async throws {
+        // The Build 228 device sequence: the first answer is delivered (the
+        // engine reports success) but its teardown observed a queued MLX error,
+        // so the container must not serve the second message. The runtime
+        // recreates it instead of reusing the mapping that just errored behind
+        // a successful answer.
+        let harness = Harness(memorySamples: [4_000_000_000])
+        let factory = harness.factory
+        let firstRun = UUID()
+        await harness.runtime.retainForTask(taskID: firstRun, modelID: modelID)
+        let first = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "你好",
+            images: [], tools: [], maxTokens: 32, ownerRunID: firstRun
+        )
+        #expect(first.text == "synthetic answer")
+        #expect(factory.created.count == 1)
+        factory.created[0].markUncleanForTesting()
+        await harness.runtime.releaseForTask(taskID: firstRun, reason: "completed")
+        // The unclean mapping earns no idle window: releasing the last claim
+        // unloads it immediately and the surface stops reporting it resident.
+        #expect(factory.created[0].shutdownCount == 1)
+        #expect(factory.liveCount == 0)
+        #expect(await harness.runtime.currentLoadState() == .unloaded)
+
+        let secondRun = UUID()
+        await harness.runtime.retainForTask(taskID: secondRun, modelID: modelID)
+        let second = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i",
+            prompt: "USER: 你好\nASSISTANT: 你好！\nUSER: 那我们继续",
+            images: [], tools: [], maxTokens: 32, ownerRunID: secondRun
+        )
+        #expect(second.text == "synthetic answer")
+        #expect(factory.created.count == 2)
+        #expect(factory.created[1].shutdownCount == 0)
+        #expect(factory.liveCount == 1)
+        await harness.runtime.releaseForTask(taskID: secondRun, reason: "completed")
+    }
+
+    @Test("An unclean engine is recreated even while its run still claims it")
+    @available(macOS 15.4, iOS 26.0, *)
+    func uncleanEngineRecreatedWhileClaimed() async throws {
+        // An in-run continuation (tool result → next model turn) keeps the
+        // durable claim while the previous turn reported an unclean teardown.
+        // The prepare path must recreate the container rather than reuse it.
+        let harness = Harness(memorySamples: [4_000_000_000])
+        let factory = harness.factory
+        let runID = UUID()
+        await harness.runtime.retainForTask(taskID: runID, modelID: modelID)
+        let first = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "turn one",
+            images: [], tools: [], maxTokens: 32, ownerRunID: runID
+        )
+        #expect(first.text == "synthetic answer")
+        factory.created[0].markUncleanForTesting()
+        // No release: the run continues and still claims the model.
+        let second = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "turn two (tool continuation)",
+            images: [], tools: [], maxTokens: 32, ownerRunID: runID
+        )
+        #expect(second.text == "synthetic answer")
+        #expect(factory.created.count == 2)
+        #expect(factory.created[0].shutdownCount == 1)
+        #expect(factory.created[1].shutdownCount == 0)
+        #expect(factory.liveCount == 1)
+        await harness.runtime.releaseForTask(taskID: runID, reason: "completed")
+    }
+
+    // MARK: 4. Memory-pressure lifecycle
     @Test("Preflight reclaim settle recovers within the bounded window instead of rejecting")
     @available(macOS 15.4, iOS 26.0, *)
     func memoryPressureSettleRecovers() async throws {

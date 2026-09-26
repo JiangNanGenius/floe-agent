@@ -57,6 +57,11 @@ public enum MLXCompilePolicy {
 public actor MLXTextEngine {
     private var container: ModelContainer?
     private let resourceProfile: LocalInferenceResourceProfile
+    /// Set when a turn's teardown observed a queued MLX error. A later
+    /// generation must not reuse this container: `requiresCleanReload` lets
+    /// the runtime recreate it before the next message. Guarded by `Mutex`
+    /// because the conformance requirement is nonisolated.
+    private let teardownUnclean = Mutex<Bool>(false)
     /// Whether this engine loaded the VLM vision projector. A text-only
     /// continuation sheds this engine so the multi-hundred-megabyte vision
     /// tower is not retained across turns that can never use it.
@@ -66,6 +71,12 @@ public actor MLXTextEngine {
     /// `engineCreated` serial with exactly one `engineShutdown` before the
     /// next serial is created.
     public let engineSerial: Int
+
+    /// Nonisolated so the runtime can consult it while deciding whether to
+    /// reuse this container at the start of the next turn.
+    public nonisolated var requiresCleanReload: Bool {
+        teardownUnclean.withLock { $0 }
+    }
 
     /// Process-wide serial used by `engineSerial`. A Mutex keeps the
     /// diagnostic counter race-free under concurrent first loads.
@@ -143,8 +154,11 @@ public actor MLXTextEngine {
     /// there, the task-local `MLX.withError` handler is empty and MLX's
     /// runtime terminates the process. Teardown must not turn an
     /// already-finished turn into a crash: run it under a scoped handler and
-    /// record a bounded diagnostic instead. The failure is not swallowed as a
-    /// success — the next request still runs through the full scoped checks.
+    /// record a bounded diagnostic instead. The turn's already-delivered result
+    /// stands, but the drain error is logged and surfaced: the completed turn
+    /// reports `requiresCleanReload` so the runtime recreates the container
+    /// before the next generation instead of reusing a possibly poisoned
+    /// mapping, and it is never reported as a clean drain.
     ///
     /// The whole reclaim is wrapped in an `autoreleasepool`: on iOS the Metal
     /// command buffers, completion-handler blocks and Objective-C temporaries
@@ -153,10 +167,14 @@ public actor MLXTextEngine {
     /// visible to the next turn as a reduced `os_proc_available_memory`
     /// allowance right after teardown. Draining the pool here returns those
     /// pages deterministically before the next preflight measures headroom.
+    ///
+    /// Returns `true` when the drain completed cleanly, `false` when a queued
+    /// MLX error was observed.
+    @discardableResult
     nonisolated static func drainPipelineAndClearCaches(
         context: String,
         traceID: String? = nil
-    ) {
+    ) -> Bool {
         autoreleasepool {
             do {
                 try MLX.withError { errors in
@@ -164,10 +182,12 @@ public actor MLXTextEngine {
                     Memory.clearCache()
                     try errors.check()
                 }
+                return true
             } catch {
                 FloeLogger(category: .providers).warning(
                     "localInferenceTeardownError context=\(context) trace=\(traceID ?? "none") \(boundedRuntimeDiagnostic(error))"
                 )
+                return false
             }
         }
     }
@@ -365,10 +385,16 @@ public actor MLXTextEngine {
         // Image inputs are consumed during prepare; logging their counts here
         // proves a text-only continuation shed every prior vision tensor.
         defer {
-            Self.drainPipelineAndClearCaches(
+            if !Self.drainPipelineAndClearCaches(
                 context: "turnTeardown",
                 traceID: diagnosticTraceID
-            )
+            ) {
+                // The completed turn delivered its result, but the drain
+                // observed a queued MLX error. Surface it through
+                // `requiresCleanReload` so the runtime recreates the container
+                // for the next message instead of reusing this mapping.
+                teardownUnclean.withLock { $0 = true }
+            }
             FloeLogger(category: .providers).info(
                 "localInferenceTurnTeardown trace=\(diagnosticTraceID ?? "none") images=\(images.count) imageBytes=\(images.reduce(0) { $0 + $1.count }) visionProjector=\(includesVisionProjector) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
             )

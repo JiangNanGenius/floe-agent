@@ -16,6 +16,18 @@ protocol LocalModelTextEngine: Sendable {
     /// text-only continuation can shed obsolete vision tensors.
     var includesVisionProjector: Bool { get }
 
+    /// True when the engine observed an UNCLEAN teardown: a queued MLX/Metal
+    /// error surfaced while draining a completed turn. The turn's result was
+    /// already returned (its text may be valid), but the drain error is logged
+    /// and surfaced through this flag — it is never silently treated as a
+    /// clean drain. `LocalModelRuntime` recreates the container before the
+    /// next message and releases it as soon as its last claim drops, instead
+    /// of leaving a possibly poisoned mapping resident through the idle
+    /// window (the Build 228 "successful first answer, second message fails"
+    /// class). Default false keeps the accepted clean container-reuse
+    /// behavior.
+    var requiresCleanReload: Bool { get }
+
     func completeMeasured(
         instructions: String,
         prompt: String,
@@ -31,6 +43,12 @@ protocol LocalModelTextEngine: Sendable {
     /// actor-isolated production engine satisfies it without a data-race
     /// crossing; every caller already awaits it.
     func shutdown() async
+}
+
+extension LocalModelTextEngine {
+    /// Clean-turn default for deterministic test doubles and any future
+    /// engine that does not track teardown state.
+    var requiresCleanReload: Bool { false }
 }
 
 /// Structured, secret-free lifecycle telemetry for the single resident local
