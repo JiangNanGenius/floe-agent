@@ -200,3 +200,81 @@ struct OfficeOpenGenerationTests {
     }
 }
 #endif
+
+/// Durable stage diagnostics: correlation identity, bounded retention,
+/// content-free sanitizing and on-disk JSONL. These tests do not need an
+/// engine, simulator or native host; the cloud simulator run verifies the
+/// real entry-path wiring against the pinned blocker.
+@Suite("FloeApp.OfficeStageDiagnostics")
+@MainActor
+struct OfficeStageRecorderTests {
+
+    private func temporaryTraceURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("office-stage-\(UUID().uuidString).jsonl")
+    }
+
+    @Test("Events carry the correlation identity and generation and persist as JSONL")
+    func recordsAndPersists() throws {
+        let url = temporaryTraceURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let recorder = OfficeStageRecorder(fileURL: url, eventLimit: 16, fileLimit: 16_384)
+        recorder.record(session: "session-a", generation: 2, stage: "engine.open",
+                        detail: ["readOnly": "false", "success": "true"])
+        recorder.record(session: "session-a", generation: 2, stage: "edit.entry")
+        recorder.record(session: "session-b", generation: 1, stage: "intent.preview")
+
+        #expect(recorder.trace(session: "session-a").map(\.stage) == ["engine.open", "edit.entry"])
+        #expect(recorder.trace(session: "session-a").allSatisfy { $0.generation == 2 })
+        #expect(recorder.trace(session: "session-b").map(\.stage) == ["intent.preview"])
+
+        let lines = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            .split(separator: "\n")
+        #expect(lines.count == 3, "every event is one JSONL line")
+        let first = try JSONDecoder().decode(OfficeStageEvent.self, from: Data(lines[0].utf8))
+        #expect(first.session == "session-a")
+        #expect(first.generation == 2)
+        #expect(first.stage == "engine.open")
+        #expect(first.detail["readOnly"] == "false")
+    }
+
+    @Test("The in-memory ring and the on-disk file stay bounded")
+    func retentionIsBounded() throws {
+        let url = temporaryTraceURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let recorder = OfficeStageRecorder(fileURL: url, eventLimit: 3, fileLimit: 1_024)
+        for index in 0..<8 {
+            recorder.record(session: "session-a", generation: index, stage: "stage.\(index)")
+        }
+        #expect(recorder.allEvents.count == 3, "the ring keeps only the newest events")
+        #expect(recorder.allEvents.map(\.stage) == ["stage.5", "stage.6", "stage.7"])
+        #expect(try Data(contentsOf: url).count <= 1_024, "the trace file stays under its byte bound")
+    }
+
+    @Test("Content-free sanitizing keeps engine facts and drops path-like values")
+    func sanitizingIsContentFree() {
+        #expect(OfficeStageRecorder.isContentFreeValue("pptx"))
+        #expect(OfficeStageRecorder.isContentFreeValue("visible-render"))
+        #expect(OfficeStageRecorder.isContentFreeValue("42"))
+        #expect(!OfficeStageRecorder.isContentFreeValue("/Users/floe/secret.pptx"))
+        #expect(!OfficeStageRecorder.isContentFreeValue("C:\\docs\\secret.pptx"))
+        #expect(!OfficeStageRecorder.isContentFreeValue(String(repeating: "a", count: 300)))
+        #expect(!OfficeStageRecorder.isContentFreeValue("line\nbreak"))
+    }
+
+    @Test("A second concurrent edit-entry wait can never orphan the first")
+    func staleEditEntryWaiterSettlesReadOnly() async {
+        let ack = OfficeEditEntryAck()
+        async let first = ack.wait()
+        await Task.yield() // first attaches
+        async let second = ack.wait()
+        await Task.yield() // second attaches; the stale first settles conservatively
+        ack.resolve((false, false))
+        let firstResult = await first
+        let secondResult = await second
+        #expect(firstResult.readOnly == true,
+                "a superseded waiter must settle as unverified read-only, never orphaned")
+        #expect(firstResult.pendingPassword == false)
+        #expect(secondResult.readOnly == false, "the live waiter keeps the real resolution")
+    }
+}

@@ -129,19 +129,39 @@ struct NotesOfficeView: View {
         .onAppear {
             isVisible = true
             session.registerLeaveGuard(for: document.id) {
-                guard !committing else { session.errorMessage = "正在保存 Office 文档，请稍后切换。"; return false }
-                if !OfficeFileSession.available { return true }
-                if office.phase == .failed, !pendingCommit, !office.hasUncommittedChanges { return true }
-                guard office.canAct else { session.errorMessage = "Office 正在打开或保存，请稍后切换。"; return false }
+                guard !committing else {
+                    recordStage("notes.exit.refused.committing")
+                    session.errorMessage = "正在保存 Office 文档，请稍后切换。"
+                    return false
+                }
+                if !OfficeFileSession.available {
+                    recordStage("notes.exit.engineUnavailable")
+                    return true
+                }
+                if office.phase == .failed, !pendingCommit, !office.hasUncommittedChanges {
+                    recordStage("notes.exit.failedNoChanges")
+                    return true
+                }
+                guard office.canAct else {
+                    recordStage("notes.exit.refused.operating")
+                    session.errorMessage = "Office 正在打开或保存，请稍后切换。"
+                    return false
+                }
                 if !office.readOnly {
                     guard await office.saveInPlace() else {
+                        recordStage("notes.exit.saveFailed")
                         session.errorMessage = office.error ?? "Office 保存未完成，编辑副本已保留。"
                         return false
                     }
                     pendingCommit = true
                 }
                 if pendingCommit { await commit() }
-                if pendingCommit { session.errorMessage = message ?? "未能保存到手记，请重试。"; return false }
+                if pendingCommit {
+                    recordStage("notes.exit.commitFailed")
+                    session.errorMessage = message ?? "未能保存到手记，请重试。"
+                    return false
+                }
+                recordStage("notes.exit.ok")
                 return true
             }
         }
@@ -237,7 +257,19 @@ struct NotesOfficeView: View {
         OfficeInkDocumentIdentity(workspaceIdentity: modeScope, relativePath: modeDocument)
     }
 
+    /// Notes bracket stages are recorded under the shared session's
+    /// correlation identity, so one durable trace carries the whole chain
+    /// (Notes staging -> shared open -> engine stages -> exit interlock).
+    private func recordStage(_ stage: String, _ detail: [String: String] = [:]) {
+        office.recordOwnerStage(stage, detail)
+    }
+
     private func prepare(force: Bool = false) async {
+        if !OfficeFileSession.available {
+            recordStage("notes.engine.unavailable", [
+                "format": (document.officeFileName as NSString?)?.pathExtension.lowercased() ?? "",
+            ])
+        }
         if force {
             canRetryOpen = false
             message = nil
@@ -279,6 +311,10 @@ struct NotesOfficeView: View {
                 return
             }
             apply(staged)
+            recordStage("notes.staged", [
+                "format": (staged.target.pathExtension).lowercased(),
+                "revision": String(staged.revision),
+            ])
             // Resolve the entry mode before the open begins: `open()` reports
             // readiness through the engine's async callback, and the
             // completion hook marks the document as opened. Reading the memory
@@ -293,10 +329,20 @@ struct NotesOfficeView: View {
             // and goes straight to the editor on its first open. A refused
             // edit entry reports the real reason instead of silently staying
             // preview.
-            if shouldEdit { _ = await office.requestEditing() }
+            if shouldEdit {
+                let entered = await office.requestEditing()
+                recordStage("notes.edit.requested", ["entered": entered ? "true" : "false"])
+            }
             canRetryOpen = false
-            if let error = office.error { message = error }
-            else if let reason = office.editUnavailableReason { message = reason }
+            if let error = office.error {
+                recordStage("notes.open.failed")
+                message = error
+            } else if let reason = office.editUnavailableReason {
+                recordStage("notes.edit.unavailable")
+                message = reason
+            } else {
+                recordStage("notes.open.ready", ["readOnly": office.readOnly ? "true" : "false"])
+            }
         } catch {
             // A thrown staging/scan error is the same terminal outcome: make it
             // visible and retryable instead of dropping the intent silently.
@@ -309,6 +355,7 @@ struct NotesOfficeView: View {
     /// shows the error instead of an unowned "opening" spinner) while the
     /// original resource and any retained drafts stay untouched.
     private func reportStagingFailure(_ text: String) {
+        recordStage("notes.staging.failed")
         message = text
         canRetryOpen = true
         office.reportOpenFailure(NSError(
@@ -539,6 +586,7 @@ struct NotesOfficeView: View {
         do {
             // OfficeFileSession's save path has already validated its native save receipt and
             // working-copy commit. Re-import never overwrites the former immutable resource.
+            recordStage("notes.commit.started")
             let resource = try await store.importResource(from: url, mediaType: "application/octet-stream")
             let current = try await store.document(document.id)
             guard current.officeResourceID == baseResourceID else { throw NoteError.conflict }
@@ -548,10 +596,12 @@ struct NotesOfficeView: View {
                             "revision": String(updated.revision), "fileName": url.lastPathComponent, "sourceHash": savedResource.lastPathComponent]
             // The content transaction has committed. A metadata failure must not retry an old revision.
             baseRevision = updated.revision; baseResourceID = resource; pendingCommit = false; message = nil
+            recordStage("notes.commit.ok", ["revision": String(updated.revision)])
             do {
                 try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: url.deletingLastPathComponent().appendingPathComponent("recovery.json"), options: .atomic)
             } catch { message = "文档已保存，但恢复记录未能更新：\(error.localizedDescription)" }
         } catch {
+            recordStage("notes.commit.failed", ["domain": (error as NSError).domain])
             message = "未能保存到手记：\(error.localizedDescription) Office 编辑副本已保留，可重试或导出。"
             recoveryURL = url
         }

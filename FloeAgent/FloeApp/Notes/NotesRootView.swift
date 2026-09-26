@@ -170,6 +170,7 @@ struct NotesRootView: View {
                 await session.open()
                 #if DEBUG
                 await NotesOfficeThumbnailFixture.seedIfRequested(session: session)
+                await OfficeWorkspaceStageFixture.seedIfRequested(environment: environment)
                 #endif
             }
         }

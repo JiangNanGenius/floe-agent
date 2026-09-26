@@ -64,6 +64,15 @@ final class OfficeEditEntryAck {
             if let settledResult {
                 continuation.resume(returning: settledResult)
             } else {
+                // Defensive only: this acknowledgement admits one waiter. A
+                // second concurrent wait must never orphan the earlier
+                // continuation — the same wedge the close and save receipts
+                // already defend against — so a stale waiter settles as
+                // unverified-read-only (the conservative outcome, never an
+                // editing grant) and the new wait continues.
+                if let stale = self.continuation {
+                    stale.resume(returning: (readOnly: true, pendingPassword: false))
+                }
                 self.continuation = continuation
             }
         }
@@ -338,6 +347,28 @@ final class OfficeFileSession: ObservableObject {
     /// callbacks it installs capture their generation, so a callback from a
     /// controller an earlier generation mounted can never settle this session.
     private var openGeneration = OfficeOpenGeneration()
+    /// Durable correlation identity for this session's bounded stage trace
+    /// (`OfficeStageRecorder`). The pinned host logs its own per-controller
+    /// identity; this one orders the App-side chain (intent -> working copy ->
+    /// controller -> engine -> permission -> first paint -> exit interlock)
+    /// and carries the host's `renderDiagnostics` snapshot when the App reads
+    /// it. Never document contents.
+    private let stageSessionID = UUID().uuidString
+    /// Records one observed stage with this session's correlation identity and
+    /// the current open generation. Content-free by construction.
+    private func recordStage(_ stage: String, _ detail: [String: String] = [:]) {
+        OfficeStageRecorder.shared.record(session: stageSessionID,
+                                          generation: openGeneration.current,
+                                          stage: stage,
+                                          detail: detail)
+    }
+    /// Owning surfaces (Notes, IDE) record their bracket stages under the same
+    /// correlation identity, so one trace carries the whole chain.
+    func recordOwnerStage(_ stage: String, _ detail: [String: String] = [:]) {
+        recordStage(stage, detail)
+    }
+    /// The correlation identity of this session's durable stage trace.
+    var stageTraceSessionID: String { stageSessionID }
     /// Invoked after a verified original-file commit. Owning surfaces use it to
     /// refresh sibling entries (IDE tabs, file tree, preview) so a save is
     /// visible from every entry point.
@@ -620,6 +651,7 @@ final class OfficeFileSession: ObservableObject {
         // FilePreviewView release on disappear and reopen on appear.
         released = false
         requestedURL = url
+        recordStage("intent.preview", ["format": url.pathExtension.lowercased()])
         await performIntent(.preview)
     }
 
@@ -630,6 +662,8 @@ final class OfficeFileSession: ObservableObject {
     /// `OfficeDocumentSurface` renders as an endless "opening" spinner and
     /// which never re-arms the owning loader.
     func reportOpenFailure(_ error: Error) {
+        recordStage("open.resolutionFailed", ["domain": (error as NSError).domain,
+                                              "code": String((error as NSError).code)])
         self.error = error.localizedDescription
         phase = .failed
     }
@@ -640,7 +674,8 @@ final class OfficeFileSession: ObservableObject {
     /// automatic preview reopen can never displace this explicit intent.
     @discardableResult
     func requestEditing() async -> Bool {
-        await performIntent(.edit)
+        recordStage("intent.edit")
+        return await performIntent(.edit)
     }
 
     func enterEditing() async {
@@ -696,14 +731,20 @@ final class OfficeFileSession: ObservableObject {
                 return true
             }
             if session != nil { try await releaseCurrent() }
+            recordStage("workingCopy.open", ["format": url.pathExtension.lowercased()])
             let files = try SecurityScopedDocumentWorkspace()
             let opened = try await files.open(securityScopedURL: url)
             workspace = files
             session = opened
             hasUncommittedChanges = false
+            recordStage("workingCopy.ready")
             try await activate(readOnly: true)
             return true
-        } catch { fail(error); return false }
+        } catch {
+            recordStage("workingCopy.failed", ["domain": (error as NSError).domain])
+            fail(error)
+            return false
+        }
     }
 
     private func executeEdit() async -> Bool {
@@ -723,18 +764,21 @@ final class OfficeFileSession: ObservableObject {
         // like a successful remote save. Refuse with the download hint, keep
         // the truthful preview mounted, and never touch the temp copy.
         guard !isRemoteSnapshot else {
+            recordStage("edit.refused.remoteSnapshot")
             editUnavailableReason = Self.remoteSnapshotHint
             return false
         }
         phase = .loading
         error = nil
         editUnavailableReason = nil
+        recordStage("edit.attempt")
         do {
             try await closeController()
             try await activate(readOnly: false)
             // Only a verified editable engine session clears preview. The
             // probe result is the acknowledgement, never the requested flag.
             try await acknowledgeEditPermission()
+            recordStage("edit.acknowledged", ["readOnly": readOnly ? "true" : "false"])
             return !readOnly
         } catch {
             // A failed edit activation must never leave a writable claim on a
@@ -816,6 +860,8 @@ final class OfficeFileSession: ObservableObject {
             guard !Task.isCancelled, let self, let native, self.controller === native,
                   self.phase == .loading, !self.runtimeFailed else { return }
             self.runtimeFailed = true
+            self.recordStage("open.watchdog", ["budget": String(Int(seconds)),
+                                               "readOnly": readOnly ? "true" : "false"])
             if var policy = self.openingPolicy {
                 _ = policy.openingDeadlineElapsed()
                 self.openingPolicy = policy
@@ -884,6 +930,8 @@ final class OfficeFileSession: ObservableObject {
         renderUnverified = true
         cancelOpenWatchdog()
         if phase == .loading { phase = .ready }
+        recordStage("render.unverified", ["phase": phase == .ready ? "ready" : "loading",
+                                          "generation": String(openGeneration.current)])
     }
 
     /// Clears the recoverable notice without changing the mounted engine
@@ -956,6 +1004,9 @@ final class OfficeFileSession: ObservableObject {
             // behaviour instead of forcing an entry that could bounce a
             // healthy editor back to preview.
             let entry = await Self.enterEditMode(native)
+            recordStage("edit.entry", ["readOnly": entry.readOnly ? "true" : "false",
+                                       "pendingPassword": entry.pendingPassword ? "true" : "false",
+                                       "branch": "paint-gated"])
             if entry.pendingPassword {
                 editUnavailableReason = OfficeInkText.t(
                     "该文档需要编辑密码，请在编辑器中输入。",
@@ -984,6 +1035,9 @@ final class OfficeFileSession: ObservableObject {
             // distinguishes an edit-password challenge (error 42) from a
             // denied document. A read-only grant is never relaxed there.
             let entry = await Self.enterEditMode(native)
+            recordStage("edit.entry", ["readOnly": entry.readOnly ? "true" : "false",
+                                       "pendingPassword": entry.pendingPassword ? "true" : "false",
+                                       "branch": "readonly-recheck"])
             if entry.pendingPassword {
                 // The engine is challenging for the edit password; that is a
                 // prompt, not a denial. Keep the editor mounted and explain,
@@ -1124,6 +1178,7 @@ final class OfficeFileSession: ObservableObject {
     /// Returns to the read-only preview controller with an honest reason. The
     /// working copy is preserved; nothing is discarded or faked.
     private func fallBackToPreview(reason: String) async throws {
+        recordStage("edit.fallback.preview")
         readOnly = true
         editUnavailableReason = reason
         try await closeController()
@@ -1144,12 +1199,18 @@ final class OfficeFileSession: ObservableObject {
         // unrendered presentation included) must never flush the engine — an
         // unloaded or unrendered document is not saved, and the retained
         // working copy is never overwritten by an unverified state.
-        guard canAct, !readOnly, renderGate?.permitsSave ?? true, let workspace, let session else { return false }
+        guard canAct, !readOnly, renderGate?.permitsSave ?? true, let workspace, let session else {
+            recordStage("save.refused", ["ready": canAct ? "true" : "false",
+                                         "readOnly": readOnly ? "true" : "false",
+                                         "permitsSave": (renderGate?.permitsSave ?? true) ? "true" : "false"])
+            return false
+        }
         operating = true
         defer { finishOperation() }
         phase = .saving
         error = nil
         hasSaveConflict = false
+        recordStage("save.started", ["returnToPreview": returnToPreview ? "true" : "false"])
         do {
             #if canImport(FloeOfficeNative)
             guard let native = controller as? FloeOfficeNativeViewController else { throw CocoaError(.fileWriteUnknown) }
@@ -1172,6 +1233,7 @@ final class OfficeFileSession: ObservableObject {
             // Every owning surface refreshes its sibling entries after a
             // verified original-file commit (and only then).
             onCommitted?()
+            recordStage("save.ok", ["returnToPreview": returnToPreview ? "true" : "false"])
             return true
             #else
             throw CocoaError(.featureUnsupported)
@@ -1180,6 +1242,9 @@ final class OfficeFileSession: ObservableObject {
             if let officeError = error as? OfficeDocumentError, case .revisionConflict = officeError {
                 hasSaveConflict = true
             }
+            recordStage("save.failed", ["domain": (error as NSError).domain,
+                                        "code": String((error as NSError).code),
+                                        "conflict": hasSaveConflict ? "true" : "false"])
             self.error = error.localizedDescription
             phase = runtimeFailed || controller == nil ? .failed : .ready
             return false
@@ -1274,9 +1339,13 @@ final class OfficeFileSession: ObservableObject {
     }
 
     func discardAndReturn() async -> Bool {
-        guard !operating, let session, let workspace else { return false }
+        guard !operating, let session, let workspace else {
+            recordStage("exit.discard.refused", ["operating": operating ? "true" : "false"])
+            return false
+        }
         operating = true
         defer { finishOperation() }
+        recordStage("exit.discard.started")
         do {
             try await closeController()
             await workspace.discardChangesAndClose(session)
@@ -1284,8 +1353,13 @@ final class OfficeFileSession: ObservableObject {
             hasUncommittedChanges = false
             readOnly = true
             phase = .idle
+            recordStage("exit.discard.ok")
             return true
-        } catch { fail(error); return false }
+        } catch {
+            recordStage("exit.discard.failed", ["domain": (error as NSError).domain])
+            fail(error)
+            return false
+        }
     }
 
     func prepareSaveCopy() async -> DocumentExportSnapshot? {
@@ -1374,9 +1448,13 @@ final class OfficeFileSession: ObservableObject {
     }
 
     func keepChangesAndReturn() async -> Bool {
-        guard !operating, session != nil else { return false }
+        guard !operating, session != nil else {
+            recordStage("exit.keep.refused", ["operating": operating ? "true" : "false"])
+            return false
+        }
         operating = true
         defer { finishOperation() }
+        recordStage("exit.keep.started")
         do {
             // Persist the current editor contents when possible, but never
             // force a conflicting original writeback merely to leave the view.
@@ -1394,8 +1472,13 @@ final class OfficeFileSession: ObservableObject {
             }
             readOnly = true
             phase = .idle
+            recordStage("exit.keep.ok")
             return true
-        } catch { fail(error); return false }
+        } catch {
+            recordStage("exit.keep.failed", ["domain": (error as NSError).domain])
+            fail(error)
+            return false
+        }
     }
 
     /// View removal never deletes an unsettled edit or pretends it was saved.
@@ -1403,6 +1486,7 @@ final class OfficeFileSession: ObservableObject {
         // Terminal from here on: a queued/replayed intent must never re-open
         // a working copy on this session.
         released = true
+        recordStage("session.release")
         renderUnverified = false
         openingPolicy = nil
         guard !operating else { releaseRequested = true; return }
@@ -1446,6 +1530,7 @@ final class OfficeFileSession: ObservableObject {
         // mounted surface is usable but the engine never painted it, and the
         // user asked for a fresh preview of the retained working copy.
         guard phase == .failed || renderUnverified else { return false }
+        recordStage("recovery.started", ["renderUnverified": renderUnverified ? "true" : "false"])
         if session == nil, controller == nil {
             renderUnverified = false
             phase = .idle
@@ -1641,7 +1726,14 @@ final class OfficeFileSession: ObservableObject {
         phase = .loading
         error = nil
         #if canImport(FloeOfficeNative)
-        try await Self.prepareNativeRuntime()
+        recordStage("engine.runtime.prepare.started", ["readOnly": readOnly ? "true" : "false"])
+        do {
+            try await Self.prepareNativeRuntime()
+        } catch {
+            recordStage("engine.runtime.prepare.failed", ["domain": (error as NSError).domain])
+            throw error
+        }
+        recordStage("engine.runtime.ready")
         let native = try FloeOfficeNativeViewController(
             workingFileURL: session.workingURL,
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
@@ -1654,6 +1746,9 @@ final class OfficeFileSession: ObservableObject {
         resolveEnginePermission(nil)
         cancelRenderWatchdog()
         hostSupportsVisibleRender = Self.hostSupportsVisibleRender(native)
+        recordStage("controller.mounted", ["generation": String(generation),
+                                           "readOnly": readOnly ? "true" : "false",
+                                           "hostRenderContract": hostSupportsVisibleRender ? "true" : "false"])
         // The pinned framework is qualified separately from this source. An
         // older host cannot report a painted surface, so its session keeps the
         // previous open-only contract and the release gate keeps the Office
@@ -1671,13 +1766,16 @@ final class OfficeFileSession: ObservableObject {
             requiresVisibleRender: requirement == .visibleRenderRequired,
             readOnly: readOnly)
         renderUnverified = false
+        recordStage("render.gate", ["requirement": requirement == .visibleRenderRequired
+                                        ? "visibleRenderRequired" : "openOnly",
+                                    "generation": String(generation)])
         if hostSupportsVisibleRender {
             // Installed through the runtime selectors: the framework is pinned
             // separately from this source, so the app must keep compiling
             // against a host that predates the visible-render contract (see
             // `hostSupportsVisibleRender`). The host reports one of these
             // exactly once; neither is an open or save event.
-            let ready: @convention(block) (NSString?, TimeInterval) -> Void = { [weak self, weak native] _, _ in
+            let ready: @convention(block) (NSString?, TimeInterval) -> Void = { [weak self, weak native] docType, elapsed in
                 Task { @MainActor in
                     // Reachability of this repair, per watchdog state: the
                     // render watchdog and the host's bounded render failure
@@ -1702,10 +1800,15 @@ final class OfficeFileSession: ObservableObject {
                     }
                     self.renderUnverified = false
                     self.phase = .ready
+                    var facts = Self.hostRenderDiagnostics(native)
+                    facts["docType"] = (docType as String?) ?? "unknown"
+                    facts["elapsed"] = String(format: "%.1f", elapsed)
+                    facts["generation"] = String(generation)
+                    self.recordStage("engine.visibleRender", facts)
                 }
             }
             _ = native.perform(NSSelectorFromString("setOnVisibleRenderReady:"), with: ready as AnyObject)
-            let failed: @convention(block) (NSError) -> Void = { [weak self, weak native] _ in
+            let failed: @convention(block) (NSError) -> Void = { [weak self, weak native] error in
                 Task { @MainActor in
                     guard let self, let native, self.controller === native,
                           self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
@@ -1715,6 +1818,10 @@ final class OfficeFileSession: ObservableObject {
                     // no paint was observed. The mounted surface stays usable
                     // with a visible, recoverable notice (retry/recovery); the
                     // retained working copy is never touched.
+                    var facts = Self.hostRenderDiagnostics(native)
+                    facts["code"] = String(error.code)
+                    facts["generation"] = String(generation)
+                    self.recordStage("engine.visibleRenderFailed", facts)
                     self.markRenderUnverified()
                 }
             }
@@ -1738,6 +1845,10 @@ final class OfficeFileSession: ObservableObject {
         native.onWorkingCopyOpenedWithPermission = { [weak self, weak native] success, readOnly in
             guard let self, let native, self.controller === native,
                   self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
+            self.recordStage("engine.open", ["success": success ? "true" : "false",
+                                             "engineReadOnly": readOnly ? "true" : "false",
+                                             "requestedReadOnly": native.isReadOnly ? "true" : "false",
+                                             "generation": String(generation)])
             self.engineSessionReadOnly = readOnly
             self.resolveEnginePermission(readOnly)
             if !success {
@@ -1794,6 +1905,7 @@ final class OfficeFileSession: ObservableObject {
             guard let self, let native, self.controller === native,
                   self.openGeneration.isCurrent(generation), !self.expectedClose else { return }
             self.runtimeFailed = true
+            self.recordStage("engine.closed.unexpected")
             self.error = OfficeInkText.t(
                 "文档已被文档引擎关闭；编辑副本已保留，可在“保留的文档”中恢复。",
                 "The document engine closed the document. Your editing copies were retained and can be recovered under Retained Documents.")
@@ -1808,9 +1920,38 @@ final class OfficeFileSession: ObservableObject {
         }
         controller = native
         #else
+        // The pinned native engine is linked into iphoneos builds only. This is
+        // the exact first missing stage when the App runs without it (iOS
+        // Simulator and host-less build variants): intent and working copy are
+        // local, and nothing after the controller mount exists to observe.
+        recordStage("engine.unavailable", ["host": "native-office",
+                                           "build": "without-native-office",
+                                           "format": session.workingURL.pathExtension.lowercased()])
         throw CocoaError(.featureUnsupported)
         #endif
     }
+
+    #if canImport(FloeOfficeNative)
+    /// Bounded, content-free snapshot of the pinned host's own render
+    /// diagnostics (document type, tile/canvas counters, probe stage and the
+    /// edit-surface paint evidence). The host builds this dictionary from
+    /// engine facts only — never document text, paths or bytes. An older host
+    /// that does not expose the selector yields an empty snapshot.
+    static func hostRenderDiagnostics(_ native: FloeOfficeNativeViewController) -> [String: String] {
+        guard native.responds(to: NSSelectorFromString("renderDiagnostics")),
+              let raw = native.perform(NSSelectorFromString("renderDiagnostics"))?
+                  .takeUnretainedValue() as? [String: Any] else { return [:] }
+        var facts: [String: String] = [:]
+        for (key, value) in raw {
+            switch value {
+            case let number as NSNumber: facts[key] = number.stringValue
+            case let text as String: facts[key] = text
+            default: continue
+            }
+        }
+        return facts
+    }
+    #endif
     private func closeController() async throws {
         guard let controller else { return }
         cancelOpenWatchdog()
@@ -1820,6 +1961,7 @@ final class OfficeFileSession: ObservableObject {
         // No view means the upstream viewWillAppear has not opened a document.
         // Do not load a WebView merely to close an abandoned preview request.
         guard controller.isViewLoaded else {
+            recordStage("close.skippedUnmounted")
             invalidateInkApply()
             explicitSaveBridge?.invalidate()
             explicitSaveBridge = nil
@@ -1829,6 +1971,7 @@ final class OfficeFileSession: ObservableObject {
         phase = .closing
         expectedClose = true
         defer { expectedClose = false }
+        recordStage("close.started")
         #if canImport(FloeOfficeNative)
         if let native = controller as? FloeOfficeNativeViewController {
             let result = await Self.closeWorkingCopy(native, timeout: 8)
@@ -1840,6 +1983,8 @@ final class OfficeFileSession: ObservableObject {
                 explicitSaveBridge?.invalidate()
                 explicitSaveBridge = nil
                 self.controller = nil
+                recordStage(message == nil ? "close.acked" : "close.failed",
+                            message == nil ? [:] : ["reason": "engine-reported"])
                 if let message {
                     throw NSError(domain: "org.floeagent.office.close", code: 2, userInfo: [
                         NSLocalizedDescriptionKey: message
@@ -1855,6 +2000,7 @@ final class OfficeFileSession: ObservableObject {
                 explicitSaveBridge?.invalidate()
                 explicitSaveBridge = nil
                 self.controller = nil
+                recordStage("close.timedOut")
                 throw NSError(domain: "org.floeagent.office.close", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: OfficeInkText.t(
                         "文档引擎未在限定时间内完成关闭；编辑副本已保留，请重试。",
@@ -1898,6 +2044,8 @@ final class OfficeFileSession: ObservableObject {
     }
     #endif
     private func fail(_ error: Error) {
+        recordStage("session.failed", ["domain": (error as NSError).domain,
+                                       "code": String((error as NSError).code)])
         self.error = error.localizedDescription
         phase = .failed
     }
