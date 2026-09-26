@@ -83,7 +83,6 @@ final class OfficeSimulatorStageUITests: XCTestCase {
         let text = app.staticTexts["IDE验收.txt"].firstMatch
         XCTAssertTrue(text.waitForExistence(timeout: 15), "the IDE text fixture must be listed")
         text.tap()
-        XCTAssertTrue(app.textViews["workspace.ide.nativeEditor"].waitForExistence(timeout: 30))
         let openIDE = app.buttons["file.preview.openIDE"]
         XCTAssertTrue(openIDE.waitForExistence(timeout: 15)); openIDE.tap()
         XCTAssertTrue(app.textViews["workspace.ide.nativeEditor"].waitForExistence(timeout: 30),
