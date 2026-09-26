@@ -907,6 +907,36 @@ struct LocalModelLifecycleTests {
         }
     }
 
+    /// Build229 repair contract: when the vendored windowed prefill hits an
+    /// MLX error (patch 0002 now throws it between windows, e.g. "[METAL]
+    /// Command buffer execution failed" under memory pressure), the engine
+    /// maps it to `decodeFailed` before the adapter sees it, so the turn
+    /// earns exactly one transparent retry and the process never traps (the
+    /// pre-fix device behavior was a Swift index-out-of-range abort inside
+    /// `getItemND`). The fake throws the post-mapping `decodeFailed`, exactly
+    /// what `MLXTextEngine.generateGuarded` produces for an `MLXError.caught`.
+    @Test("A prefill MLX failure maps to decodeFailed and retries once cleanly")
+    @available(macOS 15.4, iOS 26.0, *)
+    func prefillMLXErrorSurfacesAsDecodeFailure() async throws {
+        let harness = Harness(memorySamples: [4_000_000_000, 4_000_000_000])
+        harness.factory.scheduleBehavior(
+            { _ in throw LocalInferenceError.decodeFailed },
+            forMakeIndex: 1
+        )
+        harness.factory.scheduleBehavior(FakeEngine.success(text: "recovered answer"), forMakeIndex: 2)
+        let result = try await harness.runtime.completeMeasured(
+            modelID: modelID, instructions: "i", prompt: "long prompt turn",
+            images: [], tools: [], maxTokens: 32
+        )
+        #expect(result.text == "recovered answer")
+        #expect(harness.factory.created.count == 2)
+        #expect(harness.factory.created[0].shutdownCount == 1)
+        #expect(harness.factory.maxLive == 1)
+        let lifecycle = await harness.runtime.lifecycleDiagnostics()
+        #expect(lifecycle.decodeRetryCount == 1)
+        #expect(lifecycle.consecutiveFailureCount == 0)
+    }
+
     // MARK: 8. Unified load/benchmark/chat coordination
 
     @Test("A failing benchmark never unloads the engine a retained chat task is using")
