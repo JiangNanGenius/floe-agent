@@ -335,8 +335,8 @@ struct ExecutionEnvironmentView: View {
         let maximum = GuestReleaseShapePolicy.production.maximumSupportedVCPUs
         if maximum <= 1 {
             return ExecutionEnvironmentText.t(
-                "本版本客户机上限 \(maximum) 核：双 hart 已可启动，fork/exec 与 9P 正确（云端 S0–S4 通过），但等量双进程基准双核更慢（中位 1.93s，单核 1.69s，未达 1.10× 门槛，运行 36009075837）；实验性 store 快速路径因 LR→store→SC 失效交错已否决。从脚本运行入口选择 2 核会在启动前被拒绝，不会以 1 核静默运行。",
-                "This release caps guests at \(maximum) core: dual-hart boot, fork/exec and 9P are correct (cloud S0–S4 passed), but an equal-work two-process benchmark was slower on two harts (median 1.93s vs 1.69s on one hart; below the 1.10× gate, run 36009075837); an experimental store fast path was rejected for an LR→store→SC invalidation interleaving. Choosing 2 cores from the script-run entry is refused before start; it never silently runs on one hart."
+                "本版本支持 \(maximum) 核客户机；双核仍在资格验证中。明确选择 2 核会提示错误，不会静默降级为单核。",
+                "This release supports \(maximum)-core guests; dual-core is still being qualified. An explicit 2-core request shows an error and never silently falls back to one core."
             )
         }
         return ExecutionEnvironmentText.t("本版本客户机上限 \(maximum) 核。",

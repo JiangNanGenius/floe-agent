@@ -137,9 +137,14 @@ correctness defects and cloud run 36240219437 was cancelled:
    hart B LR loads the old word and publishes the reservation → the fast
    store then writes the reserved word → hart B's SC still succeeds. The
    conflicting store never invalidated the reservation; an LR/SC mutex could
-   be held by two harts. The deterministic model regression
-   `tests/test_smp_fastpath_interleaving.py` forces this exact schedule and
-   shows the candidate SC succeeding where the locked protocol fails.
+   be held by two harts. The deterministic design counterexample
+   `tests/test_smp_fastpath_interleaving.py` (a **Python protocol model, not
+   executable TinyEMU C** — model evidence only; it cannot count among C-engine
+   correctness gates and does not prove a shipping implementation) forces this
+   exact schedule and shows the candidate SC succeeding where the locked
+   protocol fails. The actual C engine was checked separately via the native
+   `smp_host_test` (19/19 checks on the candidate; that is real engine
+   evidence but is not the release gate either).
 2. **Data race.** Two invalidation paths used plain `live_reservations--`
    writes while the fast path reads the same field atomically — C11 UB. Any
    unlocked design must use `__atomic_*` for every counter mutation.
@@ -158,7 +163,9 @@ correct, S5 slower). Bounded safe follow-up for a future attempt:
    and stop/restart, plus a repeatable **≥1.10×** equal-work speedup. Without
    all three, `maximumSupportedVCPUs` must remain 1.
 
-Focused static checks (no guest run, no build):
+Focused static checks (no guest run, no build). The first is a **protocol
+model** (design counterexample, not a C-engine gate); the second checks the
+S5 gate helper:
 
 ```sh
 python3 FloeAgent/Qualification/TinyEMULinux/tests/test_smp_fastpath_interleaving.py

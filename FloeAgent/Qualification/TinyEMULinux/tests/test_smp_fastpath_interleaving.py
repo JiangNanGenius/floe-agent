@@ -39,6 +39,12 @@ tags every counter mutation and the audit asserts an unlocked protocol
 must never publish a mutation without atomic ordering.
 
 Run:  python3 test_smp_fastpath_interleaving.py
+
+Evidence boundary: this is a deterministic *protocol model* — a design
+counterexample in Python. It is NOT executable TinyEMU C; it cannot count
+among C-engine correctness gates and does not prove the shipping
+implementation. Real engine evidence comes from the native smp_host_test;
+release qualification comes from the cloud S0–S5 contract.
 """
 
 import unittest
