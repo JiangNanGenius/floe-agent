@@ -1,0 +1,184 @@
+--- a/riscv_cpu.c
++++ b/riscv_cpu.c
+@@ -834,6 +834,8 @@
+         if (o != s && o->load_res_valid &&
+             smp_res_overlap_host(o, host_addr, len)) {
+             o->load_res_valid = FALSE;
++            /* this invalidation consumes one live reservation */
++            smp->live_reservations--;
+         }
+     }
+ }
+@@ -877,19 +879,8 @@
+             phys_write_u64(s, pte_addr, expect | bits);
+         return 0;
+     }
+-    need_lock = !s->in_smp_atomic;
+-    if (need_lock) {
+-        smp_spin_lock(s->smp);
+-        s->in_smp_atomic = TRUE;
+-    }
+-    applied = 0;
+     pr = get_phys_mem_range(s->mem_map, pte_addr);
+     if (!pr || !pr->is_ram) {
+-        /* the entry disappeared (or is not RAM): never usable */
+-        if (need_lock) {
+-            s->in_smp_atomic = FALSE;
+-            smp_spin_unlock(s->smp);
+-        }
+         __atomic_add_fetch(&s->smp->pte_ad_conflicts, 1, __ATOMIC_RELAXED);
+         return 1;
+     }
+@@ -898,6 +889,25 @@
+         cur = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
+     else
+         cur = __atomic_load_n((uint64_t *)ptr, __ATOMIC_RELAXED);
++    /* no-lock fast path: the entry this walk loaded is unchanged and the
++       required A/D bits are already recorded, so there is nothing to
++       linearize */
++    if ((cur & ~PTE_AD_MASK) == ((target_ulong)expect & ~PTE_AD_MASK) &&
++        (cur & bits) == bits) {
++        return 0;
++    }
++    need_lock = !s->in_smp_atomic;
++    if (need_lock) {
++        smp_spin_lock(s->smp);
++        s->in_smp_atomic = TRUE;
++        /* re-read inside the lock: the advisory loads above cannot widen
++           the critical section */
++        if (pte_size_log2 == 2)
++            cur = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
++        else
++            cur = __atomic_load_n((uint64_t *)ptr, __ATOMIC_RELAXED);
++    }
++    applied = 0;
+     if ((cur & ~PTE_AD_MASK) != ((target_ulong)expect & ~PTE_AD_MASK)) {
+         /* the mapping or permission bits were replaced concurrently
+            (kernel remap / table edit): refuse the stale update and let
+@@ -933,6 +943,35 @@
+ static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
+                                    mem_uint_t val, int size_log2)
+ {
++    /* Fast path: with no live LR reservation anywhere, this store cannot
++       invalidate anything. The SEQ_CST load pairs with the LR's SEQ_CST
++       publication of live_reservations in the SC total order: if the
++       publication precedes this load, the count is observed and the slow
++       path runs; if it follows, the LR is acquired only after the store,
++       so the later SC is legitimately allowed. */
++    if (__atomic_load_n(&s->smp->live_reservations, __ATOMIC_SEQ_CST) == 0) {
++        switch(size_log2) {
++        case 0:
++            FLOE_RAM_STORE((uint8_t *)host_ptr, (uint8_t)val);
++            break;
++        case 1:
++            FLOE_RAM_STORE((uint16_t *)host_ptr, (uint16_t)val);
++            break;
++        case 2:
++            FLOE_RAM_STORE((uint32_t *)host_ptr, (uint32_t)val);
++            break;
++#if MLEN >= 64
++        case 3:
++            FLOE_RAM_STORE((uint64_t *)host_ptr, (uint64_t)val);
++            break;
++#endif
++        default:
++            /* 128-bit instantiation (RV128, not built by Floe) */
++            *(mem_uint_t *)host_ptr = val;
++            break;
++        }
++        return;
++    }
+     smp_spin_lock(s->smp);
+     switch(size_log2) {
+     case 0:
+@@ -976,6 +1015,7 @@
+         if (o->load_res_valid &&
+             smp_res_overlap_host(o, (uintptr_t)host_ptr, len)) {
+             o->load_res_valid = FALSE;
++            smp->live_reservations--;
+         }
+     }
+     smp_spin_unlock(smp);
+@@ -1176,9 +1216,12 @@
+          * so taking the atomic lock here keeps the device -> atomic
+          * order and can never invert it. */
+         smp_spin_lock(s->smp);
+-        s->load_res_valid = FALSE;
+-        s->load_res_addr = 0;
+-        s->load_res_size_log2 = 0;
++        if (s->load_res_valid) {
++            s->load_res_valid = FALSE;
++            s->load_res_addr = 0;
++            s->load_res_size_log2 = 0;
++            __atomic_sub_fetch(&s->smp->live_reservations, 1, __ATOMIC_SEQ_CST);
++        }
+         smp_spin_unlock(s->smp);
+         return ret;
+     }
+@@ -1193,6 +1236,9 @@
+     s->load_res_addr = (uintptr_t)ptr;
+     s->load_res_size_log2 = size_log2;
+     s->load_res_valid = TRUE;   /* all fields under the atomic lock */
++    /* SEQ_CST publication of the live reservation: ordinary stores that
++       observe it take the slow path; the SC total order closes the race */
++    __atomic_add_fetch(&s->smp->live_reservations, 1, __ATOMIC_SEQ_CST);
+     s->in_smp_atomic = FALSE;
+     smp_spin_unlock(s->smp);
+     return 0;
+@@ -1233,7 +1279,10 @@
+         }
+     }
+     /* every SC attempt consumes the reservation (spec) */
+-    s->load_res_valid = FALSE;
++    if (s->load_res_valid) {
++        s->load_res_valid = FALSE;
++        __atomic_sub_fetch(&s->smp->live_reservations, 1, __ATOMIC_SEQ_CST);
++    }
+     s->in_smp_atomic = FALSE;
+     smp_spin_unlock(s->smp);
+     *pstatus = status;
+@@ -1762,7 +1811,19 @@
+ {
+     BOOL deleg;
+     target_ulong causel;
+-    
++
++    /* Entering any trap clears this hart's reservation, matching real
++       hardware: an LR/SC pair can never span a trap. Account the consumed
++       live reservation under the atomic lock. */
++    if (s->smp && s->smp->nb_harts > 1 && s->load_res_valid) {
++        smp_spin_lock(s->smp);
++        if (s->load_res_valid) {
++            s->load_res_valid = FALSE;
++            __atomic_sub_fetch(&s->smp->live_reservations, 1, __ATOMIC_SEQ_CST);
++        }
++        smp_spin_unlock(s->smp);
++    }
++
+ #if defined(DUMP_EXCEPTIONS) || defined(DUMP_MMU_EXCEPTIONS) || defined(DUMP_INTERRUPTS)
+     {
+         int flag;
+--- a/riscv_cpu.h
++++ b/riscv_cpu.h
+@@ -82,6 +82,11 @@
+     uint64_t pte_ad_merges;
+     uint64_t pte_ad_conflicts;
+     uint64_t pte_walk_restarts;
++    /* FLOE-SMP fast path: number of currently live LR reservations across
++     * every hart. Mutated only under the atomic lock; an ordinary store
++     * reads it with SEQ_CST and may skip the lock only when it is zero.
++     * SEQ_CST publication closes the store/LR race in the SC total order. */
++    int live_reservations;
+ } RISCVSMPCpuArray;
+ 
+ typedef struct {
+--- a/riscv_machine.c
++++ b/riscv_machine.c
+@@ -951,6 +951,7 @@
+     s->smp_atomic_lock = 0;
+     pthread_mutex_init(&s->smp_device_lock, NULL);
+     s->smp.nb_harts = s->nb_harts;
++    s->smp.live_reservations = 0;
+     s->smp.atomic_lock = &s->smp_atomic_lock;
+     s->smp.device_lock = &s->smp_device_lock;
+     for(i = 0; i < s->nb_harts; i++) {
