@@ -481,14 +481,20 @@ jobs:
               -H "Accept: application/json" \
               "https://api.appstoreconnect.apple.com$path" "$@"
           }
-          api_get /v1/betaFeedbackCrashSubmissions \
+          api_get "/v1/builds/$BUILD_ID/relationships/app" \
+            > "$RUNNER_TEMP/crash-feedback-app.json"
+          app_id="$(jq -r '.data.id // empty' "$RUNNER_TEMP/crash-feedback-app.json")"
+          test -n "$app_id"
+          api_get "/v1/apps/$app_id/betaFeedbackCrashSubmissions" \
             --data-urlencode "filter[build]=$BUILD_ID" \
             --data-urlencode 'limit=200' \
-            --data-urlencode 'fields[betaFeedbackCrashSubmissions]=createdDate,build' \
+            --data-urlencode 'fields[betaFeedbackCrashSubmissions]=createdDate,build,deviceModel,deviceFamily,devicePlatform,osVersion' \
             --data-urlencode 'include=build' \
             > "$RUNNER_TEMP/crash-submissions.json"
           count="$(jq '.data | length' "$RUNNER_TEMP/crash-submissions.json")"
           echo "crash-submission-count=$count"
+          jq -r '.data[] | "crash-feedback date=\(.attributes.createdDate // "unknown") device=\(.attributes.deviceModel // "unknown") family=\(.attributes.deviceFamily // "unknown") platform=\(.attributes.devicePlatform // "unknown") os=\(.attributes.osVersion // "unknown")"' \
+            "$RUNNER_TEMP/crash-submissions.json"
           while IFS= read -r submission_id; do
             if ! api_get "/v1/betaFeedbackCrashSubmissions/$submission_id/crashLog" \
               --data-urlencode 'fields[betaCrashLogs]=logText' \
