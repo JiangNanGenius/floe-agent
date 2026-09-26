@@ -2,6 +2,8 @@
 
 **Status / 状态：云端构建、GitHub 预发布、TestFlight 上传及 Floe QA 内部可安装状态已核实；真机功能待验收。** 不可变标签 `v1.7.0-beta.86` 固定源码 `b06b0b0e42008e8ea5c6b402ab146c99e2bcf328`。[发布运行 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) 使用 Xcode 26.6 构建并保留未签名 IPA（739,485,403 字节；SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`），随后完成签名上传及 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)。Apple Build ID `3aecdb89-1cca-4192-9b32-1493d72ad3fe` 为 `VALID`；[测试说明运行 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863) 回读中英文本，[测试组核验运行 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) 确认未过期、仅在私有 Floe QA 组且为 `IN_BETA_TESTING`。这些交付证据不能据此推断 PPT 或本地模型已在 iPad 上恢复。
 
+[Gitee 镜像](https://gitee.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)已同步源码、不可变标签和 6 个小附件；[镜像运行 36242058529](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242058529)记录 IPA 因 1 GiB 附件配额仅剩 28.9 MiB 而未上传。Gitee IPA 不属于已完成交付。
+
 ## 简体中文
 
 - Office 打开、关闭和保存的等待回执现在只会结算一次，迟到回调不能重启已关闭的会话。PPT 若在超时提示后才真正绘制页面，可恢复该会话；未验证的首帧不算打开成功。手记原文件写回失败时，编辑器保留副本和错误，不报告保存成功或退出。
