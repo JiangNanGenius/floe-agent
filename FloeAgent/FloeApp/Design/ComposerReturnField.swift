@@ -96,6 +96,15 @@ struct ComposerReturnField: UIViewRepresentable {
     /// Reports the live caret/selection so the caller can persist it and the
     /// full editor can reopen exactly where editing stopped.
     var onSelectionChange: ((NSRange?) -> Void)? = nil
+    /// Reports whether the field currently overflows its height cap and
+    /// scrolls internally (true) or fits completely (false). The report is
+    /// delivered on the next main-queue turn, never synchronously from the
+    /// layout pass; a burst of layout passes coalesces to the newest
+    /// measured verdict, so the host always converges to the field's
+    /// current truth (including after it resets its own state on a
+    /// conversation switch). Nil keeps callers that do not need the signal
+    /// unchanged.
+    var onOverflowChange: ((Bool) -> Void)? = nil
     var onReturn: () -> Void
 
     private let textInsets = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
@@ -218,6 +227,21 @@ struct ComposerReturnField: UIViewRepresentable {
         if uiView.isScrollEnabled != scrolls {
             uiView.isScrollEnabled = scrolls
         }
+        // `scrolls` is the real layout verdict the user sees: the natural
+        // TextKit height has passed the cap, so the tail of the text is no
+        // longer visible inline. The host is told after this pass —
+        // mutating SwiftUI state inside layout would be a synchronous
+        // update during view update — and the coordinator coalesces a
+        // layout burst down to the latest verdict. Zero, unit and
+        // non-finite widths are SwiftUI probes, not the inline layout, so
+        // they must not toggle the host's control. The callback is read
+        // from the coordinator so it tracks the latest snapshot.
+        if let proposedWidth = proposal.width, proposedWidth.isFinite, proposedWidth > 1 {
+            context.coordinator.scheduleOverflowReport(
+                scrolls,
+                report: context.coordinator.field.onOverflowChange ?? onOverflowChange
+            )
+        }
         return CGSize(width: width, height: min(max(natural, floor), cap))
     }
 
@@ -279,9 +303,41 @@ struct ComposerReturnField: UIViewRepresentable {
         /// update cycle never re-applies (and never echoes) the same range.
         private var lastAppliedSelection: NSRange?
         private var lastReportedSelection: NSRange?
+        /// One overflow delivery hop at a time: a layout burst overwrites
+        /// the pending verdict instead of queueing another block, so only
+        /// the newest measured revision reaches the host and older queued
+        /// width/layout reports cannot bounce the host's control.
+        private var pendingOverflowReport = false
+        private var latestOverflow: Bool?
+        private var latestOverflowCallback: ((Bool) -> Void)?
 
         init(field: ComposerReturnField) {
             self.field = field
+        }
+
+        /// Coalescing overflow reporter. Called from `sizeThatFits` on the
+        /// main thread; delivers on the next main-queue turn (never
+        /// synchronously from layout). Repeated calls while a delivery is
+        /// pending keep only the latest verdict and callback.
+        func scheduleOverflowReport(_ overflow: Bool, report: ((Bool) -> Void)?) {
+            guard let report else { return }
+            latestOverflow = overflow
+            latestOverflowCallback = report
+            guard !pendingOverflowReport else { return }
+            pendingOverflowReport = true
+            DispatchQueue.main.async { [weak self] in
+                self?.deliverPendingOverflowReport()
+            }
+        }
+
+        private func deliverPendingOverflowReport() {
+            pendingOverflowReport = false
+            let overflow = latestOverflow
+            let report = latestOverflowCallback
+            latestOverflow = nil
+            latestOverflowCallback = nil
+            guard let overflow else { return }
+            report?(overflow)
         }
 
         func noteTextChange() {

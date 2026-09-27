@@ -202,6 +202,14 @@ struct ThreadComposerView: View {
     @State private var dictationPrefix = ""
     @State private var slashNotice: String?
     @State private var isFullEditorPresented = false
+    /// True once the inline field has reached its height cap and scrolls
+    /// internally. Only then is the full-editor control worth a row slot:
+    /// a short prompt keeps the input calm and uncluttered.
+    @State private var isInlineFieldOverflowing = false
+    /// Conversation whose draft produced the latest accepted overflow
+    /// report. A delayed layout callback from a previous conversation must
+    /// not reveal (or hide) the control of the conversation on screen now.
+    @State private var overflowReportKey: UUID?
     @State private var editorSelection: NSRange?
     /// Conversation identity captured when the full editor was presented: a
     /// late dismissal callback must never write a caret into another task.
@@ -348,6 +356,12 @@ struct ThreadComposerView: View {
             // Always replace the caret with this conversation's stored one —
             // never keep the previous task's selection when none was saved.
             editorSelection = entry?.selection
+            // Bind future overflow reports to this conversation and hide the
+            // control until the field reports this draft's layout. The
+            // inline field re-reports its newest measured layout (coalesced),
+            // so a large restored draft comes back with the control visible.
+            overflowReportKey = newKey
+            isInlineFieldOverflowing = false
         }
         .onChange(of: draft) { _, newValue in
             // A send consumed this draft; the store keeps the sent content
@@ -768,6 +782,14 @@ struct ThreadComposerView: View {
                     editorSelection = range
                     draftStore.updateSelection(range, conversationID: draftKey)
                 },
+                onOverflowChange: { overflowing in
+                    // Delivered on the next main-queue turn: only a report
+                    // from the conversation on screen may change the control.
+                    guard overflowReportKey == nil || overflowReportKey == draftKey else { return }
+                    if isInlineFieldOverflowing != overflowing {
+                        isInlineFieldOverflowing = overflowing
+                    }
+                },
                 onReturn: { onSend() }
             )
             .frame(minHeight: FloeTheme.minimumTarget, alignment: .leading)
@@ -775,24 +797,29 @@ struct ThreadComposerView: View {
             .accessibilityLabel("home.new_task.placeholder")
             .accessibilityIdentifier("composer.input")
 
-            // The full editor stays reachable in every send/attachment
-            // state: staging a file, processing a photo or a running turn
-            // never disables the expand entry.
-            Button {
-                // Bind this editor presentation to the conversation it was
-                // opened from, and start from the freshest captured caret.
-                editorDraftKey = draftKey
-                editorSelection = draftStore.entry(for: draftKey)?.selection ?? editorSelection
-                isFullEditorPresented = true
-            } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.title3)
-                    .foregroundStyle(FloeTheme.primary)
+            // The full editor control appears only once the inline field has
+            // reached its height cap and scrolls: short prompts keep the
+            // calm, uncluttered row, while any draft that no longer fits
+            // stays one tap away from the full editor. Its state is bound to
+            // the field's real TextKit overflow, so deleting text, rotation,
+            // dynamic type or a height-budget change hides it again.
+            if isInlineFieldOverflowing {
+                Button {
+                    // Bind this editor presentation to the conversation it was
+                    // opened from, and start from the freshest captured caret.
+                    editorDraftKey = draftKey
+                    editorSelection = draftStore.entry(for: draftKey)?.selection ?? editorSelection
+                    isFullEditorPresented = true
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.title3)
+                        .foregroundStyle(FloeTheme.primary)
+                }
+                .buttonStyle(.plain)
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("composer.expand_editor")
+                .accessibilityIdentifier("composer.expand")
             }
-            .buttonStyle(.plain)
-            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel("composer.expand_editor")
-            .accessibilityIdentifier("composer.expand")
 
             Button {
                 // Preserve whatever the user already typed; dictation appends
