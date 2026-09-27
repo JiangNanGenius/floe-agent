@@ -874,6 +874,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_repair_run_id != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
