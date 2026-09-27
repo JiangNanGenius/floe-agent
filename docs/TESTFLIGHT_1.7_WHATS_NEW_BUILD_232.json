@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "Build 232：修正本地模型前台恢复、iPhone弹出层生命周期及低内存VM准入；输入框溢出后才显示展开；诊断保留关键日志。新建SMP环境支持正常启动/硬重启时请求双核，默认单核，旧环境不自动换基底。请复测本地模型连续两轮工具调用、PPT进入编辑器后静置、iPhone启动VM。PPT闪退仍未确认修复，双核不保证加速，软重启不支持。",
+  "en-US": "Build 232 improves local-model foreground recovery, iPhone popover lifetime, low-memory VM admission and bounded diagnostics. Composer expansion appears only on overflow. New SMP environments accept two-core start/hard-restart requests; default remains one core and existing bases are unchanged. Please test two consecutive model tool turns, idle PPT editing and iPhone VM startup. PPT crash resolution remains unverified; no dual-core speedup guarantee; soft reboot unsupported."
+}

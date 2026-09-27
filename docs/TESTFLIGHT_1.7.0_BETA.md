@@ -1,6 +1,16 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (231) — available in Floe QA
+## Current internal delivery: 1.7.0 (232) — available in Floe QA
+
+**当前内部 TestFlight：1.7.0（232）。** 不可变标签 `v1.7.0-beta.89` 固定源码 `eeaabff6e525cf1649b0b940acad8096aa172bdd`。[发布任务](https://github.com/JiangNanGenius/floe-agent/actions/runs/36343520087)完成完整 App 编译、IPA 保留和签名上传；[核验任务](https://github.com/JiangNanGenius/floe-agent/actions/runs/36346520387)于 2026-09-27 20:02 UTC 确认 Apple `VALID`、未过期、仅现有私有 Floe QA 组及 `IN_BETA_TESTING`。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.89)已发布，Feather 同步任务 36345586180 成功。Gitee 不计为已完成交付。
+
+**Current internal TestFlight: 1.7.0 (232).** The immutable tag above binds the exact source. Full-App compilation, retained IPA and signed upload succeeded. Verification confirmed Apple `VALID`, unexpired, only the existing private Floe QA group and `IN_BETA_TESTING`. GitHub prerelease is published; the Feather follow-up succeeded. Gitee remains separate and incomplete.
+
+Unsigned IPA: 739,676,607 bytes; SHA-256 `648245a7e0a1bfbccca9b0ae8aa2fc4f4a9271b6d06ec66ac85c62d635e8c43c`, verified against the retained local copy. Xcode 26.6 (17F113), bundle `org.floeagent.ios`.
+
+PPT 静置闪退仍未解决；macOS 两轮真实模型工具调用不等于 iPad 验收。新 SMP 环境开放双核请求，旧环境不自动换 Base；性能 S5 未过，软重启仍不支持。PPT idle crash remains unresolved; macOS model-tool evidence is not iPad acceptance. New SMP environments accept dual-core requests; existing environments retain their base. S5 performance did not pass and soft reboot remains unsupported. See [Build 232 notes](RELEASE_NOTES_1.7.0_BUILD_232.md).
+
+## Previous internal delivery: 1.7.0 (231) — available in Floe QA
 
 **Current internal TestFlight: 1.7.0 (231).** Tag `v1.7.0-beta.88` fixes source `556efe929cc7e09eb7b962e225e158ecb484f99e`. [Release](https://github.com/JiangNanGenius/floe-agent/actions/runs/36293217189) completed the App build, retained IPA and signed upload; [verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/36295318954) confirmed Apple `VALID`, unexpired and `IN_BETA_TESTING` in the existing private Floe QA group. [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.88) · [Build 231 notes](RELEASE_NOTES_1.7.0_BUILD_231.md). PPT/Excel opening, Word CJK/save and MLX behavior still need iPad acceptance. Soft reboot and dual-core remain unavailable. Gitee is a separate incomplete mirror.
 
