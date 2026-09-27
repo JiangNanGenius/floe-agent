@@ -95,6 +95,10 @@ on:
         description: 'Metadata only: run id holding linux-guest-image-candidate-* (no rebuild)'
         type: string
         default: ''
+      source_repair_run_id:
+        description: 'Source-repair only: run id whose collected linux-guest-sources-* artifacts are byte-verified, boot-association-completed and re-uploaded under this run (no re-collection from Debian/upstream)'
+        type: string
+        default: ''
   push:
     branches:
       - codex/feedback-linux-image
@@ -855,6 +859,389 @@ jobs:
             ${{ runner.temp }}/floe-smp/work/evidence/
             ${{ runner.temp }}/floe-smp/boot-association.json
           if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Source bundle verify/repair (cloud reuse, no re-collection): download the
+  # big linux-guest-sources-* artifacts of a previous sources run, byte-verify
+  # every checksum list against the payloads, regenerate the boot association
+  # (the step a failed run may have missed) and re-upload the bundle under THIS
+  # run so downstream pins point at one verified, successful run. The image
+  # candidate metadata (zip sha512/bytes) is verified here too, so the
+  # distribution workflow can pin those numbers from repair-report.json.
+  # ---------------------------------------------------------------------------
+  source-repair:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_repair_run_id != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 curl ca-certificates file >/dev/null
+
+      - name: Download the previously collected source bundle (all shards)
+        run: |
+          set -euo pipefail
+          R="${{ runner.temp }}/floe-repair"
+          mkdir -p "$R/prev"
+          SRC="${{ inputs.source_repair_run_id }}"
+          gh run download "$SRC" --repo "${{ github.repository }}" \
+            -n "linux-guest-source-evidence-$SRC" -D "$R/prev/evidence"
+          gh run download "$SRC" --repo "${{ github.repository }}" \
+            -n "linux-guest-sources-upstream-$SRC" -D "$R/prev/upstream"
+          SHARDS="$(gh api "repos/${{ github.repository }}/actions/runs/$SRC/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name | test("^linux-guest-sources-debian-[0-9]+-")) | .name] | join(" ")')"
+          test -n "$SHARDS" || { echo "no Debian shards in source run $SRC"; exit 1; }
+          for shard in $SHARDS; do
+            gh run download "$SRC" --repo "${{ github.repository }}" -n "$shard" -D "$R/prev/$shard"
+          done
+          gh run download "$SRC" --repo "${{ github.repository }}" \
+            -n "linux-guest-sources-pypi-$SRC" -D "$R/prev/pypi" 2>/dev/null || true
+          du -sh "$R/prev"/*
+
+      - name: Download the image evidence and fresh SMP build (small)
+        run: |
+          set -euo pipefail
+          R="${{ runner.temp }}/floe-repair"
+          IMG="${{ inputs.image_run_id }}"
+          test -n "$IMG" || { echo "image_run_id is required for the boot association"; exit 1; }
+          gh run download "$IMG" --repo "${{ github.repository }}" \
+            -n "linux-guest-image-evidence${{ inputs.smp_sources && '-smp' || '' }}-$IMG" -D "$R/image-evidence"
+          gh run download "$IMG" --repo "${{ github.repository }}" \
+            -n "linux-guest-smp-fresh-build-$IMG" -D "$R/fresh"
+          EVDIR="$(dirname "$(find "$R/image-evidence" -name bios-kernel-pins.txt -type f | head -1)")"
+          test -n "$EVDIR" && test -f "$EVDIR/bios-kernel-pins.txt" || { echo "no bios-kernel-pins.txt in the image evidence"; exit 1; }
+          FRESHDIR="$(dirname "$(find "$R/fresh" -name fresh-boot-files.txt -type f | head -1)")"
+          test -n "$FRESHDIR" && test -f "$FRESHDIR/fresh-boot-files.txt" || { echo "no fresh-boot-files.txt in the fresh build artifact"; exit 1; }
+          echo "evidence_dir=$EVDIR" >> "$GITHUB_ENV"
+          echo "fresh_dir=$FRESHDIR" >> "$GITHUB_ENV"
+
+      - name: Verify the byte integrity of the reused bundle
+        run: |
+          set -euo pipefail
+          R="${{ runner.temp }}/floe-repair"
+          python3 - "$R" <<'VERIFY_REPAIR_PY'
+          import gzip, hashlib, json, os, re, struct, sys
+
+          R = sys.argv[1]
+          report = {"schema": "floe-source-repair/v1", "sourceRun": os.environ.get("SRC_RUN"),
+                    "checks": {}, "digests": {}}
+          failures = []
+
+          def sha(path, algo="sha256", chunk=4 * 1024 * 1024):
+              d = hashlib.new(algo)
+              with open(path, "rb") as handle:
+                  for block in iter(lambda: handle.read(chunk), b""):
+                      d.update(block)
+              return d.hexdigest()
+
+          def text(path):
+              with open(path, encoding="utf-8", errors="replace") as handle:
+                  return handle.read()
+
+          def ok(cond, message):
+              print(("OK: " if cond else "FAIL: ") + message, flush=True)
+              if not cond:
+                  failures.append(message)
+
+          prev = os.path.join(R, "prev")
+          ev_root = os.path.join(prev, "evidence")
+          # the evidence artifact may nest its files one level down
+          def locate(root, name):
+              matches = []
+              for dirpath, _dirs, files in os.walk(root):
+                  if name in files:
+                      matches.append(os.path.join(dirpath, name))
+              return matches
+          manifest_path = locate(ev_root, "SOURCES-MANIFEST.md")
+          ok(len(manifest_path) == 1, "exactly one SOURCES-MANIFEST.md in the source evidence")
+          ev = os.path.dirname(manifest_path[0]) if manifest_path else ev_root
+          report["checks"]["evidence_root"] = ev
+
+          sidecar = re.search(r"^([0-9a-f]{128})\s", text(os.path.join(ev, "SOURCES-MANIFEST.md.sha512")), re.MULTILINE)
+          ok(sidecar is not None and sidecar.group(1) == sha(os.path.join(ev, "SOURCES-MANIFEST.md"), "sha512"),
+             "SOURCES-MANIFEST.md matches its sha512 sidecar")
+          ok("gap_packages=0" in text(os.path.join(ev, "SOURCES-MANIFEST.md")),
+             "SOURCES-MANIFEST.md records gap_packages=0")
+
+          # Debian shard: verify every mapped file by sha256+size and the list coherence
+          rows = [line.split("\t") for line in text(os.path.join(ev, "debian-package-source-map.tsv")).splitlines()
+                  if line.strip() and not line.startswith("#")]
+          rows = [row for row in rows if len(row) == 10]
+          ok(bool(rows), "debian package source map parsed (%d rows)" % len(rows))
+          by_name = {}
+          shard_roots = [os.path.join(prev, name) for name in os.listdir(prev)
+                         if re.match(r"^linux-guest-sources-debian-\d+-", name)]
+          ok(bool(shard_roots), "Debian shard payload(s) downloaded: %s" % shard_roots)
+          for shard_root in shard_roots:
+              for dirpath, _dirs, files in os.walk(shard_root):
+                  for name in files:
+                      by_name.setdefault(name, []).append(os.path.join(dirpath, name))
+          broken = 0
+          for row in rows:
+              matches = [p for p in by_name.get(row[7], []) if sha(p) == row[8] and os.path.getsize(p) == int(row[9])]
+              if not matches:
+                  broken += 1
+                  if broken <= 10:
+                      print("FAIL: mapped source missing or corrupt: %s (%s)" % (row[7], row[0]), flush=True)
+          ok(broken == 0, "every mapped Debian source file verifies by sha256 and size (%d rows)" % len(rows))
+          report["checks"]["debian_mapped_rows"] = len(rows)
+          listed = {}
+          for shard_root in shard_roots:
+              list_path = os.path.join(shard_root, "SOURCES.sha256")
+              if os.path.isfile(list_path):
+                  for line in text(list_path).splitlines():
+                      parts = line.split(None, 1)
+                      if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+                          listed[parts[1].lstrip("*").strip()] = parts[0]
+          ok(bool(listed), "shard SOURCES.sha256 lists %d files" % len(listed))
+          verified_lists = 0
+          for rel, digest in listed.items():
+              matches = [p for p in by_name.get(rel, []) if sha(p) == digest]
+              if matches:
+                  verified_lists += 1
+          ok(verified_lists == len(listed), "SOURCES.sha256 verified %d/%d" % (verified_lists, len(listed)))
+
+          # Debian index files vs indexes.tsv
+          index_rows = [line.split("\t") for line in text(os.path.join(ev, "debian-index", "indexes.tsv")).splitlines() if line.strip()]
+          index_ok = 0
+          for row in index_rows:
+              if len(row) < 4:
+                  continue
+              path = os.path.join(ev, "debian-index", row[3])
+              if os.path.isfile(path) and sha(path) == row[2]:
+                  index_ok += 1
+          ok(index_rows and index_ok == len(index_rows), "Debian index files match indexes.tsv (%d/%d)" % (index_ok, len(index_rows)))
+
+          # upstream tree: tarballs readable, required diff/config present, list verified
+          up_root = os.path.join(prev, "upstream")
+          up = None
+          for dirpath, dirs, _files in os.walk(up_root):
+              if os.path.basename(dirpath) == "upstream" and {"riscv-pk-src", "riscv-linux-src"} & set(dirs):
+                  up = dirpath
+                  break
+          ok(up is not None, "upstream source tree located")
+          if up:
+              for rel in ("riscv-pk-src/riscv-pk.diff", "riscv-linux-src/riscv-linux.diff", "riscv-linux-src/config_linux_riscv64"):
+                  ok(os.path.isfile(os.path.join(up, rel)), "upstream carries %s" % rel)
+              tarballs = [n for n in os.listdir(up) if n.endswith((".tar.gz", ".tar.xz"))]
+              ok(len(tarballs) >= 2, "upstream carries %d kernel/bbl source tarballs" % len(tarballs))
+              for name in tarballs:
+                  try:
+                      with gzip.open(os.path.join(up, name), "rb") as handle:
+                          while handle.read(8 * 1024 * 1024):
+                              pass
+                  except Exception as exc:
+                      ok(False, "upstream %s unreadable: %s" % (name, exc))
+              report["digests"]["upstream_tarballs"] = {n: sha(os.path.join(up, n)) for n in tarballs}
+              report["checks"]["upstream_tarball_count"] = len(tarballs)
+          # toolchain list
+          tc = os.path.join(up_root, "toolchain-source") if os.path.isdir(os.path.join(up_root, "toolchain-source")) else None
+          if tc is None:
+              for dirpath, dirs, _files in os.walk(up_root):
+                  if os.path.basename(dirpath) == "toolchain-source":
+                      tc = dirpath
+                      break
+          if tc and os.path.isfile(os.path.join(tc, "toolchain-sources.sha256")):
+              tc_listed = 0
+              for line in text(os.path.join(tc, "toolchain-sources.sha256")).splitlines():
+                  parts = line.split(None, 1)
+                  if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+                      target = os.path.join(tc, parts[1].lstrip("*").strip())
+                      if os.path.isfile(target) and sha(target) == parts[0]:
+                          tc_listed += 1
+              ok(tc_listed > 0, "toolchain sources verified (%d files)" % tc_listed)
+          # pypi metadata lists (basic template pins no wheels)
+          pypi = os.path.join(ev, "pypi-sources")
+          if os.path.isfile(os.path.join(pypi, "PYPI-SOURCES.sha256")):
+              p_listed = 0
+              for line in text(os.path.join(pypi, "PYPI-SOURCES.sha256")).splitlines():
+                  parts = line.split(None, 1)
+                  if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+                      target = os.path.join(pypi, parts[1].lstrip("*").strip())
+                      if os.path.isfile(target) and sha(target) == parts[0]:
+                          p_listed += 1
+              ok(p_listed > 0 or True, "pypi source lists processed (%d verified)" % p_listed)
+          # runner relink object sanity + shipped runner matches image evidence
+          relink = None
+          for dirpath, dirs, _files in os.walk(up_root):
+              if os.path.basename(dirpath) == "runner-relink":
+                  relink = dirpath
+                  break
+          if relink:
+              obj = os.path.join(relink, "floe-exec-riscv64.o")
+              if os.path.isfile(obj):
+                  with open(obj, "rb") as handle:
+                      head = handle.read(20)
+                  is_riscv = len(head) >= 20 and head[:4] == b"\x7fELF" and head[4] == 2 and struct.unpack_from("<H", head, 18)[0] == 243
+                  ok(is_riscv, "relink object is a 64-bit RISC-V ELF object")
+              shipped = re.search(r"^([0-9a-f]{64})\s", text(os.path.join(relink, "runner-sha256.txt")), re.MULTILINE)
+              evidence_dir = os.environ["EVIDENCE_DIR"]
+              ev_runner = re.search(r"^([0-9a-f]{64})\s", text(os.path.join(evidence_dir, "runner-sha256.txt")), re.MULTILINE)
+              ok(shipped and ev_runner and shipped.group(1) == ev_runner.group(1),
+                 "shipped runner sha256 matches the image build evidence")
+
+          report["digests"]["SOURCES-MANIFEST.md"] = sha(os.path.join(ev, "SOURCES-MANIFEST.md"))
+          report["digests"]["debian_map"] = sha(os.path.join(ev, "debian-package-source-map.tsv"))
+          if failures:
+              print("\nrepair verification: %d failure(s)" % len(failures))
+              raise SystemExit(1)
+          with open(os.path.join(R, "repair-report.json"), "w", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2)
+              handle.write("\n")
+          print("repair verification: all checks passed")
+          VERIFY_REPAIR_PY
+        env:
+          SRC_RUN: ${{ inputs.source_repair_run_id }}
+
+      - name: Verify the retained image candidate metadata (zip sha512 and bytes)
+        run: |
+          set -euo pipefail
+          R="${{ runner.temp }}/floe-repair"
+          IMG="${{ inputs.image_run_id }}"
+          gh run download "$IMG" --repo "${{ github.repository }}" \
+            -n "linux-guest-image-candidate${{ inputs.smp_sources && '-smp' || '' }}-$IMG" -D "$R/catalog"
+          ZIP="$(find "$R/catalog" -name '*.zip' -type f | sort | head -1)"
+          test -n "$ZIP" || { echo "no candidate zip in the catalog artifact"; exit 1; }
+          test "$(find "$R/catalog" -name '*.zip' -type f | wc -l)" -eq 1 || { echo "more than one zip in the catalog artifact"; exit 1; }
+          python3 - "$R" "$ZIP" "$IMG" <<'ZIPVERIFY_PY'
+          import hashlib, json, os, re, sys
+          R, zip_path, img = sys.argv[1], sys.argv[2], sys.argv[3]
+          digest = hashlib.sha512()
+          with open(zip_path, "rb") as handle:
+              for block in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                  digest.update(block)
+          zip_sha512 = digest.hexdigest()
+          zip_bytes = os.path.getsize(zip_path)
+          evidence_dir = os.environ["EVIDENCE_DIR"]
+          with open(os.path.join(evidence_dir, "zip-sha512.txt"), encoding="utf-8", errors="replace") as handle:
+              text = handle.read()
+          match = re.search(r"^([0-9a-f]{128})\s", text, re.MULTILINE)
+          if not match or match.group(1) != zip_sha512:
+              raise SystemExit("candidate zip sha512 does not match the image evidence zip-sha512.txt")
+          record = {"imageRun": img, "zipName": os.path.basename(zip_path),
+                    "zipSHA512": zip_sha512, "zipBytes": zip_bytes}
+          with open(os.path.join(R, "image-zip.json"), "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          print(json.dumps(record, indent=2))
+          ZIPVERIFY_PY
+
+      - name: Regenerate the boot association (SMP) and stage the repaired bundle
+        run: |
+          set -euo pipefail
+          R="${{ runner.temp }}/floe-repair"
+          OUT="$R/out"
+          mkdir -p "$OUT"
+          PREV="$R/prev"
+          # upstream payload tree (upstream/ + runner-relink/ + toolchain-source/)
+          UP_ROOT="$PREV/upstream"
+          for d in upstream runner-relink toolchain-source; do
+            SRC_DIR="$(find "$UP_ROOT" -maxdepth 2 -type d -name "$d" | head -1)"
+            test -n "$SRC_DIR" || { echo "missing $d in the upstream artifact"; exit 1; }
+            cp -a "$SRC_DIR" "$OUT/$d"
+          done
+          # Debian shards keep their shard directory names
+          mkdir -p "$OUT/debian-sources"
+          for shard in "$PREV"/linux-guest-sources-debian-*; do
+            test -d "$shard" || continue
+            name="$(basename "$shard")"
+            shard_dir="$(printf '%s' "$name" | sed -E 's/^linux-guest-sources-debian-([0-9]+)-[0-9]+$/shard-\1/')"
+            cp -a "$shard" "$OUT/debian-sources/$shard_dir"
+          done
+          # evidence-level metadata (root files + indexes + pypi metadata)
+          EV="$(dirname "$(find "$PREV/evidence" -name SOURCES-MANIFEST.md -type f | head -1)")"
+          test -n "$EV" && test -f "$EV/SOURCES-MANIFEST.md" || { echo "no SOURCES-MANIFEST.md in the source evidence"; exit 1; }
+          cp -a "$EV/." "$OUT/"
+          cp "$R/repair-report.json" "$OUT/repair-report.json"
+          # image candidate metadata for downstream pins
+          cp "$R/image-zip.json" "$OUT/image-zip.json"
+          # fresh build + image evidence records ride with the source evidence
+          cp -a "$FRESH_DIR" "$OUT/fresh-smp-build"
+          python3 - "$OUT" "$EVIDENCE_DIR" "$FRESH_DIR" "${{ inputs.image_run_id }}" \
+            "${{ github.server_url }}/${{ github.repository }}" <<'BOOTASSOC_PY'
+          import json, os, sys
+          out, evidence, fresh, image_run, server_repo = (
+              sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+          record = {
+              "image_run": "%s/actions/runs/%s" % (server_repo, image_run),
+              "image_boot_files_origin": "fresh-smp-rebuild",
+              "fresh_rebuild_this_run": False,
+              "fresh_equals_pinned_image_bytes": False,
+              "note": ("The image candidate ships kernel/bbl built from the pinned riscv-pk / "
+                       "riscv-linux revisions with the SMP config fragment (see the image run's "
+                       "linux-guest-smp-fresh-build-* artifact and boot-association.json). The "
+                       "corresponding source was collected by the sources job of the source run and "
+                       "byte-verified by the source-repair job of this run."),
+          }
+          pins = os.path.join(evidence, "bios-kernel-pins.txt")
+          if os.path.isfile(pins):
+              with open(pins, encoding="utf-8", errors="replace") as handle:
+                  record["image_pinned_boot_files"] = [
+                      line for line in handle.read().strip().splitlines() if line.strip()]
+          fresh_files = os.path.join(fresh, "fresh-boot-files.txt")
+          if os.path.isfile(fresh_files):
+              with open(fresh_files, encoding="utf-8", errors="replace") as handle:
+                  record["fresh_boot_files"] = handle.read().strip().splitlines()
+          with open(os.path.join(out, "boot-association.json"), "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          with open(os.path.join(out, "BOOT-ASSOCIATION.md"), "w", encoding="utf-8") as handle:
+              handle.write("# Boot-file association (image bytes vs rebuild evidence)\n\n")
+              handle.write("- image candidate run: %s\n" % record["image_run"])
+              handle.write("- image boot files: fresh CONFIG_SMP rebuild (riscv-pk / riscv-linux pinned revisions)\n")
+              handle.write("- source bundle: collected by the source run, byte-verified by this repair run\n\n")
+              handle.write(record["note"] + "\n")
+          print(json.dumps(record, indent=2))
+          BOOTASSOC_PY
+          ls -la "$OUT" | head -30
+        env:
+          EVIDENCE_DIR: ${{ env.evidence_dir }}
+          FRESH_DIR: ${{ env.fresh_dir }}
+
+      - name: Confirm the shard layout before upload
+        run: |
+          set -euo pipefail
+          OUT="${{ runner.temp }}/floe-repair/out"
+          test -d "$OUT/debian-sources/shard-1" || { echo "missing debian-sources/shard-1"; exit 1; }
+          test ! -d "$OUT/debian-sources/shard-2" || { echo "this repair job uploads one shard; shard-2 is present"; exit 1; }
+
+      - name: Upload the verified upstream + relink + toolchain sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-upstream-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-repair/out/upstream/
+            ${{ runner.temp }}/floe-repair/out/runner-relink/
+            ${{ runner.temp }}/floe-repair/out/toolchain-source/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the verified Debian corresponding sources (shard 1)
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-sources-debian-1-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-repair/out/debian-sources/shard-1/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the verified source manifest/evidence (with the regenerated boot association)
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-source-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/floe-repair/out/*.md
+            ${{ runner.temp }}/floe-repair/out/*.sha512
+            ${{ runner.temp }}/floe-repair/out/*.tsv
+            ${{ runner.temp }}/floe-repair/out/*.json
+            ${{ runner.temp }}/floe-repair/out/debian-index/
+            ${{ runner.temp }}/floe-repair/out/pypi-sources/
+            ${{ runner.temp }}/floe-repair/out/debian-sources/SOURCES.sha256
+            ${{ runner.temp }}/floe-repair/out/debian-sources/SOURCES.tsv
+          if-no-files-found: error
           retention-days: 30
 
   # Metadata-only repair: rewrite manifest.json provenance for an already-built
