@@ -4,9 +4,9 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前已交付内部构建：1.7.0（227）**。不可变标签 [`v1.7.0-beta.84`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.84) 固定源码 `9c756864`；[发布 run 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008) 完成云端构建、未签名 IPA 留存（739,368,613 字节，SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`）与签名上传，并发布 GitHub 预发布。Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` 已核实 `VALID`、未过期并在私有 Floe QA 组 `IN_BETA_TESTING`（2026-09-24T05:42:18Z，[核验 run 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720)），中英文测试说明均已读回。真机方面：Build 227 上已报告 MLX 本地模型普通对话与测速崩溃、PPT 预览后可编辑入口停住、从 IDE 文件树打开的 Word/Excel/PPT 停留在打开指示——这些是未修复的待处理回归，不代表通过。详见 [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md) 与 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)。
+**当前已交付内部构建：1.7.0（230）**。不可变标签 [`v1.7.0-beta.87`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87) 固定源码 `06c15e35`；[发布记录](TESTFLIGHT_1.7.0_BETA.md)分别记录云端构建、IPA、Apple 处理及私有 Floe QA 可安装状态。最新设备反馈仍报告 PPT/Excel 无法打开、Word 中文字体异常和本地模型无回复；这些不能标为真机验收通过。
 
-**源码状态——Build 227 之后的未发布修复（未宣布新构建号）**：PPT 编辑入口的有界 extent 引导后备、通过共享文档会话打开 IDE Office 标签、窄宽度 IDE Git 侧栏操作与 Linux 客体运行形状/核心选择链路仍在 `main` 上开发，不属于任何已交付构建。基础 Linux 模板与开发文档模板已分别公开为[基础组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-basic-20260923.1)和[开发文档组件预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-template-dev-document-20260924.1)，镜像及对应源码已固定；两种模板仍须通过 App 构建与安装路径检查，才可作为用户可下载项提供。这不是新 App、IPA 或 TestFlight 已发布的证据；云端 App 编译、定向 UI、上传、Apple 处理和 Floe QA 可安装状态将分别补记，真机验收仍单列。
+**Build 231 候选修复，尚未交付**：[Office 打开与字体](FLOE_231_OFFICE_REPAIR.md)、[本地模型回复与首条消息导航](FLOE_231_MLX_REPAIR.md)、[Linux 生命周期工具](FLOE_231_LINUX_LIFECYCLE.md)。Office 原生宿主已云端重建；本地模型云端真实权重测试暴露的续答停滞正在继续修复。双核启动与 Guest 软重启仍未完成，不能把工具入口存在视作底层能力可用。
 
 **历史内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
