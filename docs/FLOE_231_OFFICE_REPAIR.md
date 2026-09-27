@@ -1,12 +1,14 @@
 # Floe 231 — Office PPT/Excel open and Word CJK font repair
 
-Status: source repair in the shared branch `codex/build231-device-regressions`;
-lightweight host/script harnesses pass. The native host source changed, so the
-pinned framework is now fail-closed (`SOURCE AHEAD OF ARTIFACT`) until a cloud
-host rebuild is pinned, and no App build/device behaviour is claimed here.
-Every table/statement below is sanitized engineering evidence; there is no
-device or engine run in this document except where explicitly marked as
-*not run*.
+Status: source repair in `codex/build231-device-regressions`. The native host
+was rebuilt by [cloud run 36290382224](https://github.com/JiangNanGenius/floe-agent/actions/runs/36290382224)
+from host source commit `526bd6e0`, then downloaded and verified against the
+current host sources. `engine.lock.json` now pins artifact `10922251199`;
+`OfficeNativeHost.zip` SHA-256 is
+`6666f58dccf0763e4c39228be949604b8e90d1ecfd30f4f8fa0202e65e6c7bb1`.
+The read-only pin check passes. This proves host compile/link/Swift import and
+artifact identity, **not document opening, editable first paint or iPad save**.
+The App build and physical-device gates remain separate.
 
 ## Symptoms
 
@@ -154,17 +156,18 @@ registration check that was broken.
 | Hostile-input probe (extreme `at` values) | no crash, no unbounded output: 4 hostile events rendered 304 bytes; the ISO8601 renderer clamps absurd dates to a compact year |
 | `xcrun swiftc -parse` of the modified `OfficePresentationOpeningTests.swift` (file guard bypassed) | exit 0 (full FloeApp test bundle remains a CI/cloud run) |
 | Real CoreText pass over the staged families | 23/23 parse, register, resolve by PostScript name and cover CJK (`"中"`,`"文"`) in 0.13 s |
-| `python3 FloeAgent/scripts/pin_office_host_artifact.py --check` | exit 1, `SOURCE AHEAD OF ARTIFACT … FloeOfficeNative.mm` (expected: host source changed) |
+| Initial pin check before the rebuild | exit 1, `SOURCE AHEAD OF ARTIFACT … FloeOfficeNative.mm`; preserved as the original expected failure |
+| Pin check after verified run `36290382224` artifact was applied | exit 0; source hashes match; device capabilities correctly remain unproven |
 
 Not run / not proven here: no App build, no simulator App run (the simulator has
 no native engine slice), no engine open, no real first paint, no device font
 rendering, no original-file writeback. The first three local harnesses are
 mocks/synthetic and are labelled as such in their tests.
 
-## Required next steps (cloud, main thread)
+## Host rebuild procedure and remaining gates
 
-1. Commit and push the branch (`codex/build231-device-regressions`).
-2. Rebuild and re-pin the native host:
+1. Completed: host source committed and pushed at `526bd6e0`.
+2. Completed: native host rebuilt in run `36290382224`, archive digest verified and pin applied. Reproducible procedure:
    ```
    gh workflow run office-native-host.yml --ref codex/build231-device-regressions
    gh run watch <run-id>
@@ -180,7 +183,7 @@ mocks/synthetic and are labelled as such in their tests.
    Then `--apply` updates
    `engine.lock.json.qualifiedHostArtifact` (`runID`, artifact id, archive /
    executable / manifest hashes, `hostSourceSHA256`).
-3. Run the App build with the new pin, then device acceptance (below).
+3. Remaining: App build with the new pin, then device acceptance (below). The App embedding step must verify the engine-scanned font directory; the standalone host ZIP does not contain the App font set.
 
 ## Diagnostics export shape
 

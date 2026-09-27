@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 231: Office edit entry waits for document readiness; CJK fonts are staged in the engine discovery directory and verified by name. Office diagnostics survive relaunch. Local replies stream visible prose, a JSON scanning loop is fixed, and first-message navigation no longer waits on catalog refresh. Linux now exposes status/start/stop/hard-restart tools with exclusive restart ownership. Dual-core and guest soft reboot remain unavailable. Please test PPT and Excel opening in Workspace, Notes and IDE, Word Chinese text/save, ordinary local replies and at least two tool-enabled turns, then Office close/reopen. Cloud/component evidence does not replace iPad testing.",
+  "zh-Hans": "Build 231：Office 编辑入口等待文档就绪；中文字体进入引擎实际扫描目录并验证名称解析；Office 诊断日志可跨重启保留。本地回复改为流式显示，修复普通 JSON 解析循环，首条消息跳转不再等待目录刷新。Linux 新增状态、开机、关机和独占硬重启工具。双核与 Guest 软重启仍不可用。请重点测试工作区、手记、IDE 的 PPT/Excel 打开，Word 中文显示与保存，本地普通回复及至少两轮工具调用，以及 Office 退出重开。云端与组件结果不代替 iPad 实测。"
+}
