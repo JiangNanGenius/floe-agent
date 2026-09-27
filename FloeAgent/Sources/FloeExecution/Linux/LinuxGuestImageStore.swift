@@ -100,6 +100,12 @@ public struct LinuxGuestImageImportLimits: Sendable, Equatable {
 /// download or extraction never fills the device and then reports a generic
 /// I/O error.
 enum LinuxGuestVolumeSpace {
+    /// One import of the catalog-pinned sparse image writes the archive plus
+    /// its small members up front; the big disk member is written sparsely
+    /// and grows only with its non-zero content, so the honest pre-write
+    /// estimate is the archive plus working headroom, not the logical size.
+    static let extractionHeadroomBytes: Int64 = 128 * 1024 * 1024
+
     static func availableImportantBytes(for url: URL) -> Int64 {
         if let capacity = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
            let value = capacity.volumeAvailableCapacityForImportantUsage, value > 0 {
@@ -124,7 +130,9 @@ enum LinuxGuestVolumeSpace {
     /// and promotion errors when the pre-check could not predict the need.
     static func outOfSpaceError(_ error: Error, required: Int64) -> LinuxGuestImageInstallError? {
         let ns = error as NSError
-        guard ns.domain == NSCocoaErrorDomain, ns.code == 640 /* NSFileWriteOutOfSpaceErrorCode */ else {
+        let isOutOfSpace = (ns.domain == NSCocoaErrorDomain && ns.code == 640 /* NSFileWriteOutOfSpaceErrorCode */)
+            || (ns.domain == NSPOSIXErrorDomain && ns.code == 28 /* ENOSPC */)
+        guard isOutOfSpace else {
             return nil
         }
         let available = availableImportantBytes(
@@ -418,10 +426,32 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
 
 public enum LinuxGuestImageDistributionCatalog {
     /// One fixed component release. Keep the App default and download entry aligned.
-    public static let defaultImageID = "floe-debian13-riscv64-20260922.2"
+    ///
+    /// The default is the verified SMP image (CONFIG_SMP=y / NR_CPUS=2 kernel
+    /// plus fresh raw bbl, qualified by component-image-ci run 36330566148 and
+    /// distributed as published component release `floe-linux-guest-smp-20260928.1`
+    /// with complete corresponding source). The previous single-hart image
+    /// stays listed: environments already cloned from it keep their pinned
+    /// base until their normal install/preparation flow downloads a new image
+    /// — a catalog change never rebases or overwrites an existing disk.
+    public static let defaultImageID = "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1"
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!,
+            // The SMP image has no Gitee mirror asset yet; the GitHub release
+            // is the only verified source, so no mirror URLs are invented here.
+            mirrors: [],
+            archiveSHA512: "4f19064f764ed400194a830b38af57236c5cd3145f463f2352834c0c834c90f7d4c6df078cd7d831acf42b6620de09d758c62dc3dbed90694f5ea63ff21d84a8",
+            provenance: LinuxGuestImageProvenance(
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-smp-20260928.1",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/0ed79ce8d4fe3fe7fef545275e0a0f22ae9d53e4/FloeAgent/ThirdParty/TinyEMU/guest-image",
+                license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0 (CONFIG_SMP=y); bbl BSD-3-Clause; static glibc LGPL-2.1",
+                distributionAllowed: true
+            )
+        ),
+        LinuxGuestTrustedImage(
+            id: "floe-debian13-riscv64-20260922.2",
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/floe-linux-guest-floe-debian13-riscv64-20260922.2.zip")!,
             mirrors: [
                 // Public Gitee China mirror. Byte-identical asset; the
@@ -444,8 +474,50 @@ public enum LinuxGuestImageDistributionCatalog {
     ]
 
     public static func entry(id: String) -> LinuxGuestTrustedImage? {
-        bundled.first { $0.id == id }
+        if let bundled = bundled.first(where: { $0.id == id }) {
+            return bundled
+        }
+        // The mutable test registry exists only in debug/test builds; release
+        // builds read the compile-time `bundled` pins alone.
+        #if DEBUG
+        return testEntry(id: id)
+        #else
+        return nil
+        #endif
     }
+
+    // MARK: - Test-only pinned entries
+    //
+    // Unit tests cannot add compile-time pins; they register throwaway
+    // fixtures here instead. The trust shape is identical to `bundled`
+    // (an id plus its pinned archive SHA-512 and published provenance), the
+    // registry is internal so only `@testable` tests can write it, and the
+    // `#if DEBUG` gate keeps it (and the `entry(id:)` fallback) out of
+    // release binaries entirely.
+
+    #if DEBUG
+    private static let testEntriesLock = NSLock()
+    // Guarded by testEntriesLock for every read/write (see the accessors).
+    nonisolated(unsafe) private static var testEntries: [String: LinuxGuestTrustedImage] = [:]
+
+    static func registerTestEntry(_ entry: LinuxGuestTrustedImage) {
+        testEntriesLock.lock()
+        testEntries[entry.id] = entry
+        testEntriesLock.unlock()
+    }
+
+    static func clearTestEntries() {
+        testEntriesLock.lock()
+        testEntries.removeAll()
+        testEntriesLock.unlock()
+    }
+
+    private static func testEntry(id: String) -> LinuxGuestTrustedImage? {
+        testEntriesLock.lock()
+        defer { testEntriesLock.unlock() }
+        return testEntries[id]
+    }
+    #endif
 }
 
 /// Bounded HTTPS fetch for one image archive or a shard manifest. Implemented
@@ -482,6 +554,17 @@ public actor LinuxGuestImageInstallationService {
     /// the model tool, shell auto-preparation and the UI can never start
     /// duplicate transfers of the same archive.
     private var installsInFlight: [String: Task<LinuxGuestImage, Error>] = [:]
+
+    /// The largest extraction budget any import may declare. A catalog-pinned
+    /// image whose manifest is bound by the pinned archive SHA-512 may raise
+    /// its budget up to this ceiling (the 16 GiB logical disk stays far below
+    /// it on disk thanks to sparse writes); unknown archives keep the much
+    /// smaller `LinuxGuestImageImportLimits.standard` default.
+    static let maxDeclaredExtractedBytes: Int64 = 24 * 1024 * 1024 * 1024
+    /// Entries at or above this uncompressed size are written sparsely: runs
+    /// of zero bytes never touch the disk, which keeps a mostly-empty guest
+    /// disk from consuming real blocks during import.
+    static let sparseEntryThresholdBytes: Int64 = 64 * 1024 * 1024
 
     public init(
         root: URL,
@@ -534,10 +617,20 @@ public actor LinuxGuestImageInstallationService {
     /// Imports an already-downloaded zip archive. The expected SHA-512 must be
     /// supplied out of band (qualification record or pinned catalog); an empty
     /// digest is rejected.
+    ///
+    /// Unknown archives extract under the bounded `limits` (4 GiB logical
+    /// payload by default). A caller that has already bound the archive bytes
+    /// to a pinned manifest — the catalog install path — passes
+    /// `expectedImageID`: the manifest is read from inside the digest-verified
+    /// archive, its declared artifact total becomes the extraction budget
+    /// (capped by `maxDeclaredExtractedBytes`), and its id must match. Sparse
+    /// writing keeps a large declared disk from consuming real blocks.
     @discardableResult
     public func importArchive(
         at archiveURL: URL,
         expectedSHA512: String,
+        expectedImageID: String? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil,
         fileManager: FileManager = .default
     ) async throws -> LinuxGuestImage {
         let expected = expectedSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -553,9 +646,36 @@ public actor LinuxGuestImageInstallationService {
         guard actual == expected else {
             throw LinuxGuestImageInstallError.archiveDigestMismatch(expected: expected, actual: actual)
         }
+        // The archive bytes are pinned now. Raising the extraction budget
+        // beyond the standard unknown-archive limit is a *catalog-trusted*
+        // operation, not something any caller gets by naming an id: the id
+        // must be a catalog entry and its pinned digest must equal the digest
+        // this archive just verified against.
+        var extractionBudget = limits.maxExtractedBytes
+        if let expectedImageID {
+            guard let trusted = LinuxGuestImageDistributionCatalog.entry(id: expectedImageID),
+                  trusted.archiveSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == expected else {
+                throw LinuxGuestImageInstallError.noDistributableImage(
+                    id: expectedImageID,
+                    detail: "raising the extraction budget requires the id and archive SHA-512 pinned by this build's catalog"
+                )
+            }
+            let declared = try declaredArtifactBytes(in: archiveURL, expectedID: expectedImageID)
+            let (budget, overflow) = declared.addingReportingOverflow(LinuxGuestVolumeSpace.extractionHeadroomBytes)
+            guard !overflow, budget > 0, budget <= Self.maxDeclaredExtractedBytes else {
+                throw LinuxGuestImageInstallError.extractionLimitExceeded(
+                    "declared image payload of \(declared) bytes exceeds the \(Self.maxDeclaredExtractedBytes) byte ceiling"
+                )
+            }
+            extractionBudget = budget
+        }
         try fileManager.createDirectory(at: imagesRoot, withIntermediateDirectories: true)
-        // Estimated extraction working size for a compressed binary image.
-        let requiredForExtraction = archiveBytes * 2 + 32 * 1024 * 1024
+        // Working-set estimate: the archive itself (removed after import) plus
+        // the small members; the sparse disk member grows with real content,
+        // and a mid-write volume failure is reported as insufficient space.
+        let requiredForExtraction = expectedImageID == nil
+            ? archiveBytes * 2 + 32 * 1024 * 1024
+            : archiveBytes + LinuxGuestVolumeSpace.extractionHeadroomBytes
         try LinuxGuestVolumeSpace.requireAvailable(at: imagesRoot, required: requiredForExtraction)
         let staging = imagesRoot.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: staging) }
@@ -563,7 +683,8 @@ public actor LinuxGuestImageInstallationService {
         do {
             switch archiveURL.pathExtension.lowercased() {
             case "zip":
-                try extractZip(archiveURL, to: staging, fileManager: fileManager)
+                try extractZip(archiveURL, to: staging, fileManager: fileManager,
+                               extractionBudget: extractionBudget, isCancelled: isCancelled)
             default:
                 throw LinuxGuestImageInstallError.unsupportedArchive(
                     "\(archiveURL.lastPathComponent): import a zip archive or an extracted image directory"
@@ -578,6 +699,69 @@ public actor LinuxGuestImageInstallationService {
             }
             throw error
         }
+    }
+
+    /// Reads `manifest.json` from inside a zip archive and returns the total
+    /// bytes its artifacts declare. The archive must already be digest-verified
+    /// by the caller; the id must match `expectedID` and the manifest must be
+    /// qualified with a bound artifact list. The manifest member itself is
+    /// bounded so a hostile archive cannot stream an unbounded prefix before
+    /// the budget check ever runs.
+    private func declaredArtifactBytes(in archiveURL: URL, expectedID: String) throws -> Int64 {
+        let archive: Archive
+        do {
+            archive = try Archive(url: archiveURL, accessMode: .read)
+        } catch {
+            throw LinuxGuestImageInstallError.unsupportedArchive("cannot open \(archiveURL.lastPathComponent): \(error.localizedDescription)")
+        }
+        guard let entry = archive["manifest.json"] else {
+            throw LinuxGuestImageInstallError.manifestMissing("manifest.json in \(archiveURL.lastPathComponent)")
+        }
+        // A Floe image manifest is a few KiB; anything larger is not one.
+        // Compare in UInt64 first: an Int64 conversion of a malformed ZIP64
+        // size would trap before the limit check ever ran.
+        let manifestLimit: Int64 = 4 * 1024 * 1024
+        guard entry.type == .file, entry.uncompressedSize <= UInt64(manifestLimit) else {
+            throw LinuxGuestImageInstallError.manifestMissing("manifest.json exceeds the \(manifestLimit) byte manifest limit")
+        }
+        var data = Data()
+        do {
+            let crc = try archive.extract(entry, bufferSize: 1024 * 1024, skipCRC32: false, progress: nil) { chunk in
+                data.append(chunk)
+                guard data.count <= manifestLimit else {
+                    // The reader only stops on Progress cancellation; flag it.
+                    throw LinuxGuestImageInstallError.manifestMissing("manifest.json exceeds the \(manifestLimit) byte manifest limit")
+                }
+            }
+            guard crc == entry.checksum else {
+                throw LinuxGuestImageInstallError.manifestMissing("manifest.json failed its CRC-32 check")
+            }
+        } catch let installError as LinuxGuestImageInstallError {
+            throw installError
+        } catch {
+            throw LinuxGuestImageInstallError.manifestMissing("cannot read manifest.json: \(error.localizedDescription)")
+        }
+        guard let image = try? JSONDecoder().decode(LinuxGuestImage.self, from: data) else {
+            throw LinuxGuestImageInstallError.manifestMissing("manifest.json is not a Floe Linux image manifest")
+        }
+        guard image.id == expectedID else {
+            throw LinuxGuestImageInstallError.verificationFailed(
+                "archive manifest id \(image.id) does not match the pinned image \(expectedID)"
+            )
+        }
+        guard image.qualified, let artifacts = image.artifacts, !artifacts.isEmpty else {
+            throw LinuxGuestImageInstallError.verificationFailed("archive manifest declares no qualified bound artifacts")
+        }
+        var total: Int64 = 0
+        for artifact in artifacts {
+            // Every declared artifact must be positive; overflow fails closed.
+            let (sum, overflow) = total.addingReportingOverflow(artifact.bytes)
+            guard artifact.bytes > 0, !overflow else {
+                throw LinuxGuestImageInstallError.verificationFailed("archive manifest declares an invalid artifact size")
+            }
+            total = sum
+        }
+        return total
     }
 
     /// Imports an already-extracted directory that contains `manifest.json`
@@ -662,7 +846,13 @@ public actor LinuxGuestImageInstallationService {
             downloader: downloader,
             onProgress: onProgress
         )
-        return try await importArchive(at: stagingArchive, expectedSHA512: trusted.archiveSHA512, fileManager: fileManager)
+        return try await importArchive(
+            at: stagingArchive,
+            expectedSHA512: trusted.archiveSHA512,
+            expectedImageID: trusted.id,
+            isCancelled: { Task.isCancelled },
+            fileManager: fileManager
+        )
     }
 
     public func removeImage(id: String, fileManager: FileManager = .default) async throws {
@@ -743,7 +933,13 @@ public actor LinuxGuestImageInstallationService {
         return image
     }
 
-    private func extractZip(_ archiveURL: URL, to staging: URL, fileManager: FileManager) throws {
+    private func extractZip(
+        _ archiveURL: URL,
+        to staging: URL,
+        fileManager: FileManager,
+        extractionBudget: Int64,
+        isCancelled: (@Sendable () -> Bool)?
+    ) throws {
         let archive: Archive
         do {
             archive = try Archive(url: archiveURL, accessMode: .read)
@@ -754,6 +950,9 @@ public actor LinuxGuestImageInstallationService {
         var entries = 0
         var extractedBytes: Int64 = 0
         for entry in archive {
+            if isCancelled?() == true {
+                throw LinuxGuestImageInstallError.cancelled
+            }
             entries += 1
             guard entries <= limits.maxEntries else {
                 throw LinuxGuestImageInstallError.extractionLimitExceeded("more than \(limits.maxEntries) entries")
@@ -765,18 +964,97 @@ public actor LinuxGuestImageInstallationService {
             case .directory:
                 try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
             case .file:
-                extractedBytes += Int64(entry.uncompressedSize)
-                guard extractedBytes <= limits.maxExtractedBytes else {
-                    throw LinuxGuestImageInstallError.extractionLimitExceeded("more than \(limits.maxExtractedBytes) bytes")
+                // A malformed ZIP64 size must fail the limit check, not trap
+                // on an Int64 conversion; the running total reports overflow
+                // instead of wrapping past the budget.
+                guard entry.uncompressedSize <= UInt64(Int64.max) else {
+                    throw LinuxGuestImageInstallError.extractionLimitExceeded(
+                        "archive entry \(entry.path) declares an invalid size"
+                    )
                 }
+                let entrySize = Int64(entry.uncompressedSize)
+                let (newTotal, overflow) = extractedBytes.addingReportingOverflow(entrySize)
+                guard !overflow, newTotal <= extractionBudget else {
+                    throw LinuxGuestImageInstallError.extractionLimitExceeded(
+                        "archive declares more than \(extractionBudget) extracted bytes"
+                    )
+                }
+                extractedBytes = newTotal
                 try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 if fileManager.fileExists(atPath: destination.path) {
                     throw LinuxGuestImageInstallError.unsafeArchiveEntry("duplicate entry \(entry.path)")
                 }
-                _ = try archive.extract(entry, to: destination)
+                if Int64(entry.uncompressedSize) >= Self.sparseEntryThresholdBytes {
+                    try extractSparse(entry, from: archive, to: destination, fileManager: fileManager, isCancelled: isCancelled)
+                } else {
+                    _ = try archive.extract(entry, to: destination)
+                }
             case .symlink:
                 throw LinuxGuestImageInstallError.unsafeArchiveEntry("symlink \(entry.path)")
             }
+        }
+    }
+
+    /// Streams one large file entry to disk, skipping runs of zero bytes so
+    /// the extracted file is sparse: the logical length always equals the
+    /// entry's uncompressed size, but blocks that are all zeros consume no
+    /// real capacity. The reader's returned CRC-32 is compared against the
+    /// entry's recorded checksum (the consumer variant does not do that
+    /// itself), and cooperative cancellation aborts the write. All file
+    /// operations use the throwing Swift APIs so a full volume surfaces as a
+    /// mapped `insufficientSpace` error instead of an Objective-C exception.
+    private func extractSparse(
+        _ entry: Entry,
+        from archive: Archive,
+        to destination: URL,
+        fileManager: FileManager,
+        isCancelled: (@Sendable () -> Bool)?
+    ) throws {
+        guard fileManager.createFile(atPath: destination.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: destination) else {
+            throw LinuxGuestImageInstallError.verificationFailed("cannot create \(destination.lastPathComponent) for sparse writing")
+        }
+        defer { try? handle.close() }
+        let progress = Progress(totalUnitCount: Int64(entry.uncompressedSize))
+        var logicalOffset: UInt64 = 0
+        do {
+            let crc = try archive.extract(entry, bufferSize: 4 * 1024 * 1024, skipCRC32: false, progress: progress) { chunk in
+                if isCancelled?() == true {
+                    progress.cancel()
+                    return
+                }
+                if chunk.isEmpty { return }
+                if chunk.contains(where: { $0 != 0 }) {
+                    let fileOffset = try handle.offset()
+                    if fileOffset != logicalOffset {
+                        try handle.seek(toOffset: logicalOffset)
+                    }
+                    try handle.write(contentsOf: chunk)
+                }
+                logicalOffset += UInt64(chunk.count)
+            }
+            guard crc == entry.checksum else {
+                throw LinuxGuestImageInstallError.verificationFailed("sparse entry \(entry.path) failed its CRC-32 check")
+            }
+        } catch {
+            if let archiveError = error as? Archive.ArchiveError, case .cancelledOperation = archiveError {
+                throw LinuxGuestImageInstallError.cancelled
+            }
+            if let space = LinuxGuestVolumeSpace.outOfSpaceError(error, required: Int64(entry.uncompressedSize)) {
+                throw space
+            }
+            throw error
+        }
+        guard logicalOffset == entry.uncompressedSize else {
+            throw LinuxGuestImageInstallError.verificationFailed(
+                "sparse entry \(entry.path) wrote \(logicalOffset) of \(entry.uncompressedSize) bytes"
+            )
+        }
+        // A tail of zeros (or an all-zero member) never had blocks written;
+        // extend the file to its logical length, which stays a hole.
+        let fileOffset = try handle.offset()
+        if fileOffset < entry.uncompressedSize {
+            try handle.truncate(atOffset: entry.uncompressedSize)
         }
     }
 

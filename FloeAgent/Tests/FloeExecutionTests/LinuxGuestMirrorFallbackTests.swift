@@ -24,10 +24,20 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
     // MARK: catalog ordering
 
     func testPinnedImageOrdersGitHubFirstAndGiteeSecond() {
-        let trusted = LinuxGuestImageDistributionCatalog.entry(
+        // The mirror contract applies to the mirrored entry: the current SMP
+        // default ships GitHub-primary only (no Gitee mirror asset is
+        // published for it, and none may be invented), while the legacy
+        // single-hart image keeps its verified Gitee mirror as the fallback.
+        let current = LinuxGuestImageDistributionCatalog.entry(
             id: LinuxGuestImageDistributionCatalog.defaultImageID
         )
-        guard let trusted else { return XCTFail("the catalog pins no default image") }
+        guard let current else { return XCTFail("the catalog pins no default image") }
+        XCTAssertEqual(current.archiveURL.host, "github.com", "GitHub Releases is the trust-bearing primary")
+        XCTAssertEqual(current.archiveURL.scheme, "https")
+        XCTAssertEqual(current.mirrors.count, 0, "the SMP default pins no unverified mirror")
+
+        let trusted = LinuxGuestImageDistributionCatalog.entry(id: "floe-debian13-riscv64-20260922.2")
+        guard let trusted else { return XCTFail("the catalog pins no mirrored image") }
 
         XCTAssertEqual(trusted.archiveURL.host, "github.com", "GitHub Releases is the trust-bearing primary")
         XCTAssertEqual(trusted.archiveURL.scheme, "https")
