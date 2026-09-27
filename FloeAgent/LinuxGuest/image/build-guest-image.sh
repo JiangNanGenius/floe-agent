@@ -75,10 +75,12 @@
 #                         dropped from the qualification evidence text.
 #   --smp-capable         declare `smp_capable: true` in the manifest for THIS
 #                         image. Requires --boot-dir with a real
-#                         SMP-BUILD.txt ("multi-hart IPI path present"), so a
-#                         pair that is not the CONFIG_SMP dual-hart build can
-#                         never carry the claim. The app admits a second hart
-#                         only for a verified image that declares it.
+#                         SMP-BUILD.txt carrying the exact positive firmware
+#                         token 'FW-MULTI-HART: mentry.o relocates
+#                         disabled_hart_mask (MAX_HARTS>1 IPI path present)',
+#                         so a pair that is not the CONFIG_SMP dual-hart build
+#                         can never carry the claim. The app admits a second
+#                         hart only for a verified image that declares it.
 #   --boot-max-s N        per-boot timeout seconds (default 2700)
 #   --ram MB              guest RAM (default 1024)
 #   --no-zip              skip the distributable zip (manifest still written)
@@ -92,6 +94,31 @@ die() {
 
 step() {
     printf '\n=== [%s] %s\n' "$(date -u +%H:%M:%S)" "$*"
+}
+
+# Exact firmware multi-hart evidence contract with build-kernel-bbl.sh.
+# The producer writes one FW-MULTI-HART verdict line into SMP-BUILD.txt:
+#   positive: 'FW-MULTI-HART: mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)'
+#   negative: 'FW-MULTI-HART: MISSING- ...'
+# Accept ONLY the exact positive token (grep -F, fixed string): a generic
+# 'IPI' grep cannot prove the multi-hart startup path was compiled in, and a
+# MISSING verdict (or no verdict at all) must fail the build. This is the
+# cloud36328715843 failure: the consumer pattern was not a substring of the
+# producer's actual positive sentence. Keep the two sides byte-identical.
+FW_MULTI_HART_TOKEN='FW-MULTI-HART: mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)'
+
+require_fw_multi_hart() { # require_fw_multi_hart <SMP-BUILD.txt> [context]
+    local evidence_file="$1" context="${2:-$1}"
+    [ -f "$evidence_file" ] \
+        || die "firmware multi-hart evidence missing: $context ($evidence_file not found)"
+    # an explicit producer MISSING verdict is reported as such, never as a
+    # generic token mismatch; it is unacceptable even if a malformed file
+    # also carried a positive-looking line.
+    if grep -Fq 'FW-MULTI-HART: MISSING' "$evidence_file"; then
+        die "firmware multi-hart evidence is a MISSING verdict in $context"
+    fi
+    grep -Fq "$FW_MULTI_HART_TOKEN" "$evidence_file" \
+        || die "firmware multi-hart evidence missing in $context: exact positive token not found"
 }
 
 # The workflow invokes this script under sudo, but later workflow steps run as
@@ -159,10 +186,7 @@ case "$provision" in
 esac
 if [ "$smp_capable" = 1 ]; then
     [ -n "$boot_dir" ] || die "--smp-capable requires --boot-dir with the CONFIG_SMP kernel/firmware pair"
-    [ -f "$boot_dir/SMP-BUILD.txt" ] \
-        || die "--smp-capable requires $boot_dir/SMP-BUILD.txt (the SMP build evidence)"
-    grep -q 'multi-hart IPI path present' "$boot_dir/SMP-BUILD.txt" \
-        || die "--smp-capable: $boot_dir/SMP-BUILD.txt has no firmware multi-hart evidence"
+    require_fw_multi_hart "$boot_dir/SMP-BUILD.txt" "--smp-capable"
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -292,8 +316,7 @@ if [ -n "$boot_dir" ]; then
     if [ -f "$boot_dir/SMP-BUILD.txt" ]; then
         cp "$boot_dir/SMP-BUILD.txt" "$evidence_dir/boot-pair-SMP-BUILD.txt"
         cp "$boot_dir/BOOT-PAIR.txt" "$evidence_dir/boot-pair-BOOT-PAIR.txt" 2>/dev/null || true
-        grep -q 'multi-hart IPI path present' "$boot_dir/SMP-BUILD.txt" \
-            || die "--boot-dir SMP-BUILD.txt has no firmware multi-hart evidence"
+        require_fw_multi_hart "$boot_dir/SMP-BUILD.txt" "--boot-dir"
     fi
     cp "$boot_dir/bbl64.bin" "$image_dir/bbl64.bin"
     cp "$boot_dir/kernel-riscv64.bin" "$image_dir/kernel-riscv64.bin"

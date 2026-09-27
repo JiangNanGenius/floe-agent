@@ -32,6 +32,15 @@ die() {
 
 log() { printf 'build-kernel-bbl: %s\n' "$*"; }
 
+# Exact producer -> consumer evidence contract for the firmware multi-hart
+# IPI startup path. build-guest-image.sh and .github/workflows/
+# component-image-ci.yml match this string EXACTLY (grep -F) and reject any
+# MISSING verdict; never loosen either side to a generic "IPI" grep. Cloud
+# run cloud36328715843 failed on contract drift: the consumer grepped
+# 'multi-hart IPI path present', which is not a substring of the parenthesised
+# positive sentence the producer wrote into SMP-BUILD.txt.
+FW_MULTI_HART_TOKEN='FW-MULTI-HART: mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)'
+
 out=""
 repo=""
 pins=""
@@ -300,9 +309,12 @@ if [ "$rebuild" = 1 ]; then
     mentry_obj="$(find "$rpk" -name mentry.o -not -path '*/.git/*' 2>/dev/null | head -1)"
     if [ -n "$mentry_obj" ] && \
        riscv64-linux-gnu-readelf -r "$mentry_obj" 2>/dev/null | grep -q disabled_hart_mask; then
-        fw_multi_hart="mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)"
+        fw_multi_hart="$FW_MULTI_HART_TOKEN"
     else
-        fw_multi_hart="MISSING: no mentry.o disabled_hart_mask relocation (MAX_HARTS==1)"
+        # Negative verdict. Consumers must reject it; the same distinctive
+        # token prefix makes a stale/missing positive line unforgeable by a
+        # file that only mentions the IPI words generically.
+        fw_multi_hart='FW-MULTI-HART: MISSING: no mentry.o disabled_hart_mask relocation (MAX_HARTS==1)'
     fi
     if [ -n "$mentry_obj" ] && \
        riscv64-linux-gnu-readelf -A "$mentry_obj" 2>/dev/null | grep -qi "atomic"; then
@@ -425,9 +437,12 @@ PY
             printf 'firmware: riscv-pk --with-arch=rv64gc => __riscv_atomic => MAX_HARTS 8, mentry.S multi-hart IPI path\n'
             printf 'guest serial cross-check: this pair was produced by a cloud build; stdout is not evidence of a two-hart boot\n'
             printf 'multi-hart evidence: %s\n' "$fw_multi_hart"
-            case "$fw_multi_hart" in
-                MISSING*) die "--smp built a single-hart boot loader ($fw_multi_hart)" ;;
-            esac
+            # Producer-side gate: only the exact positive token may ship; a
+            # MISSING verdict (or any future drift in the evidence string)
+            # aborts --smp instead of writing a rejectable SMP-BUILD.txt.
+            if [ "$fw_multi_hart" != "$FW_MULTI_HART_TOKEN" ]; then
+                die "--smp built a single-hart boot loader ($fw_multi_hart)"
+            fi
             grep -E '^CONFIG_(SMP|NR_CPUS|RISCV_INTC|RISCV_PLIC|RISCV_TIMER)=' \
                 "$out/riscv-linux-src/.config" || true
             printf '\ninstall into a --boot-dir as: bbl64.bin and kernel-riscv64.bin from %s/boot\n' "$out"

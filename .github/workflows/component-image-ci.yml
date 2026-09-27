@@ -130,6 +130,16 @@ jobs:
           python3 -c 'import json; json.load(open("FloeAgent/ThirdParty/TinyEMU/guest-image/pinned-inputs.json"))'
           python3 FloeAgent/LinuxGuest/image/image_id.py --self-test
           python3 FloeAgent/LinuxGuest/image/collect-pypi-sources.py --self-test
+          # SMP firmware evidence contract drift guard: the producer token
+          # must be byte-identical in the producer, the image consumer and
+          # this workflow (cloud36328715843 was producer/consumer wording
+          # drift; a generic "IPI" grep is not evidence).
+          fw_token='FW-MULTI-HART: mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)'
+          for f in FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh \
+                   FloeAgent/LinuxGuest/image/build-guest-image.sh \
+                   .github/workflows/component-image-ci.yml; do
+            grep -Fq "$fw_token" "$f" || { echo "SMP evidence token missing or drifted in $f"; exit 1; }
+          done
           echo "script lint ok"
 
       - name: Runner clock parser (native pure-function check)
@@ -615,7 +625,17 @@ jobs:
           # the config the boot pair was built with is part of the artifact
           grep -q '^CONFIG_SMP=y$' "$U/riscv-linux-src/.config" || { echo "CONFIG_SMP=y missing"; exit 1; }
           grep -q '^CONFIG_NR_CPUS=2$' "$U/riscv-linux-src/.config" || { echo "CONFIG_NR_CPUS=2 missing"; exit 1; }
-          grep -q 'multi-hart IPI path present' "$U/SMP-BUILD.txt" || { echo "firmware multi-hart evidence missing"; exit 1; }
+          # Exact producer evidence contract (build-kernel-bbl.sh
+          # FW_MULTI_HART_TOKEN): only the positive token is accepted and a
+          # MISSING verdict always fails with that explicit verdict. Never
+          # loosen this to a generic IPI grep (run 36328715843 failed on
+          # producer/consumer wording drift).
+          fw_token='FW-MULTI-HART: mentry.o relocates disabled_hart_mask (MAX_HARTS>1 IPI path present)'
+          if grep -Fq 'FW-MULTI-HART: MISSING' "$U/SMP-BUILD.txt"; then
+            echo "firmware multi-hart evidence is a MISSING verdict"; exit 1
+          fi
+          grep -Fq "$fw_token" "$U/SMP-BUILD.txt" \
+            || { echo "firmware multi-hart evidence missing (exact positive token not found)"; exit 1; }
           {
             printf 'dual-hart (SMP) rebuild of the pinned riscv-pk / riscv-linux revisions\n'
             printf 'firmware: raw objcopy -O binary bbl (ELF entry/lowest LOAD verified 0x80000000)\n'
