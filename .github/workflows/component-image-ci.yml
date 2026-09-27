@@ -669,18 +669,35 @@ jobs:
         id: probe
         run: |
           set -euo pipefail
-          if bash FloeAgent/LinuxGuest/image/build-guest-image.sh --help 2>&1 | grep -q -- '--boot-dir'; then
+          # Capture the real --help output and grep the FILE. Piping --help
+          # into `grep -q` is a false negative under pipefail: grep exits as
+          # soon as it matches, the writer can die with SIGPIPE (141), and
+          # pipefail promotes that to a failed probe even though the hook is
+          # present. Both contract tokens are checked: run 36329823280 failed
+          # because the help output was a fixed line range that no longer
+          # contained --boot-dir (or --smp-capable).
+          help_file="${{ runner.temp }}/floe-smp/build-guest-image-help.txt"
+          help_rc=0
+          bash FloeAgent/LinuxGuest/image/build-guest-image.sh --help >"$help_file" 2>&1 || help_rc=$?
+          if [ "$help_rc" = 0 ] \
+             && grep -Fq -- '--boot-dir' "$help_file" \
+             && grep -Fq -- '--smp-capable' "$help_file"; then
             echo "hook=present" >> "$GITHUB_OUTPUT"
-            echo "assembly hook present: build-guest-image.sh --boot-dir"
+            echo "assembly hook present: build-guest-image.sh --boot-dir --smp-capable"
           else
             echo "hook=missing" >> "$GITHUB_OUTPUT"
             {
               printf 'DEPENDENCY FAILURE: assembling an image with freshly built kernel+bbl\n'
               printf 'requires the A-side hook:\n\n'
-              printf '    build-guest-image.sh --boot-dir DIR\n\n'
+              printf '    build-guest-image.sh --boot-dir DIR --smp-capable\n\n'
               printf 'where DIR contains bbl64.bin and kernel-riscv64.bin built by\n'
               printf 'build-kernel-bbl.sh --rebuild; the script must record their sha256\n'
               printf 'in the manifest and keep the pinned-inputs check skippable for them.\n\n'
+              printf 'help probe: --help rc=%s, --boot-dir matches=%s, --smp-capable matches=%s\n' \
+                "$help_rc" \
+                "$(grep -Fc -- '--boot-dir' "$help_file" || true)" \
+                "$(grep -Fc -- '--smp-capable' "$help_file" || true)"
+              printf 'help output kept at %s\n\n' "$help_file"
               printf 'owner: job-40f1f1e9603240dd (A: engine/adapter/guest-image/runner)\n\n'
               printf 'No image was assembled. The fresh kernel+bbl bytes and their hashes\n'
               printf 'are uploaded as evidence and must not be presented as the shipped image.\n'
@@ -768,6 +785,7 @@ jobs:
           path: |
             ${{ runner.temp }}/floe-smp/fresh-boot-files.txt
             ${{ runner.temp }}/floe-smp/DEPENDENCY.md
+            ${{ runner.temp }}/floe-smp/build-guest-image-help.txt
             ${{ runner.temp }}/floe-smp/kernel-bbl-rebuild.log
             ${{ runner.temp }}/floe-smp/upstream/SOURCE-MANIFEST.md
             ${{ runner.temp }}/floe-smp/upstream/rebuild-riscv-pk.log

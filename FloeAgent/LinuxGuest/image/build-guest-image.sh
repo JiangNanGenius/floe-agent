@@ -172,7 +172,16 @@ while [ $# -gt 0 ]; do
         --ram) ram_mb="${2:-}"; shift 2 ;;
         --no-zip) make_zip=0; shift ;;
         --skip-qualified) claim_qualified=0; shift ;;
-        -h|--help) sed -n '2,63p' "$0"; exit 0 ;;
+        -h|--help)
+            # Print the COMPLETE header comment. The old fixed range
+            # (`sed -n '2,63p'`) silently dropped options documented after it,
+            # so the workflow's assembly-hook probe misread the present
+            # --boot-dir/--smp-capable contract as missing (run 36329823280).
+            # Print line 2 up to the first body line: a newly documented option
+            # can never fall outside the help output again.
+            awk 'NR > 1 && $0 == "set -euo pipefail" { exit } NR > 1 { print }' "$0"
+            exit 0
+            ;;
         *) die "unknown argument: $1" ;;
     esac
 done
