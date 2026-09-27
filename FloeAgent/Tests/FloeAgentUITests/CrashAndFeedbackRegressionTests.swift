@@ -587,6 +587,135 @@ struct CrashAndFeedbackRegressionTests {
         #expect(bounded.contains("middle diagnostics omitted"))
     }
 
+    /// Synthetic only. Mirrors the export shape that lost the Build 231
+    /// evidence: a large MetricKit full-payload block (kept from build 229)
+    /// sits between the current Office stage trace and the runtime log flood,
+    /// so a plain head/tail bound deleted the current sections. No device or
+    /// user content is used.
+    private func syntheticOversizedDiagnosticReport() -> String {
+        let oldPayload = "{\"diagnosticMetaData\":{\"appBuildVersion\":\"229\"},\"padding\":\""
+            + String(repeating: "m", count: 120_000) + "\"}"
+        var officeLines: [String] = (0..<120).map { index in
+            "at=2026-09-27T14:00:00Z session=0F1E2D3C generation=7 stage=paint.chunk.\(index)"
+                + " detail=\(String(repeating: "s", count: 200))"
+        }
+        officeLines.append("at=2026-09-27T14:02:00Z session=0F1E2D3C generation=7 stage=hostExit code=1")
+        let localLines = [
+            "[2026-09-27T14:01:00.000Z] [providers] [info] localInferenceEngineLoadStarted model=qwen3.8-4b-heretic-mlx4",
+            "[2026-09-27T14:01:01.000Z] [providers] [info] localInferencePrepareStarted inputTokens=5436 context=8192",
+            "[2026-09-27T14:01:59.000Z] [providers] [error] localInferenceFailed lastFailureStage=prefill lastFailureDomain=mlx lastFailureCode=OOM"
+        ]
+        let logFiller = (0..<4_000).map { index in
+            "[2026-09-27T13:55:00.000Z] [app] [info] linuxMetricsSampleDiscarded tick=\(index) 采样原因=未验证"
+        }
+        let logTail = [
+            "[2026-09-27T14:11:39.000Z] [app] [info] processLaunch previousExit=noTerminationCallback; requiresMetricKitOrIPS",
+            "[2026-09-27T14:11:40.000Z] [providers] [info] localInferenceStarted trace=BEEF model=qwen3.8-4b-heretic-mlx4"
+        ]
+        var sections: [String] = []
+        sections.append(DiagnosticsSection.reportIdentity.header + "\n"
+            + "Floe Agent Diagnostics\nversion: 1.7.0\nbuild: 231\ngenerated_at: 2026-09-27T14:12:00Z")
+        sections.append(DiagnosticsSection.systemRuntime.header + "\n"
+            + "previous_exit: noTerminationCallback; requiresMetricKitOrIPS")
+        sections.append(DiagnosticsSection.officeStageTrace.header + "\n"
+            + "events_retained=512 events_exported=\(officeLines.count)\n" + officeLines.joined(separator: "\n"))
+        sections.append(DiagnosticsSection.localInference.header + "\n"
+            + "events_retained=39 events_exported=\(localLines.count)\n" + localLines.joined(separator: "\n"))
+        sections.append(DiagnosticsSection.taskSummaries.header + "\n"
+            + "run=A1B2C3D4-0000-4000-8000-000000000232 state=streamingModel")
+        sections.append(DiagnosticsSection.metricKitSummaries.header + "\n"
+            + "[metrickit build=229 kind=crashDiagnostics] {\"diagnostics\":[{\"kind\":\"crashDiagnostics\","
+            + "\"diagnosticMetaData\":{\"appBuildVersion\":\"229\",\"terminationReason\":\"Namespace SIGNAL\"}}],"
+            + "\"floeSummaryVersion\":1}")
+        sections.append(DiagnosticsSection.metricKitFullPayloads.header + "\n"
+            + Array(repeating: oldPayload, count: 8).joined(separator: "\n"))
+        sections.append(DiagnosticsSection.recentLog.header + "\n"
+            + (logFiller + logTail).joined(separator: "\n"))
+        return sections.joined(separator: "\n")
+    }
+
+    @Test("Oversized MetricKit and runtime flood keep current Office, local inference and build identity")
+    func oversizedDiagnosticsKeepCurrentSections() {
+        let bounded = FeedbackUploadService.boundedDiagnostics(syntheticOversizedDiagnosticReport())
+
+        #expect(bounded.utf8.count <= FeedbackUploadService.maximumDiagnosticsBytes)
+        #expect(bounded.count <= FeedbackUploadService.maximumDiagnosticsCharacters)
+
+        // Current app/build identity and the current evidence survive.
+        #expect(bounded.contains("build: 231"))
+        #expect(bounded.contains("stage=hostExit"))
+        #expect(bounded.contains("localInferenceFailed lastFailureStage=prefill"))
+        #expect(bounded.contains("previous_exit: noTerminationCallback"))
+        #expect(bounded.contains("[metrickit build=229 kind=crashDiagnostics]"))
+
+        // The oversized full payloads are dropped explicitly, never silently.
+        #expect(bounded.contains("metrickit_full_payloads omitted by client"))
+        #expect(bounded.contains("section office_stage_trace truncated by client"))
+        #expect(bounded.contains("section recent_log truncated by client"))
+        #expect(bounded.contains("omitted="))
+        #expect(!bounded.contains(String(repeating: "m", count: 4_096)))
+
+        // Every crucial byte survives the nineteen-chunk UTF-8 transport bound.
+        let chunks = FeedbackUploadService.diagnosticsChunks(bounded)
+        #expect(chunks.count <= 19)
+        #expect(chunks.allSatisfy { $0.utf8.count <= 7_000 })
+        #expect(chunks.joined() == bounded)
+        let reassembled = chunks.joined()
+        #expect(reassembled.contains("build: 231"))
+        #expect(reassembled.contains("stage=hostExit"))
+        #expect(reassembled.contains("localInferenceFailed"))
+        #expect(reassembled.contains("previous_exit: noTerminationCallback"))
+    }
+
+    @Test("Oversized diagnostics upload stays inside the multipart event budget")
+    func oversizedDiagnosticsUploadIsBounded() throws {
+        let request = try FeedbackUploadService.makeRequest(
+            FeedbackSubmission(
+                problem: "PPT 编辑器打开后崩溃，本地模型没有回复",
+                diagnostics: syntheticOversizedDiagnosticReport()
+            ),
+            boundary: "DiagnosticBoundary"
+        )
+        let body = try #require(request.httpBody.flatMap { String(data: $0, encoding: .utf8) })
+        let diagnosticsEvents = body.components(separatedBy: "\"client_event_id\":\"diagnostics-").count - 1
+        #expect(diagnosticsEvents >= 2)
+        #expect(diagnosticsEvents <= 19)
+        #expect(body.contains("build: 231"))
+        #expect(body.contains("stage=hostExit"))
+        #expect(body.contains("localInferenceFailed"))
+        #expect(body.contains("metrickit_full_payloads omitted by client"))
+    }
+
+    @Test("MetricKit summaries stay version-labelled and split from full payloads")
+    @MainActor func metricKitSectionsAreLabelled() {
+        let report = "previous_exit: unknown\n== MetricKit summaries ==\n"
+            + "{\"diagnostics\":[{\"kind\":\"crashDiagnostics\",\"diagnosticMetaData\":{\"appBuildVersion\":\"231\"}}]}\n"
+            + "== MetricKit full payloads ==\n"
+            + "{\"callStackTree\":\"synthetic\"}"
+        let sections = DiagnosticsExporter.splitRuntimeEvidence(report)
+        #expect(sections.runtime == "previous_exit: unknown")
+        #expect(sections.fullPayloads == "{\"callStackTree\":\"synthetic\"}")
+        let labelled = DiagnosticsExporter.labelledMetricKitSummaries(sections.summaries)
+        #expect(labelled.contains("[metrickit build=231 kind=crashDiagnostics]"))
+        #expect(labelled.contains("\"appBuildVersion\":\"231\""))
+    }
+
+    @Test("Diagnostics render labels every section and keeps build identity first")
+    @MainActor func diagnosticsRenderIsSectioned() async throws {
+        let center = SettingsCenter(environment: AppEnvironment.preview())
+        let rendered = await DiagnosticsExporter.render(center: center)
+        for section in DiagnosticsSection.allCases {
+            #expect(rendered.contains(section.header))
+        }
+        let identity = try #require(rendered.range(of: DiagnosticsSection.reportIdentity.header))
+        let office = try #require(rendered.range(of: DiagnosticsSection.officeStageTrace.header))
+        let log = try #require(rendered.range(of: DiagnosticsSection.recentLog.header))
+        #expect(identity.lowerBound < office.lowerBound)
+        #expect(office.lowerBound < log.lowerBound)
+        #expect(rendered.contains("version: "))
+        #expect(rendered.contains("build: "))
+    }
+
     @Test("Feedback images are bounded multipart attachments")
     func feedbackImagesAreMultipartAttachments() throws {
         let jpeg = Data([0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9])

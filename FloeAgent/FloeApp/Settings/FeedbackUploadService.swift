@@ -93,7 +93,12 @@ enum FeedbackUploadService {
     // the report summary and keep every diagnostics chunk comfortably below
     // the server's UTF-8 byte limit.
     static let maximumDiagnosticsCharacters = 120_000
+    /// Transport byte bound: nineteen 7,000-byte chunks. The renderer must
+    /// satisfy both this and the legacy character bound; a mostly-ASCII
+    /// report is limited by characters, a CJK report by bytes.
+    static let maximumDiagnosticsBytes = 131_072
     private static let diagnosticsChunkBytes = 7_000
+    private static let maximumDiagnosticsChunks = 19
 
     /// Uploads only after the user explicitly presses Submit. The public app
     /// endpoint is server-rate-limited and deliberately requires no reusable
@@ -194,7 +199,7 @@ enum FeedbackUploadService {
             ]
         )]
         if let diagnostics {
-            for (index, chunk) in utf8Chunks(diagnostics, maximumBytes: diagnosticsChunkBytes).prefix(19).enumerated() {
+            for (index, chunk) in diagnosticsChunks(diagnostics).enumerated() {
                 events.append(ReportEvent(
                     clientEventID: "diagnostics-\(submission.id.uuidString)-\(index)",
                     occurredAt: reportTimestamp(),
@@ -253,15 +258,274 @@ enum FeedbackUploadService {
         return request
     }
 
-    /// Preserve both the environment/header and the most recent failure
-    /// trace. Keeping only a suffix made provider/model configuration vanish
-    /// from large reports, while keeping only a prefix lost the actual crash.
+    /// Preserves the environment/header, every current diagnostic section and
+    /// the newest failure trace. A plain head/tail bound silently deleted the
+    /// middle of the document: a large MetricKit full-payload block (often
+    /// from an older build) sits before the Office stage trace, the local
+    /// inference evidence and the durable task summaries, so all of those
+    /// newer sections vanished from the uploaded report.
+    ///
+    /// `DiagnosticsExporter` labels each region with a stable
+    /// `== section <id> ==` header. This bound allocates a per-section byte
+    /// allowance instead, keeps the oldest and newest lines of a truncated
+    /// region, and writes explicit per-section truncation counts. The result
+    /// always satisfies both `maximumDiagnosticsBytes` (the 19-chunk
+    /// transport) and `maximumDiagnosticsCharacters`. Unstructured text
+    /// (older exports, pasted logs) falls back to a byte- and
+    /// character-bounded head/tail with an explicit omission count.
     static func boundedDiagnostics(_ text: String) -> String {
-        guard text.count > maximumDiagnosticsCharacters else { return text }
-        let headCount = min(20_000, maximumDiagnosticsCharacters / 4)
-        let marker = "\n\n== middle diagnostics omitted by client ==\n\n"
-        let tailCount = max(0, maximumDiagnosticsCharacters - headCount - marker.count)
-        return String(text.prefix(headCount)) + marker + String(text.suffix(tailCount))
+        let sections = parseDiagnosticsSections(text)
+        guard sections.contains(where: { $0.id != nil }) else {
+            return legacyBoundedDiagnostics(text)
+        }
+
+        var rendered: [String] = []
+        var usedBytes = 0
+        var usedCharacters = 0
+        // Reserve one truncation marker per possible section so a marker can
+        // never push the assembled report past the transport bound.
+        let markerReserve = 240
+        let markerBudget = (DiagnosticsSection.allCases.count + 1) * markerReserve
+        let bodyBudgetBytes = max(0, maximumDiagnosticsBytes - markerBudget)
+        let bodyBudgetCharacters = max(0, maximumDiagnosticsCharacters - markerBudget)
+        for slice in sections {
+            let header = slice.id?.header
+            let headerCost = header.map { $0.utf8.count + 1 } ?? 0
+            let remainingBytes = max(0, bodyBudgetBytes - usedBytes - headerCost)
+            let remainingCharacters = max(0, bodyBudgetCharacters - usedCharacters - headerCost)
+            let body: String
+            if slice.id == .metricKitFullPayloads {
+                body = metricKitFullPayloadStub(slice.body)
+            } else if let id = slice.id {
+                let allowance = min(sectionAllowance(id), remainingBytes, remainingCharacters)
+                body = boundedSection(id: id, body: slice.body, allowance: allowance)
+            } else {
+                // Unlabelled preamble from a partially updated export: keep it
+                // (identity fields live there) but never at the cost of the
+                // named sections.
+                let allowance = min(2_000, remainingBytes, remainingCharacters)
+                body = boundedSection(id: .reportIdentity, body: slice.body, allowance: allowance)
+                if body.isEmpty { continue }
+            }
+            let contribution = header.map { $0 + "\n" + body } ?? body
+            if !rendered.isEmpty {
+                usedBytes += 1
+                usedCharacters += 1
+            }
+            rendered.append(contribution)
+            usedBytes += contribution.utf8.count
+            usedCharacters += contribution.count
+        }
+        return rendered.joined(separator: "\n")
+    }
+
+    /// UTF-8 chunks exactly as the upload sends them. The section-aware bound
+    /// keeps the payload within `maximumDiagnosticsChunks`; if a future
+    /// caller passes an unbounded string anyway, the overflow is made
+    /// explicit (oldest middle dropped, newest tail kept) instead of being
+    /// silently truncated by `prefix`.
+    static func diagnosticsChunks(_ value: String) -> [String] {
+        let chunks = utf8Chunks(value, maximumBytes: diagnosticsChunkBytes)
+        guard chunks.count > maximumDiagnosticsChunks else { return chunks }
+        let keptHead = Array(chunks.prefix(maximumDiagnosticsChunks - 1))
+        let dropped = chunks.dropFirst(maximumDiagnosticsChunks - 1).dropLast()
+        let droppedBytes = dropped.reduce(0) { $0 + $1.utf8.count }
+        let marker = "[client diagnostics overflow: \(droppedBytes) middle bytes/\(dropped.count) chunks omitted]\n"
+        let newest = clippedSuffix(chunks[chunks.count - 1],
+                                   maximumBytes: max(0, diagnosticsChunkBytes - marker.utf8.count))
+        return keptHead + [marker + newest]
+    }
+
+    // MARK: - Section parsing and budgeting
+
+    struct DiagnosticsSectionSlice {
+        let id: DiagnosticsSection?
+        let lines: [String]
+
+        var body: String { lines.joined(separator: "\n") }
+    }
+
+    static func parseDiagnosticsSections(_ text: String) -> [DiagnosticsSectionSlice] {
+        var slices: [DiagnosticsSectionSlice] = []
+        var currentID: DiagnosticsSection?
+        var currentLines: [String] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let string = String(line)
+            if let id = DiagnosticsSection.section(forHeader: string) {
+                slices.append(DiagnosticsSectionSlice(id: currentID, lines: currentLines))
+                currentID = id
+                currentLines = []
+            } else {
+                currentLines.append(string)
+            }
+        }
+        slices.append(DiagnosticsSectionSlice(id: currentID, lines: currentLines))
+        return slices
+    }
+
+    /// Per-section byte allowance inside the global transport bound. The
+    /// sections that carry the current diagnosis (Office stages, local
+    /// inference, run outcomes, concise MetricKit summaries) get a guaranteed
+    /// share; the recent log absorbs whatever is left, and the full MetricKit
+    /// payloads are never uploaded (the version-labelled summaries carry the
+    /// crash metadata and attributed frames).
+    static func sectionAllowance(_ id: DiagnosticsSection) -> Int {
+        switch id {
+        case .reportIdentity: return 6_000
+        case .systemRuntime: return 3_000
+        case .officeStageTrace: return 26_000
+        case .localInference: return 26_000
+        case .taskSummaries: return 8_000
+        case .metricKitSummaries: return 34_000
+        case .metricKitFullPayloads: return 0
+        case .recentLog: return maximumDiagnosticsBytes
+        }
+    }
+
+    /// How much of a truncated section's head (first lines) is kept. Sections
+    /// written newest-last keep a small head so the oldest retained context
+    /// survives next to the current tail; newest-first sections (MetricKit
+    /// summaries, durable run summaries) keep most of the head because the
+    /// newest record is the current evidence.
+    static func headShare(_ id: DiagnosticsSection) -> Double {
+        switch id {
+        case .reportIdentity, .systemRuntime: return 1.0
+        case .taskSummaries, .metricKitSummaries: return 0.75
+        default: return 0.2
+        }
+    }
+
+    private static func boundedSection(id: DiagnosticsSection,
+                                       body: String,
+                                       allowance: Int) -> String {
+        let bodyBytes = body.utf8.count
+        guard bodyBytes > allowance else { return body }
+        // Reserve room for the explicit truncation marker. The marker is the
+        // only content allowed to exceed the allowance, and it is tiny.
+        let markerReserve = 240
+        let usable = max(0, allowance - markerReserve)
+        let headBudget = min(usable, Int(Double(usable) * headShare(id)))
+        let tailBudget = max(0, usable - headBudget)
+
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let head = leadingLines(lines, maximumBytes: headBudget)
+        let tail = trailingLines(lines, maximumBytes: tailBudget, excludingFirst: head.lineCount)
+        let omittedLines = max(0, lines.count - head.lineCount - tail.lineCount)
+        let omittedBytes = max(0, bodyBytes - head.bytes - tail.bytes)
+        let marker = "-- section \(id.rawValue) truncated by client: kept head=\(head.lineCount)"
+            + " tail=\(tail.lineCount) of \(lines.count) lines; omitted=\(omittedLines)"
+            + " lines/\(omittedBytes) bytes --"
+        return ([head.text] + [marker] + [tail.text]).filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    private static func metricKitFullPayloadStub(_ body: String) -> String {
+        let bytes = body.utf8.count
+        guard bytes > 0 else { return "no MetricKit full payloads retained" }
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false).count
+        return "-- section metrickit_full_payloads omitted by client:"
+            + " \(lines) payload lines/\(bytes) bytes dropped;"
+            + " concise version-labelled summaries retained above --"
+    }
+
+    private struct BoundedLines {
+        let text: String
+        let lineCount: Int
+        let bytes: Int
+    }
+
+    private static func leadingLines(_ lines: [String], maximumBytes: Int) -> BoundedLines {
+        guard let first = lines.first else { return BoundedLines(text: "", lineCount: 0, bytes: 0) }
+        var chosen: [String] = []
+        var bytes = 0
+        for line in lines {
+            let lineBytes = line.utf8.count + (chosen.isEmpty ? 0 : 1)
+            if bytes + lineBytes > maximumBytes { break }
+            chosen.append(line)
+            bytes += lineBytes
+        }
+        if chosen.isEmpty {
+            let clipped = clippedPrefix(first, maximumBytes: maximumBytes)
+            return BoundedLines(text: clipped, lineCount: clipped.isEmpty ? 0 : 1, bytes: clipped.utf8.count)
+        }
+        return BoundedLines(text: chosen.joined(separator: "\n"), lineCount: chosen.count, bytes: bytes)
+    }
+
+    private static func trailingLines(_ lines: [String],
+                                      maximumBytes: Int,
+                                      excludingFirst skip: Int) -> BoundedLines {
+        guard lines.count > skip else { return BoundedLines(text: "", lineCount: 0, bytes: 0) }
+        var chosenNewestFirst: [String] = []
+        var bytes = 0
+        var index = lines.count - 1
+        while index >= skip {
+            let line = lines[index]
+            let lineBytes = line.utf8.count + (chosenNewestFirst.isEmpty ? 0 : 1)
+            if bytes + lineBytes > maximumBytes { break }
+            chosenNewestFirst.append(line)
+            bytes += lineBytes
+            index -= 1
+        }
+        if chosenNewestFirst.isEmpty {
+            let clipped = clippedSuffix(lines[lines.count - 1], maximumBytes: maximumBytes)
+            return BoundedLines(text: clipped, lineCount: clipped.isEmpty ? 0 : 1, bytes: clipped.utf8.count)
+        }
+        return BoundedLines(text: chosenNewestFirst.reversed().joined(separator: "\n"),
+                            lineCount: chosenNewestFirst.count,
+                            bytes: bytes)
+    }
+
+    /// Unstructured fallback for payloads without section headers.
+    private static func legacyBoundedDiagnostics(_ text: String) -> String {
+        let totalBytes = text.utf8.count
+        guard totalBytes > maximumDiagnosticsBytes || text.count > maximumDiagnosticsCharacters else {
+            return text
+        }
+        let headBudget = min(24_000, maximumDiagnosticsBytes / 6)
+        var tailBudget = 0
+        var omission = ""
+        for _ in 0..<3 {
+            omission = "\n\n== middle diagnostics omitted by client: kept \(headBudget) oldest bytes"
+                + " and \(tailBudget) newest bytes of \(totalBytes) bytes ==\n\n"
+            let byteBudget = maximumDiagnosticsBytes - headBudget - omission.utf8.count
+            let characterBudget = maximumDiagnosticsCharacters - headBudget - omission.count
+            tailBudget = max(0, min(byteBudget, characterBudget))
+        }
+        let head = clippedPrefix(text, maximumBytes: headBudget)
+        let tail = clippedSuffix(text, maximumBytes: tailBudget)
+        guard head.utf8.count + tail.utf8.count + omission.utf8.count < totalBytes else { return text }
+        return head + omission + tail
+    }
+
+    static func clippedPrefix(_ text: String, maximumBytes: Int) -> String {
+        guard maximumBytes > 0 else { return "" }
+        guard text.utf8.count > maximumBytes else { return text }
+        var result = ""
+        var bytes = 0
+        for scalar in text.unicodeScalars {
+            let size = String(scalar).utf8.count
+            if bytes + size > maximumBytes { break }
+            result.unicodeScalars.append(scalar)
+            bytes += size
+        }
+        return result
+    }
+
+    static func clippedSuffix(_ text: String, maximumBytes: Int) -> String {
+        guard maximumBytes > 0 else { return "" }
+        guard text.utf8.count > maximumBytes else { return text }
+        var scalars: [Unicode.Scalar] = []
+        var bytes = 0
+        for scalar in text.unicodeScalars.reversed() {
+            let size = String(scalar).utf8.count
+            if bytes + size > maximumBytes { break }
+            scalars.append(scalar)
+            bytes += size
+        }
+        var result = ""
+        for scalar in scalars.reversed() {
+            result.unicodeScalars.append(scalar)
+        }
+        return result
     }
 
     private static var deviceModel: String {
