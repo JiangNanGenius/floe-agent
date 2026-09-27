@@ -40,6 +40,10 @@ struct ThreadDetailView: View {
     @State private var showingGoalBuilder = false
     @State private var showingPermissionsSheet = false
     @State private var showingUsageDetails = false
+    /// Last usage snapshot handed to the popover. Retained until the next
+    /// open so a dismissal never collapses the presented content to an empty
+    /// view while the transition is in flight.
+    @State private var presentedUsageSummary: ThreadUsageSummary?
     @State private var selectedImportantFile: ImportantFileShortcut?
     @State private var showsReturnToLatest = false
     @State private var latestFollow = LatestMessageFollowState()
@@ -541,24 +545,7 @@ struct ThreadDetailView: View {
     @ToolbarContentBuilder
     private var stateToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            if let usage = viewModel.usageSummary,
-               usage.contextWindowTokens > 0 {
-                Button {
-                    showingUsageDetails = true
-                } label: {
-                    ContextUsageRing(fraction: usage.contextFraction)
-                }
-                .buttonStyle(.plain)
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("查看上下文用量")
-                .accessibilityValue(
-                    "\(TokenUnitFormatter.string(usage.contextTokens)) / \(TokenUnitFormatter.string(usage.contextWindowTokens))"
-                )
-                .popover(isPresented: $showingUsageDetails) {
-                    ContextUsageDetails(summary: usage)
-                        .presentationCompactAdaptation(.popover)
-                }
-            }
+            usageToolbarHost
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
@@ -645,6 +632,74 @@ struct ThreadDetailView: View {
                     .accessibilityIdentifier("thread.run_state.\(state)")
             }
         }
+    }
+
+    /// The context-usage ring and its popover host.
+    ///
+    /// Build 231 TestFlight feedback trapped in UIKit's
+    /// `_UIZoomTransitionController.startInteractiveTransition` while
+    /// SwiftUI's `UIKitPopoverBridge.dismissAndReset` dismissed a
+    /// popover inside `ViewGraph.updateOutputs`. The
+    /// stack matches that popover-dismissal class; this ring was the chat
+    /// screen's only toolbar popover mounted on a conditionally-created
+    /// source, so an approval resume or a usage tick could remove the
+    /// presenter while the presentation was live.
+    ///
+    /// This host is mounted for the toolbar's lifetime; only the ring inside
+    /// it is conditional. Availability loss and run switches clear the
+    /// presented state explicitly so a later run's usage cannot resurrect
+    /// it, and compact widths use the platform's default adaptation (a sheet
+    /// on iPhone), avoiding the forced compact popover presentation.
+    private var usageToolbarHost: some View {
+        ZStack {
+            if let usage = viewModel.usageSummary,
+               usage.contextWindowTokens > 0 {
+                Button {
+                    // Capture the snapshot before presenting: the presented
+                    // content must not collapse to an empty view if the run's
+                    // usage disappears while SwiftUI tears the presentation
+                    // down. It is replaced on the next open.
+                    presentedUsageSummary = usage
+                    showingUsageDetails = true
+                } label: {
+                    ContextUsageRing(fraction: usage.contextFraction)
+                }
+                .buttonStyle(.plain)
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .accessibilityLabel("查看上下文用量")
+                .accessibilityValue(
+                    "\(TokenUnitFormatter.string(usage.contextTokens)) / \(TokenUnitFormatter.string(usage.contextWindowTokens))"
+                )
+            }
+        }
+        .onChange(of: usageAvailability) { _, available in
+            if !available { showingUsageDetails = false }
+        }
+        .onChange(of: viewModel.selectedRun?.id) { _, _ in
+            showingUsageDetails = false
+        }
+        .popover(isPresented: usageDetailsPresented) {
+            if let summary = presentedUsageSummary {
+                ContextUsageDetails(summary: summary)
+                    .presentationCompactAdaptation(.automatic)
+                    .presentationDetents([.medium])
+            }
+        }
+    }
+
+    /// Whether the ring currently has a source. The presented flag is derived
+    /// from this so it can never outlive its data, while the explicit
+    /// `onChange` above also clears the stored flag (otherwise the next run's
+    /// usage would immediately re-present the popover).
+    private var usageAvailability: Bool {
+        (viewModel.usageSummary?.contextWindowTokens ?? 0) > 0
+    }
+
+    private var usageDetailsPresented: Binding<Bool> {
+        Binding(
+            get: { showingUsageDetails && usageAvailability },
+            set: { showingUsageDetails = $0 }
+        )
     }
 
     private func inspectorButton(
