@@ -114,13 +114,27 @@ class OfficeFontDiscoveryContract(unittest.TestCase):
         cls.source = HOST_SOURCE.read_text(encoding="utf-8")
         cls.lock = json.loads(LOCK.read_text(encoding="utf-8"))
 
-    def test_font_catalog_fingerprint_scans_both_staged_locations(self) -> None:
+    def test_font_catalog_fingerprint_covers_every_discovery_location(self) -> None:
         block = extract(self.source, FONT_BEGIN, FONT_END)
-        self.assertIn('@"Fonts"', block, "the app-level staged font folder must be scanned")
+        # The engine's own quartz scan roots (verified against the pinned
+        # vcl/quartz/salgdi.cxx and the shipped engine binary), the App-staged
+        # bundled families it registers at launch, and the legacy app-level
+        # Fonts directory.
+        self.assertIn('@"program/resource/common/fonts"', block,
+                      "the engine-scanned internal font directory must be covered")
         self.assertIn('@"share/fonts"', block, "the engine's own font resources must be scanned")
+        self.assertIn('@"Bundled"', block, "the App-staged bundled families must be covered")
+        self.assertIn('@"Fonts"', block, "the legacy app-level font folder stays covered")
         self.assertIn("NSURLFileSizeKey", block)
         self.assertIn("sortUsingSelector", block, "the fingerprint must be order-independent")
         self.assertIn("FNV", block.replace("FNV-1a", "FNV"))
+        # Registration is verified by real resolution, never by descriptors
+        # that merely parse from the file.
+        self.assertIn("FloeFontFileResolvesInProcess", block)
+        self.assertIn("kCTFontOptionsPreventAutoActivation", block)
+        self.assertIn('@"registered"', block)
+        self.assertIn('@"unresolved"', block)
+        self.assertIn("FloeOffice font discovery staged=", block)
 
     def test_profile_identity_depends_on_the_font_catalog(self) -> None:
         # Discovery is cached inside the engine profile; a changed catalog must
@@ -131,9 +145,22 @@ class OfficeFontDiscoveryContract(unittest.TestCase):
         # The engine still initializes against the final bundle resource path.
         self.assertIn("cok_init_2(bundle.resourcePath.UTF8String", self.source)
 
-    def test_embed_script_stages_fonts_into_the_app_bundle(self) -> None:
+    def test_bundled_registrar_verifies_real_resolution(self) -> None:
+        # The App-side registrar must not treat descriptors that merely parse
+        # from the file as a successful registration.
+        registrar = (REPO_ROOT / "FloeAgent/FloeApp/Fonts/BundledFontRegistrar.swift").read_text(encoding="utf-8")
+        self.assertIn("CoreTextFontRegistration.register(url: url)", registrar)
+        self.assertIn("outcome == .failed", registrar)
+        self.assertIn("discoveryReport", registrar)
+        store = (REPO_ROOT / "FloeAgent/FloeApp/Fonts/DeviceFontStore.swift").read_text(encoding="utf-8")
+        self.assertIn("CoreTextFontRegistration", store)
+        self.assertIn("resolves(postScriptName:", store)
+        self.assertIn("alreadyRegisteredCode", store)
+
+    def test_embed_script_stages_fonts_into_the_engine_scanned_directory(self) -> None:
         script = EMBED_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("Fonts", script, "the embed step must create app/Fonts")
+        self.assertIn("ENGINE_FONT_DIR = ('program', 'resource', 'common', 'fonts')", script)
+        self.assertIn("'program', 'resource', 'common', 'fonts'", script)
         self.assertIn(".ttf", script)
         self.assertIn(".otf", script)
         self.assertIn("is_symlink", script, "a symlinked font file must never be embedded")

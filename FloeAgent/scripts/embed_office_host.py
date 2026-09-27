@@ -10,29 +10,40 @@ from bootstrap_office_host import ROOT, LOCK, FRAMEWORK, checked_lock, verify_in
 
 FONT_EXTENSIONS = {'.ttf', '.otf', '.ttc', '.otc'}
 BUNDLED_FONTS = ROOT / 'FloeApp' / 'Resources' / 'Fonts' / 'Bundled'
+# The engine's quartz backend scans $BRAND_BASE_DIR/program/resource/common/fonts
+# and $BRAND_BASE_DIR/share/fonts/truetype and registers every file it finds
+# there for the process before it caches the available CoreText font list
+# (pinned vcl/quartz/salgdi.cxx AddLocalTempFontDirs, then GetCoretextFontList).
+# The app-level Fonts/ directory is on neither path: fonts staged there were
+# never discovered by the engine, so the bundled CJK families go into the
+# engine-scanned internal font directory instead.
+ENGINE_FONT_DIR = ('program', 'resource', 'common', 'fonts')
 
 
 def embed_bundled_fonts(app):
-    """Populate the engine's app-level Fonts/ directory with Floe's bundled
-    CJK/utility families. The directory is a declared embed output and starts
-    empty upstream; without it the engine renders every CJK glyph as a box
-    because it cannot see iOS system fonts."""
-    fonts_dir = app / 'Fonts'
-    fonts_dir.mkdir(exist_ok=True)
+    """Populate the engine-scanned internal font directory with Floe's bundled
+    CJK/utility families. Without them the engine renders every CJK glyph as a
+    box because it can not see the iOS system fonts."""
+    fonts_dir = app
+    for component in ENGINE_FONT_DIR:
+        fonts_dir = fonts_dir / component
+    fonts_dir.mkdir(parents=True, exist_ok=True)
     if not BUNDLED_FONTS.is_dir():
         print('warning: bundled fonts not staged; run scripts/fonts/fetch_fonts.py (CI enforces this)')
         return 0
     copied = 0
     for path in sorted(BUNDLED_FONTS.rglob('*')):
-        if path.suffix.lower() not in FONT_EXTENSIONS or not path.is_file():
+        if path.suffix.lower() not in FONT_EXTENSIONS or not path.is_file() or path.is_symlink():
             continue
         target = fonts_dir / path.name
         if target.exists():
             # Two families can share a filename; prefix the family directory.
             target = fonts_dir / f'{path.parent.name}-{path.name}'
+        if target.is_symlink():
+            raise ValueError('engine font staging refuses a symlinked destination')
         shutil.copy2(path, target)
         copied += 1
-    print(f'embedded {copied} bundled fonts into Fonts/')
+    print(f'embedded {copied} bundled fonts into {"/".join(ENGINE_FONT_DIR)}/')
     return copied
 
 

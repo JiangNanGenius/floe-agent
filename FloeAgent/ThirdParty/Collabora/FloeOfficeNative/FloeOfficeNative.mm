@@ -3,6 +3,7 @@
 #import "config.h"
 #import "FloeOfficeNative.h"
 #import <WebKit/WebKit.h>
+#import <CoreText/CoreText.h>
 #define LIBO_INTERNAL_ONLY
 #import <COKit/COKitInit.h>
 #include <comphelper/kit.hxx>
@@ -167,31 +168,91 @@ static NSString *FloeNativeDrainScript() {
 // FLOE_NATIVE_DRAIN_SCRIPT_END
 
 // FLOE_FONT_CATALOG_BEGIN
-// The embedded engine discovers fonts once and caches that discovery inside
-// its versioned profile. A stale cache from a build that predates the staged
-// CJK families (or a post-install font copy that changed) makes every Chinese
-// glyph render as a tofu box even though the font files are present. The
-// profile identity therefore includes a fingerprint of the staged font
-// catalog: when the catalog changes, a fresh profile re-runs discovery, while
-// previous profiles are retained for recovery.
+// The embedded engine discovers fonts in two steps: its quartz backend scans
+// `$BRAND_BASE_DIR/program/resource/common/fonts` and
+// `$BRAND_BASE_DIR/share/fonts/truetype` and registers every file it finds
+// there for the process (pinned `vcl/quartz/salgdi.cxx`
+// `AddLocalTempFontDirs`), and then it caches the process's *available*
+// CoreText font list (`GetCoretextFontList` →
+// `CTFontCollectionCreateFromAvailableFonts`). The App additionally registers
+// its staged families from `Bundled/` at launch. A stale profile cache from a
+// build that predates the staged CJK families — or a registration that never
+// took effect — makes every Chinese glyph render as a tofu box even though the
+// font files exist.
+//
+// The profile identity therefore fingerprints every location a font change can
+// come from, and for the App-staged families it records whether the process
+// really resolves the font: descriptors that merely parse from a file are not
+// discovery.
+static bool FloeFontFileResolvesInProcess(NSURL *url) {
+    NSArray *descriptors = CFBridgingRelease(CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)url));
+    if (![descriptors isKindOfClass:NSArray.class]) return false;
+    for (id descriptor in descriptors) {
+        NSString *name = CFBridgingRelease(CTFontDescriptorCopyAttribute((__bridge CTFontDescriptorRef)descriptor,
+                                                                         kCTFontNameAttribute));
+        if (![name isKindOfClass:NSString.class] || name.length == 0) continue;
+        CTFontRef font = CTFontCreateWithNameAndOptions((__bridge CFStringRef)name, 12, NULL,
+                                                        kCTFontOptionsPreventAutoActivation);
+        if (!font) continue;
+        NSString *actual = CFBridgingRelease(CTFontCopyPostScriptName(font));
+        CFRelease(font);
+        if ([actual caseInsensitiveCompare:name] == NSOrderedSame) return true;
+    }
+    return false;
+}
+
+static bool FloeFontFileExtension(NSURL *url) {
+    static NSSet<NSString *> *extensions = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        extensions = [NSSet setWithArray:@[@"ttf", @"otf", @"ttc", @"otc"]];
+    });
+    return [extensions containsObject:url.pathExtension.lowercaseString ?: @""];
+}
+
 static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
     NSFileManager *fileManager = NSFileManager.defaultManager;
     NSMutableArray<NSString *> *entries = [NSMutableArray array];
-    // Both staged locations the engine scans: the app-level Fonts directory
-    // (bundled CJK families) and the engine's own share/fonts resources.
-    for (NSString *relative in @[@"Fonts", @"share/fonts"]) {
+    // {relative root, verify real resolution}. The engine-scanned roots come
+    // first: those are what AddLocalTempFontDirs registers before the CoreText
+    // list is cached. The App-staged roots are verified by resolution so a
+    // broken registration changes the identity instead of hiding behind an
+    // unchanged file listing.
+    NSArray<NSArray *> *roots = @[
+        @[@"program/resource/common/fonts", @NO],
+        @[@"share/fonts", @NO],
+        @[@"Bundled", @YES],
+        @[@"Fonts", @YES],
+    ];
+    NSUInteger stagedFonts = 0;
+    NSUInteger resolvedFonts = 0;
+    for (NSArray *root in roots) {
+        NSString *relative = root[0];
+        BOOL verifyResolution = [root[1] boolValue];
         NSURL *resourceRoot = [NSURL fileURLWithPath:bundle.resourcePath isDirectory:YES];
-        NSURL *root = [resourceRoot URLByAppendingPathComponent:relative isDirectory:YES];
-        NSDirectoryEnumerator<NSURL *> *enumerator = [fileManager enumeratorAtURL:root
+        NSURL *directory = [resourceRoot URLByAppendingPathComponent:relative isDirectory:YES];
+        NSDirectoryEnumerator<NSURL *> *enumerator = [fileManager enumeratorAtURL:directory
                                                       includingPropertiesForKeys:@[NSURLFileSizeKey]
                                                                          options:NSDirectoryEnumerationSkipsHiddenFiles
                                                                     errorHandler:nil];
         for (NSURL *url in enumerator) {
             NSNumber *size = nil;
             [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
-            [entries addObject:[NSString stringWithFormat:@"%@:%@", url.lastPathComponent, size ?: @0]];
+            if (!verifyResolution) {
+                [entries addObject:[NSString stringWithFormat:@"%@:%@:%@", relative, url.lastPathComponent, size ?: @0]];
+                continue;
+            }
+            // App-staged roots carry licenses and readmes next to the fonts;
+            // only font files are part of the discovery verification.
+            if (!FloeFontFileExtension(url)) continue;
+            stagedFonts++;
+            BOOL resolved = FloeFontFileResolvesInProcess(url);
+            if (resolved) resolvedFonts++;
+            [entries addObject:[NSString stringWithFormat:@"%@:%@:%@:%@", relative, url.lastPathComponent,
+                                                         size ?: @0, resolved ? @"registered" : @"unresolved"]];
         }
     }
+    LOG_INF_NOFILE("FloeOffice font discovery staged=" << stagedFonts << " resolved=" << resolvedFonts);
     if (entries.count == 0) { return @"no-fonts"; }
     [entries sortUsingSelector:@selector(compare:)];
     // FNV-1a over the sorted catalog: stable across launches, cheap, and only
@@ -588,70 +649,70 @@ static NSString *FloeSessionFactsScript(BOOL readOnly, NSString *fileName) {
 // FLOE_SESSION_FACTS_END
 
 // FLOE_FULLSCREEN_EDIT_SCRIPT_BEGIN
+// Edit-intent handoff: in Floe's fullscreen editable mounts the page is
+// deliberately NOT the edit-intent owner. The native host is. The host knows
+// the real readiness the page cannot observe: the UIDocument open, the
+// engine's verified backing permission, the document layer's first status and
+// — for the file-based Impress/Draw startup — a decoded document tile.
+//
+// The previous wrapper called `map._switchToEditMode()` synchronously from the
+// first `setPermission('edit')`. In the pinned engine (`Socket.ts`,
+// `CanvasTileLayer.onAdd`) that first grant arrives while the layer is still
+// initialising: `onAdd` calls `map.setPermission(app.file.permission)` and only
+// afterwards runs `sendInitUNOCommands()` and `setInitialZoom()`. An entry
+// driven from inside that call is therefore re-entrant with the layer's own
+// initialisation; and the engine's `_enterEditMode` dereferences
+// `this._docLayer` (`_docType`, and Calc's `showCalcInputBar`), so an entry
+// that reaches the engine before the layer exists throws after it already set
+// `_permission = 'edit'` and fired `updatepermission` — partial edit state.
+// The file-based Impress/Draw startup additionally needs its preview to decode
+// its first document tile before the layout switch has a real document extent.
+//
+// The wrapper therefore leaves the engine's own mobile startup untouched: on
+// first open it still enters its normal viewing-first readonly mode
+// (Permission.js), and the host runs the engine's guarded
+// `map._switchToEditMode()` exactly once, asynchronously, after the readiness
+// the render probe observes. The in-page mobile edit button is a second,
+// human-owned intent path, so it is hidden here: the fullscreen mount itself
+// is already the explicit edit action and the App owns the recoverable
+// outcome (retry/recovery) instead of two entries racing.
 static NSString *FloeFullScreenEditScript() {
     return [NSString stringWithUTF8String:R"FLOE_JS(
 (() => {
-    // Floe's fullscreen entry is already an explicit edit action. Honor the
-    // initial engine grant via the normal mobile entry point, which retains
-    // format/password/lock checks. The mobile app forces its viewing-first UI
-    // for every editable document, so `_permission === 'readonly'` after the
-    // first setPermission call describes the startup UI mode, not a denied
-    // document. The engine's own backing permission (app.file.readOnly) and
-    // the host mount grant are the only editing authorities.
-    //
-    // Mobile Impress/Draw start in the file-based (endless slide scrolling)
-    // view even when the backend document is editable. That view is not a
-    // denied document: the engine's mobile entry switches the document back to
-    // its part-based edit layout through its own `updatepermission` event.
-    // View-only file-based formats (PDF and friends) never reach this branch
-    // because their engine permission stays read-only.
-    const editableFileBasedTypes = {presentation: true, drawing: true};
     const install = () => {
         const proto = window.L && window.L.Map && window.L.Map.prototype;
-        if (!proto || typeof proto.setPermission !== 'function' || proto.floeFullScreenEditInstalled) return;
-        proto.floeFullScreenEditInstalled = true;
+        if (!proto || typeof proto.setPermission !== 'function' || proto.floeEditHandoffInstalled) return;
+        proto.floeEditHandoffInstalled = true;
         const setPermission = proto.setPermission;
-        const facts = window.__floeOfficeSession || {};
-        const hostEditable = facts.editable === true;
-        const enterEdit = (map, allowDefer) => {
-            if (!hostEditable || map._permission !== 'readonly') return;
-            const file = window.app && window.app.file;
-            // The backing permission is authoritative. An unknown or read-only
-            // grant is never elevated, and a later downgrade stays locked.
-            if (!file || file.readOnly !== false) return;
-            if (typeof map._switchToEditMode !== 'function') return;
-            const layer = map._docLayer;
-            const docType = layer && typeof layer._docType === 'string' ? layer._docType
-                : (typeof map.getDocType === 'function' ? map.getDocType() : null);
-            if (file.fileBasedView === true && docType !== null && editableFileBasedTypes[docType] !== true) {
-                // A view-only file-based document (for example a PDF): keep the
-                // engine's own guarded entry untouched.
-                return;
-            }
-            if (file.fileBasedView === true && docType === null) {
-                // The document type is not known yet. Wait for the engine to
-                // report it instead of guessing, bounded so nothing hangs.
-                if (!allowDefer) return;
-                let attempts = 0;
-                const wait = () => {
-                    if (!hostEditable) return;
-                    if (map._permission !== 'readonly') return;
-                    const ready = map._docLayer && typeof map._docLayer._docType === 'string';
-                    if (ready) { enterEdit(map, false); return; }
-                    if (attempts++ < 100) setTimeout(wait, 50);
-                };
-                setTimeout(wait, 50);
-                return;
-            }
-            map._switchToEditMode();
+        const hideMobileEditEntry = () => {
+            const button = document.getElementById('mobile-edit-button');
+            if (!button) return;
+            button.hidden = true;
+            button.setAttribute('aria-hidden', 'true');
+            button.setAttribute('tabindex', '-1');
         };
+        const style = document.createElement('style');
+        style.textContent = '#mobile-edit-button { display: none !important; }';
+        document.head.appendChild(style);
         proto.setPermission = function (permission) {
             const firstOpen = this._permission === undefined;
             const result = setPermission.apply(this, arguments);
-            if (!firstOpen || permission !== 'edit' || !window.ThisIsAMobileApp) return result;
-            enterEdit(this, true);
+            if (firstOpen) {
+                // Content-free marker for the host diagnostics: the initial
+                // grant the engine itself applied (the page records, never
+                // acts on it).
+                try {
+                    window.__floeInitialGrant = {
+                        permission: String(permission),
+                        hostEditable: (window.__floeOfficeSession || {}).editable === true,
+                        at: Date.now(),
+                    };
+                } catch (_) {}
+                hideMobileEditEntry();
+            }
             return result;
         };
+        hideMobileEditEntry();
     };
     if (document.readyState === 'loading')
         document.addEventListener('DOMContentLoaded', install, { once: true });
@@ -1019,33 +1080,53 @@ static void ServerReady() {
 // instead of leaving a blank editor that claims to be ready.
 
 // FLOE_EDIT_ENTRY_GATE_BEGIN
-// Two thresholds over the same decoded-tile facts, compiled independently by
-// test_office_native_host.py against synthetic engine states:
+// Two format-aware thresholds over the same render facts, compiled
+// independently by test_office_native_host.py against synthetic engine states:
 //
-// * the edit-entry trigger fires once ANY surface painted a decoded document
-//   tile — proof of a live paint pipeline and a real document extent, the
-//   earliest point the guarded mobile edit entry may switch the file-based
-//   presentation startup into the part-based edit layout without building it
-//   on an empty extent;
+// * the edit-entry trigger fires at the real readiness of the format, never on
+//   the open-permission clock (the pinned engine reports the backing
+//   permission from main.js before any document layer exists):
+//     – the file-based presentation formats require a decoded document tile:
+//       proof of a live paint pipeline and a real document extent before the
+//       guarded entry may switch the file-based startup into the part-based
+//       edit layout;
+//     – Word/Excel require the document layer's completed first status — a
+//       reported document type, `docloaded` and a sized canvas. In the pinned
+//       engine (`Socket.ts`) `_docLayer` is assigned before `addLayer`, and
+//       `docloaded` is fired only after `CanvasTileLayer.onAdd` returned — an
+//       `onAdd` whose final `setPermission(app.file.permission)` is where the
+//       old page wrapper synchronously re-entered `_switchToEditMode()` before
+//       the same `onAdd` had run `sendInitUNOCommands()`/`setInitialZoom()`,
+//       and before the layer had processed the status it was created for. The
+//       engine's `_enterEditMode` also dereferences `this._docLayer`, so the
+//       layer must exist before any entry.
 // * the session-ready threshold additionally requires the part-based edit
 //   surface for an editable session (fileBasedView cleared) *and* a paint that
 //   happened after the edit entry (`editSurfacePainted`): a file-based startup
 //   paint is preview evidence, never edit-surface evidence, and the engine's
 //   shared tile map keeps the preview's decoded tiles across the layout
 //   switch, so the tile count alone is never edit-surface evidence.
-// * the edit-entry trigger has one bounded, weaker-evidence fallback: an
-//   editable file-based session that already proved its document extent
-//   (document type from the engine's first status, a loaded document and a
-//   sized canvas) but waited `FloeEditEntryExtentBootstrapGraceSeconds`
-//   without decoding any tile may run the guarded entry on the extent proof
-//   alone. The Build 225 white screen came from entering on the open-
-//   permission clock, BEFORE any engine status, where the part-based extent
-//   was still empty; the extent proof excludes exactly that, and nothing here
-//   relaxes the session-ready threshold — readiness below still demands the
-//   post-entry paint, so the fallback can never ready a session whose edit
-//   surface did not really paint.
-static bool FloeRenderFactsSatisfyEditEntryTrigger(FloeRenderFacts facts) {
-    return FloeRenderFactsSatisfyVisibleRender(facts);
+// * the edit-entry trigger has one bounded, weaker-evidence fallback for the
+//   file-based presentation formats: a session that proved the document
+//   extent (type, loaded document and sized canvas) but waited
+//   `FloeEditEntryExtentBootstrapGraceSeconds` without decoding any tile may
+//   run the guarded entry on the extent proof alone. Nothing here relaxes the
+//   session-ready threshold — readiness below still demands the post-entry
+//   paint, so the fallback can never ready a session whose edit surface did
+//   not really paint.
+// * the open-permission report is settled by the entry (or the bounded
+//   fallback), never before it, so a session's readiness can not run ahead of
+//   the entry it is evidence for.
+static bool FloeRenderFactsSatisfyEditEntryTrigger(FloeRenderFacts facts, bool requiresVisibleRender) {
+    if (requiresVisibleRender) return FloeRenderFactsSatisfyVisibleRender(facts);
+    // Word/Excel: the layer exists, its first status was fully processed and
+    // its canvas has a real size. The `docloaded` event follows
+    // `addLayer`/`onAdd`, sets `_docLoaded` and then the same synchronous
+    // status task runs the layer's `_onMessage`; a probe evaluation is its own
+    // task, so observing the flag already implies that task returned. A type
+    // alone is not readiness: it can be reported while the layer is still
+    // initialising.
+    return facts.docTypeKnown && facts.docLoaded && facts.canvasSized;
 }
 
 /// Bounded weaker-evidence fallback for the paint-gated edit entry (see the
@@ -1093,6 +1174,12 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// any tile exists builds the edit surface on an empty document extent, which
 /// is the device white screen.
 - (void)renderProbeDidObserveFirstPaint:(NSDictionary<NSString *, id> *)diagnostics;
+/// The probe reached the format-specific edit-entry readiness (decoded tile
+/// for the file-based presentation formats, or full first-status layer init
+/// — reported type, `docloaded` and a sized canvas — for Word/Excel). The
+/// single parked edit entry runs here; the probe state is also latched so an
+/// entry that parks just after still runs.
+- (void)renderProbeDidReachEditEntryReadiness;
 - (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
@@ -1244,18 +1331,14 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 FloeOfficeLog(@"render-probe-facts", facts);
             }
             FloeRenderFacts renderFacts = [probe renderFactsFromDictionary:facts];
-            // Primary trigger: a decoded document tile proves a live paint
-            // pipeline and a real document extent. Bounded fallback: an
-            // editable file-based startup that proved the same extent from
-            // the engine's first status (document type, loaded document,
-            // sized canvas) but waited the grace without decoding any tile
-            // may run the guarded entry on that extent proof — the switch
-            // then builds on a real extent, never the empty one of the
-            // Build 225 white screen, and the session-ready threshold below
-            // still demands the post-entry paint either way.
-            BOOL paintTrigger = FloeRenderFactsSatisfyEditEntryTrigger(renderFacts);
+            // Format-specific entry readiness (see the gate comment): the
+            // file-based presentation formats need a decoded document tile;
+            // Word/Excel need the document layer's full first-status init.
+            BOOL visibleRenderProven = FloeRenderFactsSatisfyVisibleRender(renderFacts);
+            BOOL entryTrigger = FloeRenderFactsSatisfyEditEntryTrigger(renderFacts,
+                                                                       probe.requiresVisibleRender);
             BOOL extentBootstrap = NO;
-            if (!paintTrigger && probe.expectsDeferredEditEntry) {
+            if (!visibleRenderProven && probe.expectsDeferredEditEntry) {
                 BOOL extentProven = renderFacts.docTypeKnown && renderFacts.docLoaded && renderFacts.canvasSized;
                 NSTimeInterval parked = [probe.controller deferredEditEntryParkedSeconds];
                 if (FloeDeferredEditEntryExtentBootstrapEligible([probe.controller hasPendingDeferredEditEntry],
@@ -1272,13 +1355,18 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                     [probe.controller renderProbeDidProveExtentForEditEntry];
                 }
             }
-            if (paintTrigger || extentBootstrap) {
+            if (entryTrigger || extentBootstrap) {
                 // Reported before the session-ready decision, at most once per
-                // session, so a pending edit entry always runs.
-                if (paintTrigger && !probe->_firstPaintReported) {
+                // session, so a pending edit entry always runs. A document
+                // layer alone is NOT first-paint evidence for Word/Excel, so
+                // the first-paint report stays tied to the visible render.
+                if (visibleRenderProven && !probe->_firstPaintReported) {
                     probe->_firstPaintReported = YES;
                     [probe.controller renderProbeDidObserveFirstPaint:probe.diagnostics];
                 }
+                // The single edit entry runs once at this readiness, whether
+                // it was already parked or parks just after the probe passed.
+                if (entryTrigger) [probe.controller renderProbeDidReachEditEntryReadiness];
                 BOOL fileBasedView = [facts[@"fileBasedView"] isKindOfClass:NSNumber.class]
                     && [facts[@"fileBasedView"] boolValue];
                 BOOL ready = FloeRenderFactsSatisfySessionReady(renderFacts, probe.readOnlySession, fileBasedView);
@@ -1423,6 +1511,11 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 @property (nonatomic) BOOL openPermissionReported;
 /// The render probe observed at least one decoded document tile (any surface).
 @property (nonatomic) BOOL firstPaintObserved;
+/// The probe reached the format-specific edit-entry readiness at least once
+/// (decoded tile for the file-based presentations, or full first-status
+/// layer init — type, `docloaded`, sized canvas — for Word/Excel). An edit
+/// intent parked after this runs immediately.
+@property (nonatomic) BOOL editEntryReadinessObserved;
 /// The render probe finished (ready or failed); a late deferral can never
 /// park the edit entry behind a finished probe.
 @property (nonatomic) BOOL renderProbeFinished;
@@ -1442,10 +1535,11 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// this entry; a missing helper or a page error leaves the evidence to the
 /// probe's own last file-based baseline. Always calls the completion.
 - (void)armEditSurfaceEvidenceWithCompletion:(void (^)(void))completion;
-/// Defers the guarded mobile edit entry until the render probe's first-paint
-/// trigger (file-based presentation formats). Runs it at once when the paint
-/// already happened, and settles without an entry when the probe already
-/// finished without one.
+/// Defers the single guarded mobile edit entry until the render probe reaches
+/// the format-specific readiness: a decoded document tile for the file-based
+/// presentation formats, or full first-status layer init for Word/Excel. Runs
+/// it at once when the readiness already passed, and settles without an entry
+/// when the probe already finished without it.
 - (void)deferEditEntryUntilFirstPaint;
 /// Runs the guarded edit entry at most once and reports its real outcome.
 - (void)runEditEntryAndReport;
@@ -1555,20 +1649,15 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                                               @"known": @(known),
                                               @"readOnly": @(probed.sessionIsReadOnly)});
                 // An editable backing document that the mobile editor mounted in
-                // its viewing-first UI is not a denied document: follow the
-                // engine's own guarded entry once, then report the real state.
+                // its viewing-first UI is not a denied document. Every editable
+                // format funnels through the single readiness-gated entry: the
+                // render probe runs the engine's guarded
+                // `map._switchToEditMode()` exactly once, at the real readiness
+                // (a decoded tile for the file-based Impress/Draw startup, full
+                // first-status layer init for Word/Excel), then reports the real
+                // state. The page wrapper no longer owns an entry.
                 if (known && !readOnly && !probed.readOnly) {
-                    if (FloeDocumentRequiresVisibleRender(probed.workingFileURL.pathExtension)) {
-                        // The file-based presentation startup must paint once
-                        // before the guarded entry: switching the layout on an
-                        // empty document extent builds an edit surface that
-                        // never paints (the device white screen).
-                        [probed deferEditEntryUntilFirstPaint];
-                    } else {
-                        // Word/Excel have no file-based layout switch; the
-                        // entry keeps its open-permission timing (unchanged).
-                        [probed runEditEntryAndReport];
-                    }
+                    [probed deferEditEntryUntilFirstPaint];
                     return;
                 }
                 [probed reportOpenPermissionOnce:YES readOnly:probed.sessionIsReadOnly];
@@ -1749,9 +1838,13 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                                     @"generation": @(self.openGeneration),
                                     @"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
                                         ? diagnostics[@"elapsed"] : @0});
-    // The paint-gated edit entry (file-based presentation formats) runs exactly
-    // once, here: the engine proved a live pipeline and a real document extent,
-    // so the part-based edit layout is built from a sized document.
+    // The single edit entry is run by the readiness hook the probe invokes
+    // next; this report is paint evidence only.
+}
+- (void)renderProbeDidReachEditEntryReadiness {
+    NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
+    self.editEntryReadinessObserved = YES;
+    // The single edit entry runs at most once, here, at the real readiness.
     if (self.editEntryPending) [self runEditEntryAndReport];
 }
 - (void)renderProbeDidProveExtentForEditEntry {
@@ -1797,6 +1890,11 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 - (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
     self.renderProbeFinished = YES;
+    // A still-parked entry (an editable Word/Excel session whose layer never
+    // reached its first status) settles here without forcing an entry: the
+    // bounded outcome is the App's, and the permission report must not hang
+    // behind the entry's budget. Exactly once.
+    [self settlePendingEditEntryWithoutEntry];
     self.renderDiagnostics = diagnostics;
     FloeOfficeLog(@"visible-render-unobserved", @{@"session": self.sessionID,
                                                   @"generation": @(self.openGeneration)});
@@ -1944,14 +2042,21 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         completion();
     }];
 }
-/// Defers the guarded mobile edit entry until the render probe's first-paint
-/// trigger. The file-based presentation startup must paint once before the
-/// layout switch: entering on the open-permission clock built the part-based
-/// edit surface on an empty document extent, which never painted on device.
+/// Defers the single guarded mobile edit entry until the render probe reaches
+/// the format-specific readiness. The file-based presentation startup needs a
+/// decoded document tile: switching the layout on the open-permission clock
+/// built the part-based edit surface on an empty document extent, which never
+/// painted on device. Word/Excel need the engine's document layer, because
+/// the engine's real `_enterEditMode` dereferences `this._docLayer`.
 - (void)deferEditEntryUntilFirstPaint {
     NSAssert(NSThread.isMainThread, @"Office edit entry is main-queue owned");
     if (self.editEntryPending || self.editEntryRunning || self.openPermissionReported) return;
-    if (self.firstPaintObserved) { [self runEditEntryAndReport]; return; }
+    // The probe already passed the format-specific readiness: a decoded tile
+    // for the file-based presentations, or full first-status layer init for
+    // Word/Excel. Run the entry at once instead of waiting for another probe.
+    if (self.firstPaintObserved || self.editEntryReadinessObserved) {
+        [self runEditEntryAndReport]; return;
+    }
     if (self.renderProbeFinished) {
         // The probe already settled without a paint: report the real backing
         // permission without forcing an entry; the render gate owns the

@@ -50,18 +50,20 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
     def source(self):
         return HOST_SOURCE.read_text()
 
-    def test_presentation_entry_is_paint_gated_and_word_excel_unchanged(self):
+    def test_every_editable_format_funnels_through_the_single_readiness_gated_entry(self):
         source = self.source()
-        # The permission-probe completion routes file-based formats through the
-        # paint-gated deferral and runs every other format directly.
-        self.assertIn('if (FloeDocumentRequiresVisibleRender(probed.workingFileURL.pathExtension))',
-                      source)
+        # The permission-probe completion routes every editable format through
+        # the same single deferral; it never runs an entry directly and the
+        # page wrapper no longer owns one.
+        self.assertNotIn('if (FloeDocumentRequiresVisibleRender(probed.workingFileURL.pathExtension))',
+                         source)
         self.assertIn('[probed deferEditEntryUntilFirstPaint];', source)
-        self.assertIn('[probed runEditEntryAndReport];', source)
-        # The deferral parks the entry; the first-paint trigger runs it.
+        self.assertNotIn('[probed runEditEntryAndReport];', source)
+        # The deferral parks the entry; the probe readiness hook runs it.
         self.assertIn('- (void)deferEditEntryUntilFirstPaint {', source)
         self.assertIn('- (void)runEditEntryAndReport {', source)
         self.assertIn('if (self.editEntryPending) [self runEditEntryAndReport];', source)
+        self.assertIn('- (void)renderProbeDidReachEditEntryReadiness', source)
         # The probe's finish decision requires the part-based edit surface for
         # an editable session; a file-based startup paint is preview evidence.
         self.assertIn('FloeRenderFactsSatisfySessionReady(renderFacts, probe.readOnlySession, fileBasedView)',
@@ -245,7 +247,7 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
         poll = source.split('- (void)poll {', 1)[1].split('(FloeRenderFacts)renderFactsFromDictionary:', 1)[0]
         self.assertIn('probe.expectsDeferredEditEntry', poll)
         self.assertIn('[probe.controller renderProbeDidProveExtentForEditEntry];', poll)
-        self.assertIn('if (paintTrigger && !probe->_firstPaintReported)', poll)
+        self.assertIn('if (visibleRenderProven && !probe->_firstPaintReported)', poll)
         self.assertIn('[probe.controller renderProbeDidObserveFirstPaint:probe.diagnostics];', poll)
         self.assertIn('- (void)renderProbeDidProveExtentForEditEntry {', source)
         self.assertIn('@"edit-entry-extent-bootstrap"', source)
@@ -277,10 +279,15 @@ static FloeRenderFacts facts(bool type, bool loaded, bool canvas, bool tile, boo
     return value;
 }
 int main() { @autoreleasepool {
-    // A decoded tile on the file-based startup: the edit entry may run, but an
-    // editable session is not ready on preview evidence.
-    assert(FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, true, false)));
+    // A decoded tile on the file-based startup: the presentation edit entry
+    // may run, but an editable session is not ready on preview evidence.
+    assert(FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, true, false), true));
     assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, false), false, true));
+    // Presentations without a decoded tile never trigger, even with the extent
+    // proven, and a missing base fact never triggers either.
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, false, false), true));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, false, true, true, false), true));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(false, true, true, true, false), true));
     // The counterexample: the file-based flag was cleared and the preview's
     // decoded tiles are still in the engine's shared tile map, but the edit
     // surface itself never painted. This must never read as ready.
@@ -289,13 +296,15 @@ int main() { @autoreleasepool {
     assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, true), false, false));
     // A read-only preview is ready on the same file-based paint.
     assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, false), true, true));
-    // Word/Excel keep their contract: not file-based, no preview frame to
-    // mistake for the edit surface, so the shipped probe reports painted.
-    assert(FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, true), false, false));
-    // Skeletons, an unloaded document or an unknown type never trigger either.
-    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, false, false)));
-    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, false, true, true, false)));
-    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(false, true, true, true, false)));
+    // Word/Excel readiness = full first-status layer init (type + docloaded +
+    // sized canvas); a tile is deliberately NOT required, and a type alone or
+    // a half-initialised layer never triggers — the re-entrant early entry the
+    // old page wrapper ran inside CanvasTileLayer initialization.
+    assert(FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, false, false), false));
+    assert(FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, true, true, false), false));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, true, false, false, false), false));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(true, false, true, false, false), false));
+    assert(!FloeRenderFactsSatisfyEditEntryTrigger(facts(false, true, true, false, false), false));
     assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, false, true), false, false));
     assert(!FloeRenderFactsSatisfySessionReady(facts(true, true, true, true, true), false, true));
     // The extent-bootstrap fallback: a parked entry, a proven document extent
