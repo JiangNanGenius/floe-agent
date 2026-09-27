@@ -27,6 +27,9 @@ def code(value):
 
 def symbol_name(value):
     # Compiler identifier only; discard arguments, literals and path suffixes.
+    objc = re.match(r"[+-]\[([A-Za-z_][A-Za-z0-9_]* [A-Za-z_][A-Za-z0-9_:]*)\]", str(value))
+    if objc:
+        return objc.group(0)
     match = re.match(r"(?:closure #\d+ in )?([A-Za-z_$][A-Za-z0-9_$.:]{0,159})", str(value))
     return match.group(1) if match else "omitted"
 
@@ -83,9 +86,9 @@ def summarize(log):
         if in_crashed_thread and (not line.strip() or line.startswith("Thread ")):
             in_crashed_thread = False
         if in_crashed_thread and emitted < 48:
-            match = re.match(r"\s*\d+\s+(\S+)\s+(0x[0-9a-fA-F]+)", line)
+            match = re.match(r"\s*\d+\s+(\S+)\s+(0x[0-9a-fA-F]+)\s*(.*)", line)
             if match:
-                print(f"frame image={image_name(match.group(1))} address={match.group(2)}")
+                print(f"frame image={image_name(match.group(1))} address={match.group(2)} symbol={symbol_name(match.group(3))}")
                 emitted += 1
 
 
