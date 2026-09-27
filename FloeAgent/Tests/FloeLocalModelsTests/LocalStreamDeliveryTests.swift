@@ -14,7 +14,7 @@ import FloeProviders
 // MARK: - Scripted engine double
 
 @available(macOS 15.4, iOS 26.0, *)
-private final class ScriptedStreamingEngine: LocalModelTextEngine, @unchecked Sendable {
+final class ScriptedStreamingEngine: LocalModelTextEngine, @unchecked Sendable {
     enum Step: Sendable {
         case progress(LocalInferenceProgress)
         case output(String)

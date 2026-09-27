@@ -189,8 +189,8 @@ struct LocalGenerationWatchdogStateTests {
         #expect(snapshot?.sawActivity == true)
     }
 
-    @Test("A preparing stage extends the first-activity window, not the idle one")
-    func preparingStaysOnTheLongWindow() {
+    @Test("Preparing and prefill keep the long silent-phase window; decode switches to idle")
+    func preparingAndPrefillStayOnTheLongWindow() {
         let policy = LocalGenerationWatchdogPolicy(
             firstActivitySeconds: 30,
             idleSeconds: 1,
@@ -204,10 +204,77 @@ struct LocalGenerationWatchdogStateTests {
         state.noteProgress(LocalInferenceProgress(stage: .preparing))
         #expect(state.expiredSnapshot(now: loadAt) == nil)
         #expect(state.expiredSnapshot(now: Date()) == nil)
-        // Only once prefill/decoding progress arrives does idle apply.
+        // The chunked prefill is one synchronous call with no per-window
+        // callback: cloud qualification measured a legitimate 158 s prefill at
+        // batch 8, so prefill also keeps the long window, not the decode idle.
         state.noteProgress(LocalInferenceProgress(stage: .prefill, totalInputTokens: 100))
         let prefillAt = Date()
-        #expect(state.expiredSnapshot(now: prefillAt.addingTimeInterval(0.5)) == nil)
-        #expect(state.expiredSnapshot(now: prefillAt.addingTimeInterval(2)) != nil)
+        #expect(state.expiredSnapshot(now: prefillAt.addingTimeInterval(2)) == nil)
+        // Once prefill lands, waiting for the first decoded token is an idle
+        // phase and the short deadline applies.
+        state.noteProgress(LocalInferenceProgress(
+            stage: .prefill,
+            prefilledTokens: 100,
+            totalInputTokens: 100
+        ))
+        let awaitingAt = Date()
+        #expect(state.expiredSnapshot(now: awaitingAt.addingTimeInterval(0.5)) == nil)
+        #expect(state.expiredSnapshot(now: awaitingAt.addingTimeInterval(2)) != nil)
+    }
+
+    @Test("A silent prefill leaves bounded diagnostic marks without resetting the deadline")
+    func prefillDiagnosticsAreBounded() {
+        let policy = LocalGenerationWatchdogPolicy(
+            firstActivitySeconds: 4,
+            idleSeconds: 0.2,
+            pollIntervalSeconds: 0.1,
+            prefillDiagnosticSeconds: [0.5, 1.0]
+        )
+        let start = Date()
+        let state = LocalGenerationWatchdogState(policy: policy, now: start)
+        state.noteProgress(LocalInferenceProgress(
+            stage: .prefill,
+            prefilledTokens: 0,
+            totalInputTokens: 5_436
+        ))
+        #expect(state.nextPrefillDiagnostic(now: start.addingTimeInterval(0.4)) == nil)
+        let first = state.nextPrefillDiagnostic(now: start.addingTimeInterval(0.6))
+        #expect(first?.inputTokens == 5_436)
+        #expect(first?.phase == "prefill")
+        // Each mark fires at most once.
+        #expect(state.nextPrefillDiagnostic(now: start.addingTimeInterval(0.7)) == nil)
+        let second = state.nextPrefillDiagnostic(now: start.addingTimeInterval(1.1))
+        #expect(second != nil)
+        #expect(state.nextPrefillDiagnostic(now: start.addingTimeInterval(500)) == nil)
+        // The prefill phase keeps the long silent-phase budget (4 s here),
+        // not the decode idle deadline (0.2 s); the marks never move it.
+        #expect(state.expiredSnapshot(now: start.addingTimeInterval(0.3)) == nil)
+        #expect(state.expiredSnapshot(now: start.addingTimeInterval(3.9)) == nil)
+        #expect(state.expiredSnapshot(now: start.addingTimeInterval(4.1)) != nil)
+    }
+
+    @Test("Completed prefill is labelled awaitingFirstToken, not prefill")
+    func completedPrefillChangesStage() {
+        let policy = LocalGenerationWatchdogPolicy(
+            firstActivitySeconds: 30,
+            idleSeconds: 2,
+            pollIntervalSeconds: 0.1,
+            prefillDiagnosticSeconds: []
+        )
+        let start = Date()
+        let state = LocalGenerationWatchdogState(policy: policy, now: start)
+        state.noteProgress(LocalInferenceProgress(
+            stage: .prefill, prefilledTokens: 0, totalInputTokens: 5_436
+        ))
+        state.noteProgress(LocalInferenceProgress(
+            stage: .prefill, prefilledTokens: 5_436, totalInputTokens: 5_436
+        ))
+        let snapshot = state.expiredSnapshot(now: start.addingTimeInterval(60))
+        #expect(snapshot?.phase == "awaitingFirstToken")
+        // A completed prefill is not a silent prefill: no prefill breadcrumb.
+        state.noteProgress(LocalInferenceProgress(
+            stage: .prefill, prefilledTokens: 5_436, totalInputTokens: 5_436
+        ))
+        #expect(state.nextPrefillDiagnostic(now: start.addingTimeInterval(120)) == nil)
     }
 }

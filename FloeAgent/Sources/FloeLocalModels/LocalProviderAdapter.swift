@@ -73,6 +73,33 @@ public struct LocalModelTaskResidencyLedger: Sendable, Equatable {
     }
 }
 
+/// Bounded foreground-admission policy for one on-device turn.
+///
+/// iOS can hand a foreground-recovery resume to the app while the scene is
+/// still transitioning back to `.active`. The Build 231 device log showed the
+/// resume begin 24 ms before the scene reported inactive and the admission
+/// refuse 93 ms later, after which the run ended silently with no reply. The
+/// grace delays that admission decision for a bounded window so an ordinary
+/// scene transition cannot abandon a legitimate run. It is not a generation
+/// deadline: it never extends a running generation, never resets the watchdog
+/// and never fabricates GPU permission.
+struct LocalForegroundAdmissionPolicy: Sendable, Equatable {
+    var graceSeconds: TimeInterval
+    var pollIntervalSeconds: TimeInterval
+
+    static let production = LocalForegroundAdmissionPolicy(
+        graceSeconds: 6,
+        pollIntervalSeconds: 0.25
+    )
+
+    /// No wait beyond the immediate probe. Deterministic refusal tests use
+    /// this; production keeps the bounded grace above.
+    static let immediate = LocalForegroundAdmissionPolicy(
+        graceSeconds: 0,
+        pollIntervalSeconds: 0.05
+    )
+}
+
 @available(macOS 15.4, iOS 26.0, *)
 public actor LocalModelRuntime {
     public enum LoadState: Sendable, Equatable {
@@ -162,6 +189,13 @@ public actor LocalModelRuntime {
     /// through the app-facing decision interface and stops them only after a
     /// caller confirmation.
     private let arbiter: HeavyRuntimeArbiter
+    /// Foreground admission/cancellation registry. Injected so focused tests
+    /// exercise a fresh registry with a scripted probe instead of mutating the
+    /// shared process instance.
+    private let backgroundCanceller: LocalInferenceBackgroundCanceller
+    /// Bounded grace before a not-active app is refused. See
+    /// `LocalForegroundAdmissionPolicy`.
+    private let foregroundAdmission: LocalForegroundAdmissionPolicy
     private var lifecycle = LocalInferenceLifecycleDiagnostics()
 
     public init(store: LocalModelStore = LocalModelStore()) {
@@ -186,6 +220,8 @@ public actor LocalModelRuntime {
         self.preflightSettleInterval = .milliseconds(250)
         self.idleUnloadInterval = .seconds(120)
         self.arbiter = .shared
+        self.backgroundCanceller = .shared
+        self.foregroundAdmission = .production
     }
 
     init(
@@ -196,7 +232,9 @@ public actor LocalModelRuntime {
         preflightSettleSamples: Int,
         preflightSettleInterval: Duration,
         idleUnloadInterval: Duration = .seconds(120),
-        arbiter: HeavyRuntimeArbiter = .shared
+        arbiter: HeavyRuntimeArbiter = .shared,
+        backgroundCanceller: LocalInferenceBackgroundCanceller = .shared,
+        foregroundAdmission: LocalForegroundAdmissionPolicy = .production
     ) {
         self.store = store
         self.makeEngine = makeEngine
@@ -206,6 +244,8 @@ public actor LocalModelRuntime {
         self.preflightSettleInterval = preflightSettleInterval
         self.idleUnloadInterval = idleUnloadInterval
         self.arbiter = arbiter
+        self.backgroundCanceller = backgroundCanceller
+        self.foregroundAdmission = foregroundAdmission
     }
 
     /// Internal test/inspection hook: structured lifecycle counters for the
@@ -587,14 +627,28 @@ public actor LocalModelRuntime {
         // resign-active notification was already delivered, or before the
         // first local generation ever installed a lifecycle observer. Query
         // the application state before mapping weights so on-device work never
-        // starts while iOS would reject its GPU submissions. This is advisory
-        // (the app can resign right after the probe); `registerForeground`
-        // below performs the authoritative race-checked admission.
-        guard await LocalInferenceBackgroundCanceller.shared.isForegroundEligible() else {
+        // starts while iOS would reject its GPU submissions. The bounded
+        // foreground grace absorbs an ordinary scene transition (resume ->
+        // active); `registerForeground` below still performs the authoritative
+        // race-checked admission. A refusal is NOT a cancellation: it is
+        // reported as `LocalInferenceDeferredError` so the harness can retry
+        // from its checkpoint or end recoverably instead of ending silently.
+        let admissionStartedAt = Date()
+        guard await backgroundCanceller.waitForForegroundEligibility(
+            upTo: foregroundAdmission.graceSeconds,
+            pollInterval: foregroundAdmission.pollIntervalSeconds
+        ) else {
+            // The wait also ends when the caller's task is cancelled. A real
+            // user/harness stop must stay a plain cancellation (the harness's
+            // cancel() owns the terminal transition), never a retryable
+            // lifecycle deferral. Only an uncancelled app-state refusal is
+            // translated below.
+            try Task.checkCancellation()
+            let waited = Date().timeIntervalSince(admissionStartedAt)
             FloeLogger(category: .providers).warning(
-                "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=prepare"
+                "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=prepare waitedSeconds=\(Int(waited))"
             )
-            throw CancellationError()
+            throw LocalInferenceDeferredError(stage: .admission, elapsedSeconds: waited)
         }
         // The turn runs under one transient engine lease: a chat turn, a
         // settings preload and a benchmark now share the same claim model, so
@@ -774,26 +828,41 @@ public actor LocalModelRuntime {
         // register and attach is remembered by the relay, so the task is
         // cancelled before its first GPU submission instead of being missed
         // by an observer that was installed too late.
+        //
+        // Registration is preceded by the same bounded foreground grace as the
+        // pre-map admission: a scene that is still transitioning to `.active`
+        // must not refuse the GPU launch at the first probe. A refusal here is
+        // a retryable deferral, not a cancellation.
         let cancellationRelay = LocalInferenceCancellationRelay()
-        guard let cancelToken = await LocalInferenceBackgroundCanceller.shared.registerForeground(
+        let admissionStartedAt = Date()
+        guard let cancelToken = await backgroundCanceller.registerForegroundWhenEligible(
             traceID: traceID,
+            graceSeconds: foregroundAdmission.graceSeconds,
+            pollIntervalSeconds: foregroundAdmission.pollIntervalSeconds,
             cancel: {
                 FloeLogger(category: .providers).warning(
                     "localInferenceBackgroundCancelled trace=\(traceID) model=\(modelID)"
                 )
-                cancellationRelay.requestCancellation()
+                cancellationRelay.requestCancellation(origin: .lifecycle)
             }
         ) else {
+            // A caller cancellation that ended the registration wait is a
+            // plain cancellation: the harness owns that terminal transition,
+            // and no retryable lifecycle event may be produced for a user
+            // stop. Only an uncancelled app-state refusal is deferred.
+            try Task.checkCancellation()
+            let waited = Date().timeIntervalSince(admissionStartedAt)
             FloeLogger(category: .providers).warning(
-                "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=generation"
+                "localInferenceBackgroundRefused trace=\(traceID) model=\(modelID) stage=generation waitedSeconds=\(Int(waited))"
             )
-            throw CancellationError()
+            throw LocalInferenceDeferredError(stage: .generation, elapsedSeconds: waited)
         }
-        defer { LocalInferenceBackgroundCanceller.shared.unregister(cancelToken) }
+        defer { backgroundCanceller.unregister(cancelToken) }
         // The probe above can suspend on the main actor. Re-check the caller's
         // cancellation before creating the GPU task so a stop that raced the
         // admission does not launch prefill at all.
         try Task.checkCancellation()
+        let generationStartedAt = Date()
         let generation = Task {
             if let sink {
                 return try await engine.streamMeasured(
@@ -832,10 +901,34 @@ public actor LocalModelRuntime {
         }
         // Keep harness/user cancellation working exactly as before: the
         // unstructured task above does not inherit it automatically.
-        return try await withTaskCancellationHandler {
-            try await generation.value
-        } onCancel: {
-            cancellationRelay.requestCancellation()
+        do {
+            return try await withTaskCancellationHandler {
+                try await generation.value
+            } onCancel: {
+                cancellationRelay.requestCancellation(origin: .caller)
+            }
+        } catch {
+            // A lifecycle stop (resign-active / enter-background) cancelled
+            // this generation through the registry, not through the harness.
+            // There is no caller-owned terminal transition to own the silent
+            // `CancellationError` path, so surface the deferral explicitly:
+            // the harness then retries from the saved checkpoint when the app
+            // is active again, or ends recoverably instead of leaving the run
+            // in `streamingModel` with no reply (Build 231 device evidence).
+            // A concurrent caller cancellation still wins: it must stay a
+            // plain cancellation, never a retryable lifecycle event.
+            if MLXTextEngine.isCancellation(error),
+               cancellationRelay.cancellationOrigin == .lifecycle,
+               !Task.isCancelled {
+                FloeLogger(category: .providers).warning(
+                    "localInferenceLifecycleDeferred trace=\(traceID) model=\(modelID) stage=generation elapsedMs=\(Int(Date().timeIntervalSince(generationStartedAt) * 1_000))"
+                )
+                throw LocalInferenceDeferredError(
+                    stage: .generation,
+                    elapsedSeconds: Date().timeIntervalSince(generationStartedAt)
+                )
+            }
+            throw error
         }
     }
 
@@ -905,9 +998,10 @@ public actor LocalModelRuntime {
             activeEngine = nil
             await prepared.engine.shutdown()
             lifecycle.recordEngineShutdown()
-            // Background/user cancellation is not a model failure; keep the
-            // settings surface truthful and unload silently.
-            if error is CancellationError {
+            // Background/user cancellation and a foreground deferral are not
+            // model failures; keep the settings surface truthful and unload
+            // silently.
+            if error is CancellationError || error is LocalInferenceDeferredError {
                 loadState = .unloaded
             } else {
                 loadState = .failed(
@@ -923,7 +1017,8 @@ public actor LocalModelRuntime {
             // start from a recreated container (the Build 228 second-message
             // regression), while a benchmark/auxiliary failure (no owner run)
             // must not degrade a chat task's shared engine.
-            if !(error is CancellationError), ownerRunID != nil {
+            let deferred = error is LocalInferenceDeferredError
+            if !(error is CancellationError) && !deferred, ownerRunID != nil {
                 activeEngine?.failed = true
                 if engineLeaseCount > 1 {
                     // A concurrent load/benchmark/chat still holds it; keep the
@@ -945,7 +1040,7 @@ public actor LocalModelRuntime {
                 )
             }
             FloeLogger(category: .providers).info(
-                "localInferenceEngineRetainedDespiteFailure trace=\(traceID) model=\(modelID) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) cancelled=\(error is CancellationError) failedRun=\(ownerRunID != nil)"
+                "localInferenceEngineRetainedDespiteFailure trace=\(traceID) model=\(modelID) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) cancelled=\(error is CancellationError) deferred=\(deferred) failedRun=\(ownerRunID != nil)"
             )
         }
         lifecycle.recordTurnFailed(
@@ -1910,7 +2005,22 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     // compaction, a memory preflight rejection earns bounded
                     // retries from the saved checkpoint. Both leave every
                     // settled tool and its checkpoint untouched.
-                    if let event = Self.recoverableBoundaryEvent(for: error) {
+                    //
+                    // A foreground deferral is explicit here rather than a
+                    // thrown `CancellationError`: no caller stopped this run,
+                    // so the harness must retry from the checkpoint / fail
+                    // recoverably instead of silently leaving the run in
+                    // `streamingModel` (Build 231 device evidence).
+                    if let deferred = error as? LocalInferenceDeferredError {
+                        FloeLogger(category: .providers).warning(
+                            "localInferenceDeferred model=\(request.model.remoteModelID) stage=\(deferred.stage.rawValue) elapsedSeconds=\(Int(deferred.elapsedSeconds))"
+                        )
+                        continuation.yield(Self.foregroundDeferredEvent(
+                            stage: deferred.stage.rawValue,
+                            elapsedSeconds: deferred.elapsedSeconds
+                        ))
+                        continuation.finish()
+                    } else if let event = Self.recoverableBoundaryEvent(for: error) {
                         continuation.yield(event)
                         continuation.finish()
                     } else if watchdogState.timedOut, error is CancellationError {
@@ -1939,7 +2049,18 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         return
                     }
                     guard !Task.isCancelled else { return }
-                    guard let snapshot = watchdogState.expiredSnapshot() else { continue }
+                    // Deadline first: a bounded prefill breadcrumb must never
+                    // delay the explicit no-progress terminal. The marks do
+                    // not reset anything; they only leave bounded evidence
+                    // for a device log that ends during a silent prefill.
+                    guard let snapshot = watchdogState.expiredSnapshot() else {
+                        if let prefill = watchdogState.nextPrefillDiagnostic() {
+                            FloeLogger(category: .providers).warning(
+                                "localInferencePrefillStillRunning model=\(request.model.remoteModelID) elapsedSeconds=\(Int(prefill.elapsedSeconds)) inputTokens=\(prefill.inputTokens) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) prefillBudgetSeconds=\(Int(watchdogState.policy.firstActivitySeconds))"
+                            )
+                        }
+                        continue
+                    }
                     guard watchdogState.markTimedOut() else { return }
                     FloeLogger(category: .providers).warning(
                         "localGenerationNoProgress model=\(request.model.remoteModelID) phase=\(snapshot.phase) elapsedSeconds=\(Int(snapshot.elapsedSeconds)) emittedChunks=\(snapshot.emittedChunks) inputTokens=\(snapshot.inputTokens) sawActivity=\(snapshot.sawActivity) firstActivitySeconds=\(Int(watchdogState.policy.firstActivitySeconds)) idleSeconds=\(Int(watchdogState.policy.idleSeconds))"
@@ -1972,6 +2093,23 @@ public struct LocalProviderAdapter: ProviderAdapter {
         .error(AgentEvent.NormalizedError(
             kind: .contextOverflow,
             providerMessage: "The on-device prompt exceeded the local model context window (estimated \(estimatedTokens) tokens, window \(windowTokens)). Compacting the conversation and retrying once; completed tools are not replayed."
+        ))
+    }
+
+    /// A lifecycle deferral: iOS only permits GPU submission while the app is
+    /// active, so no caller cancelled this run. `.rateLimited` is the
+    /// harness's retryable-from-checkpoint class: with the dispatch envelope
+    /// the runtime just recorded, it performs bounded automatic retries from
+    /// that checkpoint; if the budget is exhausted it ends as a recoverable
+    /// failure whose checkpoint and settled tools stay intact. The message
+    /// states exactly that behavior and what the user should do.
+    static func foregroundDeferredEvent(
+        stage: String,
+        elapsedSeconds: TimeInterval
+    ) -> AgentEvent {
+        .error(AgentEvent.NormalizedError(
+            kind: .rateLimited,
+            providerMessage: "本地模型只能在前台运行：应用离开前台时本次生成已安全暂停（阶段：\(stage)，已等待 \(Int(max(0, elapsedSeconds))) 秒）。返回 Floe 后将尝试从保存的检查点恢复；若重试次数已用完，可点击“继续”。已完成的工具不会重放。"
         ))
     }
 

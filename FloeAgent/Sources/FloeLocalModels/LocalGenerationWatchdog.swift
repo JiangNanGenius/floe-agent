@@ -14,15 +14,25 @@ import Synchronization
 /// and between decode events), after which the engine's own teardown drains
 /// the GPU stream before anything is freed.
 struct LocalGenerationWatchdogPolicy: Sendable, Equatable {
-    /// Time allowed before the first progress/output observation, covering
-    /// weight mapping, tokenization and the silent chunked prefill on a cold
-    /// iPad. Generous by design: a legitimate cold load must not be aborted.
+    /// Time allowed for the known-long silent phases: weight mapping,
+    /// tokenization and the chunked prompt prefill. The pinned mlx-swift-lm
+    /// revision exposes no per-window prefill callback, so prefill is a single
+    /// synchronous call; cloud qualification 36326672449 measured a legitimate
+    /// 4215-token batch-8 prompt at 158.3 s to first token on a macOS host
+    /// (`device-constrained-batch8`), so this phase must not be governed by
+    /// the decode idle deadline. Generous by design: a legitimate cold load or
+    /// long prefill must not be aborted. Bounded, not extended on activity.
     var firstActivitySeconds: TimeInterval
     /// Time allowed between progress/output observations once the turn has
-    /// produced any observable activity.
+    /// reached a phase where progress is expected per delivered chunk
+    /// (awaiting the first decoded token, decoding, generation bookkeeping).
     var idleSeconds: TimeInterval
     /// How often the supervisor wakes to evaluate the deadline.
     var pollIntervalSeconds: TimeInterval
+    /// Bounded diagnostic marks for a silent prompt prefill. Each configured
+    /// mark logs at most once per generation and never resets the deadline or
+    /// pretends progress. An empty array disables the marks.
+    var prefillDiagnosticSeconds: [TimeInterval] = [60, 120, 240]
 
     static let production = LocalGenerationWatchdogPolicy(
         firstActivitySeconds: 300,
@@ -35,7 +45,8 @@ struct LocalGenerationWatchdogPolicy: Sendable, Equatable {
     static let disabled = LocalGenerationWatchdogPolicy(
         firstActivitySeconds: 0,
         idleSeconds: 0,
-        pollIntervalSeconds: 1
+        pollIntervalSeconds: 1,
+        prefillDiagnosticSeconds: []
     )
 }
 
@@ -58,6 +69,7 @@ final class LocalGenerationWatchdogState: @unchecked Sendable {
         var inputTokens = 0
         var sawActivity = false
         var timedOut = false
+        var prefillDiagnosticsEmitted = 0
     }
 
     let policy: LocalGenerationWatchdogPolicy
@@ -77,20 +89,46 @@ final class LocalGenerationWatchdogState: @unchecked Sendable {
         }
     }
 
-    /// Records engine progress. Counts as activity. A bare `preparing` stage
-    /// (weight mapping, tokenization) extends the generous first-activity
-    /// window instead of switching to the shorter idle window: a cold
-    /// multi-gigabyte load must not be aborted by a decode-stall deadline.
+    /// Records engine progress. Counts as activity.
+    ///
+    /// Deadline semantics are phase-aware:
+    /// * `preparing` (weight mapping, tokenization) and `prefill` (the single
+    ///   silent chunked-prefill call) keep the generous first-activity budget;
+    /// * a `.prefill` report whose tokens are already complete means prefill
+    ///   landed and the turn is waiting for the first decoded token, so it
+    ///   switches to the idle budget and is labelled `awaitingFirstToken`;
+    /// * `decoding` switches to the idle budget because progress is expected
+    ///   per delivered chunk.
     func noteProgress(_ progress: LocalInferenceProgress) {
         state.withLock { state in
-            state.phase = progress.stage.rawValue
+            state.phase = Self.phaseLabel(for: progress)
             state.lastActivityAt = Date()
-            if progress.stage != .preparing {
+            switch progress.stage {
+            case .preparing:
+                break
+            case .prefill:
+                if progress.totalInputTokens > 0,
+                   progress.prefilledTokens >= progress.totalInputTokens {
+                    state.sawActivity = true
+                }
+            case .decoding:
                 state.sawActivity = true
             }
             state.emittedChunks = max(state.emittedChunks, progress.emittedChunks)
             state.inputTokens = max(state.inputTokens, progress.totalInputTokens)
         }
+    }
+
+    /// Maps a progress report to the watchdog's stage label. Only the
+    /// completed-prefill case is renamed; every other stage keeps its raw
+    /// value so existing diagnostics stay stable.
+    private static func phaseLabel(for progress: LocalInferenceProgress) -> String {
+        if progress.stage == .prefill,
+           progress.totalInputTokens > 0,
+           progress.prefilledTokens >= progress.totalInputTokens {
+            return "awaitingFirstToken"
+        }
+        return progress.stage.rawValue
     }
 
     /// Records a delivered output chunk. Counts as activity.
@@ -121,6 +159,34 @@ final class LocalGenerationWatchdogState: @unchecked Sendable {
             let elapsed = now.timeIntervalSince(state.lastActivityAt)
             let deadline = state.sawActivity ? policy.idleSeconds : policy.firstActivitySeconds
             guard deadline > 0, elapsed >= deadline else { return nil }
+            return Snapshot(
+                phase: state.phase,
+                elapsedSeconds: elapsed,
+                emittedChunks: state.emittedChunks,
+                inputTokens: state.inputTokens,
+                sawActivity: state.sawActivity
+            )
+        }
+    }
+
+    /// Returns the next bounded prefill-stall diagnostic snapshot, at most
+    /// once per configured mark, or nil when the turn is not in a silent
+    /// prefill or every mark was already emitted.
+    ///
+    /// The mark is deliberately read-only with respect to the deadline:
+    /// `lastActivityAt` is untouched, so logging a breadcrumb can never keep a
+    /// stalled generation alive. The pinned mlx-swift-lm revision exposes no
+    /// per-window prefill callback, so these marks are the only bounded
+    /// evidence between the prepared marker and prefill completion.
+    func nextPrefillDiagnostic(now: Date = Date()) -> Snapshot? {
+        state.withLock { state in
+            guard state.phase == LocalInferenceProgress.Stage.prefill.rawValue else { return nil }
+            let marks = policy.prefillDiagnosticSeconds
+            guard state.prefillDiagnosticsEmitted < marks.count else { return nil }
+            let mark = marks[state.prefillDiagnosticsEmitted]
+            let elapsed = now.timeIntervalSince(state.lastActivityAt)
+            guard mark > 0, elapsed >= mark else { return nil }
+            state.prefillDiagnosticsEmitted += 1
             return Snapshot(
                 phase: state.phase,
                 elapsedSeconds: elapsed,

@@ -4,6 +4,42 @@ import Synchronization
 import UIKit
 #endif
 
+/// A local generation that could not start, or was stopped, because iOS only
+/// permits GPU submission while the app is active.
+///
+/// This is deliberately **not** `CancellationError`. The harness treats a
+/// thrown `CancellationError` as "the caller owns the terminal transition" and
+/// ignores it, which is correct only for a user stop. A lifecycle deferral has
+/// no caller-owned transition: the run must instead surface a bounded,
+/// retryable event so it either continues when the app returns to the
+/// foreground or ends recoverably with its checkpoint. The Build 231 device
+/// log showed exactly the failure this type closes: a foreground-recovery
+/// resume was refused at `stage=prepare` 93 ms after the scene reported
+/// inactive, and the run ended silently in `streamingModel` with no reply.
+public struct LocalInferenceDeferredError: LocalizedError, Sendable, Equatable {
+    public enum Stage: String, Sendable, Equatable {
+        /// Admission before any model work: the app was not active.
+        case admission = "prepare"
+        /// The GPU task was about to launch and the app was not active.
+        case generation = "generation"
+    }
+
+    public let stage: Stage
+    /// Bounded elapsed seconds at the moment of refusal/cancellation. This is
+    /// diagnostic metadata only; it is never part of an admission rule.
+    public let elapsedSeconds: TimeInterval
+
+    public init(stage: Stage, elapsedSeconds: TimeInterval) {
+        self.stage = stage
+        self.elapsedSeconds = elapsedSeconds
+    }
+
+    public var errorDescription: String? {
+        let seconds = String(format: "%.1f", max(0, elapsedSeconds))
+        return "The on-device model can only generate while the app is in the foreground (stage: \(stage.rawValue), waited \(seconds)s)."
+    }
+}
+
 /// Admission and cancellation for on-device MLX generation across app
 /// lifecycle transitions.
 ///
@@ -132,6 +168,66 @@ final class LocalInferenceBackgroundCanceller: Sendable {
         }
     }
 
+    /// Bounded, cancellable wait until the foreground probe reports an active
+    /// app. Returns immediately when the app is already eligible.
+    ///
+    /// This is an **admission wait**, not a generation deadline: it never
+    /// extends a running generation, never resets a watchdog deadline and
+    /// never fabricates GPU permission. It exists because iOS can deliver a
+    /// foreground-recovery resume while the scene is still transitioning back
+    /// to `.active` (Build 231 device evidence: report inactive -> active
+    /// within 5.4 s), and refusing at that instant abandoned a legitimate run.
+    /// The wait is abandoned as soon as the caller's task is cancelled.
+    func waitForForegroundEligibility(
+        upTo timeout: TimeInterval,
+        pollInterval: TimeInterval = 0.25
+    ) async -> Bool {
+        if await isForegroundEligible() { return true }
+        guard timeout > 0 else { return false }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeout))
+        let interval = Duration.seconds(max(0.01, pollInterval))
+        while clock.now < deadline {
+            do {
+                try await Task.sleep(for: interval)
+            } catch {
+                return false
+            }
+            if Task.isCancelled { return false }
+            if await isForegroundEligible() { return true }
+        }
+        return await isForegroundEligible()
+    }
+
+    /// Registration variant for callers that arrive during a scene
+    /// transition. Spends at most `graceSeconds` waiting for the foreground
+    /// probe, then performs the authoritative race-checked
+    /// `registerForeground`. Returns `nil` only when the whole bounded grace
+    /// expired without an active app (or a lifecycle transition kept winning
+    /// the probe), which the caller reports as a retryable deferral rather
+    /// than a silent stop.
+    func registerForegroundWhenEligible(
+        traceID: String,
+        graceSeconds: TimeInterval,
+        pollIntervalSeconds: TimeInterval = 0.25,
+        cancel: @escaping @Sendable () -> Void
+    ) async -> UUID? {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(max(0, graceSeconds)))
+        while true {
+            if await isForegroundEligible(),
+               let token = await registerForeground(traceID: traceID, cancel: cancel) {
+                return token
+            }
+            guard !Task.isCancelled, clock.now < deadline else { return nil }
+            do {
+                try await Task.sleep(for: .seconds(max(0.01, pollIntervalSeconds)))
+            } catch {
+                return nil
+            }
+        }
+    }
+
     /// Cancels every registered generation and empties the registry. Available
     /// for callers that need an unconditional stop and used by the host
     /// fixture; the UIKit observers go through `applyLifecycleTransition` so
@@ -240,9 +336,19 @@ final class LocalInferenceBackgroundCanceller: Sendable {
 /// `attach` returns `true` and the caller cancels the task itself instead of
 /// letting it submit prefill.
 final class LocalInferenceCancellationRelay: Sendable {
+    /// Who requested the cancellation. A caller/user stop keeps the existing
+    /// silent `CancellationError` contract (the harness's `cancel()` owns the
+    /// terminal transition); an app-lifecycle stop has no such owner and must
+    /// surface a retryable deferral instead of ending the run invisibly.
+    enum Origin: Sendable, Equatable {
+        case caller
+        case lifecycle
+    }
+
     private struct State {
         var forward: (@Sendable () -> Void)?
         var requested = false
+        var origin: Origin?
     }
 
     private let state = Mutex(State())
@@ -260,9 +366,11 @@ final class LocalInferenceCancellationRelay: Sendable {
 
     /// Requests cancellation. Safe to call from the main thread: the
     /// forwarder only calls `Task.cancel()`. Repeated requests forward at most
-    /// once.
-    func requestCancellation() {
+    /// once; the first origin is kept so a user stop and a concurrent
+    /// lifecycle transition cannot both claim the terminal semantics.
+    func requestCancellation(origin: Origin = .caller) {
         let forward = state.withLock { state -> (@Sendable () -> Void)? in
+            if state.origin == nil { state.origin = origin }
             guard !state.requested else { return nil }
             state.requested = true
             let forward = state.forward
@@ -272,5 +380,12 @@ final class LocalInferenceCancellationRelay: Sendable {
             return forward
         }
         forward?()
+    }
+
+    /// The origin recorded by the first `requestCancellation`, or `nil` when
+    /// nothing requested cancellation. Consulted after a generation throws so
+    /// a lifecycle stop is not misreported as a caller-owned stop.
+    var cancellationOrigin: Origin? {
+        state.withLock { $0.origin }
     }
 }

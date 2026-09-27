@@ -669,12 +669,21 @@ public actor MLXTextEngine {
             // call. A scoped handler converts every error MLX reports here into
             // a Swift throw; it cannot catch a Metal command-buffer failure
             // raised off the calling task (that stays an upstream residual).
+            //
+            // This marker is emitted immediately before the first GPU
+            // submission of the turn. The pinned revision has no per-window
+            // prefill callback, so if a device log ends after it and before
+            // `localInferencePrefillCompleted`, the process disappeared
+            // inside prefill while the watchdog was still within its bound.
+            FloeLogger(category: .providers).info(
+                "localInferencePrefillStarted trace=\(diagnosticTraceID ?? "none") inputTokens=\(inputTokens) batchSize=\(parameters.prefillStepSize ?? 0) contextSize=\(resourceProfile.contextSize) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
+            )
             stream = try await container.generate(input: input, parameters: parameters)
             try errors.check()
         } catch {
             if Self.isCancellation(error) || Task.isCancelled { throw CancellationError() }
             FloeLogger(category: .providers).warning(
-                "localInferencePrefillFailed trace=\(diagnosticTraceID ?? "none") inputTokens=\(inputTokens) batchSize=\(parameters.prefillStepSize ?? 0) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) \(Self.boundedRuntimeDiagnostic(error))"
+                "localInferencePrefillFailed trace=\(diagnosticTraceID ?? "none") inputTokens=\(inputTokens) batchSize=\(parameters.prefillStepSize ?? 0) prefillMs=\(max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) \(Self.boundedRuntimeDiagnostic(error))"
             )
             throw LocalInferenceError.decodeFailed
         }
