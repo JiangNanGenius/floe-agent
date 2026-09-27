@@ -316,8 +316,13 @@ jobs:
           ROOT="${{ runner.temp }}/floe-image-evidence"
           # Old (non-SMP) evidence stages the bundle flat at the artifact root;
           # the SMP evidence artifact nests it under work/evidence/.
-          EVDIR="$(dirname "$(find "$ROOT" -name guest-packages.tsv -type f | head -1)")"
-          test -n "$EVDIR" && test -d "$EVDIR" || { echo "guest-packages.tsv not found in the downloaded evidence"; exit 1; }
+          mapfile -t FOUND < <(find "$ROOT" -name guest-packages.tsv -type f | sort)
+          test "${#FOUND[@]}" -ge 1 || { echo "guest-packages.tsv not found in the downloaded evidence"; exit 1; }
+          if [ "${#FOUND[@]}" -gt 1 ]; then
+            echo "ambiguous evidence layout: multiple guest-packages.tsv files:"; printf '%s\n' "${FOUND[@]}"; exit 1
+          fi
+          EVDIR="$(dirname "${FOUND[0]}")"
+          test -f "$EVDIR/guest-packages.tsv" || { echo "evidence bundle root is not a real directory: $EVDIR"; exit 1; }
           echo "evidence_dir=$EVDIR" >> "$GITHUB_OUTPUT"
           echo "evidence bundle root: $EVDIR"
 
@@ -363,7 +368,7 @@ jobs:
           IMAGE_RUN="${{ (github.event_name == 'workflow_dispatch' && inputs.image_run_id != '') && inputs.image_run_id || github.run_id }}"
           python3 - "$S" "$E" "$IMAGE_RUN" "${{ inputs.rebuild_kernel }}" \
             "${{ inputs.smp_sources }}" \
-            "${{ github.server_url }}/${{ github.repository }}" <<'PY
+            "${{ github.server_url }}/${{ github.repository }}" <<'PY'
           import json, os, re, sys
           sources, evidence, image_run, rebuilt, smp_sources, server_repo = (
               sys.argv[1], sys.argv[2], sys.argv[3],
