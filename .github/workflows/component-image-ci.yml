@@ -1166,13 +1166,22 @@ jobs:
           OUT="$R/out"
           mkdir -p "$OUT"
           PREV="$R/prev"
-          # upstream payload tree (upstream/ + runner-relink/ + toolchain-source/)
+          # upstream payload tree (upstream/ + runner-relink/ + toolchain-source/).
+          # -mindepth 1: the download root itself is named "upstream" and must
+          # not match, otherwise the whole artifact nests inside OUT/upstream
+          # (distribution run 36338674160 failed exactly there).
           UP_ROOT="$PREV/upstream"
           for d in upstream runner-relink toolchain-source; do
-            SRC_DIR="$(find "$UP_ROOT" -maxdepth 2 -type d -name "$d" | head -1)"
+            SRC_DIR="$(find "$UP_ROOT" -mindepth 1 -maxdepth 2 -type d -name "$d" | sort | head -1)"
             test -n "$SRC_DIR" || { echo "missing $d in the upstream artifact"; exit 1; }
             cp -a "$SRC_DIR" "$OUT/$d"
           done
+          # Fail fast on the exact layout the distribution job consumes.
+          test -f "$OUT/upstream/SOURCE-MANIFEST.md" || { echo "staged upstream lacks SOURCE-MANIFEST.md"; exit 1; }
+          test -d "$OUT/upstream/riscv-pk-src" || { echo "staged upstream lacks riscv-pk-src"; exit 1; }
+          test -d "$OUT/upstream/riscv-linux-src" || { echo "staged upstream lacks riscv-linux-src"; exit 1; }
+          test -f "$OUT/runner-relink/floe_exec.c" || { echo "staged runner-relink lacks floe_exec.c"; exit 1; }
+          test -f "$OUT/toolchain-source/toolchain-versions.txt" || { echo "staged toolchain-source lacks toolchain-versions.txt"; exit 1; }
           # Debian shards keep their shard directory names
           mkdir -p "$OUT/debian-sources"
           for shard in "$PREV"/linux-guest-sources-debian-*; do
