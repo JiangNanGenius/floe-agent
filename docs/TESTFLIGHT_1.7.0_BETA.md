@@ -1,6 +1,15 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (230) — available in Floe QA
+## Current internal delivery: 1.7.0 (231) — available in Floe QA
+
+**Current internal TestFlight: 1.7.0 (231).** Tag `v1.7.0-beta.88` fixes source `556efe929cc7e09eb7b962e225e158ecb484f99e`. [Release](https://github.com/JiangNanGenius/floe-agent/actions/runs/36293217189) completed the App build, retained IPA and signed upload; [verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/36295318954) confirmed Apple `VALID`, unexpired and `IN_BETA_TESTING` in the existing private Floe QA group. [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.88) · [Build 231 notes](RELEASE_NOTES_1.7.0_BUILD_231.md). PPT/Excel opening, Word CJK/save and MLX behavior still need iPad acceptance. Soft reboot and dual-core remain unavailable. Gitee is a separate incomplete mirror.
+
+**当前内部 TestFlight：1.7.0（231）。** 标签 `v1.7.0-beta.88` 固定源码 `556efe929cc7e09eb7b962e225e158ecb484f99e`。[发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/36293217189)已完成 App 构建、IPA 保留及签名上传；[核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/36295318954)确认 Apple `VALID`、未过期，并在现有私有 Floe QA 组 `IN_BETA_TESTING`。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.88) · [Build 231 说明](RELEASE_NOTES_1.7.0_BUILD_231.md)。PPT/Excel 打开、Word 中文与保存、本地模型仍待 iPad 验收。软重启与双核仍不可用；Gitee 是独立未完成镜像。
+
+[Prepare run](https://github.com/JiangNanGenius/floe-agent/actions/runs/36295286313) verified en-US and zh-Hans beta notes. Unsigned IPA: 739,624,204 bytes; SHA-256 `aa55964255cfd769a87af958d8612248feb86f77d9f037eedcf79527d6c3dd1b`, verified against the retained local copy. Office host/resources embedded successfully; this is packaging evidence, not real document rendering. MLX cloud qualification is macOS-host-not-iPad.
+
+
+## Previous internal delivery: 1.7.0 (230) — available in Floe QA
 
 Immutable tag `v1.7.0-beta.87` binds source `06c15e3511c5c12c52974a1426381968e778d7f6`. [Release run 36256360563](https://github.com/JiangNanGenius/floe-agent/actions/runs/36256360563) built the App with Xcode 26.6, retained the unsigned IPA before signing, uploaded the signed App, and published the [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87). The unsigned IPA is 739,518,631 bytes (SHA-256 `1dc9a10bdaaf1fd5ea9022cc5ceee9249d196cccf2202258e28e195383bc16b9`). Apple build `462dd279-16ab-4a73-9bd9-97a2e55202b6` was discovered as `VALID`; [prepare run 36259276773](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259276773) read back `en-US` and `zh-Hans` beta notes. [Verify run 36259380555](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259380555) confirmed on 2026-09-26 that the build is unexpired, attached to exactly one private internal `Floe QA` group, and `IN_BETA_TESTING`.
 

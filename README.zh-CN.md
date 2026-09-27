@@ -34,11 +34,13 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（230）**。不可变标签 `v1.7.0-beta.87` 固定源码 `06c15e35`；[发布 run 36256360563](https://github.com/JiangNanGenius/floe-agent/actions/runs/36256360563) 使用 Xcode 26.6 完成云端构建，在签名前保留未签名 IPA（739,518,631 字节，SHA-256 `1dc9a10bdaaf1fd5ea9022cc5ceee9249d196cccf2202258e28e195383bc16b9`），完成签名上传并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87)。[准备 run 36259276773](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259276773)已读回中英文测试说明；[核验 run 36259380555](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259380555)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`。[Build 230 说明](docs/RELEASE_NOTES_1.7.0_BUILD_230.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
+**当前内部 TestFlight：1.7.0（231）。** 标签 `v1.7.0-beta.88` 固定源码 `556efe929cc7e09eb7b962e225e158ecb484f99e`。[发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/36293217189)已完成 App 构建、IPA 保留及签名上传；[核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/36295318954)确认 Apple `VALID`、未过期，并在现有私有 Floe QA 组 `IN_BETA_TESTING`。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.88) · [Build 231 说明](docs/RELEASE_NOTES_1.7.0_BUILD_231.md)。PPT/Excel 打开、Word 中文与保存、本地模型仍待 iPad 验收。软重启与双核仍不可用；Gitee 是独立未完成镜像。
+
+**上一版内部 TestFlight：1.7.0（230）**。不可变标签 `v1.7.0-beta.87` 固定源码 `06c15e35`；[发布 run 36256360563](https://github.com/JiangNanGenius/floe-agent/actions/runs/36256360563) 使用 Xcode 26.6 完成云端构建，在签名前保留未签名 IPA（739,518,631 字节，SHA-256 `1dc9a10bdaaf1fd5ea9022cc5ceee9249d196cccf2202258e28e195383bc16b9`），完成签名上传并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87)。[准备 run 36259276773](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259276773)已读回中英文测试说明；[核验 run 36259380555](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259380555)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`。[Build 230 说明](docs/RELEASE_NOTES_1.7.0_BUILD_230.md) · [交付记录](docs/TESTFLIGHT_1.7.0_BETA.md)。
 
 **Build 230 针对已捕获的 iPad MLX 崩溃与 PPT 加载回归。** 本地提示词预算及 MLX 预填充错误检查针对普通对话崩溃路径；云端实权重验证完成两次独立文件工具调用、回执和模型续答。Office 宿主就绪判断与 IDE 标签加载已修复，固定宿主已嵌入 IPA。Linux 正式版仍是单核。云端与打包证据不等于真机功能验收。
 
-**Build 231 候选：** 最新 iPad 反馈仍报告 PPT/Excel 打不开、Word 中文字体异常和本地模型无回复。本候选包含 Office 初始化与字体修复、流式本地回复和 Linux 生命周期工具；解析器修复后通过云端 macOS 真实权重两轮工具回执验证，这不是 iPad 验收。详见 [Build 231 候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_231.md)。
+**Build 231 变化：** 最新 iPad 反馈仍报告 PPT/Excel 打不开、Word 中文字体异常和本地模型无回复。本候选包含 Office 初始化与字体修复、流式本地回复和 Linux 生命周期工具；解析器修复后通过云端 macOS 真实权重两轮工具回执验证，这不是 iPad 验收。详见 [Build 231 发布说明](docs/RELEASE_NOTES_1.7.0_BUILD_231.md)。
 
 **真机验收尚未完成。** 此前 iPad 测试报告了普通 MLX 对话与测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 230 包含针对性源码修复，但 PPT 可编辑首帧、保存重开及 Office 退出，本地模型加载、测速和连续工具对话，PiP、通知及键盘触控体验仍待真机确认。
 

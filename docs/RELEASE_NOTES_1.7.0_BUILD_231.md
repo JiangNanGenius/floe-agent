@@ -1,6 +1,6 @@
 # Floe 1.7.0 (231) — release notes / 发布说明
 
-**Status / 状态：修复候选，尚未发布。** 构建、IPA、TestFlight 与 GitHub 状态以交付记录为准；下列代码变化不代表 iPad 验收通过。
+**Status / 状态：已发布至 GitHub prerelease 与私有 Floe QA TestFlight / published and available for internal beta testing.** Apple VALID、未过期、IN_BETA_TESTING 已核实；下列代码变化不代表 iPad 验收通过。
 
 ## 简体中文
 
