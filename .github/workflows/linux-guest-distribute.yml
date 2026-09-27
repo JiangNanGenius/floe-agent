@@ -663,13 +663,20 @@ jobs:
                       recorded_sha = assoc.get("image_%s_sha512" % role)
                       check.require(recorded_sha == digests[role]["sha512"],
                                     "fresh boot-association image_%s_sha512 matches the shipped bytes" % role)
-              smp_build = os.path.join(fresh, "upstream", "SMP-BUILD.txt")
-              if check.require(os.path.isfile(smp_build), "fresh artifact carries upstream/SMP-BUILD.txt"):
+              # The multi-hart firmware evidence travels as upstream/SMP-BUILD.txt
+              # in the fresh-build artifact or as boot-pair-SMP-BUILD.txt in the
+              # image evidence bundle (run 36330566148 uses the latter).
+              smp_candidates = (os.path.join(fresh, "SMP-BUILD.txt"),
+                                os.path.join(fresh, "upstream", "SMP-BUILD.txt"),
+                                os.path.join(evidence, "boot-pair-SMP-BUILD.txt"))
+              smp_build = next((path for path in smp_candidates if os.path.isfile(path)), None)
+              if check.require(smp_build is not None,
+                               "the multi-hart firmware evidence is present (%s)" % ", ".join(smp_candidates)):
                   smp_text = text(smp_build)
                   check.require(FW_MULTI_HART_TOKEN in smp_text,
-                                "SMP-BUILD.txt carries the positive multi-hart firmware token")
+                                "SMP build evidence carries the positive multi-hart firmware token")
                   check.require("FW-MULTI-HART: MISSING" not in smp_text,
-                                "SMP-BUILD.txt is not a MISSING firmware verdict")
+                                "SMP build evidence is not a MISSING firmware verdict")
 
               # provenance-only manifest rewrite, then repack with the original member dates
               provenance = manifest.setdefault("provenance", {})
