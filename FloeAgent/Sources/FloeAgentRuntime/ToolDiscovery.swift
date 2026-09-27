@@ -206,7 +206,9 @@ enum ToolDiscovery {
         let descriptorNames = descriptors.map(\.name)
         let nativeMediaNames = descriptorNames.filter(ToolRoutingPolicy.isNativeMediaTool).sorted()
         let interpreterNames = descriptorNames
-            .filter { ToolRoutingPolicy.isInterpreterTool($0) && $0 != "environment.prepareLinux" }
+            .filter {
+                ToolRoutingPolicy.isInterpreterTool($0) && !$0.hasPrefix("environment.")
+            }
             .sorted()
         if !nativeMediaNames.isEmpty {
             let examples = nativeMediaNames.prefix(6).map(n).joined(separator: ", ")

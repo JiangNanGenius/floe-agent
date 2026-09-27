@@ -844,6 +844,24 @@ public struct LinuxGuestSessionInfo: Sendable, Equatable {
     }
 }
 
+/// One exclusive lifecycle transaction on a shared guest service: a hard
+/// restart holds the environment from before its stop until after its
+/// replacement start is registered and verified. The token identifies the
+/// transaction that owns the registry's existing per-environment lifecycle
+/// lock; only the transaction's own stop/start calls may pass it, so a direct
+/// start, execute, terminal or shape change cannot slip into the stop → start
+/// window (it is refused with `guestBusy`).
+public struct LinuxGuestLifecycleTransaction: Sendable, Equatable {
+    public var environmentID: String
+    /// Owner token minted by the shared service; opaque to callers.
+    public var token: UInt64
+
+    public init(environmentID: String, token: UInt64) {
+        self.environmentID = environmentID
+        self.token = token
+    }
+}
+
 /// Lifecycle surface layered on top of `LinuxCommandRunning`. The package UI
 /// and shell consume the command protocol; the app uses this to start, stop
 /// and delete the guest that owns an environment.
@@ -852,6 +870,20 @@ public protocol LinuxGuestControlling: Sendable {
     /// not own the environment (native environments are untouched). Throws
     /// with an honest reason when the guest cannot start.
     func startGuest(environmentID: String, taskID: String?) async throws -> Bool
+    /// Starts the guest with an explicit typed shape (an explicit lifecycle
+    /// start/restart): the descriptor is built carrying exactly `shape`'s
+    /// vCPU/RAM request and admitted strictly under the release gate. A
+    /// backend that cannot carry the shape throws instead of clamping it.
+    /// nil `shape` is identical to `startGuest(environmentID:taskID:)`.
+    func startGuest(
+        environmentID: String,
+        taskID: String?,
+        shape: GuestResourceRequest?
+    ) async throws -> Bool
+    /// Per-launch states of every guest this service owns, with the actual
+    /// granted shape. Used by the lifecycle manager to read back what the
+    /// runtime really granted instead of trusting the request.
+    func runtimeStates() async -> [LinuxGuestRuntimeState]
     /// Stops (and destroys) the guest; safe to call for any environment.
     /// Waits for the engine run loop to actually exit and reports running
     /// state truthfully the whole time (isRunning stays true until the VM
@@ -888,6 +920,36 @@ public protocol LinuxGuestControlling: Sendable {
         environmentID: String,
         expectedOwnerRunID: String
     ) async -> LinuxGuestTransientReleaseOutcome
+
+    // MARK: exclusive lifecycle transaction (hard restart)
+
+    /// Begins an exclusive stop → start transaction for one environment on
+    /// the shared service. The production TinyEMU service holds the
+    /// registry's existing per-environment lifecycle lock for the whole
+    /// transaction: while it is held, a direct start, guest command,
+    /// terminal or shape change is refused (`guestBusy`) instead of
+    /// preempting the restart. Returns nil when the backend cannot hold an
+    /// environment across the window; the lifecycle manager then keeps its
+    /// per-call ordering (and still verifies the granted shape afterwards).
+    func beginLifecycleTransaction(
+        environmentID: String
+    ) async throws -> LinuxGuestLifecycleTransaction?
+    /// Releases a transaction token. A stale token is ignored; the
+    /// environment's quarantine, when the stop never confirmed, is preserved.
+    func endLifecycleTransaction(_ transaction: LinuxGuestLifecycleTransaction) async
+    /// Stops the environment's actual instance under the transaction's
+    /// ownership: no second lock acquisition, same destructive body and
+    /// truthful quarantine semantics as an explicit stop. The caller still
+    /// verifies the stop through the read-only probes.
+    func stopForLifecycleTransaction(_ transaction: LinuxGuestLifecycleTransaction) async
+    /// Starts the replacement instance under the transaction's ownership,
+    /// carrying the explicit typed shape. Refuses when the transaction no
+    /// longer owns the environment or an external stop was registered.
+    func startForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        taskID: String?,
+        shape: GuestResourceRequest?
+    ) async throws -> Bool
     /// Host→guest port forwarding for a running guest.
     func forwardService(environmentID: String, forward: LinuxGuestServiceForward) async throws
     func removeServiceForward(environmentID: String, forward: LinuxGuestServiceForward) async
@@ -919,6 +981,27 @@ public protocol LinuxGuestControlling: Sendable {
 }
 
 public extension LinuxGuestControlling {
+    /// Default explicit-shape start: nil shape forwards to the shape-less
+    /// start; a non-nil shape is refused honestly by a backend that cannot
+    /// carry it, never silently reduced. The production TinyEMU service
+    /// overrides this to merge the shape into the start descriptor.
+    func startGuest(
+        environmentID: String,
+        taskID: String?,
+        shape: GuestResourceRequest?
+    ) async throws -> Bool {
+        guard let shape else {
+            return try await startGuest(environmentID: environmentID, taskID: taskID)
+        }
+        throw LinuxGuestError.invalidConfiguration(
+            "this guest backend cannot start an explicit shape (\(shape.vcpus.count) vCPU, \(shape.memory.mb) MiB); refusing instead of booting a different guest"
+        )
+    }
+
+    /// Default: a controller that does not publish per-launch states reports
+    /// none; the concrete TinyEMU service overrides it with real session truth.
+    func runtimeStates() async -> [LinuxGuestRuntimeState] { [] }
+
     /// Default: a controller that does not model capacity reports none. The
     /// production TinyEMU service overrides this with the registry's real
     /// reservation set.
@@ -936,6 +1019,40 @@ public extension LinuxGuestControlling {
         expectedOwnerRunID: String
     ) async -> LinuxGuestTransientReleaseOutcome {
         .refused(reason: "this Linux guest service does not support scoped transient release")
+    }
+
+    /// Default: this backend cannot hold an environment across a whole
+    /// restart transaction, so the manager keeps its per-call ordering. The
+    /// production TinyEMU service overrides this with the registry's real
+    /// per-environment lifecycle ownership.
+    func beginLifecycleTransaction(
+        environmentID: String
+    ) async throws -> LinuxGuestLifecycleTransaction? {
+        nil
+    }
+
+    /// Default: nothing to release when no transaction was ever begun. The
+    /// production service overrides this.
+    func endLifecycleTransaction(_ transaction: LinuxGuestLifecycleTransaction) async {}
+
+    /// Default: a per-call stop. Only reached for a backend whose
+    /// `beginLifecycleTransaction` returned a transaction, which the default
+    /// never does; the production service overrides this.
+    func stopForLifecycleTransaction(_ transaction: LinuxGuestLifecycleTransaction) async {
+        await stopGuest(environmentID: transaction.environmentID)
+    }
+
+    /// Default: a per-call explicit-shape start. Only reached for a backend
+    /// whose `beginLifecycleTransaction` returned a transaction, which the
+    /// default never does; the production service overrides this.
+    func startForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        taskID: String?,
+        shape: GuestResourceRequest?
+    ) async throws -> Bool {
+        try await startGuest(
+            environmentID: transaction.environmentID, taskID: taskID, shape: shape
+        )
     }
 }
 

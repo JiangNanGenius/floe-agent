@@ -373,6 +373,13 @@ public actor TinyEMULinuxGuestRegistry {
     private var lifecycleLocks: [String: LifecycleLock] = [:]
     private var lifecycleOperationTokenCounter: UInt64 = 0
     private var sessionGenerationCounter: UInt64 = 0
+    /// Environments whose lifecycle lock is held by an explicit hard-restart
+    /// transaction (environment id → owner token). The transaction owns the
+    /// environment from before its stop until after its replacement start is
+    /// registered, so a direct start, guest command, terminal or shape change
+    /// cannot slip into the stop → start window; each is refused with
+    /// `guestBusy` instead.
+    private var lifecycleTransactions: [String: UInt64] = [:]
     /// App-installed factory for the optional guest → host control bridge.
     /// Read once per session start; see `LinuxGuestHostRequestHandlerRegistry`.
     private let hostRequestHandlerRegistry = LinuxGuestHostRequestHandlerRegistry()
@@ -618,6 +625,13 @@ public actor TinyEMULinuxGuestRegistry {
         lifecycleLocks[environmentID]?.ownerIsShapeChange == true
     }
 
+    /// True while an explicit hard-restart transaction owns the environment's
+    /// lifecycle lock. Every direct start/command/terminal/shape-change entry
+    /// point refuses while this holds.
+    private func isLifecycleTransactionInFlight(environmentID: String) -> Bool {
+        lifecycleTransactions[environmentID] != nil
+    }
+
     /// FIFO acquire of the environment's lifecycle lock. The token identifies
     /// the owner, so a late release can never free another operation's lock.
     private func acquireLifecycle(
@@ -671,13 +685,17 @@ public actor TinyEMULinuxGuestRegistry {
         var startInFlight: Bool
         var teardownInFlight: Bool
         var shapeChangeInFlight: Bool
+        /// An explicit hard-restart transaction owns the environment's
+        /// lifecycle lock.
+        var transactionInFlight: Bool
     }
 
     func lifecycleDiagnostics(environmentID: String) -> LifecycleDiagnostics {
         LifecycleDiagnostics(
             startInFlight: startingEnvironments.contains(environmentID),
             teardownInFlight: teardownsInFlight.contains(environmentID),
-            shapeChangeInFlight: isShapeChangeInFlight(environmentID: environmentID)
+            shapeChangeInFlight: isShapeChangeInFlight(environmentID: environmentID),
+            transactionInFlight: isLifecycleTransactionInFlight(environmentID: environmentID)
         )
     }
 
@@ -741,8 +759,47 @@ public actor TinyEMULinuxGuestRegistry {
     /// not a Linux guest this service owns.
     @discardableResult
     public func start(environmentID: String, taskID: String?) async throws -> Bool {
-        guard let descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
+        try await start(environmentID: environmentID, taskID: taskID, explicitShape: nil)
+    }
+
+    /// Starts the guest, optionally at an explicit typed shape supplied by the
+    /// lifecycle start/restart path. The explicit shape is merged onto the
+    /// resolved descriptor (it never comes from a loose request string) and is
+    /// admitted strictly under the release gate; nil keeps the worker default.
+    public func start(
+        environmentID: String,
+        taskID: String?,
+        explicitShape: GuestResourceRequest?
+    ) async throws -> Bool {
+        try await start(
+            environmentID: environmentID,
+            taskID: taskID,
+            explicitShape: explicitShape,
+            transactionToken: nil
+        )
+    }
+
+    /// The body of `start`. `transactionToken` is set only by a hard
+    /// restart's own replacement start: the transaction already owns the
+    /// environment's lifecycle lock, so its shape-change refusal is skipped
+    /// for exactly that token while every other guard still applies.
+    private func start(
+        environmentID: String,
+        taskID: String?,
+        explicitShape: GuestResourceRequest?,
+        transactionToken: UInt64?
+    ) async throws -> Bool {
+        let inTransaction = transactionToken != nil
+            && lifecycleTransactions[environmentID] == transactionToken
+        guard var descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
+        }
+        if let explicitShape {
+            // Carry the explicit lifecycle request onto the descriptor so it
+            // reaches typed admission; the environment provider's own values
+            // are not consulted for this start.
+            descriptor.vcpus = explicitShape.vcpus.count
+            descriptor.ramMB = explicitShape.memory.mb
         }
         if teardownsInFlight.contains(environmentID) {
             throw LinuxGuestError.stopFailed(
@@ -758,22 +815,39 @@ public actor TinyEMULinuxGuestRegistry {
                 detail: "the previous guest is still running after a failed stop; retry stopGuest and wait for it to succeed, nothing was started"
             )
         }
-        if isShapeChangeInFlight(environmentID: environmentID) {
-            // A shape/RAM change is between its stop and its restart on this
+        if !inTransaction, isShapeChangeInFlight(environmentID: environmentID) {
+            // A shape/RAM change — or a hard-restart transaction, which owns
+            // the same lock — is between its stop and its restart on this
             // environment: the VM is intentionally down and its handle is
             // owned by that operation. Starting here would either fight the
-            // restart or register a handle the reshape would then overwrite;
-            // the caller waits for the shape change to finish.
+            // restart or register a handle the operation would then
+            // overwrite; the caller is refused.
             throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
         if let existing = sessions[environmentID], await existing.handle.isRunning() {
             return true
         }
         if sessions[environmentID] != nil {
-            // A dead handle from an earlier run: release its channel and
-            // admission slot before this start replaces it, so a stale VM is
-            // never double-counted.
-            await teardown(environmentID: environmentID, action: "restart")
+            if inTransaction {
+                // The transaction already owns the lifecycle lock: the normal
+                // teardown's lock acquisition would deadlock. Tear the dead
+                // handle down inline with the same destructive body.
+                await performLockedTeardown(environmentID: environmentID, action: "restart")
+            } else {
+                // A dead handle from an earlier run: release its channel and
+                // admission slot before this start replaces it, so a stale VM
+                // is never double-counted.
+                await teardown(environmentID: environmentID, action: "restart")
+            }
+        }
+        // Re-check under no suspension: a lifecycle transaction/reshape may
+        // have acquired the environment while this start was waiting above.
+        // With the check performed synchronously before the in-flight marker
+        // is inserted, a transaction can neither begin after this check (its
+        // `startingEnvironments` drain would then see the marker) nor before
+        // it without being observed here.
+        if !inTransaction, isShapeChangeInFlight(environmentID: environmentID) {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
         // Own the environment's start from BEFORE the heavy-runtime wait so a
         // stop that lands while this start is queued for inference idle (or
@@ -859,7 +933,8 @@ public actor TinyEMULinuxGuestRegistry {
                 let requestedShape = try Self.typedStartShape(
                     descriptor: descriptor,
                     clampedRAMMB: limits.clampedRAMMB(descriptor.ramMB),
-                    releasePolicy: releasePolicy
+                    releasePolicy: releasePolicy,
+                    explicitOrigin: explicitShape != nil ? .userSpecified : nil
                 )
                 // A descriptor start is either an explicit persisted choice
                 // (strict: an unqualified second core must fail, never boot
@@ -968,7 +1043,8 @@ public actor TinyEMULinuxGuestRegistry {
     private static func typedStartShape(
         descriptor: LinuxGuestEnvironmentDescriptor,
         clampedRAMMB: Int,
-        releasePolicy: GuestReleaseShapePolicy
+        releasePolicy: GuestReleaseShapePolicy,
+        explicitOrigin: GuestRequestOrigin? = nil
     ) throws -> GuestResourceRequest {
         let memory = GuestMemoryMiB.smallestHolding(max(0, clampedRAMMB)) ?? .m2048
         guard let requestedVCPUs = descriptor.vcpus else {
@@ -987,7 +1063,11 @@ public actor TinyEMULinuxGuestRegistry {
                 maximum: releasePolicy.maximumSupportedVCPUs
             )
         }
-        return GuestResourceRequest(vcpus: vcpus, memory: memory, origin: .environmentPolicy)
+        return GuestResourceRequest(
+            vcpus: vcpus,
+            memory: memory,
+            origin: explicitOrigin ?? .environmentPolicy
+        )
     }
 
     /// The body of `start` once admission is granted. Split out so every
@@ -1771,6 +1851,12 @@ public actor TinyEMULinuxGuestRegistry {
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult {
+        if isLifecycleTransactionInFlight(environmentID: environmentID) {
+            // A hard restart owns the environment across its stop → start
+            // window: a command must not attach to the outgoing or incoming
+            // instance.
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
         guard let session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
@@ -2184,6 +2270,151 @@ public actor TinyEMULinuxGuestRegistry {
         return .released
     }
 
+    // MARK: exclusive lifecycle transaction (hard restart)
+
+    /// How long `beginLifecycleTransaction` / its stop wait for a start that
+    /// was already in flight to abort. Bounded: a start in the middle of a VM
+    /// boot is signalled to yield, never waited for forever.
+    private static let lifecycleTransactionStartDrainTimeout: TimeInterval = 15
+
+    /// Begins an exclusive stop → start transaction for one environment,
+    /// reusing the registry's existing per-environment lifecycle lock (no
+    /// parallel lock, no second owner). While the transaction is held a
+    /// direct start, guest command, terminal or shape change is refused
+    /// (`guestBusy`) instead of preempting the restart.
+    ///
+    /// A start already in flight (it passed its shape-change check before
+    /// this call) is signalled to abort through the same `pendingStops`
+    /// mechanism an explicit stop uses, and the transaction waits, bounded,
+    /// for its marker to clear. A second transaction for the same
+    /// environment is refused. The caller must always pair this with
+    /// `endLifecycleTransaction`.
+    public func beginLifecycleTransaction(environmentID: String) async throws -> UInt64 {
+        guard await environments.linuxGuestEnvironment(id: environmentID) != nil else {
+            throw LinuxGuestError.notOwned(environmentID: environmentID)
+        }
+        guard lifecycleTransactions[environmentID] == nil else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        let token = nextLifecycleOperationToken()
+        // Shape-change-like ownership: `isShapeChangeInFlight` is the
+        // predicate every direct start/reshape already checks, so this adds
+        // no parallel lock and no second predicate.
+        await acquireLifecycle(
+            environmentID: environmentID, token: token, isShapeChange: true
+        )
+        // From here no NEW start can pass its shape-change check. A start
+        // already in flight must be asked to abort: it would otherwise boot a
+        // second VM on this environment's disk while the transaction prepares
+        // its replacement.
+        if startingEnvironments.contains(environmentID) {
+            pendingStops.insert(environmentID)
+            HeavyRuntimeArbiter.shared.cancelLinuxStart(environmentID: environmentID)
+            let deadline = Date().addingTimeInterval(Self.lifecycleTransactionStartDrainTimeout)
+            while startingEnvironments.contains(environmentID), Date() < deadline {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            let drained = !startingEnvironments.contains(environmentID)
+            pendingStops.remove(environmentID)
+            guard drained else {
+                releaseLifecycle(environmentID: environmentID, token: token)
+                throw LinuxGuestError.guestBusy(environmentID: environmentID)
+            }
+        }
+        lifecycleTransactions[environmentID] = token
+        FloeLogger(category: .tools).info(
+            "Linux guest lifecycle transaction began environment=\(environmentID)"
+        )
+        return token
+    }
+
+    /// Ends a lifecycle transaction and releases the environment's lifecycle
+    /// lock. A stale token (already ended) is ignored. A quarantine left by a
+    /// stop that never confirmed is preserved: only a later successful stop
+    /// clears it.
+    public func endLifecycleTransaction(environmentID: String, token: UInt64) async {
+        guard lifecycleTransactions[environmentID] == token else { return }
+        lifecycleTransactions[environmentID] = nil
+        releaseLifecycle(environmentID: environmentID, token: token)
+        FloeLogger(category: .tools).info(
+            "Linux guest lifecycle transaction ended environment=\(environmentID)"
+        )
+    }
+
+    /// Stops the actual instance under the transaction's ownership. The
+    /// transaction already owns the lifecycle lock, so this neither
+    /// re-acquires it nor deadlocks; the destructive body and the truthful
+    /// quarantine semantics are the same as an explicit stop. The caller
+    /// still verifies the outcome through the read-only probes.
+    public func stopForLifecycleTransaction(environmentID: String, token: UInt64) async {
+        guard lifecycleTransactions[environmentID] == token else { return }
+        await performLockedTeardown(environmentID: environmentID, action: "hardRestart")
+    }
+
+    /// Starts the replacement instance under the transaction's ownership,
+    /// carrying the explicit typed shape. Refuses when the transaction no
+    /// longer owns the environment.
+    public func startForLifecycleTransaction(
+        environmentID: String,
+        token: UInt64,
+        taskID: String?,
+        shape: GuestResourceRequest?
+    ) async throws -> Bool {
+        guard lifecycleTransactions[environmentID] == token else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        return try await start(
+            environmentID: environmentID,
+            taskID: taskID,
+            explicitShape: shape,
+            transactionToken: token
+        )
+    }
+
+    /// Destructive teardown of an environment whose lifecycle lock the CALLER
+    /// already owns (an explicit transaction): no lock acquisition, no
+    /// deadlock, but the same marker, terminal close, session removal and
+    /// truthful quarantine semantics as `teardown`. A start that slipped in
+    /// before the transaction's own admission check is signalled and waited
+    /// for, bounded, so no second VM can be booting while the replacement is
+    /// prepared.
+    @discardableResult
+    private func performLockedTeardown(environmentID: String, action: String) async -> Bool {
+        let markerOwned = teardownsInFlight.insert(environmentID).inserted
+        defer { if markerOwned { teardownsInFlight.remove(environmentID) } }
+        if startingEnvironments.contains(environmentID) {
+            pendingStops.insert(environmentID)
+            HeavyRuntimeArbiter.shared.cancelLinuxStart(environmentID: environmentID)
+            let deadline = Date().addingTimeInterval(Self.lifecycleTransactionStartDrainTimeout)
+            while startingEnvironments.contains(environmentID), Date() < deadline {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            let drained = !startingEnvironments.contains(environmentID)
+            pendingStops.remove(environmentID)
+            guard drained else {
+                // A start that refuses to yield keeps the environment: the
+                // transaction's stop did not reach a state it can start a
+                // replacement from, and the caller's verification will refuse.
+                lastErrors[environmentID] =
+                    "a concurrent guest start did not yield to the \(action); the restart did not proceed"
+                return false
+            }
+        }
+        for (sessionID, terminal) in terminalSessions where terminal.environmentID == environmentID {
+            terminalSessions.removeValue(forKey: sessionID)
+            await terminal.handle.close()
+        }
+        guard let session = sessions.removeValue(forKey: environmentID) else {
+            if !startingEnvironments.contains(environmentID) {
+                guestReservations[environmentID] = nil
+                clearReservation(environmentID: environmentID)
+                quarantinedEnvironments.remove(environmentID)
+            }
+            return false
+        }
+        return await performTeardownBody(environmentID: environmentID, action: action, session: session)
+    }
+
     /// Changes the running guest's memory tier through the safe
     /// stop → flush → restart path. Kept for call-site compatibility;
     /// forwards to `setShape` without changing the vCPU count.
@@ -2210,6 +2441,11 @@ public actor TinyEMULinuxGuestRegistry {
     /// change can never restart the old handle, rebook a released reservation
     /// or overwrite a replacement session.
     public func setShape(environmentID: String, ramMB: Int, vcpus: Int) async throws {
+        if isLifecycleTransactionInFlight(environmentID: environmentID) {
+            // A hard restart owns the environment across its stop → start
+            // window: a shape change must not preempt (or queue behind) it.
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
         // Fast fail without a session, then capture the identity this request
         // is about. The capture is only a candidate; it is revalidated under
         // the lifecycle lock before anything is touched.
@@ -2422,6 +2658,12 @@ public actor TinyEMULinuxGuestRegistry {
         columns: Int,
         rows: Int
     ) async throws {
+        if isLifecycleTransactionInFlight(environmentID: environmentID) {
+            // A hard restart owns the environment across its stop → start
+            // window: a new interactive session must not attach to the
+            // outgoing or incoming instance.
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
         guard let session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
@@ -2554,6 +2796,12 @@ public actor TinyEMULinuxGuestRegistry {
         timeout: TimeInterval,
         cancellation: CancellationToken?
     ) async throws -> Int32 {
+        if isLifecycleTransactionInFlight(environmentID: environmentID) {
+            // A hard restart owns the environment across its stop → start
+            // window: a managed service must not be spawned into an instance
+            // that is being replaced.
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
         guard let session = sessions[environmentID], await session.handle.isRunning() else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
@@ -2697,6 +2945,18 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
         try await registry.start(environmentID: environmentID, taskID: taskID)
     }
 
+    public func startGuest(
+        environmentID: String,
+        taskID: String?,
+        shape: GuestResourceRequest?
+    ) async throws -> Bool {
+        try await registry.start(
+            environmentID: environmentID,
+            taskID: taskID,
+            explicitShape: shape
+        )
+    }
+
     public func stopGuest(environmentID: String) async {
         // Services die with their guest: kill them explicitly first so the
         // host forwarding table and the job log are closed out, not just
@@ -2774,6 +3034,54 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
             await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
         }
         return outcome
+    }
+
+    // MARK: exclusive lifecycle transaction (hard restart)
+
+    /// Holds this environment's shared registry lifecycle ownership for the
+    /// whole hard-restart transaction. See
+    /// `TinyEMULinuxGuestRegistry.beginLifecycleTransaction`.
+    public func beginLifecycleTransaction(
+        environmentID: String
+    ) async throws -> LinuxGuestLifecycleTransaction? {
+        let token = try await registry.beginLifecycleTransaction(environmentID: environmentID)
+        return LinuxGuestLifecycleTransaction(environmentID: environmentID, token: token)
+    }
+
+    public func endLifecycleTransaction(_ transaction: LinuxGuestLifecycleTransaction) async {
+        await registry.endLifecycleTransaction(
+            environmentID: transaction.environmentID, token: transaction.token
+        )
+    }
+
+    /// Stops the actual instance under the transaction's ownership. Same
+    /// ordering as `stopGuest` (services first, then the VM, then the
+    /// interpreter caches), but the registry stop runs under the
+    /// transaction's ownership so it neither re-acquires the lifecycle lock
+    /// nor deadlocks.
+    public func stopForLifecycleTransaction(_ transaction: LinuxGuestLifecycleTransaction) async {
+        await localServices.stopLocalServices(environmentID: transaction.environmentID)
+        await registry.stopForLifecycleTransaction(
+            environmentID: transaction.environmentID, token: transaction.token
+        )
+        // The stop owns the environment: a service start that still crossed it
+        // is released as an explicit host stop, never kept as a live handle.
+        await localServices.environmentDidStop(environmentID: transaction.environmentID)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: transaction.environmentID)
+        await LinuxGuestNodeProvisioner.shared.forget(environmentID: transaction.environmentID)
+    }
+
+    public func startForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        taskID: String?,
+        shape: GuestResourceRequest?
+    ) async throws -> Bool {
+        try await registry.startForLifecycleTransaction(
+            environmentID: transaction.environmentID,
+            token: transaction.token,
+            taskID: taskID,
+            shape: shape
+        )
     }
 
     /// Authoritative runtime identity for one environment (metrics sampler

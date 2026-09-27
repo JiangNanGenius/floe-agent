@@ -625,7 +625,19 @@ final class AppEnvironment: ObservableObject {
             localPythonInstaller: managedPython,
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService,
-            linuxPreparation: linuxPreparation
+            linuxPreparation: linuxPreparation,
+            linuxLifecycle: LinuxGuestLifecycleManager(
+                controller: linuxGuests,
+                prepareImage: { environmentID, cancellation in
+                    guard let linuxPreparation else {
+                        throw LinuxGuestError.startFailed("Linux image preparation is unavailable")
+                    }
+                    _ = try await linuxPreparation(LinuxPreparationRequest(
+                        environmentID: environmentID,
+                        cancellation: cancellation ?? CancellationToken()
+                    ))
+                }
+            )
         )
         FloeShortcutsRuntime.shared.install(environment: self)
     }
@@ -691,7 +703,8 @@ final class AppEnvironment: ObservableObject {
         localPythonInstaller: ManagedPythonInstallService?,
         sshCommandService: SSHCommandService?,
         cloudWorkspaceService: CloudWorkspaceService?,
-        linuxPreparation: LinuxPreparationHandler?
+        linuxPreparation: LinuxPreparationHandler?,
+        linuxLifecycle: any LinuxGuestLifecycleControlling
     ) {
         let credentialVault = self.credentialVault
         // Workspace file tools (T04/T05).
@@ -804,6 +817,7 @@ final class AppEnvironment: ObservableObject {
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             webSearchAvailability: WebSearchSettingsCenter.toolIsAvailable,
             linuxPreparation: linuxPreparation,
+            linuxLifecycle: linuxLifecycle,
             includeOnDeviceJavaScript: true
         )
         // Local shell surface: exec.shell, interactive shell.* and the

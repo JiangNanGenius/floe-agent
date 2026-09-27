@@ -78,7 +78,9 @@ public enum CapabilityExecutionRouter {
         // Package management inside the guest.
         "apt", "python.packages",
         // Explicit Linux lifecycle.
-        "environment.prepareLinux"
+        "environment.prepareLinux",
+        "environment.startLinux", "environment.linuxStatus", "environment.stopLinux",
+        "environment.softRestartLinux", "environment.hardRestartLinux"
     ]
 
     /// Prefixes owned by the Linux guest (covers versioned/namespaced names).

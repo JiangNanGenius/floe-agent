@@ -46,6 +46,7 @@ public func registerExecutionTools(
     webSearchService: WebSearchService = WebSearchService(),
     webSearchAvailability: @escaping @Sendable (String) -> Bool = { _ in false },
     linuxPreparation: LinuxPreparationHandler? = nil,
+    linuxLifecycle: (any LinuxGuestLifecycleControlling)? = nil,
     includeOnDeviceJavaScript: Bool = false,
     includeStandaloneWasmTool: Bool = false
 ) -> any ScriptExecutionService {
@@ -216,6 +217,18 @@ public func registerExecutionTools(
     if let linuxPreparation {
         ToolCatalog.register(PrepareLinuxEnvironmentTool.self)
         registry.register(PrepareLinuxEnvironmentTool(prepare: linuxPreparation))
+    }
+    if let linuxLifecycle {
+        ToolCatalog.register(StartLinuxGuestLifecycleTool.self)
+        ToolCatalog.register(LinuxGuestStatusLifecycleTool.self)
+        ToolCatalog.register(StopLinuxGuestLifecycleTool.self)
+        ToolCatalog.register(SoftRestartLinuxGuestLifecycleTool.self)
+        ToolCatalog.register(HardRestartLinuxGuestLifecycleTool.self)
+        registry.register(StartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
+        registry.register(LinuxGuestStatusLifecycleTool(lifecycle: linuxLifecycle))
+        registry.register(StopLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
+        registry.register(SoftRestartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
+        registry.register(HardRestartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
     }
     return service
 }
