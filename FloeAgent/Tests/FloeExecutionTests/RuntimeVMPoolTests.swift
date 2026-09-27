@@ -24,14 +24,16 @@ final class RuntimeVMPoolTests: XCTestCase {
         memory: Int = 3072,
         vms: Int = 4,
         seams: RuntimeVMPool.Seams = .unrestricted,
-        releasePolicy: GuestReleaseShapePolicy = .production
+        releasePolicy: GuestReleaseShapePolicy = .production,
+        queueReviewInterval: TimeInterval = 5
     ) -> RuntimeVMPool {
         RuntimeVMPool(
             configuration: RuntimeVMPool.Configuration(
                 quota: GuestResourceQuota(
                     totalVCPUs: vcpus, totalMemoryMiB: memory, maxVMs: vms
                 ),
-                releasePolicy: releasePolicy
+                releasePolicy: releasePolicy,
+                queueReviewInterval: queueReviewInterval
             ),
             registry: nil,
             seams: seams
@@ -1081,6 +1083,269 @@ final class RuntimeVMPoolTests: XCTestCase {
         XCTAssertFalse(unpinned.userOverride)
     }
 
+    // MARK: - low-memory admission repairs (D1/D2/D3/D5)
+
+    /// D1: a REAL zero headroom reading must refuse admission. Treating it as
+    /// nil ("probe unavailable") would skip the gate at the exact moment the
+    /// process is out of dirty-memory budget.
+    func testZeroHeadroomReadingRefusesStart() async throws {
+        XCTAssertEqual(
+            RuntimeProcessHeadroom.requiredBytes(
+                guestRAMMiB: 256, hostOverheadMiB: 64, futureReserveMiB: 256
+            ),
+            576 * 1_048_576
+        )
+        let zeroSeams = RuntimeVMPool.Seams(
+            availableHeadroomBytes: { 0 },
+            pressure: { .nominal }
+        )
+        let pool = makePool(seams: zeroSeams)
+        let task = Task {
+            try await pool.acquire(
+                environmentID: "env-0", runtimeID: "rt-0",
+                request: GuestResourceRequest(vcpus: .one, memory: .m256),
+                imageSMPCapable: false
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        let queued = await pool.queuedCount
+        XCTAssertEqual(queued, 1, "zero headroom must queue, never skip the gate as nil")
+        task.cancel()
+        await assertCancellation(task)
+    }
+
+    #if os(iOS) || os(tvOS) || os(watchOS)
+    /// D1: on the platforms that implement the probe, a raw zero reading must
+    /// surface as 0 (a real, exhausted reading), never as nil.
+    func testAvailableBytesPreservesZeroReadingOnMobile() {
+        let raw = os_proc_available_memory()
+        XCTAssertEqual(RuntimeProcessHeadroom.availableBytes(), Int(clamping: raw))
+    }
+    #endif
+
+    /// D3: an authorized request whose requested step does not fit the real
+    /// headroom takes the largest declared RAM step at/above its floor that
+    /// does, and the lease records the downgrade honestly.
+    func testAuthorizedHeadroomShortageDowngradesWithinFloor() async throws {
+        // 512 MiB needs 832 MiB (512+64+256); 256 MiB needs 576 MiB.
+        let seams = RuntimeVMPool.Seams(
+            availableHeadroomBytes: { 600 * 1_048_576 },
+            pressure: { .nominal }
+        )
+        let pool = makePool(seams: seams)
+        let lease = try await pool.acquire(
+            environmentID: "env-0", runtimeID: "rt-0",
+            request: GuestResourceRequest(vcpus: .one, memory: .m512),
+            imageSMPCapable: false,
+            downgrade: .authorized(memoryFloor: .m256)
+        )
+        XCTAssertEqual(lease.shape.memory, .m256)
+        XCTAssertTrue(lease.memoryDowngraded)
+        XCTAssertEqual(lease.memoryDowngradeReason?.contains("headroom"), true)
+    }
+
+    /// D3: strict admission never takes the headroom downgrade, even when the
+    /// floor step would fit; the request queues instead of booting smaller.
+    func testStrictAdmissionNeverTakesHeadroomDowngrade() async throws {
+        let seams = RuntimeVMPool.Seams(
+            availableHeadroomBytes: { 600 * 1_048_576 },
+            pressure: { .nominal }
+        )
+        let pool = makePool(seams: seams)
+        let task = Task {
+            try await pool.acquire(
+                environmentID: "env-0", runtimeID: "rt-0",
+                request: GuestResourceRequest(vcpus: .one, memory: .m512),
+                imageSMPCapable: false,
+                downgrade: .strict
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        let queued = await pool.queuedCount
+        XCTAssertEqual(queued, 1)
+        task.cancel()
+        await assertCancellation(task)
+    }
+
+    /// D3: an authorized downgrade never goes below the caller's floor. When
+    /// the floor step itself does not fit, the request queues instead.
+    func testAuthorizedHeadroomNeverGoesBelowFloor() async throws {
+        // Floor 512 needs 832 MiB (> 700); 256 would fit but is NOT authorized.
+        let seams = RuntimeVMPool.Seams(
+            availableHeadroomBytes: { 700 * 1_048_576 },
+            pressure: { .nominal }
+        )
+        let pool = makePool(seams: seams)
+        let task = Task {
+            try await pool.acquire(
+                environmentID: "env-0", runtimeID: "rt-0",
+                request: GuestResourceRequest(vcpus: .one, memory: .m1024),
+                imageSMPCapable: false,
+                downgrade: .authorized(memoryFloor: .m512)
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        let queued = await pool.queuedCount
+        XCTAssertEqual(queued, 1)
+        task.cancel()
+        await assertCancellation(task)
+    }
+
+    /// D3 pure contract: the ladder walk, the floor clamp and the strict
+    /// refusal are deterministic with no concurrency involved.
+    func testResolveHeadroomLadderContract() {
+        let request = GuestResourceRequest(vcpus: .one, memory: .m1024)
+        // 850 MiB: 1024 needs 1344, 768 needs 1088, 512 needs 832, 256 needs
+        // 576 — the largest fitting authorized step is 512.
+        let authorized = RuntimeVMPool.resolveHeadroom(
+            shape: request, availableBytes: 850 * 1_048_576,
+            hostOverheadMiB: 64, futureReserveMiB: 256,
+            downgrade: .authorized(memoryFloor: .m256)
+        )
+        XCTAssertEqual(authorized?.shape.memory, .m512)
+        XCTAssertEqual(authorized?.memoryDowngraded, true)
+        // Strict keeps the request or refuses: 850 MiB cannot hold 1024.
+        XCTAssertNil(RuntimeVMPool.resolveHeadroom(
+            shape: request, availableBytes: 850 * 1_048_576,
+            hostOverheadMiB: 64, futureReserveMiB: 256,
+            downgrade: .strict
+        ))
+        // Authorized with the floor above the largest fitting step queues.
+        XCTAssertNil(RuntimeVMPool.resolveHeadroom(
+            shape: request, availableBytes: 850 * 1_048_576,
+            hostOverheadMiB: 64, futureReserveMiB: 256,
+            downgrade: .authorized(memoryFloor: .m768)
+        ))
+        // Enough headroom for the request itself is an exact grant.
+        let exact = RuntimeVMPool.resolveHeadroom(
+            shape: request, availableBytes: 1344 * 1_048_576,
+            hostOverheadMiB: 64, futureReserveMiB: 256,
+            downgrade: .authorized(memoryFloor: .m256)
+        )
+        XCTAssertEqual(exact?.shape.memory, .m1024)
+        XCTAssertEqual(exact?.memoryDowngraded, false)
+    }
+
+    /// D2: the pool itself re-evaluates queued admissions when headroom
+    /// recovers — no UI observer and no manual refresh call is involved.
+    func testQueuedAdmissionReevaluatesItselfWhenHeadroomReturns() async throws {
+        final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private var bytes: Int
+            init(_ bytes: Int) { self.bytes = bytes }
+            var value: Int { lock.lock(); defer { lock.unlock() }; return bytes }
+            func set(_ newValue: Int) { lock.lock(); bytes = newValue; lock.unlock() }
+        }
+        let box = Box(100 * 1_048_576)
+        let seams = RuntimeVMPool.Seams(
+            availableHeadroomBytes: { box.value },
+            pressure: { .nominal }
+        )
+        let pool = makePool(seams: seams, queueReviewInterval: 0.05)
+        let task = Task {
+            try await pool.acquire(
+                environmentID: "env-0", runtimeID: "rt-0",
+                request: Self.single512, imageSMPCapable: false
+            )
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        let queued = await pool.queuedCount
+        XCTAssertEqual(queued, 1)
+        // Headroom recovers with NO release, NO reportPressure and NO
+        // refreshQueuedAdmissions call.
+        box.set(4 * 1024 * 1_048_576)
+        let lease = try await awaitWithTimeoutCancelling(task, seconds: 3)
+        XCTAssertEqual(lease.shape.memory, .m512)
+        let queuedAfter = await pool.queuedCount
+        XCTAssertEqual(queuedAfter, 0)
+    }
+
+    /// D2: the bounded review loop stops as soon as the queue is empty; an
+    /// idle pool performs no periodic probing at all.
+    func testQueueReviewLoopStopsWhenQueueEmpties() async throws {
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+            func increment() { lock.lock(); count += 1; lock.unlock() }
+            var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+        }
+        let counter = Counter()
+        let seams = RuntimeVMPool.Seams(
+            availableHeadroomBytes: { counter.increment(); return 100 * 1_048_576 },
+            pressure: { .nominal }
+        )
+        let pool = makePool(seams: seams, queueReviewInterval: 0.05)
+        let task = Task {
+            try await pool.acquire(
+                environmentID: "env-0", runtimeID: "rt-0",
+                request: Self.single512, imageSMPCapable: false
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        let queued = await pool.queuedCount
+        XCTAssertEqual(queued, 1)
+        // The loop runs while the waiter exists (1 initial admit + reviews).
+        try await Task.sleep(for: .milliseconds(200))
+        let duringQueue = counter.value
+        XCTAssertGreaterThanOrEqual(duringQueue, 2)
+        task.cancel()
+        await assertCancellation(task)
+        // Let any in-flight pass finish, then prove the loop stopped.
+        try await Task.sleep(for: .milliseconds(150))
+        let settled = counter.value
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(
+            counter.value, settled,
+            "the review loop must stop when the queue empties (no idle polling)"
+        )
+    }
+
+    /// D5: the machine re-checks the real process headroom immediately before
+    /// the engine allocates and touches guest RAM. A shortage is a recoverable
+    /// start error and the VM is never created. This is the single boundary
+    /// both the Runtime v2 and the legacy (runtimeV2 == nil) start paths reach.
+    func testMachineRechecksHeadroomBeforeEngineCreate() throws {
+        let image = LinuxGuestImage(
+            id: "img", biosPath: "missing-bios-for-headroom-check.bin", qualified: false
+        )
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: "env-1", imageID: "img", ramMB: 512
+        )
+        let required = RuntimeProcessHeadroom.requiredBytes(
+            guestRAMMiB: 512, hostOverheadMiB: 64, futureReserveMiB: 256
+        )
+        // One byte less than required: refused before floe_vm_create, so no
+        // VM exists and no run thread was spawned.
+        let starved = try TinyEMUGuestMachine(
+            descriptor: descriptor, image: image, limits: .standard,
+            headroomProbe: { required - 1 }
+        )
+        XCTAssertThrowsError(try starved.start()) { error in
+            guard case .startFailed(let detail) = error as? LinuxGuestError else {
+                return XCTFail("expected startFailed, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("headroom"), detail)
+        }
+        XCTAssertFalse(starved.isRunning)
+        // Exactly the requirement clears the headroom boundary; the engine
+        // then fails on the deliberately missing firmware, proving this gate
+        // does not over-refuse at the equality edge.
+        let roomy = try TinyEMUGuestMachine(
+            descriptor: descriptor, image: image, limits: .standard,
+            headroomProbe: { required }
+        )
+        XCTAssertThrowsError(try roomy.start()) { error in
+            guard case .startFailed(let detail) = error as? LinuxGuestError else {
+                return XCTFail("expected engine startFailed, got \(error)")
+            }
+            XCTAssertFalse(
+                detail.contains("headroom"),
+                "the headroom gate must pass at exactly the requirement: \(detail)"
+            )
+        }
+        XCTAssertFalse(roomy.isRunning)
+    }
+
     // MARK: - helpers
 
     private func assertCancellation<T>(_ task: Task<T, Error>) async {
@@ -1105,5 +1370,20 @@ final class RuntimeVMPoolTests: XCTestCase {
             group.cancelAll()
             return result
         }
+    }
+
+    /// Bounded wait that CANCELS the observed task on timeout, so a regressed
+    /// waiter (still parked on the pool's queue continuation) cannot keep the
+    /// process alive past the deadline. Prefer this over the group-based
+    /// helper whenever the expected completion may not happen at all.
+    private func awaitWithTimeoutCancelling<T: Sendable>(
+        _ task: Task<T, Error>, seconds: TimeInterval
+    ) async throws -> T {
+        let timer = Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            task.cancel()
+        }
+        defer { timer.cancel() }
+        return try await task.value
     }
 }

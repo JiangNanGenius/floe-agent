@@ -98,6 +98,23 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     /// with an explicit `.internalSyntheticTesting(provenance:)` policy —
     /// never an env var or a manifest claim.
     private let releasePolicy: GuestReleaseShapePolicy
+    /// Last-boundary process-headroom probe (D5). Admission measures headroom
+    /// before image verification and working-disk preparation, but the engine
+    /// only commits guest RAM at `floe_vm_create`; between those points the
+    /// process can lose memory to another subsystem. `start()` therefore
+    /// re-checks the SAME probe and formula immediately before the create
+    /// call on EVERY start path (Runtime v2 and legacy), turning a shortage
+    /// observed at that instant into a recoverable start error. The reading is
+    /// a snapshot, so this narrows — it cannot eliminate — the remaining
+    /// time-of-check/time-of-use window in which the OS could still kill the
+    /// process mid-create. A nil reading (the platform does not implement the
+    /// API, e.g. macOS) skips the re-check because there is no reading to
+    /// honor; an explicit test seam can also pass a constant probe.
+    private let headroomProbe: (@Sendable () -> Int?)?
+    /// Host overhead / future reserve used by the re-check; production
+    /// assemblies keep the RuntimeVMPool.Configuration defaults (64/256).
+    private let hostOverheadMiB: Int
+    private let futureReserveMiB: Int
     private let consoleStream: AsyncStream<Data>
     private let sink: TinyEMUConsoleSink
     private let lock = NSLock()
@@ -116,13 +133,23 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
         descriptor: LinuxGuestEnvironmentDescriptor,
         image: LinuxGuestImage,
         limits: LinuxGuestLimits,
-        releasePolicy: GuestReleaseShapePolicy = .production
+        releasePolicy: GuestReleaseShapePolicy = .production,
+        headroomProbe: (@Sendable () -> Int?)? = nil,
+        hostOverheadMiB: Int = 64,
+        futureReserveMiB: Int = 256
     ) throws {
         self.environmentID = descriptor.id
         self.descriptor = descriptor
         self.image = image
         self.ramMB = limits.clampedRAMMB(descriptor.ramMB)
         self.releasePolicy = releasePolicy
+        // The production probe is wired INSIDE the type: the default stays
+        // nil so no default argument references the module-internal
+        // RuntimeProcessHeadroom (visibility-safe for any future public
+        // surface), while tests can still inject a constant probe.
+        self.headroomProbe = headroomProbe ?? { RuntimeProcessHeadroom.availableBytes() }
+        self.hostOverheadMiB = max(0, hostOverheadMiB)
+        self.futureReserveMiB = max(0, futureReserveMiB)
         // Direct-construction boundary (B4): validate the descriptor's loose
         // count under the release gate, never clamp — an explicit out-of-ladder
         // count must fail here even if the pool was bypassed.
@@ -215,6 +242,28 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
                     shares[index].tag = UnsafePointer(cStrings[index * 2])
                     shares[index].host_dir = UnsafePointer(cStrings[index * 2 + 1])
                 }
+            }
+        }
+
+        // Last boundary before the engine commits guest RAM (D5): admission
+        // measured the process headroom before image verification and disk
+        // preparation, but `floe_vm_create` is where every guest RAM page is
+        // allocated and touched. Re-check the SAME probe and formula here, on
+        // both the Runtime v2 and legacy start paths, so a drop observed at
+        // this instant becomes a recoverable start error whose
+        // lease/reservation the caller returns. The probe is a snapshot: this
+        // narrows the death window but cannot prove the create that follows is
+        // safe, and the OS can still terminate the process at any point.
+        if let headroomProbe, let available = headroomProbe() {
+            let required = RuntimeProcessHeadroom.requiredBytes(
+                guestRAMMiB: ramMB,
+                hostOverheadMiB: hostOverheadMiB,
+                futureReserveMiB: futureReserveMiB
+            )
+            guard available >= required else {
+                throw LinuxGuestError.startFailed(
+                    "not enough process headroom to create a \(ramMB) MiB guest: \(available) bytes available now, \(required) bytes required before the VM is created (guest RAM + \(hostOverheadMiB) MiB host overhead + \(futureReserveMiB) MiB reserve); nothing was allocated"
+                )
             }
         }
 

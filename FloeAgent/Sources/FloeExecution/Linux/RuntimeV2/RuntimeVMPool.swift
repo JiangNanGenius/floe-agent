@@ -71,6 +71,13 @@ public actor RuntimeVMPool {
         public var hostOverheadMiB: Int
         /// Free headroom kept in reserve after an admission (future margin).
         public var futureReserveMiB: Int
+        /// How often a queued admission is re-evaluated while at least one
+        /// waiter exists. The review loop starts with the first waiter and
+        /// stops as soon as the queue empties, so an idle pool performs no
+        /// periodic work at all. Each pass is one bounded `promoteWaiters`
+        /// sweep (never more than `queueLimit` entries) against the same
+        /// headroom/pressure probes admission uses.
+        public var queueReviewInterval: TimeInterval
         // Legacy tier vocabulary retained so existing callers/tests compile.
         public var floorTier: RuntimeMemoryTier
 
@@ -81,6 +88,7 @@ public actor RuntimeVMPool {
             queueTimeout: TimeInterval = 600,
             hostOverheadMiB: Int = 64,
             futureReserveMiB: Int = 256,
+            queueReviewInterval: TimeInterval = 5,
             floorTier: RuntimeMemoryTier = .constrained
         ) {
             self.quota = quota
@@ -89,6 +97,7 @@ public actor RuntimeVMPool {
             self.queueTimeout = max(1, queueTimeout)
             self.hostOverheadMiB = max(0, min(512, hostOverheadMiB))
             self.futureReserveMiB = max(0, min(2048, futureReserveMiB))
+            self.queueReviewInterval = max(0.01, queueReviewInterval)
             self.floorTier = floorTier
         }
 
@@ -208,6 +217,12 @@ public actor RuntimeVMPool {
     private var waiters: [Waiter] = []
     /// Last externally reported pressure; nil to rely on the seam probe.
     private var reportedPressure: ResourcePressure?
+    /// Bounded periodic re-admission while waiters exist (D2): host memory
+    /// and thermal state can recover without any release or UI event, so the
+    /// pool owns its own review loop. It is created when the first waiter is
+    /// enqueued and cancelled as soon as the queue is empty — an idle pool
+    /// does no polling and the loop does not depend on any UI lifecycle.
+    private var queueReviewTask: Task<Void, Never>?
 
     public init(
         configuration: Configuration = .init(),
@@ -217,6 +232,10 @@ public actor RuntimeVMPool {
         self.configuration = configuration
         self.registry = registry
         self.seams = seams
+    }
+
+    deinit {
+        queueReviewTask?.cancel()
     }
 
     /// Current effective pressure (external report merged with host probe,
@@ -318,6 +337,7 @@ public actor RuntimeVMPool {
                         continuation: continuation
                     )
                 )
+                updateQueueReviewLoop()
                 scheduleTimeout(for: runtimeID)
             }
         } onCancel: {
@@ -473,10 +493,26 @@ public actor RuntimeVMPool {
 
         // Process headroom: resident reality on top of the quota's allowance
         // for not-yet-touched leases. A nil probe leaves the quota as the
-        // sole bound (the API was unavailable), recorded honestly.
+        // sole bound (the API was unavailable). A REAL reading that does not
+        // cover the requested step lets an AUTHORIZED request take the
+        // largest declared RAM step down to its memory floor that does fit;
+        // strict requests still queue (never a silent reduction). The future
+        // reserve is charged once per admission here, and the probe already
+        // reflects resident charges — no double deduction.
+        var grantedShape = shape
+        var headroomDowngrade = false
+        var headroomReason: String?
         if let available = seams.availableHeadroomBytes() {
-            let required = (shape.memory.mb + configuration.hostOverheadMiB + configuration.futureReserveMiB) * 1_048_576
-            guard available >= required else { return nil }
+            guard let resolution = Self.resolveHeadroom(
+                shape: grantedShape,
+                availableBytes: available,
+                hostOverheadMiB: configuration.hostOverheadMiB,
+                futureReserveMiB: configuration.futureReserveMiB,
+                downgrade: downgrade
+            ) else { return nil }
+            grantedShape = resolution.shape
+            headroomDowngrade = resolution.memoryDowngraded
+            headroomReason = resolution.reason
         }
 
         let releaseGateReason = releaseGateDowngrade
@@ -485,12 +521,61 @@ public actor RuntimeVMPool {
             ? "the image has no SMP capability evidence; the caller authorized a single-hart boot" : nil
         let combinedVCPUReason = [vcpuReason, releaseGateReason, imageGateReason]
             .compactMap { $0 }.joined(separator: "; ")
+        let combinedMemoryReason = [memoryReason, headroomReason]
+            .compactMap { $0 }.joined(separator: "; ")
         return .admitted(
-            shape: shape,
+            shape: grantedShape,
             vcpusDowngraded: vcpusDowngraded || releaseGateDowngrade || imageGateDowngrade,
-            memoryDowngraded: memoryDowngraded,
+            memoryDowngraded: memoryDowngraded || headroomDowngrade,
             vcpusDowngradeReason: combinedVCPUReason.isEmpty ? nil : combinedVCPUReason,
-            memoryDowngradeReason: memoryReason
+            memoryDowngradeReason: combinedMemoryReason.isEmpty ? nil : combinedMemoryReason
+        )
+    }
+
+    /// Result of the process-headroom gate for one admission decision.
+    struct HeadroomResolution: Sendable, Equatable {
+        var shape: GuestResourceRequest
+        var memoryDowngraded: Bool
+        var reason: String?
+    }
+
+    /// Resolves the headroom gate against a REAL probe reading (D3).
+    /// Returns nil when no admissible step fits (queue). `.strict` keeps the
+    /// requested shape or refuses; `.authorized` may take the largest
+    /// declared ladder step within [memoryFloor, requested) whose RAM +
+    /// host overhead + future reserve fits the reading. Pure and synchronous
+    /// so every ladder edge is testable without concurrency.
+    static func resolveHeadroom(
+        shape: GuestResourceRequest,
+        availableBytes: Int,
+        hostOverheadMiB: Int,
+        futureReserveMiB: Int,
+        downgrade: GuestShapeDowngradePolicy
+    ) -> HeadroomResolution? {
+        func requiredBytes(_ memoryMiB: Int) -> Int {
+            RuntimeProcessHeadroom.requiredBytes(
+                guestRAMMiB: memoryMiB,
+                hostOverheadMiB: hostOverheadMiB,
+                futureReserveMiB: futureReserveMiB
+            )
+        }
+        if availableBytes >= requiredBytes(shape.memory.mb) {
+            return HeadroomResolution(shape: shape, memoryDowngraded: false, reason: nil)
+        }
+        guard case .authorized(_, let memoryFloor) = downgrade,
+              shape.memory > memoryFloor else { return nil }
+        let steps = GuestMemoryMiB.allCases
+            .filter { $0 >= memoryFloor && $0 < shape.memory }
+            .sorted()
+        guard let step = steps.reversed().first(where: { availableBytes >= requiredBytes($0.mb) }) else {
+            return nil
+        }
+        return HeadroomResolution(
+            shape: GuestResourceRequest(
+                vcpus: shape.vcpus, memory: step, origin: shape.origin
+            ),
+            memoryDowngraded: true,
+            reason: "requested \(shape.memory.mb) MiB but the process headroom only allows \(step.mb) MiB (guest RAM + \(hostOverheadMiB) MiB host overhead + \(futureReserveMiB) MiB reserve); the caller authorized a downgrade down to \(memoryFloor.mb) MiB"
         )
     }
 
@@ -528,6 +613,7 @@ public actor RuntimeVMPool {
     private func cancelWaiter(id runtimeID: String, reason: String) async {
         guard let index = waiters.firstIndex(where: { $0.id == runtimeID }) else { return }
         let waiter = waiters.remove(at: index)
+        updateQueueReviewLoop()
         // No lease was granted to a queued waiter, so nothing is returned.
         try? await registry?.setQueueEntryState(
             id: runtimeID,
@@ -593,6 +679,38 @@ public actor RuntimeVMPool {
             )
             try? await registry?.setQueueEntryState(id: waiter.id, state: "running", started: true)
             waiter.continuation.resume(returning: lease)
+        }
+        updateQueueReviewLoop()
+    }
+
+    /// One bounded re-admission pass. Returns false when the review loop must
+    /// stop (queue empty).
+    private func reviewQueuedAdmissions() async -> Bool {
+        guard !waiters.isEmpty else { return false }
+        await promoteWaiters()
+        return !waiters.isEmpty
+    }
+
+    /// Starts the review loop when waiters exist, cancels it when the queue
+    /// is empty. Called after every waiter-table mutation.
+    private func updateQueueReviewLoop() {
+        guard !waiters.isEmpty else {
+            queueReviewTask?.cancel()
+            queueReviewTask = nil
+            return
+        }
+        guard queueReviewTask == nil else { return }
+        let interval = configuration.queueReviewInterval
+        queueReviewTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(interval))
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                if await self.reviewQueuedAdmissions() == false { return }
+            }
         }
     }
 
@@ -677,7 +795,11 @@ public actor RuntimeVMPool {
             )
         }
         if let available = seams.availableHeadroomBytes() {
-            let required = (request.memory.mb + configuration.hostOverheadMiB + configuration.futureReserveMiB) * 1_048_576
+            let required = RuntimeProcessHeadroom.requiredBytes(
+                guestRAMMiB: request.memory.mb,
+                hostOverheadMiB: configuration.hostOverheadMiB,
+                futureReserveMiB: configuration.futureReserveMiB
+            )
             guard available >= required else {
                 throw LinuxGuestError.capacityReached(
                     detail: "the process currently has \(available) bytes of headroom; the new shape requires \(required); the running guest is left untouched"
@@ -722,6 +844,7 @@ public actor RuntimeVMPool {
     public func interruptAll(reason: String) async {
         let pending = waiters
         waiters.removeAll()
+        updateQueueReviewLoop()
         for waiter in pending {
             try? await registry?.setQueueEntryState(id: waiter.id, state: "interrupted", finished: true)
             waiter.continuation.resume(throwing: RuntimeV2Error.queueTimedOut(
@@ -754,16 +877,30 @@ public actor RuntimeVMPool {
 
 /// Process-headroom probe wrapping `os_proc_available_memory()`.
 enum RuntimeProcessHeadroom {
+    /// Bytes one admission requires from the process headroom probe: the
+    /// guest's RAM plus the fixed per-VM host overhead plus the future
+    /// reserve margin. Shared by pool admission/reshape validation and the
+    /// machine's last-boundary re-check so one guest is never measured with
+    /// two different formulas.
+    static func requiredBytes(guestRAMMiB: Int, hostOverheadMiB: Int, futureReserveMiB: Int) -> Int {
+        (max(0, guestRAMMiB) + max(0, hostOverheadMiB) + max(0, futureReserveMiB)) * 1_048_576
+    }
+
     /// Bytes the OS estimates the app may still allocate; nil when the API
-    /// is unavailable (including macOS). This reflects RESIDENT charges
-    /// (guest pages only once touched), which is why the pool combines it
-    /// with the quota's not-yet-fulfilled lease accounting instead of using
-    /// either alone.
+    /// is unavailable (the platform does not implement it, e.g. macOS). This
+    /// reflects RESIDENT charges (guest pages only once touched), which is
+    /// why the pool combines it with the quota's not-yet-fulfilled lease
+    /// accounting instead of using either alone.
+    ///
+    /// A raw 0 is a REAL reading: `os_proc_available_memory()` returns 0 when
+    /// the process is at/over its dirty-memory limit (or is not an app), which
+    /// is exactly when a new guest must be refused. It is returned as 0, never
+    /// folded into nil ("probe unavailable"), so the gates that treat nil as
+    /// "skip" cannot let a start through at zero headroom (D1).
     static func availableBytes() -> Int? {
         #if os(iOS) || os(tvOS) || os(watchOS)
         if #available(iOS 13.0, tvOS 13.0, watchOS 6.0, *) {
-            let bytes = os_proc_available_memory()
-            return bytes == 0 ? nil : Int(bytes)
+            return Int(clamping: os_proc_available_memory())
         }
         #endif
         return nil
