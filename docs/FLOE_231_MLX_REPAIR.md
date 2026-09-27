@@ -5,9 +5,9 @@ the macOS host with deterministic engine doubles. The Build 231 actual-weight
 cloud qualification (run 36290562417, macOS host) then passed ordinary
 generation and the first `workspace.readFile` call before stalling in decoding
 until the 180 s watchdog; that stall was traced to the stream framer and is
-fixed below. **Real weights and the iPad have not been rerun since the framer
-fix.** This document separates what is proven from what still needs device or
-cloud evidence.
+fixed below. **Cloud real-weight recheck 36292248126 passed two tool-enabled
+conversation turns after the fix; iPad and full-App acceptance remain open.**
+This document separates component-host evidence from device behavior.
 
 ## Reported failures (Build 230, iPad device feedback)
 
@@ -164,9 +164,9 @@ separately built and executed FloeLocalModels bundle, not the full App.
 
 ## Not proven here
 
-- Real-weight generation on the macOS host with the actual App envelope: the
-  last actual-weight run (36290562417) is the **pre-fix** failure above; the
-  primary owns the next cloud actual-weight run at a pushed ref.
+- Full-App inference through the complete task/runtime and UI. The cloud
+  recheck below uses the production model adapter in a qualification host
+  with controlled input; it does not execute the entire iPad App.
 - Any iPad behaviour: streamed prefill latency, watchdog thresholds under real
   memory pressure, and the first-message navigation timing.
 - The exact Build 230 stall point; without the device log the fix is bounded
@@ -174,13 +174,13 @@ separately built and executed FloeLocalModels bundle, not the full App.
 
 ## Hooks for the main thread (outside this task's scopes)
 
-- Commit/push the shared branch and dispatch the cloud real-weights / App
-  build; this task does not commit, push or release.
+- Cloud real-weight recheck completed as recorded below. The App build and
+  device acceptance remain coordinator-owned gates.
 - Optional UI progress during prefill (stage/liveness text) would need an
   owner-runId-aware hook in `FloeApp/Settings/LocalModelsSettingsView.swift`
   or `ConversationCenter` feeding `backgroundRunCoordinator.didUpdateProgress`;
   the runtime already emits bounded progress but the app does not surface it.
-- Add this document to `docs/README.md` if the index should link it.
+- This document is linked from `docs/README.md`.
 
 ## Cloud real-weight recheck after the framer repair
 
