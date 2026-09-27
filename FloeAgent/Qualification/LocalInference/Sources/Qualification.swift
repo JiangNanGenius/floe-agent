@@ -107,6 +107,14 @@ import Synchronization
     /// `balanced context=12288 batch=96`.
     static func profileCases(includeBaseline: Bool) -> [ProfileCase] {
         var cases: [ProfileCase] = []
+        // Build 231 device diagnostics used batch 8, not the historical 48/96
+        // profiles. Keep this distinct so host evidence names its actual shape.
+        cases.append(ProfileCase(
+            label: "device-constrained-batch8",
+            profile: LocalInferenceResourceProfile(
+                tier: .constrained, contextSize: 8_192, batchSize: 8,
+                gpuLayers: 16, maximumOutputTokens: 1_024)
+        ))
         if includeBaseline {
             // Original diagnostic baseline: batch 32, the only configuration
             // the first cloud run exercised. Optional so the default run covers
@@ -450,7 +458,8 @@ import Synchronization
         // Turn 2: ~12k-character SYSTEM instructions with a short user prompt,
         // the shape of the App's batch 48/96 crash turn.
         try await generate(first, using: profileCase, turn: "system-context-chat",
-                           instructions: harnessInstructions(minimumCharacters: 12_000),
+                           instructions: harnessInstructions(minimumCharacters:
+                               profileCase.profile.batchSize == 8 ? 16_000 : 12_000),
                            prompt: harnessUserPrompt, maxTokens: 128,
                            expectation: GenerationExpectation(minimumChunks: 3),
                            baselinePeak: baselinePeak)
