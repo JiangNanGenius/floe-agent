@@ -35,7 +35,7 @@
 #   image catalog   run 36330566148  artifact 10935419318  (candidate zip + manifest + SHA512SUMS)
 #   image evidence  run 36330566148  artifact 10935339859  (boot-verify bundle)
 #   fresh SMP build run 36330566148  artifact 10935543828  (kernel+bbl rebuild evidence)
-#   sources         run 36337240075  artifacts 10938270319 / 10937801194 / 10938055868
+#   sources         run 36339356340  artifacts 10938442445 / 10937903448 / 10938391795
 #                             (component-image-ci source-repair: byte-verified reuse of run
 #                             36333736932's collected bundle + regenerated boot association)
 name: linux-guest-distribute
@@ -93,17 +93,17 @@ env:
   FRESH_ARTIFACT: linux-guest-smp-fresh-build-36330566148
   FRESH_ARTIFACT_ID: '10935543828'
   FRESH_ARTIFACT_BYTES: '44599'
-  SOURCE_RUN_ID: '36337240075'
-  SOURCE_RUN_SHA: a146e65b416565b3e62f482c91fef339aea35641
-  SOURCE_UPSTREAM_ARTIFACT: linux-guest-sources-upstream-36337240075
-  SOURCE_UPSTREAM_ARTIFACT_ID: '10938270319'
+  SOURCE_RUN_ID: '36339356340'
+  SOURCE_RUN_SHA: e63de57343a791fd3789ceadcd618de25a899558
+  SOURCE_UPSTREAM_ARTIFACT: linux-guest-sources-upstream-36339356340
+  SOURCE_UPSTREAM_ARTIFACT_ID: '10938442445'
   SOURCE_UPSTREAM_ARTIFACT_BYTES: '464619250'
   # Space-separated list of the exact Debian shards the source run produced.
-  SOURCE_DEBIAN_ARTIFACTS: linux-guest-sources-debian-1-36337240075
-  SOURCE_DEBIAN_ARTIFACT_IDS: '10937801194'
+  SOURCE_DEBIAN_ARTIFACTS: linux-guest-sources-debian-1-36339356340
+  SOURCE_DEBIAN_ARTIFACT_IDS: '10937903448'
   SOURCE_DEBIAN_ARTIFACT_BYTES: '1040038122'
-  SOURCE_EVIDENCE_ARTIFACT: linux-guest-source-evidence-36337240075
-  SOURCE_EVIDENCE_ARTIFACT_ID: '10938055868'
+  SOURCE_EVIDENCE_ARTIFACT: linux-guest-source-evidence-36339356340
+  SOURCE_EVIDENCE_ARTIFACT_ID: '10938391795'
   SOURCE_EVIDENCE_ARTIFACT_BYTES: '11058438'
 
 jobs:
