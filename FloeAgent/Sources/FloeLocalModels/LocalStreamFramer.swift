@@ -59,7 +59,17 @@ struct LocalStreamFramer: Sendable {
     /// Offset in `pending` where a possible JSON payload begins, when one is
     /// currently undecided. Release stops at this offset.
     private var candidateStart: Int?
-    /// Everything released as prose so far, in order.
+    /// Offset in `pending` where the next payload-candidate search begins.
+    /// Advances past candidates that were already parsed and rejected, so one
+    /// `drain` pass can never re-detect the same non-tool JSON region and spin
+    /// forever (the Build 231 actual-weight stall: ordinary prose containing
+    /// `{"content":"probe"}` never returned from `ingest`). Kept in step with
+    /// `pending` across every release and reset whenever `pending` is replaced.
+    private var candidateSearchStart = 0
+    /// Everything released as prose so far, in order. `ingest` returns exactly
+    /// the text appended here by that call, so every character counted as
+    /// delivered was actually handed to the caller — including prose released
+    /// before an embedded `<think …>` block or a recognized tool envelope.
     private(set) var emitted = ""
 
     init(isToolCallPayload: @escaping @Sendable (String) -> Bool) {
@@ -69,11 +79,19 @@ struct LocalStreamFramer: Sendable {
     /// Feeds one raw engine chunk. Returns the prose that is safe to display
     /// now (possibly empty). Reasoning and recognized tool payloads are never
     /// returned.
+    ///
+    /// The returned string is exactly the text this call added to `emitted` —
+    /// including prose released *inside* `drain` when an embedded think block
+    /// or tool envelope is found. Delivery and accounting therefore cannot
+    /// diverge: no released prefix can be counted but never shown.
     mutating func ingest(_ chunk: String) -> String {
         guard !chunk.isEmpty else { return "" }
         pending += chunk
+        let deliveredCharacters = emitted.count
         drain()
-        return releaseProse()
+        releaseProse()
+        guard emitted.count > deliveredCharacters else { return "" }
+        return String(emitted.dropFirst(deliveredCharacters))
     }
 
     /// Reconciles the streamed prefix with the authoritative visible answer.
@@ -131,22 +149,22 @@ struct LocalStreamFramer: Sendable {
 
     /// Releases prose from the front of `pending`. Only called after `drain`
     /// has decided the leading region is safe prose.
-    private mutating func releaseProse() -> String {
-        guard mode == .prose, !pending.isEmpty else { return "" }
+    private mutating func releaseProse() {
+        guard mode == .prose, !pending.isEmpty else { return }
         var limit = pending.count
         if let candidateStart { limit = min(limit, candidateStart) }
         // Hold a trailing prefix that could still become a think tag or the
         // start of a new line that might be JSON.
         let holdback = Self.holdbackLength(in: pending)
         if holdback > 0 { limit = min(limit, pending.count - holdback) }
-        guard limit > 0 else { return "" }
+        guard limit > 0 else { return }
         let release = String(pending.prefix(limit))
         pending = String(pending.dropFirst(limit))
         if let candidateStart {
             self.candidateStart = max(0, candidateStart - limit)
         }
+        candidateSearchStart = max(0, candidateSearchStart - limit)
         emitted += release
-        return release
     }
 
     /// Characters at the tail of `pending` that cannot be shown yet because
@@ -214,7 +232,7 @@ struct LocalStreamFramer: Sendable {
         if text.hasPrefix("<") {
             switch Self.thinkOpenerVerdict(text) {
             case .opener:
-                pending = text
+                replacePending(text)
                 mode = .think
                 return true
             case .partial:
@@ -230,23 +248,38 @@ struct LocalStreamFramer: Sendable {
             }
         }
         if lowered.hasPrefix("thinking process:") || lowered.hasPrefix("reasoning process:") {
-            pending = text
+            replacePending(text)
             mode = .scratchpad
             return true
         }
         if let first = text.first, first == "{" || first == "[" || first == "`" {
-            pending = text
+            replacePending(text)
             mode = .holdRest
             return true
         }
         // Once a decisive non-marker character appears the rest is prose.
-        pending = text
+        replacePending(text)
         mode = .prose
         return true
     }
 
+    /// Replaces `pending` when a transition consumes its prefix, resetting the
+    /// candidate cursors so no stale absolute offset can survive.
+    private mutating func replacePending(_ text: String) {
+        pending = text
+        candidateStart = nil
+        candidateSearchStart = 0
+    }
+
     /// Scans prose for embedded think tags and undecided JSON payloads.
-    /// Returns true when the mode changed.
+    /// Returns true when the mode changed or the candidate search advanced.
+    ///
+    /// Progress invariant: every `return true` either consumes/replaces
+    /// `pending` or moves `candidateSearchStart` strictly forward. A candidate
+    /// that parses as complete JSON but is not an offered tool envelope is
+    /// remembered by skipping exactly its consumed region, so the next pass
+    /// looks for a *later* candidate instead of re-classifying the same one
+    /// forever.
     private mutating func scanProse() -> Bool {
         guard !pending.isEmpty else { return false }
 
@@ -257,8 +290,7 @@ struct LocalStreamFramer: Sendable {
             switch Self.thinkOpenerVerdict(rest) {
             case .opener:
                 let before = String(pending[..<angle])
-                pending = rest
-                candidateStart = nil
+                replacePending(rest)
                 if !before.isEmpty { emitted += before }
                 mode = .think
                 return true
@@ -270,9 +302,13 @@ struct LocalStreamFramer: Sendable {
             }
         }
 
-        // Undecided JSON candidate: find a marker that can start a payload.
+        // Undecided JSON candidate: find a marker that can start a payload,
+        // never re-testing a candidate that was already rejected.
         if candidateStart == nil {
-            if let start = Self.payloadCandidateStart(in: pending) {
+            if let start = Self.payloadCandidateStart(
+                in: pending,
+                from: candidateSearchStart
+            ) {
                 candidateStart = start
             }
         }
@@ -281,12 +317,16 @@ struct LocalStreamFramer: Sendable {
             switch classifyCandidate(candidate) {
             case .completeToolPayload:
                 let before = String(pending.prefix(start))
-                pending = candidate
-                candidateStart = nil
+                replacePending(candidate)
                 if !before.isEmpty { emitted += before }
                 mode = .holdRest
                 return true
-            case .notPayload:
+            case let .notPayload(consumed):
+                // A complete balanced JSON value (or a closed fence) that the
+                // authoritative parser rejects is ordinary prose. Skip past
+                // it and keep scanning, instead of resetting the candidate and
+                // detecting the identical region again (the Build 231 hang).
+                candidateSearchStart = max(candidateSearchStart, start + consumed)
                 candidateStart = nil
                 return true
             case .undecided:
@@ -298,17 +338,28 @@ struct LocalStreamFramer: Sendable {
 
     private enum CandidateVerdict {
         case completeToolPayload
-        case notPayload
+        /// Complete, parseable region that is not an offered tool envelope.
+        /// `consumed` is how many leading characters of the candidate that
+        /// verdict covers, so the scan can skip it and move on.
+        case notPayload(consumed: Int)
         case undecided
     }
 
-    /// The first offset where a JSON/fence payload could begin. Braces count
-    /// only when they are followed by a quote, a brace or whitespace-then
-    /// quote — what a JSON object looks like — so ordinary prose braces stay
-    /// cheap while inline envelopes are still caught.
-    private static func payloadCandidateStart(in text: String) -> Int? {
+    /// The first offset (at or after `lowerBound`) where a JSON/fence payload
+    /// could begin. Braces count only when they are followed by a quote, a
+    /// brace or whitespace-then-quote — what a JSON object looks like — so
+    /// ordinary prose braces stay cheap while inline envelopes are still
+    /// caught. A brace/bracket followed only by whitespace to the end of the
+    /// buffer is undecided rather than prose: the next chunk may supply the
+    /// JSON body, so holding it keeps a split immediately after the opening
+    /// character (`["Before: {", "\"tool_call\":…"]`) from releasing the
+    /// envelope's first byte. `lowerBound` lets the caller resume after a
+    /// rejected candidate.
+    private static func payloadCandidateStart(in text: String, from lowerBound: Int) -> Int? {
         let chars = Array(text)
-        for (index, char) in chars.enumerated() {
+        guard lowerBound < chars.count else { return nil }
+        for index in max(0, lowerBound)..<chars.count {
+            let char = chars[index]
             guard char == "{" || char == "[" || char == "`" else { continue }
             if char == "`" {
                 // Only a fence marker at a line start begins a payload,
@@ -318,6 +369,10 @@ struct LocalStreamFramer: Sendable {
                 continue
             }
             let next = index + 1 < chars.count ? chars[index + 1] : nil
+            // Undecided opening bracket: only whitespace has arrived so far.
+            if chars[(index + 1)...].allSatisfy({ $0 == " " || $0 == "\n" || $0 == "\t" }) {
+                return index
+            }
             if let next, next == "\"" || next == "{" || next == "[" || next == "}" || next == "]" {
                 return index
             }
@@ -339,7 +394,9 @@ struct LocalStreamFramer: Sendable {
         // Fenced payload: complete only when the closing fence arrived.
         if trimmed.hasPrefix("`") {
             if trimmed.hasSuffix("```"), trimmed.count > 3, trimmed != "```" {
-                return isToolCallPayload(trimmed) ? .completeToolPayload : .notPayload
+                return isToolCallPayload(trimmed)
+                    ? .completeToolPayload
+                    : .notPayload(consumed: trimmed.count)
             }
             return .undecided
         }
@@ -348,7 +405,9 @@ struct LocalStreamFramer: Sendable {
         guard let prefix = Self.balancedJSONPrefix(in: trimmed) else {
             return .undecided
         }
-        return isToolCallPayload(prefix) ? .completeToolPayload : .notPayload
+        return isToolCallPayload(prefix)
+            ? .completeToolPayload
+            : .notPayload(consumed: prefix.count)
     }
 
     /// The prefix up to and including the first position where brace/bracket
@@ -395,7 +454,7 @@ struct LocalStreamFramer: Sendable {
         ) else {
             return false
         }
-        pending = String(pending[tagEnd.upperBound...])
+        replacePending(String(pending[tagEnd.upperBound...]))
         mode = .undecided
         return true
     }

@@ -1,9 +1,13 @@
 # Build 231 — local-model no-reply and first-message navigation repair
 
 Status: source fix on `codex/build231-device-regressions`. Component tests pass on
-the macOS host with deterministic engine doubles. **No real weights, no iPad and
-no cloud App build have been run for this change yet.** This document separates
-what is proven from what still needs device or cloud evidence.
+the macOS host with deterministic engine doubles. The Build 231 actual-weight
+cloud qualification (run 36290562417, macOS host) then passed ordinary
+generation and the first `workspace.readFile` call before stalling in decoding
+until the 180 s watchdog; that stall was traced to the stream framer and is
+fixed below. **Real weights and the iPad have not been rerun since the framer
+fix.** This document separates what is proven from what still needs device or
+cloud evidence.
 
 ## Reported failures (Build 230, iPad device feedback)
 
@@ -35,6 +39,31 @@ claim to establish the exact stall point inside MLX.
   invisible success. The adapter now logs an explicit
   `reason=emptyVisibleAnswer` terminal diagnostic for that path.
 
+### Follow-up stall — the stream framer's scan loop (actual-weight run)
+
+The Build 231 actual-weight qualification (`run 36290562417`) generated, ran the
+first `workspace.readFile`, and then stopped decoding: the follow-up turn never
+returned, the watchdog fired at 180 s and the host footprint reached ~7.5 GB
+(`Local/Private/build231/mlx-cloud-failed.log`). The primary agent compiled the
+real `LocalStreamFramer` alone and proved
+`ingest("Result: {\"content\":\"probe\"}")` does not return; the child had to be
+killed by its 3 s subprocess timeout (`Local/Private/build231/framer-loop-probe.json`).
+
+Two verified defects in `scanProse` caused it:
+
+- `.notPayload` cleared `candidateStart` and returned `true` without consuming
+  the rejected candidate, so `drain` re-detected the same non-tool JSON object
+  forever. A closed fenced non-tool payload had the same shape.
+- `scanProse` appended prose directly to `emitted` before an embedded
+  `<think …>` block or a recognized tool envelope, but `ingest` returned only
+  `releaseProse()`. Those prefixes were counted as delivered and could never
+  reach the caller; `finish` then treated them as already shown.
+
+A later review of the same code found one more chunk-boundary leak: a lone
+trailing `{`/`[` was not recognized as a candidate and the line holdback only
+covered lines that *start* with JSON, so `["Before: {", "\"tool_call\":…"]`
+released the envelope's first byte and then its body as prose.
+
 ### First-message navigation
 
 - `HomeLaunchpadViewModel.sendNewTask` awaited `load()` after
@@ -52,7 +81,7 @@ claim to establish the exact stall point inside MLX.
 | `Sources/FloeLocalModels/LocalInferenceLifecycle.swift` | Adds `LocalInferenceProgress` (categorical/numeric only: stage, prefilled/total input tokens, **emitted chunk count** — never a token claim) and the `streamMeasured` engine requirement with a buffered default for deterministic doubles. |
 | `Sources/FloeLocalModels/MLXTextEngine.swift` | `streamMeasured` forwards decoded chunks as they arrive and emits `preparing` → `prefill (0/N)` → `prefill (N/N)` → `decoding` progress (throttled at 0.5 s). `completeMeasured` delegates to the same core with nil sinks. Tool-call envelopes keep the existing newline-separated encoding. The scoped `MLX.withError` error box and the per-turn GPU drain/clear teardown are unchanged. |
 | `Sources/FloeLocalModels/LocalGenerationWatchdog.swift` | Bounded no-progress policy (first activity 300 s, idle 180 s, production) and a thread-safe progress ledger. Expiry only cancels the Swift task; cancellation is cooperative and the runtime/engine teardown drains the GPU stream before anything is freed, so a timeout never releases a container with in-flight GPU work. |
-| `Sources/FloeLocalModels/LocalStreamFramer.swift` | Incremental display framer: releases provably visible prose; withholds cross-chunk `<think …>` blocks, whole-payload/fenced/one-per-line JSON tool envelopes and `Thinking Process:` scratchpads. `finish(visibleAnswer:)` reconciles the streamed prefix with the authoritative answer so content is never displayed twice. |
+| `Sources/FloeLocalModels/LocalStreamFramer.swift` | Incremental display framer: releases provably visible prose; withholds cross-chunk `<think …>` blocks, whole-payload/fenced/one-per-line JSON tool envelopes and `Thinking Process:` scratchpads. `finish(visibleAnswer:)` reconciles the streamed prefix with the authoritative answer so content is never displayed twice. Build 231 followed up: every scan pass provably progresses (`candidateSearchStart` skips a rejected candidate by exactly its consumed region), `ingest` returns exactly the text it appended to `emitted` so a released prefix can never be counted but not delivered (including prose before an embedded think block/envelope), and an opening brace/bracket followed only by whitespace is held as an undecided candidate so a chunk split immediately after `{`/`[` cannot leak an envelope as prose. Deterministic regressions live in `FloeAgent/Tests/FloeLocalModelsTests/LocalStreamFramerRegressionTests.swift` (bounded per-scenario supervision) and the supervised harness `Local/Scratch/build231-framer-fix`. |
 | `Sources/FloeLocalModels/LocalProviderAdapter.swift` | `LocalModelRuntime.streamMeasured` keeps the exact admission/lease/prefill/retry/teardown ownership and forwards progress + decoded text. The adapter streams prose through the framer, keeps JSON tool parsing/reasoning extraction/tool budget unchanged, logs explicit end reasons (`toolUse`, `endTurn`, `emptyVisibleAnswer`, `missingToolInvocation`), and adds the supervisor. The transparent decode retry is skipped once any output was delivered (a replay would duplicate the visible answer). |
 | `FloeApp/Remote/ConversationCenter.swift` | `startTask` publishes the durable conversation into `conversations` synchronously and runs `reload()`/workspace reload afterwards without blocking the returned identity. |
 | `FloeApp/Home/HomeLaunchpadViewModel.swift` | `sendNewTask` returns the durable conversation id immediately; the overview refresh runs in an unstructured main-actor task. Failed sends still keep the draft and create no thread. |
@@ -105,10 +134,39 @@ errors in the parallel VM task. That task subsequently corrected them and
 reported its module checks passing. The MLX evidence above comes from the
 separately built and executed FloeLocalModels bundle, not the full App.
 
+### Build 231 framer regression run (same host/toolchain, `--jobs 2`)
+
+- Full `FloeLocalModelsTests` bundle after the framer fix: **162 tests in 26
+  suites passed** (`xctest` returncode 0), including the 11 new
+  `Local stream framer regressions (Build 231)` tests:
+  - `ingest` of the primary reproduction returns promptly and character-exact;
+  - ordinary non-tool JSON is exact at every two-way split and character-wise;
+  - several rejected candidates advance to later ones;
+  - a real offered envelope is hidden at every two-way split (78/78),
+    including `["Before: {", …]` and `["List: [", …]`, and the closed
+    non-tool fence no longer spins;
+  - embedded think markup is hidden and the visible answer exact at every split
+    (24/24);
+  - the prose prefix before an envelope/think block is delivered, and
+    `emitted` always equals what the caller received.
+  Each scenario runs on a dedicated thread with a bounded wait, so a regression
+  fails the expectation instead of hanging the suite.
+- Standalone supervised harness (`Local/Scratch/build231-framer-fix`, compiled
+  against a byte-identical copy of the real source plus an adapter-parser
+  double): 20 tests in 2 suites passed; probe 9/9 scenarios.
+- Pre-fix baseline (`faba3df6…`) against the same tests: the primary
+  reproduction fails in a bounded 5 s supervised wait; the envelope sweep
+  reports 13 issues including `delivered="Before: {"` and
+  `emitted="Before: {\"tool_call\":`; the standalone probe is killed at the
+  60 s wall clock (`timedOut: true`). Evidence: `Local/Private/build231/framer-fix/`
+  (`swift-test-*.log/json`, `probe-*.json`, `floelocalmodels-xctest.log/json`,
+  `sources-*.txt`).
+
 ## Not proven here
 
-- Real-weight generation on the macOS host with the actual App envelope
-  (needs the existing cloud qualification path at a pushed ref).
+- Real-weight generation on the macOS host with the actual App envelope: the
+  last actual-weight run (36290562417) is the **pre-fix** failure above; the
+  primary owns the next cloud actual-weight run at a pushed ref.
 - Any iPad behaviour: streamed prefill latency, watchdog thresholds under real
   memory pressure, and the first-message navigation timing.
 - The exact Build 230 stall point; without the device log the fix is bounded

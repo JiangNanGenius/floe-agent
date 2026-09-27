@@ -1946,7 +1946,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     )
                     continuation.yield(.error(AgentEvent.NormalizedError(
                         kind: .network,
-                        providerMessage: "本地模型长时间没有输出（阶段：\(snapshot.phase)，已等待 \(Int(snapshot.elapsedSeconds)) 秒）。本次生成已安全停止，模型会先完成收尾；请重试，任务状态已保留。"
+                        providerMessage: "本地模型长时间没有输出（阶段：\(snapshot.phase)，已等待 \(Int(snapshot.elapsedSeconds)) 秒）。已请求停止本次生成；模型完成收尾后可重试。"
                     )))
                     continuation.finish()
                     task.cancel()
