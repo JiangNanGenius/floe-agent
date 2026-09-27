@@ -991,21 +991,35 @@ jobs:
                       print("FAIL: mapped source missing or corrupt: %s (%s)" % (row[7], row[0]), flush=True)
           ok(broken == 0, "every mapped Debian source file verifies by sha256 and size (%d rows)" % len(rows))
           report["checks"]["debian_mapped_rows"] = len(rows)
+          # The shard artifact carries the payload tree; the SOURCES.sha256 list
+          # travels in the shard root OR in the evidence bundle's debian-sources/
+          # (the collector writes it next to the shard index). Locate it anywhere.
+          list_matches = []
+          for dirpath, _dirs, files in os.walk(prev):
+              if "SOURCES.sha256" in files:
+                  list_matches.append(os.path.join(dirpath, "SOURCES.sha256"))
+          ok(len(list_matches) >= 1, "SOURCES.sha256 located (%s)" % list_matches)
           listed = {}
-          for shard_root in shard_roots:
-              list_path = os.path.join(shard_root, "SOURCES.sha256")
-              if os.path.isfile(list_path):
-                  for line in text(list_path).splitlines():
-                      parts = line.split(None, 1)
-                      if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
-                          listed[parts[1].lstrip("*").strip()] = parts[0]
-          ok(bool(listed), "shard SOURCES.sha256 lists %d files" % len(listed))
+          for list_path in list_matches:
+              for line in text(list_path).splitlines():
+                  parts = line.split(None, 1)
+                  if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+                      listed.setdefault(parts[1].lstrip("*").strip(), parts[0])
+          ok(bool(listed), "SOURCES.sha256 lists %d files" % len(listed))
           verified_lists = 0
           for rel, digest in listed.items():
               matches = [p for p in by_name.get(rel, []) if sha(p) == digest]
               if matches:
                   verified_lists += 1
-          ok(verified_lists == len(listed), "SOURCES.sha256 verified %d/%d" % (verified_lists, len(listed)))
+          ok(verified_lists == len(listed), "SOURCES.sha256 verified %d/%d by name against the shard payloads" % (verified_lists, len(listed)))
+          tsv_matches = []
+          for dirpath, _dirs, files in os.walk(prev):
+              if "SOURCES.tsv" in files and dirpath.endswith("debian-sources"):
+                  tsv_matches.append(os.path.join(dirpath, "SOURCES.tsv"))
+          if tsv_matches:
+              tsv_files = {name.strip() for line in text(tsv_matches[0]).splitlines() if line.strip() and not line.startswith("#")
+                           for name in line.split("\t")[-1].split(",") if name.strip()}
+              ok(tsv_files == set(listed), "SOURCES.tsv lists exactly the SOURCES.sha256 files (%d)" % len(tsv_files))
 
           # Debian index files vs indexes.tsv
           index_rows = [line.split("\t") for line in text(os.path.join(ev, "debian-index", "indexes.tsv")).splitlines() if line.strip()]
@@ -1081,7 +1095,7 @@ jobs:
                   is_riscv = len(head) >= 20 and head[:4] == b"\x7fELF" and head[4] == 2 and struct.unpack_from("<H", head, 18)[0] == 243
                   ok(is_riscv, "relink object is a 64-bit RISC-V ELF object")
               shipped = re.search(r"^([0-9a-f]{64})\s", text(os.path.join(relink, "runner-sha256.txt")), re.MULTILINE)
-              evidence_dir = os.environ["EVIDENCE_DIR"]
+              evidence_dir = os.environ["evidence_dir"]
               ev_runner = re.search(r"^([0-9a-f]{64})\s", text(os.path.join(evidence_dir, "runner-sha256.txt")), re.MULTILINE)
               ok(shipped and ev_runner and shipped.group(1) == ev_runner.group(1),
                  "shipped runner sha256 matches the image build evidence")
@@ -1118,7 +1132,7 @@ jobs:
                   digest.update(block)
           zip_sha512 = digest.hexdigest()
           zip_bytes = os.path.getsize(zip_path)
-          evidence_dir = os.environ["EVIDENCE_DIR"]
+          evidence_dir = os.environ["evidence_dir"]
           with open(os.path.join(evidence_dir, "zip-sha512.txt"), encoding="utf-8", errors="replace") as handle:
               text = handle.read()
           match = re.search(r"^([0-9a-f]{128})\s", text, re.MULTILINE)
