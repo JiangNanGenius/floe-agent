@@ -364,6 +364,55 @@ public actor MLXTextEngine {
         Self.drainPipelineAndClearCaches(context: "shutdown")
     }
 
+    /// Shared chunk sink used by both the buffered and streaming entry points.
+    /// The streaming variant forwards answer text as the model decodes it
+    /// (Build 231: buffering every chunk until the stream finished kept the
+    /// user on an indefinite no-progress wait with no reply or terminal
+    /// state), while the buffered variant passes nil callbacks and collects
+    /// locally.
+    private struct GenerationSinks: @unchecked Sendable {
+        let onProgress: (@Sendable (LocalInferenceProgress) -> Void)?
+        let onOutput: (@Sendable (String) -> Void)?
+        /// Throttles progress emissions so a long decode cannot turn the
+        /// diagnostic/UI channel into a hot loop. Answer text chunks
+        /// themselves are NOT throttled: they are already naturally bounded
+        /// by the tokenizer and the UI needs them promptly.
+        let minimumProgressInterval: TimeInterval
+
+        func reportProgress(_ progress: LocalInferenceProgress) {
+            onProgress?(progress)
+        }
+
+        func deliver(_ chunk: String) {
+            onOutput?(chunk)
+        }
+    }
+
+    public func streamMeasured(
+        instructions: String,
+        prompt: String,
+        images: [Data] = [],
+        tools: [ToolSchemaDescriptor] = [],
+        maxTokens: Int = 1_024,
+        diagnosticTraceID: String? = nil,
+        onProgress: @escaping @Sendable (LocalInferenceProgress) -> Void,
+        onOutput: @escaping @Sendable (String) -> Void
+    ) async throws -> LocalGenerationResult {
+        try await runCompleteMeasured(
+            instructions: instructions,
+            prompt: prompt,
+            images: images,
+            tools: tools,
+            maxTokens: maxTokens,
+            diagnosticTraceID: diagnosticTraceID,
+            sinks: GenerationSinks(
+                onProgress: onProgress,
+                onOutput: onOutput,
+                minimumProgressInterval: 0.5
+            )
+        )
+    }
+
     public func completeMeasured(
         instructions: String,
         prompt: String,
@@ -374,6 +423,26 @@ public actor MLXTextEngine {
         // Defaulted so tool/qualification hosts that never pass a trace keep
         // their current call sites unchanged.
         diagnosticTraceID: String? = nil
+    ) async throws -> LocalGenerationResult {
+        try await runCompleteMeasured(
+            instructions: instructions,
+            prompt: prompt,
+            images: images,
+            tools: tools,
+            maxTokens: maxTokens,
+            diagnosticTraceID: diagnosticTraceID,
+            sinks: nil
+        )
+    }
+
+    private func runCompleteMeasured(
+        instructions: String,
+        prompt: String,
+        images: [Data],
+        tools: [ToolSchemaDescriptor],
+        maxTokens: Int,
+        diagnosticTraceID: String?,
+        sinks: GenerationSinks?
     ) async throws -> LocalGenerationResult {
         guard let container else { throw LocalInferenceError.contextCreationFailed }
         // Keep the mapped model resident across tool turns, but release Metal
@@ -428,6 +497,7 @@ public actor MLXTextEngine {
         let promptCharacters = instructions.count + 1 + prompt.count
         let prepareDiagnostic = "localInferencePrepareStarted trace=\(diagnosticTraceID ?? "none") promptCharacters=\(promptCharacters) images=\(imageInputs.count) tools=\(toolSchemas.count) batchSize=\(resourceProfile.batchSize) contextSize=\(resourceProfile.contextSize) kvBits=\(resourceProfile.tier == .constrained ? 4 : 8) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
         FloeLogger(category: .providers).info(prepareDiagnostic)
+        sinks?.reportProgress(LocalInferenceProgress(stage: .preparing))
         do {
             // Tokenizer template + chat-template application. The scoped
             // handler converts anything MLX reports here into a Swift throw
@@ -527,7 +597,8 @@ public actor MLXTextEngine {
             parameters: parameters,
             inputTokens: preparedInputTokens,
             startedAt: startedAt,
-            diagnosticTraceID: diagnosticTraceID
+            diagnosticTraceID: diagnosticTraceID,
+            sinks: sinks
         )
     }
 
@@ -541,7 +612,8 @@ public actor MLXTextEngine {
         parameters: GenerateParameters,
         inputTokens: Int,
         startedAt: Date,
-        diagnosticTraceID: String?
+        diagnosticTraceID: String?,
+        sinks: GenerationSinks?
     ) async throws -> LocalGenerationResult {
         // MLX's C error callback calls fatalError when no task-local handler
         // exists. A Swift do/catch alone cannot catch that callback. Keep the
@@ -557,7 +629,8 @@ public actor MLXTextEngine {
             return try await generateGuarded(container: container, input: prepared,
                 parameters: parameters, inputTokens: inputTokens,
                 startedAt: startedAt, errors: errors,
-                diagnosticTraceID: diagnosticTraceID)
+                diagnosticTraceID: diagnosticTraceID,
+                sinks: sinks)
         }
     }
 
@@ -568,8 +641,24 @@ public actor MLXTextEngine {
         inputTokens: Int,
         startedAt: Date,
         errors: MLX.ErrorBox,
-        diagnosticTraceID: String?
+        diagnosticTraceID: String?,
+        sinks: GenerationSinks?
     ) async throws -> LocalGenerationResult {
+        // The pinned mlx-swift-lm runs the entire chunked prefill inside this
+        // call before returning the generation stream, so no token-level
+        // prefill callback exists at this boundary. The Build 230 on-device
+        // feedback reproduced a wait with no reply and no terminal state;
+        // until the matching device log is available the source proves this
+        // long silent window, but does not establish where the turn actually
+        // stopped. Emit the prefill stage before the call (total input known,
+        // none prefilled) and again once it returns, so the adapter can show
+        // truthful progress across the window regardless of where a wait
+        // occurs.
+        sinks?.reportProgress(LocalInferenceProgress(
+            stage: .prefill,
+            prefilledTokens: 0,
+            totalInputTokens: inputTokens
+        ))
         let stream: AsyncStream<Generation>
         do {
             // `container.generate` runs the chunked prefill inside
@@ -594,9 +683,17 @@ public actor MLXTextEngine {
         FloeLogger(category: .providers).info(
             "localInferencePrefillCompleted trace=\(diagnosticTraceID ?? "none") inputTokens=\(inputTokens) prefillMs=\(max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))) availableMemoryBytes=\(LocalInferenceResourcePolicy.availableMemoryBytes()) mlxActiveBytes=\(Memory.activeMemory) mlxCacheBytes=\(Memory.cacheMemory)"
         )
+        // Prefill fully landed: any further delay is autoregressive decode.
+        sinks?.reportProgress(LocalInferenceProgress(
+            stage: .prefill,
+            prefilledTokens: inputTokens,
+            totalInputTokens: inputTokens
+        ))
 
         var text = ""
         var firstTokenAt: Date?
+        var emittedChunkCount = 0
+        var lastProgressAt: Date?
         var info: GenerateCompletionInfo?
         for await event in stream {
             if Task.isCancelled { throw CancellationError() }
@@ -611,8 +708,28 @@ public actor MLXTextEngine {
             }
             switch event {
             case .chunk(let chunk):
-                if firstTokenAt == nil, !chunk.isEmpty { firstTokenAt = Date() }
+                guard !chunk.isEmpty else { break }
+                if firstTokenAt == nil { firstTokenAt = Date() }
                 text += chunk
+                emittedChunkCount += 1
+                // Forward answer text immediately. The adapter's framer
+                // decides prose vs a not-yet-complete tool envelope; the
+                // engine only promises in-order delivery. `emittedChunks`
+                // is an event count, not a token count — the authoritative
+                // output-token total arrives in the terminal `.info`.
+                sinks?.deliver(chunk)
+                let now = Date()
+                if let sinks,
+                   lastProgressAt == nil
+                    || now.timeIntervalSince(lastProgressAt!) >= sinks.minimumProgressInterval {
+                    lastProgressAt = now
+                    sinks.reportProgress(LocalInferenceProgress(
+                        stage: .decoding,
+                        prefilledTokens: inputTokens,
+                        totalInputTokens: inputTokens,
+                        emittedChunks: emittedChunkCount
+                    ))
+                }
             case .info(let completionInfo):
                 info = completionInfo
             case .toolCall(let call):
@@ -624,11 +741,16 @@ public actor MLXTextEngine {
                 // object per line instead of `}{`.
                 if let encoded = Self.encodeToolCall(call) {
                     if firstTokenAt == nil { firstTokenAt = Date() }
+                    let delta: String
                     if text.isEmpty || text.hasSuffix("\n") {
                         text += encoded
+                        delta = encoded
                     } else {
                         text += "\n" + encoded
+                        delta = "\n" + encoded
                     }
+                    sinks?.deliver(delta)
+                    emittedChunkCount += 1
                 }
             }
         }

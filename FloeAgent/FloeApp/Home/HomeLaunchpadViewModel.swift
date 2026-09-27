@@ -245,7 +245,13 @@ final class HomeLaunchpadViewModel: ObservableObject {
             draftConversationID = UUID()
             commit.commitStore()
             actionError = nil
-            await load()
+            // Build 230 first-message navigation: the durable identity exists
+            // now. Refresh the overview (conversation list, run states, model
+            // catalog) after returning, so Home can open the thread without
+            // waiting on `reload()`/`workspaceCenter.reload()` — the slow
+            // local-model catalog reconcile used to sit between the durable
+            // commit and the navigation.
+            Task { await load() }
             return conversationID
         } catch {
             // Failure keeps the draft and creates no lingering thread. The

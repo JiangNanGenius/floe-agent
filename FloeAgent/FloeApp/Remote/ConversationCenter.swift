@@ -1411,8 +1411,20 @@ final class ConversationCenter: ObservableObject {
         // Register the in-process owner before yielding to any reload or
         // launch-recovery work. This closes the final race between durable
         // insertion and deferred provider setup.
-        await reload()
-        await environment.workspaceCenter.reload()
+        //
+        // Build 230 first-message navigation: the durable conversation must
+        // be navigable the moment this call returns. The in-memory list is
+        // updated synchronously here, and the auxiliary refreshes
+        // (`reload()` reconciles the local-model catalog through
+        // `adapter.listModels`, and the workspace reload mounts project
+        // state) run afterwards without blocking the returned identity.
+        conversations.removeAll { $0.id == prepared.conversation.id }
+        conversations.insert(prepared.conversation, at: 0)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.reload()
+            await self.environment.workspaceCenter.reload()
+        }
         return StartedConversationTask(conversationID: prepared.conversation.id, run: run)
     }
 

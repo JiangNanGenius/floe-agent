@@ -2,6 +2,50 @@ import Foundation
 import FloeCore
 import FloeProviders
 
+/// One bounded, secret-free progress observation from a local generation.
+/// The engine emits these while a turn is still inside prefill (the long
+/// silent window on iPad) so the adapter can publish truthful stage progress
+/// before the first answer token instead of buffering the whole turn.
+///
+/// The payload is deliberately numeric/categorical only — no prompt text, no
+/// generated content — and emissions are throttled by the engine, so a long
+/// prefill cannot turn the diagnostic or UI channel into a hot loop.
+public struct LocalInferenceProgress: Sendable, Equatable {
+    public enum Stage: String, Sendable, Equatable {
+        /// Chat-template application and tokenization.
+        case preparing
+        /// Chunked prompt prefill into the KV cache (`prefilledTokens` of
+        /// `totalInputTokens`); this is the multi-second silent window that
+        /// Build 230 reported as "the local model never replies".
+        case prefill
+        /// Autoregressive decode has produced at least one token.
+        case decoding
+    }
+
+    public var stage: Stage
+    public var prefilledTokens: Int
+    public var totalInputTokens: Int
+    /// Number of upstream MLX `.chunk`/`.toolCall` events produced so far
+    /// (0 during prefill). This is an EVENT count, not a model token count:
+    /// a chunk may carry several sampled tokens or a multi-byte piece, and
+    /// the authoritative output-token total only arrives in the terminal
+    /// `.info` event, which the completion value reports. It exists for
+    /// liveness display only and is never published as usage.
+    public var emittedChunks: Int
+
+    public init(
+        stage: Stage,
+        prefilledTokens: Int = 0,
+        totalInputTokens: Int = 0,
+        emittedChunks: Int = 0
+    ) {
+        self.stage = stage
+        self.prefilledTokens = prefilledTokens
+        self.totalInputTokens = totalInputTokens
+        self.emittedChunks = emittedChunks
+    }
+}
+
 /// Engine boundary consumed by `LocalModelRuntime`. `MLXTextEngine` is the
 /// production implementation; focused lifecycle tests inject a deterministic
 /// fake so load/teardown/retry ownership is verifiable without mapping real
@@ -37,6 +81,29 @@ protocol LocalModelTextEngine: Sendable {
         diagnosticTraceID: String?
     ) async throws -> LocalGenerationResult
 
+    /// Streaming generation. Engines forward generated answer text and tool
+    /// envelopes as they are decoded (MLX) and emit bounded prefill progress,
+    /// instead of buffering the entire turn until the stream finishes.
+    ///
+    /// `onOutput` is `@Sendable` and called on the engine's inference
+    /// executor; implementations MUST throttle calls and MUST NOT deliver
+    /// anything after the call returns or throws. The returned value carries
+    /// the full text and final measurements exactly as `completeMeasured`.
+    ///
+    /// A default implementation keeps deterministic test doubles and any
+    /// future engine working: it runs the buffered call and delivers the
+    /// complete text as one output chunk.
+    func streamMeasured(
+        instructions: String,
+        prompt: String,
+        images: [Data],
+        tools: [ToolSchemaDescriptor],
+        maxTokens: Int,
+        diagnosticTraceID: String?,
+        onProgress: @escaping @Sendable (LocalInferenceProgress) -> Void,
+        onOutput: @escaping @Sendable (String) -> Void
+    ) async throws -> LocalGenerationResult
+
     /// Drops the mapped model and releases process-wide MLX caches. Called by
     /// the runtime before a replacement load, after the last task finishes,
     /// and on the failure-cleanup path. The requirement is `async` so the
@@ -49,6 +116,34 @@ extension LocalModelTextEngine {
     /// Clean-turn default for deterministic test doubles and any future
     /// engine that does not track teardown state.
     var requiresCleanReload: Bool { false }
+
+    /// Buffered fallback: engines that do not implement chunked streaming
+    /// still satisfy the boundary by delivering their full text once. It is
+    /// strictly more informative than the old all-at-once adapter behavior
+    /// but keeps the deterministic fakes unchanged. The single delivery is
+    /// safe under cancellation because it happens before the call returns.
+    func streamMeasured(
+        instructions: String,
+        prompt: String,
+        images: [Data],
+        tools: [ToolSchemaDescriptor],
+        maxTokens: Int,
+        diagnosticTraceID: String?,
+        onProgress: @escaping @Sendable (LocalInferenceProgress) -> Void,
+        onOutput: @escaping @Sendable (String) -> Void
+    ) async throws -> LocalGenerationResult {
+        let result = try await completeMeasured(
+            instructions: instructions,
+            prompt: prompt,
+            images: images,
+            tools: tools,
+            maxTokens: maxTokens,
+            diagnosticTraceID: diagnosticTraceID
+        )
+        onProgress(LocalInferenceProgress(stage: .decoding, emittedChunks: 1))
+        onOutput(result.text)
+        return result
+    }
 }
 
 /// Structured, secret-free lifecycle telemetry for the single resident local
