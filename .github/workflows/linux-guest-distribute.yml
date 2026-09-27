@@ -317,14 +317,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  distribute:
-    name: distribute (draft only)
+  assemble:
+    name: assemble + verify (draft only)
     needs: preflight
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     permissions:
-      contents: write
+      contents: read
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1279,6 +1279,42 @@ jobs:
         env:
           FRESH_DIR: ${{ env.fresh_dir }}
 
+      - name: Stage the verification reports with the assets
+        run: |
+          set -euo pipefail
+          export DIST="$RUNNER_TEMP/floe-dist" ASSETS="$RUNNER_TEMP/floe-dist/assets"
+          cp "$DIST/image.json" "$DIST/sources.json" "$DIST/record.json" "$ASSETS/"
+          ls "$ASSETS" | head -30
+
+      - name: Upload the verified release assets (so a publish retry never re-verifies or re-packs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-guest-distribution-assets-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-dist/assets/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: publish (resume the marked draft only)
+    needs: [preflight, assemble]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_COMMIT: ${{ inputs.target_commit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the verified release assets staged by the assemble job
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-guest-distribution-assets-${{ github.run_id }}
+          path: ${{ runner.temp }}/floe-dist/assets
+
       - name: Create or resume the component draft release (never published)
         run: |
           set -euo pipefail
@@ -1416,10 +1452,10 @@ jobs:
             ${{ runner.temp }}/floe-dist/assets/SHA256SUMS
             ${{ runner.temp }}/floe-dist/assets/manifest.json
             ${{ runner.temp }}/floe-dist/assets/SHA512SUMS
-            ${{ runner.temp }}/floe-dist/package-hash/package-hash.json
+            ${{ runner.temp }}/floe-dist/assets/image.json
+            ${{ runner.temp }}/floe-dist/assets/sources.json
+            ${{ runner.temp }}/floe-dist/assets/record.json
             ${{ runner.temp }}/floe-dist/release.json
-            ${{ runner.temp }}/floe-dist/image.json
-            ${{ runner.temp }}/floe-dist/sources.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -1435,9 +1471,9 @@ jobs:
             echo "- pinned image: run $IMAGE_RUN_ID artifact $IMAGE_ARTIFACT_ID (SMP candidate)"
             echo "- pinned sources: run $SOURCE_RUN_ID artifacts $SOURCE_UPSTREAM_ARTIFACT_ID / $SOURCE_DEBIAN_ARTIFACT_IDS / $SOURCE_EVIDENCE_ARTIFACT_ID"
             echo ""
-            if [ -f "$DIST/package-hash/package-hash.json" ]; then
+            if [ -f "$DIST/assets/image.json" ]; then
               echo '```json'
-              cat "$DIST/package-hash/package-hash.json"
+              python3 -c "import json; d=json.load(open('$DIST/assets/image.json')); print(json.dumps(d['facts']['final_zip'], indent=2))"
               echo '```'
             fi
             if [ -f "$DIST/release.json" ]; then
