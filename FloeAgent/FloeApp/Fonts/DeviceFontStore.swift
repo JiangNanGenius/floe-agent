@@ -19,6 +19,72 @@ struct ManagedFontRecord: Identifiable, Codable, Hashable, Sendable {
     let byteCount: Int64
 }
 
+/// Real CoreText registration verification, shared by the bundled and the
+/// device font stores.
+///
+/// `CTFontManagerCreateFontDescriptorsFromURL` parses a font file; it returns
+/// descriptors for a file that was never registered for this process.
+/// Treating those descriptors as proof of success is exactly how a failed CJK
+/// registration stayed invisible while the engine rendered every Chinese
+/// glyph as a tofu box. The only reliable check is that the process resolves
+/// the font's declared PostScript name back to that same font.
+enum CoreTextFontRegistration {
+    /// `kCTFontManagerErrorAlreadyRegistered`: a duplicate registration, not a
+    /// defect.
+    static let alreadyRegisteredCode = 105
+
+    enum Outcome: Equatable {
+        case registered
+        case alreadyRegistered
+        case failed
+    }
+
+    private static func errorCode(_ error: Unmanaged<CFError>?) -> Int? {
+        guard let error else { return nil }
+        return ((error.takeRetainedValue() as Error) as NSError).code
+    }
+
+    /// The PostScript names a font file declares (parse-only, no registration).
+    static func declaredPostScriptNames(at url: URL) -> [String] {
+        guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL)
+                as? [CTFontDescriptor] else { return [] }
+        return descriptors.compactMap {
+            CTFontDescriptorCopyAttribute($0, kCTFontNameAttribute) as? String
+        }.filter { !$0.isEmpty }
+    }
+
+    /// True when this process resolves `name` to a font with exactly that
+    /// PostScript name. A missing font resolves to a fallback (or nil), never
+    /// to the requested name, so a merely parseable file can not satisfy this.
+    static func resolves(postScriptName name: String) -> Bool {
+        guard !name.isEmpty else { return false }
+        let font = CTFontCreateWithNameAndOptions(name as CFString, 12, nil,
+                                                  CTFontOptions.preventAutoActivation)
+        return (CTFontCopyPostScriptName(font) as String)
+            .caseInsensitiveCompare(name) == .orderedSame
+    }
+
+    /// Classifies one registration attempt against real resolution.
+    static func outcome(registered: Bool,
+                        error: Unmanaged<CFError>?,
+                        url: URL) -> (Outcome, String?) {
+        let names = declaredPostScriptNames(at: url)
+        if let resolved = names.first(where: resolves(postScriptName:)) {
+            let duplicate = !registered && errorCode(error) == alreadyRegisteredCode
+            return (duplicate ? .alreadyRegistered : .registered, resolved)
+        }
+        return (.failed, names.first)
+    }
+
+    /// Registers `url` for this process and verifies the registration (not the
+    /// file's parseability). Returns the outcome and the resolved name, if any.
+    static func register(url: URL) -> (Outcome, String?) {
+        var error: Unmanaged<CFError>?
+        let success = CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
+        return outcome(registered: success, error: error, url: url)
+    }
+}
+
 enum DeviceFontError: LocalizedError {
     case invalidFont
     case unsupportedExtension
@@ -62,13 +128,11 @@ actor DeviceFontStore {
     func activateManagedFonts() -> [String] {
         var failures: [String] = []
         for url in fontFiles() {
-            var error: Unmanaged<CFError>?
-            guard CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error) else {
-                // CoreText reports an already-registered font as false. If it
-                // still describes correctly, it is available and not a fault.
-                if (try? inspect(url: url)) == nil { failures.append(url.lastPathComponent) }
-                continue
-            }
+            // A failed registration is only ignored when the process really
+            // resolves the font (an already-registered font): descriptors that
+            // merely parse from the file never count as success.
+            let (outcome, _) = CoreTextFontRegistration.register(url: url)
+            if outcome == .failed { failures.append(url.lastPathComponent) }
         }
         return failures
     }
@@ -127,7 +191,13 @@ actor DeviceFontStore {
         }
         var error: Unmanaged<CFError>?
         let registered = CTFontManagerRegisterFontsForURL(destination as CFURL, .process, &error)
-        guard registered || (try? inspect(url: destination)) != nil else {
+        let (outcome, _) = CoreTextFontRegistration.outcome(registered: registered,
+                                                            error: error,
+                                                            url: destination)
+        guard outcome != .failed else {
+            // The bytes parse but this process can not resolve the font: it is
+            // unusable, so it must not stay looking installed.
+            try? FileManager.default.removeItem(at: destination)
             throw DeviceFontError.invalidFont
         }
         return try inspect(url: destination)

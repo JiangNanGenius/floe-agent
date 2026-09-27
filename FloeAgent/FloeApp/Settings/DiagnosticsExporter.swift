@@ -63,6 +63,8 @@ enum DiagnosticsExporter {
         lines.append("keychain: \(describe(center.keychainState))")
         lines.append("== System runtime evidence ==")
         lines.append(RuntimeDiagnostics.shared.report())
+        lines.append("== Office stage trace (content-free, bounded) ==")
+        lines.append(OfficeStageRecorder.shared.exportText())
         lines.append("== Recent durable task summaries (no transcript or tool contents) ==")
         do {
             let summaries = try await SQLiteRunStore(database: center.environment.database).diagnosticRunSummaries()

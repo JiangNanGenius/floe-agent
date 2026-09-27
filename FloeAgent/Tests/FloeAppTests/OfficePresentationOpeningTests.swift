@@ -276,4 +276,222 @@ struct OfficePresentationOpeningTests {
         #expect(OfficeFileSession.permissionReportBudget(openingPolicy: nil, readOnly: true) == 25)
     }
 }
+
+// The durable Office stage trace is the evidence path for exactly the
+// bounded-opening outcomes above: a user-visible spinner must leave a
+// content-free record of which stage (host / working copy / import /
+// permission / first paint / error, correlated by session + generation) never
+// arrived. These tests live in this already-listed test file so the shared
+// workspace's generated Xcode project does not need regeneration.
+@Suite("FloeApp.OfficeStageDiagnostics")
+@MainActor
+struct OfficeStageDiagnosticsTests {
+
+    private func temporaryTraceURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-office-stage-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("office-stage.jsonl", isDirectory: false)
+    }
+
+    private func temporaryRecorder(eventLimit: Int = 512, fileLimit: Int = 262_144) -> OfficeStageRecorder {
+        OfficeStageRecorder(fileURL: temporaryTraceURL(),
+                            eventLimit: eventLimit,
+                            fileLimit: fileLimit)
+    }
+
+    @Test("The export carries session, generation, stage and sanitized detail")
+    func exportCarriesCorrelationIdentity() {
+        let recorder = temporaryRecorder()
+        recorder.record(session: "ABCDEF01-2345-6789", generation: 3, stage: "engine.open",
+                        detail: ["engineReadOnly": "false", "success": "true"])
+        let text = recorder.exportText()
+        #expect(text.contains("session=ABCDEF01"))
+        #expect(text.contains("generation=3"))
+        #expect(text.contains("stage=engine.open"))
+        #expect(text.contains("engineReadOnly=false"))
+        #expect(text.contains("events_retained=1 events_exported=1"))
+    }
+
+    @Test("A path or an over-long value never reaches the export")
+    func exportNeverCarriesContentOrPaths() {
+        let recorder = temporaryRecorder()
+        recorder.record(session: "s", generation: 1, stage: "workingCopy.open",
+                        detail: [
+                            "path": "/var/mobile/Containers/secret.docx",
+                            "long": String(repeating: "x", count: 400),
+                            "ok": "12",
+                        ])
+        let text = recorder.exportText()
+        // The unsafe values are dropped by the recorder's sanitizer (a path
+        // or an over-long value is not content-free); the safe counter is
+        // kept, so the trace stays useful.
+        #expect(!text.contains("Containers"))
+        #expect(!text.contains("/var"))
+        #expect(!text.contains("xxx"))
+        #expect(text.contains("ok=12"))
+    }
+
+    @Test("The export is bounded by lines and by bytes and keeps the newest events")
+    func exportIsBoundedAndKeepsNewest() {
+        let recorder = temporaryRecorder()
+        for index in 0..<400 {
+            recorder.record(session: "session-\(index)", generation: index,
+                            stage: "stage-\(index)", detail: ["index": String(index)])
+        }
+        let text = recorder.exportText(lineLimit: 20, maxBytes: 1_024)
+        #expect(text.utf8.count <= 1_024, "byte bound")
+        #expect(text.split(separator: "\n").count <= 21, "line bound (header + 20)")
+        // Newest events are retained; the oldest are dropped.
+        #expect(text.contains("stage-399"))
+        #expect(!text.contains("stage-379"))
+        // The header reports the real retained/exported counts.
+        #expect(text.contains("events_retained=400"))
+    }
+
+    @Test("An empty recorder still renders a valid, content-free header")
+    func emptyExportIsValid() {
+        let recorder = temporaryRecorder()
+        let text = recorder.exportText()
+        #expect(text == "events_retained=0 events_exported=0")
+    }
+
+    // MARK: - Restart recovery
+
+    @Test("A new recorder instance recovers and exports the previous instance's stages")
+    func relaunchRecoversThePreviousTrace() {
+        let url = temporaryTraceURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let previous = OfficeStageRecorder(fileURL: url)
+        previous.record(session: "PREV-AAAA-BBBB", generation: 4, stage: "engine.open",
+                        detail: ["success": "true"])
+        previous.record(session: "PREV-AAAA-BBBB", generation: 4, stage: "edit.entry")
+
+        // The process died or was relaunched; the fresh instance must not
+        // start blind and must export the old tail.
+        let relaunched = OfficeStageRecorder(fileURL: url)
+        #expect(relaunched.trace(session: "PREV-AAAA-BBBB").map(\.stage)
+                == ["engine.open", "edit.entry"])
+        let text = relaunched.exportText()
+        #expect(text.contains("events_retained=2 events_exported=2"))
+        #expect(text.contains("session=PREV-AAA"))
+        #expect(text.contains("generation=4"))
+        #expect(text.contains("stage=engine.open"))
+        #expect(text.contains("success=true"))
+        #expect(text.contains("at="), "every line carries an absolute time for cross-launch correlation")
+    }
+
+    @Test("The first record after a relaunch keeps the recovered tail instead of overwriting it")
+    func firstRecordAfterRelaunchKeepsTheOldTail() {
+        let url = temporaryTraceURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let first = OfficeStageRecorder(fileURL: url, eventLimit: 8, fileLimit: 16_384)
+        for index in 0..<5 {
+            first.record(session: "old", generation: index, stage: "stage.old\(index)")
+        }
+        let second = OfficeStageRecorder(fileURL: url, eventLimit: 8, fileLimit: 16_384)
+        second.record(session: "new", generation: 0, stage: "stage.new")
+
+        let third = OfficeStageRecorder(fileURL: url, eventLimit: 8, fileLimit: 16_384)
+        #expect(third.allEvents.map(\.stage)
+                == ["stage.old0", "stage.old1", "stage.old2", "stage.old3", "stage.old4", "stage.new"])
+        // The ring bound still applies across the relaunch.
+        let bounded = OfficeStageRecorder(fileURL: url, eventLimit: 3, fileLimit: 16_384)
+        #expect(bounded.allEvents.map(\.stage) == ["stage.old3", "stage.old4", "stage.new"])
+    }
+
+    @Test("Recovery reads only the bounded file tail and keeps the newest events")
+    func recoveryReadsOnlyTheBoundedTail() throws {
+        let url = temporaryTraceURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var raw = ""
+        for index in 0..<200 {
+            raw += "{\"session\":\"s\",\"generation\":\(index),\"stage\":\"old.\(index)\","
+                + "\"detail\":{\"index\":\"\(index)\"},\"at\":0}\n"
+        }
+        try Data(raw.utf8).write(to: url)
+
+        let recorder = OfficeStageRecorder(fileURL: url, eventLimit: 512, fileLimit: 1_024)
+        // Mirror the bounded tail read exactly: only the last fileLimit bytes
+        // are eligible, decoded line by line.
+        let data = try Data(contentsOf: url)
+        let start = max(0, data.count - 1_024)
+        let eligible = data.suffix(from: start)
+            .split(separator: 0x0A)
+            .compactMap { try? JSONDecoder().decode(OfficeStageEvent.self, from: Data($0)) }
+            .map(\.stage)
+        #expect(!eligible.isEmpty)
+        #expect(eligible.count < 200, "an oversized file must not be loaded whole")
+        #expect(recorder.allEvents.map(\.stage) == eligible.suffix(512).map { $0 })
+        #expect(recorder.exportText().contains("stage=old.199"))
+        #expect(!recorder.allEvents.contains { $0.stage == "old.0" })
+    }
+
+    @Test("Recovery tolerates malformed lines and re-sanitizes crafted fields")
+    func recoveryToleratesDamageAndResanitizes() throws {
+        let url = temporaryTraceURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let encoder = JSONEncoder()
+        var payload = Data()
+        func append(_ event: OfficeStageEvent) throws {
+            payload.append(try encoder.encode(event))
+            payload.append(0x0A)
+        }
+        try append(OfficeStageEvent(session: "good-1", generation: 1, stage: "engine.open",
+                                    detail: ["success": "true"], at: Date()))
+        payload.append(Data("not json at all".utf8))
+        payload.append(0x0A)
+        try append(OfficeStageEvent(session: "good-2", generation: 2, stage: "workingCopy.open",
+                                    detail: ["path": "/var/mobile/Containers/secret.docx",
+                                             "long": String(repeating: "x", count: 400),
+                                             "ok": "12"],
+                                    at: Date()))
+        // A crafted identity field with a path and a line break: the whole
+        // event is dropped, never exported.
+        try append(OfficeStageEvent(session: "/var/mobile/evil\nevents_exported=999",
+                                    generation: 3, stage: "stage.evil",
+                                    detail: [:], at: Date()))
+        try append(OfficeStageEvent(session: "good-3", generation: 4, stage: "render.gate",
+                                    detail: [:], at: Date()))
+        // Torn tail line: the previous process died mid-write.
+        payload.append(Data("{\"session\":\"torn\",\"generation\":5".utf8))
+        try payload.write(to: url)
+
+        let recorder = OfficeStageRecorder(fileURL: url)
+        #expect(recorder.allEvents.map(\.stage) == ["engine.open", "workingCopy.open", "render.gate"])
+        let text = recorder.exportText()
+        #expect(text.contains("events_retained=3 events_exported=3"))
+        #expect(text.contains("ok=12"))
+        #expect(!text.contains("Containers"))
+        #expect(!text.contains("/var"))
+        #expect(!text.contains("xxx"))
+        #expect(!text.contains("evil"))
+        #expect(!text.contains("torn"))
+        #expect(!text.contains("999"))
+    }
+
+    @Test("events_exported reports the lines actually rendered under the byte bound")
+    func exportedCountMatchesRenderedLines() {
+        let recorder = temporaryRecorder()
+        for index in 0..<60 {
+            recorder.record(session: "session-\(index)", generation: index,
+                            stage: "stage-\(index)",
+                            detail: ["payload": String(repeating: "d", count: 40)])
+        }
+        let text = recorder.exportText(lineLimit: 60, maxBytes: 1_024)
+        #expect(text.utf8.count <= 1_024)
+        let lines = text.split(separator: "\n")
+        let exportedField = lines[0]
+            .split(separator: " ")
+            .first { $0.hasPrefix("events_exported=") }
+            .map { $0.dropFirst("events_exported=".count) }
+        let exported = exportedField.flatMap { Int($0) }
+        #expect(exported == lines.count - 1, "the header count is the real rendered line count")
+        #expect(lines.count - 1 < 60, "the byte bound really trimmed the body")
+        #expect(text.contains("at="))
+    }
+}
 #endif

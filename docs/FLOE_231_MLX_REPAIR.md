@@ -55,7 +55,7 @@ claim to establish the exact stall point inside MLX.
 | `Sources/FloeLocalModels/LocalStreamFramer.swift` | Incremental display framer: releases provably visible prose; withholds cross-chunk `<think …>` blocks, whole-payload/fenced/one-per-line JSON tool envelopes and `Thinking Process:` scratchpads. `finish(visibleAnswer:)` reconciles the streamed prefix with the authoritative answer so content is never displayed twice. |
 | `Sources/FloeLocalModels/LocalProviderAdapter.swift` | `LocalModelRuntime.streamMeasured` keeps the exact admission/lease/prefill/retry/teardown ownership and forwards progress + decoded text. The adapter streams prose through the framer, keeps JSON tool parsing/reasoning extraction/tool budget unchanged, logs explicit end reasons (`toolUse`, `endTurn`, `emptyVisibleAnswer`, `missingToolInvocation`), and adds the supervisor. The transparent decode retry is skipped once any output was delivered (a replay would duplicate the visible answer). |
 | `FloeApp/Remote/ConversationCenter.swift` | `startTask` publishes the durable conversation into `conversations` synchronously and runs `reload()`/workspace reload afterwards without blocking the returned identity. |
-| `FloeApp/Home/HomeLaunchpadViewModel.swift` | `sendNewTask` returns the durable conversation id immediately; the overview refresh runs in a detached task. Failed sends still keep the draft and create no thread. |
+| `FloeApp/Home/HomeLaunchpadViewModel.swift` | `sendNewTask` returns the durable conversation id immediately; the overview refresh runs in an unstructured main-actor task. Failed sends still keep the draft and create no thread. |
 
 ## Terminal-state matrix (adapter)
 
@@ -100,10 +100,10 @@ new `Local stream framer`, `Local generation watchdog state` and
 - a cold-load (`preparing`) stage extends the long first-activity window
   instead of switching to the shorter idle deadline.
 
-Note: a full `swift test` in this shared scratch currently stops in the
-parallel VM task's `FloeExecutionTests/LinuxLifecycleCrossConcurrencyTests.swift`
-region-isolation errors, so the FloeLocalModels bundle was built and run
-directly (the shared SwiftPM lock is respected).
+During verification, a full `swift test` initially encountered region-isolation
+errors in the parallel VM task. That task subsequently corrected them and
+reported its module checks passing. The MLX evidence above comes from the
+separately built and executed FloeLocalModels bundle, not the full App.
 
 ## Not proven here
 

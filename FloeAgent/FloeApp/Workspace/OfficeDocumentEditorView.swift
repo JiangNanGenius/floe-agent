@@ -384,6 +384,9 @@ final class OfficeFileSession: ObservableObject {
                     guard let self else { return }
                     self.runtimeFailed = true
                     (self.controller as? FloeOfficeNativeViewController)?.cancelPendingSave()
+                    // Errors are part of the durable stage trace: the runtime
+                    // death and its generation, never document contents.
+                    self.recordStage("runtime.failed", ["phase": String(describing: self.phase)])
                     self.error = OfficeInkText.t(
                         "文档服务已停止响应，编辑副本已保留；重启应用后可恢复。",
                         "The document service stopped responding. Your editing copies were retained; restart the app to recover.")
@@ -1859,6 +1862,11 @@ final class OfficeFileSession: ObservableObject {
                                              "engineReadOnly": readOnly ? "true" : "false",
                                              "requestedReadOnly": native.isReadOnly ? "true" : "false",
                                              "generation": String(generation)])
+            // The host's own bounded render-probe facts at the open report:
+            // engine type, tile/canvas counters, probe stage/attempts and the
+            // edit-entry bookkeeping. This is what makes a PPT/Excel open that
+            // never produces a visible render attributable from the export.
+            self.recordStage("host.renderDiagnostics", Self.hostRenderDiagnostics(native))
             self.engineSessionReadOnly = readOnly
             self.resolveEnginePermission(readOnly)
             if !success {
