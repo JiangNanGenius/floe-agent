@@ -1000,18 +1000,26 @@ jobs:
                   list_matches.append(os.path.join(dirpath, "SOURCES.sha256"))
           ok(len(list_matches) >= 1, "SOURCES.sha256 located (%s)" % list_matches)
           listed = {}
+          conflicts = []
           for list_path in list_matches:
               for line in text(list_path).splitlines():
                   parts = line.split(None, 1)
                   if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
-                      listed.setdefault(parts[1].lstrip("*").strip(), parts[0])
+                      rel = parts[1].lstrip("*").strip()
+                      if rel in listed and listed[rel] != parts[0]:
+                          conflicts.append(rel)
+                      listed[rel] = parts[0]
+          ok(not conflicts, "no same-path digest conflicts across checksum lists (%d)" % len(conflicts))
           ok(bool(listed), "SOURCES.sha256 lists %d files" % len(listed))
+          # List paths are relative to debian-sources/ (e.g. shard-1/<file>);
+          # the shard artifact nests payloads under the shard root, so match
+          # by basename and verify the digest.
           verified_lists = 0
           for rel, digest in listed.items():
-              matches = [p for p in by_name.get(rel, []) if sha(p) == digest]
+              matches = [p for p in by_name.get(os.path.basename(rel), []) if sha(p) == digest]
               if matches:
                   verified_lists += 1
-          ok(verified_lists == len(listed), "SOURCES.sha256 verified %d/%d by name against the shard payloads" % (verified_lists, len(listed)))
+          ok(verified_lists == len(listed), "SOURCES.sha256 verified %d/%d against the shard payloads" % (verified_lists, len(listed)))
           tsv_matches = []
           for dirpath, _dirs, files in os.walk(prev):
               if "SOURCES.tsv" in files and dirpath.endswith("debian-sources"):
@@ -1070,17 +1078,22 @@ jobs:
                       if os.path.isfile(target) and sha(target) == parts[0]:
                           tc_listed += 1
               ok(tc_listed > 0, "toolchain sources verified (%d files)" % tc_listed)
-          # pypi metadata lists (basic template pins no wheels)
+          # PyPI wheel sources (the basic template pins no wheels; when a list
+          # is present every listed file must verify — no silent pass)
           pypi = os.path.join(ev, "pypi-sources")
+          p_listed, p_total = 0, 0
           if os.path.isfile(os.path.join(pypi, "PYPI-SOURCES.sha256")):
-              p_listed = 0
               for line in text(os.path.join(pypi, "PYPI-SOURCES.sha256")).splitlines():
                   parts = line.split(None, 1)
                   if len(parts) == 2 and re.match(r"^[0-9a-f]{64}$", parts[0]):
+                      p_total += 1
                       target = os.path.join(pypi, parts[1].lstrip("*").strip())
                       if os.path.isfile(target) and sha(target) == parts[0]:
                           p_listed += 1
-              ok(p_listed > 0 or True, "pypi source lists processed (%d verified)" % p_listed)
+          ok(p_listed == p_total, "every pinned PyPI source file verifies (%d/%d)" % (p_listed, p_total))
+          gaps_rows = [line for line in text(os.path.join(pypi, "pypi-source-gaps.tsv")).splitlines()
+                       if line.strip() and not line.startswith("#")]
+          ok(not gaps_rows, "PyPI source mapping has zero gaps (%d rows)" % len(gaps_rows))
           # runner relink object sanity + shipped runner matches image evidence
           relink = None
           for dirpath, dirs, _files in os.walk(up_root):
