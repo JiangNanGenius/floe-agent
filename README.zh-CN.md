@@ -38,6 +38,8 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 **Build 230 针对已捕获的 iPad MLX 崩溃与 PPT 加载回归。** 本地提示词预算及 MLX 预填充错误检查针对普通对话崩溃路径；云端实权重验证完成两次独立文件工具调用、回执和模型续答。Office 宿主就绪判断与 IDE 标签加载已修复，固定宿主已嵌入 IPA。Linux 正式版仍是单核。云端与打包证据不等于真机功能验收。
 
+**Build 231 候选：** 最新 iPad 反馈仍报告 PPT/Excel 打不开、Word 中文字体异常和本地模型无回复。本候选包含 Office 初始化与字体修复、流式本地回复和 Linux 生命周期工具；解析器修复后通过云端 macOS 真实权重两轮工具回执验证，这不是 iPad 验收。详见 [Build 231 候选说明](docs/RELEASE_NOTES_1.7.0_BUILD_231.md)。
+
 **真机验收尚未完成。** 此前 iPad 测试报告了普通 MLX 对话与测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 230 包含针对性源码修复，但 PPT 可编辑首帧、保存重开及 Office 退出，本地模型加载、测速和连续工具对话，PiP、通知及键盘触控体验仍待真机确认。
 
 **Build 224 从未编译成功。** 其不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败的验收 SDK run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留；参见 [Build 224 说明](docs/RELEASE_NOTES_1.7.0_BUILD_224.md)与 Build 225 说明中的失败记录表。

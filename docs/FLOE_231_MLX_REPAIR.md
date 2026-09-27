@@ -181,3 +181,16 @@ separately built and executed FloeLocalModels bundle, not the full App.
   or `ConversationCenter` feeding `backgroundRunCoordinator.didUpdateProgress`;
   the runtime already emits bounded progress but the app does not surface it.
 - Add this document to `docs/README.md` if the index should link it.
+
+## Cloud real-weight recheck after the framer repair
+
+[Run 36292248126](https://github.com/JiangNanGenius/floe-agent/actions/runs/36292248126)
+passed at `c7b9dd78be93cd353c84640c007648f173c2b49b` on 2026-09-27.
+The actual Qwen 4B snapshot completed constrained batch48 and balanced batch96
+profiles, then two conversation turns with two distinct `workspace.readFile`
+call IDs and receipt digests. `tool-roundtrip-complete` reports
+`conversationTurns=2` and `answerContainsReceipt=true`; final shutdown completed.
+The recorded platform is **macOS-host-not-iPad**. This resolves the newly
+reproduced parser stall in this cloud path, not the original device diagnosis
+or physical-iPad acceptance. The original failed run `36290562417` remains
+recorded above. See [the compact evidence](evidence/build231/model-cloud-check.json).
