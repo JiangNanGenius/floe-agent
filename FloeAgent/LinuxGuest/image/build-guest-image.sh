@@ -73,6 +73,12 @@
 #                         recorded in evidence/bios-kernel-pins.txt and in the
 #                         manifest, and the pinned-kernel capability claim is
 #                         dropped from the qualification evidence text.
+#   --smp-capable         declare `smp_capable: true` in the manifest for THIS
+#                         image. Requires --boot-dir with a real
+#                         SMP-BUILD.txt ("multi-hart IPI path present"), so a
+#                         pair that is not the CONFIG_SMP dual-hart build can
+#                         never carry the claim. The app admits a second hart
+#                         only for a verified image that declares it.
 #   --boot-max-s N        per-boot timeout seconds (default 2700)
 #   --ram MB              guest RAM (default 1024)
 #   --no-zip              skip the distributable zip (manifest still written)
@@ -114,6 +120,7 @@ skip_fetch=0
 skip_engine=0
 provision="host"
 boot_dir=""
+smp_capable=0
 boot_max_s=2700
 ram_mb=1024
 make_zip=1
@@ -133,6 +140,7 @@ while [ $# -gt 0 ]; do
         --skip-engine) skip_engine=1; shift ;;
         --provision) provision="${2:-}"; shift 2 ;;
         --boot-dir) boot_dir="${2:-}"; shift 2 ;;
+        --smp-capable) smp_capable=1; shift ;;
         --boot-max-s) boot_max_s="${2:-}"; shift 2 ;;
         --ram) ram_mb="${2:-}"; shift 2 ;;
         --no-zip) make_zip=0; shift ;;
@@ -149,6 +157,13 @@ case "$provision" in
     host|guest) ;;
     *) die "invalid --provision mode: '$provision' (allowed: host, guest)" ;;
 esac
+if [ "$smp_capable" = 1 ]; then
+    [ -n "$boot_dir" ] || die "--smp-capable requires --boot-dir with the CONFIG_SMP kernel/firmware pair"
+    [ -f "$boot_dir/SMP-BUILD.txt" ] \
+        || die "--smp-capable requires $boot_dir/SMP-BUILD.txt (the SMP build evidence)"
+    grep -q 'multi-hart IPI path present' "$boot_dir/SMP-BUILD.txt" \
+        || die "--smp-capable: $boot_dir/SMP-BUILD.txt has no firmware multi-hart evidence"
+fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "$provision" = "host" ]; then
@@ -617,6 +632,10 @@ qualified_flag=()
 if [ "$claim_qualified" = 1 ]; then
     qualified_flag=(--qualified)
 fi
+smp_flag=()
+if [ "$smp_capable" = 1 ]; then
+    smp_flag=(--smp-capable)
+fi
 evidence_text="component-image-ci boot A+B: runner PID1 clock from floe.epoch, signed HTTPS apt update/install, Python HTTPS 200, 13 user commands executed."
 if [ "$provision" = "host" ]; then
     evidence_text="$evidence_text APT/PyPI provisioning ran on the cloud host in a qemu-user riscv64 chroot against the shipped ext4 (signed verification, real dpkg scripts/database; evidence provision-*.txt); boot A re-verified the provisioned state in-Guest (dpkg live + pinned imports), boot B is the full verification."
@@ -625,6 +644,9 @@ if [ -n "$boot_dir" ]; then
     evidence_text="$evidence_text Unpinned boot pair from --boot-dir (locally built kernel/bbl); the 2018-pair capability run and its runtime claim do not apply to this image."
 else
     evidence_text="$evidence_text Runtime capability on this exact kernel/bbl/userland was independently verified by tinyemu-linux-qualification run 35500083112 (APT/numpy/node/HTTPS)."
+fi
+if [ "$smp_capable" = 1 ]; then
+    evidence_text="$evidence_text This image declares smp_capable: its kernel/firmware are the CONFIG_SMP dual-hart build (SMP-BUILD.txt multi-hart IPI evidence); the app grants a second hart only to an image carrying this declaration."
 fi
 python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" write \
     --image-dir "$image_dir" \
@@ -642,7 +664,8 @@ python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" write \
     --template-recipe "$recipe_path" \
     --template-json "$evidence_dir/template-verify.json" \
     --template-install-json "$evidence_dir/template-install.json" \
-    "${qualified_flag[@]+"${qualified_flag[@]}"}"
+    "${qualified_flag[@]+"${qualified_flag[@]}"}" \
+    "${smp_flag[@]+"${smp_flag[@]}"}"
 python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" verify --image-dir "$image_dir"
 
 ( cd "$image_dir" && sha512sum manifest.json bbl64.bin kernel-riscv64.bin disk.img >SHA512SUMS )
@@ -663,6 +686,7 @@ fi
     printf 'template=%s\n' "$template"
     printf 'cmdline=%s init=/usr/local/bin/floe-exec floe.epoch=<boot epoch>\n' "$cmdline"
     printf 'qualified=%s\n' "$claim_qualified"
+    printf 'smp_capable=%s\n' "$smp_capable"
     printf 'bootA_rc=%s\n' "$(cat "$evidence_dir/boot-stage1-rc.txt")"
     printf 'bootB_rc=%s\n' "$(cat "$evidence_dir/boot-stage2-rc.txt")"
     printf 'runner_sha256=%s\n' "$(cut -d' ' -f1 "$evidence_dir/runner-sha256.txt")"

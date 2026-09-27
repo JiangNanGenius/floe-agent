@@ -25,8 +25,15 @@ codex/feedback-integration):
       "provenance": {
         "sourceURL": "...", "buildConfigurationURL": "...",
         "license": "...", "distributionAllowed": false
-      }
+      },
+      "smp_capable": true
     }
+
+`smp_capable: true` is opt-in (`--smp-capable`) and must only be written for
+an image whose kernel AND firmware are the reworked CONFIG_SMP dual-hart pair
+(`build-guest-image.sh --boot-dir` with real SMP-BUILD.txt multi-hart
+evidence). The app lifts this key into its Runtime v2 manifest and admits a
+second hart only for images that declare it; omitting it is the safe default.
 
 `write` refuses to emit `qualified: true` without a qualification run id.
 `verify` re-checks the same things LinuxGuestImageVerifier checks: the declared
@@ -281,6 +288,9 @@ def build_manifest(args):
 
     if args.qualified and not (args.qualification_run or "").strip():
         raise SystemExit("refusing to write qualified=true without a qualification run id")
+    if args.smp_capable and not args.qualified:
+        raise SystemExit("refusing to declare smp_capable without a qualified image "
+                         "(the capability requires a real qualification run)")
 
     manifest = {
         "id": args.id,
@@ -305,6 +315,12 @@ def build_manifest(args):
         "license": args.license or "",
         "distributionAllowed": bool(args.distribution_allowed),
     }
+    # Image capability claim. Only the explicit --smp-capable flag may set
+    # this: the key is what the app's pool reads to admit a second hart, so
+    # an unverified image must never carry it. Absent means "not declared"
+    # (the app defaults to false), never "false".
+    if args.smp_capable:
+        manifest["smp_capable"] = True
     template_block = build_template_block(args)
     if template_block:
         manifest["template"] = template_block
@@ -329,6 +345,11 @@ def verify_manifest(image_dir, manifest_path):
 
     if not manifest.get("id"):
         fail("manifest has no id")
+    smp_capable = manifest.get("smp_capable")
+    if smp_capable is not None and not isinstance(smp_capable, bool):
+        fail("smp_capable is not a boolean")
+    if smp_capable is True and not manifest.get("qualified"):
+        fail("smp_capable=true on an unqualified image (the capability requires a real qualification run)")
     if manifest.get("qualified"):
         if not (manifest.get("qualificationRun") or "").strip():
             fail("qualified=true without qualificationRun")
@@ -389,7 +410,7 @@ def verify_manifest(image_dir, manifest_path):
         for problem in problems:
             print("VERIFY FAIL: %s" % problem, file=sys.stderr)
         return 1
-    print("VERIFY OK: %s" % manifest_path)
+    print("VERIFY OK: %s (smp_capable=%s)" % (manifest_path, manifest.get("smp_capable", False)))
     return 0
 
 
@@ -412,6 +433,9 @@ def main(argv=None):
     write.add_argument("--build-configuration-url", default=None)
     write.add_argument("--license", default=None)
     write.add_argument("--qualified", action="store_true", help="set only when the capability run really passed")
+    write.add_argument("--smp-capable", action="store_true",
+                       help="declare smp_capable: true — only for an image whose kernel/firmware "
+                            "are the verified CONFIG_SMP dual-hart pair (requires --qualified)")
     write.add_argument("--distribution-allowed", action="store_true",
                        help="set only when corresponding source + license obligations are published")
     write.add_argument("--read-only-disk", action="store_true")
@@ -436,7 +460,8 @@ def main(argv=None):
         with open(out, "w", encoding="utf-8") as handle:
             json.dump(manifest, handle, indent=2, sort_keys=False)
             handle.write("\n")
-        print("wrote %s (qualified=%s, artifacts=%d)" % (out, manifest["qualified"], len(manifest["artifacts"])))
+        print("wrote %s (qualified=%s, smp_capable=%s, artifacts=%d)"
+              % (out, manifest["qualified"], manifest.get("smp_capable", False), len(manifest["artifacts"])))
         return 0
     manifest_path = args.manifest or os.path.join(os.path.abspath(args.image_dir), "manifest.json")
     return verify_manifest(args.image_dir, manifest_path)

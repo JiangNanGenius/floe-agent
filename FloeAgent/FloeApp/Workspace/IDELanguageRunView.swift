@@ -17,6 +17,13 @@ enum IDELanguageRunText {
     static var isChinese: Bool { Locale.current.identifier.hasPrefix("zh") }
     static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
 
+    /// The measured dual-core equal-work ratio, stated once so every surface
+    /// shows the same honest number (FloeExecution keeps the measured
+    /// constant; cloud run 36009075837 medians 1.69 s vs 1.93 s).
+    static var speedupText: String {
+        String(format: "%.2f×", GuestRunEntryShapePlan.dualCoreMeasuredEqualWorkSpeedup)
+    }
+
     static func interpreterName(_ interpreter: IDELanguageLocalInterpreter) -> String {
         switch interpreter {
         case .python3: return "Python"
@@ -163,8 +170,8 @@ enum IDELanguageRunText {
     static func shapeRefusal(_ refusal: GuestRunEntryShapeRefusal) -> String {
         switch refusal {
         case .releaseVCPUUnsupported(let requested, let maximum):
-            return t("本版本最多 \(maximum) 个客户机内核，尚未交付 \(requested) 核：双核尚未完成发布资格和真机验证。选择 2 核会在启动前被拒绝，不会以 1 核静默运行。",
-                     "This release delivers at most \(maximum) guest core; \(requested) cores are not yet qualified for release and device use. Selecting 2 cores is refused before launch; it never silently runs on one hart.")
+            return t("本版本最多交付 \(maximum) 个客户机内核，\(requested) 核不在此版本的内核阶梯内。选择前即被拒绝，不会以 1 核静默运行。",
+                     "This release delivers at most \(maximum) guest core(s); \(requested) cores are outside this release's qualified ladder. The run is refused before launch and never silently runs on one hart.")
         case .imageDoesNotProveSMP(let requested):
             return t("当前镜像清单没有提供 SMP 证据，资源池会拒绝 \(requested) 核的授权；已在启动前拒绝，不会以 1 核静默运行。",
                      "The current image manifest does not prove SMP, so the resource pool refuses a \(requested)-core grant; the run is refused before launch and never silently runs on one hart.")
@@ -200,8 +207,8 @@ enum IDELanguageRunText {
                      "The declared signals do not ask for parallelism: this run starts with 1 guest core.")
         }
         if plan.automaticDeliversRecommendation {
-            return t("声明信号表明可并行：本次将以 2 个客户机内核启动。",
-                     "Declared signals indicate parallel work: this run starts with 2 guest cores.")
+            return t("声明信号表明可并行：本次将以 2 个客户机内核启动。双核已通过 S0–S4 正确性验证，但等量工作基准在 2 核上更慢（约 \(IDELanguageRunText.speedupText)）；仅在任务确实受益于并行时使用。",
+                     "Declared signals indicate parallel work: this run starts with 2 guest cores. Dual-core passed the S0–S4 correctness contract, but the equal-work benchmark is slower on two cores (about \(IDELanguageRunText.speedupText)); use it only when the work really benefits from parallelism.")
         }
         var note = t("声明信号推荐 2 核，但当前只能交付 1 核。本次将以 1 个客户机内核启动。",
                      "The declared signals recommend 2 cores, but only 1 can be delivered. This run starts with 1 guest core.")
@@ -516,8 +523,8 @@ struct IDELanguageRunView: View {
                             .foregroundStyle(.orange)
                     } else if plan.effectiveVCPUs == .two {
                         Text(IDELanguageRunText.t(
-                            "显式选择 2 个客户机内核；请求按严格模式提交。",
-                            "An explicit dual guest cores request; it is submitted strictly."
+                            "显式选择 2 个客户机内核；请求按严格模式提交，只有已安装的镜像清单证明 SMP 时才会授予。双核已通过 S0–S4 正确性验证，但等量工作基准在 2 核上更慢（约 \(IDELanguageRunText.speedupText)），不会声称加速。",
+                            "An explicit dual guest-cores request; it is submitted strictly and granted only when the installed image manifest proves SMP. Dual-core passed the S0–S4 correctness contract, but the equal-work benchmark is slower on two cores (about \(IDELanguageRunText.speedupText)); no speedup is claimed."
                         ))
                         .font(.caption)
                         .foregroundStyle(.secondary)

@@ -138,6 +138,38 @@ jobs:
           grep -q 'floe.epoch' FloeAgent/LinuxGuest/runner/floe_clock.h
           make -C FloeAgent/LinuxGuest/runner check-clock
 
+      - name: Image manifest capability self-check (no image build)
+        run: |
+          set -euo pipefail
+          W="$(mktemp -d)"
+          mkdir -p "$W/img"
+          printf 'bios-bytes' > "$W/img/bbl64.bin"
+          printf 'kernel-bytes' > "$W/img/kernel-riscv64.bin"
+          dd if=/dev/zero of="$W/img/disk.img" bs=1024 count=4 2>/dev/null
+          # --smp-capable is the ONLY way the capability claim appears; it
+          # requires a qualified manifest (a real run id).
+          python3 FloeAgent/LinuxGuest/image/write-image-manifest.py write \
+            --image-dir "$W/img" --id self-test-smp \
+            --bios "$W/img/bbl64.bin" --kernel "$W/img/kernel-riscv64.bin" --disk "$W/img/disk.img" \
+            --cmdline "console=hvc0" --qualification-run self-test --qualified --smp-capable
+          python3 FloeAgent/LinuxGuest/image/write-image-manifest.py verify --image-dir "$W/img"
+          python3 -c "import json; m=json.load(open('$W/img/manifest.json')); assert m.get('smp_capable') is True, m"
+          # without the flag there is no capability claim at all
+          python3 FloeAgent/LinuxGuest/image/write-image-manifest.py write \
+            --image-dir "$W/img" --id self-test-up \
+            --bios "$W/img/bbl64.bin" --kernel "$W/img/kernel-riscv64.bin" --disk "$W/img/disk.img" \
+            --qualification-run self-test --qualified
+          python3 -c "import json; m=json.load(open('$W/img/manifest.json')); assert 'smp_capable' not in m, m"
+          # and the claim is refused on an unqualified manifest
+          if python3 FloeAgent/LinuxGuest/image/write-image-manifest.py write \
+               --image-dir "$W/img" --id self-test-unqualified \
+               --bios "$W/img/bbl64.bin" --kernel "$W/img/kernel-riscv64.bin" --disk "$W/img/disk.img" \
+               --smp-capable 2>/dev/null; then
+            echo "smp_capable was accepted without a qualification run"; exit 1
+          fi
+          rm -rf "$W"
+          echo "image manifest capability self-check ok"
+
       - name: Build + boot-verify + package the image candidate
         run: |
           set -euo pipefail
@@ -643,6 +675,7 @@ jobs:
           sudo bash FloeAgent/LinuxGuest/image/build-guest-image.sh \
             --work "${{ runner.temp }}/floe-smp/work" \
             --boot-dir "${{ runner.temp }}/floe-smp/boot" \
+            --smp-capable \
             --build-id "${{ github.run_id }}-${{ github.run_attempt }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --source-ref "${{ github.sha }}" \
@@ -683,6 +716,10 @@ jobs:
           if os.path.isfile(manifest_path):
               with open(manifest_path, "r", encoding="utf-8") as handle:
                   record["manifest"] = json.load(handle)
+              if record["manifest"].get("smp_capable") is not True:
+                  problems.append("assembled manifest does not declare smp_capable=true; the app "
+                                  "would refuse a second hart even though the image carries the "
+                                  "CONFIG_SMP pair")
           record["image_matches_fresh_boot_pair"] = not problems
           if problems:
               record["problems"] = problems

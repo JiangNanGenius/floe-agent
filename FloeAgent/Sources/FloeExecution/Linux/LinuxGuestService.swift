@@ -58,12 +58,13 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     /// queueing would wait forever, so the caller hears an actionable error.
     case shapeExceedsPoolCapacity(detail: String)
     /// The requested vCPU count is expressible by the engine but is NOT
-    /// qualified for THIS release (B4 gate; dual harts stall at fork/exec per
-    /// cloud run 35851127603). Independent of the image manifest
-    /// (`smp=true` is not authority), engine SMP capability, device quota or
-    /// environment variables. Explicit requests fail with this actionable
-    /// error instead of booting a different shape silently; only an
-    /// explicitly authorized auto plan may fall back to one hart, recorded.
+    /// qualified for THIS release (B4 gate; the qualified ladder is stated by
+    /// `GuestReleaseShapePolicy.production`, currently one or two harts).
+    /// Independent of the image manifest (`smp=true` is not authority),
+    /// engine SMP capability, device quota or environment variables.
+    /// Explicit requests fail with this actionable error instead of booting a
+    /// different shape silently; only an explicitly authorized auto plan may
+    /// fall back to one hart, recorded.
     case releaseShapeUnsupported(requested: Int, maximum: Int)
     /// A *known* external workspace root could not re-establish its durable
     /// security-scoped access when the guest was about to export it. The VM
@@ -102,11 +103,11 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
             let detail = found.map { " (guest reported: \($0))" } ?? " (guest runner does not answer capability negotiation)"
             return "The Linux guest runner is too old: this build requires \(required)\(detail). Update the guest image component."
         case .smpUnsupportedByImage(let id):
-            return "The Linux image for environment \(id) does not support two cores (no SMP capability); choose a single-core guest or use an SMP-capable image."
+            return "The Linux image for environment \(id) does not support two cores: its verified manifest does not prove SMP (the matching CONFIG_SMP kernel/firmware pair). Install or update the Linux image component (Settings → Execution environment) and retry, or start a new environment once the SMP-capable image is published; an explicit 2-core request is refused and never silently reduced to one core."
         case .shapeExceedsPoolCapacity(let detail):
             return "This device cannot run the requested guest shape: \(detail)"
         case .releaseShapeUnsupported(let requested, let maximum):
-            return "This release supports at most \(maximum) guest core; a \(requested)-core guest is not qualified (dual-core boot stalls at fork/exec, cloud run 35851127603). Choose a single-core guest."
+            return "This release qualifies at most \(maximum) guest core(s); \(requested) cores are not part of the qualified ladder. Choose a supported count."
         case .shareAccessUnavailable(let id, let detail):
             return "Linux guest \(id) was not started: its external workspace is no longer accessible (\(detail)); re-authorize the folder in Files"
         }
@@ -470,6 +471,16 @@ public extension LinuxGuestEnvironmentProviding {
 /// SHA-512 digest for every artifact), and the resolver hashes the actual
 /// bytes before the registry starts the guest. A user-edited `qualified: true`
 /// without matching digests is reported as unqualified.
+///
+/// Capability declarations (`smp_capable`, `smpCapable` or
+/// `capabilities.smp`) live in this verbatim manifest and are lifted into the
+/// Runtime v2 manifest by `RuntimeV2ImageStore.declaredCapabilities`; the
+/// pool's image gate reads them to admit a second hart. `smp_capable: true`
+/// is therefore an IMAGE claim that its own kernel/firmware are the verified
+/// CONFIG_SMP pair — it is never inferred from the engine, and an image
+/// assembled from the reworked pair must be built with `--smp-capable`
+/// (`build-guest-image.sh` only accepts it next to real `SMP-BUILD.txt`
+/// multi-hart evidence).
 public struct LinuxGuestImageArtifact: Sendable, Equatable, Codable {
     public enum Role: String, Codable, Sendable {
         case bios

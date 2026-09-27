@@ -15,17 +15,28 @@
 // the safe stop → flush → restart path (see RuntimeVMPool).
 //
 // RELEASE CAPABILITY (B4): engine capacity, image-manifest claims and device
-// quota are all DISTINCT from what this release is qualified to ship. Real
-// cloud qualification (GitHub Actions run 35851127603) proved the fresh SMP
-// kernel boots and serves parallel 9P on one hart while two harts stall at
-// the first fork/exec, with no measurable dual speedup.
-// The authoritative per-release gate is therefore `GuestReleaseShapePolicy`
-// (single hart only) and is enforced at EVERY production boundary — pool
-// admission, reshape planning/confirmation, the registry and direct runtime
-// construction — independent of the image manifest (`smp=true` is never
-// authority), environment variables or loose integer inputs. Synthetic SMP
-// engine/admission experiments stay possible ONLY through an explicit internal
-// test policy value passed by code (never env vars, never a manifest).
+// quota are all DISTINCT from what this release is qualified to ship. The
+// authoritative per-release gate is `GuestReleaseShapePolicy` and it is
+// enforced at EVERY production boundary — pool admission, reshape
+// planning/confirmation, the registry and direct runtime construction —
+// independent of environment variables or loose integer inputs.
+//
+// Dual-core release state (2026-09-27, user policy): the corrected engine
+// (ff35c07a) passes the real cloud S0–S4 dual-hart correctness contract
+// (boot, /proc/cpuinfo=2 on the reworked SMP pair, fork/exec, parallel 9P;
+// runs 36004192418 / 36009075837) and the production gate now admits two
+// harts. The equal-work S5 benchmark on the same runs is still SLOWER on two
+// harts (median ratio 0.876 < 1.10), so dual is a correct but not faster
+// shape: the UI states that truthfully, an untyped request still resolves to
+// one hart, and the missing decision was explicitly taken by the user for
+// on-device testing. This is NOT a licence to claim a speedup.
+//
+// What remains a real gate: the second hart is admitted only when the
+// verified image manifest proves SMP (its kernel/firmware are the reworked
+// CONFIG_SMP pair), memory/lease/quota guards are unchanged, and an explicit
+// 2-core request is never silently reduced to one hart. Synthetic SMP
+// engine/admission experiments still cannot reach production through
+// manifests or env vars; `internalSyntheticTesting` exists for tests only.
 
 import Foundation
 
@@ -35,7 +46,8 @@ import Foundation
 /// release gate is a ResourcePolicy decision applied by every boundary.
 public enum GuestReleaseShapeError: Error, LocalizedError, Sendable, Equatable {
     /// The requested vCPU count is supported by the engine ladder but is not
-    /// qualified for this release (e.g. two harts while dual stays unproven).
+    /// part of this release's qualified ladder (e.g. an engine-ladder count
+    /// above the release ceiling).
     case unsupportedReleaseVCPUCount(requested: Int, releaseMaximum: Int)
     /// The loose input is not any expressible guest count (0, negative, or
     /// above the engine ceiling) — it must be rejected, never clamped.
@@ -44,7 +56,7 @@ public enum GuestReleaseShapeError: Error, LocalizedError, Sendable, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unsupportedReleaseVCPUCount(let requested, let releaseMaximum):
-            return "This release supports at most \(releaseMaximum) guest core; \(requested) cores are not qualified (dual-core boot stalls at fork/exec in cloud run 35851127603); choose a single-core guest."
+            return "This release qualifies at most \(releaseMaximum) guest core(s); \(requested) cores are not part of the qualified ladder. Choose a supported count."
         case .invalidVCPUCount(let requested, let range):
             return "Invalid guest core count \(requested); supported values are \(range.lowerBound)…\(range.upperBound)."
         }
@@ -55,11 +67,12 @@ public enum GuestReleaseShapeError: Error, LocalizedError, Sendable, Equatable {
 ///
 /// Engine capacity (`FLOE_VM_MAX_VCPU`), the image manifest's `smp` flag and
 /// the device quota can never widen this: it states only what THIS release is
-/// qualified to ship. The frozen `production` policy allows exactly one hart;
-/// dual/six-hart support stays opt-in ONLY through `internalSyntheticTesting`,
-/// an explicit code-supplied value for synthetic engine/admission tests, which
-/// is unreachable from manifests, environment variables or user input and is
-/// never assembled by the app.
+/// qualified to ship. `production` now qualifies two harts for images whose
+/// verified manifest proves SMP (S0–S4 correctness passed in cloud); a
+/// missing image proof is still refused by the pool/registry/integrator's
+/// separate image gate, never silently booted as dual. `internalSyntheticTesting`
+/// stays available for synthetic engine/admission tests and is unreachable
+/// from manifests, environment variables or user input.
 public struct GuestReleaseShapePolicy: Sendable, Equatable {
     /// Maximum vCPU count one guest may be granted in THIS release.
     public let maximumSupportedVCPUs: Int
@@ -74,9 +87,12 @@ public struct GuestReleaseShapePolicy: Sendable, Equatable {
         self.syntheticProvenance = provenance
     }
 
-    /// The release policy. Frozen: exactly one hart until a real release
-    /// changes this type with fresh dual-boot/performance qualification.
-    public static let production = GuestReleaseShapePolicy(maximumSupportedVCPUs: 1, synthetic: false, provenance: nil)
+    /// The release policy: up to two harts, granted only for a verified image
+    /// whose manifest proves SMP (the pool's separate image gate). An untyped
+    /// request still answers the one-hart worker default (`resolve(nil)`), so
+    /// ordinary shells are unchanged; dual remains correct-but-slower than
+    /// one hart on the S5 equal-work benchmark, which the UI states.
+    public static let production = GuestReleaseShapePolicy(maximumSupportedVCPUs: 2, synthetic: false, provenance: nil)
 
     /// Explicit internal test configuration: unlocks the engine ladder for
     /// SYNTHETIC SMP engine/admission experiments. There is intentionally no

@@ -5,9 +5,9 @@
 // The IDE run sheet asks the user which guest shape a Python/Node script run
 // should use (automatic / 1 vCPU / 2 vCPU). This type is the pure decision
 // layer behind that control. It reuses the existing `GuestResourceAdvisory`
-// plan and the frozen `GuestReleaseShapePolicy`, and it produces exactly the
-// typed `GuestResourceRequest` + `GuestShapeDowngradePolicy` pair the guest
-// pool already consumes — so the sheet can never promise a shape this release
+// plan and the `GuestReleaseShapePolicy`, and it produces exactly the typed
+// `GuestResourceRequest` + `GuestShapeDowngradePolicy` pair the guest pool
+// already consumes — so the sheet can never promise a shape this release
 // cannot deliver.
 //
 // Honesty rules encoded here:
@@ -25,11 +25,20 @@
 //  * An EXPLICIT dual-core selection is `.strict`: when any gate refuses it,
 //    `effectiveRequest` stays nil and the selection is refused. It never
 //    becomes a one-hart request, and the dispatcher must not start anything.
-//  * `GuestRunEntryShapeDispatch.singleHartOnly` is the honest state until the
-//    run controller and the guest start path accept a typed shape; while it is
+//  * `GuestRunEntryShapeDispatch.singleHartOnly` remains the honest state for
+//    a caller that cannot carry a typed shape into its start path; while it is
 //    set, an otherwise-deliverable dual selection is still refused rather than
-//    booting a silently different machine. Production app wiring must pass
-//    `.shapeAware` only after that path exists.
+//    booting a silently different machine. The IDE passes `.shapeAware`
+//    because its accepted intent reaches the guest start.
+//  * Dual-core is delivered ONLY when the released policy, the verified image
+//    manifest's SMP proof and a shape-aware dispatch path all allow it. Since
+//    2026-09-27 `production` qualifies two harts (cloud S0–S4 correctness:
+//    runs 36004192418 / 36009075837) but the equal-work S5 benchmark is still
+//    slower on two harts (0.876×). The plan therefore exposes dual as a real
+//    choice and the UI states the measured slowdown; it never claims a
+//    speedup. The verified image proof is what guarantees the second hart
+//    runs the reworked CONFIG_SMP kernel/firmware pair, so this is not a
+//    bare vCPU-count change.
 //
 // Pool alignment (RuntimeVMPool.admit): a release/image gate refusal under
 // `.strict` throws `releaseShapeUnsupported`/`smpUnsupportedByImage`; under
@@ -79,8 +88,8 @@ public enum GuestRunEntryShapeDispatch: Sendable, Equatable {
 /// Why the script-run entry refuses a selection. Typed so the UI localizes it
 /// and so tests can assert the exact gate, never a string match.
 public enum GuestRunEntryShapeRefusal: Sendable, Equatable {
-    /// The release gate does not qualify the requested count (frozen
-    /// `GuestReleaseShapePolicy`), independent of the image manifest.
+    /// The release gate does not qualify the requested count
+    /// (`GuestReleaseShapePolicy`), independent of the image manifest.
     case releaseVCPUUnsupported(requested: Int, maximum: Int)
     /// The release allows it, but the verified image manifest does not PROVE
     /// SMP, so the pool would refuse the second hart.
@@ -129,6 +138,14 @@ public struct GuestRunEntryShapeOption: Sendable, Equatable, Identifiable {
 
 /// The resolved run-entry shape decision.
 public struct GuestRunEntryShapePlan: Sendable, Equatable {
+    /// Measured equal-work result behind the honest dual-core copy: the
+    /// current engine passes the S0–S4 correctness contract, but the
+    /// equal-work S5 benchmark on the verified SMP pair is SLOWER on two
+    /// harts (cloud run 36009075837 medians 1.69 s on one hart vs 1.93 s on
+    /// two; ratio 0.876× < 1.10×). The run entry may offer dual, but no UI or
+    /// test may present it as a speedup. Replace only with a newer measured
+    /// ratio from a completed cloud S5 rerun.
+    public static let dualCoreMeasuredEqualWorkSpeedup = 0.876
     /// The user's current selection this plan resolved.
     public let selection: GuestRunEntryShapeSelection
     /// Every row of the control, including the refused ones.

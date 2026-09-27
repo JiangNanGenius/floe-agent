@@ -482,16 +482,22 @@ final class LinuxLifecycleCrossConcurrencyTests: XCTestCase {
         XCTAssertEqual(book.all.count, 1, "the quarantine booted a second engine")
     }
 
-    /// A hard restart refused by the release gate (dual core) is refused
-    /// before any disruption AND releases the shared transaction: the running
-    /// guest is untouched and a later direct start still reuses it.
+    /// A hard restart refused by a narrower release ceiling (dual core) is
+    /// refused before any disruption AND releases the shared transaction: the
+    /// running guest is untouched and a later direct start still reuses it.
+    /// (Production now qualifies two harts; the narrow test policy pins the
+    /// refusal path.)
     func testReleaseGateRefusalReleasesTransactionWithoutDisruption() async throws {
         let environmentID = "env-cross-dual"
         let book = EngineBook()
         let registry = makeRegistry(book: book, environmentID: environmentID)
         let service = TinyEMULinuxCommandService(registry: registry)
         let manager = LinuxGuestLifecycleManager(
-            controller: service, stopVerificationTimeout: 1
+            controller: service,
+            releasePolicy: GuestReleaseShapePolicy.internalSyntheticTesting(
+                maximumSupportedVCPUs: 1, provenance: "LinuxLifecycleCrossConcurrencyTests narrow ceiling"
+            ),
+            stopVerificationTimeout: 1
         )
 
         _ = try await registry.start(environmentID: environmentID, taskID: nil)

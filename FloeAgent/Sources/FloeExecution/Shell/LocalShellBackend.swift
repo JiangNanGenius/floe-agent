@@ -298,11 +298,12 @@ public enum ShellGuestRunShapeError: Error, LocalizedError, Equatable, Sendable 
 ///    overwrites the armed value, so the in-flight start's descriptor
 ///    resolution can only ever read its own run's shape (a concurrent
 ///    read-only status/ownership probe reads the same value and discards it).
-///  * The claim applies the release gate BEFORE any start call. An
-///    unqualified explicit request (two harts under the single-hart production
-///    release) throws `GuestReleaseShapeError.unsupportedReleaseVCPUCount`,
-///    arms nothing and drops the intent, so a refused dual selection can never
-///    silently become a one-hart boot.
+///  * The claim applies the release gate BEFORE any start call. A count
+///    outside the release ladder throws
+///    `GuestReleaseShapeError.unsupportedReleaseVCPUCount`, arms nothing and
+///    drops the intent, so a refused dual selection can never silently become
+///    a one-hart boot. A released two-hart request is still admitted only if
+///    the verified image proves SMP (the registry/pool image gate).
 ///  * A failed start keeps the run's pending intent (`finishClaim(consumed:
 ///    false)`): the app's image-preparation retry re-claims the SAME shape
 ///    instead of falling back to the worker default. Only a completed start

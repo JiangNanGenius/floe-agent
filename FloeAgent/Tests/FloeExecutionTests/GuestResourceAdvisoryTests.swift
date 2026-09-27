@@ -6,15 +6,16 @@
 // of the shared advisory it reuses:
 //
 //   * the automatic plan requests exactly the advisory's shape when the
-//     release gate, the image SMP proof and the connected dispatch path all
+//     release policy, the image SMP proof and the connected dispatch path all
 //     allow it;
 //   * when any of those gates refuses two harts, the automatic plan resolves
 //     to one hart with a recorded, explicit reason — never a silent change;
 //   * an EXPLICIT dual-core selection is refused outright (`effectiveRequest`
-//     is nil) by a single-core release, a missing SMP proof or an unconnected
-//     dispatch path; it never becomes a one-hart request, which is exactly the
-//     branch `RuntimeVMPool.admit` throws on under `.strict`;
-//   * a user override recorded in the advisory cannot bypass the release gate.
+//     is nil) when the release ceiling, the missing SMP proof or an
+//     unconnected dispatch path blocks it; it never becomes a one-hart
+//     request, which is exactly the branch `RuntimeVMPool.admit` throws on
+//     under `.strict`;
+//   * a user override recorded in the advisory cannot bypass the gates.
 //
 // No engine, pool or scheduler is started here: every decision is pure.
 
@@ -66,7 +67,7 @@ final class GuestResourceAdvisoryTests: XCTestCase {
         XCTAssertEqual(plan.downgrade, .authorized(vcpuFloor: .one, memoryFloor: .m256))
     }
 
-    func testAutomaticPlanResolvesToOneHartWithTheReleaseReason() {
+    func testAutomaticPlanDeliversTwoHartsUnderProductionWhenTheImageProvesSMP() {
         let plan = GuestRunEntryShapePlanner.plan(
             selection: .automatic,
             signals: parallelSignals,
@@ -74,8 +75,31 @@ final class GuestResourceAdvisoryTests: XCTestCase {
             imageProvesSMP: true,
             dispatch: .shapeAware
         )
-        // The advisory really planned two harts; the entry refuses to claim
-        // them and records the gate that blocked the request.
+        // The advisory planned two harts AND the released policy + verified
+        // image + shape-aware dispatch all allow them: no downgrade is
+        // invented and the option is selectable.
+        XCTAssertEqual(plan.recommendation.shape.vcpus, .two)
+        XCTAssertEqual(plan.effectiveRequest?.vcpus, .two)
+        XCTAssertEqual(plan.effectiveRequest?.origin, .recommendation)
+        XCTAssertFalse(plan.automaticDowngradedFromRecommendation)
+        XCTAssertTrue(plan.automaticDeliversRecommendation)
+        XCTAssertTrue(plan.isRunnable)
+        XCTAssertNil(plan.refusal)
+        XCTAssertEqual(plan.maximumDeliverableVCPUs, .two)
+        XCTAssertNil(plan.option(for: .dualCore)?.refusal)
+        XCTAssertTrue(plan.option(for: .dualCore)?.isAvailable == true)
+    }
+
+    func testAutomaticPlanResolvesToOneHartWhenTheImageDoesNotProveSMP() {
+        let plan = GuestRunEntryShapePlanner.plan(
+            selection: .automatic,
+            signals: parallelSignals,
+            releasePolicy: .production,
+            imageProvesSMP: false,
+            dispatch: .shapeAware
+        )
+        // The advisory really planned two harts; the image gate refuses to
+        // claim them and records the gate that blocked the request.
         XCTAssertEqual(plan.recommendation.shape.vcpus, .two)
         XCTAssertEqual(plan.effectiveRequest?.vcpus, .one)
         XCTAssertEqual(plan.effectiveRequest?.origin, .recommendation)
@@ -86,7 +110,7 @@ final class GuestResourceAdvisoryTests: XCTestCase {
         XCTAssertNil(plan.refusal, "the automatic selection itself is not refused")
         XCTAssertEqual(
             plan.option(for: .dualCore)?.refusal,
-            .releaseVCPUUnsupported(requested: 2, maximum: 1)
+            .imageDoesNotProveSMP(requested: 2)
         )
         XCTAssertEqual(plan.maximumDeliverableVCPUs, .one)
     }
@@ -108,7 +132,7 @@ final class GuestResourceAdvisoryTests: XCTestCase {
 
     // MARK: explicit shapes
 
-    func testExplicitDualIsRefusedByTheReleaseGateAndNeverBecomesOneHart() {
+    func testExplicitDualIsDeliveredUnderProductionWithAVerifiedSMPImage() {
         let plan = GuestRunEntryShapePlanner.plan(
             selection: .dualCore,
             signals: parallelSignals,
@@ -116,7 +140,23 @@ final class GuestResourceAdvisoryTests: XCTestCase {
             imageProvesSMP: true,
             dispatch: .shapeAware
         )
-        XCTAssertEqual(plan.refusal, .releaseVCPUUnsupported(requested: 2, maximum: 1))
+        XCTAssertNil(plan.refusal)
+        XCTAssertEqual(plan.effectiveRequest?.vcpus, .two)
+        XCTAssertEqual(plan.effectiveRequest?.origin, .userSpecified)
+        XCTAssertEqual(plan.downgrade, .strict)
+        XCTAssertTrue(plan.isRunnable)
+        XCTAssertTrue(plan.option(for: .dualCore)?.isAvailable == true)
+    }
+
+    func testExplicitDualIsRefusedWhenTheImageDoesNotProveSMPAndNeverBecomesOneHart() {
+        let plan = GuestRunEntryShapePlanner.plan(
+            selection: .dualCore,
+            signals: parallelSignals,
+            releasePolicy: .production,
+            imageProvesSMP: false,
+            dispatch: .shapeAware
+        )
+        XCTAssertEqual(plan.refusal, .imageDoesNotProveSMP(requested: 2))
         XCTAssertNil(plan.effectiveRequest, "an explicit dual request must never resolve to one hart")
         XCTAssertFalse(plan.isRunnable)
         XCTAssertEqual(plan.downgrade, .strict)
@@ -151,11 +191,11 @@ final class GuestResourceAdvisoryTests: XCTestCase {
         XCTAssertFalse(plan.isRunnable)
     }
 
-    func testExplicitDualRunsWhenEveryGateAllowsIt() {
+    func testExplicitDualRunsUnderProductionWhenEveryGateAllowsIt() {
         let plan = GuestRunEntryShapePlanner.plan(
             selection: .dualCore,
             signals: parallelSignals,
-            releasePolicy: Self.syntheticDualRelease,
+            releasePolicy: .production,
             imageProvesSMP: true,
             dispatch: .shapeAware
         )
@@ -193,16 +233,17 @@ final class GuestResourceAdvisoryTests: XCTestCase {
         )
         XCTAssertEqual(plan.option(for: .automatic)?.isAvailable, true)
         XCTAssertEqual(plan.option(for: .singleCore)?.isAvailable, true)
-        // The refused row carries its reason instead of disappearing.
+        // The refused row carries its reason instead of disappearing. With no
+        // image SMP proof (the default) the image gate is the first refusal.
         XCTAssertEqual(
             plan.option(for: .dualCore)?.refusal,
-            .releaseVCPUUnsupported(requested: 2, maximum: 1)
+            .imageDoesNotProveSMP(requested: 2)
         )
     }
 
     // MARK: advisory integration (overrides cannot bypass the gate)
 
-    func testAdvisoryOverrideCannotBypassTheReleaseGate() async {
+    func testAdvisoryOverrideCannotBypassTheGates() async {
         let advisory = GuestResourceAdvisory()
         await advisory.setUserOverride(
             GuestResourceRequest(vcpus: .two, memory: .m1024, origin: .userSpecified),
@@ -212,9 +253,9 @@ final class GuestResourceAdvisoryTests: XCTestCase {
         XCTAssertTrue(recommendation.userOverride)
         XCTAssertEqual(recommendation.shape.vcpus, .two)
 
-        // The entry honors the override as a recommendation, but the release
-        // gate still caps the deliverable shape at one hart; the explicit dual
-        // row stays refused.
+        // The entry honors the override as a recommendation, but the image
+        // gate (no SMP proof here) caps the deliverable shape at one hart; the
+        // explicit dual row stays refused.
         let automatic = GuestRunEntryShapePlanner.plan(
             selection: .automatic,
             recommendation: recommendation,
@@ -230,7 +271,22 @@ final class GuestResourceAdvisoryTests: XCTestCase {
             releasePolicy: .production
         )
         XCTAssertNil(explicit.effectiveRequest)
-        XCTAssertEqual(explicit.refusal, .releaseVCPUUnsupported(requested: 2, maximum: 1))
+        XCTAssertEqual(explicit.refusal, .imageDoesNotProveSMP(requested: 2))
+    }
+
+    // MARK: release policy
+
+    func testProductionPolicyQualifiesTwoHartsAndStillDefaultsToOne() throws {
+        XCTAssertEqual(GuestReleaseShapePolicy.production.maximumSupportedVCPUs, 2)
+        // The worker default is unchanged: no explicit request ⇒ one hart.
+        XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: nil), .one)
+        XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 1), .one)
+        XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 2), .two)
+        XCTAssertThrowsError(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 6)) {
+            guard case .invalidVCPUCount = $0 as? GuestReleaseShapeError else {
+                return XCTFail("six must be invalid, not clamped: \($0)")
+            }
+        }
     }
 
     func testAdvisoryPlansDualForDeclaredParallelSignals() async {

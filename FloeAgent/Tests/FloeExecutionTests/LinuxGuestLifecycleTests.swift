@@ -194,10 +194,12 @@ final class LinuxGuestLifecycleTests: XCTestCase {
 
     private func makeManager(
         controller: FakeLifecycleController,
-        softRestart: LinuxGuestSoftRestartPerformer? = nil
+        softRestart: LinuxGuestSoftRestartPerformer? = nil,
+        releasePolicy: GuestReleaseShapePolicy = .production
     ) -> LinuxGuestLifecycleManager {
         LinuxGuestLifecycleManager(
             controller: controller,
+            releasePolicy: releasePolicy,
             softRestartPerformer: softRestart,
             prepareImage: { [weak controller] _, _ in
                 await controller?.recordPrepare()
@@ -222,7 +224,8 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         XCTAssertFalse(receipt.reused)
         XCTAssertNil(receipt.requestedVCPUs)
         XCTAssertEqual(receipt.launchGeneration, 1)
-        XCTAssertTrue(receipt.capability.contains("single-core qualified"))
+        XCTAssertTrue(receipt.capability.contains("dual-core qualified for testing"))
+        XCTAssertTrue(receipt.capability.contains("S5"))
     }
 
     /// Explicit single-core start is carried to the runtime descriptor.
@@ -241,12 +244,36 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         XCTAssertEqual(receipt.actualVCPUs, 1)
     }
 
-    /// Explicit dual start returns an explicit capability error naming the
-    /// real reason; nothing boots and no single-core guest is substituted.
-    func testExplicitDualRefusedAsUnsupportedNoBoot() async throws {
+    /// Explicit dual start is carried to the runtime under the production
+    /// policy (the second hart is still image-gated inside the registry/pool);
+    /// the receipt reports the requested and actual counts honestly.
+    func testExplicitDualStartCarriedToRuntimeUnderProduction() async throws {
         let controller = FakeLifecycleController()
         await controller.own(environmentID)
         let manager = makeManager(controller: controller)
+
+        let receipt = try await manager.start(
+            environmentID: environmentID,
+            config: .init(vcpus: 2, memoryMB: 512),
+            ownerTaskID: nil
+        )
+        XCTAssertEqual(receipt.phase, .running)
+        XCTAssertEqual(receipt.requestedVCPUs, 2)
+        XCTAssertEqual(receipt.actualVCPUs, 2)
+    }
+
+    /// A narrower release ceiling still refuses an explicit dual start with
+    /// the typed capability error; nothing boots and no single-core guest is
+    /// substituted.
+    func testExplicitDualRefusedUnderANarrowerReleaseCeilingNoBoot() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        let manager = makeManager(
+            controller: controller,
+            releasePolicy: GuestReleaseShapePolicy.internalSyntheticTesting(
+                maximumSupportedVCPUs: 1, provenance: "LinuxGuestLifecycleTests narrow ceiling"
+            )
+        )
 
         do {
             _ = try await manager.start(
@@ -254,14 +281,14 @@ final class LinuxGuestLifecycleTests: XCTestCase {
                 config: .init(vcpus: 2, memoryMB: 512),
                 ownerTaskID: nil
             )
-            XCTFail("dual start must be refused")
+            XCTFail("dual start must be refused by the narrower ceiling")
         } catch let error as LinuxGuestLifecycleError {
             guard case .capabilityUnsupported(let id, let requested, let reason) = error else {
                 return XCTFail("expected capabilityUnsupported, got \(error)")
             }
             XCTAssertEqual(id, environmentID)
             XCTAssertEqual(requested, 2)
-            XCTAssertTrue(reason.contains("not qualified"))
+            XCTAssertTrue(reason.contains("qualified ladder"))
         }
         let isActive = await controller.isActive(environmentID)
         XCTAssertFalse(isActive)
@@ -424,18 +451,44 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         XCTAssertEqual(receipt.launchGeneration.flatMap(UInt64.init), newGeneration)
     }
 
-    /// Hard restart requested dual refuses BEFORE stopping the running guest.
-    func testHardRestartDualRefusedBeforeDisruption() async throws {
+    /// Hard restart requested dual under production restarts the guest at two
+    /// harts (the registry/pool image gate still decides delivery).
+    func testHardRestartDualUnderProductionAppliesTwoHarts() async throws {
         let controller = FakeLifecycleController()
         await controller.own(environmentID)
         let manager = makeManager(controller: controller)
+        _ = try await manager.start(environmentID: environmentID, config: .init(), ownerTaskID: nil)
+
+        let receipt = try await manager.hardRestart(
+            environmentID: environmentID, config: .init(vcpus: 2)
+        )
+        XCTAssertEqual(receipt.phase, .running)
+        XCTAssertEqual(receipt.requestedVCPUs, 2)
+        XCTAssertEqual(receipt.actualVCPUs, 2)
+        let isActive = await controller.isActive(environmentID)
+        XCTAssertTrue(isActive)
+        let generationAfterRestart = await controller.activeGeneration(environmentID)
+        XCTAssertEqual(generationAfterRestart, 2)
+    }
+
+    /// Hard restart requested dual under a narrower release ceiling refuses
+    /// BEFORE stopping the running guest.
+    func testHardRestartDualRefusedBeforeDisruptionUnderANarrowerCeiling() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        let manager = makeManager(
+            controller: controller,
+            releasePolicy: GuestReleaseShapePolicy.internalSyntheticTesting(
+                maximumSupportedVCPUs: 1, provenance: "LinuxGuestLifecycleTests hard restart narrow ceiling"
+            )
+        )
         _ = try await manager.start(environmentID: environmentID, config: .init(), ownerTaskID: nil)
 
         do {
             _ = try await manager.hardRestart(
                 environmentID: environmentID, config: .init(vcpus: 2)
             )
-            XCTFail("dual hard restart must refuse")
+            XCTFail("dual hard restart must refuse under the narrower ceiling")
         } catch let error as LinuxGuestLifecycleError {
             guard case .capabilityUnsupported = error else {
                 return XCTFail("expected capabilityUnsupported, got \(error)")
@@ -704,10 +757,15 @@ final class LinuxLifecycleToolDispatchTests: XCTestCase {
         XCTAssertTrue(output.summary.contains("phase=running"))
     }
 
-    func testDualStartToolReturnsUnsupportedReceipt() async throws {
+    func testDualStartToolUnderANarrowerCeilingReturnsUnsupportedReceipt() async throws {
         let controller = FakeLifecycleController()
         await controller.own(environmentID)
-        let manager = LinuxGuestLifecycleManager(controller: controller)
+        let manager = LinuxGuestLifecycleManager(
+            controller: controller,
+            releasePolicy: GuestReleaseShapePolicy.internalSyntheticTesting(
+                maximumSupportedVCPUs: 1, provenance: "LinuxLifecycleToolDispatchTests narrow ceiling"
+            )
+        )
         let tool = AnyAgentTool(StartLinuxGuestLifecycleTool(lifecycle: manager))
 
         let output = try await tool.run(Data(#"{"vcpus":2}"#.utf8), context())
@@ -715,6 +773,24 @@ final class LinuxLifecycleToolDispatchTests: XCTestCase {
         XCTAssertTrue(output.summary.contains("status=unsupported"))
         let isActive = await controller.isActive(environmentID)
         XCTAssertFalse(isActive)
+    }
+
+    /// Normal model access: the same JSON under the production policy reaches
+    /// the runtime and reports the actual two-hart shape — no feature flag or
+    /// manual unlock is required (the registry/pool image gate still decides
+    /// whether the second hart is delivered to a real guest).
+    func testDualStartToolDispatchesTwoHartsUnderProduction() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        let manager = LinuxGuestLifecycleManager(controller: controller)
+        let tool = AnyAgentTool(StartLinuxGuestLifecycleTool(lifecycle: manager))
+
+        let output = try await tool.run(Data(#"{"vcpus":2,"memoryMB":512}"#.utf8), context())
+        XCTAssertEqual(output.exitStatus, 0)
+        XCTAssertTrue(output.summary.contains("requestedVCPUs=2"))
+        XCTAssertTrue(output.summary.contains("actualVCPUs=2"))
+        let isActive = await controller.isActive(environmentID)
+        XCTAssertTrue(isActive)
     }
 
     func testStatusAndStopToolRoundTrip() async throws {

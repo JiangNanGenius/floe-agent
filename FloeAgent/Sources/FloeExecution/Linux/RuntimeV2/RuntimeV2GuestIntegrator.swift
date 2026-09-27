@@ -278,9 +278,10 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
 
     /// Validates a vCPU/RAM change against the release gate, pool quota and
     /// the image's SMP proof before any disruption. Nothing is stopped if
-    /// this throws. The loose integer is validated, never clamped: an
-    /// unsupported explicit count (two/six in a single-core release) throws
-    /// an actionable error even when the image manifest claims `smp=true`.
+    /// this throws. The loose integer is validated, never clamped: a count
+    /// outside the release ladder throws an actionable error, and a second
+    /// hart still requires the environment's verified base image to prove
+    /// SMP (a manifest `smp=true` claim alone is not enough).
     public func planReshape(
         environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int
     ) async throws {

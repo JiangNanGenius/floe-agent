@@ -93,13 +93,17 @@ Results:
   dual-hart bring-up cannot show workload speedup on it; the cloud baseline
   records repeats for both hart counts and explicitly claims no speedup until
   an SMP guest kernel lands (job A guest-image scope).
-- **Release state: production/default dual-core (and any SIX-tier enablement)
-  stays OFF until a real SMP guest kernel image passes the `run_smp` S1–S5
-  gates in cloud.** As of run 36004192418 the real SMP boot path is green
-  through S4; S5's completion/timing methodology was corrected here (see the
-  stage contract below) and still needs a green cloud rerun. Nothing in this
-  document enables dual-core, and the cloud gates must not be weakened to
-  change that.
+- **Release state (updated 2026-09-27): dual-core is exposed for on-device
+  testing with the S0–S4-verified engine, and the second hart is granted only
+  when the installed image's verified manifest proves SMP.** User policy
+  removed the performance-only one-hart release cap: S0–S4 correctness passed
+  in cloud (runs 36004192418 / 36009075837), and the S5 equal-work benchmark
+  being slower on two harts is stated truthfully instead of being treated as
+  a correctness blocker. The six-quota performance tier stays gated on real
+  device evidence (thermal + sustained workload), and nothing in this document
+  enables dual-core by itself: the cloud S1–S5 gates must not be weakened, S5
+  is still a real red result (0.876× at last measurement), and no speedup may
+  be claimed. See the dated note at the end of the gate-investigation section.
 
 ## SMP gate investigation (2026-09-26, host: M1 8GB macOS + cloud CI)
 
@@ -149,9 +153,14 @@ correctness defects and cloud run 36240219437 was cancelled:
    writes while the fast path reads the same field atomically — C11 UB. Any
    unlocked design must use `__atomic_*` for every counter mutation.
 
-Release state and exact remaining blocker. The production gate stays at one
-hart; the Settings note now states this bilingually and truthfully (S0–S4
-correct, S5 slower). Bounded safe follow-up for a future attempt:
+Release state and exact remaining blocker (updated 2026-09-27). The
+performance-only one-hart cap was removed by user policy: production admits
+two harts when the installed image's verified manifest proves SMP, and the UI
+states bilingually and truthfully that dual is S0–S4 correct but S5-slower.
+The shipped engine is the already-S0–S4-verified baseline (the global-lock
+implementation); the lock redesign below is NOT part of this exposure and
+must not land before its own green S0–S4 rerun. Bounded safe follow-up for a
+future attempt:
 
 1. redesign synchronization so a store's *address-keyed* reservation check is
    atomic with the data write — e.g. fine-grained per-cache-line reservation
@@ -160,8 +169,11 @@ correct, S5 slower). Bounded safe follow-up for a future attempt:
 2. keep LR/SC, DMA invalidation and trap-clears correct by construction, with
    the forced interleaving regression kept red;
 3. re-run the full cloud S0–S5 contract: 2-hart correctness, lease cleanup
-   and stop/restart, plus a repeatable **≥1.10×** equal-work speedup. Without
-   all three, `maximumSupportedVCPUs` must remain 1.
+   and stop/restart, plus a repeatable **≥1.10×** equal-work speedup. The
+   first two are the correctness gates for any engine change; the speedup is
+   the qualification target for calling dual a performance win (it is not a
+   prerequisite for the user-authorized on-device test exposure, which stays
+   clearly labelled as slower).
 
 Focused static checks (no guest run, no build). The first is a **protocol
 model** (design counterexample, not a C-engine gate); the second checks the

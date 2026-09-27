@@ -45,8 +45,9 @@ final class RuntimeVMPoolTests: XCTestCase {
         maximumSupportedVCPUs: 2, provenance: "RuntimeVMPoolTests synthetic SMP admission"
     )
 
-    /// A pool whose release policy allows the engine ladder (synthetic SMP
-    /// admission tests only; the B4 tests assert against `.production`).
+    /// A pool whose release policy allows the engine ladder outright
+    /// (synthetic SMP admission tests; the production tests now use the same
+    /// ladder but leave the image gate as the dual refusal).
     private func makeSyntheticDualPool(
         quota vcpus: Int = 4,
         memory: Int = 3072,
@@ -219,28 +220,45 @@ final class RuntimeVMPoolTests: XCTestCase {
         await assertCancellation(follower)
     }
 
-    // MARK: - B4 release gate (single-core release, independent of manifest)
+    // MARK: - release + image gates for dual (independent of manifest claim)
 
-    /// An explicit dual request on a PRODUCTION pool is refused even when
-    /// the image claims SMP (`imageSMPCapable: true`) and even though the
-    /// quota has room: this release is not qualified for two harts. The
-    /// refusal is immediate (nothing queued, nothing reserved).
-    func testProductionReleasesStrictDualDespiteSMPCapableClaim() async throws {
+    /// A strict dual request on a PRODUCTION pool is admitted when the
+    /// verified image proves SMP; the release no longer caps at one hart, and
+    /// the received shape is exactly the dual request.
+    func testProductionAdmitsStrictDualWithVerifiedImageSMP() async throws {
+        let pool = makePool(quota: 4, memory: 2048, vms: 4)
+        let lease = try await pool.acquire(
+            environmentID: "dual", runtimeID: "rt-dual",
+            request: GuestResourceRequest(vcpus: .two, memory: .m512, origin: .environmentPolicy),
+            imageSMPCapable: true,
+            downgrade: .strict
+        )
+        XCTAssertEqual(lease.shape.vcpus, .two)
+        XCTAssertEqual(lease.shape.memory, .m512)
+        XCTAssertFalse(lease.wasDowngraded)
+        let status = await pool.status
+        XCTAssertEqual(status.running, 1)
+        XCTAssertEqual(status.usedVCPUs, 2)
+    }
+
+    /// The same strict dual on a PRODUCTION pool whose verified image does not
+    /// prove SMP is refused immediately with the image error — never queued,
+    /// never silently booted as one hart.
+    func testProductionStrictDualWithoutImageSMPProofIsRefused() async throws {
         let pool = makePool(quota: 4, memory: 2048, vms: 4)
         do {
             _ = try await pool.acquire(
                 environmentID: "dual", runtimeID: "rt-dual",
                 request: GuestResourceRequest(vcpus: .two, memory: .m512, origin: .environmentPolicy),
-                imageSMPCapable: true,
+                imageSMPCapable: false,
                 downgrade: .strict
             )
-            XCTFail("a strict dual request must fail the release gate despite smp=true")
+            XCTFail("a strict dual request must fail the image gate without SMP evidence")
         } catch let error as LinuxGuestError {
-            guard case .releaseShapeUnsupported(let requested, let maximum) = error else {
+            guard case .smpUnsupportedByImage(let id) = error else {
                 return XCTFail("unexpected error: \(error)")
             }
-            XCTAssertEqual(requested, 2)
-            XCTAssertEqual(maximum, 1)
+            XCTAssertEqual(id, "dual")
         }
         let status = await pool.status
         XCTAssertEqual(status.running, 0)
@@ -252,42 +270,44 @@ final class RuntimeVMPoolTests: XCTestCase {
     /// A genuine auto plan (`.recommendation`) that asks two harts may fall
     /// back to one ONLY with an explicit authorized single-core floor, and
     /// the lease records the actual granted shape plus the downgrade reason.
-    func testProductionAuthorizedAutoDualFallsBackToRecordedSingle() async throws {
+    /// Production's remaining dual refusal is the IMAGE gate.
+    func testProductionAuthorizedAutoDualOnUnprovenImageFallsBackToRecordedSingle() async throws {
         let pool = makePool(quota: 4, memory: 2048, vms: 4)
         let lease = try await pool.acquire(
             environmentID: "auto", runtimeID: "rt-auto",
             request: GuestResourceRequest(vcpus: .two, memory: .m512, origin: .recommendation),
-            imageSMPCapable: true,
+            imageSMPCapable: false,
             downgrade: .authorized(vcpuFloor: .one, memoryFloor: .m256)
         )
         XCTAssertEqual(lease.shape.vcpus, .one)
         XCTAssertTrue(lease.vcpusDowngraded)
-        XCTAssertEqual(lease.vcpusDowngradeReason?.contains("release"), true)
+        XCTAssertEqual(lease.vcpusDowngradeReason?.contains("SMP"), true)
         let status = await pool.status
         XCTAssertEqual(status.usedVCPUs, 1)
     }
 
-    /// An authorized policy whose floor still demands two harts is refused
-    /// rather than silently downgraded — the release never grants two.
-    func testProductionAuthorizedFloorTwoStillRefused() async throws {
+    /// An authorized policy whose floor still demands two harts cannot be
+    /// satisfied from an image without SMP proof: refused, not silently
+    /// downgraded below the floor.
+    func testProductionAuthorizedFloorTwoOnUnprovenImageRefused() async throws {
         let pool = makePool(quota: 4, memory: 2048, vms: 4)
         do {
             _ = try await pool.acquire(
                 environmentID: "dual", runtimeID: "rt-dual",
                 request: GuestResourceRequest(vcpus: .two, memory: .m512),
-                imageSMPCapable: true,
+                imageSMPCapable: false,
                 downgrade: .authorized(vcpuFloor: .two, memoryFloor: .m256)
             )
-            XCTFail("an authorized two-hart floor must still fail the release gate")
+            XCTFail("an authorized two-hart floor must still fail the image gate")
         } catch let error as LinuxGuestError {
-            guard case .releaseShapeUnsupported = error else {
+            guard case .smpUnsupportedByImage = error else {
                 return XCTFail("unexpected error: \(error)")
             }
         }
     }
 
-    /// The single-core release still allows the device pool to run several
-    /// one-hart VMs concurrently (per-VM count is NOT collapsed to one VM).
+    /// The device pool still runs several one-hart VMs concurrently (per-VM
+    /// count is NOT collapsed to one VM).
     func testProductionAllowsMultipleSingleCoreVMs() async throws {
         let pool = makePool(quota: 4, memory: 2048, vms: 4)
         for index in 0..<4 {
@@ -304,9 +324,10 @@ final class RuntimeVMPoolTests: XCTestCase {
         XCTAssertEqual(status.usedVCPUs, 4)
     }
 
-    /// Reshape planning on a production pool refuses a second hart before
-    /// any disruption even with a capable image and free quota.
-    func testProductionReshapeToDualRefusedBeforeDisruption() async throws {
+    /// Reshape planning on a production pool validates the dual request
+    /// before any disruption: refused without image SMP proof, accepted with
+    /// it.
+    func testProductionReshapeToDualGatedByImageProofBeforeDisruption() async throws {
         let pool = makePool(quota: 4, memory: 2048, vms: 4)
         _ = try await pool.acquire(
             environmentID: "env-0", runtimeID: "rt-0",
@@ -317,25 +338,34 @@ final class RuntimeVMPoolTests: XCTestCase {
             try await pool.validateShapeChange(
                 environmentID: "env-0",
                 request: GuestResourceRequest(vcpus: .two, memory: .m512),
-                imageSMPCapable: true
+                imageSMPCapable: false
             )
-            XCTFail("a dual reshape must fail the release gate")
+            XCTFail("a dual reshape must fail the image gate without SMP evidence")
         } catch let error as LinuxGuestError {
-            guard case .releaseShapeUnsupported = error else {
+            guard case .invalidConfiguration(let detail) = error else {
                 return XCTFail("unexpected error: \(error)")
             }
+            XCTAssertTrue(detail.contains("SMP"), detail)
         }
         // The running lease is untouched.
         let lease = await pool.lease(runtimeID: "rt-0")
         XCTAssertEqual(lease?.shape.vcpus, .one)
+        // With the image proof, the same reshape plan passes the validation
+        // (no stop/restart happens here; that is the caller's confirmation).
+        try await pool.validateShapeChange(
+            environmentID: "env-0",
+            request: GuestResourceRequest(vcpus: .two, memory: .m512),
+            imageSMPCapable: true
+        )
+        let stillOne = await pool.lease(runtimeID: "rt-0")
+        XCTAssertEqual(stillOne?.shape.vcpus, .one, "validation must not change the running lease")
     }
 
     // MARK: - temporary shortage vs permanent image mismatch
 
     /// Strict dual with one vCPU free: temporary shortage ⇒ queue, never
-    /// silently single. Uses the explicit internal synthetic-dual policy:
-    /// this tests the quota queue, while the B4 tests below pin the release
-    /// gate's refusal on production pools.
+    /// silently single. Uses the explicit internal synthetic-dual policy so
+    /// the quota queue is tested independent of the image gate.
     func testStrictDualTemporaryShortageQueues() async throws {
         let pool = makeSyntheticDualPool(quota: 2, memory: 1024, vms: 2)
         _ = try await pool.acquire(
@@ -359,11 +389,9 @@ final class RuntimeVMPoolTests: XCTestCase {
     }
 
     /// Dual request against an image without SMP evidence under strict
-    /// admission: permanent mismatch ⇒ immediate actionable error. The
-    /// release gate is bypassed here by the explicit internal synthetic-dual
-    /// policy so this tests the IMAGE gate specifically; the B4 tests below
-    /// prove the release gate fires first on a production pool even when an
-    /// image manifest claims SMP.
+    /// admission: permanent mismatch ⇒ immediate actionable error. Same
+    /// production behavior, tested through the synthetic policy so the image
+    /// gate is exercised independent of policy construction.
     func testStrictDualOnUnsupportedImageErrorsNotQueues() async throws {
         let pool = makeSyntheticDualPool(quota: 4, memory: 2048, vms: 4)
         do {
@@ -389,8 +417,7 @@ final class RuntimeVMPoolTests: XCTestCase {
 
     /// Authorized caller on an unsupported image: single hart with reason.
     /// Uses the explicit internal synthetic-dual policy so this exercises
-    /// the IMAGE gate; on a production pool the release gate fires first
-    /// (covered by the B4 tests below).
+    /// the IMAGE gate independent of policy construction.
     func testAuthorizedDualOnUnsupportedImageDowngrades() async throws {
         let pool = makeSyntheticDualPool(quota: 4, memory: 2048, vms: 4)
         let lease = try await pool.acquire(
@@ -674,8 +701,8 @@ final class RuntimeVMPoolTests: XCTestCase {
 
     func testValidateAndConfirmShapeChange() async throws {
         // Explicit internal synthetic-dual policy: this tests the image gate
-        // and quota validation; the B4 tests below pin the release gate that
-        // refuses a dual reshape on a production pool regardless of the image.
+        // and quota validation; the production test above pins the same
+        // dual-reshape image gate.
         let pool = makeSyntheticDualPool(quota: 4, memory: 3072, vms: 4)
         _ = try await pool.acquire(
             environmentID: "env-0", runtimeID: "rt-0",
@@ -710,25 +737,21 @@ final class RuntimeVMPoolTests: XCTestCase {
 
     // MARK: - actual startup configuration
 
-    /// The direct machine boundary enforces the production release gate
-    /// (B4): a descriptor claiming two harts cannot be constructed even when
-    /// the pool is bypassed, regardless of the image manifest. A malformed
-    /// count is rejected, never clamped.
-    func testMachineProductionPolicyRejectsExplicitDualAndInvalidCounts() throws {
+    /// The direct machine boundary resolves the production policy: a
+    /// descriptor asking two harts is configured with two, while a malformed
+    /// count is rejected, never clamped. (Whether the second hart is
+    /// DELIVERED is decided earlier by the pool's image gate; this boundary
+    /// only refuses counts outside the released ladder.)
+    func testMachineProductionPolicyAcceptsDualAndRejectsInvalidCounts() throws {
         let image = LinuxGuestImage(id: "img", biosPath: "bbl64.bin", qualified: false)
         let dual = LinuxGuestEnvironmentDescriptor(
             id: "env-1", imageID: "img", ramMB: 1024, vcpus: 2
         )
-        XCTAssertThrowsError(
-            try TinyEMUGuestMachine(descriptor: dual, image: image, limits: .standard)
-        ) { error in
-            guard case .unsupportedReleaseVCPUCount(let requested, let maximum) =
-                error as? GuestReleaseShapeError else {
-                return XCTFail("expected unsupportedReleaseVCPUCount, got \(error)")
-            }
-            XCTAssertEqual(requested, 2)
-            XCTAssertEqual(maximum, 1)
-        }
+        let machine = try TinyEMUGuestMachine(
+            descriptor: dual, image: image, limits: .standard
+        )
+        XCTAssertEqual(machine.configuredShape.vcpus, 2)
+        XCTAssertEqual(machine.configuredShape.ramMB, 1024)
         // A six-core request is malformed relative to the engine ladder, not
         // silently clamped to two.
         let six = LinuxGuestEnvironmentDescriptor(
@@ -787,18 +810,26 @@ final class RuntimeVMPoolTests: XCTestCase {
     /// and synthetic policies, with no clamping in any direction.
     func testReleaseShapePolicyResolution() throws {
         let production = GuestReleaseShapePolicy.production
+        XCTAssertEqual(production.maximumSupportedVCPUs, 2)
         XCTAssertEqual(try production.resolve(requestedVCPUs: nil), .one)
         XCTAssertEqual(try production.resolve(requestedVCPUs: 1), .one)
-        XCTAssertThrowsError(try production.resolve(requestedVCPUs: 2)) {
-            guard case .unsupportedReleaseVCPUCount(2, 1) = $0 as? GuestReleaseShapeError else {
-                return XCTFail("unexpected \($0)")
-            }
-        }
+        XCTAssertEqual(try production.resolve(requestedVCPUs: 2), .two)
         for bad in [0, -1, 3, 6, 64] {
             XCTAssertThrowsError(try production.resolve(requestedVCPUs: bad)) {
                 guard case .invalidVCPUCount = $0 as? GuestReleaseShapeError else {
                     return XCTFail("\(bad) must be invalid, not clamped: \($0)")
                 }
+            }
+        }
+        // A narrower release ceiling (test-only construction) still refuses
+        // two with the typed release error rather than clamping.
+        let narrow = GuestReleaseShapePolicy.internalSyntheticTesting(
+            maximumSupportedVCPUs: 1, provenance: "unit narrow ceiling"
+        )
+        XCTAssertEqual(narrow.maximumSupportedVCPUs, 1)
+        XCTAssertThrowsError(try narrow.resolve(requestedVCPUs: 2)) {
+            guard case .unsupportedReleaseVCPUCount(2, 1) = $0 as? GuestReleaseShapeError else {
+                return XCTFail("unexpected \($0)")
             }
         }
         let synthetic = GuestReleaseShapePolicy.internalSyntheticTesting(provenance: "unit")

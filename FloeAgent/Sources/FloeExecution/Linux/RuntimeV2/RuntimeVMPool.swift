@@ -18,18 +18,18 @@
 //     reclaim never terminate an active lease — only the registry stops a
 //     VM, through the safe path.
 //
-// Dual-hart requests pass TWO independent gates. The B4 release gate
+// Dual-hart requests pass TWO independent gates. The release gate
 // (`Configuration.releasePolicy`, default `GuestReleaseShapePolicy.production`)
-// is authoritative for what THIS build is qualified to ship: it answers one
-// hart regardless of image manifests, the engine's SMP query and device quota
-// (cloud run 35851127603 — dual boots but stalls at fork/exec, no measurable
-// speedup). The second gate is `imageSMPCapable` (the registry's verified
-// image manifest): engine capability is not guest compatibility. Under a
-// strict policy an unsupported explicit request throws an actionable error
-// immediately (never queues, never silently boots one hart); under an
-// authorized policy with a one-hart floor, an auto request may fall back to
-// one hart with the downgrade recorded in the lease. Synthetic SMP engine
-// tests opt in ONLY via the explicit internal-synthetic release policy.
+// states what THIS build qualifies: since 2026-09-27 it admits two harts
+// (cloud S0–S4 correctness on the reworked SMP pair, runs 36004192418 /
+// 36009075837). The second gate is `imageSMPCapable` (the registry's verified
+// image manifest): engine capability is not guest compatibility, and the
+// second hart is granted ONLY when the image's own kernel/firmware are the
+// S0–S4-verified CONFIG_SMP pair. Under a strict policy a refusal throws an
+// actionable error immediately (never queues, never silently boots one
+// hart); under an authorized policy with a one-hart floor, an auto request
+// may fall back to one hart with the downgrade recorded in the lease.
+// Synthetic SMP engine tests keep their explicit internal-synthetic policy.
 // Several one-hart VMs still share the whole device pool.
 //
 // The pinned TinyEMU engine has no balloon/resize or online vCPU hotplug:
@@ -57,10 +57,11 @@ public actor RuntimeVMPool {
         /// CPU/RAM/VM quota for the whole pool.
         public var quota: GuestResourceQuota
         /// AUTHORITATIVE release qualification gate (B4). Independent of the
-        /// image manifest, engine query and this quota: production releases
-        /// one hart even on devices whose quota could count more, so several
-        /// single-hart VMs share the pool but no guest is ever granted the
-        /// unqualified dual shape. Synthetic SMP experiments opt in only via
+        /// image manifest, engine query and this quota. Production qualifies
+        /// up to two harts; the pool's separate `imageSMPCapable` gate still
+        /// requires the verified image manifest's SMP proof, so no guest is
+        /// ever granted the dual shape from an unproven image. Synthetic SMP
+        /// experiments opt in only via
         /// `GuestReleaseShapePolicy.internalSyntheticTesting`.
         public var releasePolicy: GuestReleaseShapePolicy
         public var queueLimit: Int
@@ -243,8 +244,8 @@ public actor RuntimeVMPool {
     public func lease(runtimeID: String) -> GuestResourceLease? { leases[runtimeID] }
 
     /// The release qualification gate this pool enforces (B4). Production
-    /// pools answer one hart; only an explicit internal synthetic-test
-    /// configuration unlocks the engine ladder.
+    /// pools qualify one or two harts; the pool's separate image gate still
+    /// requires the verified image manifest's SMP proof for the second hart.
     public var releasePolicy: GuestReleaseShapePolicy { configuration.releasePolicy }
 
     public func slot(environmentID: String) -> Slot? {
@@ -381,12 +382,13 @@ public actor RuntimeVMPool {
     ) throws -> GuestResourceAdmissionDecision? {
         // RELEASE gate FIRST (B4): what this release is qualified to ship is
         // independent of the image manifest, the engine's SMP query and this
-        // device's quota. Production answers one hart, so an explicit dual
-        // request gets an actionable error under strict admission and may
-        // fall back to one hart ONLY when the caller explicitly authorized
-        // that floor (auto policy); the lease records the downgrade honestly.
-        // Malformed loose counts (0, six, …) never reach this typed API:
-        // GuestReleaseShapePolicy.resolve throws before a request exists.
+        // device's quota. Production qualifies one or two harts; an explicit
+        // count above the ceiling gets an actionable error under strict
+        // admission and may fall back to one hart ONLY when the caller
+        // explicitly authorized that floor (auto policy); the lease records
+        // the downgrade honestly. Malformed loose counts (0, six, …) never
+        // reach this typed API: GuestReleaseShapePolicy.resolve throws before
+        // a request exists.
         var effectiveRequest = request
         var releaseGateDowngrade = false
         if !configuration.releasePolicy.supports(request.vcpus) {
@@ -410,9 +412,9 @@ public actor RuntimeVMPool {
             }
         }
 
-        // Image capability gate (only reachable for multi-hart shapes under
-        // an internal synthetic-test release policy): engine SMP support is
-        // not guest compatibility. A dual request with no image evidence
+        // Image capability gate (reachable for a dual request under the
+        // production policy): engine SMP support is not guest compatibility.
+        // A dual request whose verified image manifest does not prove SMP
         // either gets an actionable error (strict) or, when the caller
         // explicitly authorized it, a single-hart downgrade with a reason.
         var imageGateDowngrade = false
@@ -646,9 +648,10 @@ public actor RuntimeVMPool {
         guard let current = runtimeByEnvironment[environmentID].flatMap({ leases[$0] }) else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
-        // Release gate BEFORE quota/image gates (B4): a reshape to the
-        // unqualified dual shape is refused even when the device quota and
-        // an image manifest both claim SMP — this release ships one hart.
+        // Release gate BEFORE quota/image gates (B4): a reshape to a count
+        // outside the released ladder is refused even when the device quota
+        // and an image manifest claim it. (Production qualifies two harts;
+        // the image proof below is what still gates the second one.)
         if !configuration.releasePolicy.supports(request.vcpus) {
             throw LinuxGuestError.releaseShapeUnsupported(
                 requested: request.vcpus.count,

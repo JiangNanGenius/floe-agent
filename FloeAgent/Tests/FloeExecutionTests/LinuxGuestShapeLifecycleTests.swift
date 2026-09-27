@@ -494,9 +494,17 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
 
     /// Explicit internal test policy unlocking dual shapes for the B3
     /// ownership interleaving tests that drive a stop → two-hart restart;
-    /// the B4 tests below assert the production gate refuses that shape.
+    /// the production tests below reach the same shapes through the release
+    /// policy and leave the image gate as the remaining dual refusal.
     private static let lifecycleSyntheticDual = GuestReleaseShapePolicy.internalSyntheticTesting(
         provenance: "LinuxGuestShapeLifecycleTests B3 dual reshape interleaving"
+    )
+
+    /// A test-only policy whose release ceiling is one hart, used to pin the
+    /// registry's typed release-gate mapping now that production qualifies
+    /// two harts.
+    private static let lifecycleNarrowRelease = GuestReleaseShapePolicy.internalSyntheticTesting(
+        maximumSupportedVCPUs: 1, provenance: "LinuxGuestShapeLifecycleTests narrow release gate"
     )
 
     private func makeLegacyRegistry(
@@ -1045,13 +1053,14 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
 
     // MARK: - B4 release gate at the registry boundary
 
-    /// Helper: a production-policy registry backed by the deliberately
-    /// permissive `ShapeV2Integrator` (it grants whatever shape it is asked
-    /// for), so any refusal below is proven to come from the REGISTRY's own
-    /// release gate, not from the pool/integrator.
+    /// Helper: a registry backed by the deliberately permissive
+    /// `ShapeV2Integrator` (it grants whatever shape it is asked for), so any
+    /// refusal below is proven to come from the REGISTRY's own release gate,
+    /// not from the pool/integrator.
     private func makeProductionV2Registry(
         environmentID: String,
-        descriptor: LinuxGuestEnvironmentDescriptor? = nil
+        descriptor: LinuxGuestEnvironmentDescriptor? = nil,
+        releasePolicy: GuestReleaseShapePolicy = .production
     ) throws -> (TinyEMULinuxGuestRegistry, ShapeV2Integrator, ShapeSessionBook, LinuxGuestImage) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-b4-\(UUID().uuidString)", isDirectory: true)
@@ -1067,26 +1076,29 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
                 token.hasPrefix("hello-") ? shapeCaps(token) : shapeOKReply(token)
             },
             runtimeV2: integrator,
+            releasePolicy: releasePolicy,
             descriptor: descriptor
         )
         return (registry, integrator, book, image)
     }
 
-    /// A descriptor explicitly requesting two harts fails the production
-    /// release gate at START, even though the scripted integrator and image
-    /// would allow it and even with a manifest-style SMP claim: no VM, no
-    /// pool admission, no disk work.
-    func testStartRejectsExplicitDualBeforeAdmission() async throws {
+    /// A descriptor explicitly requesting two harts on a release that does
+    /// not qualify them fails the registry's release gate at START, even
+    /// though the scripted integrator and image would allow it: no VM, no
+    /// pool admission, no disk work. (Production now qualifies two harts; a
+    /// narrower release ceiling keeps this exact mapping pinned.)
+    func testStartRejectsExplicitDualUnderANarrowerReleasePolicy() async throws {
         let environmentID = "env-b4-start-dual"
         let dualDescriptor = LinuxGuestEnvironmentDescriptor(
             id: environmentID, ownerID: "owner", imageID: "shape-b4-image", vcpus: 2
         )
         let (registry, integrator, book, _) = try makeProductionV2Registry(
-            environmentID: environmentID, descriptor: dualDescriptor
+            environmentID: environmentID, descriptor: dualDescriptor,
+            releasePolicy: Self.lifecycleNarrowRelease
         )
         do {
             _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
-            XCTFail("an explicit dual start must be refused by the release gate")
+            XCTFail("an explicit dual start must be refused by the narrower release gate")
         } catch let error as LinuxGuestError {
             guard case .releaseShapeUnsupported(let requested, let maximum) = error else {
                 return XCTFail("expected releaseShapeUnsupported, got \(error)")
@@ -1100,6 +1112,30 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         XCTAssertFalse(events.contains { $0.hasPrefix("disk") }, "no disk work may run for a refused shape")
         let reserved = await registry.reservedGuestRAMMB
         XCTAssertEqual(reserved, 0)
+    }
+
+    /// The normal production path: a verified SMP-proven image plus the
+    /// released policy really carries an explicit two-hart request through
+    /// admission, the boot, and the runtime state (actual granted shape).
+    func testStartAdmitsExplicitDualUnderProductionAndRecordsTwoHarts() async throws {
+        let environmentID = "env-production-start-dual"
+        let dualDescriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: "owner", imageID: "shape-b4-image", ramMB: 512, vcpus: 2
+        )
+        let (registry, integrator, book, _) = try makeProductionV2Registry(
+            environmentID: environmentID, descriptor: dualDescriptor
+        )
+        _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
+        guard let session = book.latest else { return XCTFail("the dual guest did not start") }
+        XCTAssertEqual(session.currentVCPUs, 2, "the boot did not get the granted dual shape")
+        XCTAssertEqual(session.starts, 1)
+        let requests = await integrator.shapeRequests
+        XCTAssertEqual(requests.first?.vcpus, .two)
+        XCTAssertEqual(requests.first?.origin, .environmentPolicy)
+        let states = await registry.runtimeStates()
+        XCTAssertEqual(states.first?.vcpus, 2, "the runtime state must report the ACTUAL granted count")
+        let status = await registry.status(environmentID: environmentID)
+        XCTAssertTrue(status.running)
     }
 
     /// A loose six-core request is a malformed configuration at start, not a
@@ -1125,19 +1161,23 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         XCTAssertFalse(events.contains { $0.hasPrefix("acquire") })
     }
 
-    /// A reshape to two harts is refused BEFORE any disruption on a running
-    /// single-core guest: the guest keeps running at one core, the plan seam
-    /// is never called, and accounting stays at the single VM.
-    func testReshapeToDualRefusedBeforeAnyStopOrPlan() async throws {
+    /// A reshape to two harts on a release that does not qualify them is
+    /// refused BEFORE any disruption on a running single-core guest: the
+    /// guest keeps running at one core, the plan seam is never called, and
+    /// accounting stays at the single VM. (Production now qualifies two
+    /// harts; the narrower ceiling keeps this mapping pinned.)
+    func testReshapeToDualRefusedBeforeAnyStopOrPlanUnderANarrowerPolicy() async throws {
         let environmentID = "env-b4-reshape-dual"
-        let (registry, integrator, book, _) = try makeProductionV2Registry(environmentID: environmentID)
+        let (registry, integrator, book, _) = try makeProductionV2Registry(
+            environmentID: environmentID, releasePolicy: Self.lifecycleNarrowRelease
+        )
         _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
         guard let session = book.latest else { return XCTFail("the single-core guest did not start") }
         XCTAssertEqual(session.currentVCPUs, 1)
 
         do {
             try await registry.setShape(environmentID: environmentID, ramMB: 512, vcpus: 2)
-            XCTFail("a dual reshape must be refused by the release gate")
+            XCTFail("a dual reshape must be refused by the narrower release gate")
         } catch let error as LinuxGuestError {
             guard case .releaseShapeUnsupported = error else {
                 return XCTFail("expected releaseShapeUnsupported, got \(error)")
@@ -1157,6 +1197,31 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         XCTAssertTrue(status.running)
         let reserved = await registry.reservedGuestRAMMB
         XCTAssertEqual(reserved, 256)
+    }
+
+    /// The normal production path for a shape change: a two-hart reshape
+    /// plans through the integrator's seam and the restarted guest really
+    /// runs two harts (actual shape applied and recorded).
+    func testReshapeToDualUnderProductionPlansAndAppliesTwoHarts() async throws {
+        let environmentID = "env-production-reshape-dual"
+        let (registry, integrator, book, _) = try makeProductionV2Registry(environmentID: environmentID)
+        _ = try await registry.start(environmentID: environmentID, taskID: "task-1")
+        guard let session = book.latest else { return XCTFail("the single-core guest did not start") }
+        XCTAssertEqual(session.currentVCPUs, 1)
+
+        try await registry.setShape(environmentID: environmentID, ramMB: 512, vcpus: 2)
+        XCTAssertEqual(session.currentVCPUs, 2, "the restarted guest did not get the dual shape")
+        XCTAssertTrue(session.appliedVCPUCounts.contains(2))
+        XCTAssertEqual(session.stops, 1, "the dual reshape must go through the safe stop")
+        XCTAssertEqual(session.starts, 2, "the dual reshape must restart the guest")
+        let events = await integrator.events
+        XCTAssertTrue(
+            events.contains { $0.hasPrefix("planReshape") },
+            "the dual reshape must be validated by the integrator before any disruption: \(events)"
+        )
+        XCTAssertTrue(events.contains { $0.hasPrefix("confirmReshape") })
+        let states = await registry.runtimeStates()
+        XCTAssertEqual(states.first?.vcpus, 2)
     }
 
     /// A six-core reshape is an invalid-configuration refusal before any
@@ -1490,17 +1555,22 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         XCTAssertEqual(center.pendingCount, 1)
     }
 
-    /// An explicit dual request is refused by the release gate BEFORE any
+    /// A two-hart intent is refused by a narrower release ceiling BEFORE any
     /// start: the claim throws the typed error, arms nothing and drops the
-    /// intent so it can never be retried into a one-hart boot.
-    func testShapeCenterClaimRefusesUnqualifiedDualBeforeAnyStart() {
+    /// intent so it can never be retried into a one-hart boot. The same
+    /// request is accepted under the production policy (which qualifies two
+    /// harts) — the start path's own image gate is what guards the boot.
+    func testShapeCenterClaimRefusesDualUnderANarrowerPolicyAndAcceptsUnderProduction() {
         let center = ShellGuestRunShapeCenter()
         center.register(
             acceptedIntent(environmentID: "env-2", runID: "run-2", vcpus: .two, selection: .dualCore)
         )
         do {
-            _ = try center.claimForStart(environmentID: "env-2", runID: "run-2")
-            XCTFail("an unqualified explicit dual request must be refused")
+            _ = try center.claimForStart(
+                environmentID: "env-2", runID: "run-2",
+                releasePolicy: Self.lifecycleNarrowRelease
+            )
+            XCTFail("a narrower release ceiling must refuse the explicit dual request")
         } catch let error as GuestReleaseShapeError {
             XCTAssertEqual(
                 error,
@@ -1513,19 +1583,14 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         XCTAssertEqual(center.pendingCount, 0, "the refused intent was kept for a later retry")
         XCTAssertEqual(center.armedCount, 0)
 
-        // The same request is accepted only when the policy really supports it
-        // (the internal synthetic policy is the explicit opt-in, never a
-        // production path).
-        let synthetic = GuestReleaseShapePolicy.internalSyntheticTesting(
-            maximumSupportedVCPUs: 2, provenance: "LinuxGuestShapeLifecycleTests handoff"
-        )
+        // Production qualifies two harts, so the same request claims and arms.
         center.register(
             acceptedIntent(environmentID: "env-2", runID: "run-3", vcpus: .two, selection: .dualCore)
         )
-        let claimed = try? center.claimForStart(
-            environmentID: "env-2", runID: "run-3", releasePolicy: synthetic
-        )
+        let claimed = try? center.claimForStart(environmentID: "env-2", runID: "run-3")
         XCTAssertEqual(claimed?.request.vcpus, .two)
+        XCTAssertEqual(claimed?.request.origin, .userSpecified)
+        XCTAssertEqual(center.armedIntent(environmentID: "env-2")?.request.vcpus, .two)
     }
 
     /// Expiry and clearing are bounded: a stale intent can never shape a later

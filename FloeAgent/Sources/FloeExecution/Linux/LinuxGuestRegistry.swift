@@ -222,8 +222,9 @@ public extension LinuxGuestRuntimeV2Integrating {
     /// integrator's CPU-aware override (the pool must validate the vCPU
     /// quota), so it throws an actionable error instead of skipping that
     /// validation and drifting the pool accounting. The loose integer goes
-    /// through the production release gate, never a clamp: a request for
-    /// two/six cores in a single-core release fails before any stop runs.
+    /// through the production release gate, never a clamp: a count outside
+    /// the qualified ladder fails before any stop runs, and a second hart
+    /// still requires the environment's verified image to prove SMP.
     func planReshape(
         environmentID: String,
         ramMB: Int,
@@ -236,7 +237,7 @@ public extension LinuxGuestRuntimeV2Integrating {
             requested = try policy.resolve(requestedVCPUs: vcpus)
         } catch GuestReleaseShapeError.invalidVCPUCount {
             throw LinuxGuestError.invalidConfiguration(
-                "invalid guest core count \(vcpus); this release supports exactly one"
+                "invalid guest core count \(vcpus); this release supports 1 or 2"
             )
         } catch {
             throw LinuxGuestError.releaseShapeUnsupported(
@@ -910,21 +911,22 @@ public actor TinyEMULinuxGuestRegistry {
         // Admission. Runtime v2 (when configured) admits through the pool on
         // all three axes (vCPU/RAM/VM): at most four VMs run and further
         // starts queue — cancellable, with a bounded wait — instead of
-        // failing immediately. The B4 release gate is applied while the
-        // loose descriptor values become a typed request: an explicit
-        // request for an unqualified shape (two/six cores in this
-        // single-core release) fails with an actionable error BEFORE any
-        // disk work, regardless of the image manifest's `smp` flag, while
-        // an auto plan that explicitly authorized a single-core floor is
-        // admitted at one hart with an honest recorded downgrade. The
-        // legacy path keeps the bounded refusal. Either way the budget is
-        // bound here, before the image is verified and before any disk
-        // work, so a refusal never touches the environment's persistent
+        // failing immediately. The release gate is applied while the loose
+        // descriptor values become a typed request: an explicit request for a
+        // count outside the qualified ladder fails with an actionable error
+        // BEFORE any disk work, while an auto plan that explicitly authorized
+        // a single-core floor is admitted at one hart with an honest recorded
+        // downgrade. The legacy path keeps the bounded refusal. Either way the
+        // budget is bound here, before the image is verified and before any
+        // disk work, so a refusal never touches the environment's persistent
         // disk.
         //
-        // SMP engine capability and image-manifest claims are never the
-        // release authority: only the pool's frozen GuestReleaseShapePolicy
-        // is, and this release ships one hart (cloud run 35851127603).
+        // SMP engine capability is never the release authority: only the
+        // pool's GuestReleaseShapePolicy is. A second hart is granted only
+        // when the VERIFIED image manifest also proves SMP (its kernel and
+        // firmware are the S0–S4-verified CONFIG_SMP pair); an image without
+        // that proof is refused (strict) or downgraded (authorized) by the
+        // pool's image gate, never silently booted as dual.
         var admission: RuntimeV2Admission?
         var grantedVCPUs: Int?
         do {
@@ -1030,11 +1032,12 @@ public actor TinyEMULinuxGuestRegistry {
     ///    `.workerDefault`); no downgrade is implied or recorded because no
     ///    larger shape was ever requested.
     ///  * `vcpus != nil` is an EXPLICIT persisted choice (environment policy,
-    ///    manifest or user) and is admitted strictly: an unqualified count
-    ///    (two in this release) throws `releaseShapeUnsupported`, and a
-    ///    malformed count (0, six, …) throws an invalid-configuration error —
-    ///    never clamped onto another shape, regardless of the image
-    ///    manifest's `smp` claim.
+    ///    manifest or user) and is admitted strictly: a count outside the
+    ///    release ladder throws `releaseShapeUnsupported`, and a malformed
+    ///    count (0, six, …) throws an invalid-configuration error — never
+    ///    clamped onto another shape. Whether a second hart is really granted
+    ///    still requires the verified image's SMP proof at the pool's image
+    ///    gate.
     /// A genuine automatic recommendation (GuestResourceAdvisory) that
     /// planned two harts reaches `acquireShape` as a TYPED
     /// `GuestResourceRequest(origin: .recommendation)` whose caller chooses
@@ -2484,7 +2487,7 @@ public actor TinyEMULinuxGuestRegistry {
             requestedVCPUs = try releasePolicy.resolve(requestedVCPUs: vcpus)
         } catch GuestReleaseShapeError.invalidVCPUCount {
             throw LinuxGuestError.invalidConfiguration(
-                "invalid guest core count \(vcpus); this release supports exactly one"
+                "invalid guest core count \(vcpus); this release supports 1 or 2"
             )
         } catch GuestReleaseShapeError.unsupportedReleaseVCPUCount {
             throw LinuxGuestError.releaseShapeUnsupported(

@@ -541,13 +541,16 @@ final class IDELanguageRunController: ObservableObject {
     ///    for the app's distributed default image; a pinned environment whose
     ///    base image differs is still gated by the registry's own verified
     ///    image check at start time (which fails closed);
-    ///  * the dispatch path is `.shapeAware` because this build now carries an
+    ///  * the dispatch path is `.shapeAware` because this build carries an
     ///    accepted request into the guest start (the accepted intent reaches
     ///    the Linux environment provider's descriptor and the registry's typed
     ///    admission).
-    /// The frozen `GuestReleaseShapePolicy.production` still decides what is
-    /// deliverable: it answers one hart, so an explicit dual selection is
-    /// refused here and no intent is ever registered for it.
+    /// `GuestReleaseShapePolicy.production` qualifies two harts, but the
+    /// second hart is granted ONLY when the verified image manifest proves
+    /// SMP (the reworked CONFIG_SMP kernel/firmware pair); without that proof
+    /// an explicit dual selection is refused and never becomes one hart. Dual
+    /// is correct-but-slower on the current equal-work benchmark, which the
+    /// sheet states.
     func currentGuestShapePlan() async -> GuestRunEntryShapePlan? {
         guard case .local = selection.target,
               let path = state?.activePath,

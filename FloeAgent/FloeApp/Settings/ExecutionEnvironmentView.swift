@@ -335,12 +335,14 @@ struct ExecutionEnvironmentView: View {
         let maximum = GuestReleaseShapePolicy.production.maximumSupportedVCPUs
         if maximum <= 1 {
             return ExecutionEnvironmentText.t(
-                "本版本支持 \(maximum) 核客户机；双核仍在资格验证中。明确选择 2 核会提示错误，不会静默降级为单核。",
-                "This release supports \(maximum)-core guests; dual-core is still being qualified. An explicit 2-core request shows an error and never silently falls back to one core."
+                "本版本最多交付 \(maximum) 核客户机；明确选择 2 核会提示错误，不会静默降级为单核。",
+                "This release delivers at most \(maximum) guest core(s); an explicit 2-core request shows an error and never silently falls back to one core."
             )
         }
-        return ExecutionEnvironmentText.t("本版本客户机上限 \(maximum) 核。",
-                                          "This release caps guests at \(maximum) cores.")
+        return ExecutionEnvironmentText.t(
+            "本版本支持最多 \(maximum) 核客户机，但仅当已安装镜像的清单证明 SMP 时才会授予 2 核；双核已通过 S0–S4 正确性验证，等量工作基准在 2 核上更慢（约 0.88×），不会声称加速。显式选择 2 核在镜像无 SMP 证据时会报错，不会静默降级为单核。",
+            "This release supports up to \(maximum)-core guests, but 2 cores are granted only when the installed image manifest proves SMP. Dual-core passed the S0–S4 correctness contract; the equal-work benchmark is slower on two cores (about 0.88×) and no speedup is claimed. An explicit 2-core request on an image without SMP evidence shows an error and never silently falls back to one core."
+        )
     }
 
     private func networkLabel(_ status: LinuxGuestNetworkStatus) -> String {

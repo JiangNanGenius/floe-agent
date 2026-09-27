@@ -123,9 +123,9 @@ public struct StartLinuxGuestLifecycleTool: AgentTool {
 
     public static let name = "environment.startLinux"
     public static let toolDescription =
-        "Start this environment's on-device Linux guest (TinyEMU) with an explicit shape. Omit arguments for the default single-core, 256 MiB cold start; set vcpus and memoryMB to choose a shape. An already-running guest is reused untouched and never reset to single core. A shape that contradicts the running guest is refused (stop or hard-restart it first). This release qualifies one core: vcpus=2 returns an explicit unsupported capability with the reason, not a dual-core guest. Reports requested vs actual vCPU/memory and whether the guest was reused."
+        "Start this environment's on-device Linux guest (TinyEMU) with an explicit shape. Omit arguments for the default single-core, 256 MiB cold start; set vcpus and memoryMB to choose a shape. An already-running guest is reused untouched and never reset to single core. A shape that contradicts the running guest is refused (stop or hard-restart it first). vcpus=2 is honored only when the installed verified image proves SMP (its kernel/firmware are the dual-hart pair); otherwise the tool returns the image's explicit refusal and never boots one core silently. Dual-core passes the S0–S4 correctness contract but the equal-work benchmark is currently slower on two cores. Reports requested vs actual vCPU/memory and whether the guest was reused."
     public static let parametersJSON = #"""
-    {"type":"object","properties":{"vcpus":{"type":"integer","enum":[1,2],"description":"Requested guest cores. This release qualifies 1; 2 returns an explicit unsupported capability."},"memoryMB":{"type":"integer","enum":[256,512,768,1024,1536,2048],"description":"Requested guest RAM in MiB (default 256)."}},"additionalProperties":false}
+    {"type":"object","properties":{"vcpus":{"type":"integer","enum":[1,2],"description":"Requested guest cores. 2 requires a verified SMP-capable image; otherwise the call is refused with the image reason."},"memoryMB":{"type":"integer","enum":[256,512,768,1024,1536,2048],"description":"Requested guest RAM in MiB (default 256)."}},"additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesLocalCode]
     public static let isSideEffecting = true
@@ -281,9 +281,9 @@ public struct HardRestartLinuxGuestLifecycleTool: AgentTool {
 
     public static let name = "environment.hardRestartLinux"
     public static let toolDescription =
-        "Hard-restart this environment's Linux guest: stop the ACTUAL TinyEMU instance/threads, close its handles and verify it left and its lease was released, then reacquire a safe lease and boot a fresh instance at the requested shape (default single core). The environment is never deleted, and a command reboot inside the guest cannot do this. Open interactive terminals block it; managed services are terminated (count reported). A failed stop quarantines and no new guest boots. vcpus=2 returns an explicit unsupported capability until a later engine qualifies dual core."
+        "Hard-restart this environment's Linux guest: stop the ACTUAL TinyEMU instance/threads, close its handles and verify it left and its lease was released, then reacquire a safe lease and boot a fresh instance at the requested shape (default single core). The environment is never deleted, and a command reboot inside the guest cannot do this. Open interactive terminals block it; managed services are terminated (count reported). A failed stop quarantines and no new guest boots. vcpus=2 is honored only for a verified SMP-capable image; otherwise the tool returns the image's explicit refusal and never boots one core silently."
     public static let parametersJSON = #"""
-    {"type":"object","properties":{"vcpus":{"type":"integer","enum":[1,2],"description":"Requested cores for the new instance. This release qualifies 1; 2 returns an explicit unsupported capability."},"memoryMB":{"type":"integer","enum":[256,512,768,1024,1536,2048],"description":"Requested guest RAM in MiB (default 256)."}},"additionalProperties":false}
+    {"type":"object","properties":{"vcpus":{"type":"integer","enum":[1,2],"description":"Requested cores for the new instance. 2 requires a verified SMP-capable image; otherwise the call is refused with the image reason."},"memoryMB":{"type":"integer","enum":[256,512,768,1024,1536,2048],"description":"Requested guest RAM in MiB (default 256)."}},"additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesLocalCode]
     public static let isSideEffecting = true

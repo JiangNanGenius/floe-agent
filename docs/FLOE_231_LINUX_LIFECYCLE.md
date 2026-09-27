@@ -3,10 +3,14 @@
 Status: implemented in `FloeExecution` (+ `FloeTools` routing); focused module
 tests. The hard-restart stop→start window race found in integration review is
 repaired on the shared registry/service path (see
-"Hard-restart stop→start window repair"); soft restart and dual-core remain
-NOT implemented (their sections below name the real prerequisites). Physical
-device acceptance and dual-core qualification remain separate gates. This
-document records only sanitized engineering findings.
+"Hard-restart stop→start window repair"); soft restart remains NOT implemented
+(its section below names the real prerequisite). Dual-core is now exposed for
+on-device testing on an image whose verified manifest proves SMP: S0–S4
+correctness passed in cloud, the equal-work S5 benchmark is still slower on
+two harts (so no speedup is claimed), and the production release cap was
+removed by explicit user policy on 2026-09-27. Physical-device acceptance
+remains a separate gate. This document records only sanitized engineering
+findings.
 
 ## What exists now
 
@@ -147,30 +151,47 @@ requested RAM.
   transaction release. Every failure, cancellation or refused start releases
   the transaction, so the environment is never left locked.
 
-## Dual-core: what is NOT claimed
+## Dual-core: exposed for on-device testing (correct, currently slower)
 
-This release still ships **one hart**. `GuestReleaseShapePolicy.production`
-remains the authority at every boundary (pool, registry, reshape planning),
-independent of the image manifest's `smp` flag. `vcpus=2` therefore returns an
-explicit unsupported capability naming the real reason (SMP boot stalls at
-fork/exec; cloud run 35851127603), and no code path boots a different shape and
-labels it as the requested one.
+`GuestReleaseShapePolicy.production` now qualifies up to **two harts** (user
+policy, 2026-09-27; the old one-hart cap existed only because the equal-work S5
+benchmark was slower, and that performance-only cap is not a correctness
+gate). Nothing else became permissive:
 
-Residual prerequisites for real dual-core, none of which a schema or parameter
-change can satisfy:
+* An untyped request still resolves to the default **one hart**; ordinary
+  shells are unchanged.
+* The second hart is granted ONLY when the verified image manifest proves SMP
+  (`RuntimeV2ImageStatus.smpCapability`), which requires the image's own kernel
+  and firmware to be the reworked CONFIG_SMP pair. The image declares that with
+  `smp_capable: true`; `build-guest-image.sh --smp-capable` refuses to write it
+  without a real `SMP-BUILD.txt` multi-hart evidence file, so a bare
+  `vcpus=2` change on the 2018 UP pair cannot boot a fake dual guest.
+* Memory/quota/lease/stop guards are unchanged: the pool still admits on
+  vCPU+RAM+VM, the heavy-runtime arbiter still serializes with local inference,
+  and explicit 2-core requests are never silently reduced to one hart.
 
-1. A qualified guest kernel/firmware whose second hart actually executes and
-   whose first `fork/exec` does not stall.
-2. A passing real cloud qualification for that kernel, then a deliberate change
-   of `GuestReleaseShapePolicy.production` (the frozen safety gate) with the new
-   evidence recorded.
-3. Verified image SMP proof flowing through `RuntimeV2ImageStatus.smpCapability`
-   for the shipped image manifest.
-4. Measured dual-core benefit on device; a two-hart boot that is slower than one
-   hart is not qualification.
+Evidence status:
 
-An old/non-SMP kernel cannot be made SMP by changing `vcpus`; the second hart
-fails at the first userland fork.
+* Cloud runs 36004192418 / 36009075837 pass S0–S4 with the real SMP pair: boot,
+  `/proc/cpuinfo` = 2 processors, `fork/exec`, parallel 9P, per-hart retired
+  instructions.
+* S5 equal-work is still **slower** on two harts (medians 1.69 s vs 1.93 s,
+  ratio 0.876× < 1.10×). The UI and tool descriptions state that truthfully;
+  no speedup is claimed and device thermal/performance acceptance stays with
+  the user.
+* The engine's `riscv_cpu.c` reservation/store ordering was NOT changed for
+  this exposure: the already-S0–S4-verified global-lock implementation is the
+  one shipped, and the patch series still reproduces the vendored tree
+  (`regen_smp_patch.sh --check`). A faster lock design remains future work and
+  must not land before a green S0–S4 rerun.
+
+Residual prerequisites for calling dual-core a *release* capability:
+
+1. Publish and install an SMP-capable image (component-image-ci
+   `smp_image=true`, `smp_capable` declared) and boot it on device.
+2. Re-run the cloud S0–S5 contract on the immutable candidate before any
+   claim that dual is faster or broadly qualified.
+3. User device acceptance (thermal, memory, actual workload behavior).
 
 ## Soft restart: NOT implemented
 
@@ -208,22 +229,26 @@ prepare-then-retry route `exec.shell` already uses.
 ## Focused verification
 
 `FloeExecutionTests` covers: default single-core cold start, explicit
-single-core carried to the runtime descriptor, explicit dual refusal with no
-boot, running-guest reuse (untouched generation), vCPU/RAM mismatch refusal,
-restart shape preservation (unspecified dimensions kept), out-of-ladder
+single-core carried to the runtime descriptor, explicit dual carried to the
+runtime under production / refused under a narrower release ceiling with no
+boot, dual starts and reshapes recorded with the ACTUAL granted hart count,
+running-guest reuse (untouched generation), vCPU/RAM mismatch refusal, restart
+shape preservation (unspecified dimensions kept), out-of-ladder
 `vcpus`/`memoryMB` rejected without rounding, terminal-blocked stop,
 service-stop counting, soft-restart unsupported, hard-restart generation
-rotation, dual hard restart refused before disruption, cancellation (start and
-hard restart), image prepare-then-retry, status truthfulness, ungranted-shape
-refusal for cold start and restart (scripted preemption), real JSON → handler
-dispatch for all five tools, and cross-concurrency on the real registry: a
-direct start during the parked stop, a direct start/execute/terminal/shape
-change in the parked stop→start window (all refused, one replacement engine,
-requested shape verified), a failed replacement start releasing the
-transaction, an unconfirmed stop keeping its quarantine while releasing the
-transaction, and a release-gate (dual-core) refusal releasing the transaction
-without disrupting the running guest. `FloeToolsTests` covers the guest routing
-of the five names.
+rotation, dual hard restart applied under production and refused before
+disruption under a narrower ceiling, cancellation (start and hard restart),
+image prepare-then-retry, status truthfulness, ungranted-shape refusal for cold
+start and restart (scripted preemption), real JSON → handler dispatch for all
+five tools, and cross-concurrency on the real registry: a direct start during
+the parked stop, a direct start/execute/terminal/shape change in the parked
+stop→start window (all refused, one replacement engine, requested shape
+verified), a failed replacement start releasing the transaction, an unconfirmed
+stop keeping its quarantine while releasing the transaction, and a
+release-ceiling (dual-core) refusal releasing the transaction without
+disrupting the running guest. The pool tests cover the production dual path
+(admitted with the verified image SMP proof, refused with the typed image error
+without it). `FloeToolsTests` covers the guest routing of the five names.
 
 Observed results (Xcode-beta 27.0, macOS host; full logs in
 `Local/Private/active/build231-race/`):

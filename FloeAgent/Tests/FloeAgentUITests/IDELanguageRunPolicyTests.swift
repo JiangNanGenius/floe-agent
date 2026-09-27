@@ -406,15 +406,15 @@ struct IDELanguageRunPolicyTests {
         ) == .blocked(.snapshotSaveFailed))
     }
 
-    @Test func explicitDualEntryPlanIsRefusedUnderTheProductionReleaseGate() {
+    @Test func explicitDualEntryPlanIsRefusedWithoutImageSMPProof() {
         // Exactly the plan the run sheet builds for an explicit 2-core choice
-        // with the shipped production release policy and no connected shape
-        // dispatch: it must be refused, never resolved to one hart.
+        // when the installed image does not prove SMP and the dispatch path is
+        // not shape-aware: it must be refused, never resolved to one hart.
         let signals = IDELanguageRunPolicy.guestShapeSignals(
             relativePath: "scripts/train.py", interpreter: .python3
         )
         let plan = GuestRunEntryShapePlanner.plan(selection: .dualCore, signals: signals)
-        #expect(plan.refusal == .releaseVCPUUnsupported(requested: 2, maximum: 1))
+        #expect(plan.refusal == .imageDoesNotProveSMP(requested: 2))
         #expect(plan.effectiveRequest == nil)
         #expect(!plan.isRunnable)
         #expect(plan.option(for: .dualCore)?.isAvailable == false)
@@ -422,8 +422,8 @@ struct IDELanguageRunPolicyTests {
 
     @Test func automaticEntryPlanIsTruthfulWhenDualCannotBeDelivered() {
         // A declared native build command makes the advisory plan two harts;
-        // the shipped release can only deliver one, and the entry says so
-        // instead of presenting the run as dual-core.
+        // without image SMP proof the entry can only deliver one, and it says
+        // so instead of presenting the run as dual-core.
         let signals = WorkloadResourceSignals(
             workloadKey: "ide-run:build.sh", declaredCommands: ["make"]
         )
@@ -433,16 +433,16 @@ struct IDELanguageRunPolicyTests {
         #expect(plan.effectiveRequest?.origin == .recommendation)
         #expect(plan.automaticDowngradedFromRecommendation)
         #expect(plan.isRunnable)
-        #expect(plan.option(for: .dualCore)?.refusal == .releaseVCPUUnsupported(requested: 2, maximum: 1))
+        #expect(plan.option(for: .dualCore)?.refusal == .imageDoesNotProveSMP(requested: 2))
     }
 
     // MARK: Guest run shape handoff (entry → guest start)
 
-    @Test func productionReleaseGateStillAnswersOneHartWithVerifiedImageSMPAndShapeAwareDispatch() {
-        // Weaker evidence can never widen the release: even with the verified
-        // image proving SMP and this build carrying a typed shape request, the
-        // frozen production policy answers one hart, so an automatic plan is
-        // delivered at one hart and an explicit dual selection stays refused.
+    @Test func productionDeliversDualWithVerifiedImageSMPAndShapeAwareDispatch() {
+        // The normal production path: the released policy, the verified image
+        // SMP proof and the shape-aware dispatch all open, so an automatic
+        // plan for parallel work is delivered at two harts and an explicit
+        // dual selection is runnable and registers a strict handoff intent.
         let signals = WorkloadResourceSignals(
             workloadKey: "ide-run:build.sh", declaredCommands: ["make"]
         )
@@ -450,40 +450,38 @@ struct IDELanguageRunPolicyTests {
             selection: .automatic, signals: signals,
             imageProvesSMP: true, dispatch: .shapeAware
         )
-        #expect(automatic.effectiveRequest?.vcpus == .one)
-        #expect(automatic.automaticDowngradedFromRecommendation)
-        #expect(automatic.option(for: .dualCore)?.refusal ==
-                .releaseVCPUUnsupported(requested: 2, maximum: 1))
+        #expect(automatic.effectiveRequest?.vcpus == .two)
+        #expect(!automatic.automaticDowngradedFromRecommendation)
+        #expect(automatic.option(for: .dualCore)?.isAvailable == true)
 
         let dual = GuestRunEntryShapePlanner.plan(
             selection: .dualCore, signals: signals,
             imageProvesSMP: true, dispatch: .shapeAware
         )
-        #expect(!dual.isRunnable)
-        #expect(dual.effectiveRequest == nil)
-        // A refused selection registers no handoff intent at all, so the start
-        // path can never boot one hart and label it as the user's choice.
-        #expect(ShellGuestRunShapeIntent.from(
+        #expect(dual.isRunnable)
+        #expect(dual.effectiveRequest?.vcpus == .two)
+        #expect(dual.downgrade == .strict)
+        // The accepted explicit choice carries a strict handoff intent; the
+        // second hart is still gated by the image proof at the start path.
+        let intent = ShellGuestRunShapeIntent.from(
             plan: dual, environmentID: "env", runID: "run"
-        ) == nil)
+        )
+        #expect(intent?.request.vcpus == .two)
+        #expect(intent?.downgrade == .strict)
     }
 
     @Test func fullyQualifiedAutomaticPlanCarriesItsTypedRequestIntoTheStartIntent() {
-        // The propagation channel is real: with the release gate, the verified
-        // image SMP proof and the shape-aware dispatch path all open (the
-        // synthetic policy is an explicit test-only opt-in), the accepted
-        // automatic plan becomes a typed two-hart `.recommendation` intent with
-        // the entry's authorized single-hart floor — exactly what the guest
-        // start claims under that same policy.
+        // The propagation channel is real under the production policy: with the
+        // verified image SMP proof and the shape-aware dispatch path open, the
+        // accepted automatic plan becomes a typed two-hart `.recommendation`
+        // intent with the entry's authorized single-hart floor — exactly what
+        // the guest start claims under that same policy.
         let signals = WorkloadResourceSignals(
             workloadKey: "ide-run:build.sh", declaredCommands: ["make"]
         )
         let plan = GuestRunEntryShapePlanner.plan(
             selection: .automatic, signals: signals,
-            releasePolicy: .internalSyntheticTesting(
-                maximumSupportedVCPUs: 2,
-                provenance: "IDELanguageRunPolicyTests shape handoff"
-            ),
+            releasePolicy: .production,
             imageProvesSMP: true,
             dispatch: .shapeAware
         )
@@ -504,9 +502,10 @@ struct IDELanguageRunPolicyTests {
         // this planner call (same recommendation, same verified-image SMP
         // evidence, same `.shapeAware` dispatch) the controller uses at
         // dispatch time. Every selectable row therefore resolves to the plan
-        // the run actually consumes: automatic and single-core are runnable at
-        // one hart under this release, and an explicit dual selection is
-        // refused with no effective request (nothing can start).
+        // the run actually consumes: automatic (one hart for these signals)
+        // and single-core run at one hart, and an explicit dual selection is
+        // runnable because the verified image proves SMP — with its strict
+        // two-hart request carried into the handoff intent.
         let signals = WorkloadResourceSignals(
             workloadKey: "ide-run:train.py", declaredCommands: ["python3"]
         )
@@ -529,11 +528,12 @@ struct IDELanguageRunPolicyTests {
                 #expect(plan.effectiveRequest?.origin == .userSpecified)
                 #expect(plan.downgrade == .strict)
             case .dualCore:
-                #expect(!plan.isRunnable)
-                #expect(plan.effectiveRequest == nil)
+                #expect(plan.isRunnable)
+                #expect(plan.effectiveRequest?.vcpus == .two)
+                #expect(plan.downgrade == .strict)
                 #expect(ShellGuestRunShapeIntent.from(
                     plan: plan, environmentID: "env", runID: "run"
-                ) == nil)
+                )?.request.vcpus == .two)
             }
         }
     }

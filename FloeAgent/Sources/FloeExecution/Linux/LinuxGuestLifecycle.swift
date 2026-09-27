@@ -10,9 +10,12 @@
 //
 //  * A parameterless start asks for the worker default (one vCPU, 256 MiB).
 //    Explicit vcpus/memory are resolved through the typed ladder UNDER THE
-//    RELEASE GATE; an unsupported count (dual harts in this single-core
-//    release) throws `capabilityUnsupported` with the real reason — it is
-//    never clamped onto one hart and reported as what the caller chose.
+//    RELEASE GATE; a count outside the qualified ladder throws
+//    `capabilityUnsupported` with the real reason — it is never clamped onto
+//    one hart and reported as what the caller chose. A second hart is still
+//    granted only when the verified image proves SMP (the registry/pool image
+//    gate), so an explicit 2-core request on an UP image is refused, not
+//    silently single.
 //  * An already-running guest is REUSED. An explicit shape that contradicts
 //    the running guest's granted core count is refused (or asks for a restart);
 //    the running VM is never silently reset.
@@ -76,8 +79,8 @@ public struct LinuxGuestLifecycleReceipt: Sendable, Equatable, Codable {
     public var launchGeneration: Int?
     /// Managed services stopped as part of this operation.
     public var servicesStopped: Int
-    /// Image/kernel capability summary (single-core qualified; dual
-    /// unqualified with the reason).
+    /// Image/kernel capability summary (dual-core qualified for testing on a
+    /// verified SMP image; no speedup claimed).
     public var capability: String
     public var detail: String
 
@@ -213,7 +216,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
 
     /// Capability summary carried by every receipt of this release.
     public static let capabilitySummary =
-        "single-core qualified (this release grants at most 1 vCPU); dual-core is unqualified — SMP boot stalls at fork/exec (cloud run 35851127603) — and only a later qualified engine can deliver it"
+        "dual-core qualified for testing (cloud S0–S4 correctness passed; the equal-work S5 benchmark is slower on two cores); granted only for a verified image whose manifest proves SMP; memory, lease and stop guards unchanged"
 
     /// The engine's worker default for a start that requests no RAM
     /// (`LinuxGuestLimits.defaultRAMMB`, 256 MiB). Kept in parity so a
