@@ -259,6 +259,18 @@ enum OfficeRenderFailure {
         return NSError(domain: "org.floeagent.office.render", code: 1,
                        userInfo: [NSLocalizedDescriptionKey: description])
     }
+
+    /// Build 233 R3: the editor's web content process died. The engine session
+    /// cannot recover in place; this is a bounded, recoverable failure and the
+    /// working copy stays on disk for retry/recovery. Never presented as a
+    /// successful or still-ready editor.
+    static func webContentProcessTerminated() -> NSError {
+        let description = OfficeInkText.t(
+            "文档渲染进程已停止；编辑副本已保留，可重试或稍后从“保留的文档”恢复。",
+            "The document renderer stopped. Your editing copy was retained; retry now or recover it later under Retained Documents.")
+        return NSError(domain: "org.floeagent.office.render", code: 2,
+                       userInfo: [NSLocalizedDescriptionKey: description])
+    }
 }
 // FLOE_VISIBLE_RENDER_GATE_END
 
@@ -305,6 +317,23 @@ final class OfficeFileSession: ObservableObject {
     private var expectedClose = false
     private var runtimeFailed = false
     private var runtimeFailureObservation: AnyCancellable?
+    /// Build 233 R2: the owning surface installs this AppEnvironment-backed
+    /// idle-model shed before the first intent. The implementation releases
+    /// only a physically idle resident local model — never an active
+    /// inference, a benchmark or a retained tool continuation — and answers
+    /// nil without waiting when the mapping is claimed. A session without an
+    /// installed shed (tests, qualification hosts) simply does nothing.
+    var shedIdleLocalModelForOffice: (@MainActor (String) async -> String?)?
+    /// Build 233 R1: owner-installed provider for the device font-library
+    /// facts recorded beside the engine's own discovery numbers. Counts only;
+    /// an import that happens after the engine cached its font list is the
+    /// open refresh question this fact makes inspectable.
+    var officeDeviceFontFacts: (@MainActor () async -> [String: String])?
+    /// Build 233 R2: system memory-warning observation for this session. It
+    /// only fires while an Office controller is mounted.
+    private var memoryWarningObservation: AnyCancellable?
+    /// Memory warnings observed for this session (diagnostics only).
+    private var memoryWarningShedCount = 0
     private var explicitSaveBridge: OfficeExplicitSaveBridge?
     private var exportSnapshot: DocumentExportSnapshot?
     private var exportWorkspace: SecurityScopedDocumentWorkspace?
@@ -356,11 +385,47 @@ final class OfficeFileSession: ObservableObject {
     private let stageSessionID = UUID().uuidString
     /// Records one observed stage with this session's correlation identity and
     /// the current open generation. Content-free by construction.
-    private func recordStage(_ stage: String, _ detail: [String: String] = [:]) {
+    ///
+    /// `withMemory` attaches the process headroom sample (`OfficeMemorySample`)
+    /// at the stages a memory-related termination would need to be read from:
+    /// controller mount, engine open/render, edit entry and memory warnings.
+    private func recordStage(_ stage: String,
+                             _ detail: [String: String] = [:],
+                             withMemory: Bool = false) {
+        var facts = detail
+        if withMemory {
+            for (key, value) in OfficeMemorySample.facts() where facts[key] == nil {
+                facts[key] = value
+            }
+        }
         OfficeStageRecorder.shared.record(session: stageSessionID,
                                           generation: openGeneration.current,
                                           stage: stage,
-                                          detail: detail)
+                                          detail: facts)
+    }
+    /// Build 233 R1: maps one content-free native breadcrumb onto this
+    /// session's durable trace. The host's own session/generation ride along as
+    /// bounded facts so a native sequence can be ordered independently; the
+    /// caller already rejected callbacks from a replaced controller.
+    private func recordNativeStage(_ event: [String: Any]) {
+        guard let stage = event["stage"] as? String, !stage.isEmpty else { return }
+        var facts: [String: String] = [:]
+        if let raw = event["facts"] as? [String: Any] {
+            for (key, value) in raw {
+                switch value {
+                case let number as NSNumber: facts[key] = number.stringValue
+                case let text as String: facts[key] = text
+                default: continue
+                }
+            }
+        }
+        if let nativeSession = event["session"] as? String, !nativeSession.isEmpty {
+            facts["hostSession"] = String(nativeSession.prefix(8))
+        }
+        if let nativeGeneration = event["generation"] as? NSNumber {
+            facts["hostGeneration"] = nativeGeneration.stringValue
+        }
+        recordStage("host.\(stage)", facts)
     }
     /// Owning surfaces (Notes, IDE) record their bracket stages under the same
     /// correlation identity, so one trace carries the whole chain.
@@ -394,6 +459,18 @@ final class OfficeFileSession: ObservableObject {
                 }
             }
         #endif
+        // Build 233 R2: a system memory warning while an Office surface is
+        // mounted asks for an idle-model shed. The runtime call never waits on
+        // or interrupts active inference, and it never cancels a task, a VM or
+        // a retained tool continuation; a refused shed is recorded, not forced.
+        memoryWarningObservation = NotificationCenter.default
+            .publisher(for: UIApplication.didReceiveMemoryWarningNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.handleOfficeMemoryWarning()
+                }
+            }
     }
 
     static var available: Bool {
@@ -774,7 +851,7 @@ final class OfficeFileSession: ObservableObject {
         phase = .loading
         error = nil
         editUnavailableReason = nil
-        recordStage("edit.attempt")
+        recordStage("edit.attempt", withMemory: true)
         do {
             try await closeController()
             try await activate(readOnly: false)
@@ -840,6 +917,63 @@ final class OfficeFileSession: ObservableObject {
         permissionWaiter = nil
         waiter.resume(returning: value)
     }
+
+    /// Build 233 R2: handles one system memory warning while this session's
+    /// Office surface is mounted. The shed is idle-only and non-blocking: the
+    /// runtime refuses an active inference/benchmark/retained task without
+    /// waiting for it, so the warning path can never stall the UI or steal a
+    /// mapping an in-flight operation owns. Nothing here cancels a task, a
+    /// guest or a tool continuation.
+    private func handleOfficeMemoryWarning() async {
+        guard controller != nil, phase != .failed, !runtimeFailed else { return }
+        memoryWarningShedCount += 1
+        recordStage("memory.warning", ["count": String(memoryWarningShedCount)], withMemory: true)
+        guard hasShedHandler else { return }
+        let released = await shedIdleModel(reason: "office.memoryWarning")
+        recordStage(released == nil ? "memory.warningShedSkipped" : "memory.warningShed",
+                    ["released": released == nil ? "false" : "true",
+                     "count": String(memoryWarningShedCount)],
+                    withMemory: true)
+    }
+
+    /// The owner-injected shed when one was installed, otherwise the
+    /// process-wide coordination seam `AppEnvironment` installs at launch (the
+    /// preview and IDE surfaces never resolve the environment themselves).
+    private var hasShedHandler: Bool {
+        shedIdleLocalModelForOffice != nil || OfficeMemoryCoordination.shared.isInstalled
+    }
+
+    @discardableResult
+    private func shedIdleModel(reason: String) async -> String? {
+        if let shed = shedIdleLocalModelForOffice {
+            return await shed(reason)
+        }
+        return await OfficeMemoryCoordination.shared.shedIdleResidentEngine(reason: reason)
+    }
+
+    #if canImport(FloeOfficeNative)
+    /// Build 233: the pinned host's own font-discovery facts (staged/resolved
+    /// counts and catalog fingerprint), recorded into this session's durable
+    /// trace after the runtime settles. An older pinned framework does not
+    /// expose the class method and yields an empty snapshot.
+    static func hostFontDiscoveryFacts() -> [String: String] {
+        let selector = NSSelectorFromString("fontDiscoveryFacts")
+        guard FloeOfficeNativeRuntime.responds(to: selector) else { return [:] }
+        // Safe after the class-method probe: the pinned framework may predate
+        // this Build 233 API, and the probe keeps an old host from trapping on
+        // an unrecognized selector.
+        let raw = FloeOfficeNativeRuntime.fontDiscoveryFacts
+        var facts: [String: String] = [:]
+        for (key, value) in raw {
+            switch value {
+            case let number as NSNumber: facts[key] = number.stringValue
+            case let text as String: facts[key] = text
+            default: continue
+            }
+        }
+        return facts
+    }
+    #endif
 
     #if canImport(FloeOfficeNative)
     /// A host that never reports an open must not leave the surface on a
@@ -1739,14 +1873,36 @@ final class OfficeFileSession: ObservableObject {
         phase = .loading
         error = nil
         #if canImport(FloeOfficeNative)
-        recordStage("engine.runtime.prepare.started", ["readOnly": readOnly ? "true" : "false"])
+        recordStage("engine.runtime.prepare.started",
+                    ["readOnly": readOnly ? "true" : "false"],
+                    withMemory: true)
+        // Build 233 R2: before the engine runtime and the document import
+        // allocate, ask for an immediate unload of an *idle* resident local
+        // model. The shed is non-blocking and claim-checked: active inference,
+        // a benchmark or a retained tool continuation keeps its mapping and the
+        // Office open proceeds unchanged. Nothing is cancelled. The owner may
+        // have injected the handler; otherwise the AppEnvironment process-wide
+        // seam covers preview/IDE surfaces too.
+        if hasShedHandler {
+            let released = await shedIdleModel(
+                reason: readOnly ? "office.prepare.readOnly" : "office.prepare.editable")
+            recordStage(released == nil ? "engine.memory.shedSkipped" : "engine.memory.shed",
+                        ["released": released == nil ? "false" : "true"],
+                        withMemory: true)
+        }
         do {
             try await Self.prepareNativeRuntime()
         } catch {
             recordStage("engine.runtime.prepare.failed", ["domain": (error as NSError).domain])
             throw error
         }
-        recordStage("engine.runtime.ready")
+        var discovery = Self.hostFontDiscoveryFacts()
+        if let deviceFontFacts = officeDeviceFontFacts {
+            for (key, value) in await deviceFontFacts() where discovery[key] == nil {
+                discovery[key] = value
+            }
+        }
+        recordStage("engine.runtime.ready", discovery, withMemory: true)
         let native = try FloeOfficeNativeViewController(
             workingFileURL: session.workingURL,
             sessionDirectory: session.workingURL.deletingLastPathComponent(), readOnly: readOnly)
@@ -1761,7 +1917,8 @@ final class OfficeFileSession: ObservableObject {
         hostSupportsVisibleRender = Self.hostSupportsVisibleRender(native)
         recordStage("controller.mounted", ["generation": String(generation),
                                            "readOnly": readOnly ? "true" : "false",
-                                           "hostRenderContract": hostSupportsVisibleRender ? "true" : "false"])
+                                           "hostRenderContract": hostSupportsVisibleRender ? "true" : "false"],
+                    withMemory: true)
         // The pinned framework is qualified separately from this source. An
         // older host cannot report a painted surface, so its session keeps the
         // previous open-only contract and the release gate keeps the Office
@@ -1782,6 +1939,42 @@ final class OfficeFileSession: ObservableObject {
         recordStage("render.gate", ["requirement": requirement == .visibleRenderRequired
                                         ? "visibleRenderRequired" : "openOnly",
                                     "generation": String(generation)])
+        // Build 233 R3: the pinned host reports an editor web-content-process
+        // death through its own upstream navigation delegate (never a stolen
+        // delegate). The engine session cannot recover in place; the bounded
+        // recoverable failure keeps the working copy and remounts on retry.
+        if native.responds(to: NSSelectorFromString("setOnWebContentProcessTerminated:")) {
+            let terminated: @convention(block) () -> Void = { [weak self, weak native] in
+                Task { @MainActor in
+                    guard let self, let native, self.controller === native,
+                          self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
+                    self.runtimeFailed = true
+                    self.cancelOpenWatchdog()
+                    self.cancelRenderWatchdog()
+                    self.resolveEnginePermission(nil)
+                    self.recordStage("host.webContent.terminated",
+                                     ["generation": String(generation)],
+                                     withMemory: true)
+                    self.fail(OfficeRenderFailure.webContentProcessTerminated())
+                }
+            }
+            _ = native.perform(NSSelectorFromString("setOnWebContentProcessTerminated:"),
+                               with: terminated as AnyObject)
+        }
+        if native.responds(to: NSSelectorFromString("setOnStageEvent:")) {
+            // The native breadcrumbs carry the host's own session/generation;
+            // this session's trace keeps one App correlation identity and the
+            // controller/generation guard rejects late callbacks from a
+            // replaced or already-failed controller.
+            let onStage: @convention(block) (NSDictionary) -> Void = { [weak self, weak native] event in
+                Task { @MainActor in
+                    guard let self, let native, self.controller === native,
+                          self.openGeneration.isCurrent(generation), !self.runtimeFailed else { return }
+                    self.recordNativeStage(event as? [String: Any] ?? [:])
+                }
+            }
+            _ = native.perform(NSSelectorFromString("setOnStageEvent:"), with: onStage as AnyObject)
+        }
         if hostSupportsVisibleRender {
             // Installed through the runtime selectors: the framework is pinned
             // separately from this source, so the app must keep compiling
@@ -1817,7 +2010,7 @@ final class OfficeFileSession: ObservableObject {
                     facts["docType"] = (docType as String?) ?? "unknown"
                     facts["elapsed"] = String(format: "%.1f", elapsed)
                     facts["generation"] = String(generation)
-                    self.recordStage("engine.visibleRender", facts)
+                    self.recordStage("engine.visibleRender", facts, withMemory: true)
                 }
             }
             _ = native.perform(NSSelectorFromString("setOnVisibleRenderReady:"), with: ready as AnyObject)
@@ -1861,7 +2054,8 @@ final class OfficeFileSession: ObservableObject {
             self.recordStage("engine.open", ["success": success ? "true" : "false",
                                              "engineReadOnly": readOnly ? "true" : "false",
                                              "requestedReadOnly": native.isReadOnly ? "true" : "false",
-                                             "generation": String(generation)])
+                                             "generation": String(generation)],
+                             withMemory: true)
             // The host's own bounded render-probe facts at the open report:
             // engine type, tile/canvas counters, probe stage/attempts and the
             // edit-entry bookkeeping. This is what makes a PPT/Excel open that
@@ -2285,6 +2479,15 @@ struct OfficeDocumentEditorView: View {
             }
             .interactiveDismissDisabled()
             .task {
+                // Build 233 R2 seam: install the AppEnvironment-backed idle-model
+                // shed before the first intent. The implementation releases only
+                // a physically idle resident model; it never unloads active
+                // inference, a benchmark or a retained tool continuation, and a
+                // refused shed leaves the Office open unchanged.
+                session.shedIdleLocalModelForOffice = { reason in
+                    await environment.shedIdleLocalModelForOffice(reason: reason)
+                }
+                session.officeDeviceFontFacts = { await environment.officeDeviceFontFacts() }
                 session.useInkPreferences(
                     stableIdentity: stableInkIdentity,
                     workspaceIdentity: environment.workspaceCenter.currentWorkspace?.id.uuidString,

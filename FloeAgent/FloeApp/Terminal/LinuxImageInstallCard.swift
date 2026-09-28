@@ -14,13 +14,25 @@ import FloeTools
 @MainActor
 final class LinuxImageInstallModel: ObservableObject {
     let imageID: String
-    @Published private(set) var state: LinuxGuestInstallState = .storageUnavailable
+    @Published private(set) var state: LinuxGuestInstallState = .storageInitializing
     @Published private(set) var sizeBytes: Int64?
     @Published private(set) var probingSize = true
+    /// The image-level verification issue, kept so the repair action knows a
+    /// re-verify/repair-image sequence is required instead of starting a guest.
+    @Published private(set) var imageIssue: LinuxImageVerificationIssue?
+    /// Immediate local feedback after a cancel request, until the shared job
+    /// task actually unwinds and reports its terminal state.
+    @Published private(set) var cancelling = false
+    /// One-shot success signal for the owner's `onInstalled` continuation:
+    /// set only when THIS image's shared job transitioned from running to
+    /// finished with a real-file verified status, never for an unrelated job
+    /// revision. Consumed exactly once.
+    @Published private(set) var completedInstall = false
 
     private var didProbe = false
     private var environmentIDHint: String?
     private var refreshTask: Task<Void, Never>?
+    private var completionGate = LinuxGuestInstallCompletionGate()
 
     static let jobPrefix = "linux-image:"
     var jobID: String { Self.jobPrefix + imageID }
@@ -46,8 +58,14 @@ final class LinuxImageInstallModel: ObservableObject {
     /// Re-reads every fact and derives the single state. `environmentIDHint`
     /// is the environment the terminal is attached to, if known; the model
     /// otherwise finds the first Linux-backend environment itself.
+    ///
+    /// An internal refresh (a shared-jobs revision notification) passes no
+    /// hint and must NOT forget which environment this card was attached to:
+    /// only an explicit hint — a new attachment — updates the identity.
     func refresh(environmentIDHint: String? = nil) async {
-        self.environmentIDHint = environmentIDHint
+        if let environmentIDHint {
+            self.environmentIDHint = environmentIDHint
+        }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             await self?.reload()
@@ -55,11 +73,30 @@ final class LinuxImageInstallModel: ObservableObject {
         await refreshTask?.value
     }
 
+    func retryStorage() async {
+        await reload()
+    }
+
+    /// Consumes the one-shot completion signal. The owner calls this after
+    /// its own refresh; a stale/unrelated revision can never trigger it.
+    func consumeCompletedInstall() -> Bool {
+        guard completedInstall else { return false }
+        completedInstall = false
+        return true
+    }
+
     private func reload() async {
         let services = FloePlatformServices.shared
-        guard services.linuxGuestImageStorageAvailable() else {
-            state = .storageUnavailable
-            return
+        // Loading vs permanent unavailable: try the bounded recoverable init
+        // first so a transient assembly-time failure becomes usable.
+        if !services.linuxGuestImageStorageAvailable() {
+            state = .storageInitializing
+            let initialized = await services.ensureLinuxImageService()
+            guard initialized else {
+                state = .storageUnavailable
+                imageIssue = nil
+                return
+            }
         }
         let imageStatus = await services.linuxImageStatus(id: imageID)
         let updateDetail = await services.linuxComponentUpdateNeeded(id: imageID)
@@ -73,20 +110,34 @@ final class LinuxImageInstallModel: ObservableObject {
         }
         let guestStatus = await services.linuxGuestStatus(id: environmentID)
 
+        let runningNow = running
+        let failedNow = failed
+        // This image's own job success transition: running → finished with
+        // the image really verified. A revision for any other job never sets
+        // it, and a cancellation or failure never does.
+        let verifiedNow = imageStatus?.installed == true && imageStatus?.verificationIssue == nil
+        if completionGate.observe(running: runningNow, failed: failedNow, verified: verifiedNow) {
+            completedInstall = true
+        }
+
         var facts = LinuxGuestInstallFacts()
         facts.storageAvailable = true
         facts.imageInstalled = imageStatus?.installed ?? false
-        facts.imageVerificationFailure = imageStatus?.verificationFailure
+        facts.imageVerificationIssue = imageStatus?.verificationIssue
         facts.imageDistributable = imageStatus?.distributable ?? false
         facts.componentUpdateDetail = updateDetail
         facts.guestEnvironmentID = environmentID
         facts.guestRunning = guestStatus?.running ?? false
         facts.guestLastError = guestStatus?.lastError
         facts.guestDiskResizeFailure = guestStatus?.diskResizeFailure
-        facts.downloadRunning = running
+        facts.downloadRunning = runningNow
         facts.downloadFraction = fraction
-        facts.downloadCancelling = running && (message?.contains("取消") == true || message?.contains("ancell") == true)
+        facts.downloadCancelling = runningNow && (cancelling
+            || message?.contains("取消") == true || message?.contains("ancell") == true)
+        facts.downloadFailureMessage = failedNow ? message : nil
+        imageIssue = imageStatus?.verificationIssue
         state = LinuxGuestInstallStateDerivation.state(from: facts)
+        if !runningNow { cancelling = false }
     }
 
     // MARK: actions
@@ -94,12 +145,13 @@ final class LinuxImageInstallModel: ObservableObject {
     func startDownload() {
         // Runs the same shared, cancellable job as automatic first-use
         // preparation; concurrent callers share one download.
+        cancelling = false
         Task {
             do {
-                _ = try await FloePlatformServices.shared.prepareLinuxEnvironment(cancellation: CancellationToken())
+                try await FloePlatformServices.shared.repairLinuxImage(imageID: imageID)
             } catch {
-                // The shared job records the message; the card re-derives
-                // needsDownload/retry from it.
+                // The shared job records the failure message; the card's
+                // derived state shows it next to the verification reason.
             }
             await reload()
         }
@@ -107,6 +159,12 @@ final class LinuxImageInstallModel: ObservableObject {
     }
 
     func cancelDownload() {
+        // Immediate feedback, then the real cancellation path: the shared
+        // job's owner token and the in-flight install task are both
+        // signalled, so the download/extraction stops at its next checkpoint
+        // and a partial candidate is never promoted.
+        cancelling = true
+        FloePlatformServices.shared.cancelLinuxImagePreparation(imageID: imageID)
         jobs.cancel(id: jobID)
     }
 
@@ -135,6 +193,31 @@ final class LinuxImageInstallModel: ObservableObject {
         await FloePlatformServices.shared.stopLinuxGuest(id: environmentID)
         await reload()
     }
+
+    /// First recovery step: re-verify the installed image without a download.
+    /// A transient file I/O condition may clear; the card then shows the
+    /// normal installed state.
+    func reverifyImage() async {
+        _ = await FloePlatformServices.shared.reverifyLinuxImage(imageID: imageID)
+        await reload()
+    }
+
+    /// Repair that persists: rebuild from verified blobs when possible,
+    /// otherwise re-download the pinned image through the safe staged promote.
+    /// Runs under the same shared job as a normal download, so it stays
+    /// cancellable and coalesced.
+    func repairImage() {
+        cancelling = false
+        Task {
+            do {
+                try await FloePlatformServices.shared.repairLinuxImage(imageID: imageID)
+            } catch {
+                // The shared job and the following reload surface the honest
+                // message; do not fabricate success.
+            }
+            await reload()
+        }
+    }
 }
 
 /// Renders the authoritative state. Used by both Settings and Terminal; it
@@ -160,9 +243,16 @@ struct LinuxImageInstallCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial)
         .onChange(of: EnvironmentPackageJobs.shared.revision) { _, _ in
-            Task { await model.refresh() }
-            guard !model.running, !model.failed else { return }
-            Task { await onInstalled?() }
+            // Refresh first, then continue only when THIS image's own shared
+            // job completed with a verified status. An unrelated package job
+            // revision (or a stale pre-refresh observation) must not start a
+            // guest; cancellation and failure never do.
+            Task {
+                await model.refresh()
+                if model.consumeCompletedInstall() {
+                    await onInstalled?()
+                }
+            }
         }
     }
 
@@ -173,6 +263,16 @@ struct LinuxImageInstallCard: View {
             Text("environment.backend.image_store_unavailable")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Button {
+                Task { await model.retryStorage() }
+            } label: {
+                Label("environment.backend.retry_init", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .font(.caption)
+        case .storageInitializing:
+            ProgressView("environment.backend.storage_initializing")
+                .font(.caption)
         case .downloading(let fraction, let cancelling):
             if let fraction {
                 ProgressView(value: fraction) {
@@ -237,6 +337,27 @@ struct LinuxImageInstallCard: View {
                 }
                 .buttonStyle(.bordered)
             }
+        case .imageRepairRequired(let transient, let message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(FloeTheme.destructive)
+                .textSelection(.enabled)
+            if transient {
+                Button {
+                    Task { await model.reverifyImage() }
+                } label: {
+                    Label("environment.backend.reverify", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .font(.caption)
+            }
+            Button {
+                model.repairImage()
+            } label: {
+                Label("environment.backend.repair_image", systemImage: "wrench.and.screwdriver")
+            }
+            .buttonStyle(.bordered)
+            .font(.caption)
         case .repairRequired(let environmentID, let message):
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(.caption)

@@ -270,6 +270,242 @@ final class RuntimeV2StartupTests: XCTestCase {
         }
     }
 
+    // MARK: - Runtime v2 real-file health + recovery
+    //
+    // Registry row + manifest is registration truth, not bootable truth. A
+    // migrated image whose rebuildable expanded view was lost (the view is
+    // excluded from backup and re-materialized on demand) must report
+    // `rebuildableFromBlobs` — not "verified" and not "uninstalled" — and
+    // must recover through the verified blobs to the boot resolver with no
+    // download.
+
+    func testMigratedImageMissingExpandedReportsRebuildableAndRecoversToBootResolver() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "health-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        let expanded = try await store.images.ensureExpanded(imageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+
+        // The rebuildable view is disposed of by a device restore while the
+        // registry row, v2 manifest and blobs remain.
+        try FileManager.default.removeItem(at: expanded)
+
+        // Store-level health performs no recovery pass, so it must classify
+        // the missing view honestly from the registry row + manifest pair.
+        let health = await store.images.imageHealth(imageID: image.id)
+        XCTAssertEqual(health?.readiness, .rebuildableFromBlobs)
+        XCTAssertNotNil(health?.issue, "a missing expanded view must carry a typed reason")
+        // The registry gate alone would still say verified; health is exactly
+        // the layer that does not stop there.
+        let gateOnly = try await store.images.isImageVerified(imageID: image.id)
+        XCTAssertTrue(gateOnly, "the registry gate alone is not bootable truth")
+
+        try await integrator.reconstructExpandedImage(imageID: image.id, isCancelled: nil)
+        let recovered = await integrator.imageHealth(imageID: image.id)
+        XCTAssertEqual(recovered?.readiness, .verified)
+        XCTAssertNil(recovered?.issue)
+
+        // Boot resolver: the composite serves the expanded verified image.
+        let resolver = RuntimeV2CompositeImageResolver(
+            expandedImagesRoot: layout.expandedImagesDirectory,
+            legacy: FileLinuxGuestImageResolver(root: legacyRoot),
+            verifiedGate: { imageID in await integrator.isImageVerifiedWithoutMigration(imageID: imageID) }
+        )
+        let failure = await resolver.linuxGuestImageVerificationFailure(id: image.id)
+        XCTAssertNil(failure, "the reconstructed expanded view must satisfy the boot resolver")
+        let served = await resolver.linuxGuestImage(id: image.id)
+        XCTAssertEqual(served?.id, image.id)
+    }
+
+    /// Corrupted expanded bytes are detected by the real verifier; an explicit
+    /// reverify drops the cached success, keeps the truthful typed issue, and
+    /// reconstruction repairs the view from blobs with no download.
+    func testMigratedImageTamperedExpandedBytesDetectedAndRepaired() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "tamper-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        let expanded = try await store.images.ensureExpanded(imageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+        let initialHealth = await integrator.imageHealth(imageID: image.id)
+        XCTAssertEqual(initialHealth?.readiness, .verified)
+
+        // Truncate the rootfs on the expanded view: the cheap completeness
+        // check must fail, and the verifier must report a size mismatch
+        // instead of trusting the earlier successful fingerprint.
+        let rootfs = expanded.appendingPathComponent("rootfs.img")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: rootfs.path)
+        let handle = try FileHandle(forUpdating: rootfs)
+        try handle.truncate(atOffset: 4096)
+        try handle.close()
+
+        let damaged = await integrator.imageHealth(imageID: image.id)
+        XCTAssertEqual(damaged?.readiness, .rebuildableFromBlobs)
+        guard case .sizeMismatch? = damaged?.issue else {
+            return XCTFail("expected a size mismatch, got \(String(describing: damaged?.issue))")
+        }
+        let reverified = await integrator.reverifyImageHealth(imageID: image.id)
+        XCTAssertEqual(reverified?.readiness, .rebuildableFromBlobs)
+
+        try await integrator.reconstructExpandedImage(imageID: image.id, isCancelled: nil)
+        let repairedHealth = await integrator.imageHealth(imageID: image.id)
+        XCTAssertEqual(repairedHealth?.readiness, .verified)
+    }
+
+    /// A cancelled reconstruction leaves the previous view untouched and does
+    /// not promote its staging tree; the next attempt still succeeds.
+    func testCancelledReconstructionLeavesPreviousViewIntact() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "cancel-reconstruct-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        let expanded = try await store.images.ensureExpanded(imageID: image.id)
+        let previousManifest = try Data(contentsOf: expanded.appendingPathComponent("manifest.json"))
+
+        // Cancel before the first materialization step.
+        do {
+            _ = try await store.images.reconstructExpandedImage(
+                imageID: image.id, force: true, isCancelled: { true }
+            )
+            XCTFail("a cancelled reconstruction must throw")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: expanded.appendingPathComponent("manifest.json")),
+            previousManifest,
+            "the previous expanded view must stay in place"
+        )
+        // No staging leftover.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: layout.expandedImagesDirectory.path)
+            .filter { $0.hasPrefix(".staging-") }
+        XCTAssertTrue(leftovers.isEmpty, "staging must be removed: \(leftovers)")
+        // The image remains bootable through the untouched view.
+        let stillHealthy = await store.images.imageHealth(imageID: image.id)
+        XCTAssertEqual(stillHealthy?.readiness, .verified)
+    }
+
+    // MARK: - blob repair evidence ordering
+
+    /// A canonical blob path that is a directory cannot be hashed. It is
+    /// damaged evidence: once the replacement source is verified, the damaged
+    /// path is quarantined (never hard-deleted) and the blob is re-placed.
+    func testRepairBlobQuarantinesInvalidCanonicalPathAndPlacesVerifiedReplacement() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let bytes = Data("replacement-bytes".utf8)
+        let digest = FloeDigest.sha512Hex(bytes)
+        let canonical = try layout.blobURL(digest: digest)
+        // A directory where the blob file belongs: hashing throws EISDIR.
+        try FileManager.default.createDirectory(at: canonical, withIntermediateDirectories: true)
+        try Data("junk".utf8).write(to: canonical.appendingPathComponent("junk.bin"))
+
+        let source = root.appendingPathComponent("repair-source.bin")
+        try bytes.write(to: source)
+        let replaced = try await store.blobs.repairBlob(
+            digest: digest, sourceURL: source, expectedBytes: Int64(bytes.count)
+        )
+        XCTAssertTrue(replaced)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canonical.path))
+        XCTAssertEqual(try FloeDigest.sha512Hex(ofFileAt: canonical), digest)
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)
+            .filter { $0.hasPrefix("blob-repair-\(digest.prefix(16))") }
+        XCTAssertEqual(quarantined.count, 1, "the damaged path must be preserved as evidence")
+    }
+
+    /// A replacement source that does not match the expected digest refuses
+    /// BEFORE the existing bytes are touched: a failed repair preserves the
+    /// current evidence instead of quarantining it.
+    func testRepairBlobRefusesUntrustedSourceAndPreservesEvidence() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let bytes = Data("expected-bytes".utf8)
+        let digest = FloeDigest.sha512Hex(bytes)
+        let canonical = try layout.blobURL(digest: digest)
+        try FileManager.default.createDirectory(at: canonical.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let corrupted = Data("corrupted-bytes".utf8)
+        try corrupted.write(to: canonical)
+
+        let source = root.appendingPathComponent("untrusted-source.bin")
+        try Data("not-the-pinned-bytes".utf8).write(to: source)
+        do {
+            _ = try await store.blobs.repairBlob(
+                digest: digest, sourceURL: source, expectedBytes: Int64(corrupted.count)
+            )
+            XCTFail("a source that does not match the digest must be refused")
+        } catch RuntimeV2Error.blobDigestMismatch {
+            // expected
+        }
+        XCTAssertEqual(try Data(contentsOf: canonical), corrupted,
+                       "the damaged bytes stay untouched when the replacement cannot be proven")
+        let quarantined = (try? FileManager.default.contentsOfDirectory(atPath: layout.quarantineDirectory.path)) ?? []
+        XCTAssertFalse(quarantined.contains { $0.hasPrefix("blob-repair-") })
+    }
+
+    /// A lost backing blob cannot be rebuilt locally: health reports
+    /// `replacementRequired`, reconstruction refuses, and a same-id repair
+    /// from a freshly verified legacy install restores the boot view without
+    /// touching the environment row or its data directory.
+    func testMigratedImageLostBlobRequiresReplacementAndSameIdRepairRestores() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "lost-blob-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        let expanded = try await store.images.ensureExpanded(imageID: image.id)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacyRoot, build: "test")
+
+        // Environment state that an image repair must never touch.
+        try await store.registry.upsertEnvironment(RuntimeV2Registry.EnvironmentRow(
+            id: "env-lost-blob", kind: "linuxVM", ownerID: nil, name: nil,
+            baseImageID: image.id, baseRootfsDigest: nil, state: "stopped",
+            dataPath: "environments/env-lost-blob/data", compatHostFHS: false,
+            repairReason: nil, createdAt: Date(), lastUsedAt: Date()
+        ))
+        let dataDirectory = try layout.environmentDataDirectory(environmentID: "env-lost-blob")
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        try Data("private environment data".utf8).write(to: dataDirectory.appendingPathComponent("note.txt"))
+
+        // Lose the rebuildable view AND the rootfs blob (canonical + quarantine).
+        let loadedManifest = try await store.images.manifest(imageID: image.id)
+        let manifest = try XCTUnwrap(loadedManifest)
+        let rootfsRef = try XCTUnwrap(manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"])
+        try FileManager.default.removeItem(at: expanded)
+        try FileManager.default.removeItem(at: try layout.blobURL(digest: rootfsRef.sha512))
+        try? FileManager.default.removeItem(at: try layout.blobQuarantineURL(digest: rootfsRef.sha512))
+
+        let health = await integrator.imageHealth(imageID: image.id)
+        XCTAssertEqual(health?.readiness, .replacementRequired)
+        do {
+            try await integrator.reconstructExpandedImage(imageID: image.id, isCancelled: nil)
+            XCTFail("reconstruction must refuse when a referenced blob is gone")
+        } catch RuntimeV2Error.blobMissing(let digest) {
+            XCTAssertEqual(digest.lowercased(), rootfsRef.sha512.lowercased())
+        }
+
+        // A verified replacement install (what installTrustedImage promotes)
+        // restores the same content through the existing migration rollback.
+        let rollback = layout.recoveryMigrationsDirectory
+            .appendingPathComponent("legacy-image-\(image.id)/legacy-images/\(image.id)", isDirectory: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rollback.path),
+                      "the migrated legacy directory must still exist as the rollback point")
+        let replacement = legacyRoot.appendingPathComponent(image.id, isDirectory: true)
+        try FileManager.default.copyItem(at: rollback, to: replacement)
+        try await integrator.repairImageFromLegacyInstall(imageID: image.id, isCancelled: nil)
+
+        let repaired = await integrator.imageHealth(imageID: image.id)
+        XCTAssertEqual(repaired?.readiness, .verified)
+        // The verified replacement moved into the migration rollback area.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacement.path))
+
+        // Environment identity and data survived byte-for-byte.
+        let row = try await store.registry.environment(id: "env-lost-blob")
+        XCTAssertEqual(row?.state, "stopped")
+        XCTAssertEqual(row?.baseImageID, image.id)
+        XCTAssertEqual(
+            try Data(contentsOf: dataDirectory.appendingPathComponent("note.txt")),
+            Data("private environment data".utf8)
+        )
+    }
+
     // MARK: - legacy environment migration
 
     /// A legacy environment whose disk never started migrates its layer data

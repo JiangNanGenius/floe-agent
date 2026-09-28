@@ -277,6 +277,33 @@ struct OfficeStageRecorderTests {
         #expect(firstResult.pendingPassword == false)
         #expect(secondResult.readOnly == false, "the live waiter keeps the real resolution")
     }
+
+    @Test("Memory samples are numeric, content-free facts with a real zero preserved")
+    func memorySamplesAreContentFree() {
+        let facts = OfficeMemorySample.facts()
+        let physical = Int(facts["memPhysicalMB"] ?? "")
+        #expect(physical != nil && physical! > 0, "physical memory must be a positive MB count")
+        #if os(iOS)
+        // The kernel allowance is sampled directly; a genuine 0 stays 0 and is
+        // never folded into an absent fact (Build 233 execution-headroom
+        // contract).
+        let available = Int(facts["memAvailableMB"] ?? "")
+        #expect(available != nil, "a real available-memory reading is always recorded")
+        #expect(available! >= 0)
+        #endif
+        for value in facts.values {
+            #expect(OfficeStageRecorder.isContentFreeValue(value),
+                    "memory facts must stay within the content-free bound")
+        }
+    }
+
+    @Test("Web-content death is a distinct recoverable render failure")
+    func webContentTerminationFailure() {
+        let error = OfficeRenderFailure.webContentProcessTerminated()
+        #expect(error.domain == "org.floeagent.office.render")
+        #expect(error.code == 2, "it must not reuse the no-visible-render code 1")
+        #expect(!(error.localizedDescription.isEmpty))
+    }
 }
 
 /// The IDE Office tab loader trigger. The Build 229 device pass showed the IDE

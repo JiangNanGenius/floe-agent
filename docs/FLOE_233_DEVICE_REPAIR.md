@@ -1,0 +1,54 @@
+# Build 233 — device feedback repair / 设备反馈修复
+
+Status: candidate under primary independent review; no commit, TestFlight delivery or device success claimed. / 状态：候选版本，等待主代理独立复核；未提交、未交付 TestFlight，不声称真机已修复。
+
+## Findings and limits / 发现与限制
+
+- The shipped initialization path creates the Linux image service once. If durable-root resolution fails at launch, there is no recovery path in that process. The device report does not identify why root resolution failed. / 已发布代码只在启动时创建镜像服务，持久目录解析失败后没有进程内恢复路径；设备报告尚未说明目录解析失败的原因。
+- The current device log records a local-model repair attempt that still parsed zero calls. It does not establish that a valid invocation was emitted or that tool ranking alone caused the failure. / 当前设备日志确认本地模型修正后仍未解析出调用，不能据此认定模型已输出有效调用，也不能把工具排序认定为唯一根因。
+- The reported disk hash failure remains an unresolved file-access error. Typed diagnostics and recoverable preparation improve diagnosis/retry; they are not proof that the device failure is fixed. / 磁盘哈希报错仍属未定位的文件访问失败；类型化诊断与恢复入口改善排查和重试，不等于真机问题已修复。
+
+## Implemented changes — shared infrastructure / 共享基础设施（Linux 恢复与文件诊断）
+
+- `FloeCore.BoundedRecoverableBox`: one-time recoverable initialization with atomic get-or-create. Concurrent callers coalesce onto one build; a failed build publishes nothing; a value is observable only after full asynchronous wiring. All locked sections are synchronous `withLock`. / 新增 `BoundedRecoverableBox`：原子的“获取或创建”，并发调用合并为一次构建，失败不发布，仅在完整异步接线后可观测；加锁区段均为同步 `withLock`。
+- Two-phase reconnect in the guest registry: `begin` (idle check for running/starting/tearing-down guests and queued admissions, then resolver swap behind a barrier that refuses guest starts) → publish matching global hooks → `commit`; `abort` restores the exact old resolver. The barrier is installed BEFORE the `queuedStarts` suspension so actor reentrancy cannot admit a start. / 客户机注册表改为两阶段重连：begin（检查运行中/启动中/拆卸中客户机与排队准入，然后在屏障后换入解析器，屏障期间拒绝启动）→ 发布匹配的全局钩子 → commit；abort 精确恢复旧解析器。屏障在 `queuedStarts` 挂起前就位，杜绝重入插入启动。
+- Typed hash failures (`FloeFileIOError`: stage + POSIX errno) and typed verification issues (`LinuxImageVerificationIssue`). Messages never carry the host path. I/O failures are distinguishable from genuine digest mismatches. / 哈希失败类型化（阶段 + POSIX errno），校验问题类型化；消息不含宿主路径，I/O 失败与真实摘要不匹配可区分。
+- Launch assembly and recoverable reconnect share one prepared-wiring helper (`prepareGuestWiring`/`publishGuestWiring`); the environment provider resolves pinned images through a dynamic `PinnedImageSource`. / 启动装配与恢复重连共用同一接线助手；环境提供方通过动态 `PinnedImageSource` 解析固定镜像。
+- Pinned-environment preparation now carries `environmentID` and resolves the environment’s template base image; a private/pinned base is never silently substituted for the default (or vice versa). / 固定环境的准备携带 environmentID 并解析其模板基底；私有/固定基底不会被默认镜像静默替换，反之亦然。
+
+## Implemented changes — local-model only / 仅本地模型改动
+
+- Minimal one-tool repair with the EXACT production argument schema; the repair tool is chosen only among admitted tools (score order), guaranteeing the later parser accepts the call. / 最小单工具修复使用精确的生产参数 schema；修复工具仅在已准入工具中按得分选取，确保后续解析器能接受该调用。
+- Authoritative runtime safety/workspace rules are carried in their entirety (no prefix truncation); if the full validated context cannot fit, the repair is skipped (fail closed) rather than dropping a mandatory boundary or inviting empty-argument calls. / 权威运行时安全/工作区规则完整保留（不做前缀截断）；若完整上下文无法容纳则跳过修复（失败即关闭），不丢弃强制边界、不诱导空参数调用。
+- The bounded per-line parser is fence-aware: objects inside a ``` fence or quoted/inline examples in prose never become phantom calls. / 逐行解析器识别代码围栏：围栏内对象、散文中引用或行内示例不会变成幽灵调用。
+- These constraints stay inside `LocalProviderAdapter`; cloud wire protocols (OpenAI Responses/Chat, Anthropic Messages) never route through the local repair adapter. / 这些约束只存在于 `LocalProviderAdapter`；云端协议不会经过本地修复适配器。
+
+## Implemented changes — Runtime v2 image recovery through real files / 依据真实文件的 Runtime v2 镜像恢复
+
+- Image status is composed from real bytes, not registration rows. When the verified Runtime v2 migration moved the legacy image directory aside, the composited status comes from the v2 store’s real-file health: registry row + v2 manifest + the actual expanded bytes (hash-verified, with the success fingerprint cache) + blob availability. A registry row alone never reports “verified”, and a moved legacy directory never reports “not installed”. / 镜像状态改由真实字节组成：迁移后不再只看注册行 + 清单，而是核验展开目录实际字节（带成功指纹缓存）与 blob 可用性；注册行本身不再等同于“已验证”，旧目录被移走也不再误报“未安装”。
+- New typed readiness: `verified` (expanded bytes match), `rebuildableFromBlobs` (a referenced blob is present and the boot view can be rebuilt locally) and `replacementRequired` (a blob is gone; a verified replacement install is required). Repair reconstructs locally from verified blobs first and only downloads when reconstruction is impossible; a same-id repair after a verified legacy install re-hashes/replaces the v2 blobs and rebuilds the boot view, moving the replaced directory into the existing migration rollback area (never a hard delete). / 新增类型化就绪状态；修复先尝试从已验证 blob 本地重建，仅在无法重建时才下载；同 ID 修复会重新校验/替换 v2 blob 并重建启动视图，被替换目录进入既有迁移回滚区（不硬删）。
+- Repair never touches environment identity: per-environment deltas, workspaces, working disks and data directories are outside the shared image store, and a pinned/private image is never rebased onto the catalog default. / 修复不触碰环境身份：每个环境的 delta、工作区、工作盘与数据目录都在共享镜像存储之外；私有/固定镜像绝不会被替换为目录默认镜像。
+- Explicit reverify drops the cached success fingerprint and re-reads actual bytes; a view that is rebuildable from verified blobs is reconstructed as part of the explicit action (no download). Cache seeding happens only where the caller itself hashed every artifact (`materializeExpanded`), so a UI refresh is stat-only once verified. / 显式重新校验会作废成功指纹并重读实际字节；可从已验证 blob 重建的视图会在该显式操作中本地重建（不下载）。仅在调用方已逐一哈希产物后播种缓存，因此验证通过后界面刷新只做 stat。
+- Trusted-install cancellation is real and owner-scoped: the download, extraction and a final pre-promotion checkpoint observe the owner’s signal/task cancellation; a cancelled install promotes nothing, and staging is removed. Coalesced subscribers share one download and result, and a subscriber’s own cancellation never cancels the shared install. Reconstruction also observes cancellation between artifacts and before the switch, leaving the previous view intact. / 可信安装取消真实生效且归属明确：下载、解压与提升前检查点都会观察到属主信号/任务取消；取消的安装不会提升任何内容，暂存被清理。合并订阅者共享一次下载与结果，订阅者自身取消不会取消共享安装；重建在产物之间与切换前同样可取消，旧视图保持原样。
+- Blob repair is fail-closed: the replacement source is hashed against the digest BEFORE any existing bytes are touched; an unreadable/directory/invalid canonical path is damaged evidence, quarantined (with its evidence) and replaced rather than treated as a repair refusal. / blob 修复按失败即关闭排序：先校验替换来源的摘要，再触碰现有字节；无法读取/目录/非法路径属于受损证据，先隔离（保留证据）再替换，而不是拒绝修复。
+- Diagnostic redaction: `FloeFileIOError` keeps stage/domain/code/errno but its exported detail is path-sanitized (the path is replaced with `<path>`, never silently dropped). / 诊断脱敏：`FloeFileIOError` 保留阶段/域/错误码/errno，导出的详情移除宿主路径（以 `<path>` 替代）。
+- The install card retains its environment identity on internal refreshes, surfaces the newest job failure next to the verification reason in the repair state, and its owner continuation fires only on this image’s own successful verified transition — an unrelated package-job revision can never start a guest. / 安装卡片在内部刷新时保留环境身份，在修复状态把最新任务失败与校验原因一并显示；属主续接只在本镜像自身成功且验证通过时触发，无关任务版本不会启动客户机。
+- The public `floe-env image status|install|import` entry recovers storage and uses the same composited v2 truth; install routes through the shared repair path and import reports whether the Runtime v2 substrate was refreshed. / 公开 `floe-env image` 入口会恢复存储并使用同一组合后的 v2 事实；install 走共享修复路径，import 会报告 v2 是否已刷新。
+
+## Verification — focused (host/component, not iPad) / 针对性验证（宿主/组件，非 iPad）
+
+- Focused Run (this correction): `LinuxGuestImageRecoveryTests` + `RuntimeV2StartupTests` = 63 XCTest, 0 failures. New coverage: migrated verified registry with a missing/unreadable/corrupted expanded view (rebuildable, reconstruction reaches the boot resolver), lost blob (replacement required + same-id repair preserving the environment row/data), cancelled reconstruction leaving the previous view, owner/task/coalesced install cancellation without promotion, invalid-blob quarantine vs untrusted-source refusal, path-redacted diagnostics and the card completion contract. / 本次修正的针对性运行：63 项 XCTest 全部通过，新增覆盖上述路径。
+- Full `FloeExecutionTests` bundle: 408 XCTest + 222 Swift Testing, 0 failures. `LocalSearchRepairRegressionTests`: 17 Swift Testing, 0 failures (run at primary’s request, test read-only). / 完整 `FloeExecutionTests`：408 XCTest + 222 Swift Testing 零失败；搜索回归 17 项零失败（按主代理要求只读运行）。
+- Real retained Build 232 SMP archive (587,162,397 bytes): its SHA-512 equals the catalog-pinned digest and its manifest declares `smp_capable=true` with the expected artifact list. No 16 GiB expansion was performed (device space), and no device behavior is claimed from this. / 保留的 Build 232 SMP 归档（587,162,397 字节）摘要与目录固定值一致，清单声明 `smp_capable=true`；未展开 16 GiB，也不据此声称真机行为。
+
+## Remaining unknowns / gates for primary / 待主代理验证的未知项
+
+- The typed I/O fix proves recovery after an artifact is readable again, but the original device “cannot hash disk” errno on the 16 GiB sparse disk is still not reproduced on-device; underlying disk I/O cause remains an unknown, not a declared fix. / 类型化修复证明文件恢复可读后可恢复，但真机 16 GiB 稀疏盘“cannot hash”的原始 errno 仍未在设备上复现，底层磁盘 I/O 原因仍属未知。
+- The App target (FloeApp) is compiled by the cloud App build; local SwiftPM runs cover the FloeExecution/FloeCore package only. Full App compilation, real-weight cloud qualification and iPad device acceptance remain handed to primary. / App 目标由云端 App 构建编译；本地 SwiftPM 仅覆盖包模块。完整 App 编译、实权云端资格与 iPad 真机验收仍移交主代理。
+- `EnvironmentPackageJobs.cancel(id:)` still cancels only non-shared package jobs; the image card now cancels through the service’s explicit owner path instead. Consolidating the shared-job cancel in the settings job registry is left to primary as a possible follow-up. / 设置任务注册表的取消目前仍只作用于非共享任务；镜像卡片改走服务显式属主取消路径。是否统一共享任务取消交由主代理决定。
+
+## Primary acceptance review / 主代理验收复核
+
+- Corrected the qualification host to retain actual conversation history and require a completed answer after each of two synthetic search receipts before reporting success. Workflow gates check both answers; this remains a host test with synthetic search responses, not a live search or iPad result. / 实权宿主改为保留真实对话历史，并验证两次合成搜索回执后的完整回复；工作流校验两次回复，不把合成搜索或宿主结果当作真机证据。
+- Unified UI repair with the same image-keyed preparation job so progress and errors remain visible. Kept the previous success-only verification cache to avoid retaining a transient I/O failure indefinitely. / 界面修复入口复用镜像准备任务以显示进度和错误；保持仅成功校验命中缓存，避免临时 I/O 失败永久阻塞。
+- PPT idle crashes and Office font gaps are a separate active investigation. No fix or device acceptance is claimed here. / PPT 静置闪退与 Office 字体缺失另行排查，本文不声称已修复或真机验收通过。

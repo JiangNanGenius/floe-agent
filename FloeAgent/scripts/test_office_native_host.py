@@ -198,17 +198,27 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
 
     def test_stage_logs_carry_correlation_ids(self):
         source = self.source()
-        # open / permission / edit entry / paint / save stages each carry the
-        # per-controller session id and open generation, content-free.
-        for event in ('@"open"', '@"permission"', '@"edit-entry-deferred"', '@"edit-entry"',
-                      '@"edit-entry-result"', '@"edit-surface-armed"', '@"first-paint"',
-                      '@"visible-render"', '@"save-requested"', '@"save-completed"'):
-            self.assertIn(event, source)
+        # Build 233 R1: every breadcrumb goes through one helper that stamps
+        # the per-controller session id and open generation and hands the same
+        # content-free event to the App's durable recorder.
+        for event in ('open', 'permission', 'edit-entry-deferred', 'edit-entry',
+                      'edit-entry-result', 'edit-surface-armed', 'first-paint',
+                      'visible-render', 'close.bye', 'close.ack',
+                      'webcontent.terminated'):
+            self.assertIn(f'floeStage:@"{event}"', source, event)
         self.assertIn('_sessionID = [[NSUUID UUID] UUIDString];', source)
         self.assertIn('self.openGeneration += 1;', source)
-        self.assertGreaterEqual(source.count('@"session": self.sessionID'), 6)
-        self.assertGreaterEqual(source.count('@"session": host.sessionID'), 1)
-        self.assertGreaterEqual(source.count('@"generation": @(self.openGeneration)'), 4)
+        helper = source.split(
+            '- (void)floeStage:(NSString *)stage facts:(NSDictionary<NSString *, id> *)facts {',
+            1)[1].split('\n}\n', 1)[0]
+        self.assertIn('@"session": self.sessionID', helper)
+        self.assertIn('@"generation": @(self.openGeneration)', helper)
+        self.assertIn('self.onStageEvent(', helper)
+        self.assertGreaterEqual(source.count('floeStage:@"'), 12)
+        # The save protocol keeps its own request identity; the requested stage
+        # still carries the session.
+        self.assertIn('@"request": requestID ?: @""', source)
+        self.assertIn('@"session": self.sessionID', source)
 
     def test_extent_bootstrap_fallback_is_bounded_and_never_relaxes_readiness(self):
         """The parked edit entry has a bounded weaker-evidence trigger tier.
@@ -798,6 +808,64 @@ class OfficeReleaseGateTests(unittest.TestCase):
             'unsignedPayloadVerified': True, 'appVersion': '1.7.0', 'appBuild': '219',
             'hostExecutableSHA256': 'e' * 64}))
         return folder, writeback, embedded
+
+    def synthetic_idle_receipt(self, folder, **overrides):
+        receipt = {
+            'documentType': 'presentation', 'idleSeconds': 600,
+            'stageTracePresent': True, 'lastStage': 'host.visible-render',
+            'memoryAvailableMB': [1900, 1450, 1510],
+            'processAliveAfterIdle': True, 'interactiveAfterIdle': True,
+            'saveCompletedAfterIdle': True, 'reopenedAfterIdle': True,
+            'recordedAt': '2026-09-28T02:00:00Z',
+        }
+        receipt.update(overrides)
+        path = Path(folder) / 'idle-stability.json'
+        path.write_text(json.dumps(receipt))
+        return path
+
+    def test_idle_stability_receipt_is_recorded_and_gated_only_when_required(self):
+        # Build 233 R7: a real device idle window is recorded next to the
+        # release evidence; it is not one of the four capability flags, so it
+        # fails the verdict only with --require-idle.
+        with tempfile.TemporaryDirectory() as temporary:
+            folder, writeback, embedded = self.synthetic_device_receipts(temporary)
+            idle_path = self.synthetic_idle_receipt(temporary)
+            evidence, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                                writeback, embedded,
+                                                idle=idle_path, require_idle=True)
+            self.assertEqual(failures, [])
+            idle = evidence['idleStabilityEvidence']
+            self.assertEqual(idle['idleSeconds'], 600)
+            self.assertEqual(idle['minAvailableMB'], 1450)
+            self.assertEqual(idle['lastStage'], 'host.visible-render')
+            self.assertEqual(idle['memorySampleCount'], 3)
+
+            # A missing receipt is refused only when the caller requires it.
+            evidence, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                                writeback, embedded)
+            self.assertEqual(failures, [])
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded,
+                                         idle=Path(temporary) / 'missing.json', require_idle=True)
+            self.assertTrue(any('idle-stability' in failure for failure in failures))
+
+            # Short, synthetic or incomplete idle windows fail closed.
+            short = self.synthetic_idle_receipt(temporary, idleSeconds=120)
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded, idle=short, require_idle=True)
+            self.assertTrue(any('idleSeconds' in failure for failure in failures))
+            no_trace = self.synthetic_idle_receipt(temporary, stageTracePresent=False)
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded, idle=no_trace, require_idle=True)
+            self.assertTrue(any('stage trace' in failure for failure in failures))
+            no_samples = self.synthetic_idle_receipt(temporary, memoryAvailableMB=[1800])
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded, idle=no_samples, require_idle=True)
+            self.assertTrue(any('memoryAvailableMB' in failure for failure in failures))
+            dead = self.synthetic_idle_receipt(temporary, processAliveAfterIdle=False)
+            _, failures = device_qualify(folder, DEFAULT_DECK, 'iPad14,3', '26.0', '1234',
+                                         writeback, embedded, idle=dead, require_idle=True)
+            self.assertTrue(any('processAliveAfterIdle' in failure for failure in failures))
 
     def test_device_capabilities_need_a_complete_roundtrip_and_are_never_inferred(self):
         with tempfile.TemporaryDirectory() as temporary:

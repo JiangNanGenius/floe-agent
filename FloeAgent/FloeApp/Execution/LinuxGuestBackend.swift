@@ -25,16 +25,35 @@ import FloeExecution
 import FloePersistence
 import FloeTools
 
+/// Dynamic, reconnect-safe resolver of the base image for a pinned
+/// environment. The environment provider is created once at launch; reading
+/// through this object lets a recoverable reconnect update how pins resolve
+/// without rebuilding the provider or leaving a stale captured closure.
+final class PinnedImageSource: @unchecked Sendable {
+    private let sourceLock = NSLock()
+    private var resolver: (@Sendable (String) async -> String?)?
+
+    func set(_ resolver: (@Sendable (String) async -> String?)?) {
+        sourceLock.withLock { self.resolver = resolver }
+    }
+
+    func baseImageID(for environmentID: String) async -> String? {
+        let resolver = sourceLock.withLock { self.resolver }
+        return await resolver?(environmentID)
+    }
+}
+
 /// Maps Floe environment records onto Linux guest descriptors. Only
 /// environments explicitly declared `executionBackend == .linuxVM` are owned
 /// by the guest backend; deleted environments disappear immediately.
 struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     let registry: EnvironmentRegistry
     let defaultImageID: String
-    /// Resolves the image whose kernel/BIOS a pinned environment boots with
-    /// (its immutable template's root base image). nil/absent keeps the
-    /// configured default image, exactly as before.
-    let pinnedImageID: (@Sendable (String) async -> String?)?
+    /// Dynamic resolver for the image whose kernel/BIOS a pinned environment
+    /// boots with (its immutable template's root base image). Read at
+    /// descriptor-build time so reconnect takes effect; nil/absent keeps the
+    /// configured default image.
+    let pinnedImageSource: PinnedImageSource
     /// Durable workspace access (WorkspaceRecord/security-scoped bookmarks),
     /// injected at assembly time from the app's database. Injected rather
     /// than read from a lazily created UI center: a cold-start background
@@ -50,13 +69,13 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     init(
         registry: EnvironmentRegistry,
         defaultImageID: String,
-        pinnedImageID: (@Sendable (String) async -> String?)? = nil,
+        pinnedImageSource: PinnedImageSource,
         workspaceStore: any WorkspaceStore,
         armedRunShape: (@Sendable (String) -> ShellGuestRunShapeIntent?)? = nil
     ) {
         self.registry = registry
         self.defaultImageID = defaultImageID
-        self.pinnedImageID = pinnedImageID
+        self.pinnedImageSource = pinnedImageSource
         self.workspaceStore = workspaceStore
         self.armedRunShape = armedRunShape
     }
@@ -76,7 +95,7 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             shares.append(LinuxGuestShare(tag: "workspace", hostDirectory: workspace))
         }
 
-        let imageID = await pinnedImageID?(record.id) ?? defaultImageID
+        let imageID = await pinnedImageSource.baseImageID(for: record.id) ?? defaultImageID
         // An accepted IDE script-run shape armed for the start in flight is
         // what this descriptor must carry: the typed vCPU/RAM request travels
         // to the registry's typed admission (and from there to the pool) as an
@@ -149,8 +168,12 @@ struct LinuxOfficialTemplateRuntime: Sendable {
 /// point, a legacy-only status read would wrongly report "not installed" and
 /// offer a re-download of gigabytes the device already has. This provider
 /// answers from the v2 store only — it never triggers a migration as a side
-/// effect of a status read.
+/// effect of a status read — and its health answers are derived from the
+/// actual expanded bytes and blob availability, never from the registry row
+/// alone.
 struct LinuxGuestRuntimeV2ImageStatus: Sendable {
+    /// Cooperative cancellation check threaded into long reconstructions.
+    typealias CancellationCheck = @Sendable () -> Bool
     /// Non-migrating verified gate (`isImageVerifiedWithoutMigration`).
     let isVerified: @Sendable (String) async -> Bool
     /// `RuntimeV2Layout.expandedImagesDirectory`: the rebuildable view that
@@ -160,6 +183,16 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// engine's capability query and never a loose manifest claim). Answers
     /// false for a missing/unverified image or an absent/false declaration.
     let smpCapability: @Sendable (String) async -> Bool
+    /// Real-file health: registry + manifest + actual expanded bytes + blob
+    /// availability; nil when the v2 store does not hold the image.
+    let health: @Sendable (String) async -> RuntimeV2ImageStore.ImageHealth?
+    /// Explicit re-verification (drops the cached success fingerprint).
+    let reverifyHealth: @Sendable (String) async -> RuntimeV2ImageStore.ImageHealth?
+    /// Rebuilds the expanded view from verified blobs (no download).
+    let reconstructExpanded: @Sendable (String, CancellationCheck) async throws -> Void
+    /// Same-id repair of a migrated image from a freshly verified legacy
+    /// install (blobs re-placed, expanded rebuilt).
+    let repairFromLegacyInstall: @Sendable (String, CancellationCheck) async throws -> Void
 
     /// The verified legacy manifest of an already-migrated image, or nil when
     /// the v2 store does not hold this image verified.
@@ -193,89 +226,28 @@ enum LinuxGuestBackendAssembly {
         artifactRoot: URL?,
         workspaceStore: any WorkspaceStore
     ) -> TinyEMULinuxCommandService {
-        let images: any LinuxGuestImageResolving
-        let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
-        var pinnedImageID: (@Sendable (String) async -> String?)?
+        // Resolver + v2 substrate plus every hook come from one prepared
+        // bundle, so launch assembly and recoverable reconnect never
+        // diverge. Construction publishes nothing.
+        let wiring: PreparedGuestWiring
         if let artifactRoot {
-            let legacyRoot = artifactRoot
-                .appendingPathComponent("LinuxGuest", isDirectory: true)
-                .appendingPathComponent("images", isDirectory: true)
-            let legacy = FileLinuxGuestImageResolver(root: legacyRoot)
-            if let layout = try? RuntimeV2Layout.production() {
-                let store = RuntimeV2Store(layout: layout)
-                let integrator = RuntimeV2GuestIntegrator(
-                    store: store,
-                    legacyImagesRoot: legacyRoot
-                )
-                runtimeV2 = integrator
-                images = RuntimeV2CompositeImageResolver(
-                    expandedImagesRoot: layout.expandedImagesDirectory,
-                    legacy: legacy,
-                    verifiedGate: { imageID in await integrator.isImageVerified(imageID: imageID) }
-                )
-                // Install-state truth for Settings and the IDE capability
-                // gate: after the verified migration moves the legacy image
-                // directory aside, image status must come from the v2 store.
-                FloePlatformServices.shared.setLinuxImageRuntimeV2(
-                    LinuxGuestRuntimeV2ImageStatus(
-                        isVerified: { imageID in
-                            await integrator.isImageVerifiedWithoutMigration(imageID: imageID)
-                        },
-                        expandedImagesRoot: layout.expandedImagesDirectory,
-                        // The verified manifest's own SMP declaration is the
-                        // only image evidence; the engine query is never
-                        // consulted (see RuntimeV2ImageStore.smpCapability).
-                        smpCapability: { imageID in
-                            await integrator.imageSMPCapable(imageID: imageID)
-                        }
-                    )
-                )
-                // C5: a pinned environment boots the immutable template's own
-                // image (its root base image) instead of the default image.
-                pinnedImageID = { environmentID in
-                    await integrator.environmentTemplateBaseImageID(environmentID: environmentID)
-                }
-                // Official template distribution + registration through the
-                // existing verified image store and template store.
-                let imageService = LinuxGuestImageInstallationService(root: artifactRoot, limits: .standard)
-                let officialTemplates = RuntimeV2OfficialTemplateService(
-                    store: store,
-                    importer: LinuxGuestImageTemplateAvailabilityAdapter(service: imageService),
-                    downloader: LinuxGuestImageHTTPDownloader()
-                )
-                FloePlatformServices.shared.setLinuxOfficialTemplateService(officialTemplates)
-                FloePlatformServices.shared.setLinuxOfficialTemplateRuntime(
-                    LinuxOfficialTemplateRuntime(
-                        registerPinnedEnvironment: { environmentID, name, templateID, version in
-                            try await integrator.registerPinnedEnvironment(
-                                environmentID: environmentID, name: name,
-                                templateID: templateID, version: version
-                            )
-                        },
-                        environmentBaseImageID: { environmentID in
-                            await integrator.environmentTemplateBaseImageID(environmentID: environmentID)
-                        },
-                        rollbackEnvironment: { environmentID in
-                            await integrator.rollbackPinnedEnvironment(environmentID: environmentID)
-                        }
-                    )
-                )
-            } else {
-                runtimeV2 = nil
-                images = legacy
-            }
+            let imageService = LinuxGuestImageInstallationService(root: artifactRoot, limits: .standard)
+            wiring = prepareGuestWiring(artifactRoot: artifactRoot, imageService: imageService)
         } else {
             FloeLogger(category: .tools).warning(
                 "Linux guest images unavailable: no durable artifact root"
             )
-            images = UnavailableLinuxGuestImageResolver()
-            runtimeV2 = nil
+            wiring = PreparedGuestWiring(
+                images: UnavailableLinuxGuestImageResolver(), runtimeV2: nil,
+                runtimeV2Status: nil, pinnedProbe: nil,
+                officialTemplates: nil, officialTemplateRuntime: nil
+            )
         }
         let guestRegistry = TinyEMULinuxGuestRegistry(
             environments: AppLinuxGuestEnvironmentProvider(
                 registry: registry,
                 defaultImageID: defaultImageID,
-                pinnedImageID: pinnedImageID,
+                pinnedImageSource: FloePlatformServices.shared.linuxPinnedImageSource,
                 workspaceStore: workspaceStore,
                 // The shape claimed for the start in flight (an accepted IDE
                 // script run): the descriptor it builds carries the typed
@@ -284,10 +256,10 @@ enum LinuxGuestBackendAssembly {
                     FloePlatformServices.shared.runShapeCenter.armedIntent(environmentID: environmentID)
                 }
             ),
-            images: images,
+            images: wiring.images,
             limits: .standard,
             factory: TinyEMUGuestSessionFactory(),
-            runtimeV2: runtimeV2
+            runtimeV2: wiring.runtimeV2
         )
         let service = TinyEMULinuxCommandService(registry: guestRegistry)
         // The runtime's own session table is the authoritative source for the
@@ -299,7 +271,152 @@ enum LinuxGuestBackendAssembly {
                   state.running else { return nil }
             return state.vcpus
         }
+        // Hooks are published last, before the service can serve anyone.
+        publishGuestWiring(wiring)
         return service
+    }
+
+    /// Complete wiring for an existing artifact root: resolver, Runtime v2
+    /// substrate and the four global hook bundles. Construction publishes
+    /// NOTHING (`prepareGuestWiring`); callers then install it atomically —
+    /// launch assembly into a fresh registry (`publishGuestWiring`), or
+    /// reconnect under the registry barrier (`reconnectBackend`). Launch and
+    /// reconnect therefore can never diverge. No second installation service
+    /// is created: callers pass the shared one.
+    private struct PreparedGuestWiring {
+        let images: any LinuxGuestImageResolving
+        let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
+        let runtimeV2Status: LinuxGuestRuntimeV2ImageStatus?
+        let pinnedProbe: (@Sendable (String) async -> String?)?
+        let officialTemplates: RuntimeV2OfficialTemplateService?
+        let officialTemplateRuntime: LinuxOfficialTemplateRuntime?
+    }
+
+    private static func prepareGuestWiring(
+        artifactRoot: URL,
+        imageService: LinuxGuestImageInstallationService
+    ) -> PreparedGuestWiring {
+        let legacyRoot = artifactRoot
+            .appendingPathComponent("LinuxGuest", isDirectory: true)
+            .appendingPathComponent("images", isDirectory: true)
+        let legacy = FileLinuxGuestImageResolver(root: legacyRoot)
+        guard let layout = try? RuntimeV2Layout.production() else {
+            // No v2 layout: the legacy resolver is the whole path; the pinned
+            // probe is explicitly cleared, other hooks stay as launch left.
+            return PreparedGuestWiring(
+                images: legacy, runtimeV2: nil,
+                runtimeV2Status: nil, pinnedProbe: nil,
+                officialTemplates: nil, officialTemplateRuntime: nil
+            )
+        }
+        let store = RuntimeV2Store(layout: layout)
+        let integrator = RuntimeV2GuestIntegrator(
+            store: store,
+            legacyImagesRoot: legacyRoot
+        )
+        let images = RuntimeV2CompositeImageResolver(
+            expandedImagesRoot: layout.expandedImagesDirectory,
+            legacy: legacy,
+            verifiedGate: { imageID in await integrator.isImageVerified(imageID: imageID) }
+        )
+        // Install-state truth for Settings and the IDE capability gate: after
+        // the verified migration moves the legacy image directory aside, image
+        // status must come from the v2 store — and it must answer from the
+        // actual expanded bytes/blobs, never from the registry row alone.
+        let runtimeV2Status = LinuxGuestRuntimeV2ImageStatus(
+            isVerified: { imageID in
+                await integrator.isImageVerifiedWithoutMigration(imageID: imageID)
+            },
+            expandedImagesRoot: layout.expandedImagesDirectory,
+            // The verified manifest's own SMP declaration is the only image
+            // evidence; the engine query is never consulted.
+            smpCapability: { imageID in
+                await integrator.imageSMPCapable(imageID: imageID)
+            },
+            health: { imageID in
+                await integrator.imageHealth(imageID: imageID)
+            },
+            reverifyHealth: { imageID in
+                await integrator.reverifyImageHealth(imageID: imageID)
+            },
+            reconstructExpanded: { imageID, isCancelled in
+                try await integrator.reconstructExpandedImage(imageID: imageID, isCancelled: isCancelled)
+            },
+            repairFromLegacyInstall: { imageID, isCancelled in
+                try await integrator.repairImageFromLegacyInstall(imageID: imageID, isCancelled: isCancelled)
+            }
+        )
+        // Pinned environments boot their immutable template's own image; the
+        // environment provider and preparation both resolve it through this
+        // probe.
+        let pinnedProbe: @Sendable (String) async -> String? = { environmentID in
+            await integrator.environmentTemplateBaseImageID(environmentID: environmentID)
+        }
+        // Official template distribution + registration through the existing
+        // verified image store and template store.
+        let officialTemplates = RuntimeV2OfficialTemplateService(
+            store: store,
+            importer: LinuxGuestImageTemplateAvailabilityAdapter(service: imageService),
+            downloader: LinuxGuestImageHTTPDownloader()
+        )
+        let officialTemplateRuntime = LinuxOfficialTemplateRuntime(
+            registerPinnedEnvironment: { environmentID, name, templateID, version in
+                try await integrator.registerPinnedEnvironment(
+                    environmentID: environmentID, name: name,
+                    templateID: templateID, version: version
+                )
+            },
+            environmentBaseImageID: { environmentID in
+                await integrator.environmentTemplateBaseImageID(environmentID: environmentID)
+            },
+            rollbackEnvironment: { environmentID in
+                await integrator.rollbackPinnedEnvironment(environmentID: environmentID)
+            }
+        )
+        return PreparedGuestWiring(
+            images: images, runtimeV2: integrator,
+            runtimeV2Status: runtimeV2Status, pinnedProbe: pinnedProbe,
+            officialTemplates: officialTemplates,
+            officialTemplateRuntime: officialTemplateRuntime
+        )
+    }
+
+    /// Publishes prepared hooks. Used by launch assembly after the fresh
+    /// registry and command service are built but before they can serve
+    /// anyone.
+    private static func publishGuestWiring(_ wiring: PreparedGuestWiring) {
+        let services = FloePlatformServices.shared
+        services.setLinuxImageRuntimeV2(wiring.runtimeV2Status)
+        services.setLinuxPinnedImageIDProbe(wiring.pinnedProbe)
+        if let officialTemplates = wiring.officialTemplates {
+            services.setLinuxOfficialTemplateService(officialTemplates)
+        }
+        if let officialTemplateRuntime = wiring.officialTemplateRuntime {
+            services.setLinuxOfficialTemplateRuntime(officialTemplateRuntime)
+        }
+    }
+
+    /// Recoverable reconnect after a transient assembly-time failure. The
+    /// readiness sequence is strictly ordered:
+    ///   1. construct every dependency and hook (nothing observable yet),
+    ///   2. `begin`: the registry swaps the resolver ONLY when idle and then
+    ///      refuses guest starts via its barrier — no start can interleave,
+    ///   3. publish the matching global hooks while the barrier is held,
+    ///   4. `commit`: admits starts again.
+    /// A refused begin answers false with hooks and resolver unchanged.
+    static func reconnectBackend(
+        commandService: TinyEMULinuxCommandService,
+        artifactRoot: URL,
+        imageService: LinuxGuestImageInstallationService
+    ) async -> Bool {
+        let wiring = prepareGuestWiring(artifactRoot: artifactRoot, imageService: imageService)
+        guard await commandService.beginLinuxBackendReconnect(
+            images: wiring.images,
+            runtimeV2: wiring.runtimeV2
+        ) else { return false }
+        publishGuestWiring(wiring)
+        await commandService.commitLinuxBackendReconnect()
+        return true
     }
 
     /// Verified image storage on the same artifact root as the resolver: it

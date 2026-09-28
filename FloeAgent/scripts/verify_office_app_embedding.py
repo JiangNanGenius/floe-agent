@@ -14,6 +14,46 @@ import plistlib
 import subprocess
 from bootstrap_office_host import LOCK, ROOT, FRAMEWORK, checked_lock, verify_installed, digest
 from office_release_gates import capability_status, host_source_matches_pin
+from office_font_config import (BEGIN_MARK, language_packaging_failures,
+                                language_resource_report, validate_merged_config)
+
+
+def verify_font_and_language_payload(source, app):
+    """Build 233 R4/R5: real font-substitution and language-resource facts.
+
+    * Every language resource file the pinned host output produced must be
+      present in the app; a configured language the upstream build never
+      emitted stays a recorded gap (`languageResourceGap`).
+    * A host rebuilt with the Floe font-substitution overlay must resolve every
+      Floe alias to a family the app installs. An artifact predating the
+      overlay reports `fontSubstitutionsPresent: False` so the release gate can
+      refuse it instead of claiming the fonts are repaired.
+    """
+    source, app = Path(source), Path(app)
+    host_language = language_resource_report(source / 'OfficeRuntimeResources')
+    app_language = language_resource_report(app)
+    failures = language_packaging_failures(host_language, app_language)
+    if failures:
+        raise ValueError('Embedded Office language resources are incomplete: '
+                         + '; '.join(failures))
+    result = {
+        'languageResources': app_language,
+        'languageResourceGap': host_language['missingLanguages'],
+        'fontSubstitutionsPresent': False,
+    }
+    coolkit = app / 'coolkitconfig.xcu'
+    if coolkit.is_file() and BEGIN_MARK in coolkit.read_text(encoding='utf-8', errors='ignore'):
+        main_xcd = app / 'share/registry/main.xcd'
+        validation = validate_merged_config(
+            coolkit, [app / 'program/resource/common/fonts', app / 'share/fonts/truetype'],
+            vendor_config=main_xcd if main_xcd.is_file() else None)
+        if validation['failures']:
+            raise ValueError('Office font substitutions do not resolve to installed families: '
+                             + '; '.join(validation['failures']))
+        result.update(fontSubstitutionsPresent=True,
+                      fontSubstitutionAliases=validation['resolvedCount'],
+                      fontSubstitutionsResolved=validation['resolvedAliases'])
+    return result
 
 
 def verify_payload(source, app, lock_path=LOCK):
@@ -40,11 +80,15 @@ def verify_payload(source, app, lock_path=LOCK):
     for name in manifest['runtimeResourceDirectories']:
         if not (app / name).is_dir():
             raise ValueError('Embedded Office resource directory is missing: ' + name)
+    payload_facts = verify_font_and_language_payload(source, app)
+    # The merged font config is app-owned: hash coverage above verifies the
+    # pinned bytes and this check verifies every Floe alias resolves.
     return {'hostRunID': pin['runID'], 'sourceCommit': lock['commit'],
         'hostExecutableSHA256': pin['executableSHA256'],
         'verifiedResourceFiles': len(manifest['runtimeResourceSHA256']),
         'verifiedResourceDirectories': len(manifest['runtimeResourceDirectories']),
         'appVersion': info.get('CFBundleShortVersionString'), 'appBuild': info.get('CFBundleVersion'),
+        **payload_facts,
         'unsignedPayloadVerified': True, 'engineOpened': False,
         # Payload bytes cannot prove a rendered slide, a device roundtrip or an
         # original-file writeback; those stay unproven here.
@@ -152,6 +196,15 @@ def main():
         if not result['hostSourceMatchesPin']:
             failures.append('the embedded framework predates this checkout\'s host sources; '
                             'run .github/workflows/office-native-host.yml and re-pin the artifact')
+        if not result.get('fontSubstitutionsPresent'):
+            failures.append('the embedded framework predates the Floe font-substitution overlay; '
+                            'rebuild and re-pin the native host before release')
+        if result.get('languageResourceGap'):
+            # Honest gap: the upstream engine resource target did not emit these
+            # languages. Recorded, not fabricated; closing it needs upstream
+            # resource outputs (or an engine rebuild with that target).
+            print('Office language resource gap (recorded, not a packaging failure): '
+                  + ', '.join(result['languageResourceGap']))
         if status['unproven']:
             failures.append('unproven Office capabilities: ' + ', '.join(status['unproven']))
         if failures:

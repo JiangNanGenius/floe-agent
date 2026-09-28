@@ -31,14 +31,23 @@ final class FloePlatformServices: @unchecked Sendable {
     /// apt/dpkg shell commands then answer honestly that a Linux environment
     /// is required instead of pretending to manage packages on iOS.
     private var linuxCommandService: (any LinuxCommandRunning)?
-    /// Verified Linux guest image storage (import/remove/status). Set by the
-    /// app assembly on the same artifact root as the guest image resolver.
-    private var linuxImages: LinuxGuestImageInstallationService?
+    /// Verified Linux guest image storage (import/remove/status). App assembly
+    /// publishes it when the durable root resolved at launch; a transient
+    /// assembly-time root failure is recovered through `ensureLinuxImageService`
+    /// and published only after the guest resolver is fully reconnected.
+    private let linuxImageBox = BoundedRecoverableBox<LinuxGuestImageInstallationService>()
     /// Runtime v2 verified-image truth, injected by the Linux backend
     /// assembly. Once the v2 migration moves the legacy image directory into
     /// its rollback point, the legacy-only status below would wrongly report
     /// "not installed" and offer a re-download; the v2 store is the truth.
     private var linuxImageRuntimeV2: LinuxGuestRuntimeV2ImageStatus?
+    /// Dynamic, reconnect-safe resolver for the base image a pinned
+    /// environment boots with (C5 templates). Owned here so the environment
+    /// provider built at launch and the recoverable reconnect path share one
+    /// read point: reconnect updates the source instead of leaving a stale
+    /// closure inside the provider. nil/absent means preparation uses the
+    /// shared default image.
+    let linuxPinnedImageSource = PinnedImageSource()
     /// The IDE run entry → guest start shape handoff (one slot per run, an
     /// exclusive claim per environment). The Linux environment provider reads
     /// the armed value while a start's descriptor is built; app tests can
@@ -253,14 +262,20 @@ final class FloePlatformServices: @unchecked Sendable {
     }
 
     /// Injected verified image storage (same artifact root as the resolver).
+    /// A nil offer is ignored; a service already present always wins.
     func setLinuxImageService(_ service: LinuxGuestImageInstallationService?) {
-        lock.withLock { linuxImages = service }
+        linuxImageBox.publish(service)
     }
 
     /// Runtime v2 verified-image truth for install-state composition. Set by
     /// the Linux backend assembly when the Runtime v2 substrate exists.
     func setLinuxImageRuntimeV2(_ status: LinuxGuestRuntimeV2ImageStatus?) {
         lock.withLock { linuxImageRuntimeV2 = status }
+    }
+
+    /// Updates the pinned-image resolver (production wiring or nil).
+    func setLinuxPinnedImageIDProbe(_ probe: (@Sendable (String) async -> String?)?) {
+        linuxPinnedImageSource.set(probe)
     }
 
     /// Injected running-guest core-count probe (the runtime's own session
@@ -272,18 +287,42 @@ final class FloePlatformServices: @unchecked Sendable {
     }
 
     /// Real image state for the environment UI: manifest present, digest
-    /// verification failure, and whether this build may distribute it. When
-    /// the legacy directory was already moved aside by the verified Runtime
-    /// v2 migration, the answer comes from the v2 store — an installed
-    /// component never reports "not installed" after its migration.
+    /// verification failure, and whether this build may distribute it.
+    ///
+    /// The legacy directory is checked against its actual artifact bytes
+    /// (with the verifier's success fingerprint cache). When the verified
+    /// Runtime v2 migration already moved that directory aside — or when v2
+    /// otherwise holds the image — the answer comes from the v2 substrate's
+    /// real-file health: registry row + manifest + expanded bytes + blob
+    /// availability. A migrated image never reports "not installed" merely
+    /// because its legacy directory moved, and it never reports "verified"
+    /// merely because a registry row exists.
     func linuxImageStatus(id: String?) async -> LinuxGuestImageInstallationService.ImageStatus? {
-        guard let id, let images = lock.withLock({ linuxImages }) else { return nil }
-        var status = await images.status(id: id)
-        if !status.installed, let v2 = lock.withLock({ linuxImageRuntimeV2 }),
-           let image = await v2.verifiedImage(id: id) {
-            status.installed = true
-            status.verificationFailure = nil
-            status.image = image
+        guard let id, let images = linuxImageBox.value else { return nil }
+        let legacy = await images.status(id: id)
+        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
+              let health = await v2.health(id) else {
+            return legacy
+        }
+        return Self.composedImageStatus(legacy: legacy, health: health)
+    }
+
+    /// Composes the legacy directory status with Runtime v2 real-file health.
+    /// v2 dominates whenever it holds the image: that is the substrate the
+    /// guest actually boots, so a damaged expanded view must surface even
+    /// while a stale legacy manifest still exists.
+    private static func composedImageStatus(
+        legacy: LinuxGuestImageInstallationService.ImageStatus,
+        health: RuntimeV2ImageStore.ImageHealth
+    ) -> LinuxGuestImageInstallationService.ImageStatus {
+        var status = legacy
+        status.installed = true
+        if let image = health.image { status.image = image }
+        switch health.readiness {
+        case .verified:
+            status.verificationIssue = nil
+        case .rebuildableFromBlobs, .replacementRequired:
+            status.verificationIssue = health.issue
         }
         return status
     }
@@ -292,7 +331,88 @@ final class FloePlatformServices: @unchecked Sendable {
     /// UI offers the download entry only when storage really exists, so the
     /// button never promises an install this build cannot perform.
     func linuxGuestImageStorageAvailable() -> Bool {
-        lock.withLock { linuxImages != nil }
+        linuxImageBox.isAvailable
+    }
+
+    /// Re-initializes the durable image service when assembly-time root
+    /// resolution failed. Concurrent callers coalesce onto one bounded build
+    /// (see `BoundedRecoverableBox`), and the service becomes observable only
+    /// after:
+    ///   1. the durable root resolves (bounded retries distinguish a transient
+    ///      Application Support failure from a permanent one), and
+    ///   2. the real guest resolver / preparation path is reconnected — not
+    ///      just the Settings card.
+    /// A refused/failed reconnect publishes nothing, so `ensure` retries on
+    /// the next Linux use and a half-wired service is visible to nobody. No
+    /// temporary image directory is ever fabricated.
+    @discardableResult
+    func ensureLinuxImageService() async -> Bool {
+        await linuxImageBox.ensure { [weak self] in
+            await self?.buildRecoveredLinuxImageService()
+        }
+    }
+
+    /// Builds and wires the recovered service, returning it only when fully
+    /// ready.
+    private func buildRecoveredLinuxImageService() async -> LinuxGuestImageInstallationService? {
+        var root: URL?
+        for attempt in 0..<3 {
+            if let resolved = try? FloeArtifactStore.root() {
+                root = resolved
+                break
+            }
+            let milliseconds = [50, 200, 400][min(attempt, 2)]
+            try? await Task.sleep(for: .milliseconds(milliseconds))
+        }
+        guard let root else { return nil }
+        let service = LinuxGuestImageInstallationService(root: root, limits: .standard)
+        // Reconnect the real resolver and Runtime v2 substrate so first-Linux-use
+        // preparation and exec use the recovered root instead of the unavailable
+        // placeholder. Nothing is published if the backend refuses.
+        guard let guest = currentLinuxCommandService() as? TinyEMULinuxCommandService else {
+            return nil
+        }
+        guard await LinuxGuestBackendAssembly.reconnectBackend(
+            commandService: guest,
+            artifactRoot: root,
+            imageService: service
+        ) else {
+            return nil
+        }
+        return service
+    }
+
+    /// Re-verifies an installed image without any download (a transient file
+    /// I/O condition may clear). Returns the fresh status. Runtime v2 images
+    /// are re-verified against their actual expanded bytes with the cached
+    /// success fingerprint dropped first. Reconstruction belongs to the
+    /// separate, shared and cancellable repair action.
+    func reverifyLinuxImage(imageID: String? = nil) async -> LinuxGuestImageInstallationService.ImageStatus? {
+        guard await ensureLinuxImageService(),
+              let images = linuxImageBox.value else { return nil }
+        let id = imageID ?? LinuxGuestImageDistributionCatalog.defaultImageID
+        let legacy = await images.reverify(id: id)
+        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
+              let health = await v2.reverifyHealth(id) else {
+            return legacy
+        }
+        return Self.composedImageStatus(legacy: legacy, health: health)
+    }
+
+    /// Repairs an installed image that still fails after re-verification by
+    /// re-downloading the pinned image through the same safe staged promote
+    /// used by a normal install: the image directory is replaced only after a
+    /// fully verified replacement exists. Per-environment deltas, working
+    /// disks, 9p data directories and workspaces live outside the shared
+    /// image directory and are never touched.
+    func repairLinuxImage(
+        imageID: String? = nil,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
+    ) async throws {
+        _ = try await prepareLinuxImage(
+            imageID: imageID ?? LinuxGuestImageDistributionCatalog.defaultImageID,
+            cancellation: CancellationToken(), onProgress: onProgress
+        )
     }
 
     /// SMP capability PROVEN by the verified image manifest for `id`, from
@@ -495,7 +615,7 @@ final class FloePlatformServices: @unchecked Sendable {
     /// Runtime v2 migration moved the legacy directory aside, the verbatim
     /// manifest is read from the expanded view instead.
     func linuxComponentUpdateNeeded(id: String?) async -> String? {
-        guard let id, let images = lock.withLock({ linuxImages }) else { return nil }
+        guard let id, let images = linuxImageBox.value else { return nil }
         let manifest = images.imagesDirectory
             .appendingPathComponent(id, isDirectory: true)
             .appendingPathComponent("manifest.json")
@@ -513,20 +633,17 @@ final class FloePlatformServices: @unchecked Sendable {
     /// bounded HTTPS downloader as `floe-env image install`; the id must be a
     /// pinned catalog entry (installTrustedImage refuses anything else), and
     /// nothing is written into an environment layer — the image belongs to the
-    /// App and is shared by every Linux environment.
+    /// App and is shared by every Linux environment. Routed through the shared
+    /// preparation path so a migrated image is repaired through v2 as well.
+    @discardableResult
     func installLinuxGuestImage(
         id: String,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
     ) async throws -> String {
-        guard let images = lock.withLock({ linuxImages }) else {
-            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
-        }
-        let image = try await images.installTrustedImage(
-            id: id,
-            downloader: LinuxGuestImageHTTPDownloader(),
-            onProgress: onProgress
+        _ = try await prepareLinuxImage(
+            imageID: id, cancellation: CancellationToken(), onProgress: onProgress
         )
-        return image.id
+        return id
     }
 
     /// Explicit environment preparation: downloads, verifies and installs
@@ -534,18 +651,70 @@ final class FloePlatformServices: @unchecked Sendable {
     /// tool and by Linux-routed execution before it resumes the original
     /// command. No arbitrary image URL or install script is accepted.
     func prepareLinuxEnvironment(
+        environmentID: String? = nil,
         cancellation: CancellationToken,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
     ) async throws -> String {
-        let imageID = LinuxGuestImageDistributionCatalog.defaultImageID
-        guard let images = lock.withLock({ linuxImages }) else {
+        guard await ensureLinuxImageService() else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
-        let current = await images.status(id: imageID)
-        if current.installed && current.verificationFailure == nil {
+        // Resolve the image this environment actually boots: its pinned
+        // template base when one exists, otherwise the shared default. A
+        // private/pinned base is never silently substituted for the default
+        // (or vice versa): the id comes from the registry probe, never user
+        // text or an offered URL.
+        let resolvedImageID: String
+        if let environmentID,
+           let pinned = await linuxPinnedImageSource.baseImageID(for: environmentID),
+           !pinned.isEmpty {
+            resolvedImageID = pinned
+        } else {
+            resolvedImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+        }
+        return try await prepareLinuxImage(
+            imageID: resolvedImageID, cancellation: cancellation, onProgress: onProgress
+        )
+    }
+
+    /// UI repair and automatic preparation share ownership, progress, errors
+    /// and cancellation through the same image-keyed job.
+    ///
+    /// Order of recovery:
+    ///   1. real-file status (legacy bytes or v2 expanded bytes) — a verified
+    ///      image is never re-downloaded;
+    ///   2. local reconstruction from verified v2 blobs — no download;
+    ///   3. verified download through the legacy installer, then a same-id v2
+    ///      repair so a migrated image boots the repaired blobs, not the
+    ///      damaged ones;
+    ///   4. a final real-file check — success is never claimed from the
+    ///      download alone.
+    /// An old private/pinned image that is not in the pinned catalog is never
+    /// rebased onto the default: `installTrustedImage` refuses it and the
+    /// honest error is surfaced.
+    private func prepareLinuxImage(
+        imageID: String,
+        cancellation: CancellationToken,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws -> String {
+        guard await ensureLinuxImageService(), let images = linuxImageBox.value else {
+            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
+        }
+        if let current = await linuxImageStatus(id: imageID),
+           current.installed && current.verificationIssue == nil {
             return "Linux image \(imageID) is already installed"
         }
+        // Local reconstruction also belongs to the shared job below. Doing
+        // it before registering the owner lets concurrent callers replace
+        // the expanded view twice and leaves the card without cancellation
+        // or a completion transition while the disk is being reconstructed.
         let jobID = "linux-image:" + imageID
+        // Register the owner token BEFORE the shared job starts: a cancel
+        // pressed in the small window before the operation begins must not be
+        // lost. A coalesced caller never replaces the active owner's token.
+        let ownsJob = registerLinuxImageJobCancellation(cancellation, jobID: jobID)
+        defer {
+            if ownsJob { unregisterLinuxImageJobCancellation(cancellation, jobID: jobID) }
+        }
         // One shared, cancellable job whether the user pressed the card or
         // first Linux use (shell, Python, services, apt/npm) auto-prepares:
         // two callers never start two downloads and both see progress.
@@ -553,30 +722,155 @@ final class FloePlatformServices: @unchecked Sendable {
             id: jobID,
             title: String(format: String(localized: "environment.backend.image_download_title"), imageID)
         ) {
-            try await withTaskCancellationHandler {
-                let image = try await images.installTrustedImage(
-                    id: imageID,
-                    downloader: LinuxGuestImageHTTPDownloader(),
-                    onProgress: { received, expected in
-                        onProgress(received, expected)
-                        guard expected > 0 else { return }
-                        let fraction = min(1, Double(received) / Double(expected))
-                        Task { @MainActor in
-                            EnvironmentPackageJobs.shared.reportProgress(id: jobID, fraction: fraction)
-                        }
+            return try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                // A coalesced caller may have repaired the image while this
+                // job was queued: re-check the real bytes under the job.
+                if let current = await self.linuxImageStatus(id: imageID),
+                   current.installed && current.verificationIssue == nil {
+                    return "Linux image \(imageID) is already installed"
+                }
+                if let repaired = try await self.reconstructLinuxImageIfRebuildable(
+                    imageID: imageID, cancellation: cancellation
+                ) {
+                    return repaired
+                }
+                let image: LinuxGuestImage
+                do {
+                    image = try await images.installTrustedImage(
+                        id: imageID,
+                        downloader: LinuxGuestImageHTTPDownloader(),
+                        onProgress: { received, expected in
+                            onProgress(received, expected)
+                            guard expected > 0 else { return }
+                            let fraction = min(1, Double(received) / Double(expected))
+                            Task { @MainActor in
+                                EnvironmentPackageJobs.shared.reportProgress(id: jobID, fraction: fraction)
+                            }
+                        },
+                        isCancelled: { cancellation.isCancelled || Task.isCancelled }
+                    )
+                } catch let error as LinuxGuestImageInstallError {
+                    // A cancelled transfer is cancellation, not a repair
+                    // failure: the shared job must not record it as an error
+                    // that would hide the image's real verification state.
+                    if case .cancelled = error { throw CancellationError() }
+                    throw error
+                }
+                // A migrated image boots the v2 blobs/expanded view, not the
+                // legacy directory this install just populated: same-id repair
+                // re-hashes the blobs, rebuilds the expanded view and moves the
+                // verified legacy copy into the migration rollback area.
+                var repairFailure: Error?
+                if let v2 = self.linuxImageRuntimeV2Snapshot(),
+                   await v2.health(imageID) != nil {
+                    do {
+                        try await v2.repairFromLegacyInstall(
+                            imageID, { cancellation.isCancelled || Task.isCancelled }
+                        )
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        repairFailure = error
                     }
-                )
+                }
+                guard let final = await self.linuxImageStatus(id: imageID),
+                      final.installed, final.verificationIssue == nil else {
+                    let detail = await self.linuxImageStatus(id: imageID)?.verificationIssue?.message
+                        ?? repairFailure?.localizedDescription
+                        ?? "the installed image did not verify"
+                    throw FloeError.validationFailed(
+                        "Linux image \(imageID) did not verify after the install: \(SecretRedactor.redact(detail))"
+                    )
+                }
                 return "Linux image \(image.id) installed and verified"
             } onCancel: {
                 cancellation.cancel()
+                self.cancelLinuxImageInstall(imageID: imageID)
             }
         }
+    }
+
+    /// Rebuilds the expanded boot view when Runtime v2 reports the image as
+    /// locally rebuildable. Returns the success message, or nil when v2 does
+    /// not hold a rebuildable image (or the reconstruction failed — the
+    /// verified download path then still runs). Never downloads and never
+    /// touches environment deltas/workspaces.
+    private func reconstructLinuxImageIfRebuildable(
+        imageID: String,
+        cancellation: CancellationToken
+    ) async throws -> String? {
+        guard let v2 = linuxImageRuntimeV2Snapshot(),
+              let health = await v2.health(imageID),
+              health.readiness == .rebuildableFromBlobs else { return nil }
+        do {
+            try await v2.reconstructExpanded(
+                imageID, { cancellation.isCancelled || Task.isCancelled }
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // A reconstruction that failed for another reason falls through
+            // to the verified download repair path.
+            return nil
+        }
+        guard let current = await linuxImageStatus(id: imageID),
+              current.installed, current.verificationIssue == nil else { return nil }
+        return "Linux image \(imageID) reconstructed from its verified artifacts"
+    }
+
+    private func linuxImageRuntimeV2Snapshot() -> LinuxGuestRuntimeV2ImageStatus? {
+        lock.withLock { linuxImageRuntimeV2 }
+    }
+
+    // MARK: Linux image job cancellation
+    //
+    // The shared job coalesces every caller onto one download. Cancellation is
+    // owned by the operation that actually started the download; a coalesced
+    // caller cancelling its own context never cancels the shared transfer.
+
+    private var linuxImageJobCancellations: [String: CancellationToken] = [:]
+
+    /// Registers this caller's token as the owner of `jobID`'s shared
+    /// operation; false when another caller already owns it.
+    @discardableResult
+    private func registerLinuxImageJobCancellation(_ token: CancellationToken, jobID: String) -> Bool {
+        lock.withLock {
+            guard linuxImageJobCancellations[jobID] == nil else { return false }
+            linuxImageJobCancellations[jobID] = token
+            return true
+        }
+    }
+
+    private func unregisterLinuxImageJobCancellation(_ token: CancellationToken, jobID: String) {
+        lock.withLock {
+            if linuxImageJobCancellations[jobID] === token {
+                linuxImageJobCancellations[jobID] = nil
+            }
+        }
+    }
+
+    /// Cancels the shared Linux image job for `imageID`: the download,
+    /// extraction and pre-promotion checkpoint all observe it, so a cancelled
+    /// repair never promotes a partial candidate and never replaces a working
+    /// image with an unverified one.
+    func cancelLinuxImagePreparation(imageID: String) {
+        let jobID = "linux-image:" + imageID
+        lock.withLock { linuxImageJobCancellations[jobID] }?.cancel()
+        cancelLinuxImageInstall(imageID: imageID)
+    }
+
+    private func cancelLinuxImageInstall(imageID: String) {
+        guard let images = linuxImageBox.value else { return }
+        Task { await images.cancelInstallTrustedImage(id: imageID) }
     }
 
     /// `floe-env image status|import|install|remove` — the reachable image
     /// entry. `install` downloads the catalog-pinned Floe archive; `import`
     /// takes an already-downloaded zip plus its SHA-512, which is what a local
-    /// qualification run produces.
+    /// qualification run produces. Storage is recovered when assembly-time
+    /// root resolution failed, and status/install compose the same Runtime v2
+    /// real-file truth the UI uses.
     func runImageCommand(arguments: [String]) async -> (output: String, exitCode: Int32) {
         let usage = """
         usage: floe-env image status <id>
@@ -584,23 +878,35 @@ final class FloePlatformServices: @unchecked Sendable {
                floe-env image install <id>          (pinned Floe archive only)
                floe-env image remove <id>
         """
-        guard let images = lock.withLock({ linuxImages }) else {
-            return ("floe-env image: image storage is unavailable in this build (no durable artifact root); native environments are unchanged", 1)
-        }
         let args = Array(arguments.dropFirst())
         guard args.count >= 2 else { return (usage, 2) }
         let action = args[1]
+        // Recover the durable image service when a transient launch-time root
+        // failure left it unpublished: this CLI is the diagnostic entry and
+        // must not stay dead.
+        guard await ensureLinuxImageService(), let images = linuxImageBox.value else {
+            return ("floe-env image: image storage is unavailable in this build (no durable artifact root); native environments are unchanged", 1)
+        }
         do {
             switch action {
             case "status":
                 guard args.count == 3 else { return (usage, 2) }
-                let status = await images.status(id: args[2])
+                let composed = await linuxImageStatus(id: args[2])
+                let status: LinuxGuestImageInstallationService.ImageStatus
+                if let composed {
+                    status = composed
+                } else {
+                    status = await images.status(id: args[2])
+                }
                 var lines = [
                     "image \(status.id): \(status.installed ? "installed" : "not installed")",
                     "distributable: \(status.distributable ? "yes" : "no (no pinned Floe archive)")"
                 ]
-                if let failure = status.verificationFailure { lines.append("verification: \(failure)") }
-                else if status.installed { lines.append("verification: ok (artifacts match the qualification record)") }
+                if let failure = status.verificationFailure {
+                    lines.append("verification: \(failure)")
+                } else if status.installed {
+                    lines.append("verification: ok (artifacts match the qualification record)")
+                }
                 if let image = status.image {
                     lines.append("qualificationRun: \(image.qualificationRun ?? "-")")
                     lines.append("cmdline: \(image.effectiveCmdline)")
@@ -612,11 +918,29 @@ final class FloePlatformServices: @unchecked Sendable {
                     return ("floe-env image: place the archive inside the current workspace or the image directory", 1)
                 }
                 let image = try await images.importArchive(at: archiveURL, expectedSHA512: args[4])
-                return ("installed \(image.id) (verified artifacts; qualificationRun=\(image.qualificationRun ?? "-"))", 0)
+                var v2Note = ""
+                // A migrated image boots the Runtime v2 substrate, not the
+                // freshly imported legacy directory: give v2 the same-id
+                // verified replacement and say what happened.
+                if let v2 = linuxImageRuntimeV2Snapshot(), await v2.health(image.id) != nil {
+                    do {
+                        try await v2.repairFromLegacyInstall(image.id, { false })
+                        if let health = await v2.health(image.id), health.readiness == .verified {
+                            v2Note = " (Runtime v2 refreshed)"
+                        }
+                    } catch {
+                        v2Note = " (Runtime v2 refresh failed: \(SecretRedactor.redact(error.localizedDescription)))"
+                    }
+                }
+                return ("installed \(image.id) (verified artifacts; qualificationRun=\(image.qualificationRun ?? "-"))\(v2Note)", 0)
             case "install":
                 guard args.count == 3 else { return (usage, 2) }
-                let image = try await images.installTrustedImage(id: args[2], downloader: LinuxGuestImageHTTPDownloader())
-                return ("installed \(image.id) from the pinned Floe archive", 0)
+                let message = try await prepareLinuxImage(
+                    imageID: args[2],
+                    cancellation: CancellationToken(),
+                    onProgress: { _, _ in }
+                )
+                return (message, 0)
             case "remove":
                 guard args.count == 3 else { return (usage, 2) }
                 try await images.removeImage(id: args[2])
@@ -633,7 +957,7 @@ final class FloePlatformServices: @unchecked Sendable {
     /// app's own image directory; an arbitrary host path is not an import
     /// source.
     private func authorizedImageArchivePath(_ path: String) -> URL? {
-        guard let images = lock.withLock({ linuxImages }) else { return nil }
+        guard let images = linuxImageBox.value else { return nil }
         let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
         var allowed: [URL] = [images.imagesDirectory]
         if let root = FloeShellCommandRegistry.shared.context?.rootURL {

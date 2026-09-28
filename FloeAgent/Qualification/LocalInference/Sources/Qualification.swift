@@ -4,6 +4,8 @@ import FloeLocalModelCatalog
 import FloeCore
 import FloeModels
 import FloeProviders
+import FloeExecution
+import FloeAgentRuntime
 import MLX
 import Darwin
 import Synchronization
@@ -589,14 +591,29 @@ import Synchronization
             allToolNames: [schema.name]
         )
         var secondCalls: [ToolCall] = []
+        var secondRequestAnswer = ""
+        var secondRequestCompleted = false
         for try await event in adapter.stream(request: nextTurn, credentials: ProviderCredentials()) {
             switch event {
             case .toolRequest(let toolCall): secondCalls.append(toolCall)
+            case .textDelta(let delta): secondRequestAnswer += delta.text
+            case .completed(let info): secondRequestCompleted = info.stopReason == .endTurn
             case .error(let error): throw NSError(domain: "Qualification.Tool", code: 15,
                 userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
             default: break
             }
         }
+        // Synthetic fixture only: retain the actual failure shape before the
+        // assertion, rather than losing whether the model answered or called
+        // the wrong file. Never log user conversations here.
+        record("tool-second-turn-observed", [
+            "completed": secondRequestCompleted,
+            "syntheticAnswerPrefix": String(secondRequestAnswer.prefix(1024)),
+            "calls": secondCalls.map { call in
+                ["id": call.id, "name": call.toolName,
+                 "syntheticArguments": String(decoding: call.argumentsJSON, as: UTF8.self)]
+            }
+        ])
         guard secondCalls.count == 1, let secondCall = secondCalls.first,
               secondCall.id != call.id, secondCall.toolName == schema.name,
               let arguments = try JSONSerialization.jsonObject(with: secondCall.argumentsJSON) as? [String: Any],
@@ -648,7 +665,202 @@ import Synchronization
         await runtime.unload(modelID: entry.id)
     }
 
-    /// Original optional baseline: the three prompts from the first cloud run.
+    /// Real-weight greeting → web.search → tool result → follow-up web.search
+    /// chain through the production `LocalProviderAdapter`, using the EXACT
+    /// production `web.search` descriptor. The existing tool host covered only
+    /// file reads; this case proves the previously untested news-search path:
+    ///   * a greeting never invokes the offered search tool,
+    ///   * an explicit news request yields one `web.search` call (directly or
+    ///     after the bounded repair) with a non-empty `query`,
+    ///   * a truthful receipt then reaches a follow-up turn, which requests a
+    ///     second search (new call id, weather query).
+    /// No live/paid web search is performed: the tool result is a clearly
+    /// labeled synthetic fixture supplied by this host.
+    static func runActualSearchRoundtrip(_ entry: LocalModelCatalogEntry, store: LocalModelStore) async throws {
+        let runtime = LocalModelRuntime(store: store)
+        let adapter = LocalProviderAdapter(runtime: runtime, store: store)
+        let model = ModelProfile(
+            providerID: LocalProviderAdapter.providerProfile.id,
+            remoteModelID: entry.id,
+            displayName: "Qwen search qualification",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 256),
+            capabilities: [.text, .tools]
+        )
+        let schema = ToolSchemaDescriptor(
+            name: WebSearchTool.name,
+            description: WebSearchTool.toolDescription,
+            parametersJSON: WebSearchTool.parametersJSON
+        )
+        let offeredSchemas = [schema,
+            ToolSchemaDescriptor(name: WebFetchTool.name, description: WebFetchTool.toolDescription,
+                                 parametersJSON: WebFetchTool.parametersJSON),
+            ToolSchemaDescriptor(name: URLDownloadTool.name, description: URLDownloadTool.toolDescription,
+                                 parametersJSON: URLDownloadTool.parametersJSON),
+            ToolSchemaDescriptor(name: OCRTool.name, description: OCRTool.toolDescription,
+                                 parametersJSON: OCRTool.parametersJSON),
+            ToolSchemaDescriptor(name: LocalPythonTool.name, description: LocalPythonTool.toolDescription,
+                                 parametersJSON: LocalPythonTool.parametersJSON)
+        ]
+        let systemEnvelope = AgentPromptComposer.compose(
+            mode: .chat,
+            runtimeContext: "# Run context\nWorkspace: synthetic qualification workspace. Tool permissions are enforced by the host. After a tool result, answer from that result; repeat its receipt marker verbatim and identify synthetic results as synthetic.",
+            toolsAvailable: true, compactForLocal: true
+        )
+
+        func collect(_ request: ProviderStreamRequest) async throws -> (calls: [ToolCall], answer: String, completed: Bool) {
+            var calls: [ToolCall] = []
+            var answer = ""
+            var completed = false
+            for try await event in adapter.stream(request: request, credentials: ProviderCredentials()) {
+                switch event {
+                case .toolRequest(let call): calls.append(call)
+                case .textDelta(let delta): answer += delta.text
+                case .completed(let info): completed = info.stopReason == .endTurn
+                case .error(let error): throw NSError(domain: "Qualification.Search", code: 30,
+                    userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+                default: break
+                }
+            }
+            return (calls, answer, completed)
+        }
+
+        // Turn 1: greeting stays conversational.
+        record("search-roundtrip-start", ["model": entry.id,
+            "systemEnvelopeSource": "production-local-composer",
+            "offeredSchemas": offeredSchemas.count])
+        let greeting = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: model,
+            messages: [
+                (role: "system", content: systemEnvelope),
+                (role: "user", content: "你好，今天过得怎么样？")
+            ],
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
+        )
+        let greetingReply = try await collect(greeting)
+        guard greetingReply.calls.isEmpty, greetingReply.completed,
+              !greetingReply.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "Qualification.Search", code: 31,
+                userInfo: [NSLocalizedDescriptionKey: "Real model invoked web.search for a plain greeting"])
+        }
+
+        // Turn 2: explicit news search.
+        let search = ProviderStreamRequest(
+            provider: greeting.provider,
+            model: model,
+            messages: greeting.messages + [
+                (role: "assistant", content: greetingReply.answer),
+                (role: "user", content: "那你能尝试调用一下工具，随便搜索一下今天的新闻吗")
+            ],
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
+        )
+        let searchReply = try await collect(search)
+        let calls = searchReply.calls
+        guard calls.count == 1, let call = calls.first, call.toolName == schema.name,
+              let arguments = try JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
+              let query = arguments["query"] as? String, !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw NSError(domain: "Qualification.Search", code: 32,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Real model did not request exactly one web.search call with a non-empty query"])
+        }
+
+        // Truthful, clearly labeled synthetic receipt — no live search.
+        let firstMarker = "FLOE_SEARCH_RECEIPT_7A31"
+        let summary = "receipt marker: \(firstMarker). synthetic fixture (no live search performed): 3 normalized results for query \"\(query)\""
+        let result = ToolResult(callID: call.id, status: .ok, outputSummary: summary,
+                                outputDigest: FloeDigest.sha256Hex(Data(summary.utf8)))
+        record("search-tool-executed", ["model": entry.id, "tool": call.toolName,
+                                         "callID": call.id, "receiptSource": "synthetic-fixture",
+                                         "query": query])
+
+        let continuation = ProviderStreamRequest(
+            provider: search.provider, model: model, messages: search.messages,
+            toolResults: [(callID: call.id, output: result.outputSummary)],
+            pendingToolCalls: [call],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
+            toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
+        )
+        let firstReply = try await collect(continuation)
+        // Only synthetic qualification content: retain the actual observation
+        // before an assertion so failures distinguish truncation, another call
+        // and an answer that did not consume the tool receipt.
+        record("search-reply-observed", ["conversationTurn": 2,
+            "completed": firstReply.completed, "toolNames": firstReply.calls.map(\.toolName),
+            "answerCharacters": firstReply.answer.count,
+            "syntheticAnswerPrefix": String(firstReply.answer.prefix(1_024)),
+            "answerContainsReceipt": firstReply.answer.contains(firstMarker)])
+        guard firstReply.calls.isEmpty, firstReply.completed,
+              firstReply.answer.contains(firstMarker) else {
+            throw NSError(domain: "Qualification.Search", code: 34,
+                userInfo: [NSLocalizedDescriptionKey: "First search receipt did not produce a completed answer containing its marker"])
+        }
+        record("search-answer-complete", ["model": entry.id, "conversationTurn": 2,
+                                          "callID": call.id, "answerContainsReceipt": true])
+
+        // Turn 3 follows the actual greeting and completed search answer.
+
+        let followup = ProviderStreamRequest(
+            provider: search.provider,
+            model: model,
+            messages: search.messages + [
+                (role: "assistant", content: firstReply.answer),
+                (role: "user", content: "很好，再帮我搜索一下明天的天气")
+            ],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
+        )
+        let followupReply = try await collect(followup)
+        let followupCalls = followupReply.calls
+        guard followupCalls.count == 1, let followupCall = followupCalls.first,
+              followupCall.id != call.id, followupCall.toolName == schema.name,
+              let followupArguments = try JSONSerialization.jsonObject(with: followupCall.argumentsJSON) as? [String: Any],
+              let weatherQuery = followupArguments["query"] as? String,
+              weatherQuery.range(of: "天气|weather", options: .regularExpression) != nil else {
+            throw NSError(domain: "Qualification.Search", code: 33,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Follow-up turn did not request a new web.search call with a weather query"])
+        }
+        let secondMarker = "FLOE_SEARCH_RECEIPT_B802"
+        let secondSummary = "receipt marker: \(secondMarker). synthetic fixture (no live search performed): weather search fixture, not a real forecast."
+        let secondResult = ToolResult(callID: followupCall.id, status: .ok,
+            outputSummary: secondSummary, outputDigest: FloeDigest.sha256Hex(Data(secondSummary.utf8)))
+        record("search-tool-executed", ["model": entry.id, "tool": followupCall.toolName,
+            "callID": followupCall.id, "receiptSource": "synthetic-fixture", "query": weatherQuery])
+        let secondContinuation = ProviderStreamRequest(
+            provider: followup.provider, model: model, messages: followup.messages,
+            toolResults: [(callID: followupCall.id, output: secondResult.outputSummary)],
+            pendingToolCalls: [followupCall],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result),
+                               ReplayedToolPair(call: followupCall, result: secondResult)],
+            toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
+        )
+        let secondReply = try await collect(secondContinuation)
+        record("search-reply-observed", ["conversationTurn": 3,
+            "completed": secondReply.completed, "toolNames": secondReply.calls.map(\.toolName),
+            "answerCharacters": secondReply.answer.count,
+            "syntheticAnswerPrefix": String(secondReply.answer.prefix(1_024)),
+            "answerContainsReceipt": secondReply.answer.contains(secondMarker)])
+        guard secondReply.calls.isEmpty, secondReply.completed,
+              secondReply.answer.contains(secondMarker) else {
+            throw NSError(domain: "Qualification.Search", code: 35,
+                userInfo: [NSLocalizedDescriptionKey: "Second search receipt did not produce a completed answer containing its marker"])
+        }
+        record("search-answer-complete", ["model": entry.id, "conversationTurn": 3,
+            "callID": followupCall.id, "answerContainsReceipt": true])
+        record("search-roundtrip-complete", [
+            "model": entry.id,
+            "greetingInvokedTool": false,
+            "completedToolAnswers": 2,
+            "firstCallID": call.id,
+            "followupCallID": followupCall.id,
+            "conversationTurns": 3,
+            "receiptSource": "synthetic-fixture"
+        ])
+        await runtime.unload(modelID: entry.id)
+    }
     static func runBaseline(_ entry: LocalModelCatalogEntry, using profileCase: ProfileCase,
                             directory: URL) async throws {
         var startFields = profileCase.fields
@@ -746,5 +958,6 @@ import Synchronization
             }
         }
         try await runActualToolRoundtrip(entry, store: store, fixtureRoot: root)
+        try await runActualSearchRoundtrip(entry, store: store)
     }
 }

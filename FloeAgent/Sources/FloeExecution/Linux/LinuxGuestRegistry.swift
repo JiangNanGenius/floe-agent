@@ -303,14 +303,17 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     private let environments: any LinuxGuestEnvironmentProviding
-    private let images: any LinuxGuestImageResolving
+    /// Mutable so a recoverable initialization can reconnect the real
+    /// resolver after a transient assembly-time failure; only replaced via
+    /// `reconnect` while no session is active.
+    private var images: any LinuxGuestImageResolving
     private let limits: LinuxGuestLimits
     private let factory: any LinuxGuestSessionCreating
     /// Runtime v2 substrate: pool admission (4 running + queue), durable
     /// leases, working-disk/delta lifecycle. nil keeps the legacy bounded
     /// admission (capacityReached) and per-layer disk preparation — the seam
     /// used by focused registry tests.
-    private let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
+    private var runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
     private var sessions: [String: Session] = [:]
     private var lastErrors: [String: String] = [:]
     private var lastImpacts: [String: String] = [:]
@@ -408,6 +411,81 @@ public actor TinyEMULinuxGuestRegistry {
         self.runtimeV2 = runtimeV2
         self.releasePolicy = releasePolicy
     }
+
+    /// Barrier for a two-phase reconnect. While held the registry already
+    /// runs the NEW resolver and every guest-booting entry is refused
+    /// (`guestBusy`), giving the caller a gap to publish the matching
+    /// global hooks with no start interleaving. `abort` restores the old
+    /// resolver captured here.
+    private final class ReconnectBarrier: @unchecked Sendable {
+        let oldImages: any LinuxGuestImageResolving
+        let oldRuntimeV2: (any LinuxGuestRuntimeV2Integrating)?
+
+        init(oldImages: any LinuxGuestImageResolving, oldRuntimeV2: (any LinuxGuestRuntimeV2Integrating)?) {
+            self.oldImages = oldImages
+            self.oldRuntimeV2 = oldRuntimeV2
+        }
+    }
+    private var reconnectBarrier: ReconnectBarrier?
+
+    /// Phase 1 of a recoverable reconnect. Checks the idle invariants
+    /// (running/starting/tearing-down guests and queued admissions), swaps in
+    /// the new resolver and holds a barrier that refuses guest starts until
+    /// `commitReconnect`. Returns false when not idle: nothing is changed and
+    /// the caller must not publish.
+    public func beginReconnect(
+        images: any LinuxGuestImageResolving,
+        runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
+    ) async -> Bool {
+        // Synchronous pre-screen before any suspension.
+        guard sessions.isEmpty,
+              startingEnvironments.isEmpty,
+              teardownsInFlight.isEmpty,
+              reconnectBarrier == nil else {
+            return false
+        }
+        // Querying queued admissions suspends: install the barrier FIRST so
+        // actor reentrancy cannot admit a start while we await, and roll it
+        // back when the queued check refuses. The captured resolver is the
+        // live one, so an abort restores exactly it.
+        let barrier = ReconnectBarrier(oldImages: self.images, oldRuntimeV2: self.runtimeV2)
+        reconnectBarrier = barrier
+        if let queued = await self.runtimeV2?.queuedStarts(), queued > 0 {
+            abortReconnect()
+            return false
+        }
+        // No suspension exists between this point and the swap, but re-check
+        // every guard anyway: a future added await must not silently break
+        // the invariant.
+        guard sessions.isEmpty,
+              startingEnvironments.isEmpty,
+              teardownsInFlight.isEmpty,
+              reconnectBarrier === barrier else {
+            abortReconnect()
+            return false
+        }
+        self.images = images
+        self.runtimeV2 = runtimeV2
+        return true
+    }
+
+    /// Phase 2: releases the barrier after the caller published the matching
+    /// hooks. Guest starts are admitted again.
+    public func commitReconnect() {
+        reconnectBarrier = nil
+    }
+
+    /// Rolls a begin back without publishing: the old resolver is restored
+    /// before the barrier lifts, so registry state is exactly as before.
+    public func abortReconnect() {
+        guard let barrier = reconnectBarrier else { return }
+        self.images = barrier.oldImages
+        self.runtimeV2 = barrier.oldRuntimeV2
+        reconnectBarrier = nil
+    }
+
+    /// True when a reconnect barrier blocks guest-booting entries.
+    public var isReconnectBarrierActive: Bool { reconnectBarrier != nil }
 
     /// True when this service owns the environment as a Linux guest, running
     /// or not. Native environments (and unknown ids) answer false.
@@ -792,6 +870,10 @@ public actor TinyEMULinuxGuestRegistry {
     ) async throws -> Bool {
         let inTransaction = transactionToken != nil
             && lifecycleTransactions[environmentID] == transactionToken
+        if reconnectBarrier != nil {
+            // A reconnect is between resolver swap and hook publication.
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
         guard var descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
         }
@@ -2910,6 +2992,27 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     public init(registry: TinyEMULinuxGuestRegistry, limits: LinuxGuestLimits = .standard) {
         self.registry = registry
         self.localServices = LinuxGuestLocalServiceSupervisor(host: registry, limits: limits)
+    }
+
+    /// Reconnects the resolver/v2 substrate after recoverable initialization.
+    /// Returns false when a guest is active (then the caller waits for the
+    /// next stopped state instead of swapping under a live VM).
+    /// Two-phase reconnect, phase 1: idle check + resolver swap + barrier.
+    public func beginLinuxBackendReconnect(
+        images: any LinuxGuestImageResolving,
+        runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
+    ) async -> Bool {
+        await registry.beginReconnect(images: images, runtimeV2: runtimeV2)
+    }
+
+    /// Two-phase reconnect, phase 2: hooks published; admit starts again.
+    public func commitLinuxBackendReconnect() async {
+        await registry.commitReconnect()
+    }
+
+    /// Rolls a begin back; old resolver restored before the barrier lifts.
+    public func abortLinuxBackendReconnect() async {
+        await registry.abortReconnect()
     }
 
     // MARK: LinuxCommandRunning

@@ -120,6 +120,25 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// whether the v2 store already holds this image verified, so a status
     /// read can never kick off a multi-gigabyte migration as a side effect.
     func isImageVerifiedWithoutMigration(imageID: String) async -> Bool
+    /// Inspection-only real-file health of a Runtime v2 image: registry row,
+    /// v2 manifest, the actual expanded bytes and (when the view needs
+    /// rebuilding) referenced-blob availability. `nil` when the v2 store does
+    /// not hold this image. Never migrates, rebuilds or downloads.
+    func imageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth?
+    /// Explicit re-verification: drops the cached success fingerprint before
+    /// re-reading the actual bytes. Never migrates or downloads.
+    func reverifyImageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth?
+    /// Rebuilds the expanded boot view from verified blobs (no download).
+    /// Throws `RuntimeV2Error.blobMissing` when a referenced blob is gone,
+    /// and `CancellationError` when `isCancelled` fires between artifacts. The
+    /// previous view is never replaced by a partial one.
+    func reconstructExpandedImage(imageID: String, isCancelled: (@Sendable () -> Bool)?) async throws
+    /// Same-id repair after `installTrustedImage` promoted a verified
+    /// replacement into the legacy directory: re-hashes/re-places the v2
+    /// blobs and rebuilds the expanded view so a migrated image does not keep
+    /// booting damaged bytes. Observed `isCancelled` stops between blobs and
+    /// before the switch; quarantined evidence is preserved either way.
+    func repairImageFromLegacyInstall(imageID: String, isCancelled: (@Sendable () -> Bool)?) async throws
     /// Runner capability ledger (system/runner.json in v2).
     func recordedRunnerCapabilities(environmentID: String) async -> String?
     func recordRunnerCapabilities(_ capabilities: String, environmentID: String) async
@@ -160,6 +179,21 @@ public extension LinuxGuestRuntimeV2Integrating {
             environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
         )
         return .unknown
+    }
+
+    /// Conservative defaults for scripted test integrators: no real image
+    /// substrate answers "not held" / "cannot repair" instead of inventing
+    /// verified truth.
+    func imageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth? { nil }
+
+    func reverifyImageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth? { nil }
+
+    func reconstructExpandedImage(imageID: String, isCancelled: (@Sendable () -> Bool)?) async throws {
+        throw RuntimeV2Error.imageNotFound(imageID)
+    }
+
+    func repairImageFromLegacyInstall(imageID: String, isCancelled: (@Sendable () -> Bool)?) async throws {
+        throw RuntimeV2Error.imageNotFound(imageID)
     }
 }
 
@@ -815,6 +849,48 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         } catch {
             return false
         }
+    }
+
+    /// Inspection-only real-file health (see `RuntimeV2ImageStore.ImageHealth`).
+    /// No migration, no rebuild, no download: failures answer `nil` rather
+    /// than a fabricated state.
+    public func imageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth? {
+        do {
+            try await ensurePrepared()
+            return await store.images.imageHealth(imageID: imageID)
+        } catch {
+            return nil
+        }
+    }
+
+    public func reverifyImageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth? {
+        do {
+            try await ensurePrepared()
+            return await store.images.reverifyImageHealth(imageID: imageID)
+        } catch {
+            return nil
+        }
+    }
+
+    public func reconstructExpandedImage(
+        imageID: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async throws {
+        try await ensurePrepared()
+        _ = try await store.images.reconstructExpandedImage(
+            imageID: imageID, isCancelled: isCancelled
+        )
+    }
+
+    public func repairImageFromLegacyInstall(
+        imageID: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async throws {
+        try await ensurePrepared()
+        guard let legacyImagesRoot else { throw RuntimeV2Error.imageNotFound(imageID) }
+        _ = try await store.images.repairImageFromLegacyInstall(
+            imageID: imageID, legacyImagesRoot: legacyImagesRoot, isCancelled: isCancelled
+        )
     }
 
     public func environmentDataDirectory(environmentID: String) async throws -> URL {

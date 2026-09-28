@@ -14,6 +14,8 @@ from package_office_engine import digest
 from prepare_office_native_sources import DEFAULT_LOCK
 from qualify_office_mobile import qualify
 from office_release_gates import false_capabilities
+from office_font_config import (KNOWN_ENGINE_BUNDLED_FAMILIES, language_resource_report,
+                                merge_font_config, validate_overlay)
 
 HOST = DEFAULT_LOCK.parent / "FloeOfficeNative"
 NAME = "FloeOfficeNative"
@@ -235,6 +237,40 @@ def build_host(root, output, *, build=True, filter_overlay=None):
     for required in ['cool.html', 'rc', 'ICU.dat', 'program', 'share']:
         if not (resources / required).exists():
             raise ValueError('Framework omitted a required engine resource: ' + required)
+    # Floe-owned font substitution config (Build 233 R4): merge the additive
+    # user-layer overlay into the packaged coolkitconfig.xcu before the
+    # resource hashes are recorded, so the pin covers exactly the bytes the
+    # app embeds. Structural validation only here: the Floe staged fonts are
+    # copied into the app later by embed_office_host.py, but the real pinned
+    # share/registry/main.xcd is present and every locale/alias path is
+    # checked against it.
+    main_xcd = resources / 'share/registry/main.xcd'
+    if not main_xcd.is_file():
+        raise ValueError('Office font validation requires the packaged VCL registry: main.xcd')
+    structural = validate_overlay(require_targets=False,
+                                  vendor_config=main_xcd)
+    if structural['failures']:
+        raise ValueError('Floe font substitution overlay is invalid: '
+                         + '; '.join(structural['failures']))
+    coolkit = resources / 'coolkitconfig.xcu'
+    if not coolkit.is_file():
+        raise ValueError('Framework omitted the kit configuration: coolkitconfig.xcu')
+    merged, merge_facts = merge_font_config(coolkit.read_bytes())
+    coolkit.write_bytes(merged)
+    report['fontSubstitutionConfig'] = {
+        'overlaySHA256': digest(DEFAULT_LOCK.parent / 'FloeOfficeFontSubstitutions.xcu'),
+        'aliases': len(structural['aliases']),
+        'locales': structural['locales'],
+        'aliasOverrides': len(structural['aliasOverrides']),
+        'aliasAdditions': len(structural['aliasAdditions']),
+        'schemaCheckedAgainst': 'share/registry/main.xcd' if main_xcd.is_file() else None,
+        'hostConfigSHA256': digest(coolkit),
+        'engineBundledTargets': sorted(KNOWN_ENGINE_BUNDLED_FAMILIES),
+        **merge_facts,
+    }
+    # Build 233 R5: record which configured-language UI resources the upstream
+    # build actually produced. A gap is reported, never fabricated.
+    report['languageResources'] = language_resource_report(resources)
     report['runtimeResourceSHA256'] = {str(path.relative_to(resources)): digest(path)
         for path in sorted(resources.rglob('*')) if path.is_file()}
     report['runtimeResourceDirectories'] = [str(path.relative_to(resources))

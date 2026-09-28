@@ -5,7 +5,7 @@
 // still render the "Download and Start" card). This type is the single
 // derivation from verified facts:
 //
-//  - image install + digest verification (`LinuxGuestImageInstallationService`),
+//  - image install + typed verification issue (`LinuxGuestImageInstallationService`),
 //  - per-environment disk preparation/migration provenance,
 //  - the live guest runtime (`LinuxGuestStatus`),
 //  - the shared, cancellable download job.
@@ -17,7 +17,12 @@
 import Foundation
 
 public enum LinuxGuestInstallState: Sendable, Equatable {
-    /// No App-shared image storage is configured in this build.
+    /// Durable image storage is still being initialized (first launch before
+    /// the root is ready). Distinct from a permanent unavailability so the
+    /// UI shows progress, not a dead end.
+    case storageInitializing
+    /// No App-shared image storage could be initialized yet, but a recoverable
+    /// initialization can retry; data already on disk was retained.
     case storageUnavailable
     /// The verified image is absent/unverified and no download is running.
     /// The UI offers exactly one download entry (never a second one).
@@ -25,6 +30,11 @@ public enum LinuxGuestInstallState: Sendable, Equatable {
     /// The shared download/install job is running (`fraction` 0...1 when the
     /// server sent a Content-Length) or being cancelled.
     case downloading(fraction: Double?, cancelling: Bool)
+    /// The image directory exists but failed verification. `transient` is true
+    /// only for a known transient file I/O condition: first re-verify; if it
+    /// persists, the repair re-downloads the pinned image through the safe
+    /// staged promote. Never deletes user environments/deltas.
+    case imageRepairRequired(transient: Bool, message: String)
     /// Image verified; no guest is running. Start action. When `environment`
     /// is present the start targets that environment; otherwise first Linux
     /// use auto-prepares through the shared preparation service.
@@ -43,8 +53,11 @@ public enum LinuxGuestInstallState: Sendable, Equatable {
 /// corresponding service cannot answer; the derivation never invents state.
 public struct LinuxGuestInstallFacts: Sendable, Equatable {
     public var storageAvailable: Bool
+    /// Durable image storage initialization is in progress (loading vs a
+    /// permanent unavailability).
+    public var storageInitializing: Bool
     public var imageInstalled: Bool
-    public var imageVerificationFailure: String?
+    public var imageVerificationIssue: LinuxImageVerificationIssue?
     public var imageDistributable: Bool
     public var componentUpdateDetail: String?
     public var guestEnvironmentID: String?
@@ -55,11 +68,20 @@ public struct LinuxGuestInstallFacts: Sendable, Equatable {
     public var downloadRunning: Bool
     public var downloadFraction: Double?
     public var downloadCancelling: Bool
+    /// The shared image job's own failure message (a real error, never a
+    /// cancellation). When the image still fails verification, this newest
+    /// signal must stay visible: the older verification reason alone would
+    /// hide why the repair just failed.
+    public var downloadFailureMessage: String?
+
+    /// Backward-compatible read of the verification failure message.
+    public var imageVerificationFailure: String? { imageVerificationIssue?.message }
 
     public init(
         storageAvailable: Bool = false,
+        storageInitializing: Bool = false,
         imageInstalled: Bool = false,
-        imageVerificationFailure: String? = nil,
+        imageVerificationIssue: LinuxImageVerificationIssue? = nil,
         imageDistributable: Bool = false,
         componentUpdateDetail: String? = nil,
         guestEnvironmentID: String? = nil,
@@ -68,11 +90,13 @@ public struct LinuxGuestInstallFacts: Sendable, Equatable {
         guestDiskResizeFailure: String? = nil,
         downloadRunning: Bool = false,
         downloadFraction: Double? = nil,
-        downloadCancelling: Bool = false
+        downloadCancelling: Bool = false,
+        downloadFailureMessage: String? = nil
     ) {
         self.storageAvailable = storageAvailable
+        self.storageInitializing = storageInitializing
         self.imageInstalled = imageInstalled
-        self.imageVerificationFailure = imageVerificationFailure
+        self.imageVerificationIssue = imageVerificationIssue
         self.imageDistributable = imageDistributable
         self.componentUpdateDetail = componentUpdateDetail
         self.guestEnvironmentID = guestEnvironmentID
@@ -82,6 +106,24 @@ public struct LinuxGuestInstallFacts: Sendable, Equatable {
         self.downloadRunning = downloadRunning
         self.downloadFraction = downloadFraction
         self.downloadCancelling = downloadCancelling
+        self.downloadFailureMessage = downloadFailureMessage
+    }
+}
+
+/// One-shot completion gate for the shared Linux image job. A card owner's
+/// continuation (start the guest) must fire only when THIS image's job
+/// transitioned from running to finished with a real-file verified status —
+/// never for an unrelated package-job revision, and never for a cancellation
+/// or failure. `observe` returns true at most once per genuine transition.
+public struct LinuxGuestInstallCompletionGate: Sendable, Equatable {
+    private var observedRunning = false
+
+    public init() {}
+
+    public mutating func observe(running: Bool, failed: Bool, verified: Bool) -> Bool {
+        defer { observedRunning = running }
+        guard observedRunning, !running, !failed, verified else { return false }
+        return true
     }
 }
 
@@ -91,13 +133,16 @@ public enum LinuxGuestInstallStateDerivation {
     /// 1. A running guest is `running` — nothing else may render (the
     ///    not-installed card is unreachable once the engine reports running).
     /// 2. An in-flight shared download is `downloading`.
-    /// 3. No storage → `storageUnavailable`.
-    /// 4. Missing/unverified image → `needsDownload` (exactly one entry).
-    /// 5. Verified image + a disk resize failure → `repairRequired`.
-    /// 6. Verified image + a newer component → `updateAvailable` (start
+    /// 3. Storage still initializing → `storageInitializing`; no storage →
+    ///    `storageUnavailable` (a recoverable init can retry).
+    /// 4. Missing image → `needsDownload` (exactly one entry).
+    /// 5. Installed image with a verification issue → `imageRepairRequired`
+    ///    (re-verify; then re-download the pinned image safely).
+    /// 6. Verified image + a disk resize failure → `repairRequired`.
+    /// 7. Verified image + a newer component → `updateAvailable` (start
     ///    performs the update).
-    /// 7. A guest last start error → `repairRequired` with the reason.
-    /// 8. Otherwise verified + stopped → `installedStopped`.
+    /// 8. A guest last start error → `repairRequired` with the reason.
+    /// 9. Otherwise verified + stopped → `installedStopped`.
     public static func state(from facts: LinuxGuestInstallFacts) -> LinuxGuestInstallState {
         if facts.guestRunning, let environmentID = facts.guestEnvironmentID {
             return .running(environmentID: environmentID)
@@ -105,11 +150,32 @@ public enum LinuxGuestInstallStateDerivation {
         if facts.downloadRunning || facts.downloadCancelling {
             return .downloading(fraction: facts.downloadFraction, cancelling: facts.downloadCancelling)
         }
+        if facts.storageInitializing {
+            return .storageInitializing
+        }
         guard facts.storageAvailable else {
             return .storageUnavailable
         }
-        guard facts.imageInstalled, facts.imageVerificationFailure == nil else {
-            return .needsDownload(verificationFailure: facts.imageVerificationFailure)
+        guard facts.imageInstalled else {
+            return .needsDownload(verificationFailure: facts.imageVerificationIssue?.message)
+        }
+        if let issue = facts.imageVerificationIssue {
+            let transient: Bool
+            if case .ioFailure(_, let io) = issue {
+                transient = io.isTransientAccessFailure
+            } else {
+                transient = false
+            }
+            // A failed repair is the newest and most actionable signal; keep
+            // it visible alongside the underlying verification reason instead
+            // of letting the older message hide it.
+            let message: String
+            if let failure = facts.downloadFailureMessage, !failure.isEmpty {
+                message = failure + "\n" + issue.message
+            } else {
+                message = issue.message
+            }
+            return .imageRepairRequired(transient: transient, message: message)
         }
         if let resize = facts.guestDiskResizeFailure, !resize.isEmpty {
             return .repairRequired(environmentID: facts.guestEnvironmentID, message: resize)

@@ -662,31 +662,41 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
     /// digest bytes themselves are verified by `LinuxGuestImageVerifier`,
     /// which knows the image root; this function must not be used alone as
     /// proof that an image is startable.
-    public func qualificationFailure(imageDirectory: URL? = nil, fileManager: FileManager = .default) -> String? {
+    /// Typed structural/contract issue. Every branch is a typed case so a
+    /// missing artifact or a path problem is never a bare string carrying the
+    /// host path, and callers can classify recovery.
+    public func qualificationIssue(
+        imageDirectory: URL? = nil,
+        fileManager: FileManager = .default
+    ) -> LinuxImageVerificationIssue? {
         if !qualified {
             let evidence = qualificationEvidence?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return "no modern Linux qualification run has passed (\(evidence?.isEmpty == false ? evidence! : "no evidence recorded"))"
+            return .structural(detail:
+                "no modern Linux qualification run has passed (\(evidence?.isEmpty == false ? evidence! : "no evidence recorded"))"
+            )
         }
         let run = qualificationRun?.trimmingCharacters(in: .whitespacesAndNewlines)
         if run?.isEmpty != false {
-            return "manifest claims qualified but records no qualification run id"
+            return .structural(detail: "manifest claims qualified but records no qualification run id")
         }
         guard let artifacts, !artifacts.isEmpty else {
-            return "manifest claims qualified but carries no artifact digests; import the image through a verified archive"
+            return .structural(detail:
+                "manifest claims qualified but carries no artifact digests; import the image through a verified archive"
+            )
         }
         for declared in declaredArtifacts {
             guard let digest = artifactDigest(role: declared.role) else {
-                return "manifest has no \(declared.role.rawValue) digest; a partial image cannot start"
+                return .noDigest(role: declared.role.rawValue)
             }
             if digest.path != declared.path {
-                return "\(declared.role.rawValue) digest path does not match the manifest path"
+                return .structural(detail: "\(declared.role.rawValue) digest path does not match the manifest path")
             }
             let normalized = digest.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if normalized.count != 128 || normalized.contains(where: { !$0.isHexDigit }) {
-                return "\(declared.role.rawValue) digest is not a SHA-512 hex string"
+                return .structural(detail: "\(declared.role.rawValue) digest is not a SHA-512 hex string")
             }
             if digest.bytes <= 0 {
-                return "\(declared.role.rawValue) digest records no size"
+                return .structural(detail: "\(declared.role.rawValue) digest records no size")
             }
         }
         if let imageDirectory {
@@ -696,16 +706,16 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
             let root = imageDirectory.resolvingSymlinksInPath().standardizedFileURL
             for declared in declaredArtifacts {
                 if declared.path.contains("\u{0}") {
-                    return "artifact path contains NUL: \(declared.path)"
+                    return .pathContainsNUL
                 }
                 if declared.path.split(separator: "/").contains("..") {
-                    return "artifact path escapes the image directory: \(declared.path)"
+                    return .artifactEscapes(role: declared.path)
                 }
                 let resolved = artifactURL(declared.path, imageDirectory: imageDirectory)
                     .resolvingSymlinksInPath()
                     .standardizedFileURL
                 if resolved.path != root.path, !resolved.path.hasPrefix(root.path + "/") {
-                    return "artifact path escapes the image directory: \(declared.path)"
+                    return .artifactEscapes(role: declared.path)
                 }
             }
         }
@@ -718,26 +728,37 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
             }
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-                return "image artifact is missing: \(url.path)"
+                return .artifactMissing(role: declared.role.rawValue)
             }
         }
         if let runnerFailure = runnerUpgradeContractFailure() {
-            return runnerFailure
+            return .structural(detail: runnerFailure)
         }
         for origin in compatibleOrigins ?? [] {
             let originID = origin.imageID.trimmingCharacters(in: .whitespacesAndNewlines)
             let originDigest = origin.artifactSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if originID.isEmpty || originID.contains("/") || originID.contains("\u{0}") {
-                return "compatible disk origin records an invalid image id '\(origin.imageID)'"
+                return .structural(detail: "compatible disk origin records an invalid image id")
             }
             if originDigest.count != 128 || originDigest.contains(where: { !$0.isHexDigit }) {
-                return "compatible disk origin for \(originID) is not a SHA-512 hex string"
+                return .structural(detail:
+                    "compatible disk origin for \(originID) is not a SHA-512 hex string"
+                )
             }
             if origin.artifactBytes <= 0 {
-                return "compatible disk origin for \(originID) records no size"
+                return .structural(detail: "compatible disk origin for \(originID) records no size")
             }
         }
         return nil
+    }
+
+    /// Message bridge for the typed contract. Retained for callers that only
+    /// need a user-facing reason; it never carries a host path.
+    public func qualificationFailure(
+        imageDirectory: URL? = nil,
+        fileManager: FileManager = .default
+    ) -> String? {
+        qualificationIssue(imageDirectory: imageDirectory, fileManager: fileManager)?.message
     }
 
     /// Structural contract for the optional standalone runner upgrade

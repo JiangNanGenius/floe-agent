@@ -7,6 +7,8 @@ import plistlib
 import shutil
 import subprocess
 from bootstrap_office_host import ROOT, LOCK, FRAMEWORK, checked_lock, verify_installed
+from office_font_config import (BEGIN_MARK, language_packaging_failures,
+                                language_resource_report, validate_merged_config)
 
 FONT_EXTENSIONS = {'.ttf', '.otf', '.ttc', '.otc'}
 BUNDLED_FONTS = ROOT / 'FloeApp' / 'Resources' / 'Fonts' / 'Bundled'
@@ -47,6 +49,45 @@ def embed_bundled_fonts(app):
     return copied
 
 
+def verify_font_and_language_payload(app, host_resources, *, font_dirs=None):
+    """Build-233 payload facts for the embedded font/language configuration.
+
+    * A host artifact rebuilt with the R4 font-substitution overlay carries the
+      marked block; if it does, every Floe alias must resolve to a family this
+      app really installs, or the embedding fails.
+    * An artifact that predates the overlay is reported as such (the release
+      gate refuses it); it is never silently accepted as repaired.
+    * Every language resource the host output produced must reach the app.
+    """
+    coolkit = app / 'coolkitconfig.xcu'
+    facts = {'fontSubstitutionsPresent': False, 'fontSubstitutionsRepaired': False}
+    if coolkit.is_file() and BEGIN_MARK in coolkit.read_text(encoding='utf-8', errors='ignore'):
+        font_dirs = font_dirs or [app / 'program/resource/common/fonts',
+                                  app / 'share/fonts/truetype']
+        main_xcd = app / 'share/registry/main.xcd'
+        validation = validate_merged_config(
+            coolkit, font_dirs,
+            vendor_config=main_xcd if main_xcd.is_file() else None)
+        if validation['failures']:
+            raise ValueError('embedded Office font substitutions do not resolve: '
+                             + '; '.join(validation['failures']))
+        facts.update(fontSubstitutionsPresent=True, fontSubstitutionsRepaired=True,
+                     fontSubstitutionAliases=validation['resolvedCount'])
+    else:
+        facts['fontSubstitutionNote'] = (
+            'pinned host artifact predates the Build 233 font-substitution overlay; '
+            'a rebuilt and re-pinned host is required')
+    host_language = language_resource_report(host_resources)
+    app_language = language_resource_report(app)
+    failures = language_packaging_failures(host_language, app_language)
+    if failures:
+        raise ValueError('embedded Office language resources are incomplete: '
+                         + '; '.join(failures))
+    facts.update(hostLanguageResources=host_language, appLanguageResources=app_language,
+                 languageResourceGap=host_language['missingLanguages'])
+    return facts
+
+
 def embed(source, app, lock_path=LOCK, *, signing_identity=None):
     lock, pin = checked_lock(lock_path)
     source, app = Path(source), Path(app)
@@ -80,11 +121,12 @@ def embed(source, app, lock_path=LOCK, *, signing_identity=None):
     framework = app / 'Frameworks' / FRAMEWORK
     (framework / 'FloeOfficeNative').chmod(0o755)
     bundled_fonts = embed_bundled_fonts(app)
+    payload = verify_font_and_language_payload(app, resources)
     if signing_identity:
         subprocess.run(['/usr/bin/codesign', '--force', '--sign', signing_identity,
                         '--timestamp=none', str(framework)], check=True)
     return {**verified, 'embeddedFramework': True, 'signedFramework': bool(signing_identity),
-            'bundledFonts': bundled_fonts,
+            'bundledFonts': bundled_fonts, **payload,
             'runtimeOpened': False, 'deviceRoundtripPassed': False}
 
 

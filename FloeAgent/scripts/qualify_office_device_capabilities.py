@@ -13,6 +13,7 @@ Receipts consumed (all produced by the isolated probe app, never by Floe itself)
   <receipts>/render-receipt.json        host visible-render facts + deck digest
   <receipts>/events.json                probe lifecycle events
   <receipts>/roundtrip-<ext>.json       per-format edit/save/close/reopen receipt
+  <receipts>/idle-stability.json        optional R7 idle window receipt
   --original-writeback <file.json>      original-file write-back receipt
   --embedded <file.json>                verify_office_app_embedding.py receipt
 
@@ -20,7 +21,7 @@ Usage:
   python3 qualify_office_device_capabilities.py \
       --receipts ./device --device-model 'iPad14,3' --os-version '26.0' --run-id 123456 \
       --original-writeback ./device/original-writeback.json \
-      --embedded ./app-embedding.json [--apply]
+      --embedded ./app-embedding.json [--require-idle] [--apply]
 """
 import argparse
 import json
@@ -44,6 +45,11 @@ REQUIRED_EVENTS = {
     'reopenedReadonly': 1,
 }
 FORBIDDEN_EVENTS = ('unexpectedClose', 'visibleRenderFailed', 'saveFailed')
+
+# Build 233 R7: the shortest accepted idle window for the presentation hazard
+# (the Build 232 process died 3-4 s after the editable mount, but the reported
+# symptom is a crash without interaction, so the receipt must cover minutes).
+MINIMUM_IDLE_SECONDS = 600
 
 
 def _read_json(path):
@@ -135,8 +141,64 @@ def verify_embedded(receipt_path):
     return failures
 
 
+def verify_idle(receipt_path):
+    """Build 233 R7: the optional device idle-stability receipt.
+
+    The Build 232 presentation died between the editable mount and the first
+    engine stage, and the user reports the crash *without interaction*. This
+    receipt records one real presentation session that painted, stayed
+    untouched for the accepted idle window (>= 10 min) with the R1 durable
+    stage trace + memory samples captured, remained interactive and could
+    still save/reopen afterwards. It never sets a release capability flag and
+    no synthetic/simulator run satisfies it: the device facts come from the
+    caller's named hardware. `--require-idle` turns a missing or incomplete
+    receipt into a qualification failure.
+
+    Returns `(failures, facts)`; facts are None when the receipt is absent.
+    """
+    if receipt_path is None or not Path(receipt_path).is_file():
+        return ['no idle-stability receipt was provided'], None
+    receipt = _read_json(receipt_path)
+    failures = []
+    if receipt.get('documentType') != 'presentation':
+        failures.append('idle-stability receipt is not a presentation session')
+    if receipt.get('stageTracePresent') is not True:
+        failures.append('idle-stability receipt has no R1 durable stage trace')
+    last_stage = receipt.get('lastStage')
+    if not isinstance(last_stage, str) or not last_stage:
+        failures.append('idle-stability receipt has no last recorded stage')
+    idle_seconds = receipt.get('idleSeconds')
+    if not isinstance(idle_seconds, int) or isinstance(idle_seconds, bool) \
+            or idle_seconds < MINIMUM_IDLE_SECONDS:
+        failures.append(f'idle-stability receipt idleSeconds must be an integer >= {MINIMUM_IDLE_SECONDS}')
+    samples = receipt.get('memoryAvailableMB')
+    if (not isinstance(samples, list) or len(samples) < 2
+            or not all(isinstance(value, int) and not isinstance(value, bool) for value in samples)):
+        failures.append('idle-stability receipt needs at least two integer memoryAvailableMB samples')
+    for field in ('processAliveAfterIdle', 'interactiveAfterIdle',
+                  'saveCompletedAfterIdle', 'reopenedAfterIdle'):
+        if receipt.get(field) is not True:
+            failures.append(f'idle-stability receipt {field} is not true')
+    if failures:
+        return failures, None
+    return failures, {
+        'documentType': 'presentation',
+        'idleSeconds': idle_seconds,
+        'stageTracePresent': True,
+        'lastStage': last_stage,
+        'memorySampleCount': len(samples),
+        'minAvailableMB': min(samples),
+        'processAliveAfterIdle': True,
+        'interactiveAfterIdle': True,
+        'saveCompletedAfterIdle': True,
+        'reopenedAfterIdle': True,
+        'recordedAt': receipt.get('recordedAt'),
+    }
+
+
 def qualify(receipts, deck, device_model, os_version, run_id,
-            original_writeback=None, embedded=None):
+            original_writeback=None, embedded=None,
+            idle=None, require_idle=False):
     """Deterministic verdict; callers decide whether to record it."""
     receipts = Path(receipts) if receipts else None
     failures = []
@@ -144,6 +206,10 @@ def qualify(receipts, deck, device_model, os_version, run_id,
     roundtrip_failures = verify_roundtrip(receipts) if receipts else ['no roundtrip receipts were provided']
     writeback_failures = verify_writeback(original_writeback, deck)
     embedded_failures = verify_embedded(embedded)
+    idle_path = Path(idle) if idle else (receipts / 'idle-stability.json' if receipts else None)
+    idle_failures, idle_facts = verify_idle(idle_path)
+    if require_idle:
+        failures.extend(idle_failures)
     failures.extend(render_failures)
     failures.extend(roundtrip_failures)
     failures.extend(writeback_failures)
@@ -174,6 +240,11 @@ def qualify(receipts, deck, device_model, os_version, run_id,
             'runID': str(run_id), 'deviceModel': device_model,
             'documentType': writeback['documentType'], 'savedSHA256': writeback['savedSHA256'],
             'recordedAt': recorded_at},
+        # R7: recorded when provided; it is not one of the four release
+        # capabilities, but a caller may require it explicitly.
+        'idleStabilityEvidence': ({**idle_facts, 'runID': str(run_id),
+                                   'deviceModel': device_model, 'osVersion': os_version}
+                                  if idle_facts else {'provided': False}),
     }
     status = capability_status(evidence)
     if status['failures']:
@@ -189,6 +260,11 @@ def apply_to_lock(lock_path, evidence):
     for flag in CAPABILITY_FLAGS:
         key = EVIDENCE[flag]['key']
         pin[key] = evidence[key]
+    # Build 233 R7: keep the idle window facts with the device evidence; it is
+    # not a release capability, but a rebuild/audit can see exactly what was
+    # observed on the device.
+    if evidence.get('idleStabilityEvidence'):
+        pin['idleStabilityEvidence'] = evidence['idleStabilityEvidence']
     lock['qualifiedHostArtifact'] = pin
     lock_path.write_text(json.dumps(lock, indent=2, ensure_ascii=False) + '\n')
     return pin
@@ -203,11 +279,16 @@ def main():
     parser.add_argument('--run-id')
     parser.add_argument('--original-writeback', type=Path)
     parser.add_argument('--embedded', type=Path)
+    parser.add_argument('--idle', type=Path,
+                        help='idle-stability receipt (default <receipts>/idle-stability.json)')
+    parser.add_argument('--require-idle', action='store_true',
+                        help='fail unless a complete idle-stability receipt is provided (Build 233 R7)')
     parser.add_argument('--lock', type=Path, default=LOCK)
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     evidence, failures = qualify(args.receipts, args.deck, args.device_model, args.os_version,
-                                 args.run_id, args.original_writeback, args.embedded)
+                                 args.run_id, args.original_writeback, args.embedded,
+                                 idle=args.idle, require_idle=args.require_idle)
     if failures:
         print('Office device qualification rejected:', file=sys.stderr)
         for failure in failures:

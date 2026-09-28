@@ -76,6 +76,67 @@ public enum LinuxGuestImageInstallError: Error, LocalizedError, Sendable, Equata
     }
 }
 
+/// Typed image-verification outcome so a file I/O failure is never mistaken
+/// for a content/digest failure. It carries the same user-facing messages as
+/// the previous string checks but adds classification used by the recovery
+/// derivation (`LinuxGuestInstallStateDerivation`).
+public enum LinuxImageVerificationIssue: Sendable, Equatable {
+    /// Structural/provenance/runner-contract failure returned by the manifest's
+    /// own `qualificationFailure`.
+    case structural(detail: String)
+    case manifestNotRegular
+    case noDigest(role: String)
+    case pathContainsNUL
+    case artifactEscapes(role: String)
+    case artifactUsesSymlink(role: String)
+    case artifactMissing(role: String)
+    case sizeMismatch(role: String, actual: Int64, expected: Int64)
+    /// The bytes could not be read: file I/O evidence, never evidence that
+    /// the pinned archive or its digest is wrong.
+    case ioFailure(role: String, error: FloeFileIOError)
+    case digestMismatch(role: String)
+
+    public var message: String {
+        switch self {
+        case .structural(let detail):
+            return detail
+        case .manifestNotRegular:
+            return "image manifest is not a regular file"
+        case .noDigest(let role):
+            return "manifest has no \(role) digest"
+        case .pathContainsNUL:
+            return "artifact path contains NUL"
+        case .artifactEscapes(let role):
+            return "artifact escapes the image directory: \(role)"
+        case .artifactUsesSymlink(let role):
+            return "artifact path uses a symlink: \(role)"
+        case .artifactMissing(let role):
+            return "image artifact is missing: \(role)"
+        case .sizeMismatch(let role, let actual, let expected):
+            return "\(role) size mismatch (\(actual) bytes on disk, manifest records \(expected))"
+        case .ioFailure(let role, let error):
+            var suffix = ["stage=\(error.stage.rawValue)"]
+            if error.posixErrno != 0 {
+                suffix.append("errno=\(error.posixErrno)")
+            }
+            if let domain = error.domain, let code = error.code {
+                suffix.append("domain=\(domain) code=\(code)")
+            }
+            return "cannot hash \(role): \(error.detail) (\(suffix.joined(separator: " ")))"
+        case .digestMismatch(let role):
+            return "\(role) SHA-512 mismatch; the image bytes do not match the qualification record"
+        }
+    }
+
+    /// True when artifact bytes could not even be read. Transient I/O, not a
+    /// content failure; re-verification may clear it without any download.
+    public var isIOFailure: Bool {
+        if case .ioFailure = self { return true }
+        return false
+    }
+
+}
+
 /// Limits for one import. Defaults are intentionally generous enough for a
 /// Debian userland but bounded so a malformed archive cannot fill the device.
 public struct LinuxGuestImageImportLimits: Sendable, Equatable {
@@ -149,7 +210,7 @@ enum LinuxGuestVolumeSpace {
 public actor LinuxGuestImageVerifier {
     private struct CacheEntry {
         var fingerprint: String
-        var failure: String?
+        var issue: LinuxImageVerificationIssue?
         var verifiedAt: Date
     }
 
@@ -157,21 +218,67 @@ public actor LinuxGuestImageVerifier {
 
     public init() {}
 
-    /// Verification failure for a manifest in `imageDirectory`, or nil when
-    /// the image is startable. Every artifact must resolve inside that
+    /// Typed verification issue for a manifest in `imageDirectory`, or nil
+    /// when the image is startable. Every artifact must resolve inside that
     /// directory.
-    public func verificationFailure(image: LinuxGuestImage, imageDirectory: URL) -> String? {
-        if let structural = image.qualificationFailure(imageDirectory: imageDirectory) { return structural }
+    ///
+    /// `cacheNamespace` separates the success cache of two views of the same
+    /// image id. The legacy directory and the Runtime v2 expanded view are
+    /// different directories with different file identities; sharing one
+    /// cache key would evict the other on every check and re-hash a
+    /// multi-gigabyte disk each time.
+    public func verificationIssue(
+        image: LinuxGuestImage,
+        imageDirectory: URL,
+        cacheNamespace: String = "legacy"
+    ) -> LinuxImageVerificationIssue? {
+        if let structural = image.qualificationIssue(imageDirectory: imageDirectory) {
+            return structural
+        }
         let fingerprint = Self.fingerprint(image: image, imageDirectory: imageDirectory)
-        if let cached = cache[image.id], cached.fingerprint == fingerprint, cached.failure == nil {
+        let cacheKey = Self.cacheKey(namespace: cacheNamespace, imageID: image.id)
+        if let cached = cache[cacheKey], cached.fingerprint == fingerprint, cached.issue == nil {
             return nil
         }
-        let failure = Self.verify(image: image, imageDirectory: imageDirectory)
-        cache[image.id] = CacheEntry(fingerprint: fingerprint, failure: failure, verifiedAt: Date())
-        return failure
+        let issue = Self.verify(image: image, imageDirectory: imageDirectory)
+        cache[cacheKey] = CacheEntry(fingerprint: fingerprint, issue: issue, verifiedAt: Date())
+        return issue
     }
+
+    /// Verification failure message, or nil when the image is startable.
+    public func verificationFailure(image: LinuxGuestImage, imageDirectory: URL) -> String? {
+        verificationIssue(image: image, imageDirectory: imageDirectory)?.message
+    }
+
     public func invalidate(id: String) {
-        cache[id] = nil
+        for key in Array(cache.keys) where Self.imageID(fromCacheKey: key) == id {
+            cache[key] = nil
+        }
+    }
+
+    /// Records a verification the caller itself just performed: it hashed
+    /// every declared artifact against the manifest digests (the Runtime v2
+    /// materializer does exactly this while rebuilding the expanded view).
+    /// No bytes are hashed here — this stores the success fingerprint only,
+    /// and any later byte/size/mtime change invalidates it. Never call this
+    /// from a path that did not itself prove the digests.
+    func recordSuccessfulVerification(
+        image: LinuxGuestImage,
+        imageDirectory: URL,
+        cacheNamespace: String
+    ) {
+        let fingerprint = Self.fingerprint(image: image, imageDirectory: imageDirectory)
+        cache[Self.cacheKey(namespace: cacheNamespace, imageID: image.id)] = CacheEntry(
+            fingerprint: fingerprint, issue: nil, verifiedAt: Date()
+        )
+    }
+
+    private static func cacheKey(namespace: String, imageID: String) -> String {
+        namespace + "\u{1f}" + imageID
+    }
+
+    private static func imageID(fromCacheKey key: String) -> String {
+        key.split(separator: "\u{1f}", maxSplits: 1).last.map(String.init) ?? key
     }
 
     /// Cheap identity used to decide whether a previous digest check still
@@ -192,23 +299,24 @@ public actor LinuxGuestImageVerifier {
         return FloeDigest.sha256Hex(Data(parts.joined(separator: "\u{1f}").utf8))
     }
 
-    private static func verify(image: LinuxGuestImage, imageDirectory: URL) -> String? {
+    private static func verify(image: LinuxGuestImage, imageDirectory: URL) -> LinuxImageVerificationIssue? {
         let resolvedRoot = imageDirectory.resolvingSymlinksInPath().standardizedFileURL
         // The manifest itself must be a real file inside the image directory.
         let manifest = imageDirectory.appendingPathComponent("manifest.json")
         if let values = try? manifest.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
            values.isRegularFile != true || values.isSymbolicLink == true {
-            return "image manifest is not a regular file: \(manifest.path)"
+            return .manifestNotRegular
         }
         for declared in image.declaredArtifacts {
+            let roleName = declared.role.rawValue
             guard let digest = image.artifactDigest(role: declared.role) else {
-                return "manifest has no \(declared.role.rawValue) digest"
+                return .noDigest(role: roleName)
             }
             let url = image.artifactURL(declared.path, imageDirectory: imageDirectory)
-            if url.path.contains("\u{0}") { return "artifact path contains NUL" }
+            if url.path.contains("\u{0}") { return .pathContainsNUL }
             let resolved = url.resolvingSymlinksInPath().standardizedFileURL
             guard resolved.path == resolvedRoot.path || resolved.path.hasPrefix(resolvedRoot.path + "/") else {
-                return "artifact escapes the image directory: \(declared.path)"
+                return .artifactEscapes(role: declared.path)
             }
             // Reject symlinks *inside* the image directory (an artifact link
             // could point at bytes that were never verified). Platform
@@ -221,26 +329,31 @@ public actor LinuxGuestImageVerifier {
                     cursor.appendPathComponent(String(component))
                     if let values = try? cursor.resourceValues(forKeys: [.isSymbolicLinkKey]),
                        values.isSymbolicLink == true {
-                        return "artifact path uses a symlink: \(cursor.path)"
+                        return .artifactUsesSymlink(role: declared.path)
                     }
                 }
             }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
                   values.isRegularFile == true else {
-                return "image artifact is missing: \(declared.path)"
+                return .artifactMissing(role: roleName)
             }
             let size = Int64(values.fileSize ?? -1)
             if size != digest.bytes {
-                return "\(declared.role.rawValue) size mismatch (\(size) bytes on disk, manifest records \(digest.bytes))"
+                return .sizeMismatch(role: roleName, actual: size, expected: digest.bytes)
             }
             let actual: String
             do {
                 actual = try FloeDigest.sha512Hex(ofFileAt: url)
+            } catch let io as FloeFileIOError {
+                return .ioFailure(role: roleName, error: io)
             } catch {
-                return "cannot hash \(declared.role.rawValue): \(error.localizedDescription)"
+                return .ioFailure(
+                    role: roleName,
+                    error: FloeFileIOError(stage: .read, underlying: error, path: url.path)
+                )
             }
             if actual.lowercased() != digest.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-                return "\(declared.role.rawValue) SHA-512 mismatch; the image bytes do not match the qualification record"
+                return .digestMismatch(role: roleName)
             }
         }
         return nil
@@ -582,14 +695,22 @@ public actor LinuxGuestImageInstallationService {
     public struct ImageStatus: Sendable, Equatable {
         public var id: String
         public var installed: Bool
-        public var verificationFailure: String?
+        public var verificationIssue: LinuxImageVerificationIssue?
         public var image: LinuxGuestImage?
         public var distributable: Bool
 
-        public init(id: String, installed: Bool, verificationFailure: String?, image: LinuxGuestImage?, distributable: Bool) {
+        public var verificationFailure: String? { verificationIssue?.message }
+
+        public init(
+            id: String,
+            installed: Bool,
+            verificationIssue: LinuxImageVerificationIssue?,
+            image: LinuxGuestImage?,
+            distributable: Bool
+        ) {
             self.id = id
             self.installed = installed
-            self.verificationFailure = verificationFailure
+            self.verificationIssue = verificationIssue
             self.image = image
             self.distributable = distributable
         }
@@ -597,9 +718,9 @@ public actor LinuxGuestImageInstallationService {
 
     public func status(id: String) async -> ImageStatus {
         let image = loadManifest(id: id)
-        var failure: String?
+        var issue: LinuxImageVerificationIssue?
         if let image {
-            failure = await verifier.verificationFailure(
+            issue = await verifier.verificationIssue(
                 image: image,
                 imageDirectory: imagesRoot.appendingPathComponent(id, isDirectory: true)
             )
@@ -608,10 +729,17 @@ public actor LinuxGuestImageInstallationService {
         return ImageStatus(
             id: id,
             installed: image != nil,
-            verificationFailure: failure,
+            verificationIssue: issue,
             image: image,
             distributable: trusted != nil
         )
+    }
+
+    /// Drops cached verification for `id`, then re-reads the real status. A
+    /// transient file I/O condition can therefore clear without a download.
+    public func reverify(id: String) async -> ImageStatus {
+        await verifier.invalidate(id: id)
+        return await status(id: id)
     }
 
     /// Imports an already-downloaded zip archive. The expected SHA-512 must be
@@ -689,6 +817,11 @@ public actor LinuxGuestImageInstallationService {
                 throw LinuxGuestImageInstallError.unsupportedArchive(
                     "\(archiveURL.lastPathComponent): import a zip archive or an extracted image directory"
                 )
+            }
+            // Last cancellation checkpoint before promotion: never replace a
+            // working image with a candidate whose owner has already left.
+            if isCancelled?() == true {
+                throw LinuxGuestImageInstallError.cancelled
             }
             return try await promote(from: staging, fileManager: fileManager)
         } catch let installError as LinuxGuestImageInstallError {
@@ -786,13 +919,25 @@ public actor LinuxGuestImageInstallationService {
     /// Downloads a catalog-pinned image and imports it. This is the only path
     /// that can create a *distributable* image, and it refuses to run while
     /// the pinned catalog is empty.
+    ///
+    /// Cancellation: `isCancelled` is the OWNER's cooperative signal (usually
+    /// a shared-job token). It is captured by the operation that actually
+    /// downloads; coalesced subscribers share that operation and its result,
+    /// and a subscriber's own cancellation never cancels the shared install.
+    /// Cancellation is observed during the download, between sources, during
+    /// extraction and immediately before promotion — a cancelled install
+    /// never promotes a partially verified candidate and never replaces the
+    /// previously installed image. `cancelInstallTrustedImage(id:)` is the
+    /// explicit owner-side cancel for a caller that only holds the service.
     @discardableResult
     public func installTrustedImage(
         id: String,
         downloader: any LinuxGuestImageDownloading,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in },
+        isCancelled: (@Sendable () -> Bool)? = nil,
         fileManager: FileManager = .default
     ) async throws -> LinuxGuestImage {
+        try Self.checkInstallCancellation(isCancelled)
         // Already present and verified: never start a second download.
         let current = await status(id: id)
         if current.installed && current.verificationFailure == nil, let image = current.image {
@@ -809,20 +954,44 @@ public actor LinuxGuestImageInstallationService {
                 id: id,
                 downloader: downloader,
                 onProgress: onProgress,
+                isCancelled: isCancelled,
                 fileManager: fileManager
             )
         }
         installsInFlight[id] = task
         defer { installsInFlight[id] = nil }
-        return try await task.value
+        // Only the OWNER's cancellation is linked to the shared operation: a
+        // coalesced subscriber cancelling its own await never cancels the
+        // install every other subscriber is waiting for. The pre-promotion
+        // checkpoint keeps a cancelled owner from replacing a working image.
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    /// Cancels the in-flight trusted install for `id`. The download loop,
+    /// extraction and the pre-promotion checkpoint all observe it; staging is
+    /// discarded and no partial candidate is ever promoted.
+    public func cancelInstallTrustedImage(id: String) {
+        installsInFlight[id]?.cancel()
+    }
+
+    private static func checkInstallCancellation(_ isCancelled: (@Sendable () -> Bool)?) throws {
+        if Task.isCancelled || isCancelled?() == true {
+            throw LinuxGuestImageInstallError.cancelled
+        }
     }
 
     private func performTrustedInstall(
         id: String,
         downloader: any LinuxGuestImageDownloading,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        isCancelled: (@Sendable () -> Bool)?,
         fileManager: FileManager
     ) async throws -> LinuxGuestImage {
+        try Self.checkInstallCancellation(isCancelled)
         guard let trusted = LinuxGuestImageDistributionCatalog.entry(id: id) else {
             throw LinuxGuestImageInstallError.noDistributableImage(
                 id: id,
@@ -844,13 +1013,15 @@ public actor LinuxGuestImageInstallationService {
             to: stagingArchive,
             maxBytes: limits.maxArchiveBytes,
             downloader: downloader,
-            onProgress: onProgress
+            onProgress: onProgress,
+            isCancelled: isCancelled
         )
+        try Self.checkInstallCancellation(isCancelled)
         return try await importArchive(
             at: stagingArchive,
             expectedSHA512: trusted.archiveSHA512,
             expectedImageID: trusted.id,
-            isCancelled: { Task.isCancelled },
+            isCancelled: { Task.isCancelled || isCancelled?() == true },
             fileManager: fileManager
         )
     }

@@ -740,6 +740,9 @@ private struct EnvironmentDetailView: View {
         } catch { self.error = String(describing: error) }
     }
     @MainActor private func reloadGuestStatus() async {
+        // Recover before reading the flag so a transient assembly-time
+        // failure does not permanently hide the install controls here.
+        await FloePlatformServices.shared.ensureLinuxImageService()
         imageStorageAvailable = FloePlatformServices.shared.linuxGuestImageStorageAvailable()
         guestStatus = await FloePlatformServices.shared.linuxEnvironmentStatus(id: report.id)
         let imageID = guestStatus?.imageID ?? LinuxGuestBackendAssembly.defaultImageID

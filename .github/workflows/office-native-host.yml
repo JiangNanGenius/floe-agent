@@ -36,6 +36,9 @@ jobs:
           python3 FloeAgent/scripts/test_office_fullscreen_edit.py
           python3 FloeAgent/scripts/test_office_native_drain.py
           python3 FloeAgent/scripts/test_office_editor_language.py
+          python3 FloeAgent/scripts/tests/test_office_font_config.py
+          python3 FloeAgent/scripts/tests/test_office_language_resources.py
+          python3 FloeAgent/scripts/test_office_stage_diagnostics.py
       - name: Reuse complete qualified engine inputs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,6 +78,39 @@ jobs:
           python3 FloeAgent/scripts/build_office_native_host.py \
             "$RUNNER_TEMP/office-native-bundle" "$RUNNER_TEMP/office-native-host" \
             --filter-overlay "$RUNNER_TEMP/office-filter-overlay"
+      - name: Verify packaged Floe font substitution and language payload
+        run: |
+           python3 - <<'PY'
+           import json, os, pathlib, sys
+           sys.path.insert(0, 'FloeAgent/scripts')
+           import office_font_config
+           output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'office-native-host'
+           manifest = json.loads((output / 'native-host.json').read_text())
+           font = manifest.get('fontSubstitutionConfig')
+           assert font and font.get('aliases', 0) > 0, 'font substitution config missing from host package'
+           resources = output / 'OfficeRuntimeResources'
+           main_xcd = resources / 'share/registry/main.xcd'
+           assert main_xcd.is_file(), 'packaged pin has no share/registry/main.xcd to check the font paths against'
+           coolkit_text = (resources / 'coolkitconfig.xcu').read_text()
+           assert 'FLOE_OFFICE_FONT_SUBSTITUTIONS_BEGIN' in coolkit_text, 'merged font config marker missing'
+           assert 'FLOE_OFFICE_FONT_SUBSTITUTIONS_END' in coolkit_text
+           # The real pinned table is the authority for the locale/alias hierarchy.
+           report = office_font_config.validate_overlay(
+               require_targets=False, vendor_config=main_xcd)
+           assert not report['failures'], report['failures']
+           assert report['locales'] == [office_font_config.ENGINE_SUBSTITUTION_FALLBACK_LOCALE], report['locales']
+           assert report['aliasOverrides'] and report['aliasAdditions'], report
+           merged = office_font_config.validate_merged_config(
+               resources / 'coolkitconfig.xcu', require_targets=False, vendor_config=main_xcd)
+           assert not merged['failures'], merged['failures']
+           languages = manifest.get('languageResources')
+           assert languages and 'en-US' in languages['availableLanguages'], 'language audit missing'
+           print(json.dumps({'fontSubstitutionAliases': font['aliases'],
+                             'fontSubstitutionLocales': report['locales'],
+                             'aliasOverrides': len(report['aliasOverrides']),
+                             'aliasAdditions': len(report['aliasAdditions']),
+                             'languageResources': languages}, indent=2))
+           PY
       - name: Preserve host qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
