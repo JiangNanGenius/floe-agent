@@ -591,14 +591,29 @@ import Synchronization
             allToolNames: [schema.name]
         )
         var secondCalls: [ToolCall] = []
+        var secondAnswer = ""
+        var secondCompleted = false
         for try await event in adapter.stream(request: nextTurn, credentials: ProviderCredentials()) {
             switch event {
             case .toolRequest(let toolCall): secondCalls.append(toolCall)
+            case .textDelta(let delta): secondAnswer += delta
+            case .completed(let info): secondCompleted = info.stopReason == .endTurn
             case .error(let error): throw NSError(domain: "Qualification.Tool", code: 15,
                 userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
             default: break
             }
         }
+        // Synthetic fixture only: retain the actual failure shape before the
+        // assertion, rather than losing whether the model answered or called
+        // the wrong file. Never log user conversations here.
+        record("tool-second-turn-observed", [
+            "completed": secondCompleted,
+            "syntheticAnswerPrefix": String(secondAnswer.prefix(1024)),
+            "calls": secondCalls.map { call in
+                ["id": call.id, "name": call.toolName,
+                 "syntheticArguments": String(decoding: call.argumentsJSON, as: UTF8.self)]
+            }
+        ])
         guard secondCalls.count == 1, let secondCall = secondCalls.first,
               secondCall.id != call.id, secondCall.toolName == schema.name,
               let arguments = try JSONSerialization.jsonObject(with: secondCall.argumentsJSON) as? [String: Any],
