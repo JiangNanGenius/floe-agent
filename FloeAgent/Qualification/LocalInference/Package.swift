@@ -7,6 +7,7 @@ let package = Package(name: "FloeLocalInferenceQualification", platforms: [.macO
             .product(name: "FloeModels", package: "FloeAgent"),
             .product(name: "FloeProviders", package: "FloeAgent"),
             .product(name: "FloeExecution", package: "FloeAgent"),
+            .product(name: "FloeAgentRuntime", package: "FloeAgent"),
             .product(name: "FloeLocalModels", package: "FloeAgent"),
             .product(name: "FloeLocalModelCatalog", package: "FloeAgent")
         ], path: "Sources")

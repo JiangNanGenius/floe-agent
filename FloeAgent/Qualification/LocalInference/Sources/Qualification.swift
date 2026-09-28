@@ -5,6 +5,7 @@ import FloeCore
 import FloeModels
 import FloeProviders
 import FloeExecution
+import FloeAgentRuntime
 import MLX
 import Darwin
 import Synchronization
@@ -675,8 +676,21 @@ import Synchronization
             description: WebSearchTool.toolDescription,
             parametersJSON: WebSearchTool.parametersJSON
         )
-        let systemEnvelope =
-            "A web.search tool is offered. Use it ONLY when the current user explicitly asks to search the public web; never call it for a greeting. After a tool result, answer from that result without searching again; if it contains a receipt marker, repeat that marker verbatim and identify synthetic results as synthetic."
+        let offeredSchemas = [schema,
+            ToolSchemaDescriptor(name: WebFetchTool.name, description: WebFetchTool.toolDescription,
+                                 parametersJSON: WebFetchTool.parametersJSON),
+            ToolSchemaDescriptor(name: URLDownloadTool.name, description: URLDownloadTool.toolDescription,
+                                 parametersJSON: URLDownloadTool.parametersJSON),
+            ToolSchemaDescriptor(name: OCRTool.name, description: OCRTool.toolDescription,
+                                 parametersJSON: OCRTool.parametersJSON),
+            ToolSchemaDescriptor(name: LocalPythonTool.name, description: LocalPythonTool.toolDescription,
+                                 parametersJSON: LocalPythonTool.parametersJSON)
+        ]
+        let systemEnvelope = AgentPromptComposer.compose(
+            mode: .chat,
+            runtimeContext: "# Run context\nWorkspace: synthetic qualification workspace. Tool permissions are enforced by the host. After a tool result, answer from that result; repeat its receipt marker verbatim and identify synthetic results as synthetic.",
+            toolsAvailable: true, compactForLocal: true
+        )
 
         func collect(_ request: ProviderStreamRequest) async throws -> (calls: [ToolCall], answer: String, completed: Bool) {
             var calls: [ToolCall] = []
@@ -696,7 +710,9 @@ import Synchronization
         }
 
         // Turn 1: greeting stays conversational.
-        record("search-roundtrip-start", ["model": entry.id])
+        record("search-roundtrip-start", ["model": entry.id,
+            "systemEnvelopeSource": "production-local-composer",
+            "offeredSchemas": offeredSchemas.count])
         let greeting = ProviderStreamRequest(
             provider: LocalProviderAdapter.providerProfile,
             model: model,
@@ -704,8 +720,8 @@ import Synchronization
                 (role: "system", content: systemEnvelope),
                 (role: "user", content: "你好，今天过得怎么样？")
             ],
-            toolSchemas: [schema],
-            allToolNames: [schema.name]
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
         )
         let greetingReply = try await collect(greeting)
         guard greetingReply.calls.isEmpty, greetingReply.completed,
@@ -722,8 +738,8 @@ import Synchronization
                 (role: "assistant", content: greetingReply.answer),
                 (role: "user", content: "那你能尝试调用一下工具，随便搜索一下今天的新闻吗")
             ],
-            toolSchemas: [schema],
-            allToolNames: [schema.name]
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
         )
         let searchReply = try await collect(search)
         let calls = searchReply.calls
@@ -749,7 +765,7 @@ import Synchronization
             toolResults: [(callID: call.id, output: result.outputSummary)],
             pendingToolCalls: [call],
             replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
-            toolSchemas: [schema], allToolNames: [schema.name]
+            toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
         )
         let firstReply = try await collect(continuation)
         guard firstReply.calls.isEmpty, firstReply.completed,
@@ -770,8 +786,8 @@ import Synchronization
                 (role: "user", content: "很好，再帮我搜索一下明天的天气")
             ],
             replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
-            toolSchemas: [schema],
-            allToolNames: [schema.name]
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
         )
         let followupReply = try await collect(followup)
         let followupCalls = followupReply.calls
@@ -796,7 +812,7 @@ import Synchronization
             pendingToolCalls: [followupCall],
             replayedToolPairs: [ReplayedToolPair(call: call, result: result),
                                ReplayedToolPair(call: followupCall, result: secondResult)],
-            toolSchemas: [schema], allToolNames: [schema.name]
+            toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
         )
         let secondReply = try await collect(secondContinuation)
         guard secondReply.calls.isEmpty, secondReply.completed,

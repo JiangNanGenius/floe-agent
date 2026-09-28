@@ -250,6 +250,42 @@ struct LocalSearchRepairRegressionTests {
 
     // MARK: - Full greeting → search → tool result → follow-up chain
 
+    @Test("A device-sized runtime envelope remains eligible for bounded repair")
+    @available(macOS 15.4, iOS 26.0, *)
+    func deviceSizedEnvelopeCanRepair() throws {
+        // Synthetic size fixture, not copied user instructions or device text.
+        let rules = String(repeating: "Preserve user data. ", count: 285)
+        let instructions = try #require(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: SearchRepairFixtures.webSearch, usesNativeToolSchemas: false,
+            extraSafety: rules
+        ))
+        #expect(instructions.contains(rules.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: instructions, prompt: "搜索一下今天的新闻",
+            tool: SearchRepairFixtures.webSearch, usesNativeToolSchemas: false,
+            contextTokens: 8_192
+        ))
+    }
+
+    @Test("Repair token admission includes full mixed-script transcript and output reserve")
+    @available(macOS 15.4, iOS 26.0, *)
+    func repairChecksWholeInputBudget() throws {
+        let instructions = try #require(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: SearchRepairFixtures.webSearch, usesNativeToolSchemas: false,
+            extraSafety: "Keep workspace scope."
+        ))
+        #expect(!LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: instructions, prompt: String(repeating: "汉", count: 10_000),
+            tool: SearchRepairFixtures.webSearch, usesNativeToolSchemas: false,
+            contextTokens: 8_192
+        ))
+        #expect(!LocalProviderAdapter.PromptBuild.repairFitsContext(
+            instructions: instructions, prompt: "news",
+            tool: SearchRepairFixtures.webSearch, usesNativeToolSchemas: true,
+            contextTokens: 256
+        ))
+    }
+
     @Test("Greeting, repaired search and a follow-up search chain through the adapter")
     @available(macOS 15.4, iOS 26.0, *)
     func greetingSearchFollowupChain() async throws {

@@ -1882,6 +1882,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                tool: repairTool,
                                usesNativeToolSchemas: usesNative,
                                extraSafety: promptBuild.preservedRuntimeInstructions
+                           ),
+                           PromptBuild.repairFitsContext(
+                               instructions: repairInstructions, prompt: repairPrompt,
+                               tool: repairTool, usesNativeToolSchemas: usesNative,
+                               contextTokens: request.model.limits.contextTokens
                            ) {
                             let repairSchemas: [ToolSchemaDescriptor]
                             if usesNative {
@@ -2291,7 +2296,27 @@ public struct LocalProviderAdapter: ProviderAdapter {
         /// Maximum characters of the whole assembled minimal-repair channel
         /// (prototype + schema + authoritative rules). It bounds total size;
         /// it is never used to clip a rule.
-        static let minimalRepairInstructionLimit = 4_200
+        // The observed device runtime envelope alone was about 5.3k
+        // characters. A 4.2k cap skipped every repair for that valid request.
+        // Retain its complete rules; the token guard below bounds the actual
+        // repair prefill, including transcript and native schema overhead.
+        static let minimalRepairInstructionLimit = 8_192
+
+        static func repairFitsContext(
+            instructions: String, prompt: String,
+            tool: ToolSchemaDescriptor, usesNativeToolSchemas: Bool,
+            contextTokens: Int
+        ) -> Bool {
+            let nativeSchemaTokens = usesNativeToolSchemas
+                ? LocalPromptPressure.heuristicTokens(in: tool.name + tool.description + tool.parametersJSON)
+                : 0
+            let estimated = LocalPromptPressure.heuristicTokens(in: instructions)
+                + LocalPromptPressure.heuristicTokens(in: prompt) + nativeSchemaTokens
+            // Keep both the repair output reserve and a bounded local prefill.
+            // Refuse an oversized request instead of clipping its authority.
+            let budget = min(4_096, max(0, contextTokens - 256))
+            return estimated <= budget
+        }
 
         /// Builds the minimal repair instructions, or nil when the repair
         /// cannot be performed safely (no admitted tool, an oversized/
