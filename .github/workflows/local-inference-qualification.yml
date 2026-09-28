@@ -153,6 +153,16 @@ jobs:
           test "$(grep -c '"event":"tool-executed".*"tool":"workspace.readFile"' "$EVIDENCE/run.log")" -eq 2
           grep -q '"answerContainsReceipt":true.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
           grep -q '"conversationTurns":2.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
+          # Search-roundtrip evidence: the real-weight greeting → web.search →
+          # synthetic receipt → follow-up web.search chain. The receipt source
+          # is truthfully a synthetic fixture (no live/paid search), and the
+          # greeting never invoked the tool.
+          test "$(grep -c '"event":"search-tool-executed".*"tool":"web.search"' "$EVIDENCE/run.log")" -eq 2
+          grep -q '"event":"search-tool-executed".*"receiptSource":"synthetic-fixture"' "$EVIDENCE/run.log"
+          grep -q '"event":"search-roundtrip-complete".*"greetingInvokedTool":false' "$EVIDENCE/run.log"
+          grep -q '"conversationTurns":3.*"event":"search-roundtrip-complete"' "$EVIDENCE/run.log"
+          grep -q '"completedToolAnswers":2.*"event":"search-roundtrip-complete"' "$EVIDENCE/run.log"
+          test "$(grep -c '"answerContainsReceipt":true.*"event":"search-answer-complete"' "$EVIDENCE/run.log")" -eq 2
           grep -q '"event":"qualification-complete"' "$EVIDENCE/run.log"
           # Truthful compile-policy metadata: the process starts unapplied, the
           # engine applies the policy, and the environment switch stays absent.
