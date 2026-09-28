@@ -3279,6 +3279,74 @@
         }
       }
     },
+    "environment.backend.repair_image": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair Linux image"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修复 Linux 镜像"
+          }
+        }
+      }
+    },
+    "environment.backend.retry_init": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试初始化"
+          }
+        }
+      }
+    },
+    "environment.backend.reverify": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-verify"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新校验"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_initializing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing Linux image storage…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备 Linux 镜像存储…"
+          }
+        }
+      }
+    },
     "environment.backend.native": {
       "extractionState": "manual",
       "localizations": {

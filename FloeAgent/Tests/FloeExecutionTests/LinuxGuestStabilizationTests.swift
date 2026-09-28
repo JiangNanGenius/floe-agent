@@ -171,7 +171,7 @@ final class LinuxInstallStateDerivationTests: XCTestCase {
         XCTAssertEqual(LinuxGuestInstallStateDerivation.state(from: facts), .running(environmentID: "env-1"))
         // Even an unverified-image glitch must not outrank a running guest.
         facts.imageInstalled = false
-        facts.imageVerificationFailure = "digest mismatch"
+        facts.imageVerificationIssue = .digestMismatch(role: "disk")
         facts.downloadRunning = true
         XCTAssertEqual(LinuxGuestInstallStateDerivation.state(from: facts), .running(environmentID: "env-1"))
     }

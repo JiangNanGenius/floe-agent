@@ -263,68 +263,65 @@ struct ExecutionEnvironmentView: View {
 
     @ViewBuilder
     private var linuxComponentSection: some View {
-        if !FloePlatformServices.shared.linuxGuestImageStorageAvailable() {
-            Text("environment.backend.image_store_unavailable")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        } else {
-            // One card derives the single authoritative state: a verified
-            // installed/running component never renders the download entry.
-            // Settings offers no manual guest start: running Python, Node or
-            // Shell prepares and leases this conversation's environment
-            // automatically, so a standalone Start control only misleads.
-            if let model = linuxImageModel {
-                LinuxImageInstallCard(
-                    model: model,
-                    onInstalled: { await startLinuxEnvironment() },
-                    allowsManualStart: false
-                )
+        // The card is always mounted and derives the real state itself:
+        // storageInitializing/storageUnavailable render in-card with a real
+        // retry action instead of an early guard that hid every recovery
+        // control. A verified installed/running component never renders the
+        // download entry. Settings offers no manual guest start: running
+        // Python, Node or Shell prepares and leases this conversation's
+        // environment automatically, so a standalone Start control only
+        // misleads.
+        if let model = linuxImageModel {
+            LinuxImageInstallCard(
+                model: model,
+                onInstalled: { await startLinuxEnvironment() },
+                allowsManualStart: false
+            )
+        }
+        if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus, status.running {
+            LabeledContent("environment.backend.status", value: String(localized: "environment.backend.status.running"))
+            if let network = status.networkStatus {
+                LabeledContent("environment.backend.network", value: networkLabel(network))
             }
-            if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus, status.running {
-                LabeledContent("environment.backend.status", value: String(localized: "environment.backend.status.running"))
-                if let network = status.networkStatus {
-                    LabeledContent("environment.backend.network", value: networkLabel(network))
-                }
-                if let kernel = guestKernel {
-                    LabeledContent(ExecutionEnvironmentText.t("内核", "Kernel"), value: kernel)
-                }
-                if let python = guestRuntimes["Python"] {
-                    LabeledContent("Python", value: python)
-                }
-                if let node = guestRuntimes["Node"] {
-                    LabeledContent("Node", value: node)
-                }
-                if let guestVCPUs {
-                    LabeledContent(ExecutionEnvironmentText.t("客户机 vCPU", "Guest vCPUs"),
-                                   value: "\(guestVCPUs)")
-                    Text(guestShapeCapacityNote)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                if let resize = status.diskResizeFailure {
-                    Label(resize, systemImage: "wrench.and.screwdriver")
-                        .font(.caption2)
-                        .foregroundStyle(FloeTheme.pending)
-                        .textSelection(.enabled)
-                }
-                if let message = status.lastError, status.networkStatus?.isReady != true {
-                    Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(FloeTheme.pending)
-                        .textSelection(.enabled)
-                }
-                Button("environment.backend.stop", systemImage: "stop") {
-                    Task { await stopLinuxEnvironment(id: environmentID) }
-                }
-                .disabled(linuxBusy)
+            if let kernel = guestKernel {
+                LabeledContent(ExecutionEnvironmentText.t("内核", "Kernel"), value: kernel)
             }
-            if linuxBusy { ProgressView("environment.backend.checking") }
-            if let linuxError {
-                Label(linuxError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(FloeTheme.destructive)
+            if let python = guestRuntimes["Python"] {
+                LabeledContent("Python", value: python)
+            }
+            if let node = guestRuntimes["Node"] {
+                LabeledContent("Node", value: node)
+            }
+            if let guestVCPUs {
+                LabeledContent(ExecutionEnvironmentText.t("客户机 vCPU", "Guest vCPUs"),
+                               value: "\(guestVCPUs)")
+                Text(guestShapeCapacityNote)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let resize = status.diskResizeFailure {
+                Label(resize, systemImage: "wrench.and.screwdriver")
+                    .font(.caption2)
+                    .foregroundStyle(FloeTheme.pending)
                     .textSelection(.enabled)
             }
+            if let message = status.lastError, status.networkStatus?.isReady != true {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(FloeTheme.pending)
+                    .textSelection(.enabled)
+            }
+            Button("environment.backend.stop", systemImage: "stop") {
+                Task { await stopLinuxEnvironment(id: environmentID) }
+            }
+            .disabled(linuxBusy)
+        }
+        if linuxBusy { ProgressView("environment.backend.checking") }
+        if let linuxError {
+            Label(linuxError, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(FloeTheme.destructive)
+                .textSelection(.enabled)
         }
     }
 
@@ -357,7 +354,9 @@ struct ExecutionEnvironmentView: View {
     /// reports the real guest state. No state is invented when the service is
     /// unavailable.
     private func refreshLinux() async {
-        guard FloePlatformServices.shared.linuxGuestImageStorageAvailable() else { return }
+        // No storage guard: the install model performs recoverable init and
+        // reports its own real state; environment reports below are
+        // independent of image storage.
         let imageID = LinuxGuestImageDistributionCatalog.defaultImageID
         if linuxImageModel == nil {
             linuxImageModel = LinuxImageInstallModel(imageID: imageID)

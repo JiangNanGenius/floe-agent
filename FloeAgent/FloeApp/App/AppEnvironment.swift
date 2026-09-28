@@ -458,21 +458,21 @@ final class AppEnvironment: ObservableObject {
             artifactRoot: try? FloeArtifactStore.root()
         )
         FloePlatformServices.shared.setLinuxImageService(linuxImageService)
-        // One explicit preparation handler reused by exec.shell,
-        // exec.localPython and the environment.prepareLinux tool. It never
-        // takes an image URL or install script.
-        // Written as an if/else on purpose: a ternary whose branch is a
-        // closure literal makes the compiler fail to type-check the
-        // expression ("failed to produce diagnostic for expression").
-        let linuxPreparation: LinuxPreparationHandler?
-        if FloePlatformServices.shared.linuxGuestImageStorageAvailable() {
-            linuxPreparation = { request in
-                try await FloePlatformServices.shared.prepareLinuxEnvironment(
-                    cancellation: request.cancellation
+        // Always registered: the closure lazily recovers the image service
+        // (bounded retries + backend reconnect) at first Linux use, so a
+        // transient assembly-time root failure no longer freezes preparation
+        // to nil for the whole process. The handler accepts no image URL or
+        // install script.
+        let linuxPreparation: LinuxPreparationHandler = { request in
+            guard await FloePlatformServices.shared.ensureLinuxImageService() else {
+                throw FloeError.invalidConfiguration(
+                    String(localized: "environment.backend.image_store_unavailable")
                 )
             }
-        } else {
-            linuxPreparation = nil
+            return try await FloePlatformServices.shared.prepareLinuxEnvironment(
+                environmentID: request.environmentID,
+                cancellation: request.cancellation
+            )
         }
 
         // Phase 2 (TinyEMU migration): local Python runs only inside the task
@@ -629,9 +629,6 @@ final class AppEnvironment: ObservableObject {
             linuxLifecycle: LinuxGuestLifecycleManager(
                 controller: linuxGuests,
                 prepareImage: { environmentID, cancellation in
-                    guard let linuxPreparation else {
-                        throw LinuxGuestError.startFailed("Linux image preparation is unavailable")
-                    }
                     _ = try await linuxPreparation(LinuxPreparationRequest(
                         environmentID: environmentID,
                         cancellation: cancellation ?? CancellationToken()
@@ -640,6 +637,40 @@ final class AppEnvironment: ObservableObject {
             )
         )
         FloeShortcutsRuntime.shared.install(environment: self)
+        // Build 233 R2: every Office surface (workspace preview, IDE tab,
+        // Notes, fullscreen editor) can reach the idle-model shed even when its
+        // own view does not resolve this environment. The safety contract stays
+        // in the runtime (idle-only, claim-checked, non-blocking).
+        OfficeMemoryCoordination.shared.install { [weak self] reason in
+            guard let self else { return nil }
+            return await self.shedIdleLocalModelForOffice(reason: reason)
+        }
+    }
+
+    /// Build 233 R2: Office memory-coordination seam. Office memory-heavy
+    /// preparation (editable mount, Impress import) and system memory warnings
+    /// ask for an immediate release of an *idle* resident local model.
+    ///
+    /// The runtime enforces the safety contract: an active load/benchmark/
+    /// generation or a durable run that still holds its logical claim answers
+    /// nil immediately, without waiting on the inference FIFO. It never
+    /// unloads a mapping an active operation, a retained task or a benchmark is
+    /// using, and never cancels a task, a guest or a tool continuation. Only
+    /// the physical MLX mapping is released; the next local turn reloads the
+    /// same pinned snapshot.
+    func shedIdleLocalModelForOffice(reason: String) async -> String? {
+        await localModelRuntime.shedIdleResidentEngineForOffice(reason: reason)
+    }
+
+    /// Build 233 R1: device font-library facts recorded beside the engine's own
+    /// discovery numbers in the Office stage trace. Counts only. Fonts imported
+    /// before the engine starts are registered for the process and visible to
+    /// its font scan; an import that lands after the engine cached its font
+    /// list is the open refresh question this fact makes inspectable — no claim
+    /// is made that every imported font is engine-visible.
+    func officeDeviceFontFacts() async -> [String: String] {
+        let records = await fontStore.list()
+        return ["deviceFonts": String(records.count)]
     }
 
     /// Environment exported into every local shell run. Paths point at

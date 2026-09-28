@@ -25,6 +25,25 @@
 // records what the App observed.
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
+
+/// Process memory headroom facts for one durable Office stage sample.
+///
+/// Numbers only. `os_proc_available_memory()` returning a real 0 (the kernel
+/// currently allows no more growth) is recorded as 0 — it is never folded
+/// into "unknown" or nil, exactly like the Build 233 execution headroom probe.
+enum OfficeMemorySample {
+    static func facts() -> [String: String] {
+        var facts: [String: String] = [:]
+        #if canImport(Darwin)
+        facts["memAvailableMB"] = String(os_proc_available_memory() / (1024 * 1024))
+        #endif
+        facts["memPhysicalMB"] = String(ProcessInfo.processInfo.physicalMemory / (1024 * 1024))
+        return facts
+    }
+}
 
 /// One App-observed stage event for one Office session generation.
 struct OfficeStageEvent: Codable, Equatable, Sendable {

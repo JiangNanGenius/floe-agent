@@ -246,6 +246,76 @@ public actor RuntimeV2BlobStore {
         return fileManager.fileExists(atPath: url.path)
     }
 
+    /// Cheap availability check (stat only, never a hash): true when the
+    /// referenced bytes exist at the canonical path OR in the deterministic
+    /// quarantine slot a GC move uses. Used by image-health classification to
+    /// distinguish "the expanded view can be rebuilt from local blobs" from
+    /// "a verified download is required", without reading gigabytes of data.
+    public func blobAvailable(digest: String) throws -> Bool {
+        let normalized = digest.lowercased()
+        if fileManager.fileExists(atPath: try layout.blobURL(digest: normalized).path) { return true }
+        return fileManager.fileExists(atPath: try layout.blobQuarantineURL(digest: normalized).path)
+    }
+
+    /// Re-verifies the referenced blob and, when its bytes are damaged or
+    /// missing, re-places them from `sourceURL`. The caller's manifest still
+    /// holds the reference, so no reference is taken here and GC cannot
+    /// reclaim the digest. Returns true when bytes were re-placed, false when
+    /// the existing blob already matches.
+    ///
+    /// Fail-closed ordering: the replacement source is hashed against the
+    /// digest BEFORE any existing bytes are touched, so a repair that cannot
+    /// be completed never destroys evidence. The canonical path being
+    /// unreadable, a directory or otherwise invalid is damaged evidence too:
+    /// it is moved into quarantine (never hard-deleted) and replaced, not
+    /// treated as a reason to refuse repair.
+    @discardableResult
+    public func repairBlob(
+        digest: String,
+        sourceURL: URL,
+        expectedBytes: Int64
+    ) async throws -> Bool {
+        let normalized = digest.lowercased()
+        let canonical = try layout.blobURL(digest: normalized)
+        if fileManager.fileExists(atPath: canonical.path) {
+            // Hash failure (unreadable) or a digest mismatch: both are damage.
+            if let actual = try? FloeDigest.sha512Hex(ofFileAt: canonical), actual == normalized {
+                try? fileManager.setAttributes([.posixPermissions: 0o444], ofItemAtPath: canonical.path)
+                return false
+            }
+        }
+        // Prove the replacement before touching what remains at the canonical
+        // path. A source that does not match the expected digest/size is a
+        // caller error, not a licence to quarantine the existing bytes.
+        let sourceSize = (try? fileManager.attributesOfItem(atPath: sourceURL.path)[.size] as? Int64) ?? -1
+        guard sourceSize == expectedBytes else {
+            throw RuntimeV2Error.blobDigestMismatch(
+                expected: "\(normalized) (\(expectedBytes) bytes)",
+                actual: "replacement source size \(sourceSize)"
+            )
+        }
+        let sourceDigest = try FloeDigest.sha512Hex(ofFileAt: sourceURL)
+        guard sourceDigest == normalized else {
+            throw RuntimeV2Error.blobDigestMismatch(expected: normalized, actual: sourceDigest)
+        }
+        if fileManager.fileExists(atPath: canonical.path) {
+            let quarantine = layout.quarantineDirectory.appendingPathComponent(
+                "blob-repair-\(normalized.prefix(16))-\(UUID().uuidString)"
+            )
+            do {
+                try fileManager.createDirectory(at: layout.quarantineDirectory, withIntermediateDirectories: true)
+                try fileManager.moveItem(at: canonical, to: quarantine)
+            } catch {
+                throw RuntimeV2Error.migrationFailed(
+                    id: "blob-repair-\(normalized.prefix(16))", phase: "copied",
+                    reason: "the damaged blob could not be quarantined (errno \(errno)); the verified replacement was not placed"
+                )
+            }
+        }
+        _ = try await place(sourceURL: sourceURL, expectedSHA512: normalized, expectedBytes: expectedBytes)
+        return true
+    }
+
     /// The read-only path of a blob that provably exists. Callers that clone
     /// straight from the store (template builds clone the parent's blob disk
     /// without a second materialization) still get a missing-blob error

@@ -4,6 +4,7 @@
 #import "FloeOfficeNative.h"
 #import <WebKit/WebKit.h>
 #import <CoreText/CoreText.h>
+#include <os/proc.h>
 #define LIBO_INTERNAL_ONLY
 #import <COKit/COKitInit.h>
 #include <comphelper/kit.hxx>
@@ -60,6 +61,46 @@ static void FloeOfficeLog(NSString *event, NSDictionary<NSString *, id> *facts) 
     NSLog(@"[FloeOffice] %@ %@", event, [fields componentsJoinedByString:@" "]);
 }
 // FLOE_OFFICE_LOG_END
+
+// FLOE_OFFICE_STAGE_BEGIN
+// Build 233 (R1/R3): content-free native breadcrumbs persisted by the App's
+// OfficeStageRecorder, plus the web-content recovery hook.
+//
+// The host already logs bounded `[FloeOffice]` stages to the unified log, but
+// a process killed inside the editable open window (the Build 232 PPT idle
+// crash) never delivered them anywhere durable. `FloeOfficeStageEvent` is
+// handed to the App's recorder under its own session/generation correlation,
+// so a recurrence names the last native stage. Facts stay counters, enums and
+// memory samples; never document text, paths or bytes.
+static NSNotificationName const FloeOfficeWebContentTerminatedNotification = @"FloeOfficeWebContentTerminated";
+
+/// Process memory headroom for one stage sample. `os_proc_available_memory`
+/// returns the kernel's current allowance; a raw 0 is a real reading and is
+/// recorded as such (Swift's optional bridging must never fold it to nil).
+static NSDictionary<NSString *, id> *FloeOfficeMemoryFacts(void) {
+    unsigned long long physical = NSProcessInfo.processInfo.physicalMemory;
+    size_t available = os_proc_available_memory();
+    return @{@"memAvailableMB": @(available / (1024ULL * 1024ULL)),
+             @"memPhysicalMB": @(physical / (1024ULL * 1024ULL))};
+}
+
+/// The upstream DocumentViewController is the editor's WKNavigationDelegate
+/// (see the pinned embedding patch). Adding the optional termination callback
+/// to that class keeps sole delegate ownership with upstream: no delegate is
+/// replaced or proxied, and the working copy is never discarded here. The
+/// method forwards to the host controller through a notification because a
+/// category cannot own per-controller state.
+@interface DocumentViewController (FloeWebContentRecovery)
+@end
+
+@implementation DocumentViewController (FloeWebContentRecovery)
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+    [NSNotificationCenter.defaultCenter postNotificationName:FloeOfficeWebContentTerminatedNotification
+                                                      object:self
+                                                    userInfo:@{@"webView": webView ?: NSNull.null}];
+}
+@end
+// FLOE_OFFICE_STAGE_END
 
 static NSError *OfficeAttachmentReadError(NSInteger code, NSString *description, const std::exception &failure) {
     // Engine-only attachment readers throw fixed format/IO diagnostics, never
@@ -210,6 +251,8 @@ static bool FloeFontFileExtension(NSURL *url) {
     return [extensions containsObject:url.pathExtension.lowercaseString ?: @""];
 }
 
+static NSDictionary<NSString *, id> *gFloeFontDiscoveryFacts;
+
 static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
     NSFileManager *fileManager = NSFileManager.defaultManager;
     NSMutableArray<NSString *> *entries = [NSMutableArray array];
@@ -253,20 +296,29 @@ static NSString *FloeBundledFontCatalogFingerprint(NSBundle *bundle) {
         }
     }
     LOG_INF_NOFILE("FloeOffice font discovery staged=" << stagedFonts << " resolved=" << resolvedFonts);
-    if (entries.count == 0) { return @"no-fonts"; }
-    [entries sortUsingSelector:@selector(compare:)];
-    // FNV-1a over the sorted catalog: stable across launches, cheap, and only
-    // identifies the catalog (never file contents or user data).
-    uint64_t hash = 1469598103934665603ULL;
-    for (NSString *entry in entries) {
-        const char *bytes = entry.UTF8String;
-        for (const char *cursor = bytes; cursor && *cursor; cursor++) {
-            hash ^= (uint8_t)*cursor;
-            hash *= 1099511628211ULL;
+    NSString *fingerprint = nil;
+    if (entries.count == 0) {
+        fingerprint = @"no-fonts";
+    } else {
+        [entries sortUsingSelector:@selector(compare:)];
+        // FNV-1a over the sorted catalog: stable across launches, cheap, and only
+        // identifies the catalog (never file contents or user data).
+        uint64_t hash = 1469598103934665603ULL;
+        for (NSString *entry in entries) {
+            const char *bytes = entry.UTF8String;
+            for (const char *cursor = bytes; cursor && *cursor; cursor++) {
+                hash ^= (uint8_t)*cursor;
+                hash *= 1099511628211ULL;
+            }
         }
+        fingerprint = [NSString stringWithFormat:@"%llu-%08llx",
+                       (unsigned long long)entries.count, (unsigned long long)hash];
     }
-    return [NSString stringWithFormat:@"%llu-%08llx",
-            (unsigned long long)entries.count, (unsigned long long)hash];
+    // The App's durable diagnostics record these counts; the profile identity
+    // keeps the full fingerprint.
+    gFloeFontDiscoveryFacts = @{@"staged": @(stagedFonts), @"resolved": @(resolvedFonts),
+                                @"catalogFingerprint": fingerprint ?: @"unavailable"};
+    return fingerprint;
 }
 // FLOE_FONT_CATALOG_END
 
@@ -853,6 +905,12 @@ static void ServerReady() {
 - (BOOL)isReady {
     NSAssert(NSThread.isMainThread, @"Office runtime state is main-queue owned");
     return self.state == FloeRuntimeReady;
+}
+/// Build 233 (R1): the engine's own font-discovery facts, shared with the
+/// App's durable diagnostics after `prepare` settles. Main-queue owned because
+/// `startEngine` populates it there.
++ (NSDictionary<NSString *, id> *)fontDiscoveryFacts {
+    return gFloeFontDiscoveryFacts ?: @{};
 }
 - (void)finishWaiters:(NSError *)error {
     NSArray *pending = [self.waiters copy];
@@ -1519,6 +1577,13 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 /// The render probe finished (ready or failed); a late deferral can never
 /// park the edit entry behind a finished probe.
 @property (nonatomic) BOOL renderProbeFinished;
+/// Build 233 (R3): the editor's web content process terminated once; a second
+/// notification can never report again.
+@property (nonatomic) BOOL webContentProcessTerminated;
+/// Content-free stage breadcrumb: bounded unified-log line plus the optional
+/// App recorder block under this controller's session/generation, always with
+/// a process memory sample. Never document text, paths or bytes.
+- (void)floeStage:(NSString *)stage facts:(NSDictionary<NSString *, id> *)facts;
 - (void)startRenderProbe;
 - (void)enginePermissionDidUpdate:(BOOL)readOnly;
 - (void)probeEnginePermissionWithAttempts:(NSUInteger)attempts
@@ -1602,6 +1667,13 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         document.floeEngineCopyDirectory = [directory URLByAppendingPathComponent:@"engine" isDirectory:YES];
         document.viewController = _editor;
         _editor.document = document;
+        // Build 233 (R3): the editor (upstream WKNavigationDelegate) reports
+        // web-content death through the category above; only this controller's
+        // editor is observed, and the session's files are never touched here.
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                              selector:@selector(floeEditorWebContentTerminated:)
+                                                  name:FloeOfficeWebContentTerminatedNotification
+                                                object:_editor];
         __weak FloeOfficeNativeViewController *weakSelf = self;
         document.onOpened = ^(BOOL success) {
             FloeOfficeNativeViewController *host = weakSelf;
@@ -1609,12 +1681,10 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
             host.openSettled = YES;
             host.documentOpened = success;
             if (host.onWorkingCopyOpened) host.onWorkingCopyOpened(success);
-            FloeOfficeLog(@"open", @{@"success": @(success),
-                                     @"session": host.sessionID,
-                                     @"generation": @(host.openGeneration),
-                                     @"format": host.workingFileURL.pathExtension.lowercaseString ?: @"",
-                                     @"readOnly": @(host.readOnly),
-                                     @"appDocId": @(host.editor.document->appDocId)});
+            [host floeStage:@"open" facts:@{@"success": @(success),
+                                           @"format": host.workingFileURL.pathExtension.lowercaseString ?: @"",
+                                           @"readOnly": @(host.readOnly),
+                                           @"appDocId": @(host.editor.document->appDocId)}];
             if (!success) {
                 host.sessionIsReadOnly = YES;
                 [host reportOpenPermissionOnce:NO readOnly:YES];
@@ -1644,10 +1714,8 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 // an edit grant: keep the conservative read-only state. The
                 // permission observer corrects it once the engine reports.
                 probed.sessionIsReadOnly = known ? readOnly : YES;
-                FloeOfficeLog(@"permission", @{@"session": probed.sessionID,
-                                              @"generation": @(probed.openGeneration),
-                                              @"known": @(known),
-                                              @"readOnly": @(probed.sessionIsReadOnly)});
+                [probed floeStage:@"permission" facts:@{@"known": @(known),
+                                                        @"readOnly": @(probed.sessionIsReadOnly)}];
                 // An editable backing document that the mobile editor mounted in
                 // its viewing-first UI is not a denied document. Every editable
                 // format funnels through the single readiness-gated entry: the
@@ -1689,6 +1757,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
             [host.saveReceipts cancel];
             host.closing = NO;
             host.closed = success;
+            [host floeStage:@"close.ack" facts:@{@"success": @(success)}];
             if (!success) host.editor.view.userInteractionEnabled = YES;
             [host settleCloseWaitersWithError:success ? nil : OfficeError(10, @"Office could not close this document. Your document copies have been retained.")];
             if (host.onClosed) host.onClosed(success);
@@ -1803,6 +1872,40 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     self.sessionIsReadOnly = readOnly;
     if (self.onEnginePermissionChanged) self.onEnginePermissionChanged(readOnly);
 }
+// MARK: - Durable stage breadcrumbs
+/// One content-free native stage. `FloeOfficeLog` keeps the bounded unified
+/// log, the memory sample turns memory pressure into a trace fact, and the
+/// App's recorder receives the same stage under its own session identity when
+/// this App installed the block (pinned framework older than this source just
+/// skips that half).
+- (void)floeStage:(NSString *)stage facts:(NSDictionary<NSString *, id> *)facts {
+    NSMutableDictionary<NSString *, id> *all = [NSMutableDictionary dictionaryWithDictionary:facts ?: @{}];
+    [all addEntriesFromDictionary:FloeOfficeMemoryFacts()];
+    FloeOfficeLog(stage, all);
+    if (!self.onStageEvent) return;
+    self.onStageEvent(@{@"stage": stage ?: @"",
+                        @"session": self.sessionID ?: @"",
+                        @"generation": @(self.openGeneration),
+                        @"facts": all});
+}
+/// Build 233 (R3): the upstream navigation delegate reported that the editor's
+/// web content process died. The engine session is unrecoverable; record the
+/// stage, stop the probe so its deadline cannot double-report, keep every file
+/// and let the App settle its bounded recoverable failure.
+- (void)floeEditorWebContentTerminated:(NSNotification *)notification {
+    NSAssert(NSThread.isMainThread, @"Office controllers are main-queue owned");
+    if (notification.object != self.editor || self.closing || self.closed) return;
+    if (self.webContentProcessTerminated) return;
+    self.webContentProcessTerminated = YES;
+    [self.renderProbe cancel];
+    self.renderProbe = nil;
+    self.renderProbeFinished = YES;
+    [self floeStage:@"webcontent.terminated" facts:@{}];
+    if (self.onWebContentProcessTerminated) self.onWebContentProcessTerminated();
+}
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
 // MARK: - Visible render readiness
 - (void)startRenderProbe {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
@@ -1811,8 +1914,8 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                                                                             readOnly:self.readOnly
                                                                          workingFile:self.workingFileURL];
     self.renderProbe = probe;
-    FloeOfficeLog(@"render-probe", @{@"deadline": @(probe.deadline),
-                                     @"requiresVisibleRender": @(probe.requiresVisibleRender)});
+    [self floeStage:@"render-probe" facts:@{@"deadline": @(probe.deadline),
+                                            @"requiresVisibleRender": @(probe.requiresVisibleRender)}];
     [probe start];
 }
 - (void)evaluateRenderFactsWithCompletion:(void (^)(NSDictionary<NSString *, id> * _Nullable,
@@ -1834,10 +1937,8 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
     if (self.firstPaintObserved) return;
     self.firstPaintObserved = YES;
-    FloeOfficeLog(@"first-paint", @{@"session": self.sessionID,
-                                    @"generation": @(self.openGeneration),
-                                    @"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
-                                        ? diagnostics[@"elapsed"] : @0});
+    [self floeStage:@"first-paint" facts:@{@"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
+                                              ? diagnostics[@"elapsed"] : @0}];
     // The single edit entry is run by the readiness hook the probe invokes
     // next; this report is paint evidence only.
 }
@@ -1858,16 +1959,14 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     self.firstPaintObserved = YES;
     self.renderProbeFinished = YES;
     self.renderDiagnostics = diagnostics;
-    FloeOfficeLog(@"visible-render", @{@"session": self.sessionID,
-                                       @"generation": @(self.openGeneration),
-                                       @"docType": diagnostics[@"docType"] ?: @"",
-                                       @"entrySettled": @(self.openPermissionReported),
-                                       @"editSurfacePainted": diagnostics[@"editSurfacePainted"] ?: @NO,
-                                       @"editSurfaceArmed": diagnostics[@"editSurfaceArmed"] ?: @NO,
-                                       @"newDecodes": diagnostics[@"editSurfaceNewDecodes"] ?: @0,
-                                       @"changedSamples": diagnostics[@"editSurfaceChangedSamples"] ?: @0,
-                                       @"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
-                                           ? diagnostics[@"elapsed"] : @0});
+    [self floeStage:@"visible-render" facts:@{@"docType": diagnostics[@"docType"] ?: @"",
+                                              @"entrySettled": @(self.openPermissionReported),
+                                              @"editSurfacePainted": diagnostics[@"editSurfacePainted"] ?: @NO,
+                                              @"editSurfaceArmed": diagnostics[@"editSurfaceArmed"] ?: @NO,
+                                              @"newDecodes": diagnostics[@"editSurfaceNewDecodes"] ?: @0,
+                                              @"changedSamples": diagnostics[@"editSurfaceChangedSamples"] ?: @0,
+                                              @"elapsed": [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
+                                                  ? diagnostics[@"elapsed"] : @0}];
     if (self.onVisibleRenderReady)
         self.onVisibleRenderReady(diagnostics[@"docType"],
                                   [diagnostics[@"elapsed"] isKindOfClass:NSNumber.class]
@@ -1877,10 +1976,8 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
     self.renderProbeFinished = YES;
     self.renderDiagnostics = diagnostics;
-    FloeOfficeLog(@"visible-render-failed", @{@"session": self.sessionID,
-                                              @"generation": @(self.openGeneration),
-                                              @"stage": diagnostics[@"stage"] ?: @"",
-                                              @"failure": diagnostics[@"failure"] ?: @""});
+    [self floeStage:@"visible-render-failed" facts:@{@"stage": diagnostics[@"stage"] ?: @"",
+                                                     @"failure": diagnostics[@"failure"] ?: @""}];
     // A still-pending edit entry settles here without forcing an entry: the
     // engine never proved a paint, and the render gate owns the bounded
     // outcome. The report still settles exactly once.
@@ -1896,8 +1993,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     // behind the entry's budget. Exactly once.
     [self settlePendingEditEntryWithoutEntry];
     self.renderDiagnostics = diagnostics;
-    FloeOfficeLog(@"visible-render-unobserved", @{@"session": self.sessionID,
-                                                  @"generation": @(self.openGeneration)});
+    [self floeStage:@"visible-render-unobserved" facts:@{}];
 }
 // Retries until the editor has created its map. app.file.readOnly is the
 // backing permission; _permission/isReadOnlyMode() alone is the mobile UI mode.
@@ -2036,9 +2132,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                           completionHandler:^(id value, NSError *error) {
         FloeOfficeNativeViewController *host = weakSelf;
         BOOL armed = !error && [value isKindOfClass:NSNumber.class] && [value boolValue];
-        FloeOfficeLog(@"edit-surface-armed", @{@"session": host.sessionID ?: @"",
-                                               @"generation": host ? @(host.openGeneration) : @0,
-                                               @"armed": @(armed)});
+        [host floeStage:@"edit-surface-armed" facts:@{@"armed": @(armed)}];
         completion();
     }];
 }
@@ -2067,8 +2161,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     }
     self.editEntryPending = YES;
     self.editEntryDeferredAt = [NSDate date];
-    FloeOfficeLog(@"edit-entry-deferred", @{@"session": self.sessionID,
-                                            @"generation": @(self.openGeneration)});
+    [self floeStage:@"edit-entry-deferred" facts:@{}];
 }
 /// Runs the guarded edit entry at most once and reports its real outcome.
 /// A close that wins the race owns the outcome; the entry result is dropped.
@@ -2082,8 +2175,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     self.editEntryPending = NO;
     self.editEntryDeferredAt = nil;
     self.editEntryRunning = YES;
-    FloeOfficeLog(@"edit-entry", @{@"session": self.sessionID,
-                                   @"generation": @(self.openGeneration)});
+    [self floeStage:@"edit-entry" facts:@{}];
     __weak FloeOfficeNativeViewController *weakSelf = self;
     void (^performEntry)(void) = ^{
         FloeOfficeNativeViewController *host = weakSelf;
@@ -2094,10 +2186,8 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
             entered.editEntryRunning = NO;
             if (entered.closed || entered.closing) return;
             entered.sessionIsReadOnly = stillReadOnly;
-            FloeOfficeLog(@"edit-entry-result", @{@"session": entered.sessionID,
-                                                  @"generation": @(entered.openGeneration),
-                                                  @"readOnly": @(stillReadOnly),
-                                                  @"pendingPassword": @(pendingPassword)});
+            [entered floeStage:@"edit-entry-result" facts:@{@"readOnly": @(stillReadOnly),
+                                                            @"pendingPassword": @(pendingPassword)}];
             [entered reportOpenPermissionOnce:YES readOnly:stillReadOnly];
             [entered beginCloseIfRequested];
         }];
@@ -2118,9 +2208,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     self.editEntryPending = NO;
     self.editEntryDeferredAt = nil;
     if (self.closed || self.closing) return;
-    FloeOfficeLog(@"edit-entry-settled-without-entry", @{@"session": self.sessionID,
-                                                         @"generation": @(self.openGeneration),
-                                                         @"readOnly": @(self.sessionIsReadOnly)});
+    [self floeStage:@"edit-entry-settled-without-entry" facts:@{@"readOnly": @(self.sessionIsReadOnly)}];
     [self reportOpenPermissionOnce:YES readOnly:self.sessionIsReadOnly];
     [self beginCloseIfRequested];
 }
@@ -2252,6 +2340,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         return;
     }
     self.closing = YES;
+    [self floeStage:@"close.bye" facts:@{}];
     [self.saveReceipts cancel];
     self.editor.view.userInteractionEnabled = NO;
     if (self.editor.webView)

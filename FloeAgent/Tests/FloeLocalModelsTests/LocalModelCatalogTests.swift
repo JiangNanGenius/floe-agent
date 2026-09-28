@@ -639,6 +639,8 @@ struct LocalModelCatalogTests {
         // and never promises a native tool interface the template cannot use.
         #expect(build.systemInstructions.contains("documented JSON tool_call"))
         #expect(build.systemInstructions.contains(#"{"tool_call":{"name":"exact.offered.name","arguments":{}}}"#))
+        #expect(build.systemInstructions.contains("Fill every required argument declared by the called tool's schema"))
+        #expect(build.systemInstructions.contains("may use an empty arguments object"))
         #expect(build.selectedTools.map(\.name) == [
             "document.pdf.inspect", "document.pdf.render", "image.ocr", "workspace.readFile"
         ])

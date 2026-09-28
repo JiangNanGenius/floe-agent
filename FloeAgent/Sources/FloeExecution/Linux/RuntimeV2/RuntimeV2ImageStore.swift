@@ -178,6 +178,177 @@ public actor RuntimeV2ImageStore {
 
     // MARK: expansion (rebuildable view)
 
+    /// Success-cache namespace for the expanded view of an image. The legacy
+    /// directory of the same id lives in a different directory with different
+    /// file identities; a shared key would evict and re-hash on every check.
+    static let expandedVerificationNamespace = "v2-expanded"
+
+    /// Real, path-level health of one image WITHOUT triggering a migration,
+    /// a download or any rebuild. `nil` means the verified Runtime v2 store
+    /// does not hold this image at all.
+    ///
+    /// Registry row + v2 manifest are registration evidence, never proof the
+    /// bootable bytes exist: readiness is derived from the actual expanded
+    /// view (hash-verified, with the success fingerprint cache) and from the
+    /// availability of every referenced blob when the view needs rebuilding.
+    public struct ImageHealth: Sendable, Equatable {
+        public enum Readiness: String, Sendable, Equatable {
+            /// Expanded view present and its artifact bytes match the manifest.
+            case verified
+            /// Blobs for every artifact are present; the expanded view is
+            /// missing/incomplete/damaged and can be rebuilt locally with no
+            /// download.
+            case rebuildableFromBlobs
+            /// At least one referenced blob is absent: only a verified
+            /// replacement install can restore this image.
+            case replacementRequired
+        }
+
+        public var readiness: Readiness
+        public var issue: LinuxImageVerificationIssue?
+        public var image: LinuxGuestImage?
+
+        public init(readiness: Readiness, issue: LinuxImageVerificationIssue?, image: LinuxGuestImage?) {
+            self.readiness = readiness
+            self.issue = issue
+            self.image = image
+        }
+    }
+
+    /// Inspection-only real health (see `ImageHealth`). Cheap when healthy:
+    /// expanded bytes are hash-verified only when the success fingerprint
+    /// changed. When unhealthy it costs no hashing at all unless the view is
+    /// complete-but-wrong, and it never reads a blob.
+    public func imageHealth(imageID: String) async -> ImageHealth? {
+        let bootable = (try? await registry.bootableImage(id: imageID, root: layout.root)) ?? nil
+        guard bootable != nil, let imageManifest = try? manifest(imageID: imageID) else {
+            return nil
+        }
+        let image = try? Self.decoder.decode(LinuxGuestImage.self, from: imageManifest.legacyManifestData)
+        guard let image else {
+            return ImageHealth(
+                readiness: .replacementRequired,
+                issue: .structural(detail: "the Runtime v2 manifest carries no decodable legacy manifest"),
+                image: nil
+            )
+        }
+        guard let expanded = try? layout.expandedImageDirectory(imageID: imageID) else {
+            return ImageHealth(readiness: .replacementRequired, issue: .artifactMissing(role: "expanded"), image: image)
+        }
+        let issue = await verifier.verificationIssue(
+            image: image, imageDirectory: expanded, cacheNamespace: Self.expandedVerificationNamespace
+        )
+        if issue == nil {
+            return ImageHealth(readiness: .verified, issue: nil, image: image)
+        }
+        // The expanded bytes are missing/incomplete/damaged. The blobs (a
+        // cheap stat — never a hash; blob bytes are content-addressed and
+        // re-verified by the rebuild itself) decide whether local
+        // reconstruction can succeed.
+        let rebuildable = await allBlobsAvailable(manifest: imageManifest)
+        return ImageHealth(
+            readiness: rebuildable ? .rebuildableFromBlobs : .replacementRequired,
+            issue: issue,
+            image: image
+        )
+    }
+
+    /// Explicit re-verification: drops the cached success fingerprint first,
+    /// so expanded bytes that changed and changed back, or that share a
+    /// stale fingerprint, are actually re-read.
+    public func reverifyImageHealth(imageID: String) async -> ImageHealth? {
+        await verifier.invalidate(id: imageID)
+        return await imageHealth(imageID: imageID)
+    }
+
+    /// Rebuilds the expanded boot view from the verified blobs (no download).
+    /// Every materialized artifact is hashed against the v2 manifest before
+    /// the switch, and the previous view is moved aside — never deleted. Use
+    /// only when `imageHealth` reports `.rebuildableFromBlobs`; a missing
+    /// blob throws `RuntimeV2Error.blobMissing` and nothing is switched.
+    /// `force` re-materializes even a size-complete view: callers that know
+    /// the bytes are suspect (a same-id repair after blob replacement) must
+    /// not trust the cheap completeness check.
+    @discardableResult
+    public func reconstructExpandedImage(
+        imageID: String,
+        force: Bool = false,
+        isCancelled: (@Sendable () -> Bool)? = nil
+    ) async throws -> URL {
+        try Self.checkReconstructionCancelled(isCancelled)
+        guard let imageManifest = try manifest(imageID: imageID) else {
+            throw RuntimeV2Error.imageNotFound(imageID)
+        }
+        let bootable = (try? await registry.bootableImage(id: imageID, root: layout.root)) ?? nil
+        guard bootable != nil else {
+            throw RuntimeV2Error.imageNotFound(imageID)
+        }
+        let expanded = try layout.expandedImageDirectory(imageID: imageID)
+        // A complete, digest-verified view needs no rebuild (unless forced).
+        if !force, try expandedViewComplete(imageID: imageID, manifest: imageManifest, directory: expanded) {
+            if let image = try? Self.decoder.decode(LinuxGuestImage.self, from: imageManifest.legacyManifestData),
+               await verifier.verificationIssue(
+                   image: image, imageDirectory: expanded,
+                   cacheNamespace: Self.expandedVerificationNamespace
+               ) == nil {
+                return expanded
+            }
+        }
+        let staging = layout.expandedImagesDirectory
+            .appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: staging) }
+        try await materializeExpanded(manifest: imageManifest, into: staging, isCancelled: isCancelled)
+        try Self.checkReconstructionCancelled(isCancelled)
+        try fileManager.createDirectory(at: layout.expandedImagesDirectory, withIntermediateDirectories: true)
+        let previous = layout.quarantineDirectory
+            .appendingPathComponent("expanded-\(imageID)-\(UUID().uuidString)", isDirectory: true)
+        let hadPrevious = fileManager.fileExists(atPath: expanded.path)
+        if hadPrevious {
+            try? fileManager.createDirectory(at: layout.quarantineDirectory, withIntermediateDirectories: true)
+            try fileManager.moveItem(at: expanded, to: previous)
+        }
+        do {
+            guard rename(staging.path, expanded.path) == 0 else {
+                throw RuntimeV2Error.migrationFailed(
+                    id: "reconstruct-\(imageID)", phase: "switched",
+                    reason: "expanded rename failed (errno \(errno))"
+                )
+            }
+        } catch {
+            if hadPrevious, !fileManager.fileExists(atPath: expanded.path) {
+                try? fileManager.moveItem(at: previous, to: expanded)
+            }
+            throw error
+        }
+        // materializeExpanded hashed every artifact against the manifest
+        // before the switch; record that success so the next status read is
+        // stat-only instead of re-hashing a multi-gigabyte disk.
+        if let image = try? Self.decoder.decode(LinuxGuestImage.self, from: imageManifest.legacyManifestData) {
+            await verifier.recordSuccessfulVerification(
+                image: image, imageDirectory: expanded,
+                cacheNamespace: Self.expandedVerificationNamespace
+            )
+        }
+        return expanded
+    }
+
+    private static func checkReconstructionCancelled(
+        _ isCancelled: (@Sendable () -> Bool)?
+    ) throws {
+        if Task.isCancelled || isCancelled?() == true {
+            throw CancellationError()
+        }
+    }
+
+    private func allBlobsAvailable(manifest: Manifest) async -> Bool {
+        for (_, ref) in manifest.artifacts {
+            guard let available = try? await blobs.blobAvailable(digest: ref.sha512), available else {
+                return false
+            }
+        }
+        return true
+    }
+
     /// Materializes (or repairs) the expanded view for a verified image from
     /// its blobs. Expanded content is rebuildable: a missing or incomplete
     /// directory is re-cloned, never treated as state.
@@ -203,6 +374,14 @@ public actor RuntimeV2ImageStore {
                 reason: "rename into images/expanded failed (errno \(errno))"
             )
         }
+        // materializeExpanded just hashed every artifact; record the success
+        // so a following status read is stat-only.
+        if let image = try? Self.decoder.decode(LinuxGuestImage.self, from: manifest.legacyManifestData) {
+            await verifier.recordSuccessfulVerification(
+                image: image, imageDirectory: expanded,
+                cacheNamespace: Self.expandedVerificationNamespace
+            )
+        }
         return expanded
     }
 
@@ -218,14 +397,23 @@ public actor RuntimeV2ImageStore {
 
     /// Writes the expanded tree into `directory`: the verbatim legacy manifest
     /// plus every artifact materialized from its blob, then re-verifies every
-    /// file against the recorded digest before returning.
-    private func materializeExpanded(manifest: Manifest, into directory: URL) async throws {
+    /// file against the recorded digest before returning. `isCancelled` is
+    /// observed between artifacts (and before the switch): a cancelled
+    /// reconstruction leaves the previous view untouched and its staging tree
+    /// is removed by the caller's defer.
+    private func materializeExpanded(
+        manifest: Manifest,
+        into directory: URL,
+        isCancelled: (@Sendable () -> Bool)? = nil
+    ) async throws {
+        try Self.checkReconstructionCancelled(isCancelled)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try manifest.legacyManifestData.write(
             to: directory.appendingPathComponent("manifest.json"),
             options: .atomic
         )
         for (role, ref) in manifest.artifacts.sorted(by: { $0.key < $1.key }) {
+            try Self.checkReconstructionCancelled(isCancelled)
             guard !ref.expandedPath.contains("\u{0}"),
                   !ref.expandedPath.hasPrefix("/"),
                   !ref.expandedPath.split(separator: "/").contains("..") else {
@@ -524,6 +712,93 @@ public actor RuntimeV2ImageStore {
             }
         }
         try await registry.setMigrationPhase(id: migrationID, phase: .failed, error: "rolled back by request")
+    }
+
+    // MARK: same-id repair from a verified replacement install
+
+    /// Forces a same-id repair from a freshly verified legacy install.
+    ///
+    /// `installTrustedImage` promotes verified bytes into the legacy image
+    /// directory, but a migrated image's boot path reads the Runtime v2 blobs
+    /// and expanded view; without this step a damaged v2 image would keep
+    /// booting damaged bytes even though a verified replacement was just
+    /// downloaded. Every referenced blob is re-hashed and, when damaged or
+    /// missing, re-placed from the legacy artifact; the expanded view is then
+    /// rebuilt from the re-verified blobs and the legacy directory is moved
+    /// aside into the existing migration rollback area (never deleted).
+    ///
+    /// Requires the legacy manifest to describe exactly the digests the v2
+    /// manifest records: a genuinely different image must go through the
+    /// normal migration path, and a same-id repair never silently rebases
+    /// anything. Per-environment deltas, workspaces and working disks are not
+    /// touched.
+    @discardableResult
+    public func repairImageFromLegacyInstall(
+        imageID: String,
+        legacyImagesRoot: URL,
+        isCancelled: (@Sendable () -> Bool)? = nil
+    ) async throws -> Bool {
+        try Self.checkReconstructionCancelled(isCancelled)
+        try RuntimeV2Identifier.validate(imageID, kind: .image)
+        let migrationID = "legacy-image-\(imageID)"
+        guard let existingManifest = try manifest(imageID: imageID),
+              try await registry.bootableImage(id: imageID, root: layout.root) != nil else {
+            throw RuntimeV2Error.imageNotFound(imageID)
+        }
+        let legacyDirectory = legacyImagesRoot.appendingPathComponent(imageID, isDirectory: true)
+        let legacyManifestURL = legacyDirectory.appendingPathComponent("manifest.json")
+        guard let legacyData = try? Data(contentsOf: legacyManifestURL),
+              let legacyImage = try? Self.decoder.decode(LinuxGuestImage.self, from: legacyData) else {
+            throw RuntimeV2Error.migrationFailed(
+                id: migrationID, phase: "discovered",
+                reason: "the replacement legacy manifest is missing or undecodable"
+            )
+        }
+        if let failure = legacyImage.qualificationFailure(imageDirectory: legacyDirectory) {
+            throw RuntimeV2Error.migrationFailed(
+                id: migrationID, phase: "discovered",
+                reason: "the replacement legacy image is not qualified: \(failure)"
+            )
+        }
+        guard manifestMatches(manifest: existingManifest, image: legacyImage) else {
+            throw RuntimeV2Error.migrationFailed(
+                id: migrationID, phase: "discovered",
+                reason: "the replacement image content differs from the installed Runtime v2 manifest; same-id repair refuses instead of rebasing"
+            )
+        }
+        var replacedAny = false
+        for declared in legacyImage.declaredArtifacts {
+            try Self.checkReconstructionCancelled(isCancelled)
+            guard legacyImage.artifactDigest(role: declared.role) != nil,
+                  let ref = existingManifest.artifacts[manifestRole(declared.role)] else {
+                throw RuntimeV2Error.migrationFailed(
+                    id: migrationID, phase: "copied",
+                    reason: "no digest record for \(declared.role.rawValue)"
+                )
+            }
+            let source = try containedArtifact(
+                path: declared.path, inside: legacyDirectory, migrationID: migrationID
+            )
+            if try await blobs.repairBlob(
+                digest: ref.sha512, sourceURL: source, expectedBytes: ref.bytes
+            ) {
+                replacedAny = true
+            }
+        }
+        // Rebuild the bootable view from the re-verified blobs (forces a
+        // fresh materialization instead of trusting a size-complete view).
+        try Self.checkReconstructionCancelled(isCancelled)
+        _ = try await reconstructExpandedImage(imageID: imageID, force: true, isCancelled: isCancelled)
+        // reconstructExpandedImage seeds the success cache from the digests
+        // it just verified; no invalidation is needed (and would force a
+        // re-hash of the whole disk on the next status read).
+        try await moveLegacyAside(
+            legacyDirectory: legacyDirectory, migrationID: migrationID, kind: "legacy-images"
+        )
+        FloeLogger(category: .tools).info(
+            "Runtime v2 image \(imageID) repaired from a verified legacy install (blobs re-placed=\(replacedAny))"
+        )
+        return replacedAny
     }
 
     // MARK: helpers

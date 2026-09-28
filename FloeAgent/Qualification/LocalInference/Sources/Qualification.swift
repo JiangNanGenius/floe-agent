@@ -4,6 +4,8 @@ import FloeLocalModelCatalog
 import FloeCore
 import FloeModels
 import FloeProviders
+import FloeExecution
+import FloeAgentRuntime
 import MLX
 import Darwin
 import Synchronization
@@ -55,6 +57,44 @@ import Synchronization
             "errorCode": nsError.code,
             "errorMessage": nsError.localizedDescription
         ]
+    }
+
+    /// Synthetic-fixture-only projection of parsed model calls used by the
+    /// failure observations below. It contains the tool name and the model's
+    /// argument JSON only — never user conversation content.
+    static func observedCalls(_ calls: [ToolCall]) -> [[String: String]] {
+        calls.map { call in
+            [
+                "id": call.id,
+                "name": call.toolName,
+                "syntheticArguments": String(decoding: call.argumentsJSON, as: UTF8.self)
+            ]
+        }
+    }
+
+    /// Bounded projection of the production adapter's own local-tool
+    /// diagnostics (repair started/finished with reason and parsed count,
+    /// dropped emitted tool names, emitted call batch). It answers whether the
+    /// bounded repair ran and what the model actually emitted, which the
+    /// emitted-event stream alone cannot show. Only known provider prefixes
+    /// are exported and the process-wide ring buffer already redacts secrets;
+    /// this host runs synthetic fixtures only.
+    static func adapterToolDiagnostics(limit: Int = 80) -> [String] {
+        let prefixes = [
+            "localToolInvocationRepair",
+            "localToolCallsIncompleteArguments",
+            "localFallbackToolNameDropped",
+            "localToolGapBegan",
+            "localStreamEnded",
+            "localStreamAnswerMismatch"
+        ]
+        return FloeLogger.buffer.recentEntries
+            .filter { entry in
+                entry.category == FloeLogger.Category.providers.rawValue
+                    && prefixes.contains { entry.message.hasPrefix($0) }
+            }
+            .suffix(limit)
+            .map { "[\($0.level)] \($0.message)" }
     }
 
     private nonisolated static func verifyMLXErrorGuard() async throws {
@@ -523,13 +563,32 @@ import Synchronization
         )
         record("tool-roundtrip-start", ["model": entry.id])
         var calls: [ToolCall] = []
+        var firstRequestAnswer = ""
+        var firstRequestCompleted = false
+        var firstRequestError: String?
         for try await event in adapter.stream(request: first, credentials: ProviderCredentials()) {
             switch event {
             case .toolRequest(let call): calls.append(call)
-            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 10,
-                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            case .textDelta(let delta): firstRequestAnswer += delta.text
+            case .completed(let info): firstRequestCompleted = info.stopReason == .endTurn
+            case .error(let error): firstRequestError = error.providerMessage
             default: break
             }
+        }
+        // Synthetic-qualification observation only: retain the actual first
+        // call shape (zero calls, wrong arguments or several calls) before the
+        // exact gate throws, so a cloud failure is debuggable instead of
+        // indistinguishable. Contains fixture names/arguments only.
+        record("tool-first-turn-observed", [
+            "completed": firstRequestCompleted,
+            "error": firstRequestError.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(firstRequestAnswer.prefix(1_024)),
+            "calls": observedCalls(calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let firstRequestError {
+            throw NSError(domain: "Qualification.Tool", code: 10,
+                userInfo: [NSLocalizedDescriptionKey: firstRequestError])
         }
         guard calls.count == 1, let call = calls.first,
               call.toolName == schema.name,
@@ -589,13 +648,31 @@ import Synchronization
             allToolNames: [schema.name]
         )
         var secondCalls: [ToolCall] = []
+        var secondRequestAnswer = ""
+        var secondRequestCompleted = false
+        var secondRequestError: String?
         for try await event in adapter.stream(request: nextTurn, credentials: ProviderCredentials()) {
             switch event {
             case .toolRequest(let toolCall): secondCalls.append(toolCall)
-            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 15,
-                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            case .textDelta(let delta): secondRequestAnswer += delta.text
+            case .completed(let info): secondRequestCompleted = info.stopReason == .endTurn
+            case .error(let error): secondRequestError = error.providerMessage
             default: break
             }
+        }
+        // Synthetic fixture only: retain the actual failure shape before the
+        // assertion, rather than losing whether the model answered or called
+        // the wrong file. Never log user conversations here.
+        record("tool-second-turn-observed", [
+            "completed": secondRequestCompleted,
+            "error": secondRequestError.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(secondRequestAnswer.prefix(1024)),
+            "calls": observedCalls(secondCalls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let secondRequestError {
+            throw NSError(domain: "Qualification.Tool", code: 15,
+                userInfo: [NSLocalizedDescriptionKey: secondRequestError])
         }
         guard secondCalls.count == 1, let secondCall = secondCalls.first,
               secondCall.id != call.id, secondCall.toolName == schema.name,
@@ -648,7 +725,353 @@ import Synchronization
         await runtime.unload(modelID: entry.id)
     }
 
-    /// Original optional baseline: the three prompts from the first cloud run.
+    /// Real-weight greeting → web.search → tool result → follow-up web.search
+    /// chain through the production `LocalProviderAdapter`, using the EXACT
+    /// production `web.search` descriptor. The existing tool host covered only
+    /// file reads; this case proves the previously untested news-search path:
+    ///   * a greeting never invokes the offered search tool,
+    ///   * an explicit news request yields one `web.search` call (directly or
+    ///     after the bounded repair) with a non-empty `query`,
+    ///   * a truthful receipt then reaches a follow-up turn, which requests a
+    ///     second search (new call id, weather query).
+    /// No live/paid web search is performed: the tool result is a clearly
+    /// labeled synthetic fixture supplied by this host.
+    static func runActualSearchRoundtrip(_ entry: LocalModelCatalogEntry, store: LocalModelStore) async throws {
+        let runtime = LocalModelRuntime(store: store)
+        let adapter = LocalProviderAdapter(runtime: runtime, store: store)
+        let model = ModelProfile(
+            providerID: LocalProviderAdapter.providerProfile.id,
+            remoteModelID: entry.id,
+            displayName: "Qwen search qualification",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 256),
+            capabilities: [.text, .tools]
+        )
+        let schema = ToolSchemaDescriptor(
+            name: WebSearchTool.name,
+            description: WebSearchTool.toolDescription,
+            parametersJSON: WebSearchTool.parametersJSON
+        )
+        let offeredSchemas = [schema,
+            ToolSchemaDescriptor(name: WebFetchTool.name, description: WebFetchTool.toolDescription,
+                                 parametersJSON: WebFetchTool.parametersJSON),
+            ToolSchemaDescriptor(name: URLDownloadTool.name, description: URLDownloadTool.toolDescription,
+                                 parametersJSON: URLDownloadTool.parametersJSON),
+            ToolSchemaDescriptor(name: OCRTool.name, description: OCRTool.toolDescription,
+                                 parametersJSON: OCRTool.parametersJSON),
+            ToolSchemaDescriptor(name: LocalPythonTool.name, description: LocalPythonTool.toolDescription,
+                                 parametersJSON: LocalPythonTool.parametersJSON)
+        ]
+        let systemEnvelope = AgentPromptComposer.compose(
+            mode: .chat,
+            runtimeContext: "# Run context\nWorkspace: synthetic qualification workspace. Tool permissions are enforced by the host. After a tool result, answer from that result; repeat its receipt marker verbatim and identify synthetic results as synthetic.",
+            toolsAvailable: true, compactForLocal: true
+        )
+
+        func collect(_ request: ProviderStreamRequest) async throws
+            -> (calls: [ToolCall], answer: String, completed: Bool, error: String?) {
+            var calls: [ToolCall] = []
+            var answer = ""
+            var completed = false
+            var streamError: String?
+            for try await event in adapter.stream(request: request, credentials: ProviderCredentials()) {
+                switch event {
+                case .toolRequest(let call): calls.append(call)
+                case .textDelta(let delta): answer += delta.text
+                case .completed(let info): completed = info.stopReason == .endTurn
+                case .error(let error): streamError = error.providerMessage
+                default: break
+                }
+            }
+            return (calls, answer, completed, streamError)
+        }
+
+        // Turn 1: greeting stays conversational.
+        record("search-roundtrip-start", ["model": entry.id,
+            "systemEnvelopeSource": "production-local-composer",
+            "offeredSchemas": offeredSchemas.count])
+        let greeting = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: model,
+            messages: [
+                (role: "system", content: systemEnvelope),
+                (role: "user", content: "你好，今天过得怎么样？")
+            ],
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
+        )
+        let greetingReply = try await collect(greeting)
+        // Synthetic-qualification observation only: record whether the
+        // greeting produced prose, a call, or a stream error before the gate.
+        record("search-greeting-observed", [
+            "completed": greetingReply.completed,
+            "error": greetingReply.error.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(greetingReply.answer.prefix(1_024)),
+            "calls": observedCalls(greetingReply.calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let greetingError = greetingReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: greetingError])
+        }
+        guard greetingReply.calls.isEmpty, greetingReply.completed,
+              !greetingReply.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "Qualification.Search", code: 31,
+                userInfo: [NSLocalizedDescriptionKey: "Real model invoked web.search for a plain greeting"])
+        }
+
+        // Turn 2: explicit news search.
+        let search = ProviderStreamRequest(
+            provider: greeting.provider,
+            model: model,
+            messages: greeting.messages + [
+                (role: "assistant", content: greetingReply.answer),
+                (role: "user", content: "那你能尝试调用一下工具，随便搜索一下今天的新闻吗")
+            ],
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
+        )
+        let searchReply = try await collect(search)
+        // Synthetic-qualification observation only: the exact news-search call
+        // shape (zero calls, several calls or wrong/missing query) before the
+        // exact gate. The receipt stays synthetic either way.
+        record("search-call-observed", [
+            "conversationTurn": 2,
+            "completed": searchReply.completed,
+            "error": searchReply.error.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(searchReply.answer.prefix(1_024)),
+            "calls": observedCalls(searchReply.calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let searchError = searchReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: searchError])
+        }
+        let calls = searchReply.calls
+        guard calls.count == 1, let call = calls.first, call.toolName == schema.name,
+              let arguments = try JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
+              let query = arguments["query"] as? String, !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw NSError(domain: "Qualification.Search", code: 32,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Real model did not request exactly one web.search call with a non-empty query"])
+        }
+
+        // Truthful, clearly labeled synthetic receipt — no live search.
+        let firstMarker = "FLOE_SEARCH_RECEIPT_7A31"
+        let summary = "receipt marker: \(firstMarker). synthetic fixture (no live search performed): 3 normalized results for query \"\(query)\""
+        let result = ToolResult(callID: call.id, status: .ok, outputSummary: summary,
+                                outputDigest: FloeDigest.sha256Hex(Data(summary.utf8)))
+        record("search-tool-executed", ["model": entry.id, "tool": call.toolName,
+                                         "callID": call.id, "receiptSource": "synthetic-fixture",
+                                         "query": query])
+
+        let continuation = ProviderStreamRequest(
+            provider: search.provider, model: model, messages: search.messages,
+            toolResults: [(callID: call.id, output: result.outputSummary)],
+            pendingToolCalls: [call],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
+            toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
+        )
+        let firstReply = try await collect(continuation)
+        // Only synthetic qualification content: retain the actual observation
+        // before an assertion so failures distinguish truncation, another call
+        // and an answer that did not consume the tool receipt.
+        record("search-reply-observed", ["conversationTurn": 2,
+            "completed": firstReply.completed,
+            "error": firstReply.error.map { $0 as Any } ?? NSNull(),
+            "toolNames": firstReply.calls.map(\.toolName),
+            "answerCharacters": firstReply.answer.count,
+            "syntheticAnswerPrefix": String(firstReply.answer.prefix(1_024)),
+            "answerContainsReceipt": firstReply.answer.contains(firstMarker),
+            "adapterDiagnostics": adapterToolDiagnostics()])
+        if let firstReplyError = firstReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: firstReplyError])
+        }
+        guard firstReply.calls.isEmpty, firstReply.completed,
+              firstReply.answer.contains(firstMarker) else {
+            throw NSError(domain: "Qualification.Search", code: 34,
+                userInfo: [NSLocalizedDescriptionKey: "First search receipt did not produce a completed answer containing its marker"])
+        }
+        record("search-answer-complete", ["model": entry.id, "conversationTurn": 2,
+                                          "callID": call.id, "answerContainsReceipt": true])
+
+        // Turn 3 follows the actual greeting and completed search answer.
+
+        let followup = ProviderStreamRequest(
+            provider: search.provider,
+            model: model,
+            messages: search.messages + [
+                (role: "assistant", content: firstReply.answer),
+                (role: "user", content: "很好，再帮我搜索一下明天的天气")
+            ],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
+            toolSchemas: offeredSchemas,
+            allToolNames: offeredSchemas.map(\.name)
+        )
+        let followupReply = try await collect(followup)
+        // Synthetic-qualification observation only: the follow-up call shape
+        // before the exact gate.
+        record("search-followup-observed", [
+            "conversationTurn": 3,
+            "completed": followupReply.completed,
+            "error": followupReply.error.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(followupReply.answer.prefix(1_024)),
+            "calls": observedCalls(followupReply.calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let followupError = followupReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: followupError])
+        }
+        let followupCalls = followupReply.calls
+        guard followupCalls.count == 1, let followupCall = followupCalls.first,
+              followupCall.id != call.id, followupCall.toolName == schema.name,
+              let followupArguments = try JSONSerialization.jsonObject(with: followupCall.argumentsJSON) as? [String: Any],
+              let weatherQuery = followupArguments["query"] as? String,
+              weatherQuery.range(of: "天气|weather", options: .regularExpression) != nil else {
+            throw NSError(domain: "Qualification.Search", code: 33,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Follow-up turn did not request a new web.search call with a weather query"])
+        }
+        let secondMarker = "FLOE_SEARCH_RECEIPT_B802"
+        let secondSummary = "receipt marker: \(secondMarker). synthetic fixture (no live search performed): weather search fixture, not a real forecast."
+        let secondResult = ToolResult(callID: followupCall.id, status: .ok,
+            outputSummary: secondSummary, outputDigest: FloeDigest.sha256Hex(Data(secondSummary.utf8)))
+        record("search-tool-executed", ["model": entry.id, "tool": followupCall.toolName,
+            "callID": followupCall.id, "receiptSource": "synthetic-fixture", "query": weatherQuery])
+        let secondContinuation = ProviderStreamRequest(
+            provider: followup.provider, model: model, messages: followup.messages,
+            toolResults: [(callID: followupCall.id, output: secondResult.outputSummary)],
+            pendingToolCalls: [followupCall],
+            replayedToolPairs: [ReplayedToolPair(call: call, result: result),
+                               ReplayedToolPair(call: followupCall, result: secondResult)],
+            toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
+        )
+        let secondReply = try await collect(secondContinuation)
+        record("search-reply-observed", ["conversationTurn": 3,
+            "completed": secondReply.completed,
+            "error": secondReply.error.map { $0 as Any } ?? NSNull(),
+            "toolNames": secondReply.calls.map(\.toolName),
+            "answerCharacters": secondReply.answer.count,
+            "syntheticAnswerPrefix": String(secondReply.answer.prefix(1_024)),
+            "answerContainsReceipt": secondReply.answer.contains(secondMarker),
+            "adapterDiagnostics": adapterToolDiagnostics()])
+        if let secondReplyError = secondReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: secondReplyError])
+        }
+        guard secondReply.calls.isEmpty, secondReply.completed,
+              secondReply.answer.contains(secondMarker) else {
+            throw NSError(domain: "Qualification.Search", code: 35,
+                userInfo: [NSLocalizedDescriptionKey: "Second search receipt did not produce a completed answer containing its marker"])
+        }
+        record("search-answer-complete", ["model": entry.id, "conversationTurn": 3,
+            "callID": followupCall.id, "answerContainsReceipt": true])
+        record("search-roundtrip-complete", [
+            "model": entry.id,
+            "greetingInvokedTool": false,
+            "completedToolAnswers": 2,
+            "firstCallID": call.id,
+            "followupCallID": followupCall.id,
+            "conversationTurns": 3,
+            "receiptSource": "synthetic-fixture"
+        ])
+        await runtime.unload(modelID: entry.id)
+    }
+    /// Bounded, evidence-only grounding matrix on the real pinned snapshot.
+    /// Every case is run even if one fails; outcomes are recorded, never
+    /// asserted into a pass/fail exit, so the run discriminates hypotheses
+    /// instead of trapping at the first fabrication. Synthetic content only.
+    static func runGroundingProbeMatrix(
+        entry: LocalModelCatalogEntry, directory: URL
+    ) async throws {
+        let schema = ToolSchemaDescriptor(
+            name: WebSearchTool.name,
+            description: WebSearchTool.toolDescription,
+            parametersJSON: WebSearchTool.parametersJSON
+        )
+        let offeredSchemas = [schema,
+            ToolSchemaDescriptor(name: WebFetchTool.name, description: WebFetchTool.toolDescription,
+                                 parametersJSON: WebFetchTool.parametersJSON),
+            ToolSchemaDescriptor(name: URLDownloadTool.name, description: URLDownloadTool.toolDescription,
+                                 parametersJSON: URLDownloadTool.parametersJSON),
+            ToolSchemaDescriptor(name: OCRTool.name, description: OCRTool.toolDescription,
+                                 parametersJSON: OCRTool.parametersJSON),
+            ToolSchemaDescriptor(name: LocalPythonTool.name, description: LocalPythonTool.toolDescription,
+                                 parametersJSON: LocalPythonTool.parametersJSON)
+        ]
+        let envelope = AgentPromptComposer.compose(
+            mode: .chat,
+            runtimeContext: "# Run context\nWorkspace: synthetic qualification workspace. Tool permissions are enforced by the host. After a tool result, answer from that result; repeat its receipt marker verbatim and identify synthetic results as synthetic.",
+            toolsAvailable: true, compactForLocal: true
+        )
+        let plan = try LocalGroundingProbePlan.standard(
+            envelope: envelope, schemas: offeredSchemas, modelID: entry.id)
+        record("grounding-probe-start", [
+            "model": entry.id, "caseCount": plan.cases.count
+        ])
+        // One container reused across cases; each probe prepares fresh tokens
+        // and a fresh KV, matching production. Output allowance 1024 covers
+        // the 320-token items case.
+        let profile = LocalInferenceResourceProfile(
+            tier: .constrained, contextSize: 8_192, batchSize: 48,
+            gpuLayers: 16, maximumOutputTokens: 1_024)
+        let engine = try await MLXTextEngine(
+            modelDirectory: directory, includesVisionProjector: false,
+            resourceProfile: profile)
+        // Heuristic-only labels for unsupported claims: present on the
+        // empty-item receipt answers that invent concrete news while omitting
+        // the marker. Not a gate; the answer text is retained verbatim.
+        let inventionMarkers = [
+            "芯片", "股市", "股指", "交通管制", "量产", "股价", "降息", "发布新"
+        ]
+        for probeCase in plan.cases {
+            do {
+                let outcome = try await engine.runGroundingProbe(
+                    content: probeCase.content,
+                    temperature: probeCase.temperature,
+                    repetitionPenalty: probeCase.repetitionPenalty,
+                    maxTokens: probeCase.maxTokens,
+                    evidenceNeedles: probeCase.evidenceNeedles,
+                    diagnosticTraceID: "probe-\(probeCase.id)")
+                let marker = probeCase.evidenceNeedles.first ?? ""
+                let answerContainsMarker = marker.isEmpty
+                    ? true : outcome.answer.contains(marker)
+                let lowered = outcome.answer.lowercased()
+                let answerSaysSynthetic = lowered.contains("synthetic")
+                    || outcome.answer.contains("合成")
+                    || outcome.answer.contains("模拟")
+                let answerPresentsUnsupportedClaims = !answerContainsMarker
+                    && inventionMarkers.contains { outcome.answer.contains($0) }
+                record("grounding-probe-case", [
+                    "case": probeCase.id,
+                    "hypothesis": probeCase.hypothesis,
+                    "temperature": probeCase.temperature,
+                    "repetitionPenalty": probeCase.repetitionPenalty,
+                    "inputTokens": outcome.preparedTokens,
+                    "outputTokens": outcome.outputTokens,
+                    "generationDurationMs": outcome.generationDurationMs,
+                    "needleSpans": outcome.needleSpans,
+                    "answerContainsMarker": answerContainsMarker,
+                    "answerSaysSynthetic": answerSaysSynthetic,
+                    "answerPresentsUnsupportedClaims": answerPresentsUnsupportedClaims,
+                    "answer": outcome.answer,
+                    "renderedText": outcome.renderedText
+                ])
+            } catch {
+                record("grounding-probe-case", [
+                    "case": probeCase.id,
+                    "hypothesis": probeCase.hypothesis,
+                    "temperature": probeCase.temperature,
+                    "repetitionPenalty": probeCase.repetitionPenalty,
+                    "error": errorFields(error)
+                ])
+            }
+        }
+        await engine.shutdown()
+        record("grounding-probe-complete", ["caseCount": plan.cases.count])
+    }
+
     static func runBaseline(_ entry: LocalModelCatalogEntry, using profileCase: ProfileCase,
                             directory: URL) async throws {
         var startFields = profileCase.fields
@@ -722,10 +1145,21 @@ import Synchronization
         var arguments = Array(CommandLine.arguments.dropFirst())
         let includeBaseline = arguments.contains("--include-baseline")
         arguments.removeAll { $0 == "--include-baseline" }
+        // Bounded diagnostic scope for iterating on the real-weight tool
+        // protocol without re-running the unchanged lifecycle profiles. It
+        // never relaxes a tool/search gate: the same roundtrip assertions run.
+        let toolsOnly = arguments.contains("--tools-only")
+        arguments.removeAll { $0 == "--tools-only" }
+        // Bounded diagnostic-only scope: runs the controlled grounding-probe
+        // matrix instead of profiles and tool/search roundtrips. It never
+        // replaces, weakens or reruns any receipt gate — those stay
+        // exclusive to full/tools-only.
+        let groundingProbe = arguments.contains("--grounding-probe")
+        arguments.removeAll { $0 == "--grounding-probe" }
         guard arguments.count == 1 else {
             throw NSError(domain: "Qualification", code: 1, userInfo: [
                 NSLocalizedDescriptionKey:
-                    "Provide one isolated model-cache directory (optional flag: --include-baseline)"
+                    "Provide one isolated model-cache directory (optional flags: --include-baseline, --tools-only, --grounding-probe)"
             ])
         }
         let entry = CuratedLocalModelCatalog.entries.first { $0.id == "qwen3.8-4b-heretic-mlx4" }!
@@ -738,7 +1172,21 @@ import Synchronization
         let directory = try await store.download(entry)
         record("download-complete", ["model": entry.id, "revision": entry.revision])
 
-        for profileCase in profileCases(includeBaseline: includeBaseline) {
+        if groundingProbe {
+            record("qualification-scope", [
+                "toolsOnly": false,
+                "groundingProbe": true,
+                "profileCount": 0
+            ])
+            try await runGroundingProbeMatrix(entry: entry, directory: directory)
+            return
+        }
+        let profiles = toolsOnly ? [] : profileCases(includeBaseline: includeBaseline)
+        record("qualification-scope", [
+            "toolsOnly": toolsOnly,
+            "profileCount": profiles.count
+        ])
+        for profileCase in profiles {
             if includeBaseline, profileCase.label.hasPrefix("baseline") {
                 try await runBaseline(entry, using: profileCase, directory: directory)
             } else {
@@ -746,5 +1194,6 @@ import Synchronization
             }
         }
         try await runActualToolRoundtrip(entry, store: store, fixtureRoot: root)
+        try await runActualSearchRoundtrip(entry, store: store)
     }
 }

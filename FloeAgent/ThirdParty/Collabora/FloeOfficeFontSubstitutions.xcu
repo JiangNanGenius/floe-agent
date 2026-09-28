@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Floe Office font substitutions (Build 233, R4).
+
+  This file is an additive user-layer configuration merged into the app's
+  `coolkitconfig.xcu` (the host's last CONFIGURATION_LAYERS entry) by
+  scripts/build_office_native_host.py at native-host packaging time. The
+  merge is deterministic and preserves every vendor item byte-for-byte; the
+  shipped overlay is a candidate that needs a new immutable host pin.
+
+  Rules enforced by scripts/office_font_config.py and its tests:
+
+  * every item path follows the pinned VCL registry hierarchy exactly:
+    `/org.openoffice.VCL/FontSubstitutions/` (set, node-type
+    `LocalizedFontSubstitutions`) then the locale set member
+    `org.openoffice.VCL:LocalizedFontSubstitutions['en']`, then the alias
+    record `org.openoffice.VCL:LFonts['simsun']`. The pinned
+    `fontcfg.cxx readLocaleSubst` reads a locale member and its alias
+    records; a path that omits the locale would address a set member of the
+    root set (a locale) or be rejected outright by configmgr;
+  * an alias the pinned `share/registry/main.xcd` already declares under the
+    locale has only its `SubstFonts` property replaced; the vendor
+    `SubstFontsMS`/`FontWeight`/`FontWidth`/`FontType` stay intact;
+  * an alias the pinned table lacks is added as an `oor:op="fuse"` node child
+    of the existing locale member. The pinned `XcuParser::handleSetNode`
+    creates the missing `LFonts` member (or merges into one) and never
+    replaces the locale member, so every sibling alias and locale is retained;
+  * alias keys are stored in the normalized form the pinned engine looks up
+    (fontdefs.cxx GetEnglishSearchFontName: ASCII lowercase, whitespace and
+    special characters removed except `;` `(` `)`, fullwidth ASCII folded,
+    localized names translated), because fontcfg.cxx getSubstInfo lowercases
+    the query and prefix-matches; `宋体` reaches the engine as `simsun` and
+    `方正仿宋` as `fzfangsong`;
+  * `SubstFonts` targets are real font *families* (name table IDs 1/16) of
+    licensed fonts Floe stages (`FloeApp/Resources/Fonts/Bundled`, copied to
+    the engine-scanned `program/resource/common/fonts`), never PostScript
+    filenames and never proprietary fonts;
+  * properties use only the shipped VCL schema names (SubstFonts,
+    SubstFontsMS, FontWeight, FontWidth, FontType).
+
+  The existing `share/registry/main.xcd` substitution entries list Chinese
+  targets such as `fzsongti`/`msunglightsc`/`nsimsun` that are not installed;
+  these overrides put the bundled families first so a document naming SimSun,
+  SimHei, Microsoft YaHei, DengXian, KaiTi, FangSong or the Office Latin
+  defaults resolves to a real glyph set instead of the engine's fallback.
+-->
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <!-- Simplified Chinese families: serif body text keeps a serif face.
+       These aliases exist as `LFonts` records of the `en` locale set in the
+       pinned main.xcd, so an alias-path item replaces just SubstFonts. -->
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['simsun']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['nsimsun']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['simsong']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['song']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['shusong']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['msunglightsc']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['fangsong']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;LXGW WenKai</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['cfangsong']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;LXGW WenKai</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['simkai']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>LXGW WenKai;Source Han Serif SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['kai']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>LXGW WenKai;Source Han Serif SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['simhei']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['hei']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['zycjksun']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['zycjkhei']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['zycjkkai']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>LXGW WenKai;Source Han Serif SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['fzsongti']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['fzhei']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['fzkai']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>LXGW WenKai;Source Han Serif SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['msong']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['mhei']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['mkai']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>LXGW WenKai;Source Han Serif SC</value></prop>
+  </item>
+
+  <!-- Traditional Chinese families. -->
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['msunglighttc']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif TC;Source Han Sans TC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['fzmingti']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif TC;Source Han Sans TC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['pmingliu']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif TC;Source Han Sans TC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['mingliu']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif TC;Source Han Sans TC</value></prop>
+  </item>
+
+  <!-- Office Latin defaults that the engine's own table maps to fonts the
+       iOS host does not install (Carlito/Caladea/Liberation are shipped in
+       the pinned LibreOffice bundle and are confirmed by the embedding gate). -->
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['calibri']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Carlito;Liberation Sans</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['cambria']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Caladea;Liberation Serif</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['arial']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Liberation Sans;Source Han Sans SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['timesnewroman']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Liberation Serif;Source Han Serif SC</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['couriernew']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Liberation Mono</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']/org.openoffice.VCL:LFonts['consolas']">
+    <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Sarasa Mono SC;Liberation Mono</value></prop>
+  </item>
+
+  <!-- Aliases the pinned VCL table has no locale record for. They are
+       additive members of the existing `en` locale set: the pinned
+       configmgr `XcuParser::handleSetNode` creates a missing member on
+       `oor:op="fuse"` and merges into an existing one, so sibling aliases
+       and other locales are never replaced. -->
+  <item oor:path="/org.openoffice.VCL/FontSubstitutions/org.openoffice.VCL:LocalizedFontSubstitutions['en']">
+    <node oor:name="fzfangsong" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC;LXGW WenKai</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="microsoftyahei" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="yahei" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="msyh" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="dengxian" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="kaiti" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>LXGW WenKai;Source Han Serif SC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="microsoftjhenghei" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans TC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_TW</value></prop>
+    </node>
+    <node oor:name="pingfangsc" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC;MiSans</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="pingfangtc" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans TC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_TW</value></prop>
+    </node>
+    <node oor:name="pingfanghk" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans TC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_TW</value></prop>
+    </node>
+    <node oor:name="stheiti" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="stsong" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="songtisc" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif SC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+    <node oor:name="songtistc" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Serif TC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_TW</value></prop>
+    </node>
+    <node oor:name="heitisc" oor:op="fuse">
+      <prop oor:name="SubstFonts" oor:op="replace" oor:type="xs:string"><value>Source Han Sans SC</value></prop>
+      <prop oor:name="FontWeight" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontWidth" oor:op="replace" oor:type="xs:string"><value>Normal</value></prop>
+      <prop oor:name="FontType" oor:op="replace" oor:type="xs:string"><value>CJK,CJK_SC</value></prop>
+    </node>
+  </item>
+
+</oor:items>

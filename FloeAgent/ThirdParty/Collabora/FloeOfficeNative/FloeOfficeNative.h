@@ -24,6 +24,10 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 @interface FloeOfficeNativeRuntime : NSObject
 @property (class, nonatomic, readonly) FloeOfficeNativeRuntime *sharedRuntime NS_SWIFT_NAME(shared);
 @property (nonatomic, readonly, getter=isReady) BOOL ready;
+/// Content-free font discovery facts from the engine's own startup scan:
+/// `staged`, `resolved` and `catalogFingerprint` for the bundled catalog.
+/// Empty until the runtime starts. Never contains document contents.
+@property (class, nonatomic, readonly, strong) NSDictionary<NSString *, id> *fontDiscoveryFacts;
 - (void)prepareWithCompletion:(void (^)(NSError * _Nullable error))completion;
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)new NS_UNAVAILABLE;
@@ -68,6 +72,17 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// Format/type/open/render/save diagnostics for logging and qualification.
 /// Contains only engine state and counters, never document contents.
 @property (nonatomic, readonly, copy, nullable) NSDictionary<NSString *, id> *renderDiagnostics;
+/// Build 233 (R1): content-free stage breadcrumb for the App's durable Office
+/// trace, delivered on the main queue. `stage`, `session`, `generation` and a
+/// bounded facts dictionary (engine state, counters, memory samples) only —
+/// never document text, paths or bytes. Optional: an older App does not
+/// install it.
+@property (nonatomic, copy, nullable) void (^onStageEvent)(NSDictionary<NSString *, id> *event);
+/// Build 233 (R3): the editor's web content process terminated. The engine
+/// session is dead and the App must settle a bounded recoverable failure; the
+/// working copy is retained. Fired at most once per controller, on the main
+/// queue.
+@property (nonatomic, copy, nullable) void (^onWebContentProcessTerminated)(void);
 /// Native close completed. The caller still owns writeback and recovery retention.
 @property (nonatomic, copy, nullable) void (^onClosed)(BOOL success);
 /// Force a normal engine save and wait for this request's native working-file

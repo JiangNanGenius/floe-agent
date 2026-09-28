@@ -29,8 +29,10 @@ enum LinuxGuestImageSourceFetch {
         to stagingArchive: URL,
         maxBytes: Int64,
         downloader: any LinuxGuestImageDownloading,
-        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        isCancelled: (@Sendable () -> Bool)? = nil
     ) async throws {
+        try checkCancelled(isCancelled)
         // 1 — primary first, always.
         do {
             try await downloader.download(
@@ -51,6 +53,7 @@ enum LinuxGuestImageSourceFetch {
 
         // 2 — mirrors in declared order.
         for mirror in trusted.mirrors {
+            try checkCancelled(isCancelled)
             do {
                 try await fetchMirror(
                     mirror,
@@ -58,7 +61,8 @@ enum LinuxGuestImageSourceFetch {
                     to: stagingArchive,
                     maxBytes: maxBytes,
                     downloader: downloader,
-                    onProgress: onProgress
+                    onProgress: onProgress,
+                    isCancelled: isCancelled
                 )
                 return
             } catch let error where error.allowsNextSource {
@@ -75,15 +79,25 @@ enum LinuxGuestImageSourceFetch {
         )
     }
 
+    private static func checkCancelled(
+        _ isCancelled: (@Sendable () -> Bool)?
+    ) throws(LinuxGuestImageTransferError) {
+        if Task.isCancelled || isCancelled?() == true {
+            throw .cancelled
+        }
+    }
+
     private static func fetchMirror(
         _ mirror: LinuxGuestImageMirror,
         image trusted: LinuxGuestTrustedImage,
         to stagingArchive: URL,
         maxBytes: Int64,
         downloader: any LinuxGuestImageDownloading,
-        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        isCancelled: (@Sendable () -> Bool)?
     ) async throws(LinuxGuestImageTransferError) {
         // Download the manifest beside the release assets.
+        try checkCancelled(isCancelled)
         let manifestFile = stagingArchive.deletingLastPathComponent()
             .appendingPathComponent(".shards-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: manifestFile) }
@@ -93,6 +107,7 @@ enum LinuxGuestImageSourceFetch {
             maxBytes: maxManifestBytes,
             onProgress: { _, _ in }
         )
+        try checkCancelled(isCancelled)
 
         let data: Data
         do {
@@ -120,6 +135,7 @@ enum LinuxGuestImageSourceFetch {
         // download seam, individually verified, and the assembled archive is
         // re-checked against the pinned SHA-512; verified pieces survive an
         // availability failure so a retry resumes.
+        try checkCancelled(isCancelled)
         try await LinuxGuestImageShardFetch.fetch(
             downloader: downloader,
             baseURL: baseURL,
