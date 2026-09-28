@@ -117,6 +117,22 @@ class PortablePreflightFixtureTests(unittest.TestCase):
             '    return {"unproven": [], "failures": []}\n', encoding='utf-8')
         plist_path = app / 'FloeScreenShare/Info.plist'
         plist_path.write_text(transform(plist_path.read_text()))
+        # Stage synthetic bilingual release copy for the copied project.yml's
+        # version/build so the read-only release-copy gate passes in this
+        # portable fixture; the real documents and the gate's failure cases are
+        # exercised by test_release_preflight_versions.py.
+        project_yml = (app / 'project.yml').read_text()
+        version = re.search(r'^\s*MARKETING_VERSION:\s*"?([^"\s]+)', project_yml, re.MULTILINE).group(1)
+        build = re.search(r'^\s*CURRENT_PROJECT_VERSION:\s*"?([^"\s]+)', project_yml, re.MULTILINE).group(1)
+        series = '.'.join(version.split('.')[:2])
+        docs = root / 'docs'
+        docs.mkdir()
+        (docs / f'RELEASE_NOTES_{version}_BUILD_{build}.md').write_text(
+            f'# Floe Agent {version} (build {build})\n\n## 简体中文\n\n内测说明。\n\n'
+            '## English\n\nInternal beta notes.\n', encoding='utf-8')
+        (docs / f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json').write_text(
+            json.dumps({'en-US': 'Internal beta fixture notes.', 'zh-Hans': '内测夹具说明。'},
+                       ensure_ascii=False), encoding='utf-8')
         git_env = dict(os.environ, GIT_AUTHOR_NAME='Floe Review', GIT_COMMITTER_NAME='Floe Review',
                        GIT_AUTHOR_EMAIL='review@example.invalid',
                        GIT_COMMITTER_EMAIL='review@example.invalid')

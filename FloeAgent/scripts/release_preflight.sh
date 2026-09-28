@@ -73,6 +73,78 @@ if [[ "${TAG%%-beta.*}" != "v$VERSION" ]]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Release-copy gate, before any expensive App build or upload. Build 234
+# (run 36429111717) compiled, retained and uploaded successfully, then failed
+# the prerelease heading check because the frozen tag's release notes had no
+# bilingual section headings and the build-specific TestFlight notes JSON did
+# not exist at all; a distribution-only recovery had to publish afterwards.
+# Both documents must already be committed in the frozen source.
+#
+# Policy boundary: this check lives in the script revision of the checked-out
+# source, so historical immutable tags and the recovery workflows that execute
+# their own historical script or original-source copy are unchanged. Only
+# releases whose frozen source contains this gate are enforced. A
+# distribution-only recovery that intentionally does not run this script
+# (for example the Build 234 publication recovery) keeps its existing path.
+# The gate is read-only: it opens the two documents and never rewrites them.
+# ---------------------------------------------------------------------------
+if ! python3 - "$VERSION" "$BUILD" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+version, build = sys.argv[1], sys.argv[2]
+docs = Path('../docs')
+series = '.'.join(version.split('.')[:2])
+notes_path = docs / f'RELEASE_NOTES_{version}_BUILD_{build}.md'
+whats_new_path = docs / f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json'
+
+problems = []
+try:
+    notes = notes_path.read_text(encoding='utf-8')
+except OSError as error:
+    problems.append(f'{notes_path.name}: unreadable ({error.strerror})')
+else:
+    # Same contract as the publish step: h2 or h3 heading, both languages.
+    for language in ('简体中文', 'English'):
+        if not re.search(f'^##+ {re.escape(language)}', notes, re.MULTILINE):
+            problems.append(f"{notes_path.name}: missing '## {language}' section heading")
+
+try:
+    beta_notes = json.loads(whats_new_path.read_text(encoding='utf-8'))
+except OSError as error:
+    problems.append(f'{whats_new_path.name}: unreadable ({error.strerror})')
+except json.JSONDecodeError as error:
+    problems.append(f'{whats_new_path.name}: invalid JSON ({error.msg})')
+else:
+    if not isinstance(beta_notes, dict):
+        problems.append(f'{whats_new_path.name}: must be a JSON object of locale to text')
+    else:
+        # Same acceptance contract as prepare_testflight.py: en-US and zh-Hans,
+        # non-empty after stripping, at most App Store Connect's 4000 chars.
+        for locale in ('en-US', 'zh-Hans'):
+            text = beta_notes.get(locale)
+            if not isinstance(text, str) or not text.strip():
+                problems.append(f'{whats_new_path.name}: missing non-empty {locale} text')
+            elif len(text) > 4000:
+                problems.append(f'{whats_new_path.name}: {locale} text exceeds 4000 characters')
+        extra = sorted(set(beta_notes) - {'en-US', 'zh-Hans'})
+        if extra:
+            problems.append(f'{whats_new_path.name}: unsupported locales {extra}')
+
+if problems:
+    print('error: release-copy preflight failed before any build:', file=sys.stderr)
+    for problem in problems:
+        print(f'  {problem}', file=sys.stderr)
+    sys.exit(1)
+print(f'Release-copy preflight OK: {notes_path.name}, {whats_new_path.name}')
+PY
+then
+    exit 1
+fi
+
 # App extensions must carry the same version/build as the containing app.
 # Check every target, not only the first project.yml occurrence.
 if ! awk -F': ' -v version="$VERSION" -v build="$BUILD" '
