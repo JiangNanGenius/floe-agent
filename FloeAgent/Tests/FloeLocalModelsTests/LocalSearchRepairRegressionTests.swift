@@ -250,6 +250,18 @@ struct LocalSearchRepairRegressionTests {
 
     // MARK: - Full greeting → search → tool result → follow-up chain
 
+    @Test("A fresh search receipt permits an answer while a new follow-up still requires a call")
+    @available(macOS 15.4, iOS 26.0, *)
+    func receiptDoesNotForceRepeatedAction() {
+        var continuation = SearchRepairFixtures.request(userText: "搜索一下今天的新闻")
+        continuation.toolResults = [(callID: "search-1", output: "Synthetic result: three news items.")]
+        let receiptBuild = LocalProviderAdapter.buildPrompt(for: continuation)
+        #expect(!receiptBuild.requiresToolCall)
+        #expect(!receiptBuild.systemInstructions.contains("Emit the documented JSON tool_call object(s) now"))
+        let followup = SearchRepairFixtures.request(userText: "再搜索一下明天的天气")
+        #expect(LocalProviderAdapter.buildPrompt(for: followup).requiresToolCall)
+    }
+
     @Test("A device-sized runtime envelope remains eligible for bounded repair")
     @available(macOS 15.4, iOS 26.0, *)
     func deviceSizedEnvelopeCanRepair() throws {

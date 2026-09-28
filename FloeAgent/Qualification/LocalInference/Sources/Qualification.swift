@@ -768,6 +768,14 @@ import Synchronization
             toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
         )
         let firstReply = try await collect(continuation)
+        // Only synthetic qualification content: retain the actual observation
+        // before an assertion so failures distinguish truncation, another call
+        // and an answer that did not consume the tool receipt.
+        record("search-reply-observed", ["conversationTurn": 2,
+            "completed": firstReply.completed, "toolNames": firstReply.calls.map(\.toolName),
+            "answerCharacters": firstReply.answer.count,
+            "syntheticAnswerPrefix": String(firstReply.answer.prefix(1_024)),
+            "answerContainsReceipt": firstReply.answer.contains(firstMarker)])
         guard firstReply.calls.isEmpty, firstReply.completed,
               firstReply.answer.contains(firstMarker) else {
             throw NSError(domain: "Qualification.Search", code: 34,
@@ -815,6 +823,11 @@ import Synchronization
             toolSchemas: offeredSchemas, allToolNames: offeredSchemas.map(\.name)
         )
         let secondReply = try await collect(secondContinuation)
+        record("search-reply-observed", ["conversationTurn": 3,
+            "completed": secondReply.completed, "toolNames": secondReply.calls.map(\.toolName),
+            "answerCharacters": secondReply.answer.count,
+            "syntheticAnswerPrefix": String(secondReply.answer.prefix(1_024)),
+            "answerContainsReceipt": secondReply.answer.contains(secondMarker)])
         guard secondReply.calls.isEmpty, secondReply.completed,
               secondReply.answer.contains(secondMarker) else {
             throw NSError(domain: "Qualification.Search", code: 35,
