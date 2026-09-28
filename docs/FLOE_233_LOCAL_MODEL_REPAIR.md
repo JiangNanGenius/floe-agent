@@ -80,6 +80,67 @@ quoted examples (curly/CJK/backtick/fence/envelope), quoted-argument positive
 cases, negations, ordinary chat mentioning a tool name, boundary-safe name
 matching, and the receipt-continuation negative.
 
+## R3 fix — receipt grounding after a real tool invocation
+
+Diagnostic run
+[36405120893](https://github.com/JiangNanGenius/floe-agent/actions/runs/36405120893)
+(`767950bdd5`, tools-only) passed the greeting, the real `web.search` call and the
+synthetic receipt, then failed code 34: the continuation answered with fabricated
+generic "today's news" prose and never repeated the receipt marker. The file-tool
+roundtrips (two real `workspace.readFile` calls with distinct ids and paths) passed
+in the same run.
+
+A deterministic render of the exact continuation through the production
+`LocalProviderAdapter.buildPrompt` (synthetic qualification fixture only, no
+weights) showed the receipt was **not** omitted or clipped: the `TOOL RESULT` line
+with its marker survived verbatim, the runtime-context sentence ("After a tool
+result, answer from that result…") survived, and the prompt fit at 1833/7936
+estimated tokens. A candidate cause is phase precedence in the representation:
+
+- the only turn-scoped "answer now" wording sat inside the runtime-context
+  envelope, away from generation;
+- the still-active offered-tools paragraph kept instructing the model to emit
+  JSON `tool_call` objects;
+- the original user imperative remained the latest USER line.
+
+The file roundtrips passed because their receipt *is* the requested content and
+the prompt said "report its exact contents"; the synthetic news receipt contains no
+items, so the model filled the gap from priors. This is a proposed context/representation repair; causality and weight-specific
+grounding remain unverified until
+the next real-weight run.
+
+The R3 change (additive, local adapter only,
+`FloeAgent/Sources/FloeLocalModels/LocalProviderAdapter.swift`):
+
+- `hasPendingReceipts = !isAppleToolFollowUp && !request.toolResults.isEmpty`.
+- On such a turn a bounded app-generated section is appended at the **end** of the
+  user-side transcript, immediately after the receipt evidence: the `TOOL RESULT`
+  lines are the only evidence returned for the request; answer it now from their
+  content and relevant conversation context; repeat receipt markers only when requested by the user or runtime; if a result says no live action was
+  performed or is a synthetic/fixture result, say so plainly; do not repeat a
+  completed call; never invent facts, titles, numbers, sources or events the
+  results do not contain. The section is harness text, never tool output, and never
+  contains a fixture marker.
+- A short clause is added to the system tool paragraph for native/Qwen MLX paths so
+  the generic "emit a tool_call" protocol stops competing with the fresh evidence.
+- Greeting, fresh-user forcing, bounded one-call repair, budgets, verbatim runtime
+  envelope preservation, Apple Foundation path and cloud-provider isolation are
+  unchanged; no qualification-specific token enters production.
+
+Regression coverage (new tests in `LocalSearchRepairRegressionTests`): receipt
+survives verbatim in the actual continuation prompt; the grounding directive is
+placed after the evidence and forbids repetition/fabrication without carrying a
+fixture token; ordinary, fresh and replay-only turns never receive it (a fresh
+request still requires its own call); and the streaming continuation path delivers
+marker + directive to the engine with exactly one generation and no extra tool
+request.
+
+Local verification: focused search suite **26/26 pass**; full `FloeLocalModelsTests`
+filter **217 tests, 1 issue** — the known timing-flaky baseline
+`Consumer cancellation stays a cancellation and reaches the engine`, unchanged and
+not touched; adapter object rebuilt; qualification host compiled with the final
+wording. No real-weight run has consumed R3 yet.
+
 ## What the existing evidence proves (and does not)
 
 | Evidence | Result | What it shows |
@@ -207,14 +268,15 @@ passes.
 
 ## Exact next cloud step (primary-owned; not performed here)
 
-The R2 intent fix, its regression tests, the qualification observations and
-the workflow change must be in the dispatched revision. Create the next
-immutable audit snapshot (private alternate index, main HEAD/index untouched)
-that includes at least:
+The R2 intent fix, the R3 receipt-grounding change, their regression tests, the
+qualification observations and the workflow change must be in the dispatched
+revision. Create the next immutable audit snapshot (private alternate index, main
+HEAD/index untouched) that includes at least:
 
 - `FloeAgent/Sources/FloeLocalModels/LocalProviderAdapter.swift`
-- `FloeAgent/Tests/FloeLocalModelsTests/*` (including the new
-  `LocalNamedToolIntentRegressionTests.swift`)
+- `FloeAgent/Tests/FloeLocalModelsTests/*` (including
+  `LocalNamedToolIntentRegressionTests.swift` and
+  `LocalSearchRepairRegressionTests.swift`)
 - `FloeAgent/Qualification/LocalInference/Sources/Qualification.swift`
 - `.github/workflows/local-inference-qualification.yml`
 
@@ -231,9 +293,12 @@ gh workflow run local-inference-qualification.yml \
 Read `tool-first-turn-observed` / `search-*-observed` →
 `calls[].name`, `calls[].syntheticArguments`, `error`, and
 `adapterDiagnostics` to classify the actual shape (zero calls vs several calls
-vs wrong arguments vs dropped emitted name). Do not click through to a full
-run until that shape is recorded. Full qualification remains the only
-acceptance run:
+vs wrong arguments vs dropped emitted name). For the receipt continuation, read
+`search-reply-observed.answerContainsReceipt` and `syntheticAnswerPrefix`: R3 is
+cloud-verified only when both search receipts produce completed answers that
+contain their markers and state the synthetic/no-live-search fact. Do not click
+through to a full run until that shape is recorded. Full qualification remains
+the only acceptance run:
 
 ```
 gh workflow run local-inference-qualification.yml \
@@ -242,11 +307,15 @@ gh workflow run local-inference-qualification.yml \
 
 ## Unverified / limits
 
-- No real-weight run has consumed the R2 intent fix; the second-turn replay is
-  proven with deterministic engine doubles and object compilation, not with
-  qwen3.8 weights. The next tools-only cloud run is expected to pass the
-  second file turn (two `workspace.readFile` executions) and reach the search
-  chain; until then R2 is not cloud-verified.
+- R2 passed both real file-tool turns in v7; no real-weight run has consumed R3; the rendered-prompt proof, the
+  streaming-path regression and object compilation use deterministic engine
+  doubles, not qwen3.8 weights. The next tools-only cloud run is expected to
+  pass the second file turn (two `workspace.readFile` executions) and to make
+  the search continuation answer from the synthetic receipt with its marker;
+  until then R3 is not cloud-verified.
+- Phase precedence is a candidate explanation for the v7 fabrication in the prompt
+  representation; the residual weight-specific grounding sensitivity is a
+  hypothesis the next real-weight run will measure, not a proven result.
 - The earlier empty-arguments shape (v5 code 11) remains a **candidate
   hypothesis**, not a confirmed cause; its bounded recovery is retained.
 - The device proof remains the `bochaWeb` name drop; no raw first-call output

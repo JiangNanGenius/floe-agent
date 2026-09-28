@@ -19,6 +19,7 @@ import Testing
 import FloeCore
 import FloeModels
 import FloeProviders
+@testable import FloeAgentRuntime
 @testable import FloeLocalModelCatalog
 @testable import FloeLocalModels
 @testable import FloeExecution
@@ -284,6 +285,181 @@ struct LocalSearchRepairRegressionTests {
         #expect(!receiptBuild.systemInstructions.contains("Emit the documented JSON tool_call object(s) now"))
         let followup = SearchRepairFixtures.request(userText: "再搜索一下明天的天气")
         #expect(LocalProviderAdapter.buildPrompt(for: followup).requiresToolCall)
+    }
+
+    // MARK: - Receipt grounding after a real tool invocation (Build 233 v7)
+
+    /// Builds the exact continuation shape the v7 real-weight qualification
+    /// sent after the model emitted its `web.search` call: production compact
+    /// system envelope, the greeting/news transcript, the pending call and the
+    /// synthetic receipt — without double-replaying the pending pair (the
+    /// production runtime excludes pending pairs from `replayedToolPairs`).
+    @available(macOS 15.4, iOS 26.0, *)
+    private static func v7SearchContinuation() throws -> (
+        build: LocalProviderAdapter.PromptBuild, call: ToolCall, marker: String
+    ) {
+        let marker = "FLOE_SEARCH_RECEIPT_7A31"
+        let call = try ToolCall(
+            id: "local-12876B6F-08E5-4260-8DA5-6311B67D9B1D",
+            toolName: "web.search",
+            argumentsJSON: Data(#"{"query":"今日新闻"}"#.utf8),
+            scope: .local
+        )
+        let summary = "receipt marker: \(marker). synthetic fixture (no live search performed): 3 normalized results for query \"今日新闻\""
+        let systemEnvelope = AgentPromptComposer.compose(
+            mode: .chat,
+            runtimeContext: "# Run context\nWorkspace: synthetic qualification workspace. Tool permissions are enforced by the host. After a tool result, answer from that result; repeat its receipt marker verbatim and identify synthetic results as synthetic.",
+            toolsAvailable: true, compactForLocal: true
+        )
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: SearchRepairFixtures.model(),
+            messages: [
+                (role: "system", content: systemEnvelope),
+                (role: "user", content: "你好，今天过得怎么样？"),
+                (role: "assistant", content: "你好！今天我过得挺充实的，谢谢关心。"),
+                (role: "user", content: "那你能尝试调用一下工具，随便搜索一下今天的新闻吗")
+            ],
+            toolResults: [(callID: call.id, output: summary)],
+            pendingToolCalls: [call],
+            replayedToolPairs: [],
+            toolSchemas: [SearchRepairFixtures.webSearch],
+            allToolNames: [SearchRepairFixtures.webSearch.name]
+        )
+        return (LocalProviderAdapter.buildPrompt(for: request), call, marker)
+    }
+
+    @Test("The search receipt survives verbatim in the actual continuation prompt")
+    @available(macOS 15.4, iOS 26.0, *)
+    func searchReceiptSurvivesContinuationPrompt() throws {
+        let rendered = try Self.v7SearchContinuation()
+        // The TOOL RESULT line keeps the exact call id and marker body.
+        #expect(rendered.build.text.contains(
+            "TOOL RESULT \(rendered.call.id): receipt marker: \(rendered.marker)"))
+        #expect(rendered.build.text.contains("synthetic fixture (no live search performed)"))
+        #expect(rendered.build.text.contains(#"ASSISTANT TOOL REQUEST \#(rendered.call.id): web.search {"query":"今日新闻"}"#))
+        // The production runtime grounding note is preserved in the system
+        // envelope, and nothing flips the continuation back into a forced call.
+        #expect(rendered.build.systemInstructions.contains("After a tool result, answer from that result"))
+        #expect(!rendered.build.requiresToolCall)
+        #expect(!rendered.build.exceedsContextWindow)
+    }
+
+    @Test("A pending receipt gets an explicit answer-now grounding directive after the evidence")
+    @available(macOS 15.4, iOS 26.0, *)
+    func pendingReceiptGetsGroundingDirective() throws {
+        let rendered = try Self.v7SearchContinuation()
+        let text = rendered.build.text
+        // The harness directive closes the user-side prompt AFTER the TOOL
+        // RESULT evidence, nearer generation than both the original search
+        // imperative and the JSON-call protocol in the system envelope.
+        #expect(text.contains("TOOL RESULT GROUNDING"))
+        let resultIndex = try #require(text.range(of:
+            "TOOL RESULT \(rendered.call.id): receipt marker: \(rendered.marker)"))
+        let directiveIndex = try #require(text.range(of: "TOOL RESULT GROUNDING"))
+        #expect(directiveIndex.lowerBound > resultIndex.upperBound)
+        #expect(text.range(of: "TOOL RESULT GROUNDING")!.upperBound <= text.endIndex)
+        // It forbids repeating the completed call and forbids fabricating
+        // facts/results.
+        #expect(text.contains("Do not repeat a completed call"))
+        #expect(text.contains("only evidence returned"))
+        #expect(text.contains("never invent facts"))
+        #expect(text.contains("relevant conversation context"))
+        #expect(text.contains("only when the user or runtime instructions require it"))
+        // Receipts stay data: the directive never embeds a fixture marker or
+        // a qualification-specific token of its own.
+        let directive = String(text[directiveIndex.lowerBound...])
+        #expect(!directive.contains("FLOE_"))
+        // The system paragraph stops competing with the call protocol.
+        #expect(rendered.build.systemInstructions.contains(
+            "answer from that result now"))
+    }
+
+    @Test("Ordinary, fresh and replay-only turns never receive the grounding directive")
+    @available(macOS 15.4, iOS 26.0, *)
+    func nonContinuationTurnsHaveNoGroundingDirective() throws {
+        // Plain greeting.
+        let greeting = LocalProviderAdapter.buildPrompt(
+            for: SearchRepairFixtures.request(userText: "你好，今天过得怎么样？"))
+        #expect(!greeting.text.contains("TOOL RESULT GROUNDING"))
+        #expect(!greeting.systemInstructions.contains("answer from that result now"))
+        // Fresh user turn carrying only settled (replayed) history: no pending
+        // receipt, so no continuation directive and the call protocol stays.
+        let settledCall = try ToolCall(
+            id: "settled-1", toolName: "web.search",
+            argumentsJSON: Data(#"{"query":"news"}"#.utf8), scope: .local
+        )
+        let settled = ToolResult(callID: settledCall.id, status: .ok,
+                                 outputSummary: "earlier result", outputDigest: "digest")
+        let followup = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: SearchRepairFixtures.model(),
+            messages: [
+                (role: "system", content: "Runtime envelope: synthetic workspace."),
+                (role: "user", content: "再搜索一下明天的天气")
+            ],
+            replayedToolPairs: [ReplayedToolPair(call: settledCall, result: settled)],
+            toolSchemas: SearchRepairFixtures.offeredTools,
+            allToolNames: SearchRepairFixtures.offeredTools.map(\.name)
+        )
+        let followupBuild = LocalProviderAdapter.buildPrompt(for: followup)
+        #expect(!followupBuild.text.contains("TOOL RESULT GROUNDING"))
+        #expect(!followupBuild.systemInstructions.contains("answer from that result now"))
+        #expect(followupBuild.requiresToolCall, "a fresh request still requires its own call")
+    }
+
+    @Test("The grounding directive reaches the model through the streaming continuation path")
+    @available(macOS 15.4, iOS 26.0, *)
+    func groundingDirectiveReachesMLXPrompt() async throws {
+        // A real continuation after the model's own web.search call. The
+        // deterministic engine answers as a grounded model would (marker
+        // repeated), and captures the exact system/user text the MLX path
+        // receives. Nothing fabricates the answer: the engine script is the
+        // stand-in for weights, and the assertions pin the evidence it saw.
+        let marker = "FLOE_SEARCH_RECEIPT_7A31"
+        let grounded = "根据搜索结果（\(marker)，synthetic fixture）：今日新闻的合成结果共 3 条。"
+        let engine = CapturingContinuationEngine(answer: grounded)
+        let harness = try RepairStreamHarness(engine: engine)
+        defer { harness.cleanUp() }
+
+        let call = try ToolCall(
+            id: "local-cont-1", toolName: "web.search",
+            argumentsJSON: Data(#"{"query":"今日新闻"}"#.utf8), scope: .local
+        )
+        let summary = "receipt marker: \(marker). synthetic fixture (no live search performed): 3 normalized results for query \"今日新闻\""
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: SearchRepairFixtures.model(),
+            messages: [
+                (role: "system", content: "Runtime envelope: synthetic workspace. After a tool result, answer from that result."),
+                (role: "user", content: "随便搜索一下今天的新闻")
+            ],
+            toolResults: [(callID: call.id, output: summary)],
+            pendingToolCalls: [call],
+            replayedToolPairs: [],
+            toolSchemas: SearchRepairFixtures.offeredTools,
+            allToolNames: SearchRepairFixtures.offeredTools.map(\.name)
+        )
+        var answer = ""
+        var furtherCalls: [ToolCall] = []
+        for try await event in harness.adapter().stream(
+            request: request, credentials: ProviderCredentials()
+        ) {
+            if case .textDelta(let delta) = event { answer += delta.text }
+            if case .toolRequest(let newCall) = event { furtherCalls.append(newCall) }
+        }
+        #expect(answer.contains(marker))
+        #expect(furtherCalls.isEmpty, "a receipt continuation must not request another tool")
+        #expect(engine.generationCount == 1, "no bounded invocation repair on an answered continuation")
+        let captured = try #require(engine.captured.last)
+        #expect(captured.prompt.contains("TOOL RESULT \(call.id)"))
+        #expect(captured.prompt.contains(marker))
+        #expect(captured.prompt.contains("TOOL RESULT GROUNDING"))
+        #expect(captured.prompt.range(of: marker)!.upperBound
+                < captured.prompt.range(of: "TOOL RESULT GROUNDING")!.lowerBound)
+        #expect(captured.instructions.contains("answer from that result now"))
+        // Qwen bounded path: no native schemas on the continuation.
+        #expect(engine.captured.last?.tools.isEmpty == true)
     }
 
     @Test("A device-sized runtime envelope remains eligible for bounded repair")
@@ -560,6 +736,51 @@ struct LocalSearchRepairRegressionTests {
     }
 }
 
+// MARK: - Capturing continuation engine
+
+/// One-shot streaming engine for a tool-result continuation. It records the
+/// exact system instructions, user prompt and schemas that reach the MLX
+/// streaming boundary, then returns a scripted grounded answer. No weights are
+/// involved; this pins the prompt representation, not model behaviour.
+@available(macOS 15.4, iOS 26.0, *)
+private final class CapturingContinuationEngine: LocalModelTextEngine, @unchecked Sendable {
+    struct Capture: Sendable {
+        let instructions: String
+        let prompt: String
+        let tools: [ToolSchemaDescriptor]
+    }
+
+    let includesVisionProjector = false
+    private let lock = NSLock()
+    private let answer: String
+    private(set) var captured: [Capture] = []
+    private(set) var generationCount = 0
+
+    init(answer: String) {
+        self.answer = answer
+    }
+
+    func completeMeasured(
+        instructions: String,
+        prompt: String,
+        images: [Data],
+        tools: [ToolSchemaDescriptor],
+        maxTokens: Int,
+        diagnosticTraceID: String?
+    ) async throws -> LocalGenerationResult {
+        lock.withLock {
+            generationCount += 1
+            captured.append(Capture(instructions: instructions, prompt: prompt, tools: tools))
+        }
+        return LocalGenerationResult(
+            text: answer, inputTokens: 12, outputTokens: 8,
+            timeToFirstTokenMs: 2, generationDurationMs: 4
+        )
+    }
+
+    func shutdown() async {}
+}
+
 // MARK: - Deterministic repair engine
 
 /// Streams the first response, then returns the repair response via
@@ -609,11 +830,11 @@ private final class SequencedRepairEngine: LocalModelTextEngine, @unchecked Send
 @available(macOS 15.4, iOS 26.0, *)
 private struct RepairStreamHarness {
     let root: URL
-    let engine: SequencedRepairEngine
+    let engine: any LocalModelTextEngine
     let runtime: LocalModelRuntime
     let store: LocalModelStore
 
-    init(engine: SequencedRepairEngine) throws {
+    init(engine: any LocalModelTextEngine) throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-b233-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
