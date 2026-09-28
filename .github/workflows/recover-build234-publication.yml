@@ -1,0 +1,61 @@
+name: Recover Build234 GitHub publication only
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+  attestations: read
+concurrency:
+  group: floe-build234-publication-recovery
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: 9ec002af1d75a53675b982c9012d6e993cc109cf
+      RELEASE_TAG: v1.7.0-beta.91
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+      - name: Verify and publish the original unsigned artifact without rebuilding or uploading to Apple
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse refs/tags/$RELEASE_TAG^{commit})" = "$SOURCE_SHA"
+          mkdir -p recovery public-assets
+          gh api repos/$GITHUB_REPOSITORY/actions/runs/36429111717 > recovery/run.json
+          gh api repos/$GITHUB_REPOSITORY/actions/runs/36429111717/artifacts > recovery/artifacts.json
+          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/10973829612/zip > recovery/artifact.zip
+          python3 FloeAgent/scripts/verify_direct_unsigned_artifact.py \
+            --run recovery/run.json --artifacts recovery/artifacts.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-name expedited-unsigned-ipa-1.7.0-build234 \
+            --tag "$RELEASE_TAG" --source-sha "$SOURCE_SHA" \
+            --version 1.7.0 --build 234 --toolchain 'Xcode 26.6 (17F113)' \
+            --expect-testflight-accepted --require-symbols-artifact \
+            --artifact-zip recovery/artifact.zip --extract-dir recovery/extracted \
+            --report recovery/verification.json
+          IPA="$(jq -r .ipaPath recovery/verification.json)"
+          test "$(sha256sum "$IPA" | cut -d' ' -f1)" = e702966a2397b94ac3630b5e3a3d8eb953031438c0a5dfd2e2c5b8494b0e219b
+          gh attestation verify "$IPA" --repo "$GITHUB_REPOSITORY" \
+            --source-digest "$SOURCE_SHA" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-unsigned-ipa.yml"
+          cp "$IPA" "$IPA.sha256" public-assets/
+          cp recovery/extracted/TEST-SUMMARY.txt recovery/extracted/DIRECT-PROVENANCE.json public-assets/
+          for name in bundle-normalization.json pdfium-linkage.json; do
+            if test -f "recovery/extracted/$name"; then cp "recovery/extracted/$name" public-assets/; fi
+          done
+          NOTES=docs/RELEASE_NOTES_1.7.0_BUILD_234.md
+          grep -qE '^##+ 简体中文' "$NOTES"
+          grep -qE '^##+ English' "$NOTES"
+          gh release create "$RELEASE_TAG" public-assets/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --prerelease --latest=false \
+            --title 'Floe Agent 1.7.0 (build 234)' --notes-file "$NOTES"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build234-publication-recovery-evidence
+          path: recovery/verification.json
