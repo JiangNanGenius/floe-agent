@@ -1,6 +1,16 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (232) — available in Floe QA
+## Current internal delivery: 1.7.0 (234) — available in Floe QA
+
+**当前内部 TestFlight：1.7.0（234）。** 不可变标签 `v1.7.0-beta.91` 固定源码 `9ec002af1d75a53675b982c9012d6e993cc109cf`。完整 App 编译、云端 IPA 保留、签名与上传成功。[核验任务](https://github.com/JiangNanGenius/floe-agent/actions/runs/36437282899)于 2026-09-28 14:36 UTC 确认 Apple `VALID`、未过期、仅现有私有 Floe QA 分组和 `IN_BETA_TESTING`。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.91)已发布；发布说明格式故障由仅分发恢复任务 36437041153 处理，复用原 IPA，未重编译或重复上传 Apple。
+
+**Current internal TestFlight: 1.7.0 (234).** Full-App compilation, cloud artifact retention and signed upload succeeded. Verification confirmed Apple `VALID`, unexpired, exactly the existing private Floe QA group and `IN_BETA_TESTING`. The GitHub prerelease uses the original verified artifact; publication recovery changed only release documentation/distribution, not the immutable App source.
+
+Unsigned IPA: 739,789,250 bytes; SHA-256 `e702966a2397b94ac3630b5e3a3d8eb953031438c0a5dfd2e2c5b8494b0e219b`. Cloud artifact and published asset hashes match; the local backup download is still in progress. Xcode 26.6 (17F113), bundle `org.floeagent.ios`. Feather and Gitee follow-ups are separate and not yet verified.
+
+本地模型搜索回答失实、PPT 静置闪退仍未解决，Office 字体覆盖和 iPad 实际效果尚未验收。Local-model search grounding and PPT idle crashes remain unresolved; font coverage and iPad behavior are not accepted as verified. [发布说明 / Release notes](RELEASE_NOTES_1.7.0_BUILD_234.md).
+
+## Previous internal delivery: 1.7.0 (232) — available in Floe QA
 
 **当前内部 TestFlight：1.7.0（232）。** 不可变标签 `v1.7.0-beta.89` 固定源码 `eeaabff6e525cf1649b0b940acad8096aa172bdd`。[发布任务](https://github.com/JiangNanGenius/floe-agent/actions/runs/36343520087)完成完整 App 编译、IPA 保留和签名上传；[核验任务](https://github.com/JiangNanGenius/floe-agent/actions/runs/36346520387)于 2026-09-27 20:02 UTC 确认 Apple `VALID`、未过期、仅现有私有 Floe QA 组及 `IN_BETA_TESTING`。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.89)已发布，Feather 同步任务 36345586180 成功。Gitee 不计为已完成交付。
 
