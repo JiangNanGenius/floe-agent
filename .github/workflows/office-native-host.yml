@@ -25,6 +25,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Stage and verify pinned fonts for real family checks
+        run: |
+          python3 FloeAgent/scripts/fonts/fetch_fonts.py --check || {
+            python3 FloeAgent/scripts/fonts/fetch_fonts.py
+            python3 FloeAgent/scripts/fonts/fetch_fonts.py --check
+          }
       - name: Validate native input and framework tooling
         run: |
           python3 FloeAgent/scripts/test_office_engine_bundle.py
