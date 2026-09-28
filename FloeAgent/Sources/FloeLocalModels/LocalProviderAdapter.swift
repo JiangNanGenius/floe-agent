@@ -1554,6 +1554,52 @@ public actor LocalModelRuntime {
         return releasedModel
     }
 
+    /// Build 233 (R2): Office memory coordination. Office memory-heavy
+    /// preparation (editable mount, Impress import) and system memory warnings
+    /// may ask for an immediate physical release of an *idle* resident model
+    /// before the engine and the document import allocate.
+    ///
+    /// Non-blocking by contract, deliberately unlike
+    /// `releaseIdleResidentEngineIfUnclaimed`: this call never waits for the
+    /// FIFO inference slot. An active load/benchmark/generation (`inferenceBusy`
+    /// or a transient lease) or a durable run that still holds its logical
+    /// claim answers `nil` immediately — Office can never stall behind another
+    /// operation's inference, a benchmark never loses its mapping and a
+    /// retained tool continuation keeps its claim. No task, guest or request is
+    /// cancelled; only the physical MLX mapping is unmapped, and the next local
+    /// generation reloads the same pinned snapshot and replays its settled
+    /// context.
+    ///
+    /// Returns the released model identifier, or nil when the mapping was
+    /// retained or nothing was resident.
+    @discardableResult
+    public func shedIdleResidentEngineForOffice(reason: String) async -> String? {
+        // The demand is activity: a pending idle timer must not race the unmap.
+        cancelIdleUnload()
+        guard !inferenceBusy, engineLeaseCount == 0, taskResidency.activeTaskCount == 0 else {
+            FloeLogger(category: .providers).info(
+                "localInferenceOfficeShedRetained reason=\(reason) busy=\(inferenceBusy) activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount) resident=\(activeEngine?.key.modelID ?? "none")"
+            )
+            return nil
+        }
+        // Take the free slot synchronously: no suspension separates the checks
+        // from this assignment, so no load can start in between and the unmap
+        // below is atomic with respect to every other slot holder.
+        inferenceBusy = true
+        defer { releaseInferenceSlot() }
+        guard activeEngine != nil else {
+            FloeLogger(category: .providers).info(
+                "localInferenceOfficeShedNothingResident reason=\(reason) busy=false activeLeases=\(engineLeaseCount) activeTasks=\(taskResidency.activeTaskCount)"
+            )
+            return nil
+        }
+        guard let releasedModel = await releaseResidentEngine(reason: reason) else { return nil }
+        FloeLogger(category: .providers).info(
+            "localInferenceOfficeShed reason=\(reason) releasedModel=\(releasedModel) reloadOnNextTurn=true"
+        )
+        return releasedModel
+    }
+
     private func acquireInferenceSlot() async {
         if !inferenceBusy {
             inferenceBusy = true
@@ -1859,11 +1905,22 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     // no prose+JSON suffix salvage is attempted (quoted
                     // examples/hypotheticals could become phantom calls). The
                     // bounded repair pass handles malformed output.
-                    if parsedToolCalls.isEmpty,
+                    //
+                    // A well-formed envelope with missing required arguments
+                    // is not a usable invocation either. The cloud v5 log
+                    // proves only that the host guard rejected the first
+                    // file-tool turn (code 11); the exact shape is not yet
+                    // observed. Until it is, this candidate recovery stays
+                    // bounded: one repair for an incomplete first attempt, no
+                    // fabricated arguments and no global protocol change.
+                    let parsedCallsCarryRequiredArguments = Self.toolCallsSatisfyRequiredArguments(
+                        parsedToolCalls, offered: promptBuild.fallbackTools
+                    )
+                    if (parsedToolCalls.isEmpty || !parsedCallsCarryRequiredArguments),
                        promptBuild.requiresToolCall,
                        request.model.remoteModelID != AppleFoundationModelIdentity.remoteModelID {
                         FloeLogger(category: .providers).warning(
-                            "localToolInvocationRepairStarted model=\(request.model.remoteModelID) outputCharacters=\(channels.answer.count) selectedTools=\(promptBuild.selectedToolCount)"
+                            "localToolInvocationRepairStarted model=\(request.model.remoteModelID) reason=\(parsedToolCalls.isEmpty ? "missingInvocation" : "incompleteArguments") outputCharacters=\(channels.answer.count) selectedTools=\(promptBuild.selectedToolCount)"
                         )
                         // Minimal repair: the full-envelope/10-tool repair
                         // failed again on device (01:34 evidence), so do not
@@ -1944,6 +2001,17 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                 "localToolInvocationRepairSkipped model=\(request.model.remoteModelID) reason=failClosed"
                             )
                         }
+                    }
+                    // One bounded repair is the limit: if the emitted calls
+                    // still miss required arguments, record the shape and let
+                    // the normal runtime validation deny/retry honestly.
+                    if !parsedToolCalls.isEmpty,
+                       !Self.toolCallsSatisfyRequiredArguments(
+                            parsedToolCalls, offered: promptBuild.fallbackTools
+                       ) {
+                        FloeLogger(category: .providers).warning(
+                            "localToolCallsIncompleteArguments model=\(request.model.remoteModelID) calls=\(parsedToolCalls.count)"
+                        )
                     }
                     if !channels.reasoning.isEmpty {
                         continuation.yield(.reasoningSummary(.init(text: channels.reasoning)))
@@ -2318,6 +2386,18 @@ public struct LocalProviderAdapter: ProviderAdapter {
             return estimated <= budget
         }
 
+        /// Required top-level argument keys declared by a tool schema, or an
+        /// empty list when the schema declares none. An empty list means an
+        /// empty arguments object is a legitimate call for that tool, so
+        /// guidance must never demand arguments it did not declare.
+        static func requiredArgumentKeys(of tool: ToolSchemaDescriptor) -> [String] {
+            guard let data = tool.parametersJSON.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let required = object["required"] as? [String]
+            else { return [] }
+            return required
+        }
+
         /// Builds the minimal repair instructions, or nil when the repair
         /// cannot be performed safely (no admitted tool, an oversized/
         /// invalid schema, or the full authoritative rules do not fit). The
@@ -2325,6 +2405,14 @@ public struct LocalProviderAdapter: ProviderAdapter {
         /// stays an honest validation failure. Authoritative safety/workspace
         /// rules are carried in their entirety — never a leading-rule subset
         /// that could silently drop a mandatory boundary.
+        ///
+        /// The instructions are conditioned on the tool's own schema: a tool
+        /// that declares required arguments gets an explicit fill-these-keys
+        /// directive, while a zero-argument tool keeps its legitimate empty
+        /// object. Candidate (not yet confirmed by retained raw output): a
+        /// weak model may copy a documented example instead of filling it, so
+        /// for a tool with required fields the example stays an unparsable
+        /// placeholder rather than a copyable empty-arguments call.
         static func minimalRepairInstructions(
             tool: ToolSchemaDescriptor?,
             usesNativeToolSchemas: Bool,
@@ -2342,6 +2430,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             // Complete authoritative projection; no clipping and no subset.
             let safety = extraSafety.trimmingCharacters(in: .whitespacesAndNewlines)
             let safetyBlock = safety.isEmpty ? "" : "\nAuthoritative rules for this workspace:\n\(safety)\n"
+            let requiredKeys = Self.requiredArgumentKeys(of: tool)
             let instructions: String
             if usesNativeToolSchemas {
                 instructions = """
@@ -2351,11 +2440,23 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 \(json)
                 \(safetyBlock)Never invent tool names, never answer with prose or sample JSON, never claim the action succeeded before a tool result.
                 """
-            } else {
+            } else if requiredKeys.isEmpty {
+                // The tool declares no required arguments; the empty object
+                // is a valid call and must not be presented as an error.
                 instructions = """
                 Repair the missing invocation. Return exactly one JSON object and no prose:
                 {"tool_call":{"name":"\(tool.name)","arguments":{}}}
-                Fill arguments from the user request using this schema:
+                This tool declares no required arguments; use an empty arguments object unless the request supplies optional values.
+                Schema:
+                \(json)
+                \(safetyBlock)Never invent a tool name, never add prose, and never claim the action succeeded before a TOOL RESULT with the same call id.
+                """
+            } else {
+                instructions = """
+                Repair the missing invocation. Return exactly one JSON object and no prose:
+                {"tool_call":{"name":"\(tool.name)","arguments":<object containing every required field, filled from the user request>}}
+                The arguments object must contain every required field of this schema with values taken from the user request. Required: \(requiredKeys.joined(separator: ", ")).
+                Schema:
                 \(json)
                 \(safetyBlock)Never invent a tool name, never add prose, and never claim the action succeeded before a TOOL RESULT with the same call id.
                 """
@@ -2500,6 +2601,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 invocationInstructions = """
                 To call one, use the native tool interface. If the model template cannot emit a native call, return exactly one JSON object and no prose:
                 {"tool_call":{"name":"exact.offered.name","arguments":{}}}
+                Fill every required argument declared by the called tool's schema from the current request; a tool that declares no required fields may use an empty arguments object.
                 """
             } else {
                 // Qwen-family bounded protocol: the chat template receives no
@@ -2508,6 +2610,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 invocationInstructions = """
                 To call a tool, return only JSON tool-call objects and no prose. One object per call; to run several calls in order, return one object per line (or a JSON array) in the order they must run:
                 {"tool_call":{"name":"exact.offered.name","arguments":{}}}
+                Fill every required argument declared by the called tool's schema from the current request; a tool that declares no required fields may use an empty arguments object.
                 Never claim a call or its action succeeded before a TOOL RESULT with the same call id appears.
                 """
             }
@@ -3405,7 +3508,34 @@ public struct LocalProviderAdapter: ProviderAdapter {
         ).first
     }
 
-
+    /// True when every parsed call carries the fields its offered schema
+    /// declares as required. The bounded local JSON-envelope protocol can
+    /// produce a well-formed envelope whose arguments object does not fill a
+    /// required field; that is not a usable invocation and earns the same
+    /// single bounded repair as a missing invocation. This is a bounded
+    /// recovery for an unconfirmed failure shape (cloud v5 proves only that
+    /// the host guard rejected the turn, code 11), not a claim about what the
+    /// model emitted. Unknown or unparsable schemas stay admissible: this
+    /// check never invents a constraint the tool did not declare, a tool with
+    /// no required fields keeps its legitimate empty object, and a nil
+    /// (absent) required value is a missing argument.
+    static func toolCallsSatisfyRequiredArguments(
+        _ calls: [ToolCall],
+        offered: [ToolSchemaDescriptor]
+    ) -> Bool {
+        let byName = Dictionary(offered.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        for call in calls {
+            guard let schema = byName[call.toolName] else { continue }
+            let required = PromptBuild.requiredArgumentKeys(of: schema)
+            guard !required.isEmpty,
+                  let arguments = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any]
+            else { continue }
+            for key in required {
+                guard let value = arguments[key], !(value is NSNull) else { return false }
+            }
+        }
+        return true
+    }
 
     /// Xcode 27 Foundation Models can occasionally serialize a plain answer
     /// using the legacy `{tool,result}` envelope seen in early builds. It is

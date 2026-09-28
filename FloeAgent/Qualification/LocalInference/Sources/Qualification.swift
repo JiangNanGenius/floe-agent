@@ -59,6 +59,44 @@ import Synchronization
         ]
     }
 
+    /// Synthetic-fixture-only projection of parsed model calls used by the
+    /// failure observations below. It contains the tool name and the model's
+    /// argument JSON only — never user conversation content.
+    static func observedCalls(_ calls: [ToolCall]) -> [[String: String]] {
+        calls.map { call in
+            [
+                "id": call.id,
+                "name": call.toolName,
+                "syntheticArguments": String(decoding: call.argumentsJSON, as: UTF8.self)
+            ]
+        }
+    }
+
+    /// Bounded projection of the production adapter's own local-tool
+    /// diagnostics (repair started/finished with reason and parsed count,
+    /// dropped emitted tool names, emitted call batch). It answers whether the
+    /// bounded repair ran and what the model actually emitted, which the
+    /// emitted-event stream alone cannot show. Only known provider prefixes
+    /// are exported and the process-wide ring buffer already redacts secrets;
+    /// this host runs synthetic fixtures only.
+    static func adapterToolDiagnostics(limit: Int = 80) -> [String] {
+        let prefixes = [
+            "localToolInvocationRepair",
+            "localToolCallsIncompleteArguments",
+            "localFallbackToolNameDropped",
+            "localToolGapBegan",
+            "localStreamEnded",
+            "localStreamAnswerMismatch"
+        ]
+        return FloeLogger.buffer.recentEntries
+            .filter { entry in
+                entry.category == FloeLogger.Category.providers.rawValue
+                    && prefixes.contains { entry.message.hasPrefix($0) }
+            }
+            .suffix(limit)
+            .map { "[\($0.level)] \($0.message)" }
+    }
+
     private nonisolated static func verifyMLXErrorGuard() async throws {
         // Exercise the same task-local C callback route that previously
         // terminated the iPad app in prefill; a Swift catch alone is insufficient.
@@ -525,13 +563,32 @@ import Synchronization
         )
         record("tool-roundtrip-start", ["model": entry.id])
         var calls: [ToolCall] = []
+        var firstRequestAnswer = ""
+        var firstRequestCompleted = false
+        var firstRequestError: String?
         for try await event in adapter.stream(request: first, credentials: ProviderCredentials()) {
             switch event {
             case .toolRequest(let call): calls.append(call)
-            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 10,
-                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            case .textDelta(let delta): firstRequestAnswer += delta.text
+            case .completed(let info): firstRequestCompleted = info.stopReason == .endTurn
+            case .error(let error): firstRequestError = error.providerMessage
             default: break
             }
+        }
+        // Synthetic-qualification observation only: retain the actual first
+        // call shape (zero calls, wrong arguments or several calls) before the
+        // exact gate throws, so a cloud failure is debuggable instead of
+        // indistinguishable. Contains fixture names/arguments only.
+        record("tool-first-turn-observed", [
+            "completed": firstRequestCompleted,
+            "error": firstRequestError.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(firstRequestAnswer.prefix(1_024)),
+            "calls": observedCalls(calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let firstRequestError {
+            throw NSError(domain: "Qualification.Tool", code: 10,
+                userInfo: [NSLocalizedDescriptionKey: firstRequestError])
         }
         guard calls.count == 1, let call = calls.first,
               call.toolName == schema.name,
@@ -593,13 +650,13 @@ import Synchronization
         var secondCalls: [ToolCall] = []
         var secondRequestAnswer = ""
         var secondRequestCompleted = false
+        var secondRequestError: String?
         for try await event in adapter.stream(request: nextTurn, credentials: ProviderCredentials()) {
             switch event {
             case .toolRequest(let toolCall): secondCalls.append(toolCall)
             case .textDelta(let delta): secondRequestAnswer += delta.text
             case .completed(let info): secondRequestCompleted = info.stopReason == .endTurn
-            case .error(let error): throw NSError(domain: "Qualification.Tool", code: 15,
-                userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+            case .error(let error): secondRequestError = error.providerMessage
             default: break
             }
         }
@@ -608,12 +665,15 @@ import Synchronization
         // the wrong file. Never log user conversations here.
         record("tool-second-turn-observed", [
             "completed": secondRequestCompleted,
+            "error": secondRequestError.map { $0 as Any } ?? NSNull(),
             "syntheticAnswerPrefix": String(secondRequestAnswer.prefix(1024)),
-            "calls": secondCalls.map { call in
-                ["id": call.id, "name": call.toolName,
-                 "syntheticArguments": String(decoding: call.argumentsJSON, as: UTF8.self)]
-            }
+            "calls": observedCalls(secondCalls),
+            "adapterDiagnostics": adapterToolDiagnostics()
         ])
+        if let secondRequestError {
+            throw NSError(domain: "Qualification.Tool", code: 15,
+                userInfo: [NSLocalizedDescriptionKey: secondRequestError])
+        }
         guard secondCalls.count == 1, let secondCall = secondCalls.first,
               secondCall.id != call.id, secondCall.toolName == schema.name,
               let arguments = try JSONSerialization.jsonObject(with: secondCall.argumentsJSON) as? [String: Any],
@@ -707,21 +767,22 @@ import Synchronization
             toolsAvailable: true, compactForLocal: true
         )
 
-        func collect(_ request: ProviderStreamRequest) async throws -> (calls: [ToolCall], answer: String, completed: Bool) {
+        func collect(_ request: ProviderStreamRequest) async throws
+            -> (calls: [ToolCall], answer: String, completed: Bool, error: String?) {
             var calls: [ToolCall] = []
             var answer = ""
             var completed = false
+            var streamError: String?
             for try await event in adapter.stream(request: request, credentials: ProviderCredentials()) {
                 switch event {
                 case .toolRequest(let call): calls.append(call)
                 case .textDelta(let delta): answer += delta.text
                 case .completed(let info): completed = info.stopReason == .endTurn
-                case .error(let error): throw NSError(domain: "Qualification.Search", code: 30,
-                    userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
+                case .error(let error): streamError = error.providerMessage
                 default: break
                 }
             }
-            return (calls, answer, completed)
+            return (calls, answer, completed, streamError)
         }
 
         // Turn 1: greeting stays conversational.
@@ -739,6 +800,19 @@ import Synchronization
             allToolNames: offeredSchemas.map(\.name)
         )
         let greetingReply = try await collect(greeting)
+        // Synthetic-qualification observation only: record whether the
+        // greeting produced prose, a call, or a stream error before the gate.
+        record("search-greeting-observed", [
+            "completed": greetingReply.completed,
+            "error": greetingReply.error.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(greetingReply.answer.prefix(1_024)),
+            "calls": observedCalls(greetingReply.calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let greetingError = greetingReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: greetingError])
+        }
         guard greetingReply.calls.isEmpty, greetingReply.completed,
               !greetingReply.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NSError(domain: "Qualification.Search", code: 31,
@@ -757,6 +831,21 @@ import Synchronization
             allToolNames: offeredSchemas.map(\.name)
         )
         let searchReply = try await collect(search)
+        // Synthetic-qualification observation only: the exact news-search call
+        // shape (zero calls, several calls or wrong/missing query) before the
+        // exact gate. The receipt stays synthetic either way.
+        record("search-call-observed", [
+            "conversationTurn": 2,
+            "completed": searchReply.completed,
+            "error": searchReply.error.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(searchReply.answer.prefix(1_024)),
+            "calls": observedCalls(searchReply.calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let searchError = searchReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: searchError])
+        }
         let calls = searchReply.calls
         guard calls.count == 1, let call = calls.first, call.toolName == schema.name,
               let arguments = try JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
@@ -787,10 +876,17 @@ import Synchronization
         // before an assertion so failures distinguish truncation, another call
         // and an answer that did not consume the tool receipt.
         record("search-reply-observed", ["conversationTurn": 2,
-            "completed": firstReply.completed, "toolNames": firstReply.calls.map(\.toolName),
+            "completed": firstReply.completed,
+            "error": firstReply.error.map { $0 as Any } ?? NSNull(),
+            "toolNames": firstReply.calls.map(\.toolName),
             "answerCharacters": firstReply.answer.count,
             "syntheticAnswerPrefix": String(firstReply.answer.prefix(1_024)),
-            "answerContainsReceipt": firstReply.answer.contains(firstMarker)])
+            "answerContainsReceipt": firstReply.answer.contains(firstMarker),
+            "adapterDiagnostics": adapterToolDiagnostics()])
+        if let firstReplyError = firstReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: firstReplyError])
+        }
         guard firstReply.calls.isEmpty, firstReply.completed,
               firstReply.answer.contains(firstMarker) else {
             throw NSError(domain: "Qualification.Search", code: 34,
@@ -813,6 +909,20 @@ import Synchronization
             allToolNames: offeredSchemas.map(\.name)
         )
         let followupReply = try await collect(followup)
+        // Synthetic-qualification observation only: the follow-up call shape
+        // before the exact gate.
+        record("search-followup-observed", [
+            "conversationTurn": 3,
+            "completed": followupReply.completed,
+            "error": followupReply.error.map { $0 as Any } ?? NSNull(),
+            "syntheticAnswerPrefix": String(followupReply.answer.prefix(1_024)),
+            "calls": observedCalls(followupReply.calls),
+            "adapterDiagnostics": adapterToolDiagnostics()
+        ])
+        if let followupError = followupReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: followupError])
+        }
         let followupCalls = followupReply.calls
         guard followupCalls.count == 1, let followupCall = followupCalls.first,
               followupCall.id != call.id, followupCall.toolName == schema.name,
@@ -839,10 +949,17 @@ import Synchronization
         )
         let secondReply = try await collect(secondContinuation)
         record("search-reply-observed", ["conversationTurn": 3,
-            "completed": secondReply.completed, "toolNames": secondReply.calls.map(\.toolName),
+            "completed": secondReply.completed,
+            "error": secondReply.error.map { $0 as Any } ?? NSNull(),
+            "toolNames": secondReply.calls.map(\.toolName),
             "answerCharacters": secondReply.answer.count,
             "syntheticAnswerPrefix": String(secondReply.answer.prefix(1_024)),
-            "answerContainsReceipt": secondReply.answer.contains(secondMarker)])
+            "answerContainsReceipt": secondReply.answer.contains(secondMarker),
+            "adapterDiagnostics": adapterToolDiagnostics()])
+        if let secondReplyError = secondReply.error {
+            throw NSError(domain: "Qualification.Search", code: 30,
+                userInfo: [NSLocalizedDescriptionKey: secondReplyError])
+        }
         guard secondReply.calls.isEmpty, secondReply.completed,
               secondReply.answer.contains(secondMarker) else {
             throw NSError(domain: "Qualification.Search", code: 35,
@@ -934,10 +1051,15 @@ import Synchronization
         var arguments = Array(CommandLine.arguments.dropFirst())
         let includeBaseline = arguments.contains("--include-baseline")
         arguments.removeAll { $0 == "--include-baseline" }
+        // Bounded diagnostic scope for iterating on the real-weight tool
+        // protocol without re-running the unchanged lifecycle profiles. It
+        // never relaxes a tool/search gate: the same roundtrip assertions run.
+        let toolsOnly = arguments.contains("--tools-only")
+        arguments.removeAll { $0 == "--tools-only" }
         guard arguments.count == 1 else {
             throw NSError(domain: "Qualification", code: 1, userInfo: [
                 NSLocalizedDescriptionKey:
-                    "Provide one isolated model-cache directory (optional flag: --include-baseline)"
+                    "Provide one isolated model-cache directory (optional flags: --include-baseline, --tools-only)"
             ])
         }
         let entry = CuratedLocalModelCatalog.entries.first { $0.id == "qwen3.8-4b-heretic-mlx4" }!
@@ -950,7 +1072,12 @@ import Synchronization
         let directory = try await store.download(entry)
         record("download-complete", ["model": entry.id, "revision": entry.revision])
 
-        for profileCase in profileCases(includeBaseline: includeBaseline) {
+        let profiles = toolsOnly ? [] : profileCases(includeBaseline: includeBaseline)
+        record("qualification-scope", [
+            "toolsOnly": toolsOnly,
+            "profileCount": profiles.count
+        ])
+        for profileCase in profiles {
             if includeBaseline, profileCase.label.hasPrefix("baseline") {
                 try await runBaseline(entry, using: profileCase, directory: directory)
             } else {

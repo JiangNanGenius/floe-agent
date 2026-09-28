@@ -115,8 +115,32 @@ struct LocalSearchRepairRegressionTests {
         // Safety boundaries.
         #expect(instructions.contains("Never invent a tool name"))
         #expect(instructions.contains("never claim the action succeeded"))
+        // web.search declares required ["query"], so the repair example is an
+        // unparsable placeholder (candidate anti-copy shape, not confirmed
+        // actual-weight evidence) and names the required key explicitly. A
+        // zero-argument tool keeps its legitimate empty object instead.
+        #expect(!instructions.contains(#""arguments":{}"#))
+        #expect(instructions.contains("Required: query"))
+        #expect(instructions.contains("values taken from the user request"))
         // The repair does not re-send the whole offered tool set.
         #expect(!instructions.contains("workspace.createFile"))
+    }
+
+    @Test("A zero-argument tool keeps its legitimate empty-arguments repair example")
+    @available(macOS 15.4, iOS 26.0, *)
+    func zeroArgumentToolRepairKeepsEmptyObject() throws {
+        let zeroArgument = ToolSchemaDescriptor(
+            name: "tools.list", description: "List offered tools",
+            parametersJSON: #"{"type":"object","properties":{}}"#
+        )
+        let instructions = try #require(LocalProviderAdapter.PromptBuild.minimalRepairInstructions(
+            tool: zeroArgument,
+            usesNativeToolSchemas: false,
+            extraSafety: "Synthetic rules."
+        ))
+        #expect(instructions.contains(#"{"tool_call":{"name":"tools.list","arguments":{}}}"#))
+        #expect(instructions.contains("declares no required arguments"))
+        #expect(!instructions.contains("Required:"))
     }
 
     @Test("A repair emitting the JSON call yields the web.search tool request")
@@ -363,6 +387,140 @@ struct LocalSearchRepairRegressionTests {
         #expect(engine.generationCount == 4, "three turns with exactly one repair")
         // The repair channel (generation 3) for Qwen carries no native schemas.
         #expect(engine.toolsLog[2]?.isEmpty == true)
+    }
+
+    @Test("A copied generic protocol example is never accepted as a call")
+    @available(macOS 15.4, iOS 26.0, *)
+    func documentedProtocolExampleIsNotACall() throws {
+        let build = LocalProviderAdapter.buildPrompt(
+            for: SearchRepairFixtures.request(userText: "那你能尝试调用一下工具，随便搜索一下今天的新闻吗")
+        )
+        // The documented shape keeps the proven valid-JSON envelope for
+        // successful calls, but its placeholder name is not an offered tool,
+        // so echoing the example verbatim yields zero calls and the bounded
+        // repair, never a phantom invocation.
+        let documentedLine = try #require(
+            build.systemInstructions
+                .split(separator: "\n")
+                .first { $0.contains("exact.offered.name") }
+        )
+        let copied = try LocalProviderAdapter.fallbackToolCalls(
+            from: String(documentedLine),
+            modelRemoteID: SearchRepairFixtures.modelID,
+            selectedTools: SearchRepairFixtures.offeredTools
+        )
+        #expect(copied.isEmpty)
+    }
+
+    @Test("A well-formed call with empty arguments earns exactly one bounded repair")
+    @available(macOS 15.4, iOS 26.0, *)
+    func emptyArgumentsCallIsRepaired() async throws {
+        // Suspected actual-weight first-turn shape: the model emits the
+        // documented envelope with an unfilled arguments object.
+        let emptyArguments = #"{"tool_call":{"name":"workspace.readFile","arguments":{}}}"#
+        let repaired = #"{"tool_call":{"name":"workspace.readFile","arguments":{"path":"qualification-probe.txt"}}}"#
+        let engine = SequencedRepairEngine(first: emptyArguments, repair: repaired)
+        let harness = try RepairStreamHarness(engine: engine)
+        defer { harness.cleanUp() }
+        let readFile = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read the UTF-8 text of one file in the current workspace",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+        )
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: SearchRepairFixtures.model(),
+            messages: [
+                (role: "system", content: "A workspace is available."),
+                (role: "user", content: "Call workspace.readFile with path qualification-probe.txt.")
+            ],
+            toolSchemas: [readFile],
+            allToolNames: [readFile.name]
+        )
+        var calls: [ToolCall] = []
+        for try await event in harness.adapter().stream(
+            request: request, credentials: ProviderCredentials()
+        ) {
+            if case .toolRequest(let call) = event { calls.append(call) }
+        }
+        #expect(calls.count == 1)
+        let call = try #require(calls.first)
+        #expect(call.toolName == "workspace.readFile")
+        #expect(String(decoding: call.argumentsJSON, as: UTF8.self).contains("qualification-probe.txt"))
+        #expect(engine.generationCount == 2, "exactly one bounded repair")
+        // The repair named the missing required key instead of a copyable
+        // empty-arguments example.
+        #expect(engine.repairInstructions.contains("Required: path"))
+        #expect(!engine.repairInstructions.contains(#""arguments":{}"#))
+    }
+
+    @Test("An empty-arguments call whose repair stays prose is an honest failure")
+    @available(macOS 15.4, iOS 26.0, *)
+    func emptyArgumentsWithoutRepairFailsClosed() async throws {
+        let emptyArguments = #"{"tool_call":{"name":"workspace.readFile","arguments":{}}}"#
+        let engine = SequencedRepairEngine(first: emptyArguments, repair: "我无法读取该文件。")
+        let harness = try RepairStreamHarness(engine: engine)
+        defer { harness.cleanUp() }
+        let readFile = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read a workspace file",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+        )
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: SearchRepairFixtures.model(),
+            messages: [(role: "user", content: "Call workspace.readFile with path a.txt.")],
+            toolSchemas: [readFile],
+            allToolNames: [readFile.name]
+        )
+        var calls: [ToolCall] = []
+        var failed = false
+        do {
+            for try await event in harness.adapter().stream(
+                request: request, credentials: ProviderCredentials()
+            ) {
+                if case .toolRequest(let call) = event { calls.append(call) }
+            }
+        } catch {
+            failed = true
+        }
+        #expect(calls.isEmpty, "no phantom call is fabricated after the repair")
+        #expect(failed, "a missing invocation must stay a validation failure")
+        #expect(engine.generationCount == 2, "both scripted generations were consumed")
+    }
+
+    @Test("Required-argument admission covers empty, null and schema-free calls")
+    @available(macOS 15.4, iOS 26.0, *)
+    func requiredArgumentsAdmission() throws {
+        let readFile = ToolSchemaDescriptor(
+            name: "workspace.readFile",
+            description: "Read a workspace file",
+            parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+        )
+        let empty = try ToolCall(
+            id: "empty", toolName: "workspace.readFile",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        let nullPath = try ToolCall(
+            id: "null", toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":null}"#.utf8), scope: .local
+        )
+        let filled = try ToolCall(
+            id: "filled", toolName: "workspace.readFile",
+            argumentsJSON: Data(#"{"path":"a.txt"}"#.utf8), scope: .local
+        )
+        #expect(!LocalProviderAdapter.toolCallsSatisfyRequiredArguments([empty], offered: [readFile]))
+        #expect(!LocalProviderAdapter.toolCallsSatisfyRequiredArguments([nullPath], offered: [readFile]))
+        #expect(LocalProviderAdapter.toolCallsSatisfyRequiredArguments([filled], offered: [readFile]))
+        // A call whose schema declares no required fields stays admissible.
+        let bare = ToolSchemaDescriptor(name: "web.fetch", description: "Fetch")
+        let bareCall = try ToolCall(
+            id: "bare", toolName: "web.fetch",
+            argumentsJSON: Data("{}".utf8), scope: .local
+        )
+        #expect(LocalProviderAdapter.toolCallsSatisfyRequiredArguments([bareCall], offered: [bare]))
+        // Unknown schemas never invent a constraint.
+        #expect(LocalProviderAdapter.toolCallsSatisfyRequiredArguments([empty], offered: []))
     }
 
     // MARK: - Cloud providers are unaffected

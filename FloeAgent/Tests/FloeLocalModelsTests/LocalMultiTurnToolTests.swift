@@ -295,6 +295,8 @@ struct LocalBoundedToolProtocolTests {
         #expect(build.nativeToolSchemas.isEmpty)
         #expect(!build.selectedTools.isEmpty)
         #expect(build.systemInstructions.contains(#"{"tool_call":{"name":"exact.offered.name","arguments":{}}}"#))
+        #expect(build.systemInstructions.contains("Fill every required argument declared by the called tool's schema"))
+        #expect(build.systemInstructions.contains("may use an empty arguments object"))
         #expect(build.systemInstructions.contains("one object per line"))
         #expect(!build.systemInstructions.lowercased().contains("use the native tool interface"))
 
