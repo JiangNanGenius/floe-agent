@@ -3,6 +3,15 @@
 Status: **candidate under cloud diagnosis; no Build 233 release or iPad acceptance.**
 状态：候选代码正在云端诊断，尚未发布 Build 233，也未通过 iPad 验收。
 
+v8 audit `c7bca350d8b70f491da497fdb72c2ab68290a3f0` (tools-only run
+36411749778) passed both real file-tool turns, the greeting and the real
+`web.search` call, then **failed code 34 again**: the receipt continuation
+invented AI-chip/stock-market/transport news, never stated synthetic and
+never repeated the marker. Two prompt-wording repairs having failed at real
+weights, the R4 work below stops strengthening wording and traces the actual
+model path; it adds a qualification-only discriminating matrix.
+v8 审计再次以 code 34 失败；R4 不再加强措辞，而是追踪真实模型路径并加入仅用于资质诊断的判别矩阵。
+
 Primary-reviewed audit source `5aa40e52a7534a4a1612f793912692356af3decd`
 ran in [diagnostic run 36395580557](https://github.com/JiangNanGenius/floe-agent/actions/runs/36395580557)
 and **failed the second file turn with code 16**. This tools-only run retained
@@ -141,6 +150,73 @@ filter **217 tests, 1 issue** — the known timing-flaky baseline
 not touched; adapter object rebuilt; qualification host compiled with the final
 wording. No real-weight run has consumed R3 yet.
 
+## R4 — end-to-end path trace and discriminating cloud diagnostic
+
+v7 and v8 proved the wording was present at the pre-template string boundary
+but still failed at real weights. R4 traces the full path instead of adding
+more adjectives:
+
+`LocalProviderAdapter.buildPrompt` (system 5 149 chars incl. tool protocol +
+offered index + runtime envelope; user transcript with greeting history,
+current news request, the pending `web.search` pair, the receipt and the
+grounding directive last) → `LocalModelRuntime.streamMeasured` (one FIFO slot,
+engine keyed by model id; no cross-model mixing) → `MLXTextEngine`
+(`UserInput.chat` = system+user, `tools: nil`, `enable_thinking:false`) →
+pinned `LLMUserInputProcessor.prepare` → `tokenizer.applyChatTemplate`
+(truncation default **false**; no length cap applied) → production chat
+template → fresh KV per generation → streaming/final answer.
+
+The real production template for the audited snapshot (the standard Qwen3
+template) applies no content escaping and renders:
+`<|im_start|>system\n…<|im_end|>\n<|im_start|>user\n…<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`.
+
+**No input-preparation defect has been established by source inspection.**
+The retained output contains unsupported generated claims; it does not prove
+that the prepared-token boundary is correct or that representation is irrelevant.
+The R4 probe must observe actual prepared tokens and controlled outputs before
+excluding clipping, template or representation causes.
+
+### Competing hypotheses (kept explicit; none asserted as certain)
+
+- `H-MODEL` — true model inability: the audited model is a **4B distill that
+  is described as abliterated**; that description alone does not establish its behavior. When the asked
+  content (news items) is absent it pattern-completes the news list rather
+  than abstaining.
+- `H-REPR` — flattened representation: receipts rendered as plain text inside
+  one user turn dilute evidence authority vs Qwen's native tool protocol
+  (`assistant` with `tool_calls`, then `tool` role inside `<tool_response>`).
+- `H-SAMPLING` — temperature 0.55 picks the high-prior fabrication branch;
+  argmax (temperature 0) may ground.
+- `H-REPPENALTY` — `repetitionPenalty 1.05` down-weights the exact receipt
+  tokens (marker, "synthetic fixture") at generation.
+- `H-COPY` — basic verbatim copy of the marker/sentence fails on these
+  weights.
+
+### R4 changes — macOS qualification-only; production path untouched
+
+- New `LocalGroundingProbePlan` (FloeLocalModels): seven controlled cases
+  `copy-minimal`, `flat-production`, `flat-greedy`,
+  `flat-no-rep-penalty`, `native-tool`, `native-greedy-noRP`,
+  `flat-items-present`; the last keeps a complementary receipt with three
+  clearly-labeled synthetic items (distinguishes "cannot ground provided
+  content" from "will not abstain"). It exposes pure message resolution and
+  the needle-span search only; the app never calls it.
+- New `MLXTextEngine.runGroundingProbe`: prepares each case on the real
+  snapshot and returns the exact prepared token count, the decoded rendered
+  template, needle spans proving the marker/"synthetic fixture" inside the
+  actual prepared token ids, plus the answer with independent sampling. It is
+  documented qualification-only and adds no capability to the app path;
+  `streamMeasured`/`completeMeasured` and the native/Qwen production
+  protocols are unchanged.
+- `Qualification` accepts `--grounding-probe`: runs the matrix instead of
+  profiles and the receipt roundtrips. Cases are evidence-only and all run
+  even when one fails; the existing negative semantics (empty fixture ⇒ must
+  say unavailable/synthetic) stays enforced exclusively in full/tools-only.
+- Workflow gains scope `grounding-probe`. Its gate asserts scope selection,
+  exactly seven case events, matrix completion and process completion; the
+  two-file/two-search receipt gates run unchanged for full/tools-only and do
+  not run for the probe. No gate was weakened.
+
 ## What the existing evidence proves (and does not)
 
 | Evidence | Result | What it shows |
@@ -266,6 +342,21 @@ passes.
   `Qualification/LocalInference/Package.swift` were already dirty before this
   task; **no `Package.resolved` was modified**.
 
+### R4 verification (path trace + diagnostic matrix)
+
+- Focused `LocalGroundingProbePlanTests` → **12/12 pass** (plan structure,
+  hypothesis tags, receipt/directive ordering through the production
+  composer, native role resolution, sampling knobs, needle-span search).
+  Log: `probe-plan-tests-run9.log`.
+- Qualification host object build with the shared scratch, Xcode 27.0,
+  `-j 2` → `Build complete! (195.95s)`; binary contains all probe events,
+  both markers and the labeled synthetic items. Log:
+  `probe-qualification-build.log`.
+- Synthetic gate-selection check for all three scopes (full, tools-only,
+  grounding-probe) → all gates select correctly. Log: `probe-gate-check.log`.
+- `git diff --check` clean; no `Package.resolved` modification; cloud
+  providers, Apple path and the production local-engine protocol untouched.
+
 ## Exact next cloud step (primary-owned; not performed here)
 
 The R2 intent fix, the R3 receipt-grounding change, their regression tests, the
@@ -274,20 +365,48 @@ revision. Create the next immutable audit snapshot (private alternate index, mai
 HEAD/index untouched) that includes at least:
 
 - `FloeAgent/Sources/FloeLocalModels/LocalProviderAdapter.swift`
+- `FloeAgent/Sources/FloeLocalModels/LocalGroundingProbePlan.swift` (new)
+- `FloeAgent/Sources/FloeLocalModels/MLXTextEngine.swift`
 - `FloeAgent/Tests/FloeLocalModelsTests/*` (including
-  `LocalNamedToolIntentRegressionTests.swift` and
-  `LocalSearchRepairRegressionTests.swift`)
+  `LocalNamedToolIntentRegressionTests.swift`,
+  `LocalSearchRepairRegressionTests.swift` and
+  `LocalGroundingProbePlanTests.swift` (new))
 - `FloeAgent/Qualification/LocalInference/Sources/Qualification.swift`
 - `.github/workflows/local-inference-qualification.yml`
 
-Then dispatch **once**, bounded scope first (diagnosis, no profile rerun):
+R4 first step is the discriminating matrix (no receipt gate rerun), dispatch
+**once** from the immutable snapshot:
 
 ```
 gh workflow run local-inference-qualification.yml \
   --repo <origin> \
   --ref <new immutable audit branch or SHA> \
   -f dependency_profile=current \
-  -f scope=tools-only
+  -f scope=grounding-probe
+```
+
+Read each `grounding-probe-case`: `needleSpans` (non-empty spans prove the
+marker and "synthetic fixture" survived into the actual prepared token ids),
+`answerContainsMarker`, `answerSaysSynthetic`,
+`answerPresentsUnsupportedClaims`, `renderedText` and `answer`. Interpretation:
+
+- copy-minimal fails → `H-COPY`;
+- flat cases fail while native cases ground → `H-REPR`;
+- flat-greedy grounds while flat-production fabricates → `H-SAMPLING`;
+- flat-no-rep-penalty grounds → `H-REPPENALTY`;
+- flat-items-present fails to echo provided items → general grounding defect;
+  it echoes them but empty cases still fabricate → abstention-specific;
+- every case still fabricates → `H-MODEL` (the abliterated 4B weights), in
+  which case the fix must be a representation/service decision (native tool
+  protocol, or routing tool turns off these weights), not more prompt wording.
+
+Only after the matrix identifies a supported repair direction, re-verify it
+through the existing gates (no weakening):
+
+```
+gh workflow run local-inference-qualification.yml \
+  --repo <origin> --ref <same frozen source> \
+  -f dependency_profile=current -f scope=tools-only
 ```
 
 Read `tool-first-turn-observed` / `search-*-observed` →
@@ -322,5 +441,10 @@ gh workflow run local-inference-qualification.yml \
   exists for v3/v5.
 - `runActualToolRoundtrip`/`runActualSearchRoundtrip` on this macOS host are
   not iPad acceptance; search receipts are labelled synthetic fixtures.
-- The known baseline cancellation failure in `FloeLocalModelsTests` is not
+- The known baseline cancellation failure in `FloeLocalModels` is not
   fixed here and must not be claimed as green.
+- R4 source analysis proves the input-preparation path is intact but does
+  not observe real tokenization/generation on the snapshot: the
+  grounding-probe matrix is a cloud diagnostic, not a repair verdict. No
+  production behavior changed in R4; the matrix outcome decides the next
+  bounded implementation step.

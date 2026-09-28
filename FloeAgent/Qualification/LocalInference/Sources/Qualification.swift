@@ -978,6 +978,100 @@ import Synchronization
         ])
         await runtime.unload(modelID: entry.id)
     }
+    /// Bounded, evidence-only grounding matrix on the real pinned snapshot.
+    /// Every case is run even if one fails; outcomes are recorded, never
+    /// asserted into a pass/fail exit, so the run discriminates hypotheses
+    /// instead of trapping at the first fabrication. Synthetic content only.
+    static func runGroundingProbeMatrix(
+        entry: LocalModelCatalogEntry, directory: URL
+    ) async throws {
+        let schema = ToolSchemaDescriptor(
+            name: WebSearchTool.name,
+            description: WebSearchTool.toolDescription,
+            parametersJSON: WebSearchTool.parametersJSON
+        )
+        let offeredSchemas = [schema,
+            ToolSchemaDescriptor(name: WebFetchTool.name, description: WebFetchTool.toolDescription,
+                                 parametersJSON: WebFetchTool.parametersJSON),
+            ToolSchemaDescriptor(name: URLDownloadTool.name, description: URLDownloadTool.toolDescription,
+                                 parametersJSON: URLDownloadTool.parametersJSON),
+            ToolSchemaDescriptor(name: OCRTool.name, description: OCRTool.toolDescription,
+                                 parametersJSON: OCRTool.parametersJSON),
+            ToolSchemaDescriptor(name: LocalPythonTool.name, description: LocalPythonTool.toolDescription,
+                                 parametersJSON: LocalPythonTool.parametersJSON)
+        ]
+        let envelope = AgentPromptComposer.compose(
+            mode: .chat,
+            runtimeContext: "# Run context\nWorkspace: synthetic qualification workspace. Tool permissions are enforced by the host. After a tool result, answer from that result; repeat its receipt marker verbatim and identify synthetic results as synthetic.",
+            toolsAvailable: true, compactForLocal: true
+        )
+        let plan = try LocalGroundingProbePlan.standard(
+            envelope: envelope, schemas: offeredSchemas, modelID: entry.id)
+        record("grounding-probe-start", [
+            "model": entry.id, "caseCount": plan.cases.count
+        ])
+        // One container reused across cases; each probe prepares fresh tokens
+        // and a fresh KV, matching production. Output allowance 1024 covers
+        // the 320-token items case.
+        let profile = LocalInferenceResourceProfile(
+            tier: .constrained, contextSize: 8_192, batchSize: 48,
+            gpuLayers: 16, maximumOutputTokens: 1_024)
+        let engine = try await MLXTextEngine(
+            modelDirectory: directory, includesVisionProjector: false,
+            resourceProfile: profile)
+        // Heuristic-only labels for unsupported claims: present on the
+        // empty-item receipt answers that invent concrete news while omitting
+        // the marker. Not a gate; the answer text is retained verbatim.
+        let inventionMarkers = [
+            "芯片", "股市", "股指", "交通管制", "量产", "股价", "降息", "发布新"
+        ]
+        for probeCase in plan.cases {
+            do {
+                let outcome = try await engine.runGroundingProbe(
+                    content: probeCase.content,
+                    temperature: probeCase.temperature,
+                    repetitionPenalty: probeCase.repetitionPenalty,
+                    maxTokens: probeCase.maxTokens,
+                    evidenceNeedles: probeCase.evidenceNeedles,
+                    diagnosticTraceID: "probe-\(probeCase.id)")
+                let marker = probeCase.evidenceNeedles.first ?? ""
+                let answerContainsMarker = marker.isEmpty
+                    ? true : outcome.answer.contains(marker)
+                let lowered = outcome.answer.lowercased()
+                let answerSaysSynthetic = lowered.contains("synthetic")
+                    || outcome.answer.contains("合成")
+                    || outcome.answer.contains("模拟")
+                let answerPresentsUnsupportedClaims = !answerContainsMarker
+                    && inventionMarkers.contains { outcome.answer.contains($0) }
+                record("grounding-probe-case", [
+                    "case": probeCase.id,
+                    "hypothesis": probeCase.hypothesis,
+                    "temperature": probeCase.temperature,
+                    "repetitionPenalty": probeCase.repetitionPenalty,
+                    "inputTokens": outcome.preparedTokens,
+                    "outputTokens": outcome.outputTokens,
+                    "generationDurationMs": outcome.generationDurationMs,
+                    "needleSpans": outcome.needleSpans,
+                    "answerContainsMarker": answerContainsMarker,
+                    "answerSaysSynthetic": answerSaysSynthetic,
+                    "answerPresentsUnsupportedClaims": answerPresentsUnsupportedClaims,
+                    "answer": outcome.answer,
+                    "renderedText": outcome.renderedText
+                ])
+            } catch {
+                record("grounding-probe-case", [
+                    "case": probeCase.id,
+                    "hypothesis": probeCase.hypothesis,
+                    "temperature": probeCase.temperature,
+                    "repetitionPenalty": probeCase.repetitionPenalty,
+                    "error": errorFields(error)
+                ])
+            }
+        }
+        await engine.shutdown()
+        record("grounding-probe-complete", ["caseCount": plan.cases.count])
+    }
+
     static func runBaseline(_ entry: LocalModelCatalogEntry, using profileCase: ProfileCase,
                             directory: URL) async throws {
         var startFields = profileCase.fields
@@ -1056,10 +1150,16 @@ import Synchronization
         // never relaxes a tool/search gate: the same roundtrip assertions run.
         let toolsOnly = arguments.contains("--tools-only")
         arguments.removeAll { $0 == "--tools-only" }
+        // Bounded diagnostic-only scope: runs the controlled grounding-probe
+        // matrix instead of profiles and tool/search roundtrips. It never
+        // replaces, weakens or reruns any receipt gate — those stay
+        // exclusive to full/tools-only.
+        let groundingProbe = arguments.contains("--grounding-probe")
+        arguments.removeAll { $0 == "--grounding-probe" }
         guard arguments.count == 1 else {
             throw NSError(domain: "Qualification", code: 1, userInfo: [
                 NSLocalizedDescriptionKey:
-                    "Provide one isolated model-cache directory (optional flags: --include-baseline, --tools-only)"
+                    "Provide one isolated model-cache directory (optional flags: --include-baseline, --tools-only, --grounding-probe)"
             ])
         }
         let entry = CuratedLocalModelCatalog.entries.first { $0.id == "qwen3.8-4b-heretic-mlx4" }!
@@ -1072,6 +1172,15 @@ import Synchronization
         let directory = try await store.download(entry)
         record("download-complete", ["model": entry.id, "revision": entry.revision])
 
+        if groundingProbe {
+            record("qualification-scope", [
+                "toolsOnly": false,
+                "groundingProbe": true,
+                "profileCount": 0
+            ])
+            try await runGroundingProbeMatrix(entry: entry, directory: directory)
+            return
+        }
         let profiles = toolsOnly ? [] : profileCases(includeBaseline: includeBaseline)
         record("qualification-scope", [
             "toolsOnly": toolsOnly,

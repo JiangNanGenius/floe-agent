@@ -10,11 +10,12 @@ on:
           - historical-baseline
         default: current
       scope:
-        description: Qualification scope (full = lifecycle profiles plus tool/search gates; tools-only = bounded real-weight tool/search diagnosis, no profile rerun)
+        description: Qualification scope (full = profiles plus tool/search gates; tools-only = bounded tool/search diagnosis; grounding-probe = diagnostic-only matrix, never a release gate)
         type: choice
         options:
           - full
           - tools-only
+          - grounding-probe
         default: full
   workflow_call:
     inputs:
@@ -23,7 +24,7 @@ on:
         type: string
         default: current
       scope:
-        description: Qualification scope (full or tools-only)
+        description: Qualification scope (full, tools-only or grounding-probe)
         type: string
         default: full
 permissions:
@@ -141,7 +142,7 @@ jobs:
           EVIDENCE="$RUNNER_TEMP/LocalInferenceEvidence"
           SCOPE="$QUALIFICATION_SCOPE"
           case "$SCOPE" in
-            full|tools-only) ;;
+            full|tools-only|grounding-probe) ;;
             *) echo "Unsupported qualification scope" >&2; exit 2 ;;
           esac
           xcodebuild -version > "$EVIDENCE/toolchain.txt"
@@ -165,44 +166,61 @@ jobs:
             # Bounded diagnostic scope: skips only the unchanged lifecycle
             # profiles. Every real-weight tool/search gate below still runs.
             scope_args+=("--tools-only")
+          elif [ "$SCOPE" = "grounding-probe" ]; then
+            # Diagnostic-only matrix: does not run any receipt gate, and no
+            # result here may be cited as release qualification.
+            scope_args+=("--grounding-probe")
           fi
           /usr/bin/time -l "$bin_path/FloeLocalInferenceQualification" "$RUNNER_TEMP/QwenSnapshot" \
             "${scope_args[@]}" \
             2>&1 | tee "$EVIDENCE/run.log"
           grep -q '"event":"download-complete"' "$EVIDENCE/run.log"
-          if [ "$SCOPE" = "tools-only" ]; then
-            # Bounded diagnosis scope: the run must prove it skipped the
-            # lifecycle profiles. This is never a release gate.
-            grep -q '"event":"qualification-scope".*"toolsOnly":true' "$EVIDENCE/run.log"
+          if [ "$SCOPE" = "grounding-probe" ]; then
+            # Diagnostic scope gate: prove the matrix scope was selected,
+            # all seven controlled cases ran and emitted structured
+            # outcomes, and the process finished. It asserts event counts
+            # only — it never validates fabricated vs grounded answers, and
+            # no receipt gate runs or can be cited from this scope.
+            grep -q '"event":"qualification-scope".*"groundingProbe":true' "$EVIDENCE/run.log"
+            test "$(grep -c '"event":"grounding-probe-case"' "$EVIDENCE/run.log")" -eq 7
+            grep -q '"event":"grounding-probe-complete"' "$EVIDENCE/run.log"
+            grep -q '"event":"qualification-complete"' "$EVIDENCE/run.log"
           else
-            # Full scope retains every lifecycle-profile gate.
-            grep -q '"event":"profile-complete".*"profile":"device-constrained-batch8"' "$EVIDENCE/run.log"
-            grep -q '"event":"profile-complete".*"profile":"constrained-batch48"' "$EVIDENCE/run.log"
-            grep -q '"event":"profile-complete".*"profile":"balanced-batch96"' "$EVIDENCE/run.log"
-            test "$(grep -c '"event":"multi-chunk-verified"' "$EVIDENCE/run.log")" -eq 3
-            grep -q '"event":"shutdown-complete"' "$EVIDENCE/run.log"
+            if [ "$SCOPE" = "tools-only" ]; then
+              # Bounded diagnosis scope: the run must prove it skipped the
+              # lifecycle profiles. This is never a release gate.
+              grep -q '"event":"qualification-scope".*"toolsOnly":true' "$EVIDENCE/run.log"
+            else
+              # Full scope retains every lifecycle-profile gate.
+              grep -q '"event":"profile-complete".*"profile":"device-constrained-batch8"' "$EVIDENCE/run.log"
+              grep -q '"event":"profile-complete".*"profile":"constrained-batch48"' "$EVIDENCE/run.log"
+              grep -q '"event":"profile-complete".*"profile":"balanced-batch96"' "$EVIDENCE/run.log"
+              test "$(grep -c '"event":"multi-chunk-verified"' "$EVIDENCE/run.log")" -eq 3
+              grep -q '"event":"shutdown-complete"' "$EVIDENCE/run.log"
+            fi
+            # Common tool/search receipt gates for full and tools-only.
+            test "$(grep -c '"event":"tool-executed".*"tool":"workspace.readFile"' "$EVIDENCE/run.log")" -eq 2
+            grep -q '"answerContainsReceipt":true.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
+            grep -q '"conversationTurns":2.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
+            # Search-roundtrip evidence: the real-weight greeting → web.search →
+            # synthetic receipt → follow-up web.search chain. The receipt source
+            # is truthfully a synthetic fixture (no live/paid search), and the
+            # greeting never invoked the tool.
+            test "$(grep -c '"event":"search-tool-executed".*"tool":"web.search"' "$EVIDENCE/run.log")" -eq 2
+            grep -q '"event":"search-tool-executed".*"receiptSource":"synthetic-fixture"' "$EVIDENCE/run.log"
+            grep -q '"event":"search-roundtrip-complete".*"greetingInvokedTool":false' "$EVIDENCE/run.log"
+            grep -q '"conversationTurns":3.*"event":"search-roundtrip-complete"' "$EVIDENCE/run.log"
+            grep -q '"completedToolAnswers":2.*"event":"search-roundtrip-complete"' "$EVIDENCE/run.log"
+            test "$(grep -c '"answerContainsReceipt":true.*"event":"search-answer-complete"' "$EVIDENCE/run.log")" -eq 2
+            grep -q '"event":"qualification-complete"' "$EVIDENCE/run.log"
+            # Truthful compile-policy metadata: the process starts unapplied, the
+            # engine applies the policy, and the environment switch stays absent.
+            grep -q '"mlxCompilePolicy":"not-applied"' "$EVIDENCE/run.log"
+            grep -q '"mlxCompilePolicy":"disabled-by-process-policy"' "$EVIDENCE/run.log"
+            grep -q '"mlxCompilePolicyAppliedBeforeLoad":true' "$EVIDENCE/run.log"
+            grep -q '"mlxDisableCompileEnvSet":false' "$EVIDENCE/run.log"
+            test "$(grep -c '"mlxDisableCompileEnvSet":true' "$EVIDENCE/run.log" || true)" -eq 0
           fi
-          test "$(grep -c '"event":"tool-executed".*"tool":"workspace.readFile"' "$EVIDENCE/run.log")" -eq 2
-          grep -q '"answerContainsReceipt":true.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
-          grep -q '"conversationTurns":2.*"event":"tool-roundtrip-complete"' "$EVIDENCE/run.log"
-          # Search-roundtrip evidence: the real-weight greeting → web.search →
-          # synthetic receipt → follow-up web.search chain. The receipt source
-          # is truthfully a synthetic fixture (no live/paid search), and the
-          # greeting never invoked the tool.
-          test "$(grep -c '"event":"search-tool-executed".*"tool":"web.search"' "$EVIDENCE/run.log")" -eq 2
-          grep -q '"event":"search-tool-executed".*"receiptSource":"synthetic-fixture"' "$EVIDENCE/run.log"
-          grep -q '"event":"search-roundtrip-complete".*"greetingInvokedTool":false' "$EVIDENCE/run.log"
-          grep -q '"conversationTurns":3.*"event":"search-roundtrip-complete"' "$EVIDENCE/run.log"
-          grep -q '"completedToolAnswers":2.*"event":"search-roundtrip-complete"' "$EVIDENCE/run.log"
-          test "$(grep -c '"answerContainsReceipt":true.*"event":"search-answer-complete"' "$EVIDENCE/run.log")" -eq 2
-          grep -q '"event":"qualification-complete"' "$EVIDENCE/run.log"
-          # Truthful compile-policy metadata: the process starts unapplied, the
-          # engine applies the policy, and the environment switch stays absent.
-          grep -q '"mlxCompilePolicy":"not-applied"' "$EVIDENCE/run.log"
-          grep -q '"mlxCompilePolicy":"disabled-by-process-policy"' "$EVIDENCE/run.log"
-          grep -q '"mlxCompilePolicyAppliedBeforeLoad":true' "$EVIDENCE/run.log"
-          grep -q '"mlxDisableCompileEnvSet":false' "$EVIDENCE/run.log"
-          test "$(grep -c '"mlxDisableCompileEnvSet":true' "$EVIDENCE/run.log" || true)" -eq 0
       - name: Preserve diagnostic output
         if: always()
         uses: actions/upload-artifact@v4

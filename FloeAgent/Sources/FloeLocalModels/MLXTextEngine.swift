@@ -435,6 +435,161 @@ public actor MLXTextEngine {
         )
     }
 
+    #if os(macOS)
+    // MARK: - Qualification-only grounding probe
+
+    /// Outcome of a controlled grounding probe. Produced only by the
+    /// LocalInference qualification host; the production app never calls the
+    /// probe entry point. Fields carry synthetic fixture text only.
+    public struct GroundingProbeOutcome: Sendable {
+        public let preparedTokens: Int
+        /// Best-effort decode of the prepared token ids with special tokens
+        /// retained, exposing the exact production-template rendering.
+        public let renderedText: String
+        /// For each evidence needle: `[start,end]` index span in the prepared
+        /// ids, or an empty array when absent. This proves presence in the
+        /// actual tokenized model input rather than in the pre-template
+        /// string.
+        public let needleSpans: [String: [Int]]
+        public let answer: String
+        public let outputTokens: Int
+        public let generationDurationMs: Int
+
+        public init(preparedTokens: Int, renderedText: String,
+                    needleSpans: [String: [Int]], answer: String,
+                    outputTokens: Int, generationDurationMs: Int) {
+            self.preparedTokens = preparedTokens
+            self.renderedText = renderedText
+            self.needleSpans = needleSpans
+            self.answer = answer
+            self.outputTokens = outputTokens
+            self.generationDurationMs = generationDurationMs
+        }
+    }
+
+    /// QUALIFICATION ONLY. Runs one controlled generation from a raw chat
+    /// message list with independently varied sampling and returns the exact
+    /// prepared-template rendering. It exists to discriminate template
+    /// representation / sampling / repetition-penalty defects from true
+    /// model inability on the real pinned snapshot. It is not reachable from
+    /// the production app path and never changes the ordinary
+    /// `streamMeasured`/`completeMeasured` behavior.
+    public func runGroundingProbe(
+        content: LocalGroundingProbePlan.Case.Content,
+        temperature: Float,
+        repetitionPenalty: Float,
+        maxTokens: Int = 256,
+        evidenceNeedles: [String] = [],
+        diagnosticTraceID: String? = nil
+    ) async throws -> GroundingProbeOutcome {
+        guard let container else { throw LocalInferenceError.contextCreationFailed }
+        try Task.checkCancellation()
+        defer {
+            if !Self.drainPipelineAndClearCaches(
+                context: "groundingProbeTeardown",
+                traceID: diagnosticTraceID
+            ) {
+                teardownUnclean.withLock { $0 = true }
+            }
+        }
+        let prepared: LMInput
+        do {
+            prepared = try await MLX.withError { errors in
+                do {
+                    // Resolve non-Sendable Chat.Message values inside this
+                    // scope from the Sendable content spec, then build and
+                    // consume UserInput here. Same region boundary as the
+                    // production prepare path.
+                    let messages: [Chat.Message]
+                    switch content {
+                    case .direct(let specs):
+                        messages = LocalGroundingProbePlan.resolveProbeMessages(specs)
+                    case .flatContinuation(let request):
+                        messages = LocalGroundingProbePlan.flattenedMessages(for: request)
+                    }
+                    let input = UserInput(
+                        chat: messages,
+                        // The probe matrix varies messages/sampling only;
+                        // native schemas stay off exactly like the Qwen
+                        // production path.
+                        tools: nil,
+                        additionalContext: ["enable_thinking": false]
+                    )
+                    let value = try await container.prepare(input: input)
+                    try errors.check()
+                    return value
+                } catch {
+                    try errors.check()
+                    throw error
+                }
+            }
+        } catch {
+            if Self.isCancellation(error) { throw CancellationError() }
+            throw LocalInferenceError.promptTooLong
+        }
+        let ids: [Int] = prepared.text.tokens.asArray(Int.self)
+        let effectiveMaximum = min(
+            max(1, maxTokens), resourceProfile.maximumOutputTokens)
+        guard ids.count + effectiveMaximum <= Int(resourceProfile.contextSize) else {
+            throw LocalInferenceError.promptTooLong
+        }
+        let tokenizer = await container.tokenizer
+        let renderedText = tokenizer.decode(
+            tokenIds: ids, skipSpecialTokens: false)
+        var needleSpans: [String: [Int]] = [:]
+        for needle in evidenceNeedles {
+            // BPE boundary merges can differ depending on the character
+            // preceding the needle inside the template; try the bare needle
+            // and a leading-space variant before reporting absent.
+            var candidates: [[Int]] = [
+                tokenizer.encode(text: needle, addSpecialTokens: false),
+                tokenizer.encode(text: " " + needle, addSpecialTokens: false)
+            ]
+            var span: Range<Int>?
+            for candidate in candidates {
+                if let range = LocalGroundingProbePlan.firstSpan(
+                    of: candidate, in: ids) {
+                    span = range
+                    break
+                }
+            }
+            if let span {
+                needleSpans[needle] = [span.lowerBound, span.upperBound]
+            } else {
+                needleSpans[needle] = []
+            }
+        }
+        let kvBits = resourceProfile.tier == .constrained ? 4 : 8
+        let parameters = GenerateParameters(
+            maxTokens: effectiveMaximum,
+            maxKVSize: nil,
+            kvBits: kvBits,
+            temperature: temperature,
+            topP: 0.95,
+            repetitionPenalty: repetitionPenalty,
+            prefillStepSize: Int(resourceProfile.batchSize)
+        )
+        let result = try await generatePrepared(
+            container: container,
+            input: prepared,
+            parameters: parameters,
+            inputTokens: ids.count,
+            startedAt: Date(),
+            diagnosticTraceID: diagnosticTraceID,
+            sinks: nil
+        )
+        return GroundingProbeOutcome(
+            preparedTokens: ids.count,
+            renderedText: renderedText,
+            needleSpans: needleSpans,
+            answer: result.text,
+            outputTokens: result.outputTokens,
+            generationDurationMs: result.generationDurationMs
+        )
+    }
+
+    #endif
+
     private func runCompleteMeasured(
         instructions: String,
         prompt: String,
