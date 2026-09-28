@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 234: Linux Runtime v2 image recovery and cancellation fixes, local-model tool-call improvements, and updated Office font fallbacks and diagnostic host. Known issues: local-model search answers can contain unsupported claims; PPT may crash while idle; Office font coverage is incomplete. iPad behavior remains unverified. Please test image download/repair, two consecutive tool turns, and Office opening/saving. This internal beta does not claim these remaining issues are resolved.",
+  "zh-Hans": "Build 234：改进 Linux Runtime v2 镜像恢复与取消、本地模型工具调用，更新 Office 字体回退和诊断宿主。已知问题：本地模型搜索回答仍可能失实；PPT 静置仍可能闪退；Office 字体覆盖不完整。iPad 实际效果仍待验证。请测试镜像下载与修复、连续两轮工具调用及 Office 打开和保存。本内测版本不代表上述遗留问题已经解决。"
+}
