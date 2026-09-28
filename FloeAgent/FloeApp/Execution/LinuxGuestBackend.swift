@@ -173,6 +173,11 @@ struct LinuxOfficialTemplateRuntime: Sendable {
 /// alone.
 struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// Cooperative cancellation check threaded into long reconstructions.
+    /// The integrator's `isCancelled` parameter is an escaping optional, and a
+    /// closure literal's parameter forwards to an escaping parameter only when
+    /// its own type is that same optional (implicitly escaping) function type:
+    /// the stored boundary mirrors it. Callers still pass a real check; `nil`
+    /// means "no cooperative check".
     typealias CancellationCheck = @Sendable () -> Bool
     /// Non-migrating verified gate (`isImageVerifiedWithoutMigration`).
     let isVerified: @Sendable (String) async -> Bool
@@ -189,10 +194,10 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// Explicit re-verification (drops the cached success fingerprint).
     let reverifyHealth: @Sendable (String) async -> RuntimeV2ImageStore.ImageHealth?
     /// Rebuilds the expanded view from verified blobs (no download).
-    let reconstructExpanded: @Sendable (String, CancellationCheck) async throws -> Void
+    let reconstructExpanded: @Sendable (String, CancellationCheck?) async throws -> Void
     /// Same-id repair of a migrated image from a freshly verified legacy
     /// install (blobs re-placed, expanded rebuilt).
-    let repairFromLegacyInstall: @Sendable (String, CancellationCheck) async throws -> Void
+    let repairFromLegacyInstall: @Sendable (String, CancellationCheck?) async throws -> Void
 
     /// The verified legacy manifest of an already-migrated image, or nil when
     /// the v2 store does not hold this image verified.
