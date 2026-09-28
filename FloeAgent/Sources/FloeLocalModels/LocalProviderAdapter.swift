@@ -2533,10 +2533,47 @@ public struct LocalProviderAdapter: ProviderAdapter {
         }
 
         let normalizedUserText = latestUserText.lowercased()
-        let actionRequested = requestsAction(normalizedUserText)
         let inventoryRequested = requestsInventory(normalizedUserText)
         let explicitToolExecutionRequested = requestsExplicitToolExecution(normalizedUserText)
-        let includeToolDirectory = inventoryRequested || actionRequested
+        // A direct command naming an offered tool ("Now call workspace.readFile
+        // with path …", "现在调用 web.search 搜索 …") is an execution request even
+        // when its wording also mentions tools/responding. Build 233 cloud run
+        // 36395580557 proved the bare "tool" substring folded such a second-turn
+        // command into capability inventory, which suppressed the required call
+        // and let prose quoting the OLD receipt stand.
+        let availableToolNames = availableTools.map(\.name)
+        // Quoted/fenced example spans are samples, not commands; remove them
+        // before intent evaluation so a quoted "call workspace.readFile"
+        // cannot be promoted by either the named-command path or the legacy
+        // fuzzy action substring ("read" inside "readFile").
+        let commandText = textWithoutQuotedToolExamples(
+            normalizedUserText,
+            offeredToolNames: availableToolNames
+        )
+        // The legacy fuzzy action classifier is substring based ("read" also
+        // matches inside an offered name such as "readFile"). When a sentence
+        // is explanatory or negated AND names an offered tool, the fuzzy
+        // signal can only come from the named tool itself, so it must not
+        // force a call ("how do i call workspace.readFile …",
+        // "don't call workspace.readFile yet"). Ordinary fuzzy actions that do
+        // not name a dotted tool keep their exact prior behavior.
+        let namesOfferedTool = Self.mentionsOfferedToolName(
+            in: commandText,
+            offeredToolNames: availableToolNames
+        )
+        let explainsOrNegatesNamedTool = namesOfferedTool
+            && containsAny(
+                normalizedUserText,
+                namedToolExplanatoryMarkers + namedToolNegationMarkers
+            )
+        let fuzzyActionRequested = requestsAction(commandText)
+            && !explainsOrNegatesNamedTool
+        let namedToolExecutionRequested = requestsNamedToolExecution(
+            commandText,
+            offeredToolNames: availableToolNames
+        )
+        let explicitActionRequested = fuzzyActionRequested || namedToolExecutionRequested
+        let includeToolDirectory = inventoryRequested || explicitActionRequested
             || !selectedTools.isEmpty || !request.pendingToolCalls.isEmpty
         let budgets = promptBudgets(contextTokens: contextTokens)
         // Native schemas are part of the prepared prompt: MLX renders them
@@ -2822,8 +2859,27 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // to invoke the same action again (and having its valid answer replaced
         // by the missing-invocation repair). A new user turn has no current
         // toolResults, even when settled pairs remain in its replay history.
-        let requiredInvocation = request.toolResults.isEmpty && actionRequested
-            && (!inventoryRequested || explicitToolExecutionRequested)
+        //
+        // A genuine capability question stays informational unless it also
+        // contains an explicit execution request — either the fuzzy "try one"
+        // form or, Build 233 run 36395580557, a direct command that NAMES an
+        // offered tool ("Now call workspace.readFile with path …"). The bare
+        // inventory substring ("tool") in that sentence must not downgrade the
+        // command: previously requiredInvocation was suppressed, the model
+        // answered with prose quoting the earlier receipt, and the second
+        // fixture was never read.
+        //
+        // The named-tool branch is self-contained and additive: when no tool
+        // is named as a command, the existing fuzzy action/inventory semantics
+        // are unchanged, so ordinary chat and quoted examples keep their prior
+        // classification. Both paths evaluate against quote-stripped text, so
+        // a quoted sample can never be promoted into a required invocation.
+        // The classifier itself rejects explanatory prose, how-to questions
+        // and negations.
+        let requiredInvocation = request.toolResults.isEmpty && (
+            (fuzzyActionRequested && (!inventoryRequested || explicitToolExecutionRequested))
+            || namedToolExecutionRequested
+        )
         let invocationPriority: String
         if requiredInvocation, !selectedTools.isEmpty {
             if usesNativeToolSchemas
@@ -3140,6 +3196,242 @@ public struct LocalProviderAdapter: ProviderAdapter {
         containsAny(text, [
             "工具", "能力", "能做什么", "可以做什么", "可用", "tool", "capability", "what can you do", "available"
         ])
+    }
+
+    /// Markers that a tool mention is explanatory (a quoted example, a how-to
+    /// question or documentation) rather than a command to run the tool now.
+    /// The bounded repair must never force such prose into an invocation.
+    private static let namedToolExplanatoryMarkers = [
+        "for example", "e.g.", "such as", "example:", "sample:",
+        "how do i", "how to", "how would", "what happens if", "explain",
+        "例如", "比如", "示例", "样例", "用法", "怎么", "怎样", "如何",
+        "说明一下", "介绍一下", "解释一下"
+    ]
+
+    /// Quoted/coded spans where an imperative verb plus a tool name is an
+    /// EXAMPLE rather than a command: `"call workspace.readFile"`,
+    /// `「调用 workspace.readFile」`, a fenced ```` ``` ```` block or a quoted
+    /// `{"tool_call":…}` envelope. Backtick spans are always samples; other
+    /// quote spans are blanked only when they carry an imperative cue or a
+    /// tool-call envelope, so a real command whose ARGUMENTS are quoted
+    /// (`call workspace.readFile with path "a.txt"`) keeps its name.
+    private static let namedToolQuotedSpanPatterns: [(expression: NSRegularExpression, alwaysBlank: Bool)] = {
+        func regex(_ pattern: String) -> NSRegularExpression {
+            // All patterns are static, trusted literals; force unwrap fails
+            // only on a typo in this table, which must be caught in tests.
+            try! NSRegularExpression(pattern: pattern)
+        }
+        return [
+            (regex("`[^`\n]{0,800}`"), true),
+            (regex("\u{201C}[^\u{201D}\n]{0,800}\u{201D}"), false),
+            (regex("\u{2018}[^\u{2019}\n]{0,800}\u{2019}"), false),
+            (regex(#""[^"\n]{0,800}""#), false),
+            (regex(#"'[^'\n]{0,800}'"#), false),
+            (regex("\u{300C}[^\u{300D}\n]{0,800}\u{300D}"), false),
+            (regex("\u{300E}[^\u{300F}\n]{0,800}\u{300F}"), false),
+            (regex("\u{300A}[^\u{300B}\n]{0,800}\u{300B}"), false)
+        ]
+    }()
+
+    private static func quotedSpanIsToolExample(_ span: String, offeredToolNames: [String]) -> Bool {
+        let lower = span.lowercased()
+        if lower.contains("tool_call") { return true }
+        if hasImperativeCue(lower) { return true }
+        // A quoted fully-qualified offered name (`「workspace.readFile」`) is a
+        // tool-name sample. Generic dotted text such as a quoted file path
+        // ("a.txt") must NOT match, so only offered names qualify.
+        for name in offeredToolNames {
+            let escaped = NSRegularExpression.escapedPattern(for: name.lowercased())
+            let pattern = "(?<![a-z0-9_.])" + escaped + "(?![a-z0-9_.])"
+            if let expression = try? NSRegularExpression(pattern: pattern),
+               expression.firstMatch(
+                in: lower,
+                range: NSRange(lower.startIndex..<lower.endIndex, in: lower)
+               ) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static let namedToolFencePattern =
+        try! NSRegularExpression(pattern: "```(?:(?!```)[\\s\\S]){0,4000}```")
+
+    /// Blank the quoted example spans described on
+    /// `namedToolQuotedSpanPatterns`, leaving spaces so adjacent words do not
+    /// fuse into new tokens. Everything outside quotes is untouched.
+    private static func textWithoutQuotedToolExamples(
+        _ text: String,
+        offeredToolNames: [String]
+    ) -> String {
+        var result = text
+        // Fenced blocks are samples/documentation, never commands.
+        let fenceRange = NSRange(result.startIndex..<result.endIndex, in: result)
+        let fences = namedToolFencePattern.matches(in: result, range: fenceRange).reversed()
+        for match in fences {
+            guard let range = Range(match.range, in: result) else { continue }
+            let span = String(result[range])
+            result = result.replacingCharacters(
+                in: range,
+                with: String(repeating: " ", count: span.count)
+            )
+        }
+        for (expression, alwaysBlank) in namedToolQuotedSpanPatterns {
+            let full = NSRange(result.startIndex..<result.endIndex, in: result)
+            let matches = expression.matches(in: result, range: full)
+            // Replace back-to-front so earlier ranges stay valid.
+            for match in matches.reversed() {
+                guard let range = Range(match.range, in: result) else { continue }
+                let span = String(result[range])
+                // Formatting a tool name is not quoting an entire command:
+                // "call `workspace.readFile`" must retain its explicit target.
+                // Bare quoted commands still take the blanking path below.
+                let nameOnly = span.trimmingCharacters(in:
+                    CharacterSet(charactersIn: "`\"'“”‘’「」『』《》 \t\n"))
+                if offeredToolNames.contains(where: { $0.lowercased() == nameOnly }),
+                   hasImperativeCue(String(result[..<range.lowerBound])) {
+                    result.replaceSubrange(range, with: nameOnly)
+                    continue
+                }
+                guard alwaysBlank
+                    || quotedSpanIsToolExample(span, offeredToolNames: offeredToolNames) else { continue }
+                let spaces = String(repeating: " ", count: span.count)
+                result = result.replacingCharacters(in: range, with: spaces)
+            }
+        }
+        return result
+    }
+
+    /// Strong imperative cues: together with an offered tool's full name they
+    /// identify a direct command ("Now call workspace.readFile with path …",
+    /// "现在调用 web.search 搜索 …"). Bounded on purpose: the cue alone never
+    /// forces a call; the fully-qualified offered name must also appear.
+    private static let namedToolStrongImperativeMarkers = [
+        "调用", "調用", "执行", "執行", "运行", "運行", "启动", "啟動",
+        "call", "invoke", "execute", "run", "launch"
+    ]
+
+    /// Weaker cues ("use …") that only count as a command when the message is
+    /// not a question about the tool.
+    private static let namedToolWeakImperativeMarkers = ["使用", "use"]
+
+    /// Interrogative cues that keep a weak "use" phrasing informational.
+    private static let namedToolQuestionMarkers = [
+        "?", "？", "吗", "嗎", "怎么", "怎麼", "怎样", "怎樣", "如何",
+        "能不能", "可不可以", "是否", "can ", "could", "may ", "whether",
+        "is it possible"
+    ]
+
+    /// Latin imperative markers are short ("run", "use", "call"); match them
+    /// on word boundaries so "because"/"user"/"recall" never qualify. CJK
+    /// markers match as substrings.
+    private static func containsMarker(_ marker: String, asWordIn text: String) -> Bool {
+        if marker.unicodeScalars.allSatisfy({ $0.value < 0x3000 }) {
+            let pattern = #"(?<![a-z0-9])"# + NSRegularExpression.escapedPattern(for: marker)
+                + #"(?![a-z0-9])"#
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { return false }
+            return expression.firstMatch(
+                in: text,
+                range: NSRange(text.startIndex..<text.endIndex, in: text)
+            ) != nil
+        }
+        return text.contains(marker)
+    }
+
+    private static func hasImperativeCue(_ text: String) -> Bool {
+        if namedToolStrongImperativeMarkers.contains(where: { containsMarker($0, asWordIn: text) }) {
+            return true
+        }
+        // The weaker "use/使用" cue only counts in a non-interrogative command.
+        guard !containsAny(text, namedToolQuestionMarkers) else { return false }
+        return namedToolWeakImperativeMarkers.contains { containsMarker($0, asWordIn: text) }
+    }
+
+    /// Negative imperatives ("don't call workspace.readFile", "不要调用 …") must
+    /// never become required invocations.
+    private static let namedToolNegationMarkers = [
+        "不要调用", "不要調用", "别调用", "別調用", "请勿调用", "請勿調用",
+        "无需调用", "無需調用", "不用调用", "不用調用", "不要执行", "不要執行",
+        "别执行", "別執行", "do not call", "don't call", "never call",
+        "do not invoke", "don't invoke", "never invoke", "without calling",
+        "without invoking", "without running"
+    ]
+
+    /// Returns the full names of offered tools the latest message directly
+    /// commands the assistant to run. `text` must already be lowercased.
+    ///
+    /// Build 233 cloud run 36395580557: the second user turn was the direct
+    /// command "Now call workspace.readFile with path qualification-probe-2.txt.
+    /// Report its exact contents only after the tool responds." The word
+    /// "tool" made `requestsInventory` true while `requestsExplicitToolExecution`
+    /// only recognized the fuzzy "call one / try one" phrasing, so the required
+    /// invocation was suppressed and prose quoting the OLD receipt was accepted.
+    /// A fully-qualified offered name plus an imperative verb identifies that
+    /// command without forcing ordinary chat, quoted examples or how-to
+    /// questions. Tool-result continuations are excluded separately by the
+    /// `request.toolResults.isEmpty` guard at the call site.
+    static func namedExecutionToolNames(
+        in normalizedText: String,
+        offeredToolNames: [String]
+    ) -> Set<String> {
+        guard !normalizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !containsAny(normalizedText, namedToolExplanatoryMarkers),
+              !containsAny(normalizedText, namedToolNegationMarkers) else {
+            return []
+        }
+        // Remove quoted/fenced example spans before matching the command. A
+        // bare quoted sentence such as 「call workspace.readFile」 is a sample,
+        // not a command; the real command text outside quotes is untouched.
+        // Idempotent: callers may already pass stripped text.
+        let commandText = textWithoutQuotedToolExamples(
+            normalizedText,
+            offeredToolNames: offeredToolNames
+        )
+        guard hasImperativeCue(commandText) else { return [] }
+        var matches: Set<String> = []
+        for name in offeredToolNames {
+            let normalizedName = name.lowercased()
+            // Match the fully-qualified name only, with boundary guards on both
+            // sides so "workspace.readFileBackup" cannot satisfy a command for
+            // "workspace.readFile".
+            let escaped = NSRegularExpression.escapedPattern(for: normalizedName)
+            let pattern = "(?<![a-z0-9_.])" + escaped + "(?![a-z0-9_.])"
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(commandText.startIndex..<commandText.endIndex, in: commandText)
+            if expression.firstMatch(in: commandText, range: range) != nil {
+                matches.insert(name)
+            }
+        }
+        return matches
+    }
+
+    private static func requestsNamedToolExecution(
+        _ normalizedText: String,
+        offeredToolNames: [String]
+    ) -> Bool {
+        !namedExecutionToolNames(in: normalizedText, offeredToolNames: offeredToolNames).isEmpty
+    }
+
+    /// True when the text contains a fully-qualified offered tool name, using
+    /// the same boundary guards as the named-command classifier. No imperative
+    /// cue is required; this is used only to suppress the legacy fuzzy action
+    /// substring inside explicitly explanatory/negated tool sentences.
+    private static func mentionsOfferedToolName(
+        in normalizedText: String,
+        offeredToolNames: [String]
+    ) -> Bool {
+        for name in offeredToolNames {
+            let escaped = NSRegularExpression.escapedPattern(for: name.lowercased())
+            let pattern = "(?<![a-z0-9_.])" + escaped + "(?![a-z0-9_.])"
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            if expression.firstMatch(
+                in: normalizedText,
+                range: NSRange(normalizedText.startIndex..<normalizedText.endIndex, in: normalizedText)
+            ) != nil {
+                return true
+            }
+        }
+        return false
     }
 
     private struct PromptBudgets {
