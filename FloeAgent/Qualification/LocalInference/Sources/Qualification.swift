@@ -591,13 +591,13 @@ import Synchronization
             allToolNames: [schema.name]
         )
         var secondCalls: [ToolCall] = []
-        var secondAnswer = ""
-        var secondCompleted = false
+        var secondRequestAnswer = ""
+        var secondRequestCompleted = false
         for try await event in adapter.stream(request: nextTurn, credentials: ProviderCredentials()) {
             switch event {
             case .toolRequest(let toolCall): secondCalls.append(toolCall)
-            case .textDelta(let delta): secondAnswer += delta
-            case .completed(let info): secondCompleted = info.stopReason == .endTurn
+            case .textDelta(let delta): secondRequestAnswer += delta.text
+            case .completed(let info): secondRequestCompleted = info.stopReason == .endTurn
             case .error(let error): throw NSError(domain: "Qualification.Tool", code: 15,
                 userInfo: [NSLocalizedDescriptionKey: error.providerMessage])
             default: break
@@ -607,8 +607,8 @@ import Synchronization
         // assertion, rather than losing whether the model answered or called
         // the wrong file. Never log user conversations here.
         record("tool-second-turn-observed", [
-            "completed": secondCompleted,
-            "syntheticAnswerPrefix": String(secondAnswer.prefix(1024)),
+            "completed": secondRequestCompleted,
+            "syntheticAnswerPrefix": String(secondRequestAnswer.prefix(1024)),
             "calls": secondCalls.map { call in
                 ["id": call.id, "name": call.toolName,
                  "syntheticArguments": String(decoding: call.argumentsJSON, as: UTF8.self)]
