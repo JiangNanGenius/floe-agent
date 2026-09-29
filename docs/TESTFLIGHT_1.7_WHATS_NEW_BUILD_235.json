@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 235: bounded-memory Linux image verification, cancellation and native progress updates; rejected local-tool name correction; consistent Floe assistant icons; Office termination cleanup and render diagnostics. Please test image download/repair, two consecutive tool turns and Office editing/saving. PPT idle crashes, search-answer reliability and Office font coverage remain unverified; this beta does not claim those issues are resolved.",
+  "zh-Hans": "Build235：改进 Linux 镜像校验内存使用、取消与原生进度刷新；纠正本地模型错误工具名称；统一 Floe 助手图标；修复 Office 终止清理并补充渲染诊断。请测试镜像下载修复、连续两轮工具调用及 Office 编辑保存。PPT 静置闪退、搜索回答可靠性及 Office 字体覆盖仍未完成验收，本内测不宣称这些问题已经解决。"
+}
