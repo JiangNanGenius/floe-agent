@@ -262,7 +262,8 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         store: RuntimeV2Store,
         legacyImagesRoot: URL? = nil,
         build: String? = nil,
-        seams: Seams = .production
+        seams: Seams = .production,
+        preparationStageHandler: (@Sendable (RuntimeV2Store.RecoveryStage) -> Void)? = nil
     ) {
         self.store = store
         self.legacyImagesRoot = legacyImagesRoot
@@ -270,11 +271,20 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         self.build = build
             ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
             ?? "unknown"
+        // Installed in the initializer, not via the actor-isolated setter:
+        // a synchronous assembly context (the app's non-async backend wiring)
+        // can hand the handler over at construction and it is stored before the
+        // integrator is observable to anyone — no unstructured Task and no
+        // window in which a recovery pass could start without the sink. The
+        // setter remains for async contexts (tests, replacement).
+        self.stageHandler = preparationStageHandler
     }
 
     /// Installs the sink that receives startup-recovery stages from the
     /// shared preparation pass. The app wires this to its storage-init
-    /// progress presentation; tests observe stage order.
+    /// progress presentation; tests observe stage order. Callers in a
+    /// synchronous context instead pass the handler to the initializer so it
+    /// is registered before the integrator becomes reachable.
     public func setPreparationStageHandler(
         _ handler: (@Sendable (RuntimeV2Store.RecoveryStage) -> Void)?
     ) {

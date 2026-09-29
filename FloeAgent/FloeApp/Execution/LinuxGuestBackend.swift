@@ -321,10 +321,30 @@ enum LinuxGuestBackendAssembly {
                 officialTemplates: nil, officialTemplateRuntime: nil
             )
         }
+        // Startup-recovery stages feed the shared jobs object so the Linux
+        // component card can present honest progress instead of an
+        // indeterminate spinner while the first preparation salvages,
+        // verifies and re-materializes gigabytes. Reporting never changes
+        // recovery semantics.
+        //
+        // The sink is handed to the initializer rather than installed with
+        // the actor-isolated `setPreparationStageHandler`: this wiring runs
+        // in a synchronous (nonisolated) function, and constructor injection
+        // both compiles there and registers the handler *before* the
+        // integrator is reachable by any call — there is no post-init window
+        // in which the first shared recovery pass could miss stages (no
+        // unstructured Task registration race).
+        let stageReport: @Sendable (RuntimeV2Store.RecoveryStage) -> Void = { stage in
+            let raw = stage.rawValue
+            Task { @MainActor in
+                EnvironmentPackageJobs.shared.reportLinuxStorageStage(raw)
+            }
+        }
         let store = RuntimeV2Store(layout: layout)
         let integrator = RuntimeV2GuestIntegrator(
             store: store,
-            legacyImagesRoot: legacyRoot
+            legacyImagesRoot: legacyRoot,
+            preparationStageHandler: stageReport
         )
         let images = RuntimeV2CompositeImageResolver(
             expandedImagesRoot: layout.expandedImagesDirectory,
@@ -361,17 +381,6 @@ enum LinuxGuestBackendAssembly {
                 await integrator.preparationStage()
             }
         )
-        // Startup-recovery stages feed the shared jobs object so the Linux
-        // component card can present honest progress instead of an
-        // indeterminate spinner while the first preparation salvages,
-        // verifies and re-materializes gigabytes. Reporting never changes
-        // recovery semantics.
-        await integrator.setPreparationStageHandler { stage in
-            let raw = stage.rawValue
-            Task { @MainActor in
-                EnvironmentPackageJobs.shared.reportLinuxStorageStage(raw)
-            }
-        }
         // Pinned environments boot their immutable template's own image; the
         // environment provider and preparation both resolve it through this
         // probe.

@@ -243,6 +243,35 @@ final class LinuxGuestFirstUsePreparationTests: XCTestCase {
         XCTAssertEqual(stageAfter, .templates)
     }
 
+    /// The app's backend wiring builds the integrator from a SYNCHRONOUS
+    /// (nonisolated) function, so it cannot `await` the actor-isolated
+    /// `setPreparationStageHandler`; the stage sink is instead handed to the
+    /// initializer. Constructor injection must register the handler before the
+    /// integrator is reachable — every recovery stage, including the very
+    /// first one of the first shared pass, must arrive, with no Task-based
+    /// registration window. (The async-setter registration path is covered by
+    /// `testRecoveryStagesAreReportedInOrder`.)
+    func testRecoveryStagesFlowForHandlerInstalledAtConstruction() async throws {
+        let store = RuntimeV2Store(layout: RuntimeV2Layout(root: root))
+        let recorder = StageRecorder()
+        let integrator = RuntimeV2GuestIntegrator(
+            store: store,
+            legacyImagesRoot: nil,
+            build: "test",
+            preparationStageHandler: { stage in recorder.record(stage) }
+        )
+        let expected: [RuntimeV2Store.RecoveryStage] = [
+            .queue, .leases, .runtimeDirectories, .preservedQuarantine,
+            .stagedImages, .orphanManifests, .expandedViews, .templates
+        ]
+        // Trigger the first (and only) recovery pass; no stage may be missed.
+        _ = await integrator.imageHealth(imageID: "absent-image", isCancelled: nil)
+        let stages = await recorder.waitForStages(count: expected.count)
+        XCTAssertEqual(stages, expected)
+        let latest = await integrator.preparationStage()
+        XCTAssertEqual(latest, .templates)
+    }
+
     // MARK: - First use with the image absent settles (real store, no seam)
 
     /// With the real recovery on an empty substrate, a first-use health read
