@@ -46,9 +46,11 @@ fixtures cannot claim a prompt or parser change fixes generation behaviour.
 ```
 swift build --package-path FloeAgent/Qualification/LocalModels \
   --scratch-path FloeAgent/.build --jobs 2
-.build/debug/FloeLocalModelsQualification   # under the shared scratch Products dir
+FloeAgent/.build/debug/FloeLocalModelsQualification
 ```
 
 Set `DEVELOPER_DIR` to the installed Xcode (the Command Line Tools toolchain
 cannot compile MLX's Metal sources). Exit code 0 with `"passed": true` is
 success; JSON evidence is printed to stdout.
+
+The first Build 235 deterministic run resolved five newer transitive dependencies. Its original lock remains in private evidence. The committed host lock now matches the root pins; that exact host dependency set still needs a rerun. The App and real-weight cloud run use their existing separate pinned paths.
