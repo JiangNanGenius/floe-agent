@@ -1848,12 +1848,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         let offeredTools = promptBuild.fallbackTools
                         let streamedModelID = request.model.remoteModelID
                         let buffer = LocalStreamDisplayBuffer { payload in
-                            guard let calls = try? Self.fallbackToolCalls(
-                                from: payload,
-                                modelRemoteID: streamedModelID,
-                                selectedTools: offeredTools
-                            ) else { return false }
-                            return !calls.isEmpty
+                            Self.toolLikePayloadWithhold(
+                                payload: payload,
+                                offeredToolNames: Set(offeredTools.map(\.name)),
+                                turnRequiresCall: promptBuild.requiresToolCall
+                            )
                         }
                         displayBuffer = buffer
                         watchdogState.notePhase("generating")
@@ -1919,8 +1918,52 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     if (parsedToolCalls.isEmpty || !parsedCallsCarryRequiredArguments),
                        promptBuild.requiresToolCall,
                        request.model.remoteModelID != AppleFoundationModelIdentity.remoteModelID {
+                        // Diagnose the gap before repair so a rejected-name
+                        // envelope (e.g. the `bochaWeb` provider enum emitted
+                        // where `web.search` is offered) earns a corrective
+                        // repair that names the canonical tool, rather than a
+                        // generic "emit a call" nudge the model can satisfy by
+                        // repeating the invented name. The rejected name is
+                        // never aliased or executed.
+                        let gapReason = Self.invocationGapReason(
+                            rawOutput: channels.answer,
+                            parsedCalls: parsedToolCalls,
+                            offeredNames: Set(promptBuild.fallbackTools.map(\.name))
+                        )
+                        let repairReason: String
+                        var correctiveName: String?
+                        switch gapReason {
+                        case .missingInvocation:
+                            repairReason = "missingInvocation"
+                        case .incompleteArguments:
+                            repairReason = "incompleteArguments"
+                        case .unrecognizedToolName(let emitted, let candidate):
+                            repairReason = "unrecognizedToolName"
+                            // The emitted name is model-controlled and bounded:
+                            // collapse control characters/newlines and cap the
+                            // length so a long or malformed name cannot inflate
+                            // the log or inject a forged log line.
+                            let boundedName = Self.boundedLogName(emitted)
+                            FloeLogger(category: .providers).warning(
+                                "localToolNameRejected model=\(request.model.remoteModelID) emitted=\(boundedName) canonicalCandidate=\(candidate ?? "none")"
+                            )
+                            // Prefer the lexical candidate when it is an
+                            // admitted selected tool; otherwise the scored
+                            // primary repair tool is the admitted tool this
+                            // turn intended (e.g. web.search for a news
+                            // request whose model emitted the `bochaWeb`
+                            // provider enum). Naming it in the directive stops
+                            // the model repeating the rejected name; the
+                            // rejected name is never aliased or executed.
+                            if let candidate,
+                               promptBuild.selectedTools.contains(where: { $0.name == candidate }) {
+                                correctiveName = candidate
+                            } else {
+                                correctiveName = promptBuild.primaryRepairTool?.name
+                            }
+                        }
                         FloeLogger(category: .providers).warning(
-                            "localToolInvocationRepairStarted model=\(request.model.remoteModelID) reason=\(parsedToolCalls.isEmpty ? "missingInvocation" : "incompleteArguments") outputCharacters=\(channels.answer.count) selectedTools=\(promptBuild.selectedToolCount)"
+                            "localToolInvocationRepairStarted model=\(request.model.remoteModelID) reason=\(repairReason) outputCharacters=\(channels.answer.count) selectedTools=\(promptBuild.selectedToolCount)"
                         )
                         // Minimal repair: the full-envelope/10-tool repair
                         // failed again on device (01:34 evidence), so do not
@@ -1930,11 +1973,23 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         // current request and the freshest receipts, and hand
                         // the template at most that one schema.
                         let usesNative = promptBuild.usesNativeToolSchemas
+                        // When the model emitted an unrecognized name, name the
+                        // exact canonical tool in both the repair tool and the
+                        // directive so the repair cannot keep the invented name.
+                        let repairTool: ToolSchemaDescriptor? = correctiveName.flatMap { canonical in
+                            promptBuild.fallbackTools.first { $0.name == canonical }
+                        } ?? promptBuild.primaryRepairTool
+                        let repairDirective: String = {
+                            guard let correctiveName else {
+                                return "Emit the call now using the offered tool in the documented form; no prose."
+                            }
+                            return "The previous call used a name that is not an offered tool. Re-emit the call now using exactly the offered tool name \(correctiveName) in the documented form; keep the same intent and arguments; no prose and no other name."
+                        }()
                         let repairPrompt = Self.repairPrompt(
                             for: request,
-                            directive: "Emit the call now using the offered tool in the documented form; no prose."
+                            directive: repairDirective
                         )
-                        if let repairTool = promptBuild.primaryRepairTool,
+                        if let repairTool,
                            let repairInstructions = PromptBuild.minimalRepairInstructions(
                                tool: repairTool,
                                usesNativeToolSchemas: usesNative,
@@ -3010,6 +3065,22 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return names.intersection(mlxAdmissibleToolNames)
     }
 
+    /// Weak local models occasionally emit an older/alternate tool spelling.
+    /// Each alias maps an emitted spelling to one canonical registered tool.
+    /// This is deliberately narrow: a provider/backend enum (e.g. `bochaWeb`)
+    /// is never a tool name and is intentionally absent, so a model that
+    /// confuses a search provider with the `web.search` tool cannot have that
+    /// invented name silently executed or aliased.
+    static let weakModelToolAliases: [String: String] = [
+        "browser.get": "web.fetch",
+        "browser.fetch": "web.fetch",
+        "browser.search": "web.search",
+        "image.createImage": "image.generate",
+        "image_createImage": "image.generate",
+        "image.create": "image.generate",
+        "createImage": "image.generate"
+    ]
+
     /// Resolves an emitted name against the offered set through the shared
     /// spelling rule after applying the known weak-model aliases.
     static func normalizedOfferedName(
@@ -3020,6 +3091,223 @@ public struct LocalProviderAdapter: ProviderAdapter {
         if offered.contains(emitted) { return emitted }
         if let alias = aliases[emitted], offered.contains(alias) { return alias }
         return ToolNameSpelling.canonical(emitted, among: Array(offered))
+    }
+
+    /// Production decode path: exact, then the curated alias table, then the
+    /// shared dotted/underscored spelling rule.
+    static func resolveOfferedToolName(_ emitted: String, offered: Set<String>) -> String? {
+        normalizedOfferedName(emitted, offered: offered, aliases: weakModelToolAliases)
+    }
+
+    /// Why a generation that required an invocation did not yield a usable
+    /// structured call. The single bounded repair is keyed on this so the
+    /// repair instructions can name the exact canonical tool the model
+    /// intended instead of merely asking again.
+    enum InvocationGapReason: Equatable {
+        /// No structured tool-call envelope at all (prose / sample only).
+        case missingInvocation
+        /// One or more envelopes exist, but every emitted name resolves to a
+        /// non-offered tool (e.g. the `bochaWeb` provider enum emitted where
+        /// `web.search` was offered). Carries the first rejected name and the
+        /// best canonical candidate the envelope most likely intended.
+        case unrecognizedToolName(emitted: String, bestCanonicalCandidate: String?)
+        /// An offered-name envelope is present but misses required argument
+        /// fields.
+        case incompleteArguments
+    }
+
+    /// Structural result of scanning one model generation for the bounded
+    /// tool protocol, WITHOUT resolving names to offered tools. It exists so
+    /// the display framer can withhold an envelope that *looks* like a tool
+    /// call — including one carrying a rejected name — instead of streaming
+    /// its raw JSON to the user as a "successful" answer.
+    struct ToolEnvelopeProbe {
+        let body: [String: Any]
+        let name: String
+    }
+
+    /// Extracts every structurally-recognizable tool-call envelope in `text`
+    /// using the same whole-payload / fence / one-object-per-line boundaries
+    /// as `toolCalls(from:offeredToolNames:)`, but performs NO offered-name
+    /// resolution. Used to (a) withhold rejected-name envelopes from the
+    /// visible stream and (b) diagnose an `unrecognizedToolName` gap. Quoted
+    /// inline examples are not envelopes: the boundary rules already reject a
+    /// JSON object that shares a line with prose.
+    static func structuralToolEnvelopes(in text: String) -> [ToolEnvelopeProbe] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var objects: [[String: Any]] = []
+        if let data = trimmed.data(using: .utf8),
+           let root = try? JSONSerialization.jsonObject(with: data) {
+            if let array = root as? [[String: Any]] {
+                objects = array
+            } else if let dictionary = root as? [String: Any],
+                      let array = dictionary["tool_calls"] as? [[String: Any]],
+                      dictionary["tool_call"] == nil {
+                objects = array
+            } else if let dictionary = root as? [String: Any] {
+                objects = [dictionary]
+            }
+        }
+        if objects.isEmpty {
+            let wholeCandidates = [strictJSONObject(trimmed), strictFencedJSON(trimmed)]
+                .compactMap { $0 }.uniqued()
+            for candidate in wholeCandidates {
+                guard let data = candidate.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                objects.append(object)
+            }
+        }
+        if objects.isEmpty {
+            let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: true)
+            guard lines.count > 1 else {
+                objects.append(contentsOf: fencedEnvelopeObjects(in: trimmed))
+                return objects.compactMap { envelopeProbe(from: $0) }
+            }
+            var insideFence = false
+            for line in lines {
+                let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fenceMarker = text.hasPrefix("```")
+                if fenceMarker { insideFence = !insideFence; continue }
+                guard !insideFence else { continue }
+                guard let candidate = strictJSONObject(text),
+                      let data = candidate.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                objects.append(object)
+                if objects.count >= maximumSequentialToolCalls { break }
+            }
+            // The screenshot shape can place the envelope in a ```json fence
+            // after prose. For the STRUCTURAL/withhold probe (not the execution
+            // parser) recognize those fenced object lines too, bounded to a
+            // json fence and whole-object lines, so a fragmented stream holds
+            // the rejected-name envelope instead of printing it.
+            if objects.isEmpty {
+                objects.append(contentsOf: fencedEnvelopeObjects(in: trimmed))
+            }
+        }
+        return objects.compactMap { envelopeProbe(from: $0) }
+    }
+
+    /// Whole JSON-object lines found inside a ```json fenced block. Bounded:
+    /// only an explicitly json-labelled fence, each candidate must be a whole
+    /// balanced object on its own line, and at most `maximumSequentialToolCalls`
+    /// are returned. Used by the structural withhold/classification probe; the
+    /// authoritative execution parser intentionally keeps fenced lines
+    /// non-executable so a user-requested fenced example can never run.
+    private static func fencedEnvelopeObjects(in text: String) -> [[String: Any]] {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var insideJSONFence = false
+        var objects: [[String: Any]] = []
+        for line in lines {
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedLine.hasPrefix("```") {
+                if !insideJSONFence {
+                    let opener = trimmedLine.dropFirst(3)
+                        .trimmingCharacters(in: .whitespaces).lowercased()
+                    // Open only an explicitly json fence; a ``` fence without a
+                    // language label is treated as a sample, not an envelope.
+                    insideJSONFence = opener == "json"
+                } else {
+                    insideJSONFence = false
+                }
+                continue
+            }
+            guard insideJSONFence else { continue }
+            guard let candidate = strictJSONObject(trimmedLine),
+                  let data = candidate.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            objects.append(object)
+            if objects.count >= maximumSequentialToolCalls { break }
+        }
+        return objects
+    }
+
+    private static func envelopeProbe(from object: [String: Any]) -> ToolEnvelopeProbe? {
+        guard let body = toolCallBody(in: object),
+              let rawName = body["name"] as? String else { return nil }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        return ToolEnvelopeProbe(body: body, name: name)
+    }
+
+    /// True when `text` contains at least one structural tool-call envelope,
+    /// regardless of whether its name resolves to an offered tool. This is
+    /// the display framer's structural-only withhold predicate; the streaming
+    /// path gates it through `toolLikePayloadWithhold(payload:turnRequiresCall:)`
+    /// so that on ordinary (non-action) turns a legitimate user-requested JSON
+    /// example (e.g. "show me what the envelope looks like") is still shown.
+    static func looksLikeToolCallPayload(_ text: String) -> Bool {
+        !structuralToolEnvelopes(in: text).isEmpty
+    }
+
+    /// Streaming display decision for an in-flight local generation. On a turn
+    /// that requires an invocation, withhold ANY structural tool envelope
+    /// (including a rejected-name one such as `bochaWeb`) so raw call JSON can
+    /// never be shown as a finished answer while the authoritative pipeline
+    /// denies or correctively repairs it. On an ordinary turn the framer uses
+    /// only the authoritative parser: a structural envelope that resolves to an
+    /// offered call is withheld, while prose containing JSON examples — which
+    /// the parser correctly refuses to execute — remains visible.
+    static func toolLikePayloadWithhold(
+        payload: String,
+        offeredToolNames: Set<String>,
+        turnRequiresCall: Bool
+    ) -> Bool {
+        if turnRequiresCall, looksLikeToolCallPayload(payload) { return true }
+        guard let calls = try? toolCalls(
+            from: payload, offeredToolNames: offeredToolNames
+        ) else { return false }
+        return !calls.isEmpty
+    }
+
+    /// Classifies why a required invocation is absent. `parsedCalls` are the
+    /// calls that already passed offered-name resolution; `offeredNames` is
+    /// the authoritative admitted directory for the turn. The structural
+    /// scan distinguishes "emitted a call to an invented/provider name" from
+    /// "emitted no call at all" so the bounded repair can name the canonical
+    /// tool without ever aliasing the rejected name into execution.
+    static func invocationGapReason(
+        rawOutput: String,
+        parsedCalls: [ToolCall],
+        offeredNames: Set<String>
+    ) -> InvocationGapReason {
+        if !parsedCalls.isEmpty { return .incompleteArguments }
+        let envelopes = structuralToolEnvelopes(in: rawOutput)
+        guard let rejected = envelopes.first(where: { offeredNames.contains($0.name) == false }) else {
+            return .missingInvocation
+        }
+        // Suggest the single admitted tool the rejected envelope most likely
+        // intended, by the shared intent ranking. This is a hint for the
+        // repair wording only; the rejected name is never executed.
+        let candidate = bestCanonicalCandidate(forRejectedName: rejected.name, offered: offeredNames)
+        return .unrecognizedToolName(emitted: rejected.name, bestCanonicalCandidate: candidate)
+    }
+
+    /// Deterministic best-guess canonical target for a rejected emitted name.
+    /// Uses a deliberately conservative lexical signal on top of the offered
+    /// set; returns nil when no single candidate stands out, in which case the
+    /// repair falls back to the scored primary repair tool.
+    private static func bestCanonicalCandidate(
+        forRejectedName rejected: String,
+        offered: Set<String>
+    ) -> String? {
+        let lower = rejected.lowercased()
+        let tokens = Set(lower.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        let scored: [(name: String, score: Int)] = offered.map { name in
+            let leaf = name.split(separator: ".").last.map(String.init)?.lowercased() ?? name.lowercased()
+            var score = 0
+            if lower.contains(leaf) || leaf.contains(lower) { score += 4 }
+            for token in tokens where leaf.contains(token) { score += 1 }
+            return (name, score)
+        }
+        let best = scored.filter { $0.score > 0 }.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.name < rhs.name
+        }
+        guard let first = best.first, best.count == 1 || best[1].score < first.score else { return nil }
+        return first.name
     }
 
     private static let mlxAdmissibleToolNames: Set<String> = [
@@ -3639,6 +3927,18 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return String(text.prefix(headCount)) + "\n...[omitted]...\n" + String(text.suffix(tailCount))
     }
 
+    /// Bounds a model-controlled tool name before it enters a log line:
+    /// replace newlines/control characters with a space and cap the length, so
+    /// a malformed or oversized emitted name cannot inflate logs or forge a
+    /// new log entry.
+    private static func boundedLogName(_ name: String, limit: Int = 120) -> String {
+        let collapsed = name.unicodeScalars.map { scalar -> Character in
+            (scalar == "\n" || scalar == "\r" || CharacterSet.controlCharacters.contains(scalar))
+                ? " " : Character(scalar)
+        }
+        return String(String(collapsed).prefix(limit))
+    }
+
     private static func sumOptional(_ lhs: Int?, _ rhs: Int?) -> Int? {
         guard lhs != nil || rhs != nil else { return nil }
         return (lhs ?? 0) + (rhs ?? 0)
@@ -3753,21 +4053,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
         guard let body = toolCallBody(in: object),
               let rawName = body["name"] as? String else { return nil }
         let emittedName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let aliases = [
-            "browser.get": "web.fetch",
-            "browser.fetch": "web.fetch",
-            "browser.search": "web.search",
-            "image.createImage": "image.generate",
-            "image_createImage": "image.generate",
-            "image.create": "image.generate",
-            "createImage": "image.generate"
-        ]
         // Weak local models mangle names (case drift, underscore/dot
         // swaps). Normalize before giving up instead of silently dropping.
-        guard let name = Self.normalizedOfferedName(emittedName, offered: offered, aliases: aliases) else {
-            FloeLogger(category: .providers).warning(
-                "localFallbackToolNameDropped emitted=\(emittedName) offered=\(offered.count)"
-            )
+        guard let name = Self.resolveOfferedToolName(emittedName, offered: offered) else {
             return nil
         }
         let arguments: [String: Any]
