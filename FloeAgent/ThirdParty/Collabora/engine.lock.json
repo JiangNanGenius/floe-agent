@@ -3,12 +3,12 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "36510871917",
+    "runID": "36600071346",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 11009350060,
-    "workflowCommit": "d0dbdf3c8bcd17e893818628554931bf08e82278",
-    "archiveSHA256": "94df02ad59ffa521a1d72e4088ce083700e33f9f596409436eec330e6deb3985",
-    "executableSHA256": "7b95d41e1f8059bea21a4c6de4e109937937f3f62eb4e4a2584f39c6f378df0e",
+    "artifactID": 11048599019,
+    "workflowCommit": "2659b28d32119d193684bf766bfec282f52ff57d",
+    "archiveSHA256": "6fdbb8ba0dfc477f28b3f32e7a747be819997d9d646ef1f42e87aac0eacfe435",
+    "executableSHA256": "16665e010dd8dfc79c2784c4a68a3f0d4eb5341145f97b69fdd1106df0534c60",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "21240fe24342aa51194fd3baf16591a806856d74aa9ba28aa1941c980d1de721",
@@ -18,7 +18,7 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "27855dcdc53e5c75789f7fd44ff4aba38e58d7942b71225622dd5442cc9440da",
+    "manifestSHA256": "2ae73052fe51c453da6ecfe7ec072203fe046e0dfa2b9d76501d8f03dcbe03bb",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "21240fe24342aa51194fd3baf16591a806856d74aa9ba28aa1941c980d1de721",
       "Info.plist": "2eb182ee435d827e9eec83734faeaebb32a1589bf45615c646d402d818eb73a9",
@@ -100,17 +100,17 @@
           "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
         }
       },
-      "archiveSHA256": "9fce81d2fc5fe4febabd25d3699bca71a9bbfa895e5c79136c367efdefabe9aa",
+      "archiveSHA256": "f04e4dfef75f1b71412f1df355aa4703a7cd46c67fc4ce5ae6aff62b6f80b46c",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "9fce81d2fc5fe4febabd25d3699bca71a9bbfa895e5c79136c367efdefabe9aa",
+      "selectedArchiveSHA256": "f04e4dfef75f1b71412f1df355aa4703a7cd46c67fc4ce5ae6aff62b6f80b46c",
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "9fce81d2fc5fe4febabd25d3699bca71a9bbfa895e5c79136c367efdefabe9aa",
-        "libooxlo.a": "089a59bb0a7bc49d2ce4548f8a5c972ed884095e43209c6e85cce396dd64224a"
+        "libscfiltlo.a": "f04e4dfef75f1b71412f1df355aa4703a7cd46c67fc4ce5ae6aff62b6f80b46c",
+        "libooxlo.a": "94018409746eaed690b67478d63609ee6e4487a69791491faf62112e1fe83604"
       },
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "089a59bb0a7bc49d2ce4548f8a5c972ed884095e43209c6e85cce396dd64224a",
+          "archiveSHA256": "94018409746eaed690b67478d63609ee6e4487a69791491faf62112e1fe83604",
           "objectSHA256ByMember": {
             "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77",
             "chartexport.o": "af7da7bb40ebc0af6204c5980be4b5963f96d642f1c37276674b463b4f237168"
@@ -128,7 +128,8 @@
       "pptxVisibleRenderPassed": false,
       "deviceRoundtripPassed": false,
       "originalFileWritebackPassed": false
-    }
+    },
+    "schemeOverlaySHA256": "0d41d552707a3fcbcf1a94bcd1bc89e86386d74838f4a912a9e7de92dc6ad14a"
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
