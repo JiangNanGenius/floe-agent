@@ -119,12 +119,16 @@ class NativeStageContractTests(unittest.TestCase):
             self.assertIn(name, self.header, f"header is missing {name}")
             self.assertIn(name, self.host, f"host is missing {name}")
 
-    def test_web_content_death_uses_the_upstream_delegate_class(self):
+    def test_web_content_death_preserves_upstream_callback(self):
         block = self.host.split("// FLOE_OFFICE_STAGE_BEGIN", 1)[1].split("// FLOE_OFFICE_STAGE_END", 1)[0]
-        self.assertIn("DocumentViewController (FloeWebContentRecovery)", block)
+        self.assertNotIn("@implementation DocumentViewController (FloeWebContentRecovery)", block,
+                         "a category must not replace upstream termination cleanup")
+        self.assertIn("@implementation FloeOfficeDocumentViewController", block)
+        self.assertIn("[super webViewWebContentProcessDidTerminate:webView]", block)
+        self.assertIn("[[FloeOfficeDocumentViewController alloc]", self.host)
         self.assertIn("webViewWebContentProcessDidTerminate:", block)
         self.assertNotIn("navigationDelegate =", block,
-                         "recovery must add the callback to the upstream delegate class, "
+                         "recovery must preserve the upstream delegate ownership, "
                          "never replace the delegate")
         # The host only accepts termination from its own editor instance.
         self.assertIn("notification.object != self.editor", self.host)

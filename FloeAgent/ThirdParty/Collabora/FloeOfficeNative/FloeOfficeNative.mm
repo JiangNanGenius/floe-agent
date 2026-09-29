@@ -84,17 +84,35 @@ static NSDictionary<NSString *, id> *FloeOfficeMemoryFacts(void) {
              @"memPhysicalMB": @(physical / (1024ULL * 1024ULL))};
 }
 
-/// The upstream DocumentViewController is the editor's WKNavigationDelegate
-/// (see the pinned embedding patch). Adding the optional termination callback
-/// to that class keeps sole delegate ownership with upstream: no delegate is
-/// replaced or proxied, and the working copy is never discarded here. The
-/// method forwards to the host controller through a notification because a
-/// category cannot own per-controller state.
+/// The pinned upstream `DocumentViewController` owns the editor's
+/// WKNavigationDelegate and *already implements* the optional termination
+/// callback (`ios/Mobile/DocumentViewController.mm`, pinned 27b21dc1, original
+/// SHA-256 7dab7a3c…): it calls `[self bye]`, which the embedding patch turns
+/// into the coordinated document close that settles `floeCloseCompletion`.
+/// An Objective-C category implementing the same selector would silently
+/// replace that upstream implementation (category methods win over the
+/// class's own method), so the recovery hook is a subclass: it calls the
+/// upstream implementation through first and only then reports the death to
+/// the host controller. The declaration-only category exists so the
+/// call-through type-checks; it registers no runtime method. No delegate is
+/// replaced or proxied and the working copy is never discarded here.
 @interface DocumentViewController (FloeWebContentRecovery)
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView;
 @end
 
-@implementation DocumentViewController (FloeWebContentRecovery)
+@interface FloeOfficeDocumentViewController : DocumentViewController
+@end
+
+@implementation FloeOfficeDocumentViewController
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+    // Pinned upstream teardown first: `[self bye]` closes the document,
+    // dismisses the dead surface and settles the host's close completion.
+    // The guard keeps a future upstream without the callback from arming an
+    // unrecognized-selector crash in the delegate path.
+    if ([DocumentViewController instancesRespondToSelector:_cmd])
+        [super webViewWebContentProcessDidTerminate:webView];
+    // Then report this editor's death to the host, which cancels the probe,
+    // keeps every file and settles the bounded recoverable failure.
     [NSNotificationCenter.defaultCenter postNotificationName:FloeOfficeWebContentTerminatedNotification
                                                       object:self
                                                     userInfo:@{@"webView": webView ?: NSNull.null}];
@@ -406,6 +424,79 @@ static bool FloeDocumentRequiresVisibleRender(NSString *extension) {
     return [formats containsObject:extension.lowercaseString ?: @""];
 }
 // FLOE_RENDER_DECISION_END
+
+// FLOE_RENDER_PROGRESS_BEGIN
+// Bounded, content-free render-probe progress breadcrumbs. Build 234's PPT
+// device evidence ends at `edit-entry-deferred` with no later durable stage:
+// the process died inside the engine's file-based Impress load, and the trace
+// could not name how far the engine had come (page map only? layer loaded?
+// canvas sized? tile decoded?) or how the headroom moved while it waited.
+// Each newly observed readiness class is persisted through `floeStage:` (which
+// stamps the App recorder and a memory sample), so the last breadcrumb before
+// a kill attributes the open window. Diagnostics only: neither the mask nor
+// the counters participate in any readiness decision.
+typedef NS_OPTIONS(NSUInteger, FloeProbeProgressClass) {
+    FloeProbeProgressPage        = 1 << 0, // window.app.map was observed
+    FloeProbeProgressType        = 1 << 1, // engine reported a document type
+    FloeProbeProgressLoaded      = 1 << 2, // document layer loaded
+    FloeProbeProgressCanvas      = 1 << 3, // a sized document canvas exists
+    FloeProbeProgressTile        = 1 << 4, // at least one decoded document tile
+    FloeProbeProgressPaint       = 1 << 5, // canvas pixels read as painted
+    FloeProbeProgressEditSurface = 1 << 6, // post-entry edit-surface paint
+};
+
+/// Upper bound on progress breadcrumbs per probe session. The open window is
+/// bounded (25 s), so this only protects the App's 512-event trace from a
+/// stuck session.
+static const NSUInteger FloeRenderProbeMaxProgressBreadcrumbs = 10;
+/// While no new readiness class appears, the probe still refreshes the
+/// breadcrumb on this poll cadence, leaving a time series for a long import.
+static const NSUInteger FloeRenderProbeProgressCadenceAttempts = 20;
+/// A poll's JS evaluation that has not called back within this many seconds is
+/// a stalled (or dead) web content process. The probe persists a bounded stall
+/// breadcrumb instead of leaving the trace silent until the wall-clock
+/// deadline; the deadline still owns the bounded outcome.
+static const NSTimeInterval FloeRenderProbeEvalStallSeconds = 3.0;
+/// Upper bound on stall breadcrumbs per probe session.
+static const NSUInteger FloeRenderProbeMaxStallBreadcrumbs = 3;
+
+/// The readiness classes one poll observed. `pageObserved` is the probe's own
+/// JS stage (`ready`), never a guessed value.
+static NSUInteger FloeRenderProbeProgressMask(FloeRenderFacts facts, BOOL pageObserved) {
+    NSUInteger mask = pageObserved ? FloeProbeProgressPage : 0;
+    if (facts.docTypeKnown) mask |= FloeProbeProgressType;
+    if (facts.docLoaded) mask |= FloeProbeProgressLoaded;
+    if (facts.canvasSized) mask |= FloeProbeProgressCanvas;
+    if (facts.tileDecoded) mask |= FloeProbeProgressTile;
+    if (facts.pixelPainted) mask |= FloeProbeProgressPaint;
+    if (facts.editSurfacePainted) mask |= FloeProbeProgressEditSurface;
+    return mask;
+}
+
+/// Bounded render-probe counters for the failure/unobserved stages. Only
+/// counters, booleans and engine type/layout strings survive; pixel sample
+/// dictionaries and unknown keys are dropped, so the durable trace can never
+/// receive document content or paths.
+static NSDictionary<NSString *, id> *FloeRenderProbeDiagnosticFacts(NSDictionary<NSString *, id> *diagnostics) {
+    static NSArray<NSString *> *keys = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = @[@"stage", @"failure", @"format", @"readOnly", @"requiresVisibleRender",
+                 @"docType", @"docLoaded", @"fileBasedView", @"tiles", @"decodedTiles",
+                 @"attempts", @"elapsed", @"deadline", @"editSurfacePainted",
+                 @"editSurfaceNewDecodes", @"editSurfaceChangedSamples",
+                 @"editSurfaceLayoutChanged", @"editSurfaceLayout",
+                 @"evalStalled", @"evalPendingSeconds"];
+    });
+    NSMutableDictionary<NSString *, id> *facts = [NSMutableDictionary dictionary];
+    for (NSString *key in keys) {
+        id value = diagnostics[key];
+        if ([value isKindOfClass:NSString.class] || [value isKindOfClass:NSNumber.class])
+            facts[key] = value;
+    }
+    return facts;
+}
+// FLOE_RENDER_PROGRESS_END
 
 // FLOE_RENDER_PROBE_SCRIPT_BEGIN
 // Downsampled document-canvas fingerprint. The probe never returns pixels or
@@ -1290,6 +1381,20 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSMutableDictionary<NSString *, id> *_lastFacts;
     /// Last logged probe stage; polling every 200 ms must not flood the log.
     NSString *_lastLoggedStage;
+    /// Readiness classes and JS stage already persisted as durable progress
+    /// breadcrumbs, plus the bounded emission count. Diagnostics only: the
+    /// readiness decisions never read these.
+    NSUInteger _persistedProgressMask;
+    NSString *_persistedProgressStage;
+    NSUInteger _progressEmissions;
+    /// The poll evaluation currently in flight and its issue time. A
+    /// callback-less evaluation is the "stalled JS" case: it blocks the next
+    /// poll (the next poll is scheduled from the completion), so the stall is
+    /// persisted explicitly and bounded.
+    BOOL _evalPending;
+    NSUInteger _inFlightAttempt;
+    NSDate *_evalStartedAt;
+    NSUInteger _stallBreadcrumbs;
     /// Wall-clock deadline. The completion-driven check below only runs after a
     /// probe eval finishes; a content process that never answers an eval would
     /// otherwise delay the honest bounded outcome past the App's budgets. The
@@ -1377,18 +1482,29 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         return;
     }
     _attempts++;
+    _inFlightAttempt = _attempts;
+    _evalStartedAt = [NSDate date];
+    _evalPending = YES;
+    // Names a never-returning evaluation (stalled or dead web content
+    // process) in the durable trace; the deadline still owns the outcome.
+    [self scheduleEvalStallCheckForAttempt:_attempts];
     __weak FloeOfficeRenderProbe *weakSelf = self;
     [controller evaluateRenderFactsWithCompletion:^(NSDictionary<NSString *, id> *facts, NSError *error) {
         FloeOfficeRenderProbe *probe = weakSelf;
         if (!probe || probe->_finished || probe->_cancelled) return;
+        probe->_evalPending = NO;
         if (facts) [probe->_lastFacts addEntriesFromDictionary:facts];
         if (facts) {
+            FloeRenderFacts renderFacts = [probe renderFactsFromDictionary:facts];
+            // Durable, bounded progress breadcrumb first: a process killed
+            // inside this poll window leaves the furthest observed readiness
+            // class (and its memory sample) in the App's trace.
+            [probe persistProgressWithFacts:facts renderFacts:renderFacts];
             NSString *stage = [facts[@"stage"] isKindOfClass:NSString.class] ? facts[@"stage"] : nil;
             if (stage && ![stage isEqualToString:probe->_lastLoggedStage]) {
                 probe->_lastLoggedStage = stage;
                 FloeOfficeLog(@"render-probe-facts", facts);
             }
-            FloeRenderFacts renderFacts = [probe renderFactsFromDictionary:facts];
             // Format-specific entry readiness (see the gate comment): the
             // file-based presentation formats need a decoded document tile;
             // Word/Excel need the document layer's full first-status init.
@@ -1447,6 +1563,12 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 // surface's own paint — the session is only ready on that, and
                 // only after a paint that happened after the entry.
             }
+        } else {
+            // A page that stopped answering the eval (or a dead web content
+            // process) still leaves its bounded probe state in the trace.
+            [probe persistProgressWithFacts:@{@"stage": @"no-facts",
+                                              @"errorCode": @(error.code)}
+                                renderFacts:(FloeRenderFacts){0}];
         }
         if (probe->_startedAt && -[probe->_startedAt timeIntervalSinceNow] >= probe.deadline) {
             [probe finishWithStage:@"deadline"];
@@ -1456,6 +1578,84 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [weakSelf poll]; });
     }];
+}
+
+/// Persists one bounded, content-free progress breadcrumb when a poll observes
+/// a new readiness class or JS stage (and on the slow cadence). The line names
+/// how far the engine got and how long the edit entry has been parked; the
+/// App's durable trace keeps it across a hard kill. Diagnostics only: no
+/// readiness decision reads the persisted state.
+- (void)persistProgressWithFacts:(NSDictionary<NSString *, id> *)facts
+                     renderFacts:(FloeRenderFacts)renderFacts {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    if (_finished || _cancelled) return;
+    if (_progressEmissions >= FloeRenderProbeMaxProgressBreadcrumbs) return;
+    NSString *stage = [facts[@"stage"] isKindOfClass:NSString.class] ? facts[@"stage"] : nil;
+    NSString *stageName = stage ?: @"unknown";
+    NSUInteger mask = FloeRenderProbeProgressMask(renderFacts, [stage isEqualToString:@"ready"]);
+    BOOL stageChanged = ![stageName isEqualToString:_persistedProgressStage ?: @""];
+    BOOL cadence = (_attempts % FloeRenderProbeProgressCadenceAttempts) == 0;
+    if (_progressEmissions > 0 && !stageChanged && mask == _persistedProgressMask && !cadence) return;
+    _persistedProgressStage = stageName;
+    _persistedProgressMask = mask;
+    _progressEmissions++;
+    NSMutableDictionary<NSString *, id> *progress = [@{
+        @"stage": stageName,
+        @"attempts": @(_attempts),
+        @"docTypeKnown": @(renderFacts.docTypeKnown),
+        @"docLoaded": @(renderFacts.docLoaded),
+        @"canvasSized": @(renderFacts.canvasSized),
+        @"tileDecoded": @(renderFacts.tileDecoded),
+        @"pixelPainted": @(renderFacts.pixelPainted),
+        @"editSurfacePainted": @(renderFacts.editSurfacePainted),
+        @"fileBasedView": @([facts[@"fileBasedView"] isKindOfClass:NSNumber.class] && [facts[@"fileBasedView"] boolValue]),
+    } mutableCopy];
+    if ([facts[@"docType"] isKindOfClass:NSString.class]) progress[@"docType"] = facts[@"docType"];
+    if ([facts[@"tiles"] isKindOfClass:NSNumber.class]) progress[@"tiles"] = facts[@"tiles"];
+    if ([facts[@"decodedTiles"] isKindOfClass:NSNumber.class]) progress[@"decodedTiles"] = facts[@"decodedTiles"];
+    if ([facts[@"editSurfaceNewDecodes"] isKindOfClass:NSNumber.class])
+        progress[@"newDecodes"] = facts[@"editSurfaceNewDecodes"];
+    if ([facts[@"errorCode"] isKindOfClass:NSNumber.class]) progress[@"errorCode"] = facts[@"errorCode"];
+    // A parked edit entry names its own wait in the same trace line.
+    FloeOfficeNativeViewController *controller = self.controller;
+    if ([controller hasPendingDeferredEditEntry])
+        progress[@"entryParkedSeconds"] = @((long long)[controller deferredEditEntryParkedSeconds]);
+    [controller floeStage:@"render-probe-progress" facts:progress];
+}
+
+/// Names a poll evaluation that never called back — a stalled or dead web
+/// content process — with a bounded, content-free breadcrumb. The evaluation
+/// blocks the poll chain (the next poll is scheduled from its completion), so
+/// without this the trace would stay silent until the wall-clock deadline.
+/// The deadline still owns the bounded outcome; this only makes the stall
+/// attributable. Content-free: counters, the deadline and the last readiness
+/// mask, never page contents.
+- (void)scheduleEvalStallCheckForAttempt:(NSUInteger)attempt {
+    __weak FloeOfficeRenderProbe *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(FloeRenderProbeEvalStallSeconds * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        FloeOfficeRenderProbe *probe = weakSelf;
+        if (!probe || probe->_finished || probe->_cancelled) return;
+        if (!probe->_evalPending || probe->_inFlightAttempt != attempt) return;
+        if (probe->_stallBreadcrumbs >= FloeRenderProbeMaxStallBreadcrumbs) return;
+        probe->_stallBreadcrumbs++;
+        NSTimeInterval pending = probe->_evalStartedAt
+            ? -[probe->_evalStartedAt timeIntervalSinceNow] : 0;
+        // The diagnostics snapshot the failure/unobserved stages consume
+        // carries the stall too, so a deadline outcome names it.
+        [probe->_lastFacts setObject:@YES forKey:@"evalStalled"];
+        [probe->_lastFacts setObject:@(pending) forKey:@"evalPendingSeconds"];
+        [probe.controller floeStage:@"render-probe-stalled" facts:@{
+            @"attempts": @(attempt),
+            @"pendingSeconds": @((long long)pending),
+            @"deadline": @(probe.deadline),
+            @"readinessMask": @(probe->_persistedProgressMask),
+        }];
+        // Keep the bounded series going while the evaluation stays pending.
+        if (probe->_stallBreadcrumbs < FloeRenderProbeMaxStallBreadcrumbs)
+            [probe scheduleEvalStallCheckForAttempt:attempt];
+    });
 }
 
 - (FloeRenderFacts)renderFactsFromDictionary:(NSDictionary *)facts {
@@ -1661,15 +1861,18 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         _sessionID = [[NSUUID UUID] UUIDString];
         _saveReceipts = [FloeSaveReceiptJoiner new];
         _closeWaiters = [NSMutableArray array];
-        _editor = [[DocumentViewController alloc] initWithNibName:nil bundle:nil];
+        // The Floe subclass calls the pinned upstream termination callback
+        // through and then reports web-content death (see the recovery block).
+        _editor = [[FloeOfficeDocumentViewController alloc] initWithNibName:nil bundle:nil];
         FloeOfficeDocument *document = [[FloeOfficeDocument alloc] initWithFileURL:file];
         document->readOnly = readOnly;
         document.floeEngineCopyDirectory = [directory URLByAppendingPathComponent:@"engine" isDirectory:YES];
         document.viewController = _editor;
         _editor.document = document;
         // Build 233 (R3): the editor (upstream WKNavigationDelegate) reports
-        // web-content death through the category above; only this controller's
-        // editor is observed, and the session's files are never touched here.
+        // web-content death through the recovery subclass; only this
+        // controller's editor is observed, and the session's files are never
+        // touched here.
         [NSNotificationCenter.defaultCenter addObserver:self
                                               selector:@selector(floeEditorWebContentTerminated:)
                                                   name:FloeOfficeWebContentTerminatedNotification
@@ -1976,8 +2179,12 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
     self.renderProbeFinished = YES;
     self.renderDiagnostics = diagnostics;
-    [self floeStage:@"visible-render-failed" facts:@{@"stage": diagnostics[@"stage"] ?: @"",
-                                                     @"failure": diagnostics[@"failure"] ?: @""}];
+    // The bounded last probe state rides along: the App's durable trace then
+    // names the furthest readiness class even when the probe never painted.
+    NSMutableDictionary<NSString *, id> *facts =
+        [FloeRenderProbeDiagnosticFacts(diagnostics) mutableCopy];
+    facts[@"failure"] = diagnostics[@"failure"] ?: @"unknown";
+    [self floeStage:@"visible-render-failed" facts:facts];
     // A still-pending edit entry settles here without forcing an entry: the
     // engine never proved a paint, and the render gate owns the bounded
     // outcome. The report still settles exactly once.
@@ -1993,7 +2200,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     // behind the entry's budget. Exactly once.
     [self settlePendingEditEntryWithoutEntry];
     self.renderDiagnostics = diagnostics;
-    [self floeStage:@"visible-render-unobserved" facts:@{}];
+    [self floeStage:@"visible-render-unobserved" facts:FloeRenderProbeDiagnosticFacts(diagnostics)];
 }
 // Retries until the editor has created its map. app.file.readOnly is the
 // backing permission; _permission/isReadOnlyMode() alone is the mobile UI mode.
