@@ -1,6 +1,18 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (235) — available in Floe QA
+## Current internal delivery: 1.7.0 (237) — available in Floe QA
+
+2026-09-29 19:19 UTC：[发布任务36611042867](https://github.com/JiangNanGenius/floe-agent/actions/runs/36611042867)完成完整 App 编译、保留 IPA、签名上传；[Apple 核验36618326467](https://github.com/JiangNanGenius/floe-agent/actions/runs/36618326467)确认 `VALID`、未过期、仅现有私有 Floe QA 组和 `IN_BETA_TESTING`，内测可安装。[GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.96) 与 [Feather36616814251](https://github.com/JiangNanGenius/floe-agent/actions/runs/36616814251)已成功，实际源条目的下载地址、大小、摘要和源码一致。
+
+At 2026-09-29 19:19 UTC, full-App compilation, retained IPA, signed upload, GitHub prerelease and Feather publication were verified. Apple verification confirmed `VALID`, unexpired, exactly the existing private Floe QA group and `IN_BETA_TESTING`: available for internal installation.
+
+Immutable tag `v1.7.0-beta.96`: `a5b1644feff7cfa134b823e3cd010e2071a8a000`. Unsigned IPA: 739,870,080 bytes; SHA-256 `25821fdbbe9a061e0be547a8d1bfb55dfcd4886a03e9d364ca74f4b3dddbbcda`. Local backup and cloud/public metadata match. Xcode 26.6 (17F113), SDK 26.5, bundle `org.floeagent.ios`, version 1.7.0/build237. 本地备份已保留并核对，公开产物仅为未签名 IPA。
+
+Build236 failed compilation and produced no IPA; its tag remains unchanged. Build237 fixes progress-handler initialization; 9 focused tests and extracted object/SIL/runtime checks passed before the successful full-App cloud build. Build236 编译失败未交付，Build237 修正回调初始化后完成发布。
+
+PPT 编辑闪退根因、Office 字体方框及本地模型真实搜索回答仍未解决或完成真机验收；本次分发完成不等于这些功能验收通过。PPT edit crashes, Office square glyphs and real-weight local search-answer accuracy remain unresolved or unverified on device. Gitee remains a nonblocking follow-up. [Release notes / 发布说明](RELEASE_NOTES_1.7.0_BUILD_237.md).
+
+## Previous internal delivery: 1.7.0 (235) — available in Floe QA
 
 截至 2026-09-29 04:33 UTC，Build235 已由[发布任务36516585936](https://github.com/JiangNanGenius/floe-agent/actions/runs/36516585936)完成完整 App 编译、云端 IPA 保留及签名上传。不可变标签 `v1.7.0-beta.92` 对应 `3fdb528251cac8e5c0b37b661f7b86a0b5644bae`。[GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.92) 和 Feather 发布任务36519834873已成功。[Apple 核验36522117460](https://github.com/JiangNanGenius/floe-agent/actions/runs/36522117460)于04:33 UTC确认 `VALID`、未过期、仅现有私有 Floe QA 分组，以及 `IN_BETA_TESTING`；已确认内测可安装。
 
