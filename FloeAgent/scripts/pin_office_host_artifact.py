@@ -75,6 +75,9 @@ def check(lock_path: Path) -> int:
     expected = pin["hostSourceSHA256"]
     actual = {name: source_hashes().get(name) for name in expected}
     mismatched = sorted(name for name, value in actual.items() if value != expected[name])
+    overlay = json.loads(Path(lock_path).read_text()).get("schemeTaskLifecycleOverlay")
+    if overlay and pin.get("schemeOverlaySHA256") != overlay["sha256"]:
+        mismatched.append("schemeTaskLifecycleOverlay")
     pending = pin.get("pendingHostRebuild") is True
     status = capability_status(pin)
     for flag in status["unproven"]:
@@ -168,6 +171,16 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         failures.append("the artifact was built from a different engine commit")
     if manifest.get("overlaySHA256") != pin["overlaySHA256"]:
         failures.append("the embedding overlay differs from the locked one")
+    scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
+    if scheme_overlay:
+        expected_scheme = {
+            "patchSHA256": scheme_overlay["sha256"],
+            "sourceCommit": lock["commit"],
+            "files": {name: value["preparedSHA256"]
+                      for name, value in scheme_overlay["files"].items()},
+        }
+        if manifest.get("schemeTaskLifecycle") != expected_scheme:
+            failures.append("the scheme lifecycle overlay provenance differs from the locked source")
     for key in QUALIFICATION_KEYS:
         if manifest.get(key) is not True:
             failures.append(f"qualification flag {key} did not pass")
@@ -215,6 +228,8 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     updated["verifiedResourceFiles"] = len(hashes["runtimeResourceSHA256"])
     updated["verifiedResourceDirectories"] = hashes["runtimeResourceDirectories"]
     updated["hostSourceSHA256"] = {name: sources[name] for name in pin["hostSourceSHA256"]}
+    if scheme_overlay:
+        updated["schemeOverlaySHA256"] = scheme_overlay["sha256"]
     if rebuilt_overlay:
         updated["filterOverlay"] = rebuilt_overlay
     updated["runID"] = manifest.get("runID", pin.get("runID"))
