@@ -1340,6 +1340,14 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 - (BOOL)hasSettledOpenPermission;
 // The probe implementation appears before the controller's private class
 // extension, so expose only the observations it needs at this boundary.
+// Content-free stage breadcrumb sink implemented by the controller (declared
+// again in the private class extension below; identical redeclarations compile
+// cleanly, including under -Wduplicate-method-match). Declared here because the
+// probe's progress/stall calls precede that extension textually, and Clang
+// resolves message sends against visible interfaces only: without this
+// pre-probe declaration the calls fail with "no visible @interface ...
+// declares the selector 'floeStage:facts:'". It stays out of the public header.
+- (void)floeStage:(NSString *)stage facts:(NSDictionary<NSString *, id> *)facts;
 - (BOOL)hasPendingDeferredEditEntry;
 - (BOOL)isDeferredEditEntryRunning;
 - (BOOL)hasReportedOpenPermission;

@@ -91,6 +91,88 @@ void floe_stage_compile_probe(void) { (void)FloeOfficeMemoryFacts(); }
     return {"stageBlockCompiled": True, "osProcShim": "macOS syntax pass only; iOS symbol"}
 
 
+def _interface_block(text: str, marker: str) -> str:
+    """Return an `@interface ... @end` block introduced by `marker`."""
+    start = text.index(marker)
+    end = text.index("@end", start) + len("@end")
+    return text[start:end]
+
+
+def compile_probe_interface_ordering():
+    """Syntax-check the real interface ordering the cloud host build compiles.
+
+    Build 235 cloud host run 36509365822 failed with:
+
+        FloeOfficeNative.mm:1623/1649: error: no visible @interface for
+        'FloeOfficeNativeViewController' declares the selector
+        'floeStage:facts:'
+
+    because the render probe sends `floeStage:facts:` from inside
+    `@implementation FloeOfficeRenderProbe`, which textually precedes the
+    controller's private class extension that declared the selector. Clang
+    resolves a message send only against interfaces visible at that point.
+    The standalone stage-block compile cannot see this: it never places the
+    probe calls ahead of the controller extension.
+
+    This check extracts the *real* pre-probe category and the *real* probe
+    interface from the host and compiles the two sends in their true textual
+    order (category -> probe interface -> probe sends -> private extension ->
+    controller implementation). If the selector is not declared in the
+    pre-probe category, this fails with the exact cloud error. The selector is
+    also redeclared identically in the later private extension to prove that
+    does not trip -Wduplicate-method-match.
+    """
+    text = HOST.read_text(encoding="utf-8")
+    category = _interface_block(
+        text, "@interface FloeOfficeNativeViewController (FloeRenderProbe)")
+    probe_interface = _interface_block(
+        text, "@interface FloeOfficeRenderProbe : NSObject")
+    source = '''#import <Foundation/Foundation.h>
+@interface FloeOfficeNativeViewController : NSObject
+@end
+''' + category + '''
+''' + probe_interface + '''
+// Textually this is exactly where @implementation FloeOfficeRenderProbe sits in
+// the real file: after the probe interface and BEFORE the controller's private
+// class extension below. Selector resolution is textual against visible
+// interfaces, so the two probe sends here only compile when the pre-probe
+// category declares floeStage:facts:. A free function stands in for the probe
+// implementation so the probe interface's init/start/cancel need no definitions.
+static __attribute__((used))
+void FloeProbeOrderingRegression(FloeOfficeRenderProbe *probe,
+                                        FloeOfficeNativeViewController *controller,
+                                        NSTimeInterval deadline, NSUInteger attempt) {
+    [controller floeStage:@"render-probe-progress" facts:@{}];
+    [probe.controller floeStage:@"render-probe-stalled" facts:@{
+        @"attempts": @(attempt),
+        @"pendingSeconds": @0,
+        @"deadline": @(deadline),
+        @"readinessMask": @0,
+    }];
+}
+// The private class extension (declared later in the real file) repeats the
+// declaration identically; matching redeclarations must stay warning-free.
+@interface FloeOfficeNativeViewController ()
+- (void)floeStage:(NSString *)stage facts:(NSDictionary<NSString *, id> *)facts;
+@end
+@implementation FloeOfficeNativeViewController
+- (void)floeStage:(NSString *)stage facts:(NSDictionary<NSString *, id> *)facts {
+    (void)stage; (void)facts;
+}
+@end
+'''
+    with tempfile.TemporaryDirectory(prefix="floe-probe-order-") as folder:
+        path = Path(folder) / "probe-order.mm"
+        path.write_text(source, encoding="utf-8")
+        sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                                      text=True).strip()
+        subprocess.run(["xcrun", "--sdk", "macosx", "clang++", "-fsyntax-only",
+                        "-std=c++20", "-fobjc-arc", "-Wall", "-Werror",
+                        "-Wduplicate-method-match", "-isysroot", sdk, str(path)],
+                       check=True, capture_output=True, text=True)
+    return {"probeInterfaceOrderingCompiled": True}
+
+
 class NativeStageContractTests(unittest.TestCase):
     def setUp(self):
         self.host = HOST.read_text(encoding="utf-8")
@@ -201,9 +283,25 @@ class AppStageContractTests(unittest.TestCase):
 
 
 class CompilationTests(unittest.TestCase):
+    def setUp(self):
+        self.header = HEADER.read_text(encoding="utf-8")
+
     def test_stage_block_compiles(self):
         result = compile_stage_block()
         self.assertTrue(result["stageBlockCompiled"])
+
+    def test_probe_calls_see_controller_selector_before_private_extension(self):
+        # Regression for cloud native-host run 36509365822: the probe's
+        # floeStage:facts: sends textually precede the controller's private
+        # class extension, so the selector must be declared in the pre-probe
+        # category. Extracts the real interfaces in their real order.
+        result = compile_probe_interface_ordering()
+        self.assertTrue(result["probeInterfaceOrderingCompiled"])
+
+    def test_floe_stage_selector_not_widened_to_public_header(self):
+        # The visibility fix must stay private to the .mm: the breadcrumb sink
+        # is a diagnostics seam, never part of the framework's public API.
+        self.assertNotIn("floeStage:facts:", self.header)
 
 
 if __name__ == "__main__":
