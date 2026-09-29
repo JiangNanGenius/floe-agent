@@ -1,0 +1,88 @@
+name: Verify Existing Office Host Artifact
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful native host producing run
+        required: true
+        type: string
+      artifact_id:
+        description: Existing office-native-host-unsigned artifact ID
+        required: true
+        type: string
+  push:
+    branches: ['codex/office-host-pin']
+    paths: ['.github/workflows/office-host-pin.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HOST_RUN: ${{ inputs.run_id || '36510871917' }}
+      HOST_ARTIFACT: ${{ inputs.artifact_id || '11009350060' }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify producer and download existing artifact
+        run: |
+          set -euo pipefail
+          [[ "$HOST_RUN" =~ ^[0-9]+$ && "$HOST_ARTIFACT" =~ ^[0-9]+$ ]]
+          mkdir -p pin-proposal
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOST_RUN" > pin-proposal/producer.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$HOST_ARTIFACT" > pin-proposal/artifact.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('pin-proposal')
+          run = json.loads((root/'producer.json').read_text())
+          artifact = json.loads((root/'artifact.json').read_text())
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert artifact['workflow_run']['id'] == int(os.environ['HOST_RUN'])
+          assert artifact['name'] == 'office-native-host-unsigned' and not artifact['expired']
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$HOST_ARTIFACT/zip" > "$RUNNER_TEMP/artifact.zip"
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          with zipfile.ZipFile(root/'artifact.zip') as archive:
+              names = archive.namelist()
+              assert names == ['OfficeNativeHost.zip'], names
+              archive.extract('OfficeNativeHost.zip', root)
+          PY
+      - name: Verify every resource and generate a lock proposal
+        run: |
+          set -euo pipefail
+          python3 FloeAgent/scripts/pin_office_host_artifact.py \
+            --artifact-zip "$RUNNER_TEMP/OfficeNativeHost.zip" \
+            --artifact-id "$HOST_ARTIFACT" --apply \
+            --note 'Cloud-verified existing host; compile/link only, PPT device acceptance remains unverified.' \
+            | tee pin-proposal/verification.log
+          python3 FloeAgent/scripts/pin_office_host_artifact.py --check
+          cp FloeAgent/ThirdParty/Collabora/engine.lock.json pin-proposal/engine.lock.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('pin-proposal')
+          pin = json.loads((root/'engine.lock.json').read_text())['qualifiedHostArtifact']
+          producer = json.loads((root/'producer.json').read_text())
+          assert str(pin['runID']) == os.environ['HOST_RUN']
+          assert pin['workflowCommit'] == producer['head_sha']
+          (root/'receipt.json').write_text(json.dumps({
+              'verificationSource': os.environ['GITHUB_SHA'],
+              'producerSource': producer['head_sha'],
+              'producerRun': os.environ['HOST_RUN'],
+              'artifactID': os.environ['HOST_ARTIFACT'],
+              'archiveSHA256': pin['archiveSHA256'],
+              'verifiedResourceFiles': pin['verifiedResourceFiles'],
+              'deviceAcceptance': False,
+          }, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: office-host-pin-proposal
+          path: pin-proposal/
+          if-no-files-found: error
