@@ -443,7 +443,7 @@ struct NotesDocumentEditor: View {
                 Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
                     .disabled(!session.canUndo || session.pendingWrites > 0)
-                Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { showAssistant.toggle() }
+                Button("Floe 助手", systemImage: FloeTheme.assistantSymbol) { showAssistant.toggle() }
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
                     .accessibilityIdentifier("notes.assistant")
                 Menu {
@@ -484,7 +484,7 @@ struct NotesDocumentEditor: View {
             if session.unsavedDocumentIDs.contains(document.id), session.pendingWrites == 0 {
                 Button("重试保存", systemImage: "arrow.clockwise") { session.retrySaving() }
             }
-            Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { showAssistant.toggle() }
+            Button("Floe 助手", systemImage: FloeTheme.assistantSymbol) { showAssistant.toggle() }
                 .frame(minWidth: 44, minHeight: 44)
                 .accessibilityIdentifier("notes.assistant")
             Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
@@ -589,7 +589,7 @@ struct NotesDocumentEditor: View {
                 }
                 Divider().frame(height: 24)
                 if #available(iOS 27.0, *), selectedStrokeCount > 0 {
-                    Button("问 Floe", systemImage: "bubble.left.and.text.bubble.right") {
+                    Button("问 Floe", systemImage: FloeTheme.assistantSymbol) {
                         captureSelectionRequest = UUID()
                     }.frame(minHeight: 44).accessibilityIdentifier("notes.selection.ask")
                     Button("删除所选笔迹（\(selectedStrokeCount)）", systemImage: "trash", role: .destructive) {

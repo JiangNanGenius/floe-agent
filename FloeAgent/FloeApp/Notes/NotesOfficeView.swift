@@ -111,10 +111,10 @@ struct NotesOfficeView: View {
                     HStack(spacing: 4) {
                         NotesDocumentTabs(session: session)
                         Menu {
-                            Button("Floe 助手", systemImage: "bubble.left.and.bubble.right", action: onAssistant)
+                            Button("Floe 助手", systemImage: FloeTheme.assistantSymbol, action: onAssistant)
                             Button("思维导图", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
                         } label: {
-                            Image(systemName: "bubble.left.and.bubble.right")
+                            Image(systemName: FloeTheme.assistantSymbol)
                                 .frame(width: 44, height: 44)
                         }.accessibilityLabel("notes.office.assistantAndMindMaps")
                             .accessibilityIdentifier("notes.office.assistant")
@@ -230,10 +230,10 @@ struct NotesOfficeView: View {
             NotesDocumentTabs(session: session)
             Spacer(minLength: 0)
             Menu {
-                Button("Floe 助手", systemImage: "bubble.left.and.bubble.right", action: onAssistant)
+                Button("Floe 助手", systemImage: FloeTheme.assistantSymbol, action: onAssistant)
                 Button("思维导图", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
             } label: {
-                Image(systemName: "bubble.left.and.bubble.right")
+                Image(systemName: FloeTheme.assistantSymbol)
                     .frame(width: 44, height: 44)
             }
             .accessibilityLabel("notes.office.assistantAndMindMaps")

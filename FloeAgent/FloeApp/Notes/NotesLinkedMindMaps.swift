@@ -229,7 +229,7 @@ struct NotesMindMapWindow: View {
                         Button("主题附件", systemImage: "paperclip") { inspector = selectedNode }
                             .disabled(selectedNode == nil)
                         if let document = session.document {
-                            Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { onAssistant(document) }
+                            Button("Floe 助手", systemImage: FloeTheme.assistantSymbol) { onAssistant(document) }
                         }
                     } label: { Label("更多操作", systemImage: "ellipsis") }
                 } else {
@@ -253,7 +253,7 @@ struct NotesMindMapWindow: View {
                     Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }.disabled(!session.canUndo)
                     Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }.disabled(!session.canRedo)
                     Button("主题附件", systemImage: "paperclip") { inspector = selectedNode }
-                    Button("Floe 助手", systemImage: "bubble.left.and.bubble.right") { onAssistant(document) }
+                    Button("Floe 助手", systemImage: FloeTheme.assistantSymbol) { onAssistant(document) }
                     Spacer()
                     Text(session.pendingWrites > 0 ? "保存中" : "已保存").font(.caption).foregroundStyle(.secondary)
                 }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(8)

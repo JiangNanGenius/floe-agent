@@ -84,6 +84,15 @@ enum FloeTheme {
         static let evidence = Font.system(.footnote, design: .monospaced)
     }
 
+    // MARK: - Shared symbols
+
+    /// SF Symbol for every Floe/AI assistant *entry* that opens the
+    /// assistant conversation surface (Notes document assistant, linked
+    /// mind maps, Office header, canvas assistant panel). Notes is the
+    /// reference. Generation/image actions, the inline node refine field,
+    /// model selectors and other AI glyphs keep their own semantic symbols.
+    static let assistantSymbol = "bubble.left.and.bubble.right"
+
     // MARK: - Accessibility helpers
 
     /// Minimum hit-target dimension (44pt per HIG).

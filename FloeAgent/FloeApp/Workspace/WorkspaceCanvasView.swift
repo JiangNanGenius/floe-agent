@@ -730,7 +730,7 @@ private struct CanvasConnectionCreatePalette: View {
             Button {
                 onAssociate()
             } label: {
-                Label(String(localized: "canvas.connection.ai_associate"), systemImage: "sparkles")
+                Label(String(localized: "canvas.connection.ai_associate"), systemImage: FloeTheme.assistantSymbol)
                     .frame(maxWidth: .infinity, minHeight: 38)
             }
             .buttonStyle(.borderedProminent)
@@ -3791,7 +3791,7 @@ struct WorkspaceCanvasView: View {
                 isAgentCollapsed = false
             }
         } label: {
-            Label("画布助手", systemImage: "sparkles")
+            Label("画布助手", systemImage: FloeTheme.assistantSymbol)
         }
         Button {
             materialTargetNodeID = nil
@@ -5454,7 +5454,7 @@ struct WorkspaceCanvasView: View {
                 }
                 Menu("更多", systemImage: "ellipsis.circle") {
                     if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
-                        Button("节点内提问", systemImage: "sparkles") {
+                        Button("节点内提问", systemImage: FloeTheme.assistantSymbol) {
                             pendingAgentRequest = CanvasAgentRequest(nodeID: nodeID, prompt: "")
                             showsAgent = true
                             isAgentCollapsed = false
@@ -7136,10 +7136,10 @@ private struct CanvasNodeCard: View {
             } else if node.supportsInlineEditing, !node.isLocked {
                 Button("编辑", systemImage: "pencil", action: onBeginEditing)
             }
-            Button("节点内提问", systemImage: "sparkles", action: onAskAI)
+            Button("节点内提问", systemImage: FloeTheme.assistantSymbol, action: onAskAI)
             Button(
                 String(localized: "canvas.connection.ai_associate"),
-                systemImage: "sparkles.rectangle.stack",
+                systemImage: FloeTheme.assistantSymbol,
                 action: onAssociate
             )
             Button("复制", systemImage: "plus.square.on.square", action: onDuplicate)
@@ -8396,7 +8396,7 @@ private struct CanvasAgentFloatingPanel: View {
                 } else {
                     ContentUnavailableView(
                         setupError == nil ? "正在准备画布助手…" : "无法准备画布助手",
-                        systemImage: setupError == nil ? "sparkles" : "exclamationmark.triangle",
+                        systemImage: setupError == nil ? FloeTheme.assistantSymbol : "exclamationmark.triangle",
                         description: setupError.map(Text.init)
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -8423,7 +8423,7 @@ private struct CanvasAgentFloatingPanel: View {
 
     private var floatingHeader: some View {
         HStack(spacing: 10) {
-            Image(systemName: "sparkles")
+            Image(systemName: FloeTheme.assistantSymbol)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(FloeTheme.primary)
                 .frame(width: 30, height: 30)
@@ -8695,7 +8695,7 @@ private struct SharedCanvasAgentConversation: View {
             LazyVStack(alignment: .leading, spacing: 12) {
                 if viewModel.messages.isEmpty, !viewModel.isRunning {
                     VStack(alignment: .leading, spacing: 10) {
-                        Image(systemName: "sparkles")
+                        Image(systemName: FloeTheme.assistantSymbol)
                             .font(.title2)
                             .foregroundStyle(FloeTheme.primary)
                         Text("从一个想法开始")
