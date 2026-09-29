@@ -210,17 +210,23 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         /// registry fault at exactly that stage). nil = normal.
         public var markRepairRequired: (@Sendable (String, String) async throws -> Void)?
         /// Replaces the durable non-expiring repair-hold placement (throw to
-        /// inject an IO/full-disk fault at exactly that stage). nil = normal.
+        /// inject a IO/full-disk fault at exactly that stage). nil = normal.
         public var placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)?
+        /// Replaces the one-time startup recovery pass (count or park it in
+        /// focused tests to prove concurrent first uses share a single
+        /// preparation). nil = normal.
+        public var prepareAndRecover: (@Sendable (String) async throws -> Void)?
 
         public init(
             recordShutdown: (@Sendable (RuntimeV2DeltaStore.ShutdownRecord, String) async throws -> Void)? = nil,
             markRepairRequired: (@Sendable (String, String) async throws -> Void)? = nil,
-            placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)? = nil
+            placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)? = nil,
+            prepareAndRecover: (@Sendable (String) async throws -> Void)? = nil
         ) {
             self.recordShutdown = recordShutdown
             self.markRepairRequired = markRepairRequired
             self.placeRepairHold = placeRepairHold
+            self.prepareAndRecover = prepareAndRecover
         }
 
         public static let production = Seams()
@@ -232,6 +238,21 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     private let seams: Seams
     private var fileManager: FileManager { .default }
     private var prepared = false
+    /// The single in-flight first-preparation pass. Concurrent first uses
+    /// (a guest start, shell auto-preparation, a settings/terminal status
+    /// read) join this one task instead of each running the full multi-
+    /// gigabyte recovery themselves; on a device whose recovery hashes and
+    /// re-materializes gigabytes, N concurrent first uses used to mean N
+    /// complete recovery passes in the first-use critical path. Proven by
+    /// `LinuxGuestFirstUsePreparationTests` (the device report itself shows
+    /// the spinner/no-receipt symptom, not which pass count ran). nil again
+    /// after failure so the next Linux use retries; success flips `prepared`.
+    private var preparationFlight: PreparationFlight?
+    /// Latest recovery stage observed by the shared pass, and the sink that
+    /// forwards stages to the app (diagnostic progress for the storage-init
+    /// presentation). Stage reporting never changes recovery semantics.
+    private var latestStage: RuntimeV2Store.RecoveryStage?
+    private var stageHandler: (@Sendable (RuntimeV2Store.RecoveryStage) -> Void)?
     /// Held leases by runtimeID so completeStop releases exactly its own. A
     /// lease kept here after a persistence failure is the surviving exclusion:
     /// it is NOT treated as stale by a later acquire in this process.
@@ -251,10 +272,262 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             ?? "unknown"
     }
 
-    private func ensurePrepared() async throws {
-        guard !prepared else { return }
-        _ = try await store.prepareAndRecover(build: build)
+    /// Installs the sink that receives startup-recovery stages from the
+    /// shared preparation pass. The app wires this to its storage-init
+    /// progress presentation; tests observe stage order.
+    public func setPreparationStageHandler(
+        _ handler: (@Sendable (RuntimeV2Store.RecoveryStage) -> Void)?
+    ) {
+        stageHandler = handler
+    }
+
+    /// The latest recovery stage the shared pass reported (nil before any
+    /// pass). Diagnostic progress truth for the storage-init presentation.
+    public func preparationStage() -> RuntimeV2Store.RecoveryStage? {
+        latestStage
+    }
+
+    /// Identity and waiter registry for one shared preparation pass. `Task`
+    /// is a value type and cannot be compared, so the recorded flight is
+    /// matched by reference; a finished or abandoned pass is cleared only by
+    /// a caller still holding the current flight.
+    ///
+    /// Waiters are explicit continuations, not child tasks: resolving one
+    /// caller's wait with `CancellationError` NEVER touches the shared task —
+    /// recovery mutates durable state and must run to completion even when
+    /// every caller has gone away.
+    private final class PreparationFlight: @unchecked Sendable {
+        enum Terminal {
+            case success
+            case failure(Error)
+        }
+
+        private let lock = NSLock()
+        private var terminal: Terminal?
+        private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+
+        init(task: Task<Void, Error>) {
+            // Dedicated completion observer: resumes every registered waiter
+            // exactly once when the shared task settles. The task itself is
+            // never cancelled through this path.
+            Task {
+                let result = await task.result
+                switch result {
+                case .success:
+                    complete(.success)
+                case .failure(let error):
+                    complete(.failure(error))
+                }
+            }
+        }
+
+        /// False when the pass already finished; the caller takes the inline
+        /// terminal path instead of registering.
+        func register(_ id: UUID, continuation: CheckedContinuation<Void, Error>) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard terminal == nil else { return false }
+            waiters[id] = continuation
+            return true
+        }
+
+        /// Removes and returns one waiter so an external cancellation can
+        /// resolve exactly that caller. Returns nil when the flight already
+        /// settled or the waiter was already withdrawn — the resume happened
+        /// or will happen exactly once through the other path.
+        func withdraw(_ id: UUID) -> CheckedContinuation<Void, Error>? {
+            lock.lock()
+            defer { lock.unlock() }
+            return waiters.removeValue(forKey: id)
+        }
+
+        func isSettled() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return terminal != nil
+        }
+
+        /// The settled terminal state, for inline completion after a
+        /// register race.
+        func settled() -> Terminal {
+            lock.lock()
+            defer { lock.unlock() }
+            return terminal ?? .success
+        }
+
+        /// Resumes one waiter inline from the recorded terminal state.
+        func resumeInline(_ continuation: CheckedContinuation<Void, Error>) {
+            switch settled() {
+            case .success:
+                continuation.resume(returning: ())
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+
+        private func complete(_ outcome: Terminal) {
+            lock.lock()
+            guard terminal == nil else {
+                lock.unlock()
+                return
+            }
+            terminal = outcome
+            let pending = waiters
+            waiters.removeAll()
+            lock.unlock()
+            for (_, continuation) in pending {
+                resume(continuation, with: outcome)
+            }
+        }
+
+        private func resume(_ continuation: CheckedContinuation<Void, Error>, with outcome: Terminal) {
+            switch outcome {
+            case .success:
+                continuation.resume(returning: ())
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    /// Builds the shared preparation flight. The stage sink captures the
+    /// integrator strongly: the pass may outlive any single caller, stage
+    /// reporting is diagnostic-only, and the recorded flight is released as
+    /// soon as the pass settles (no permanent cycle).
+    private func startPreparationFlight() -> PreparationFlight {
+        let store = self.store
+        let build = self.build
+        let seams = self.seams
+        let stageSink: @Sendable (RuntimeV2Store.RecoveryStage) -> Void = { [self] stage in
+            Task { await self.recordPreparationStage(stage) }
+        }
+        let task = Task<Void, Error> {
+            if let prepare = seams.prepareAndRecover {
+                try await prepare(build)
+            } else {
+                _ = try await store.prepareAndRecover(build: build, onStage: stageSink)
+            }
+        }
+        return PreparationFlight(task: task)
+    }
+
+    private func ensurePrepared(isCancelled: (@Sendable () -> Bool)? = nil) async throws {
+        if prepared { return }
+        let flight: PreparationFlight
+        if let existing = preparationFlight {
+            flight = existing
+        } else {
+            flight = startPreparationFlight()
+            preparationFlight = flight
+        }
+        do {
+            try await joinPreparation(flight, isCancelled: isCancelled)
+        } catch is CancellationError {
+            // Only this caller's wait is abandoned; the shared pass is never
+            // cancelled. The flight stays recorded so joiners (or the next
+            // use) observe its completion and flip `prepared`.
+            throw CancellationError()
+        } catch {
+            // A failed pass publishes nothing and stays retryable: the next
+            // Linux use starts a fresh recovery instead of joining a
+            // completed failure.
+            if preparationFlight === flight {
+                preparationFlight = nil
+            }
+            throw error
+        }
+        // Completion observed by this caller: cache it and release the
+        // finished flight when this caller is still the recorded one.
         prepared = true
+        if preparationFlight === flight {
+            preparationFlight = nil
+        }
+    }
+
+    private func recordPreparationStage(_ stage: RuntimeV2Store.RecoveryStage) {
+        latestStage = stage
+        stageHandler?(stage)
+    }
+
+    /// Bounded watcher for token-based cancellation: while the flight is
+    /// unsettled it polls the caller's token and resolves exactly that waiter
+    /// when it fires; it stops as soon as the flight settles, the waiter is
+    /// withdrawn, or it is cancelled. Task-cancellation needs no watcher —
+    /// `withTaskCancellationHandler` covers it.
+    private func startTokenWatcher(
+        flight: PreparationFlight,
+        waiterID: UUID,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) -> Task<Void, Never> {
+        Task {
+            while true {
+                try? await Task.sleep(for: .milliseconds(50))
+                if Task.isCancelled { return }
+                if flight.isSettled() { return }
+                if isCancelled() {
+                    if let continuation = flight.withdraw(waiterID) {
+                        continuation.resume(throwing: CancellationError())
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    /// Waits for the shared pass through the flight's waiter registry. The
+    /// moment the CALLER's own cancellation fires — task cancellation via the
+    /// handler, or a token via the bounded watcher — its continuation is
+    /// resolved with `CancellationError` and the wait finishes, while the
+    /// shared pass keeps running untouched.
+    ///
+    /// Every racing path resolves the continuation exactly once:
+    /// cancel-before-register is caught by the inline cancellation check;
+    /// cancel-between-register-and-recheck by the post-registration withdraw
+    /// (the handler/watcher withdrew nothing, so this withdraw wins);
+    /// cancel-after-registration by the handler/watcher withdraw; and a
+    /// settle-before-register by the inline terminal path. `withdraw` returns
+    /// non-nil for at most one resolver, and a settled flight resumes each
+    /// waiter exactly once.
+    private func joinPreparation(
+        _ flight: PreparationFlight,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async throws {
+        if let isCancelled, isCancelled() {
+            throw CancellationError()
+        }
+        let waiterID = UUID()
+        let watcher = isCancelled.map {
+            startTokenWatcher(flight: flight, waiterID: waiterID, isCancelled: $0)
+        }
+        defer { watcher?.cancel() }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // Cancellation may have fired before registration and removed
+                // nothing: settle inline in that case.
+                if Task.isCancelled || isCancelled?() == true {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                guard flight.register(waiterID, continuation: continuation) else {
+                    // The pass settled between the pre-check and registration.
+                    flight.resumeInline(continuation)
+                    return
+                }
+                // Register-then-cancel race: a cancellation that fired between
+                // the inline check and registration found nothing to withdraw.
+                // Probe once more; this withdraw wins exactly-once when so.
+                if Task.isCancelled || isCancelled?() == true {
+                    if let registered = flight.withdraw(waiterID) {
+                        registered.resume(throwing: CancellationError())
+                    }
+                }
+            }
+        } onCancel: {
+            watcher?.cancel()
+            if let continuation = flight.withdraw(waiterID) {
+                continuation.resume(throwing: CancellationError())
+            }
+        }
     }
 
     private func ensureImageMigrated(_ imageID: String) async throws {
@@ -267,7 +540,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     }
 
     public func acquireSlot(environmentID: String, runtimeID: String, requestedMB: Int) async throws -> RuntimeV2Admission {
-        try await ensurePrepared()
+        try await ensurePrepared(isCancelled: { Task.isCancelled })
         let tier = RuntimeMemoryTier.tier(forRequestedMB: requestedMB)
         let slot = try await store.pool.acquire(
             environmentID: environmentID, runtimeID: runtimeID, requestedTier: tier
@@ -286,7 +559,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         request: GuestResourceRequest, imageSMPCapable: Bool,
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission {
-        try await ensurePrepared()
+        try await ensurePrepared(isCancelled: { Task.isCancelled })
         // The image manifest is the capability authority: the caller's flag is
         // a hint that can never widen an unproven image into SMP. The engine
         // gate (floe_vm_smp_capable) is deliberately not consulted here.
@@ -871,11 +1144,15 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         isCancelled: (@Sendable () -> Bool)?
     ) async -> LinuxImageHealthCheck? {
         do {
-            try await ensurePrepared()
-            return await store.images.imageHealth(imageID: imageID, isCancelled: isCancelled)
+            try await ensurePrepared(isCancelled: isCancelled)
+        } catch is CancellationError {
+            // The caller abandoned its wait (e.g. the card's refresh was
+            // superseded): report the cooperative stop, never a verdict.
+            return .cancelled
         } catch {
             return nil
         }
+        return await store.images.imageHealth(imageID: imageID, isCancelled: isCancelled)
     }
 
     public func reverifyImageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth? {
@@ -893,11 +1170,13 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         isCancelled: (@Sendable () -> Bool)?
     ) async -> LinuxImageHealthCheck? {
         do {
-            try await ensurePrepared()
-            return await store.images.reverifyImageHealth(imageID: imageID, isCancelled: isCancelled)
+            try await ensurePrepared(isCancelled: isCancelled)
+        } catch is CancellationError {
+            return .cancelled
         } catch {
             return nil
         }
+        return await store.images.reverifyImageHealth(imageID: imageID, isCancelled: isCancelled)
     }
 
     public func reconstructExpandedImage(

@@ -18856,6 +18856,142 @@
           }
         }
       }
+    },
+    "environment.backend.storage_stage.queue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reviewing the pending start queue…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查待处理的启动队列…"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_stage.leases": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reclaiming stale runtime leases…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在回收过期的运行租约…"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_stage.runtime_directories": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovering interrupted runtime disks…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在恢复中断的运行磁盘…"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_stage.preserved_quarantine": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rechecking preserved disk evidence…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在复核保留的磁盘证据…"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_stage.staged_images": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying staged image artifacts…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在验证暂存的镜像文件…"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_stage.orphan_manifests": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repairing orphaned image manifests…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在修复孤立的镜像清单…"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_stage.expanded_views": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebuilding verified boot views…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重建已验证的启动视图…"
+          }
+        }
+      }
+    },
+    "environment.backend.storage_stage.templates": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovering interrupted template builds…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在恢复中断的模板构建…"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -308,6 +308,20 @@ final class FloePlatformServices: @unchecked Sendable {
         return Self.composedImageStatus(legacy: legacy, health: health)
     }
 
+    /// Cancellation-aware variant for the component card: the card's refresh
+    /// replaces its previous task, and a superseded refresh must stop a large
+    /// real-file verification at its next read instead of holding the
+    /// "preparing storage" spinner until the hash finishes. Throws
+    /// `CancellationError` when the caller's signal fires; no verdict is
+    /// cached for a cancelled read.
+    func linuxImageStatus(
+        id: String?,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) async throws -> LinuxGuestImageInstallationService.ImageStatus? {
+        guard let id else { return nil }
+        return try await linuxImageStatusChecked(id: id, isCancelled: isCancelled)
+    }
+
     /// Cancellation-aware status composition for the shared job: a long
     /// real-file verification stops when the owner's token fires, instead of
     /// finishing the hash and only then noticing the cancel.

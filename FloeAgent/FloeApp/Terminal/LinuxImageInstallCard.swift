@@ -36,6 +36,10 @@ final class LinuxImageInstallModel: ObservableObject {
     private var didProbe = false
     private var environmentIDHint: String?
     private var refreshTask: Task<Void, Never>?
+    /// Bumped by every refresh start: a reload that was superseded mid-flight
+    /// (a newer refresh, or this task was cancelled) must never publish its
+    /// facts over the newer read.
+    private var refreshGeneration = 0
     private var completionGate = LinuxGuestInstallCompletionGate()
 
     static let jobPrefix = "linux-image:"
@@ -74,15 +78,27 @@ final class LinuxImageInstallModel: ObservableObject {
         if let environmentIDHint {
             self.environmentIDHint = environmentIDHint
         }
-        refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
-            await self?.reload()
-        }
-        await refreshTask?.value
+        await beginRefresh().value
     }
 
     func retryStorage() async {
-        await reload()
+        await beginRefresh().value
+    }
+
+    /// Cancels the previous refresh, bumps the generation and starts the new
+    /// read. Awaiting the returned task keeps the owner's ordering contract
+    /// (refresh-then-observe) intact.
+    @discardableResult
+    private func beginRefresh() -> Task<Void, Never> {
+        refreshTask?.cancel()
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.reload(generation: generation)
+        }
+        refreshTask = task
+        return task
     }
 
     /// Consumes the one-shot completion signal. The owner calls this after
@@ -93,20 +109,51 @@ final class LinuxImageInstallModel: ObservableObject {
         return true
     }
 
-    private func reload() async {
+    private func reload(generation: Int) async {
+        // True while this read is still the card's latest request: the image
+        // status read observes task cancellation, but the follow-on queries
+        // do not; every publication passes this guard so a superseded reload
+        // can never overwrite the newer state.
+        func isCurrent() -> Bool {
+            generation == refreshGeneration && !Task.isCancelled
+        }
+
         let services = FloePlatformServices.shared
         // Loading vs permanent unavailable: try the bounded recoverable init
         // first so a transient assembly-time failure becomes usable.
         if !services.linuxGuestImageStorageAvailable() {
+            guard isCurrent() else { return }
             state = .storageInitializing
             let initialized = await services.ensureLinuxImageService()
             guard initialized else {
+                guard isCurrent() else { return }
                 state = .storageUnavailable
                 imageIssue = nil
                 return
             }
         }
-        let imageStatus = await services.linuxImageStatus(id: imageID)
+        // The status read hashes real image bytes when the success
+        // fingerprint is stale; without the caller's cancel signal a
+        // superseded refresh (every jobs/running change starts a new one)
+        // would hold the storage-initializing spinner until the whole disk
+        // was read. Cancellation aborts the read and leaves the last
+        // published state for the newer refresh to replace; any other read
+        // failure settles to the retryable unavailable state instead of the
+        // spinner (the service maps real I/O to typed issues, so this is the
+        // defensive last net — nonthrowing reload must still publish).
+        let imageStatus: LinuxGuestImageInstallationService.ImageStatus?
+        do {
+            imageStatus = try await services.linuxImageStatus(
+                id: imageID, isCancelled: { Task.isCancelled }
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrent() else { return }
+            state = .storageUnavailable
+            imageIssue = nil
+            return
+        }
         let updateDetail = await services.linuxComponentUpdateNeeded(id: imageID)
         // `??` takes an autoclosure, so the asynchronous lookup has to be
         // awaited into a local value before the fallback is chosen.
@@ -117,6 +164,11 @@ final class LinuxImageInstallModel: ObservableObject {
             environmentID = await services.firstLinuxEnvironmentID()
         }
         let guestStatus = await services.linuxGuestStatus(id: environmentID)
+
+        // Publication guard: the queries above cannot observe cancellation,
+        // so a refresh superseded during them must drop its result here
+        // instead of publishing stale facts over the newer read.
+        guard isCurrent() else { return }
 
         let runningNow = running
         let failedNow = failed
@@ -146,6 +198,9 @@ final class LinuxImageInstallModel: ObservableObject {
         imageIssue = imageStatus?.verificationIssue
         state = LinuxGuestInstallStateDerivation.state(from: facts)
         if !runningNow { cancelling = false }
+        // The status read settled: any first-preparation pass this read
+        // waited on has finished; clear the recovery-stage progress line.
+        jobs.reportLinuxStorageStage(nil)
     }
 
     // MARK: actions
@@ -161,9 +216,9 @@ final class LinuxImageInstallModel: ObservableObject {
                 // The shared job records the failure message; the card's
                 // derived state shows it next to the verification reason.
             }
-            await reload()
+            await refresh()
         }
-        Task { await reload() }
+        Task { await refresh() }
     }
 
     func cancelDownload() {
@@ -175,7 +230,7 @@ final class LinuxImageInstallModel: ObservableObject {
         // which only fires when the job actually ends.
         cancelling = true
         FloePlatformServices.shared.cancelLinuxImagePreparation(imageID: imageID)
-        Task { await reload() }
+        Task { await refresh() }
     }
 
     func startGuest(environmentID: String?) async {
@@ -189,19 +244,19 @@ final class LinuxImageInstallModel: ObservableObject {
                 // No Linux environment exists yet; first use still flows
                 // through the shared preparation entry.
                 _ = try await FloePlatformServices.shared.prepareLinuxEnvironment(cancellation: CancellationToken())
-                await reload()
+                await refresh()
                 return
             }
             try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(id: id)
         } catch {
             // Keep the honest message visible in the card's repair state.
         }
-        await reload()
+        await refresh()
     }
 
     func stopGuest(environmentID: String) async {
         await FloePlatformServices.shared.stopLinuxGuest(id: environmentID)
-        await reload()
+        await refresh()
     }
 
     /// First recovery step: re-verify the installed image without a download.
@@ -213,7 +268,7 @@ final class LinuxImageInstallModel: ObservableObject {
         reverifying = true
         defer { reverifying = false }
         _ = await FloePlatformServices.shared.reverifyLinuxImage(imageID: imageID)
-        await reload()
+        await refresh()
     }
 
     /// Repair that persists: rebuild from verified blobs when possible,
@@ -229,7 +284,7 @@ final class LinuxImageInstallModel: ObservableObject {
                 // The shared job and the following reload surface the honest
                 // message; do not fabricate success.
             }
-            await reload()
+            await refresh()
         }
     }
 }
@@ -300,6 +355,12 @@ struct LinuxImageInstallCard: View {
         case .storageInitializing:
             ProgressView("environment.backend.storage_initializing")
                 .font(.caption)
+            if let raw = jobs.linuxStorageStage,
+               let stage = RuntimeV2Store.RecoveryStage(rawValue: raw) {
+                Text(Self.storageStageText(stage))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         case .downloading(_, let cancelling):
             downloadingContent(cancelling: cancelling || model.cancelling)
         case .needsDownload(let failure):
@@ -432,6 +493,31 @@ struct LinuxImageInstallCard: View {
         }
         .font(.caption)
         .disabled(cancelling)
+    }
+
+    /// Localized label for the Runtime v2 startup-recovery stage reported by
+    /// the shared preparation pass. Each stage has its own catalog entry in
+    /// both languages; an unknown raw id falls back to the generic
+    /// storage-initializing text instead of rendering a diagnostic id.
+    static func storageStageText(_ stage: RuntimeV2Store.RecoveryStage) -> String {
+        switch stage {
+        case .queue:
+            return String(localized: "environment.backend.storage_stage.queue")
+        case .leases:
+            return String(localized: "environment.backend.storage_stage.leases")
+        case .runtimeDirectories:
+            return String(localized: "environment.backend.storage_stage.runtime_directories")
+        case .preservedQuarantine:
+            return String(localized: "environment.backend.storage_stage.preserved_quarantine")
+        case .stagedImages:
+            return String(localized: "environment.backend.storage_stage.staged_images")
+        case .orphanManifests:
+            return String(localized: "environment.backend.storage_stage.orphan_manifests")
+        case .expandedViews:
+            return String(localized: "environment.backend.storage_stage.expanded_views")
+        case .templates:
+            return String(localized: "environment.backend.storage_stage.templates")
+        }
     }
 
     /// Localized label for the service-owned phase. Each phase has its own

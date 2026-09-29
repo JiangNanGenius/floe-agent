@@ -201,6 +201,10 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// Same-id repair of a migrated image from a freshly verified legacy
     /// install (blobs re-placed, expanded rebuilt).
     let repairFromLegacyInstall: @Sendable (String, CancellationCheck?) async throws -> Void
+    /// The latest startup-recovery stage the shared preparation pass
+    /// reported (nil before any pass). Diagnostic progress truth for the
+    /// storage-initializing presentation; never a state machine.
+    let preparationStage: @Sendable () async -> RuntimeV2Store.RecoveryStage?
 
     /// The verified legacy manifest of an already-migrated image, or nil when
     /// the v2 store does not hold this image verified.
@@ -352,8 +356,22 @@ enum LinuxGuestBackendAssembly {
             },
             repairFromLegacyInstall: { imageID, isCancelled in
                 try await integrator.repairImageFromLegacyInstall(imageID: imageID, isCancelled: isCancelled)
+            },
+            preparationStage: {
+                await integrator.preparationStage()
             }
         )
+        // Startup-recovery stages feed the shared jobs object so the Linux
+        // component card can present honest progress instead of an
+        // indeterminate spinner while the first preparation salvages,
+        // verifies and re-materializes gigabytes. Reporting never changes
+        // recovery semantics.
+        await integrator.setPreparationStageHandler { stage in
+            let raw = stage.rawValue
+            Task { @MainActor in
+                EnvironmentPackageJobs.shared.reportLinuxStorageStage(raw)
+            }
+        }
         // Pinned environments boot their immutable template's own image; the
         // environment provider and preparation both resolve it through this
         // probe.

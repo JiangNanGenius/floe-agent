@@ -23,6 +23,11 @@ import FloeTools
     /// transient phase label can never overwrite the job's terminal result or
     /// its cancellation message.
     @Published private(set) var phases: [String: LinuxGuestImageTransferPhase] = [:]
+    /// Latest Runtime v2 startup-recovery stage (raw id) while the shared
+    /// first preparation pass runs; nil once the substrate is prepared or no
+    /// pass ever started. Lets the Linux component card show honest recovery
+    /// progress instead of a bare indeterminate spinner.
+    @Published private(set) var linuxStorageStage: String?
     private var tasks: [String: Task<Void, Never>] = [:]
 
     func start(id: String, title: String, action: FloePlatformServices.PackageAction) {
@@ -104,6 +109,12 @@ import FloeTools
         let bounded = LinuxGuestImageProgress.monotonic(previous: fractions[id], next: fraction)
         fractions[id] = bounded
         progressHandlerBindings[id]?(bounded)
+    }
+
+    /// Publishes the latest Runtime v2 startup-recovery stage. `nil` clears
+    /// the storage-init progress line (pass finished or never started).
+    func reportLinuxStorageStage(_ raw: String?) {
+        linuxStorageStage = raw
     }
     func cancel(id: String) {
         guard let task = tasks[id] else { return }

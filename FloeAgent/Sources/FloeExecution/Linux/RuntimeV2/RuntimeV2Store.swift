@@ -13,6 +13,31 @@ import Foundation
 import FloeCore
 
 public actor RuntimeV2Store {
+    /// One coarse startup-recovery stage. Emitted through
+    /// `prepareAndRecover(onStage:)` so a first-use caller (the Linux
+    /// preparation path, the component card) can present honest progress
+    /// instead of an indeterminate spinner while gigabytes are salvaged,
+    /// verified and re-materialized. Ids are stable diagnostics, never a
+    /// state machine.
+    public enum RecoveryStage: String, Sendable, Equatable, CaseIterable {
+        /// Interrupting queue entries left by a dead incarnation.
+        case queue
+        /// Reclaiming stale single-writer leases.
+        case leases
+        /// Salvaging/quarantining leftover runtime working disks.
+        case runtimeDirectories
+        /// Re-deriving repair protections for preserved quarantine evidence.
+        case preservedQuarantine
+        /// Re-verifying images stuck in the staged state.
+        case stagedImages
+        /// Repairing orphan manifests left by a crash window.
+        case orphanManifests
+        /// Rebuilding verified expanded boot views from blobs.
+        case expandedViews
+        /// Marking interrupted template builds failed honestly.
+        case templates
+    }
+
     public struct RecoveryReport: Sendable, Equatable {
         public var interruptedQueueEntries: Int
         public var unreclaimableLeases: [String]
@@ -148,9 +173,15 @@ public actor RuntimeV2Store {
     // MARK: prepare + recover
 
     /// Creates the tree, opens the registry and runs the startup recovery
-    /// pass. Idempotent; safe to call on every launch.
+    /// pass. Idempotent; safe to call on every launch. `onStage` reports each
+    /// coarse stage as it begins so first-use callers can present honest
+    /// progress while the pass hashes and re-materializes gigabytes; it is
+    /// diagnostic only and never changes recovery semantics.
     @discardableResult
-    public func prepareAndRecover(build: String) async throws -> RecoveryReport {
+    public func prepareAndRecover(
+        build: String,
+        onStage: (@Sendable (RecoveryStage) -> Void)? = nil
+    ) async throws -> RecoveryReport {
         _ = try layout.prepare(build: build)
         try await registry.open()
         try await caches.prepare()
@@ -158,6 +189,7 @@ public actor RuntimeV2Store {
 
         // 1. Queue entries from a dead incarnation are interrupted, never
         //    resumed as if still pending.
+        onStage?(.queue)
         report.interruptedQueueEntries = (try? await registry.interruptOpenQueueEntries()) ?? 0
 
         // 2. Leases: reclaim provably-stale ones; anything unreclaimable is
@@ -165,6 +197,7 @@ public actor RuntimeV2Store {
         //    hold outranks the interruption marking: the hold is the
         //    authoritative exclusion, and the lease stays untouched as
         //    evidence until repair is acknowledged.
+        onStage?(.leases)
         let unresolved = (try? await leases.recoverOnLaunch()) ?? []
         report.unreclaimableLeases = unresolved
         for environmentID in unresolved {
@@ -184,6 +217,7 @@ public actor RuntimeV2Store {
         //    capture path (like a power-loss recovery on real hardware), or
         //    quarantine when salvage fails. runtime/ is never a state source:
         //    everything ends up captured, quarantined or swept.
+        onStage?(.runtimeDirectories)
         report = await recoverRuntimeDirectories(report: report)
 
         // 3c. Authoritative quarantine recovery: a preserved working disk
@@ -192,6 +226,7 @@ public actor RuntimeV2Store {
         //     re-derives the repairRequired state + durable hold from the
         //     orphaned quarantine entry, so preserved bytes can never become
         //     undiscoverable just because the original marker write failed.
+        onStage?(.preservedQuarantine)
         report = await recoverPreservedQuarantine(report: report)
 
         // 3b. Staged blob ownership claims are process-lifetime: a restart
@@ -206,10 +241,12 @@ public actor RuntimeV2Store {
 
         // 5. Images stuck in 'staged' (crash between file writes and the
         //    registry update): re-verify files and promote, or leave staged.
+        onStage?(.stagedImages)
         report.repairedImages = await repairStagedImages()
 
         // 6. Orphan v2 manifests without a registry row (crash window):
         //    verify and register, or quarantine the manifest.
+        onStage?(.orphanManifests)
         report.notes.append(contentsOf: await repairOrphanManifests())
 
         // 7. Verified images whose rebuildable expanded view was lost (the
@@ -217,11 +254,13 @@ public actor RuntimeV2Store {
         //    demand; registry row + manifest + blobs are the truth):
         //    rebuild from the verified blobs so a status read never reports
         //    "uninstalled" and the boot path never redownloads.
+        onStage?(.expandedViews)
         report = await rebuildMissingExpandedViews(report: report)
 
         // 8. Interrupted template builds: an unverified install can never
         //    become a verified version. Mark failed, quarantine the staging
         //    evidence, sweep orphaned clone directories.
+        onStage?(.templates)
         let templateNotes = (try? await templates.recoverInterruptedBuilds()) ?? []
         report.interruptedTemplateBuilds = templateNotes.count
         report.notes.append(contentsOf: templateNotes)
