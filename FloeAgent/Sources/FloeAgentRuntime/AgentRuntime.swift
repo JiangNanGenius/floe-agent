@@ -1297,24 +1297,42 @@ public actor FloeAgentRuntime {
         if let effectiveAllowedNames {
             catalogDescriptors.removeAll { !effectiveAllowedNames.contains($0.name) }
         }
+        // On-device runs are bounded by the curated ceiling. Apply it to this
+        // run's catalog before any discovery so hidden tools (shell, code
+        // execution, Linux provisioning and environment lifecycle) can never
+        // be reintroduced through a discovery guess, tools.list/search or
+        // remembered state. Cloud runs keep their full catalog.
+        let isLocalProvider = configuration.provider.kind == .local
+        if isLocalProvider {
+            catalogDescriptors.removeAll {
+                !LocalModelToolPolicy.curatedCeilingNames.contains($0.name)
+            }
+        }
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
         // Eviction notices only make sense for schemas the model actually saw
-        // in a previous request, not the first-turn guess set.
+        // in a previous request. Capture the pre-discovery state exactly as
+        // before (cloud semantics unchanged): a first-turn guess, the curated
+        // pinned union, or names dropped by the ceiling must not look like a
+        // prior discovery and trigger an eviction notice.
         let hadPriorDiscovery = !discoveredToolNames.isEmpty
         if discoveredToolNames.isEmpty {
             let initial = ToolDiscovery.matches(query: userTask, descriptors: catalogDescriptors)
             discoveredToolNames.formUnion(initial.map(\.name))
             discoveryPriority = initial.map(\.name)
         }
-        // On-device runs receive a stable, budgeted base set without any
-        // tools.list round-trip. Union the names present in this run's
-        // capability ceiling; cloud runs keep dynamic discovery untouched.
-        let isLocalProvider = configuration.provider.kind == .local
+        // On-device runs: prune discovery/remembered state to the curated
+        // ceiling and to the descriptors this run actually offers (covers
+        // persisted and checkpoint-restored state), then union the stable
+        // pinned base present in the run without any tools.list round-trip.
         if isLocalProvider {
-            let baseNames = LocalModelToolPolicy.alwaysLoadedToolNames
+            let offeredNames = Set(catalogDescriptors.map(\.name))
+            discoveredToolNames = discoveredToolNames.filter { offeredNames.contains($0) }
+            discoveryPriority = discoveryPriority.filter { offeredNames.contains($0) }
             discoveredToolNames.formUnion(
-                catalogDescriptors.map(\.name).filter { baseNames.contains($0) }
+                catalogDescriptors.map(\.name).filter {
+                    LocalModelToolPolicy.pinnedToolNames.contains($0)
+                }
             )
         }
         // Restore recently used groups without replaying a discovery call.
@@ -1324,14 +1342,14 @@ public actor FloeAgentRuntime {
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         var pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
-        // Keep the stable local base schemas on the wire even under the
+        // Keep the stable local pinned schemas on the wire even under the
         // 23-tool/23-KB presentation budget; the adapter still applies its
         // per-window token/character budget, so this never overruns the
         // model context.
         if isLocalProvider {
             pinned.formUnion(
                 catalogDescriptors.map(\.name).filter {
-                    LocalModelToolPolicy.alwaysLoadedToolNames.contains($0)
+                    LocalModelToolPolicy.pinnedToolNames.contains($0)
                 }
             )
         }

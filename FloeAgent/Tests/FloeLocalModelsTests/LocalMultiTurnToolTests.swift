@@ -170,10 +170,10 @@ private let readFileSchema = ToolSchemaDescriptor(
     parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}}}"#
 )
 
-private let localPythonSchema = ToolSchemaDescriptor(
-    name: "exec.localPython",
-    description: "Run a bounded local Python script",
-    parametersJSON: #"{"type":"object","properties":{"script":{"type":"string"}}}"#
+private let fetchSchema = ToolSchemaDescriptor(
+    name: "web.fetch",
+    description: "Fetch readable content of a web page",
+    parametersJSON: #"{"type":"object","properties":{"url":{"type":"string"}}}"#
 )
 
 // MARK: - Multi-turn tool definition stability
@@ -184,15 +184,15 @@ struct LocalMultiTurnToolStabilityTests {
     @available(macOS 15.4, iOS 26.0, *)
     func settledToolSurvivesFollowingTurns() throws {
         let call = try ToolCall(
-            id: "py-1",
-            toolName: "exec.localPython",
-            argumentsJSON: Data(#"{"script":"print(1)"}"#.utf8),
+            id: "fetch-1",
+            toolName: "web.fetch",
+            argumentsJSON: Data(#"{"url":"https://example.com"}"#.utf8),
             scope: .local
         )
         let result = ToolResult(
-            callID: "py-1",
+            callID: "fetch-1",
             status: .ok,
-            outputSummary: "1",
+            outputSummary: "example page content",
             outputDigest: "digest"
         )
         let base = ProviderStreamRequest(
@@ -202,14 +202,14 @@ struct LocalMultiTurnToolStabilityTests {
                 (role: "system", content: "Run context: synthetic workspace."),
                 (role: "user", content: "继续基于刚才的结果回答。")
             ],
-            toolSchemas: [readFileSchema, localPythonSchema],
-            allToolNames: [readFileSchema.name, localPythonSchema.name]
+            toolSchemas: [readFileSchema, fetchSchema],
+            allToolNames: [readFileSchema.name, fetchSchema.name]
         )
 
         // Turn 1 established nothing: the follow-up text alone does not select
-        // the Python tool.
+        // the fetch tool.
         let withoutReplay = LocalProviderAdapter.buildPrompt(for: base)
-        #expect(!withoutReplay.selectedTools.contains { $0.name == "exec.localPython" })
+        #expect(!withoutReplay.selectedTools.contains { $0.name == "web.fetch" })
 
         // Turn 2/3 replay the settled pair: the exact definition stays offered
         // and the call/result association stays visible.
@@ -223,24 +223,24 @@ struct LocalMultiTurnToolStabilityTests {
                 allToolNames: base.allToolNames
             )
         )
-        #expect(withReplay.selectedTools.contains { $0.name == "exec.localPython" })
-        #expect(withReplay.text.contains("EARLIER TOOL CALL exec.localPython id=py-1"))
-        #expect(withReplay.text.contains("EARLIER TOOL RESULT id=py-1"))
+        #expect(withReplay.selectedTools.contains { $0.name == "web.fetch" })
+        #expect(withReplay.text.contains("EARLIER TOOL CALL web.fetch id=fetch-1"))
+        #expect(withReplay.text.contains("EARLIER TOOL RESULT id=fetch-1"))
     }
 
     @Test("A failed receipt reaches the next turn as a failed status, not as success")
     @available(macOS 15.4, iOS 26.0, *)
     func failedReceiptStaysTruthful() throws {
         let call = try ToolCall(
-            id: "py-2",
-            toolName: "exec.localPython",
-            argumentsJSON: Data(#"{"script":"raise SystemExit(3)"}"#.utf8),
+            id: "fetch-2",
+            toolName: "web.fetch",
+            argumentsJSON: Data(#"{"url":"https://example.com"}"#.utf8),
             scope: .local
         )
         let result = ToolResult(
-            callID: "py-2",
+            callID: "fetch-2",
             status: .failed,
-            outputSummary: "status=failed exitCode=3",
+            outputSummary: "status=failed reason=fetch failed",
             outputDigest: "digest",
             exitStatus: 3
         )
@@ -249,16 +249,16 @@ struct LocalMultiTurnToolStabilityTests {
             model: localModel(remoteModelID: "qwen3.5-4b-mlx4"),
             messages: [
                 (role: "system", content: "Run context: synthetic workspace."),
-                (role: "user", content: "刚才的脚本为什么失败？")
+                (role: "user", content: "刚才的抓取为什么失败？")
             ],
-            toolResults: [(callID: "py-2", output: result.outputSummary)],
+            toolResults: [(callID: "fetch-2", output: result.outputSummary)],
             pendingToolCalls: [call],
             replayedToolPairs: [ReplayedToolPair(call: call, result: result)],
-            toolSchemas: [localPythonSchema],
-            allToolNames: [localPythonSchema.name]
+            toolSchemas: [fetchSchema],
+            allToolNames: [fetchSchema.name]
         )
         let build = LocalProviderAdapter.buildPrompt(for: request)
-        #expect(build.text.contains("TOOL RESULT py-2"))
+        #expect(build.text.contains("TOOL RESULT fetch-2"))
         #expect(build.text.contains("status=failed"))
         #expect(build.systemInstructions.contains("TOOL RESULT with the same call id"))
     }

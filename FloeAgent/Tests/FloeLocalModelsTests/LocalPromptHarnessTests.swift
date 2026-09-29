@@ -262,31 +262,29 @@ struct LocalReplayedToolEvidenceTests {
 
 @Suite("Local cross-task history admission")
 struct LocalHistoryAdmissionTests {
-    @Test("Conversation tools are admissible for MLX models and excluded for Apple Foundation Models")
+    @Test("Conversation tools are hidden from MLX and Apple Foundation Models")
     @available(macOS 15.4, *)
-    func conversationToolsAreMLXAdmissible() {
+    func conversationToolsAreHidden() {
         let names: Set<String> = ["conversation.search", "conversation.read", "conversation.list", "workspace.readFile", "ssh.execute"]
         let mlx = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: "qwen3.8-4b-heretic-mlx4")
-        #expect(mlx.contains("conversation.search"))
-        #expect(mlx.contains("conversation.read"))
-        #expect(mlx.contains("conversation.list"))
-        #expect(!mlx.contains("ssh.execute"))
+        // Only the curated read tool survives; cross-task history is complex.
+        #expect(mlx == ["workspace.readFile"])
+        #expect(mlx.isDisjoint(with: ["conversation.search", "conversation.read", "conversation.list"]))
         let apple = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: AppleFoundationModelIdentity.remoteModelID)
         #expect(apple.isDisjoint(with: ["conversation.search", "conversation.read", "conversation.list"]))
     }
 
-    @Test("Bounded Notes tools are admissible for MLX models")
+    @Test("Notes tools are hidden from MLX along with heavier surfaces")
     @available(macOS 15.4, *)
-    func notesToolsAreMLXAdmissible() {
+    func notesToolsAreHidden() {
         let names: Set<String> = [
             "notes.read", "notes.search", "notes.edit",
             "notes.attachFile", "notes.stageAttachment", "mail.send"
         ]
         let mlx = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: "qwen3.8-4b-heretic-mlx4")
-        #expect(mlx.contains("notes.read"))
-        #expect(mlx.contains("notes.search"))
-        #expect(mlx.contains("notes.edit"))
-        // Heavier staging surfaces stay cloud-side; external sends stay out.
+        // The document assistant is not part of the curated local ceiling.
+        #expect(mlx.isEmpty)
+        #expect(!mlx.contains("notes.edit"))
         #expect(!mlx.contains("notes.attachFile"))
         #expect(!mlx.contains("notes.stageAttachment"))
         #expect(!mlx.contains("mail.send"))
@@ -308,7 +306,8 @@ struct LocalHistoryAdmissionTests {
             ToolSchemaDescriptor(name: "conversation.read", description: "Read a page from another Floe task", parametersJSON: #"{"type":"object"}"#),
             ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a workspace file", parametersJSON: #"{"type":"object"}"#)
         ]
-        for userText in ["之前任务里是怎么配置的", "查一下历史记录", "what did we decide in the earlier chat history"] {
+        let historyCases = ["之前任务里是怎么配置的", "what did we decide in the earlier chat history"]
+        for userText in historyCases {
             let request = ProviderStreamRequest(
                 provider: provider,
                 model: model,
@@ -321,10 +320,27 @@ struct LocalHistoryAdmissionTests {
                 allToolNames: ["conversation.search", "conversation.read", "workspace.readFile"]
             ).refreshingRuntimeClock()
             let local = LocalProviderAdapter.buildPrompt(for: request)
-            let selected = Set(local.selectedTools.map(\.name))
-            #expect(selected.contains("conversation.search"), "user text: \(userText)")
-            #expect(selected.contains("conversation.read"), "user text: \(userText)")
+            // Hidden history tools never reach the offer, and no tool call is
+            // forced merely because a read schema sits in the directory.
+            #expect(!local.selectedTools.contains { $0.name.hasPrefix("conversation.") })
+            #expect(!local.requiresToolCall, "user text: \(userText)")
         }
+        // An explicit news-search turn with NO configured web.search gets
+        // the truthful notice and zero tools instead of a substituted call.
+        let searchRequest = ProviderStreamRequest(
+            provider: provider,
+            model: model,
+            messages: [
+                (role: "system", content: "Run context: synthetic workspace."),
+                (role: "user", content: "搜索一下今天的新闻")
+            ],
+            toolSchemas: schemas,
+            allToolNames: ["conversation.search", "conversation.read", "workspace.readFile"]
+        ).refreshingRuntimeClock()
+        let searchLocal = LocalProviderAdapter.buildPrompt(for: searchRequest)
+        #expect(searchLocal.selectedTools.isEmpty)
+        #expect(searchLocal.systemInstructions.contains("WEB SEARCH UNAVAILABLE FOR THIS REQUEST"))
+        #expect(!searchLocal.requiresToolCall)
     }
 }
 
@@ -402,7 +418,7 @@ struct LocalPromptPressureTests {
         // The current request is protected: CJK clipping must never cut the
         // correction the user just typed.
         #expect(local.text.contains(current))
-        #expect(local.selectedTools.contains { $0.name == "conversation.search" })
+        #expect(local.selectedTools.contains { $0.name == "web.search" })
     }
 
     @Test("An oversized current request is refused before any model allocation")

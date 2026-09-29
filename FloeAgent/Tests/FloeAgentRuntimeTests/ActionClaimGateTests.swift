@@ -125,6 +125,11 @@ struct ActionClaimFlowTests {
             riskLabels: [.readsFiles],
             isSideEffecting: false
         )
+        executor.descriptors["workspace.searchFiles"] = ToolCatalog.Descriptor(
+            name: "workspace.searchFiles",
+            riskLabels: [.readsFiles],
+            isSideEffecting: false
+        )
         return executor
     }
 
@@ -186,37 +191,37 @@ struct ActionClaimFlowTests {
         #expect(failure.message.contains("without a successful tool result"))
     }
 
-    /// Sequential multi-tool work: create, then read the same file, then a
-    /// truthful summary — with the chain's schemas still offered on the later
-    /// turns (no tools.list round-trip in between).
-    @Test("A local run chains create then read with schemas still offered")
+    /// Sequential curated chain: search files, then read the match, then a
+    /// truthful summary — under the read-only local ceiling (file creation is
+    /// no longer offered), with the read schemas still present on later turns.
+    @Test("A local run chains search then read with read schemas still offered")
     func sequentialLocalToolChain() async throws {
         let adapter = MockAdapter()
         adapter.script = [
             [.toolRequest(try TestFixtures.toolCall(
-                id: "create-chain",
-                toolName: "workspace.createFile",
-                arguments: #"{"path":"test.txt","content":"hello"}"#
+                id: "search-chain",
+                toolName: "workspace.searchFiles",
+                arguments: #"{"query":"report"}"#
             )), .completed(.init(stopReason: .toolUse))],
             [.toolRequest(try TestFixtures.toolCall(
                 id: "read-chain",
                 toolName: "workspace.readFile",
-                arguments: #"{"path":"test.txt"}"#
+                arguments: #"{"path":"report.txt"}"#
             )), .completed(.init(stopReason: .toolUse))],
-            [.textDelta(.init(text: "test.txt 的内容是 hello。")), .completed(.init(stopReason: .endTurn))]
+            [.textDelta(.init(text: "report.txt 的内容是 hello。")), .completed(.init(stopReason: .endTurn))]
         ]
         let executor = makeExecutor()
         let runtime = makeRuntime(adapter: adapter, executor: executor, sink: MockSink())
 
-        try await runtime.start(goal: "创建一个文件再读回来")
+        try await runtime.start(goal: "搜索文件再读回来")
 
-        #expect(executor.executedCalls.map(\.toolName) == ["workspace.createFile", "workspace.readFile"])
+        #expect(executor.executedCalls.map(\.toolName) == ["workspace.searchFiles", "workspace.readFile"])
         #expect(adapter.requests.count == 3)
-        // The second and third requests still carry the file schemas.
+        // The second and third requests still carry the read schemas.
         for request in adapter.requests.dropFirst() {
             let names = Set(request.toolSchemas.map(\.name))
             #expect(names.contains("workspace.readFile"))
-            #expect(names.contains("workspace.createFile"))
+            #expect(names.contains("workspace.searchFiles"))
         }
         guard case .completed = await runtime.state else {
             Issue.record("Expected the chain to complete, got \(await runtime.state.name)")

@@ -555,7 +555,9 @@ struct LocalModelCatalogTests {
         )
         let tools = (0..<20).map { index in
             ToolSchemaDescriptor(
-                name: "workspace.tool\(index)",
+                name: index < 4 ? ["workspace.readFile", "workspace.listDirectory",
+                                  "workspace.searchFiles", "workspace.inspectFileMetadata"][index]
+                    : "workspace.other\(index)",
                 description: "Workspace operation \(index)",
                 parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}}}"#
             )
@@ -563,10 +565,15 @@ struct LocalModelCatalogTests {
         let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
             provider: provider,
             model: model,
-            messages: [("user", "测试所有工作区工具")],
+            messages: [("user", "列出工作区目录里的所有文件")],
             toolSchemas: tools
         ))
+        // Only canonical read tools survive the ceiling; invented
+        // workspace.other names and extra schemas stay out.
         #expect(build.selectedToolCount <= 4)
+        #expect(build.selectedTools.allSatisfy {
+            LocalModelToolPolicy.pinnedToolNames.contains($0.name)
+        })
         #expect(build.text.count < 3_000)
     }
 
@@ -583,15 +590,21 @@ struct LocalModelCatalogTests {
         )
         let tools = [
             "exec.localPython", "git.status", "image.inspect", "memory.recall",
-            "web.search", "workspace.listDirectory", "workspace.readFile"
-        ].map { ToolSchemaDescriptor(name: $0, description: "Safe local tool") }
+            "web.search", "workspace.listDirectory", "workspace.readFile",
+            "workspace.searchFiles", "workspace.inspectFileMetadata"
+        ].map { ToolSchemaDescriptor(name: $0, description: "Candidate tool") }
         let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
             provider: provider,
             model: model,
-            messages: [("user", "帮我测试一下所有工具")],
+            // Inventory wording (not a search-specific request): the 4-tool
+            // inventory budget admits 4 of the 5 pinned schemas.
+            messages: [("user", "帮我看看可用的工具有哪些")],
             toolSchemas: tools
         ))
-        #expect(!build.fallbackTools.contains(where: { $0.name == "image.inspect" }))
+        // Hidden/non-canonical names never enter the fallback directory.
+        #expect(!build.fallbackTools.contains {
+            ["exec.localPython", "git.status", "image.inspect", "memory.recall"].contains($0.name)
+        })
         let selectedNames = Set(build.selectedTools.map(\.name))
         let omitted = try #require(build.fallbackTools.first {
             !selectedNames.contains($0.name)
@@ -605,7 +618,7 @@ struct LocalModelCatalogTests {
         #expect(parsed?.toolName == omitted.name)
     }
 
-    @Test("MLX prompt offers only simple intent-relevant tools")
+    @Test("MLX prompt hides PDF/OCR/browser/SSH tools and keeps the read chain")
     @available(macOS 15.4, *)
     func localPromptSelectsRelevantTools() {
         let provider = LocalProviderAdapter.providerProfile
@@ -628,26 +641,19 @@ struct LocalModelCatalogTests {
         let request = ProviderStreamRequest(
             provider: provider,
             model: model,
-            messages: [("user", "读取 PDF，需要时渲染并 OCR")],
+            messages: [("user", "读取这个 PDF 文件，需要时渲染并 OCR")],
             toolSchemas: tools
         )
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        #expect(build.selectedToolCount == 4)
-        // The Qwen-family bounded protocol documents the exact JSON envelope
-        // and never promises a native tool interface the template cannot use.
-        #expect(build.systemInstructions.contains("documented JSON tool_call"))
-        #expect(build.systemInstructions.contains(#"{"tool_call":{"name":"exact.offered.name","arguments":{}}}"#))
-        #expect(build.systemInstructions.contains("Fill every required argument declared by the called tool's schema"))
-        #expect(build.systemInstructions.contains("may use an empty arguments object"))
-        #expect(build.selectedTools.map(\.name) == [
-            "document.pdf.inspect", "document.pdf.render", "image.ocr", "workspace.readFile"
-        ])
+        // Only the canonical read tool survives; complex media/browser/SSH
+        // tools never enter the offered set.
+        #expect(build.selectedTools.map(\.name) == ["workspace.readFile"])
         #expect(build.systemInstructions.contains("workspace.readFile"))
-        #expect(build.systemInstructions.contains("document.pdf.inspect"))
-        #expect(build.systemInstructions.contains("document.pdf.render"))
-        #expect(build.systemInstructions.contains("image.ocr"))
+        #expect(!build.systemInstructions.contains("document.pdf.inspect"))
+        #expect(!build.systemInstructions.contains("document.pdf.render"))
+        #expect(!build.systemInstructions.contains("image.ocr"))
         #expect(!build.systemInstructions.contains("document.presentation.createInline"))
         #expect(!build.systemInstructions.contains("browser.click"))
         #expect(!build.systemInstructions.contains("- ssh.execute:"))
@@ -716,7 +722,10 @@ struct LocalModelCatalogTests {
 
         let build = LocalProviderAdapter.buildPrompt(for: request)
 
-        #expect(build.selectedTools.map(\.name) == ["image.ocr", "workspace.readFile"])
+        // Only the canonical read tool is admitted; OCR/inspect/SSH/Apple
+        // tools are outside the curated ceiling.
+        #expect(build.selectedTools.map(\.name) == ["workspace.readFile"])
+        #expect(!build.systemInstructions.contains("image.ocr"))
         #expect(!build.systemInstructions.contains("image.inspect"))
         #expect(!build.systemInstructions.contains("ssh.execute"))
         #expect(!build.systemInstructions.contains("apple.calendar.list"))
@@ -738,10 +747,8 @@ struct LocalModelCatalogTests {
             from: offered,
             modelRemoteID: "qwen3.5-4b-mlx4"
         )
-        #expect(mlx == [
-            "workspace.readFile", "image.ocr",
-            "document.pdf.inspect", "document.pdf.render"
-        ])
+        // Only the canonical read tool survives the curated ceiling.
+        #expect(mlx == ["workspace.readFile"])
 
         let apple = LocalProviderAdapter.admissibleToolNames(
             from: offered,
@@ -750,9 +757,9 @@ struct LocalModelCatalogTests {
         #expect(apple == ["apple.location.current"])
     }
 
-    @Test("MLX Git requests receive only read-only local Git tools")
+    @Test("MLX Git requests get no Git tools — local and cloud-workspace intents")
     @available(macOS 15.4, *)
-    func localPromptSelectsGitTools() {
+    func localPromptHidesGitTools() {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
@@ -761,19 +768,15 @@ struct LocalModelCatalogTests {
             limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024),
             capabilities: [.text, .tools]
         )
-        let tools = [
-            ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file"),
-            ToolSchemaDescriptor(name: "git.status", description: "Git status"),
-            ToolSchemaDescriptor(name: "git.diff", description: "Git diff"),
-            ToolSchemaDescriptor(name: "git.log", description: "Git log"),
-            ToolSchemaDescriptor(name: "git.stage", description: "Stage changes"),
-            ToolSchemaDescriptor(name: "git.commit", description: "Commit changes"),
-            ToolSchemaDescriptor(name: "git.push", description: "Push changes"),
-            ToolSchemaDescriptor(name: "github.repositories", description: "List repositories"),
-            ToolSchemaDescriptor(name: "cloudWorkspace.git.status", description: "Cloud Git status"),
-            ToolSchemaDescriptor(name: "cloudWorkspace.git.push", description: "Cloud Git push"),
-            ToolSchemaDescriptor(name: "ssh.execute", description: "Run SSH")
+        let gitNames = [
+            "git.status", "git.diff", "git.log",
+            "git.stage", "git.commit", "git.push",
+            "github.repositories",
+            "cloudWorkspace.git.status", "cloudWorkspace.git.push",
+            "ssh.execute"
         ]
+        let tools = [ToolSchemaDescriptor(name: "workspace.readFile", description: "Read a file")]
+            + gitNames.map { ToolSchemaDescriptor(name: $0, description: "Git tool") }
 
         let local = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
             provider: provider,
@@ -781,25 +784,21 @@ struct LocalModelCatalogTests {
             messages: [("user", "查看本地仓库状态，暂存并提交代码，然后推送 GitHub")],
             toolSchemas: tools
         ))
-        #expect(local.selectedTools.contains { $0.name == "git.status" })
-        #expect(local.selectedTools.contains { $0.name == "git.diff" })
-        #expect(local.selectedTools.contains { $0.name == "git.log" })
-        #expect(!local.selectedTools.contains { $0.name == "git.stage" })
-        #expect(!local.selectedTools.contains { $0.name == "git.commit" })
-        #expect(!local.selectedTools.contains { $0.name == "git.push" })
-        #expect(!local.selectedTools.contains { $0.name == "github.repositories" })
-        #expect(!local.selectedTools.contains { $0.name == "ssh.execute" })
+        // No Git tool (read-only or mutating) is ever offered; the curated
+        // read tool is the only schema that survives.
+        #expect(local.selectedTools.map(\.name) == ["workspace.readFile"])
+        #expect(!local.systemInstructions.contains("git."))
+        #expect(!local.systemInstructions.contains("cloudWorkspace."))
+        #expect(!local.systemInstructions.contains("ssh.execute"))
 
         let cloud = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
             provider: provider,
             model: model,
-            messages: [("user", "检查云工作区 Git 状态并推送")],
+            messages: [("user", "检查云工作区的文件并读取")],
             toolSchemas: tools
         ))
-        #expect(cloud.selectedTools.contains { $0.name == "git.status" })
-        #expect(cloud.selectedTools.contains { $0.name == "git.diff" })
-        #expect(cloud.selectedTools.contains { $0.name == "git.log" })
-        #expect(!cloud.selectedTools.contains { $0.name.hasPrefix("cloudWorkspace.") })
+        #expect(cloud.selectedTools.map(\.name) == ["workspace.readFile"])
+        #expect(!cloud.systemInstructions.contains("cloudWorkspace.git"))
     }
 
     @Test("Local reasoning tags are separated from the visible answer")

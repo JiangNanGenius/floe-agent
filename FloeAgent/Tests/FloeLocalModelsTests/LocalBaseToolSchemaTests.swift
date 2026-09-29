@@ -1,11 +1,12 @@
-// FloeLocalModelsTests — stable base tool schemas for on-device models.
+// FloeLocalModelsTests — stable curated tool schemas for on-device models.
 //
-// Device evidence (2026-09-21): a local model called tools.list on the first
-// run, then produced two prose-only turns that falsely claimed a file was
-// created. The base file-tool schemas must therefore be offered on every
-// relevant run without a discovery round-trip, stay available for the
-// create→read chain, and remain inside the per-window budgets the prompt
-// pressure model enforces.
+// Device evidence (Build 235): a "search today's news" turn picked
+// workspace.listDirectory instead of web.search, then claimed search was
+// unavailable. The curated pinned set (web search + read-only file lookup)
+// must therefore be offered on every relevant run without a discovery
+// round-trip, in intent-specific admission order, stay available on
+// follow-ups, and remain inside the per-window budgets the prompt pressure
+// model enforces.
 
 import Foundation
 import Testing
@@ -30,22 +31,11 @@ struct LocalBaseToolSchemaTests {
         .init(name: "workspace.inspectFileMetadata",
               description: "Inspect file metadata",
               parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}"#),
-        .init(name: "workspace.createFile",
-              description: "Create a workspace file",
-              parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}"#),
-        .init(name: "workspace.writeFile",
-              description: "Write a workspace file",
-              parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}"#),
-        .init(name: "workspace.applyPatch",
-              description: "Apply a unified diff patch",
-              parametersJSON: #"{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":false}"#),
+        .init(name: "web.search", description: "Search the web",
+              parametersJSON: #"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}"#),
         .init(name: "environment.prepareLinux",
               description: "Install the App-provided Linux image",
-              parametersJSON: #"{"type":"object","properties":{},"additionalProperties":false}"#),
-        .init(name: "web.search", description: "Search the web",
-              parametersJSON: #"{"type":"object","properties":{"query":{"type":"string"}},"additionalProperties":false}"#),
-        .init(name: "notes.read", description: "Read a note",
-              parametersJSON: #"{"type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false}"#)
+              parametersJSON: #"{"type":"object","properties":{},"additionalProperties":false}"#)
     ]
 
     @available(macOS 15.4, *)
@@ -82,83 +72,106 @@ struct LocalBaseToolSchemaTests {
         )
     }
 
-    /// The exact first-run failure: an action request must already see the
-    /// complete file schemas, with no tools.list call.
-    @Test("A file action request receives the full base schemas without tools.list")
+    /// The exact Build 235 failure: an explicit news-search request must
+    /// already see web.search (first in admission), with no tools.list call,
+    /// and never the Linux preparation capability.
+    @Test("A news-search request receives web.search without tools.list and no provisioning tool")
     @available(macOS 15.4, *)
     func baseSchemasWithoutDiscovery() {
         let build = LocalProviderAdapter.buildPrompt(
-            for: Self.request(userText: "试一下创建一个文本文件并保存")
+            for: Self.request(userText: "搜索一下今天的新闻")
         )
-        let selected = Set(build.selectedTools.map(\.name))
-        for name in LocalModelToolPolicy.baseFileToolNames {
-            #expect(selected.contains(name), "\(name) must be offered on the first run")
+        let selected = build.selectedTools
+        let selectedNames = Set(selected.map(\.name))
+        #expect(selectedNames.contains("web.search"), "web.search must be offered on the first run")
+        // The intended forced tool is the scored primary repair tool.
+        #expect(build.primaryRepairTool?.name == "web.search")
+        for name in LocalModelToolPolicy.pinnedToolNames {
+            #expect(selectedNames.contains(name), "\(name) belongs to the pinned base set")
         }
-        #expect(selected.contains(LocalModelToolPolicy.prepareLinuxToolName))
+        // Hidden complex tools never enter via the base set.
+        #expect(!selectedNames.contains("environment.prepareLinux"))
         // Complete schemas travel, not just names.
-        for tool in build.selectedTools {
-            #expect(!tool.parametersJSON.isEmpty || tool.name == "environment.prepareLinux")
+        for tool in selected {
+            #expect(!tool.parametersJSON.isEmpty)
             #expect(!tool.description.isEmpty)
         }
         #expect(build.requiresToolCall, "an action request with offered tools must require a call")
         #expect(build.systemInstructions.contains("OFFERED TOOLS FOR THIS TURN"))
-        #expect(build.systemInstructions.contains("workspace.createFile"))
+        #expect(build.systemInstructions.contains("web.search"))
         // No discovery round-trip is required for these. The truthful-completion
         // rule names the receipt explicitly (Build 222 bounded protocol).
         #expect(build.systemInstructions.contains("never claim"))
         #expect(build.systemInstructions.contains("TOOL RESULT with the same call id"))
     }
 
-    /// The create→read chain: after a settled tool result, the same wiring
-    /// tools stay available so the model can read back what it created.
-    @Test("Chain-needed schemas stay offered after a tool result")
+    /// A file-lookup request admits the read chain ahead of web.search, so in
+    /// a tight window that only holds three schemas, the generic "搜索 …文件"
+    /// turn keeps the file tools and web.search is dropped, not the reverse.
+    @Test("A file-search request spends the tight budget on read tools")
+    @available(macOS 15.4, *)
+    func fileRequestLeadsReadTools() {
+        let build = LocalProviderAdapter.buildPrompt(
+            for: Self.request(
+                userText: "搜索工作区里的文件，列出目录",
+                contextTokens: 2_048
+            )
+        )
+        let names = Set(build.selectedTools.map(\.name))
+        #expect(names.contains("workspace.readFile"))
+        #expect(names.contains("workspace.listDirectory"))
+        #expect(names.contains("workspace.searchFiles"))
+        #expect(!names.contains("web.search"), "the file intent must win the tight budget")
+    }
+
+    /// The read chain: after a settled tool result, the read tools stay
+    /// available so the model can follow up on what it found.
+    @Test("Read-tool schemas stay offered after a tool result")
     @available(macOS 15.4, *)
     func chainSchemasSurviveToolResults() throws {
-        let created = try ToolCall(
-            id: "call-create",
-            toolName: "workspace.createFile",
-            argumentsJSON: Data(#"{"path":"test.txt","content":"hello"}"#.utf8),
+        let listed = try ToolCall(
+            id: "call-list",
+            toolName: "workspace.listDirectory",
+            argumentsJSON: Data(#"{"path":"."}"#.utf8),
             scope: .local
         )
         let build = LocalProviderAdapter.buildPrompt(
             for: Self.request(
-                userText: "读取 test.txt 并告诉我内容",
-                toolResults: [("call-create", "{\"status\":\"ok\",\"path\":\"test.txt\"}")],
-                pendingToolCalls: [created]
+                userText: "读取刚才目录里的文件并告诉我内容",
+                toolResults: [("call-list", "{\"status\":\"ok\",\"entries\":[\"test.txt\"]}")],
+                pendingToolCalls: [listed]
             )
         )
         let selected = Set(build.selectedTools.map(\.name))
-        #expect(selected.contains("workspace.createFile"))
+        #expect(selected.contains("workspace.listDirectory"))
         #expect(selected.contains("workspace.readFile"))
         // The receipt is rendered as evidence for the follow-up turn.
         let envelope = build.systemInstructions + "\n" + build.text
-        #expect(envelope.contains("TOOL RESULT call-create"))
+        #expect(envelope.contains("TOOL RESULT call-list"))
         #expect(build.systemInstructions.contains("workspace.readFile"))
     }
 
-    /// Context/compaction limits are preserved: the base set is admitted
+    /// Context/compaction limits are preserved: the pinned set is admitted
     /// inside the existing per-window schema budget, never on top of it.
-    @Test("The base set respects the small-window schema budget")
+    @Test("The pinned set respects the small-window schema budget")
     @available(macOS 15.4, *)
     func baseSetRespectsBudget() {
         for contextTokens in [2_048, 4_096, 8_192] {
             let build = LocalProviderAdapter.buildPrompt(
                 for: Self.request(
-                    userText: "创建一个文件并写入内容",
+                    userText: "搜索今天的新闻",
                     contextTokens: contextTokens
                 )
             )
             let selected = build.selectedTools
             // Deterministic order keeps chat templates stable across turns.
             #expect(selected.map(\.name) == selected.map(\.name).sorted())
-            #expect(!selected.isEmpty, "every window must still offer the file tools it can afford")
+            #expect(!selected.isEmpty, "every window must still offer the tools it can afford")
             #expect(selected.count <= 10, "never more than the widest inventory budget")
             #expect(!build.exceedsContextWindow)
-            let selectedNames = Set(selected.map(\.name))
-            // The critical create/write pair is always affordable, even in the
-            // smallest supported window.
-            #expect(selectedNames.contains("workspace.createFile"))
-            #expect(selectedNames.contains("workspace.writeFile"))
+            // The critical search schema is always admitted for a live-web
+            // request, even in the smallest supported window.
+            #expect(selected.map(\.name).contains("web.search"))
         }
     }
 

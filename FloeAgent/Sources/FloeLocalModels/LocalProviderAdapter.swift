@@ -2550,8 +2550,26 @@ public struct LocalProviderAdapter: ProviderAdapter {
             request.toolSchemas,
             modelRemoteID: request.model.remoteModelID
         )
+        // When a fresh turn specifically asks for web search but no usable
+        // web.search is offered in this request, answer truthfully instead of
+        // reaching for an unrelated tool. Apple Foundation Models have their
+        // own tool channel and are excluded; direct-URL fetch and file-only
+        // turns keep their ordinary flow.
+        let isAppleModel = request.model.remoteModelID
+            == AppleFoundationModelIdentity.remoteModelID
+        let precheckText = latestUserText.lowercased()
+        let searchRequested = !isAppleModel
+            && request.toolResults.isEmpty
+            && LocalModelToolPolicy.requestsWebSearch(precheckText)
+        let searchMissingFromOffer = searchRequested
+            && !availableTools.map(\.name)
+                .contains(LocalModelToolPolicy.webSearchToolName)
+        // When search is absent from the request entirely, load NO tools: no
+        // offered schema, no required/forced unrelated call. The truthful
+        // notice section below carries the explanation.
+        let toolsForSelection = searchMissingFromOffer ? [] : availableTools
         let rankedTools = isAppleToolFollowUp ? [] : selectTools(
-            availableTools,
+            toolsForSelection,
             latestUserText: latestUserText,
             pendingToolNames: Set(request.pendingToolCalls.map(\.toolName)),
             // Build 222 stability: a tool that already ran in this run stays
@@ -2565,10 +2583,24 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // Dynamic Foundation Models schemas are intentionally limited to one
         // exact Apple capability per turn. Build 23 logs showed five schemas
         // entering a stream that never produced its first token.
-        let selectedTools = request.model.remoteModelID
+        var selectedTools = request.model.remoteModelID
             == AppleFoundationModelIdentity.remoteModelID
             ? Array(rankedTools.prefix(1))
             : rankedTools
+        // Final offer check: a search turn is truthful when web.search is not
+        // in the presented set — whether it was absent from the request's
+        // capability set or pruned by this window's schema budget.
+        let webSearchUnavailable = searchRequested
+            && !selectedTools.map(\.name)
+                .contains(LocalModelToolPolicy.webSearchToolName)
+        // A search turn must not fall back to an unrelated offered tool:
+        // clear the other schemas so no substitute call is required, offered
+        // or resolvable, and the truthful notice below is the only directive.
+        var fallbackToolsForBuild = toolsForSelection
+        if webSearchUnavailable {
+            selectedTools.removeAll { $0.name != LocalModelToolPolicy.webSearchToolName }
+            fallbackToolsForBuild.removeAll { $0.name != LocalModelToolPolicy.webSearchToolName }
+        }
 
         // Build 222: which models may see native schemas. Qwen-family chat
         // templates are the ones device logs tie to tool-invocation crashes,
@@ -2667,13 +2699,27 @@ public struct LocalProviderAdapter: ProviderAdapter {
         var sections: [String] = []
         // Add the adapter's actual admitted directory for actions/capability
         // questions. Keep it in system context alongside runtime instructions.
-        if includeToolDirectory, !availableTools.isEmpty {
-            let names = availableTools.map(\.name).sorted().joined(separator: ", ")
+        // On a search-unavailable turn it is suppressed: the directory must
+        // not advertise a substitute tool the notice forbids.
+        if includeToolDirectory, !fallbackToolsForBuild.isEmpty, !webSearchUnavailable {
+            let names = fallbackToolsForBuild.map(\.name).sorted().joined(separator: ", ")
             let boundedNames = LocalPromptPressure.clippedToTokens(
                 clipped(names, limit: budgets.directoryCharacters),
                 limit: tokenBudgets.directory
             )
             sections.append("AVAILABLE TOOL NAMES (authoritative): \(boundedNames)")
+        }
+        if webSearchUnavailable {
+            // Truthful, precise notice scoped to this request. It does not
+            // claim the device has no provider configuration: the tool may
+            // instead be outside this task's capability set or have been
+            // pruned by the window's schema budget. No tool is offered as a
+            // substitute, so the model cannot be forced into an unrelated
+            // call and must answer from general knowledge.
+            sections.append("""
+            WEB SEARCH UNAVAILABLE FOR THIS REQUEST (app notice; truthful): No usable web.search tool is present in this request — either no web-search provider is configured, it is outside this task's capability set, or it was pruned by the current schema budget. Do not call any other tool merely as a substitute and do not invent search results, titles, numbers or sources. To configure web search later, open Settings → Web Search and add/enable a provider. Answer the user's request plainly from general knowledge and say search is unavailable for this request when doing so.
+            本次请求无法联网搜索（应用提示，属实）：当前请求中没有可用的 web.search 工具——可能是未配置联网搜索服务商、不在本任务的能力范围内，或因当前窗口的工具预算被裁剪。不要调用其他工具替代，也不要编造搜索结果、标题、数字或来源。可在「设置 → 联网搜索」中添加并启用服务商。请根据已有常识如实回答，并在需要时说明本次请求无法联网搜索。
+            """)
         }
         if !selectedTools.isEmpty {
             let offered = LocalPromptPressure.clippedToTokens(
@@ -3006,7 +3052,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
             applePrompt: latestUserText,
             appleConversation: appleConversation,
             selectedTools: selectedTools,
-            fallbackTools: availableTools,
+            fallbackTools: fallbackToolsForBuild,
             nativeToolSchemas: nativeToolSchemas,
             selectedToolCount: selectedTools.count,
             usesNativeToolSchemas: usesNativeToolSchemas,
@@ -3310,24 +3356,13 @@ public struct LocalProviderAdapter: ProviderAdapter {
         return first.name
     }
 
-    private static let mlxAdmissibleToolNames: Set<String> = [
-            "tools.list", "tools.search", "checklist.readPlan", "checklist.updatePlan", "skill.search",
-            "web.search", "web.searchAI", "web.fetch",
-            "workspace.listDirectory", "workspace.readFile", "workspace.searchFiles",
-            "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
-            "workspace.applyPatch",
-            "image.ocr", "document.pdf.inspect", "document.pdf.render",
-            "exec.localPython", "exec.javascript", "exec.compatEvaluator",
-            "memory.recall", "git.status", "git.diff", "git.log",
-            "conversation.search", "conversation.read", "conversation.list",
-            // Explicit Linux preparation; never an arbitrary image URL or
-            // install script.
-            LocalModelToolPolicy.prepareLinuxToolName,
-            // Bounded document-assistant handlers: read/search are read-only,
-            // edit stays behind the Notes approval policy like anywhere else.
-            // Heavier surfaces (attachFile/stageAttachment) stay cloud-side.
-            "notes.read", "notes.search", "notes.edit"
-    ]
+    /// Curated on-device ceiling. Local models may only ever see web
+    /// retrieval, read-only file lookup and the discovery meta-tools: shell,
+    /// code execution, Linux provisioning and complex environment lifecycle
+    /// management are absent, so discovery cannot reintroduce them. The list
+    /// is owned by `LocalModelToolPolicy`; this adapter and the app runtime
+    /// share it verbatim.
+    private static let mlxAdmissibleToolNames = LocalModelToolPolicy.curatedCeilingNames
 
     /// Intent scoring shared by tool admission and the minimal-repair tool
     /// pick. Returns the tools with a positive score ordered by descending
@@ -3347,7 +3382,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let intentPrefixes: [(needles: [String], prefixes: [String])] = [
             (["文件", "目录", "文档", "pdf", "代码", "file", "folder", "document", "code"], ["workspace.", "document.", "pdf."]),
             (["图片", "照片", "图像", "视觉", "ocr", "image", "photo", "vision"], ["image."]),
-            (["网页", "浏览器", "联网", "搜索", "网站", "天气", "预报", "web", "browser", "search", "weather", "forecast", "url"], ["web."]),
+            (["网页", "浏览器", "联网", "搜索", "搜一下", "网站", "天气", "预报", "新闻", "资讯", "热点", "web", "browser", "search", "news", "headline", "weather", "forecast", "url"], ["web."]),
             (["python", "javascript", "js", "脚本", "计算", "运行", "execute", "script", "compute"], ["exec."]),
             (["ssh", "主机", "远程", "终端", "服务器", "host", "remote", "terminal", "server"], ["ssh."]),
             (["记忆", "memory", "偏好"], ["memory."]),
@@ -3445,16 +3480,17 @@ public struct LocalProviderAdapter: ProviderAdapter {
             schemaCharacters += schemaCost(tool)
             return true
         }
-        // Stable, budgeted base set: complete file-tool schemas and the
-        // explicit Linux preparation capability are admitted on every run
-        // without a tools.list discovery call. Admission follows the policy's
-        // priority order so a small window keeps the create/read/write chain.
-        // Intent-scored tools fill the remaining slots afterwards. The
-        // minimal-repair pick bypasses this admission entirely via
-        // `scoreTools`, where an alphabetically earlier file tool must not
+        // Stable, budgeted base set: the curated search/lookup schemas are
+        // admitted on every run without a tools.list discovery call. Admission
+        // order is intent-specific: file lookup leads for a file-only request
+        // and web.search leads for a live-web request, so a small window keeps
+        // the schema the turn needs. The per-window budget then drops schemas
+        // from the tail. Intent-scored tools fill the remaining slots
+        // afterwards. The minimal-repair pick bypasses this admission entirely
+        // via `scoreTools`, where an alphabetically earlier file tool must not
         // masquerade as the intended tool.
         let byName = Dictionary(tools.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-        for name in LocalModelToolPolicy.admissionOrder {
+        for name in LocalModelToolPolicy.pinnedAdmissionOrder(for: latestUserText.lowercased()) {
             guard let tool = byName[name] else { continue }
             _ = admit(tool)
         }
