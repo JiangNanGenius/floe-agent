@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 237: shared Linux first-use recovery with cancellable status waits and visible stages; curated local search/read tools with cloud discovery preserved; corrected cloud Git schemas; rebuilt Office native transport with stop/close race fixes and bounded ordered delivery. Please test missing-image automatic download, progress/cancel, two search turns and Office editing. PPT edit crashes, square glyphs and real-weight search-answer accuracy remain unverified; this beta does not claim those issues are resolved.",
+  "zh-Hans": "Build237：Linux 首次恢复合并、可取消状态等待与阶段显示；本地模型精选搜索和只读工具，保留云端工具范围；修复云端 Git 工具参数正则；重建 Office 原生宿主，修复停止关闭回调竞态并保持有界顺序传输。请测试缺失镜像自动下载、进度取消、连续两轮搜索及 Office 编辑。PPT 编辑闪退、字体方框和真实权重搜索回答准确性仍待验收，本内测不宣称已解决。"
+}
