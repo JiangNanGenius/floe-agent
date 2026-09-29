@@ -1,0 +1,577 @@
+diff --git a/ios/Mobile/CoolURLSchemeHandler.mm b/ios/Mobile/CoolURLSchemeHandler.mm
+index 8b9fe05..b9e3f32 100644
+--- a/ios/Mobile/CoolURLSchemeHandler.mm
++++ b/ios/Mobile/CoolURLSchemeHandler.mm
+@@ -279,9 +279,15 @@ - (void)handleMobileSocketTask:(id<WKURLSchemeTask>)urlSchemeTask {
+     NSString * command = [path objectAtIndex:[path count] - 3];
+     
+     if ([command isEqualToString:@"open"]) {
+-        [mobileSocket open:urlSchemeTask];
+-        [self->ongoingMobileSocketTasks removeObject:urlSchemeTask];
+-        [self->ongoingTasks removeObject:urlSchemeTask];
++        // open's work is asynchronous. Upstream removed the task from our
++        // bookkeeping immediately, so a WebKit stop arriving afterwards was
++        // never forwarded to MobileSocket; its queued open block still emitted
++        // callbacks on a stopped task. Remove only once the work finishes;
++        // stopURLSchemeTask forwards invalidation while it stays tracked here.
++        [mobileSocket open:urlSchemeTask onFinish:^{
++            [self->ongoingMobileSocketTasks removeObject:urlSchemeTask];
++            [self->ongoingTasks removeObject:urlSchemeTask];
++        }];
+         return;
+     }
+     
+diff --git a/ios/Mobile/MobileSocket.h b/ios/Mobile/MobileSocket.h
+index 763218c..beb58fa 100644
+--- a/ios/Mobile/MobileSocket.h
++++ b/ios/Mobile/MobileSocket.h
+@@ -34,7 +34,7 @@
+  * out for similar reasons.
+  */
+ @interface MobileSocket : NSObject
+-- (void)open:(id<WKURLSchemeTask>)urlSchemeTask;
++- (void)open:(id<WKURLSchemeTask>)urlSchemeTask onFinish:(void (^)(void))callback;
+ - (void)write:(id<WKURLSchemeTask>)urlSchemeTask onFinish:(void (^)(void))callback;
+ 
+ - (void)queueSend:(std::string)message then:(void (^)(void))callback;
+diff --git a/ios/Mobile/MobileSocket.mm b/ios/Mobile/MobileSocket.mm
+index 0645af1..5e35550 100644
+--- a/ios/Mobile/MobileSocket.mm
++++ b/ios/Mobile/MobileSocket.mm
+@@ -25,126 +25,463 @@
+ 
+ #import <wsd/DocumentBroker.hpp>
+ 
++// Synchronously run |block| on the main queue when called off-main. This is
++// deadlock-free: every main -> background hop is asynchronous, so the main
++// queue never waits on background work and always drains.
++static void FLEOnMainSync(dispatch_block_t block) {
++    if ([NSThread isMainThread])
++        block();
++    else
++        dispatch_sync(dispatch_get_main_queue(), block);
++}
++
++// Largest single didReceiveData payload. Large message bodies are streamed
++// in chunks of at most this size, so no main-queue block performs unbounded
++// work and no per-message payload is duplicated in memory. The wire framing
++// (header, body bytes, terminating newline) is unchanged: WebKit concatenates
++// streamed data and the frame boundary is still the trailing newline.
++static const NSUInteger FLEMaxDataChunk = 256 * 1024;
++
++// Per-task lifecycle state (Floe overlay).
++@interface FLEMobileSocketTaskState : NSObject
++@property (nonatomic) BOOL stopped; // Main queue only.
++@end
++
++@implementation FLEMobileSocketTaskState
++@end
++
++// Outcome of one WebKit callback attempt (main queue only).
++//  - executed: the callback ran. A reentrant stop INSIDE that very callback
++//    still leaves executed == YES (the frame genuinely entered WebKit, so the
++//    message is consumed exactly as for any delivered frame).
++//  - active: the task was alive both before AND after the callback. It is NO
++//    when the callback was suppressed (already stopped) or when a stop landed
++//    reentrantly during it; callers use it to stop emitting further frames and
++//    to settle as cancelled.
++// Keeping the two apart is essential: conflating "executed" with "active"
++// skipped pop_front after a reentrant stop inside the trailing newline, so a
++// fully delivered message was requeued and duplicated on the replacement task.
++typedef struct FLEEmitResult {
++    BOOL executed;
++    BOOL active;
++} FLEEmitResult;
++
++// Read stopped via the main queue (the only owner of state).
++static BOOL FLEStateStopped(FLEMobileSocketTaskState *state) {
++    __block BOOL stopped = NO;
++    FLEOnMainSync(^{ stopped = state.stopped; });
++    return stopped;
++}
++
++// One queued/in-flight write request (Floe overlay).
++@interface FLEMobileSocketWriteRequest : NSObject
++@property (nonatomic, strong) id<WKURLSchemeTask> task;
++@property (nonatomic, strong) FLEMobileSocketTaskState *state;
++@property (nonatomic, copy) void (^completion)(void);
++@end
++
++@implementation FLEMobileSocketWriteRequest {
++@public
++    // Messages still owed, in order. Fully delivered messages are popped, so
++    // delivered payload memory is freed incrementally. A std::deque gives O(1)
++    // pop_front and lets settlement requeue the suffix at the queue's front.
++    std::deque<std::string> remaining;
++}
++@end
++
++// Upstream tracked tasks only in a set mutated on a serial background queue.
++// That could not stop callbacks for a task WebKit had invalidated:
++//  - open/write blocks re-add the task when they run after stopURLSchemeTask,
++//    while the stop removal itself is enqueued behind them;
++//  - the in-loop "still tracked?" check can never observe a stop, because no
++//    other block on a serial queue runs while it executes;
++//  - checking a flag immediately before invoking WebKit is check-then-act
++//    when stop runs on another thread;
++//  - overlapping writes snapshot the same queued messages (duplicates),
++//    while a success clear() drops messages pushed during delivery;
++//  - and preparing the whole batch duplicates every pending payload.
++//
++// Invalidation, queue and memory contract:
++//  - The MAIN queue is the single owner of WebKit callbacks and stopped
++//    state, matching WebKit which invokes each handler callback on the main
++//    run loop (callOnMainRunLoopAndWait) and raises on every method invoked
++//    after stop. The stopped check and the WebKit call sit in one
++//    non-preemptible main block, so nothing (including stop) can run between
++//    them. Stop never waits on background work.
++//  - Task state is registered synchronously on the main thread inside
++//    startURLSchemeTask, before any background work.
++//  - The background serial queue owns the message queue and framing. It moves
++//    (never copies) the queued batch into the request when a write starts, so
++//    messages pushed during delivery stay queued for the next write; requests
++//    that overlap an in-flight write wait in order. A message is popped only
++//    once its newline frame was delivered.
++//  - Messages are streamed ONE AT A TIME, and large bodies in bounded chunks,
++//    each in its own main block: no whole-batch payload copy, bounded main
++//    work, and stop can take effect at any frame/chunk boundary.
++//  - On cancellation, the undelivered suffix (the partial current message and
++//    all later ones) is inserted at the FRONT of the message queue, ahead of
++//    messages pushed meanwhile, for the replacement write.
++//  - Reentrant stop from inside a callback is safe: no locks are involved.
++//    A callback that ran is "executed" even if that same callback triggered
++//    the stop; the frame entered WebKit, so its message is consumed. "active"
++//    (alive before and after) is a separate signal that gates the next frame.
++//    Conflating the two made a reentrant stop in the trailing newline skip
++//    pop_front and duplicate a fully delivered message after reopen.
+ @interface MobileSocket()
+ {
++    // Background serial queue: owns sendingMessages / write bookkeeping and
++    // frame preparation. It never invokes WebKit directly. It may read settled
++    // lifecycle state with a synchronous hop to main (FLEStateStopped and the
++    // finishWriteRequest completion); that is safe because the blocking is
++    // one-directional — the MAIN queue never waits on background work and so
++    // always drains.
+     dispatch_queue_t queue;
+     int serial;
+-    std::vector<std::string> sendingMessages;
+-    NSMutableSet<id<WKURLSchemeTask>> *ongoingTasks;
++    std::deque<std::string> sendingMessages;
++    BOOL writeInFlight;
++    NSMutableArray<FLEMobileSocketWriteRequest *> *pendingWrites;
++
++    // Main-queue-only registry of task lifecycle state, keyed by object
++    // identity (WKURLSchemeTask is not documented as NSCopying). Bounded by
++    // the number of live tasks (removed when each task completes).
++    NSMapTable<id<WKURLSchemeTask>, FLEMobileSocketTaskState *> *taskStates;
+ }
+ 
+ - (id)init;
+ 
+-- (void)send:(std::string)message to:(id<WKURLSchemeTask>)urlSchemeTask;
++// Main queue.
++- (FLEMobileSocketTaskState *)registerTask:(id<WKURLSchemeTask>)urlSchemeTask;
++- (FLEEmitResult)emit:(FLEMobileSocketTaskState *)state block:(void (^)(void))block;
++- (void)completeTask:(id<WKURLSchemeTask>)urlSchemeTask callback:(void (^)(void))callback;
++
++// Background queue: chunked write chain.
++- (NSHTTPURLResponse *)preparedResponseForTask:(id<WKURLSchemeTask>)urlSchemeTask;
++- (void)enqueueWriteTask:(id<WKURLSchemeTask>)urlSchemeTask
++                   state:(FLEMobileSocketTaskState *)state
++              completion:(void (^)(void))completion;
++- (void)startWriteRequest:(FLEMobileSocketWriteRequest *)holder;
++- (void)nextMessageForWrite:(FLEMobileSocketWriteRequest *)holder
++                   response:(NSHTTPURLResponse *)response;
++- (void)emitMain:(FLEMobileSocketWriteRequest *)holder
++           block:(void (^)(void))frame
++         onContinue:(void (^)(void))continueWork;
++- (void)nextChunkForWrite:(FLEMobileSocketWriteRequest *)holder;
++- (void)finishWriteRequest:(FLEMobileSocketWriteRequest *)holder cancelled:(BOOL)cancelled;
++- (void)removePendingWriteForTask:(id<WKURLSchemeTask>)urlSchemeTask;
+ @end
+ 
+-@implementation MobileSocket
++@implementation MobileSocket {
++@private
++    // Per-message preparation cursor (background queue only).
++    NSData *_frameHeader;
++    NSUInteger _frameChunkCount;
++    NSUInteger _frameChunkIndex;
++}
++
+ - (id)init {
+-    self->ongoingTasks = [[NSMutableSet alloc] init];
++    self = [super init];
+     self->queue = dispatch_queue_create("com.collabora.iOS.CoolURLSchemeHandler.proxySocketQueue", DISPATCH_QUEUE_SERIAL);
++    self->writeInFlight = NO;
++    self->pendingWrites = [NSMutableArray array];
++    self->taskStates = [NSMapTable mapTableWithKeyOptions:(NSPointerFunctionsObjectPointerPersonality |
++                                                           NSPointerFunctionsStrongMemory)
++                                             valueOptions:NSPointerFunctionsStrongMemory];
+     return self;
+ }
+ 
+-- (void)send:(const std::string)message to:(id<WKURLSchemeTask>)urlSchemeTask {
++#pragma mark Main-queue ownership
++
++- (FLEMobileSocketTaskState *)registerTask:(id<WKURLSchemeTask>)urlSchemeTask {
++    FLEMobileSocketTaskState *state = [taskStates objectForKey:urlSchemeTask];
++    if (state == nil) {
++        state = [[FLEMobileSocketTaskState alloc] init];
++        [taskStates setObject:state forKey:urlSchemeTask];
++    }
++    return state;
++}
++
++- (FLEEmitResult)emit:(FLEMobileSocketTaskState *)state block:(void (^)(void))block {
++    // Must be called on the main queue. The check and the WebKit call are one
++    // non-preemptible main block: linearized against a non-reentrant stop, no
++    // lock needed. A stop invoked REENTRANTLY from inside |block| (WebKit
++    // delivers stop on the main run loop too) flips stopped while the callback
++    // is running; report executed=YES (it ran) with active=NO (cancelled).
++    FLEEmitResult result = { NO, NO };
++    if (state.stopped)
++        return result;
++    block();
++    result.executed = YES;
++    result.active = !state.stopped;
++    return result;
++}
++
++- (void)completeTask:(id<WKURLSchemeTask>)urlSchemeTask callback:(void (^)(void))callback {
++    [taskStates removeObjectForKey:urlSchemeTask];
++    callback();
++}
++
++#pragma mark Background preparation
++
++- (NSHTTPURLResponse *)preparedResponseForTask:(id<WKURLSchemeTask>)urlSchemeTask {
++    NSMutableDictionary<NSString*, NSString*> * responseHeaders = [[NSMutableDictionary alloc] init];
++    [responseHeaders setObject:@"null" forKey:@"Access-Control-Allow-Origin"]; // Yes, the origin really is 'null' for 'file:' origins
++
++    NSHTTPURLResponse * response = [[NSHTTPURLResponse alloc]
++                                    initWithURL:urlSchemeTask.request.URL
++                                    statusCode:200
++                                    HTTPVersion:nil
++                                    headerFields:responseHeaders
++    ];
++    return response;
++}
++
++#pragma mark Write serialization (background)
++
++- (void)enqueueWriteTask:(id<WKURLSchemeTask>)urlSchemeTask
++                   state:(FLEMobileSocketTaskState *)state
++              completion:(void (^)(void))completion {
++    FLEMobileSocketWriteRequest *holder = [[FLEMobileSocketWriteRequest alloc] init];
++    holder.task = urlSchemeTask;
++    holder.state = state;
++    holder.completion = completion;
++
++    if (writeInFlight) {
++        [pendingWrites addObject:holder]; // Wait in order; its stop drops it meanwhile.
++        return;
++    }
++    [self startWriteRequest:holder];
++}
++
++- (void)startWriteRequest:(FLEMobileSocketWriteRequest *)holder {
++    writeInFlight = YES;
++
++    // A stop may have arrived before this reached the background (immediate
++    // write) or while the request sat waiting. finishWriteRequest is the only
++    // settle/pump path, so a stopped head can never strand followers.
++    if (FLEStateStopped(holder.state)) {
++        [self finishWriteRequest:holder cancelled:YES];
++        return;
++    }
++
++    // Take OWNERSHIP of everything queued (move, no payload copy). New
++    // queueSends append to the now-empty deque and belong to a later write.
++    holder->remaining.swap(self->sendingMessages);
++
++    NSHTTPURLResponse *response = [self preparedResponseForTask:holder.task];
++
++    // Response frame.
++    [self emitMain:holder block:^{ [holder.task didReceiveResponse:response]; }
++        onContinue:^{ [self nextMessageForWrite:holder response:response]; }];
++}
++
++- (void)nextMessageForWrite:(FLEMobileSocketWriteRequest *)holder
++                   response:(NSHTTPURLResponse *)response {
++    (void)response;
++    if (holder->remaining.empty()) {
++        // Every message delivered (or the batch was empty): finish the stream.
++        dispatch_async(dispatch_get_main_queue(), ^{
++            FLEEmitResult finish = [self emit:holder.state
++                                        block:^{ [holder.task didFinish]; }];
++            dispatch_async(self->queue, ^{
++                // didFinish is the terminal frame: nothing remains in
++                // remaining regardless of whether it executed or a stop
++                // landed, so never requeue on this path. Settle as cancelled
++                // only when didFinish was actually suppressed.
++                [self finishWriteRequest:holder cancelled:!finish.executed];
++            });
++        });
++        return;
++    }
++
++    const std::string &message = holder->remaining.front();
++
+     serial++;
+-    
++
+     std::ostringstream header;
+-    
+     bool binary = false;
+-    
+-    for (const char &c : message) {
++    for (const char c : message) {
+         if (c == '\n') {
+             binary = true;
+             break;
+         }
+     }
+-    
+-    if (binary) {
++    if (binary)
+         header << "B";
+-    } else {
++    else
+         header << "T";
++    header << "0x" << std::hex << serial << "\n";
++    header << "0x" << std::hex << message.size() << "\n";
++
++    _frameHeader = [NSData dataWithBytes:header.str().data() length:header.str().length()];
++    _frameChunkCount = (message.size() + FLEMaxDataChunk - 1) / FLEMaxDataChunk;
++    if (_frameChunkCount == 0)
++        _frameChunkCount = 1; // Empty body: one zero-length chunk.
++    _frameChunkIndex = 0;
++
++    [self emitMain:holder block:^{ [holder.task didReceiveData:self->_frameHeader]; }
++        onContinue:^{ [self nextChunkForWrite:holder]; }];
++}
++
++- (void)nextChunkForWrite:(FLEMobileSocketWriteRequest *)holder {
++    const std::string &message = holder->remaining.front();
++    NSUInteger offset = _frameChunkIndex * FLEMaxDataChunk;
++
++    if (offset < message.size()) {
++        NSUInteger length = std::min(FLEMaxDataChunk, message.size() - offset);
++        // One bounded copy; the source string stays owned by the request.
++        NSData *chunk = [NSData dataWithBytes:message.data() + offset length:length];
++
++        _frameChunkIndex++;
++        [self emitMain:holder block:^{ [holder.task didReceiveData:chunk]; }
++            onContinue:^{ [self nextChunkForWrite:holder]; }];
++        return;
++    }
++
++    // Whole body streamed: terminate the frame with the newline.
++    NSData *newline = [@"\n" dataUsingEncoding:NSUTF8StringEncoding];
++    dispatch_async(dispatch_get_main_queue(), ^{
++        FLEEmitResult newlineResult = [self emit:holder.state
++                                           block:^{ [holder.task didReceiveData:newline]; }];
++        dispatch_async(self->queue, ^{
++            // The message is consumed once its newline frame actually entered
++            // WebKit — INCLUDING when a reentrant stop ran inside this very
++            // callback (newlineResult.executed == YES, active == NO). Gating
++            // the pop on |active| previously skipped pop_front and duplicated
++            // the fully delivered message on the replacement write.
++            if (newlineResult.executed)
++                holder->remaining.pop_front();
++            if (newlineResult.active)
++                [self nextMessageForWrite:holder response:nil];
++            else
++                [self finishWriteRequest:holder cancelled:YES];
++        });
++    });
++}
++
++// Emit one non-terminal frame on the main queue. While the task stays active
++// the next preparation step runs on the background queue; if the callback was
++// suppressed or a stop landed (even reentrantly inside it), settle without
++// consuming anything this frame did not itself deliver.
++- (void)emitMain:(FLEMobileSocketWriteRequest *)holder
++           block:(void (^)(void))frame
++       onContinue:(void (^)(void))continueWork {
++    dispatch_async(dispatch_get_main_queue(), ^{
++        FLEEmitResult result = [self emit:holder.state block:frame];
++        dispatch_async(self->queue, ^{
++            if (result.active)
++                continueWork();
++            else
++                [self finishWriteRequest:holder cancelled:YES];
++        });
++    });
++}
++
++- (void)finishWriteRequest:(FLEMobileSocketWriteRequest *)holder cancelled:(BOOL)cancelled {
++    if (cancelled && !holder->remaining.empty()) {
++        // Requeue the exact undelivered suffix at the FRONT, so messages
++        // pushed during delivery (already sitting in sendingMessages) follow
++        // it rather than precede it: global order preserved, no duplication.
++        for (auto it = holder->remaining.rbegin(); it != holder->remaining.rend(); ++it)
++            self->sendingMessages.push_front(*it);
+     }
+-    
+-    header << "0x";
+-    header << std::hex << serial;
+-    header << "\n";
+-    
+-    header << "0x";
+-    header << std::hex << message.size();
+-    header << "\n";
++    writeInFlight = NO;
++    FLEOnMainSync(^{
++        [self completeTask:holder.task callback:holder.completion];
++    });
+ 
+-    [urlSchemeTask didReceiveData:[NSData dataWithBytes:header.str().data() length:header.str().length()]];
+-    [urlSchemeTask didReceiveData:[NSData dataWithBytes:message.data() length:message.length()]];
+-    [urlSchemeTask didReceiveData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
++    // Pump followers in order, dropping requests stopped while waiting.
++    while (pendingWrites.count > 0) {
++        FLEMobileSocketWriteRequest *next = pendingWrites.firstObject;
++        [pendingWrites removeObjectAtIndex:0];
++        if (FLEStateStopped(next.state)) {
++            writeInFlight = NO;
++            FLEOnMainSync(^{ [self completeTask:next.task callback:next.completion]; });
++            continue;
++        }
++        [self startWriteRequest:next];
++        return;
++    }
+ }
+ 
+-- (void)open:(id<WKURLSchemeTask>)urlSchemeTask {
++- (void)removePendingWriteForTask:(id<WKURLSchemeTask>)urlSchemeTask {
++    // Background queue, following a stop. A waiting write is dropped here; an
++    // in-flight task is cancelled through its emission chain.
++    for (NSUInteger i = 0; i < pendingWrites.count; i++) {
++        if (pendingWrites[i].task == urlSchemeTask) {
++            FLEMobileSocketWriteRequest *holder = pendingWrites[i];
++            [pendingWrites removeObjectAtIndex:i];
++            FLEOnMainSync(^{ [self completeTask:holder.task callback:holder.completion]; });
++            return;
++        }
++    }
++}
++
++#pragma mark Public entry points
++
++- (void)open:(id<WKURLSchemeTask>)urlSchemeTask onFinish:(void (^)(void))callback {
++    FLEMobileSocketTaskState *state = [self registerTask:urlSchemeTask];
++
+     dispatch_async(queue, ^{
+-        [self->ongoingTasks addObject:urlSchemeTask];
+-        NSMutableDictionary<NSString*, NSString*> * responseHeaders = [[NSMutableDictionary alloc] init];
+-        [responseHeaders setObject:@"null" forKey:@"Access-Control-Allow-Origin"]; // Yes, the origin really is 'null' for 'file:' origins
+-        
+         self->serial = 0;
+-        NSData * identifier = [@"mobile" dataUsingEncoding:NSUTF8StringEncoding]; // This is entirely arbitrary - "mobile" is nice but for functionality it may as well be "xnopyt", "pomni" or any other random string without colons
+-        [responseHeaders setObject:[NSString stringWithFormat:@"%lu", identifier.length] forKey:@"Content-Length"];
+-        
+-        NSHTTPURLResponse * response = [[NSHTTPURLResponse alloc]
+-                                        initWithURL:urlSchemeTask.request.URL
+-                                        statusCode:200
+-                                        HTTPVersion:nil
+-                                        headerFields:responseHeaders
+-        ];
+-        [urlSchemeTask didReceiveResponse:response];
+-        [urlSchemeTask didReceiveData:identifier];
+-        
+-        [self->ongoingTasks removeObject:urlSchemeTask];
+-        [urlSchemeTask didFinish];
++        NSData *identifier = [@"mobile" dataUsingEncoding:NSUTF8StringEncoding]; // Arbitrary identifier; see upstream history.
++        NSHTTPURLResponse *response = [self preparedResponseForTask:urlSchemeTask];
++
++        dispatch_async(dispatch_get_main_queue(), ^{
++            FLEEmitResult responseResult = [self emit:state block:^{
++                [urlSchemeTask didReceiveResponse:response];
++            }];
++            if (!responseResult.active) {
++                [self completeTask:urlSchemeTask callback:callback];
++                return;
++            }
++            dispatch_async(dispatch_get_main_queue(), ^{
++                FLEEmitResult dataResult = [self emit:state block:^{
++                    [urlSchemeTask didReceiveData:identifier];
++                }];
++                if (!dataResult.active) {
++                    [self completeTask:urlSchemeTask callback:callback];
++                    return;
++                }
++                dispatch_async(dispatch_get_main_queue(), ^{
++                    FLEEmitResult finishResult =
++                        [self emit:state block:^{ [urlSchemeTask didFinish]; }];
++                    (void)finishResult; // terminal frame; settle either way below
++                    [self completeTask:urlSchemeTask callback:callback];
++                });
++            });
++        });
+     });
+ }
+ 
+ - (void)write:(id<WKURLSchemeTask>)urlSchemeTask onFinish:(void (^)(void))callback {
++    FLEMobileSocketTaskState *state = [self registerTask:urlSchemeTask];
+     dispatch_async(queue, ^{
+-        [self->ongoingTasks addObject:urlSchemeTask];
+-        NSMutableDictionary<NSString*, NSString*> * responseHeaders = [[NSMutableDictionary alloc] init];
+-        [responseHeaders setObject:@"null" forKey:@"Access-Control-Allow-Origin"]; // Yes, the origin really is 'null' for 'file:' origins
+-        
+-        NSHTTPURLResponse * response = [[NSHTTPURLResponse alloc]
+-                                        initWithURL:urlSchemeTask.request.URL
+-                                        statusCode:200
+-                                        HTTPVersion:nil
+-                                        headerFields:responseHeaders
+-        ];
+-        [urlSchemeTask didReceiveResponse:response];
+-
+-        for (const std::string &message : self->sendingMessages) {
+-            [self send:message to:urlSchemeTask];
+-            
+-            if (![self->ongoingTasks containsObject:urlSchemeTask]) {
+-                return; // Call no further methods - we're not going to worry too much about re-sending stuff here ... this abort is a fairly odd situation anyway
+-            }
+-        }
+-        
+-        self->sendingMessages.clear();
+-        
+-        // Tell the other side that we finished, and remove the ongoing-ness of the task
+-        [self->ongoingTasks removeObject:urlSchemeTask];
+-        [urlSchemeTask didFinish];
+-        
+-        dispatch_async(dispatch_get_main_queue(), callback);
++        [self enqueueWriteTask:urlSchemeTask state:state completion:callback];
+     });
+ }
+ 
+ - (void)queueSend:(std::string)message then:(void (^)(void))callback {
+     dispatch_async(queue, ^{
+-        self->sendingMessages.push_back(message);
++        self->sendingMessages.push_back(std::move(message));
+         dispatch_async(dispatch_get_main_queue(), callback);
+     });
+ }
+ 
+ - (void)stopURLSchemeTask:(id<WKURLSchemeTask>)urlSchemeTask {
++    // Synchronous, non-waiting invalidation:
++    //  - enqueuing on |queue| would run after the open/write block to cancel;
++    //  - waiting for background work from the main thread deadlocks against
++    //    WebKit's own callOnMainRunLoopAndWait delivery.
++    // After this returns, every frame block not yet executing observes
++    // stopped and skips; a block already executing completes (its WebKit
++    // message began before stop, which WebKit does not reject).
++    FLEOnMainSync(^{
++        FLEMobileSocketTaskState *state = [self->taskStates objectForKey:urlSchemeTask];
++        if (state != nil)
++            state.stopped = YES;
++    });
+     dispatch_async(queue, ^{
+-        // Yeet the task from the ongoingTasks
+-        [self->ongoingTasks removeObject:urlSchemeTask];
++        [self removePendingWriteForTask:urlSchemeTask];
+     });
+ }
+ @end

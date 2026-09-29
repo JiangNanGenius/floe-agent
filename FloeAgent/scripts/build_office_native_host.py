@@ -174,6 +174,17 @@ def build_host(root, output, *, build=True, filter_overlay=None):
     # A compile/link qualification can never prove the release capabilities.
     # The block is explicit so a pin can never read an absent flag as passed.
     report['capabilityQualification'] = false_capabilities()
+    # Provenance of the scheme lifecycle overlay carried in the produced host:
+    # an older host (absent block) cannot satisfy a new-overlay claim, and
+    # bootstrap_office_host enforces it once the host pin records the hash.
+    lock = json.loads(DEFAULT_LOCK.read_text())
+    scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
+    if scheme_overlay is not None:
+        report['schemeTaskLifecycle'] = {
+            'patchSHA256': scheme_overlay['sha256'],
+            'sourceCommit': lock['commit'],
+            'files': {name: spec['preparedSHA256']
+                      for name, spec in scheme_overlay['files'].items()}}
     report.update(run_identity())
     receipt = output / 'native-host.json'
 

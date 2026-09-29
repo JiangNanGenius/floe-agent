@@ -254,5 +254,24 @@
         "preparedSHA256": "0600a9e698b9993f1d4bc2f3272f849d9c593395f568023b4df9acb4b8bc6371"
       }
     }
+  },
+  "schemeTaskLifecycleOverlay": {
+    "patch": "patches/ios-scheme-task-lifecycle.patch",
+    "sha256": "0d41d552707a3fcbcf1a94bcd1bc89e86386d74838f4a912a9e7de92dc6ad14a",
+    "files": {
+      "ios/Mobile/MobileSocket.h": {
+        "originalSHA256": "1f159e2a36087c3aa1a62bd9c09d820701926c06a483ffed353a59ffbabea2c1",
+        "preparedSHA256": "1fa5d056642440c45eb354e30e9efa0ba60e51f85317b1d8493b8c8fb4e523c4"
+      },
+      "ios/Mobile/MobileSocket.mm": {
+        "originalSHA256": "e9a0ddb3d5e3be4d0235d95f2363e6e8ebe292b5db0d470acc024d427f7f5448",
+        "preparedSHA256": "b43c80fc00e005d70b07084b91264257b93f378f4b05f860ab4d94fcad82507f"
+      },
+      "ios/Mobile/CoolURLSchemeHandler.mm": {
+        "originalSHA256": "26ff7fe5cd5d67e86be3a2768cc2ce0ec43d5703aae8f792e081b774ef3c8512",
+        "preparedSHA256": "2638b30bb71a674db5a0fbbaf977f187f6ecbd16d6d7887cb5ac3619f199db06"
+      }
+    },
+    "note": "Serializes WKURLSchemeTask lifecycle: main queue is the single owner of stopped state and WebKit callbacks (stopped check and WebKit call execute in one main-queue block); the background serial queue only prepares frames and owns message batches. One write in flight; the batch is moved (not copied) out of sendingMessages when the write starts (new queueSends preserved) and the undelivered suffix is prepended on cancellation. Messages stream one at a time, bodies in bounded 256 KiB didReceiveData chunks, each in its own main block (wire framing unchanged, no whole-batch payload copy). emit separates executed (the WebKit callback ran, including a reentrant stop inside it) from active (alive before and after): a message whose trailing newline executed is popped even when that callback reentrantly stops the task, so fully delivered messages are never requeued/duplicated after reopen; only frames that did not execute are requeued. Applies after the embedding overlay and does not overlap its files. Regression: scripts/test_office_scheme_lifecycle.py (mock native transport on macOS; not device Office/PPT root-cause acceptance)."
   }
 }

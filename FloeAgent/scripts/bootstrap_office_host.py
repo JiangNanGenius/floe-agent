@@ -37,6 +37,14 @@ def checked_lock(lock_path):
     pin = lock['qualifiedHostArtifact']
     if pin['overlaySHA256'] != lock['embeddingOverlay']['sha256']:
         raise ValueError('Native host must be rebuilt for the current source overlay')
+    # When the host pin claims a scheme lifecycle overlay, the produced host
+    # manifest must carry matching provenance so an older host cannot satisfy
+    # the claim. Absent claim: hosts built before this overlay stay accepted.
+    scheme_claim = pin.get('schemeOverlaySHA256')
+    if scheme_claim is not None:
+        overlay = lock.get('schemeTaskLifecycleOverlay')
+        if overlay is None or scheme_claim != overlay['sha256']:
+            raise ValueError('Native host scheme overlay claim does not match its lock')
     for name, checksum in pin['hostSourceSHA256'].items():
         relative(name)
         if digest(lock_path.parent / 'FloeOfficeNative' / name) != checksum:
@@ -77,6 +85,16 @@ def inventory(folder, lock, pin):
             or report['hostSourceSHA256'] != pin['hostSourceSHA256']
             or not all(report.get(key) is True for key in ['hostCompilePassed', 'hostLinkPassed', 'swiftModuleImportPassed'])):
         raise ValueError('Native Office qualification does not match this build')
+    scheme_claim = pin.get('schemeOverlaySHA256')
+    if scheme_claim is not None:
+        overlay = lock['schemeTaskLifecycleOverlay']
+        provenance = report.get('schemeTaskLifecycle', {})
+        expected_files = {name: spec['preparedSHA256']
+                          for name, spec in overlay['files'].items()}
+        if (provenance.get('patchSHA256') != scheme_claim
+                or provenance.get('sourceCommit') != lock['commit']
+                or provenance.get('files') != expected_files):
+            raise ValueError('Native Office host lacks the pinned scheme overlay provenance')
     if 'filterOverlay' in pin:
         selected = report.get('filterOverlay', {})
         if (not selected.get('compilePassed') or not selected.get('archiveReplacementPassed')

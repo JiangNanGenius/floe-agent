@@ -57,6 +57,11 @@ jobs:
           python3 FloeAgent/scripts/test_office_native_drain.py \
             --upstream "$RUNNER_TEMP/office-native-bundle/source/browser/js/global.js" \
             > "$RUNNER_TEMP/office-native-bundle/native-drain-contract.json"
+      - name: Verify pinned native scheme lifecycle regression
+        run: |
+          python3 FloeAgent/scripts/test_office_scheme_lifecycle.py \
+            --source "$RUNNER_TEMP/office-native-bundle/source" \
+            > "$RUNNER_TEMP/office-native-bundle/scheme-lifecycle-regression.json"
       - name: Prepare pinned Calc exporter sources
         run: |
           python3 - <<'PY'
@@ -125,6 +130,7 @@ jobs:
           path: |
             ${{ runner.temp }}/office-native-bundle/bundle-repair.json
             ${{ runner.temp }}/office-native-bundle/native-drain-contract.json
+            ${{ runner.temp }}/office-native-bundle/scheme-lifecycle-regression.json
             ${{ runner.temp }}/office-filter-overlay/filter-overlay.json
             ${{ runner.temp }}/office-filter-overlay/compile.log
             ${{ runner.temp }}/office-filter-overlay/*.compile.log
