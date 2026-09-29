@@ -16,6 +16,94 @@
 
 import Foundation
 
+/// What one App-shared Linux image job is doing right now. The phase is owned
+/// by the service operation (download → archive verification → extraction →
+/// image verification/finalization, or local reconstruction/checks); the UI
+/// only mirrors it, so a progress bar can never claim "downloading" while the
+/// service is hashing or extracting, and a later phase never renders as the
+/// previous phase's percentage.
+public enum LinuxGuestImageTransferPhase: String, Sendable, Equatable, CaseIterable {
+    /// Re-verifying already-installed bytes (no download).
+    case checking
+    /// Rebuilding the bootable view from locally verified blobs (no download).
+    case reconstructing
+    /// Downloading the pinned archive (byte progress is available).
+    case downloading
+    /// Hashing the downloaded archive against the pinned SHA-512 (progress is
+    /// available in archive bytes).
+    case verifyingArchive
+    /// Extracting the verified archive into staging.
+    case extracting
+    /// Hashing the staged/promoted image artifacts against the manifest.
+    case verifyingImage
+    /// Atomic promotion / Runtime v2 refresh of the verified image.
+    case finalizing
+}
+
+/// Shared progress bookkeeping for the image job. A phase change starts a new
+/// 0...1 scale (download bytes and archive-verify bytes are different totals);
+/// within one phase the fraction is monotonic so a mirror retry or a redundant
+/// callback can never move the bar backwards.
+public enum LinuxGuestImageProgress {
+    public static func monotonic(previous: Double?, next: Double) -> Double {
+        let bounded = min(1, max(0, next))
+        guard let previous else { return bounded }
+        return max(min(1, max(0, previous)), bounded)
+    }
+}
+
+/// Gated phase/progress state for one shared image job.
+///
+/// Phase and progress reports reach the UI through independent MainActor
+/// hops, so they can arrive in a different order than they were produced.
+/// Every report carries a sequence stamped by the service operation: a report
+/// older than the last applied one is dropped, and `finish()` makes the state
+/// terminal so nothing can resurrect a completed or cancelled job. A new job
+/// for the same id starts a new epoch, so an in-flight report from the
+/// previous job is dropped as well.
+public struct LinuxGuestImageJobProgress: Sendable, Equatable {
+    public let epoch: UUID
+    public private(set) var sequence: UInt64
+    public private(set) var phase: LinuxGuestImageTransferPhase?
+    public private(set) var fraction: Double?
+    public private(set) var isFinished = false
+
+    public init(epoch: UUID) {
+        self.epoch = epoch
+        self.sequence = 0
+    }
+
+    /// Applies one report. Returns false when it is stale (wrong epoch, older
+    /// sequence, or after `finish()`), in which case the caller must not touch
+    /// the UI mirrors.
+    @discardableResult
+    public mutating func apply(
+        epoch: UUID,
+        sequence: UInt64,
+        phase: LinuxGuestImageTransferPhase,
+        fraction: Double?
+    ) -> Bool {
+        guard !isFinished, epoch == self.epoch, sequence >= self.sequence else { return false }
+        self.sequence = sequence
+        if self.phase != phase {
+            self.phase = phase
+            self.fraction = nil
+        }
+        if let fraction {
+            self.fraction = LinuxGuestImageProgress.monotonic(previous: self.fraction, next: fraction)
+        }
+        return true
+    }
+
+    /// Terminal transition: the job ended (success, failure or cancellation).
+    /// Later reports, however delayed, are ignored.
+    public mutating func finish() {
+        isFinished = true
+        phase = nil
+        fraction = nil
+    }
+}
+
 public enum LinuxGuestInstallState: Sendable, Equatable {
     /// Durable image storage is still being initialized (first launch before
     /// the root is ready). Distinct from a permanent unavailability so the

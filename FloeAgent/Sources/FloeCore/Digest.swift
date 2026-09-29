@@ -92,9 +92,15 @@ public struct FloeFileIOError: Error, LocalizedError, Equatable {
     /// Permission failures (EACCES/EPERM) are deliberately excluded: a
     /// permanent denial must not be called transient without reason, and an
     /// unknown error (errno 0) never defaults to transient.
+    ///
+    /// ENOMEM belongs here: `read(2)` reports it when the kernel cannot provide
+    /// the read buffer under memory pressure — the errno=12 the device raised
+    /// while hashing — and the same bytes can be read again once pressure
+    /// clears. It is a local condition, never evidence that the hashed content
+    /// is wrong.
     #if canImport(Darwin) || canImport(Glibc)
     private static let transientErrnos: Set<Int32> = {
-        var values: Set<Int32> = [EINTR, EAGAIN, EBUSY, EDEADLK]
+        var values: Set<Int32> = [EINTR, EAGAIN, EBUSY, EDEADLK, ENOMEM]
         // EWOULDBLOCK is a separate constant on some platforms.
         values.insert(EWOULDBLOCK)
         return values
@@ -127,9 +133,23 @@ public enum FloeDigest {
     }
 
     /// Streaming hash so large files never load fully into memory.
-    public static func sha256Hex(ofFileAt url: URL, chunkSize: Int = 1 << 20) throws -> String {
+    ///
+    /// `progress` receives `(hashedBytes, totalBytes)` after every chunk;
+    /// `totalBytes` is the size captured with `fstat` at open time (-1 when
+    /// the platform cannot report it). `isCancelled` is checked before every
+    /// read: a true answer throws `CancellationError` and no digest is
+    /// produced. Both parameters default to nil/absent, so existing callers
+    /// keep the plain digest contract.
+    public static func sha256Hex(
+        ofFileAt url: URL,
+        chunkSize: Int = 1 << 20,
+        progress: ((_ hashedBytes: Int64, _ totalBytes: Int64) -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil
+    ) throws -> String {
         var hasher = SHA256()
-        try streamBytes(ofFileAt: url, chunkSize: chunkSize) { hasher.update(data: $0) }
+        try streamBytes(ofFileAt: url, chunkSize: chunkSize, progress: progress, isCancelled: isCancelled) {
+            hasher.update(bufferPointer: $0)
+        }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
@@ -140,22 +160,87 @@ public enum FloeDigest {
     /// Streaming SHA-512 for guest image artifacts (BIOS/kernel/initrd/disk).
     /// The image manifest binds artifact digests, so verification must hash the
     /// actual bytes and never trust a size or a user-written `qualified` flag.
-    public static func sha512Hex(ofFileAt url: URL, chunkSize: Int = 1 << 20) throws -> String {
+    ///
+    /// See `sha256Hex(ofFileAt:)` for the `progress`/`isCancelled` contract.
+    public static func sha512Hex(
+        ofFileAt url: URL,
+        chunkSize: Int = 1 << 20,
+        progress: ((_ hashedBytes: Int64, _ totalBytes: Int64) -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil
+    ) throws -> String {
         var hasher = SHA512()
-        try streamBytes(ofFileAt: url, chunkSize: chunkSize) { hasher.update(data: $0) }
+        try streamBytes(ofFileAt: url, chunkSize: chunkSize, progress: progress, isCancelled: isCancelled) {
+            hasher.update(bufferPointer: $0)
+        }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Streams the file through `consume` using Foundation `FileHandle`,
-    /// recovering the underlying POSIX errno from the NSError chain on an
-    /// open/read failure. Foundation retries EINTR internally, so no raw
-    /// syscall layer is needed here.
+    /// Streams the file through `consume` with one preallocated POSIX buffer.
+    ///
+    /// This deliberately does NOT use `FileHandle.read(upToCount:)`: on Darwin
+    /// each returned Foundation buffer is autoreleased, and a long synchronous
+    /// hash loop never drains the enclosing pool, so resident memory grows
+    /// with the file size. Measured on the host (macOS, 1 GiB sparse file,
+    /// 1 MiB chunks) the former loop sampled 383–704 MiB resident versus a
+    /// flat ~7 MiB here. The device reported a read failure with errno 12
+    /// while verifying a Linux image whose download archive was 587.2 MB
+    /// (UI-reported size; the expanded disk size on the device was not
+    /// measured), so the source-level link between retained buffers and that
+    /// failure is a bounded diagnosis, not a device-proven jetsam. Hashing the
+    /// real bytes is unchanged (no size-only or cached-digest shortcut).
+    ///
+    /// `read(2)` is retried on EINTR; any other failure becomes the typed
+    /// `FloeFileIOError` with the real POSIX errno, never a digest verdict.
     private static func streamBytes(
         ofFileAt url: URL,
         chunkSize: Int,
-        consume: (Data) -> Void
+        progress: ((_ hashedBytes: Int64, _ totalBytes: Int64) -> Void)?,
+        isCancelled: (() -> Bool)?,
+        consume: (UnsafeRawBufferPointer) -> Void
     ) throws {
         let boundedChunk = max(4096, min(chunkSize, 1 << 20))
+        #if canImport(Darwin) || canImport(Glibc)
+        let descriptor = open(url.path, O_RDONLY)
+        guard descriptor >= 0 else {
+            // Capture errno immediately, before any formatting call can
+            // observe (or overwrite) it.
+            let code = errno
+            throw FloeFileIOError(
+                stage: .open,
+                posixErrno: code,
+                detail: posixDetail(code),
+                domain: NSPOSIXErrorDomain,
+                code: Int(code)
+            )
+        }
+        defer { _ = close(descriptor) }
+        let total = fileSize(descriptor: descriptor)
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: boundedChunk, alignment: MemoryLayout<UInt8>.alignment)
+        defer { buffer.deallocate() }
+        var hashed: Int64 = 0
+        while true {
+            if isCancelled?() == true { throw CancellationError() }
+            let count = read(descriptor, buffer, boundedChunk)
+            if count < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                throw FloeFileIOError(
+                    stage: .read,
+                    posixErrno: code,
+                    detail: posixDetail(code),
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(code)
+                )
+            }
+            if count == 0 { break }
+            consume(UnsafeRawBufferPointer(start: buffer, count: count))
+            hashed += Int64(count)
+            progress?(hashed, total)
+        }
+        #else
+        // No POSIX layer: a Foundation fallback for unsupported platforms.
+        // The supported Darwin/Glibc targets always take the fixed-buffer path
+        // above, which is the one that carries the bounded-memory promise.
         let handle: FileHandle
         do {
             handle = try FileHandle(forReadingFrom: url)
@@ -163,16 +248,43 @@ public enum FloeDigest {
             throw FloeFileIOError(stage: .open, underlying: error, path: url.path)
         }
         defer { try? handle.close() }
+        var total: Int64 = -1
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attributes[.size] as? NSNumber {
+            total = size.int64Value
+        }
+        var hashed: Int64 = 0
         while true {
+            if isCancelled?() == true { throw CancellationError() }
+            let chunk: Data
             do {
-                let chunk = try handle.read(upToCount: boundedChunk) ?? Data()
-                if chunk.isEmpty { break }
-                consume(chunk)
+                chunk = try handle.read(upToCount: boundedChunk) ?? Data()
             } catch {
                 throw FloeFileIOError(stage: .read, underlying: error, path: url.path)
             }
+            if chunk.isEmpty { break }
+            chunk.withUnsafeBytes { consume($0) }
+            hashed += Int64(chunk.count)
+            progress?(hashed, total)
         }
+        #endif
     }
+
+    #if canImport(Darwin) || canImport(Glibc)
+    /// Size captured from the already-open descriptor, so progress cannot race
+    /// a path swap. -1 when `fstat` is unavailable.
+    private static func fileSize(descriptor: Int32) -> Int64 {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else { return -1 }
+        return Int64(info.st_size)
+    }
+
+    /// Human-readable POSIX error text, used path-free in `FloeFileIOError`.
+    private static func posixDetail(_ code: Int32) -> String {
+        guard let message = strerror(code) else { return "errno \(code)" }
+        return String(cString: message)
+    }
+    #endif
 
     /// Walks the Foundation NSError underlying chain and returns the POSIX
     /// errno when the failure originates at a syscall. 0 otherwise.

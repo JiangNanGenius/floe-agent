@@ -272,7 +272,18 @@ final class LinuxGuestSparseImageImportTests: XCTestCase {
                 return XCTFail("unexpected error \(error)")
             }
         }
-        let contents = try FileManager.default.contentsOfDirectory(at: service.imagesDirectory, includingPropertiesForKeys: nil)
+        // Cancellation is observed inside the archive hash now, before the
+        // import writes anything: either the images directory was never
+        // created (nothing was written at all) or it exists and must contain
+        // no staging/installed leftovers.
+        let contents: [URL]
+        if FileManager.default.fileExists(atPath: service.imagesDirectory.path) {
+            contents = try FileManager.default.contentsOfDirectory(
+                at: service.imagesDirectory, includingPropertiesForKeys: nil
+            )
+        } else {
+            contents = []
+        }
         XCTAssertFalse(contents.contains { $0.lastPathComponent.hasPrefix(".import-") },
                        "staging directories must be removed after cancellation")
         XCTAssertFalse(contents.contains { $0.lastPathComponent == fixture.manifest.id },

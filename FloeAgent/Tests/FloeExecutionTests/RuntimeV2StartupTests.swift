@@ -386,8 +386,49 @@ final class RuntimeV2StartupTests: XCTestCase {
         XCTAssertEqual(stillHealthy?.readiness, .verified)
     }
 
-    // MARK: - blob repair evidence ordering
+    /// A cancelled health check reports `.cancelled` and caches nothing: the
+    /// next check reads the real bytes and returns the true verdict, so a
+    /// cooperative stop can never become a cached "damaged" (or "verified")
+    /// answer.
+    func testCancelledHealthCheckIsNotAVerdict() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let legacyRoot = root.appendingPathComponent("legacy-images", isDirectory: true)
+        let (image, _) = try makeLegacyImage(imageID: "cancel-health-image", root: legacyRoot)
+        _ = try await store.images.migrateLegacyImage(imageID: image.id, legacyImagesRoot: legacyRoot)
+        let expanded = try await store.images.ensureExpanded(imageID: image.id)
 
+        // Cancel before any byte is read: `.cancelled`, and the explicit
+        // re-verify dropped the success fingerprint first, so the attempt
+        // wrote no verdict at all.
+        let cancelled = await store.images.reverifyImageHealth(imageID: image.id, isCancelled: { true })
+        guard case .cancelled? = cancelled else {
+            return XCTFail("expected a cancelled check, got \(String(describing: cancelled))")
+        }
+        // A fresh check hashes the untouched bytes and reports them verified,
+        // not damaged and not a stale cancellation.
+        let health = await store.images.imageHealth(imageID: image.id)
+        XCTAssertEqual(health?.readiness, .verified)
+        XCTAssertNil(health?.issue)
+
+        // Damage the expanded bytes and cancel again: the next check must
+        // report the real content problem, never the cancelled attempt.
+        let rootfs = expanded.appendingPathComponent("rootfs.img")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: rootfs.path)
+        let handle = try FileHandle(forUpdating: rootfs)
+        try handle.truncate(atOffset: 4096)
+        try handle.close()
+        let cancelledAgain = await store.images.reverifyImageHealth(imageID: image.id, isCancelled: { true })
+        guard case .cancelled? = cancelledAgain else {
+            return XCTFail("expected a cancelled check, got \(String(describing: cancelledAgain))")
+        }
+        let damaged = await store.images.imageHealth(imageID: image.id)
+        XCTAssertEqual(damaged?.readiness, .rebuildableFromBlobs)
+        guard case .sizeMismatch? = damaged?.issue else {
+            return XCTFail("expected the real size mismatch, got \(String(describing: damaged?.issue))")
+        }
+    }
+
+    // MARK: - blob repair evidence ordering
     /// A canonical blob path that is a directory cannot be hashed. It is
     /// damaged evidence: once the replacement source is verified, the damaged
     /// path is quarantined (never hard-deleted) and the blob is re-placed.

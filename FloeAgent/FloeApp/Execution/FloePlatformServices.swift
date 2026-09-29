@@ -301,10 +301,32 @@ final class FloePlatformServices: @unchecked Sendable {
         guard let id, let images = linuxImageBox.value else { return nil }
         let legacy = await images.status(id: id)
         guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
-              let health = await v2.health(id) else {
+              let check = await v2.health(id, nil),
+              case .health(let health) = check else {
             return legacy
         }
         return Self.composedImageStatus(legacy: legacy, health: health)
+    }
+
+    /// Cancellation-aware status composition for the shared job: a long
+    /// real-file verification stops when the owner's token fires, instead of
+    /// finishing the hash and only then noticing the cancel.
+    private func linuxImageStatusChecked(
+        id: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async throws -> LinuxGuestImageInstallationService.ImageStatus? {
+        guard let images = linuxImageBox.value else { return nil }
+        let legacy = try await images.status(id: id, isCancelled: isCancelled)
+        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
+              let check = await v2.health(id, isCancelled) else {
+            return legacy
+        }
+        switch check {
+        case .health(let health):
+            return Self.composedImageStatus(legacy: legacy, health: health)
+        case .cancelled:
+            throw CancellationError()
+        }
     }
 
     /// Composes the legacy directory status with Runtime v2 real-file health.
@@ -385,15 +407,27 @@ final class FloePlatformServices: @unchecked Sendable {
     /// Re-verifies an installed image without any download (a transient file
     /// I/O condition may clear). Returns the fresh status. Runtime v2 images
     /// are re-verified against their actual expanded bytes with the cached
-    /// success fingerprint dropped first. Reconstruction belongs to the
-    /// separate, shared and cancellable repair action.
+    /// success fingerprint dropped first. The check is tied to the caller's
+    /// task cancellation, so leaving the re-verify view stops a long disk
+    /// read; a cancelled check reports no state (the next refresh re-reads).
+    /// Reconstruction belongs to the separate, shared and cancellable repair
+    /// action.
     func reverifyLinuxImage(imageID: String? = nil) async -> LinuxGuestImageInstallationService.ImageStatus? {
         guard await ensureLinuxImageService(),
               let images = linuxImageBox.value else { return nil }
         let id = imageID ?? LinuxGuestImageDistributionCatalog.defaultImageID
-        let legacy = await images.reverify(id: id)
+        let cancelCheck: @Sendable () -> Bool = { Task.isCancelled }
+        let legacy: LinuxGuestImageInstallationService.ImageStatus
+        do {
+            legacy = try await images.reverify(id: id, isCancelled: cancelCheck)
+        } catch {
+            // Cancelled (or an unreachable throw): report no fresh state
+            // rather than a fabricated one.
+            return nil
+        }
         guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
-              let health = await v2.reverifyHealth(id) else {
+              let check = await v2.reverifyHealth(id, cancelCheck),
+              case .health(let health) = check else {
             return legacy
         }
         return Self.composedImageStatus(legacy: legacy, health: health)
@@ -676,6 +710,38 @@ final class FloePlatformServices: @unchecked Sendable {
         )
     }
 
+    /// Mutable phase cell for one shared image job. The byte-progress callback
+    /// reads it synchronously, so the phase a chunk belongs to is fixed at the
+    /// call site even though phase changes and progress reach the UI through
+    /// independent MainActor hops. Each stamp carries an increasing sequence;
+    /// the jobs store drops an older sequence, so a delayed hop cannot move
+    /// the UI back to a previous phase.
+    private final class LinuxImageJobPhaseBox: @unchecked Sendable {
+        struct Stamp: Sendable {
+            let sequence: UInt64
+            let phase: LinuxGuestImageTransferPhase
+        }
+
+        private let lock = NSLock()
+        private var sequence: UInt64 = 0
+        private var phase: LinuxGuestImageTransferPhase = .checking
+
+        func advance(_ next: LinuxGuestImageTransferPhase) -> Stamp {
+            lock.lock()
+            sequence += 1
+            phase = next
+            let stamp = Stamp(sequence: sequence, phase: phase)
+            lock.unlock()
+            return stamp
+        }
+
+        func snapshot() -> Stamp {
+            lock.lock()
+            defer { lock.unlock() }
+            return Stamp(sequence: sequence, phase: phase)
+        }
+    }
+
     /// UI repair and automatic preparation share ownership, progress, errors
     /// and cancellation through the same image-keyed job.
     ///
@@ -699,8 +765,9 @@ final class FloePlatformServices: @unchecked Sendable {
         guard await ensureLinuxImageService(), let images = linuxImageBox.value else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
-        if let current = await linuxImageStatus(id: imageID),
-           current.installed && current.verificationIssue == nil {
+        if let current = try await linuxImageStatusChecked(
+            id: imageID, isCancelled: { cancellation.isCancelled || Task.isCancelled }
+        ), current.installed && current.verificationIssue == nil {
             return "Linux image \(imageID) is already installed"
         }
         // Local reconstruction also belongs to the shared job below. Doing
@@ -715,23 +782,53 @@ final class FloePlatformServices: @unchecked Sendable {
         defer {
             if ownsJob { unregisterLinuxImageJobCancellation(cancellation, jobID: jobID) }
         }
+        // The phase channel belongs to this job, not to the view: the service
+        // operation reports what it is doing (download/verify/extract/
+        // finalize/rebuild/check) and the UI only mirrors it. Reports are
+        // stamped with the job epoch and a sequence so a delayed MainActor hop
+        // can never land on a newer job or regress a later phase.
         // One shared, cancellable job whether the user pressed the card or
         // first Linux use (shell, Python, services, apt/npm) auto-prepares:
         // two callers never start two downloads and both see progress.
         return try await EnvironmentPackageJobs.shared.runShared(
             id: jobID,
             title: String(format: String(localized: "environment.backend.image_download_title"), imageID)
-        ) {
+        ) { epoch in
+            let phaseBox = LinuxImageJobPhaseBox()
+            let reportPhase: @Sendable (LinuxGuestImageTransferPhase) -> Void = { phase in
+                let stamp = phaseBox.advance(phase)
+                Task { @MainActor in
+                    EnvironmentPackageJobs.shared.reportPhase(
+                        id: jobID, epoch: epoch, sequence: stamp.sequence, phase: stamp.phase
+                    )
+                }
+            }
+            let reportProgress: @Sendable (Int64, Int64) -> Void = { received, expected in
+                onProgress(received, expected)
+                guard expected > 0 else { return }
+                let fraction = min(1, Double(received) / Double(expected))
+                let stamp = phaseBox.snapshot()
+                Task { @MainActor in
+                    EnvironmentPackageJobs.shared.reportProgress(
+                        id: jobID, epoch: epoch, sequence: stamp.sequence,
+                        phase: stamp.phase, fraction: fraction
+                    )
+                }
+            }
+            let cancelCheck: @Sendable () -> Bool = { cancellation.isCancelled || Task.isCancelled }
             return try await withTaskCancellationHandler {
                 try Task.checkCancellation()
+                reportPhase(.checking)
                 // A coalesced caller may have repaired the image while this
-                // job was queued: re-check the real bytes under the job.
-                if let current = await self.linuxImageStatus(id: imageID),
-                   current.installed && current.verificationIssue == nil {
+                // job was queued: re-check the real bytes under the job. The
+                // check honours this job's cancel token.
+                if let current = try await self.linuxImageStatusChecked(
+                    id: imageID, isCancelled: cancelCheck
+                ), current.installed && current.verificationIssue == nil {
                     return "Linux image \(imageID) is already installed"
                 }
                 if let repaired = try await self.reconstructLinuxImageIfRebuildable(
-                    imageID: imageID, cancellation: cancellation
+                    imageID: imageID, cancellation: cancellation, reportPhase: reportPhase
                 ) {
                     return repaired
                 }
@@ -740,14 +837,8 @@ final class FloePlatformServices: @unchecked Sendable {
                     image = try await images.installTrustedImage(
                         id: imageID,
                         downloader: LinuxGuestImageHTTPDownloader(),
-                        onProgress: { received, expected in
-                            onProgress(received, expected)
-                            guard expected > 0 else { return }
-                            let fraction = min(1, Double(received) / Double(expected))
-                            Task { @MainActor in
-                                EnvironmentPackageJobs.shared.reportProgress(id: jobID, fraction: fraction)
-                            }
-                        },
+                        onProgress: reportProgress,
+                        onPhase: reportPhase,
                         isCancelled: { cancellation.isCancelled || Task.isCancelled }
                     )
                 } catch let error as LinuxGuestImageInstallError {
@@ -760,23 +851,27 @@ final class FloePlatformServices: @unchecked Sendable {
                 // A migrated image boots the v2 blobs/expanded view, not the
                 // legacy directory this install just populated: same-id repair
                 // re-hashes the blobs, rebuilds the expanded view and moves the
-                // verified legacy copy into the migration rollback area.
+                // verified legacy copy into the migration rollback area. The
+                // presence check is cancellation-aware, so a cancel during the
+                // v2 re-check aborts instead of starting a rebuild.
                 var repairFailure: Error?
-                if let v2 = self.linuxImageRuntimeV2Snapshot(),
-                   await v2.health(imageID) != nil {
+                let v2Presence = await self.linuxImageRuntimeV2Snapshot()?.health(imageID, cancelCheck)
+                if case .cancelled? = v2Presence { throw CancellationError() }
+                if case .health? = v2Presence, let v2 = self.linuxImageRuntimeV2Snapshot() {
+                    reportPhase(.reconstructing)
                     do {
-                        try await v2.repairFromLegacyInstall(
-                            imageID, { cancellation.isCancelled || Task.isCancelled }
-                        )
+                        try await v2.repairFromLegacyInstall(imageID, cancelCheck)
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
                         repairFailure = error
                     }
                 }
-                guard let final = await self.linuxImageStatus(id: imageID),
+                reportPhase(.checking)
+                guard let final = try await self.linuxImageStatusChecked(id: imageID, isCancelled: cancelCheck),
                       final.installed, final.verificationIssue == nil else {
-                    let detail = await self.linuxImageStatus(id: imageID)?.verificationIssue?.message
+                    let checked = try? await self.linuxImageStatusChecked(id: imageID, isCancelled: cancelCheck)
+                    let detail = (checked ?? nil)?.verificationIssue?.message
                         ?? repairFailure?.localizedDescription
                         ?? "the installed image did not verify"
                     throw FloeError.validationFailed(
@@ -798,15 +893,28 @@ final class FloePlatformServices: @unchecked Sendable {
     /// touches environment deltas/workspaces.
     private func reconstructLinuxImageIfRebuildable(
         imageID: String,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        reportPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void = { _ in }
     ) async throws -> String? {
-        guard let v2 = linuxImageRuntimeV2Snapshot(),
-              let health = await v2.health(imageID),
-              health.readiness == .rebuildableFromBlobs else { return nil }
+        let cancelCheck: @Sendable () -> Bool = { cancellation.isCancelled || Task.isCancelled }
+        guard let v2 = linuxImageRuntimeV2Snapshot() else { return nil }
+        // The check hashes the expanded view when its fingerprint is stale; it
+        // must observe the owner's cancel signal instead of finishing a large
+        // disk read first.
+        let check = await v2.health(imageID, cancelCheck)
+        let health: RuntimeV2ImageStore.ImageHealth
+        switch check {
+        case .health(let value):
+            health = value
+        case .cancelled:
+            throw CancellationError()
+        case nil:
+            return nil
+        }
+        guard health.readiness == .rebuildableFromBlobs else { return nil }
+        reportPhase(.reconstructing)
         do {
-            try await v2.reconstructExpanded(
-                imageID, { cancellation.isCancelled || Task.isCancelled }
-            )
+            try await v2.reconstructExpanded(imageID, cancelCheck)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -814,7 +922,7 @@ final class FloePlatformServices: @unchecked Sendable {
             // to the verified download repair path.
             return nil
         }
-        guard let current = await linuxImageStatus(id: imageID),
+        guard let current = try await linuxImageStatusChecked(id: imageID, isCancelled: cancelCheck),
               current.installed, current.verificationIssue == nil else { return nil }
         return "Linux image \(imageID) reconstructed from its verified artifacts"
     }
@@ -921,11 +1029,13 @@ final class FloePlatformServices: @unchecked Sendable {
                 var v2Note = ""
                 // A migrated image boots the Runtime v2 substrate, not the
                 // freshly imported legacy directory: give v2 the same-id
-                // verified replacement and say what happened.
-                if let v2 = linuxImageRuntimeV2Snapshot(), await v2.health(image.id) != nil {
+                // verified replacement and say what happened. This CLI path
+                // has no cancel token, so the checks run without one.
+                if let v2 = linuxImageRuntimeV2Snapshot(),
+                   case .health? = await v2.health(image.id, nil) {
                     do {
                         try await v2.repairFromLegacyInstall(image.id, { false })
-                        if let health = await v2.health(image.id), health.readiness == .verified {
+                        if case .health(let health)? = await v2.health(image.id, nil), health.readiness == .verified {
                             v2Note = " (Runtime v2 refreshed)"
                         }
                     } catch {

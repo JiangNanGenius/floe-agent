@@ -24,6 +24,14 @@
 import Foundation
 import FloeCore
 
+/// Outcome of a cancellation-aware image-health check. `.cancelled` is a
+/// cooperative stop, never a verdict: nothing is cached and the caller must
+/// not treat it as verified or damaged.
+public enum LinuxImageHealthCheck: Sendable {
+    case health(RuntimeV2ImageStore.ImageHealth)
+    case cancelled
+}
+
 public actor RuntimeV2ImageStore {
     /// images/manifests/<imageID>.json payload (schema version 2).
     public struct Manifest: Codable, Sendable, Equatable {
@@ -219,7 +227,56 @@ public actor RuntimeV2ImageStore {
     /// expanded bytes are hash-verified only when the success fingerprint
     /// changed. When unhealthy it costs no hashing at all unless the view is
     /// complete-but-wrong, and it never reads a blob.
+    ///
+    /// No cancellation check is supplied here, so the throwing variant cannot
+    /// cancel; nil keeps the previous "store does not hold this image"
+    /// contract.
     public func imageHealth(imageID: String) async -> ImageHealth? {
+        (try? await imageHealthOrCancelled(imageID: imageID, isCancelled: nil)) ?? nil
+    }
+
+    /// Cancellation-aware health check. `.cancelled` is returned when the
+    /// caller's signal fires during the expanded-view hash; no verdict is
+    /// cached, so a later check reads the real bytes again.
+    public func imageHealth(
+        imageID: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async -> LinuxImageHealthCheck? {
+        do {
+            guard let health = try await imageHealthOrCancelled(imageID: imageID, isCancelled: isCancelled) else {
+                return nil
+            }
+            return .health(health)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            // Unreachable: the implementation maps every non-cancellation
+            // failure to a typed issue instead of throwing.
+            return nil
+        }
+    }
+
+    /// Explicit re-verification: drops the cached success fingerprint first,
+    /// so expanded bytes that changed and changed back, or that share a
+    /// stale fingerprint, are actually re-read.
+    public func reverifyImageHealth(imageID: String) async -> ImageHealth? {
+        await verifier.invalidate(id: imageID)
+        return await imageHealth(imageID: imageID)
+    }
+
+    /// Cancellation-aware explicit re-verification (see `imageHealth`).
+    public func reverifyImageHealth(
+        imageID: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async -> LinuxImageHealthCheck? {
+        await verifier.invalidate(id: imageID)
+        return await imageHealth(imageID: imageID, isCancelled: isCancelled)
+    }
+
+    private func imageHealthOrCancelled(
+        imageID: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async throws -> ImageHealth? {
         let bootable = (try? await registry.bootableImage(id: imageID, root: layout.root)) ?? nil
         guard bootable != nil, let imageManifest = try? manifest(imageID: imageID) else {
             return nil
@@ -235,8 +292,10 @@ public actor RuntimeV2ImageStore {
         guard let expanded = try? layout.expandedImageDirectory(imageID: imageID) else {
             return ImageHealth(readiness: .replacementRequired, issue: .artifactMissing(role: "expanded"), image: image)
         }
-        let issue = await verifier.verificationIssue(
-            image: image, imageDirectory: expanded, cacheNamespace: Self.expandedVerificationNamespace
+        let issue = try await verifier.verificationIssueOrCancelled(
+            image: image, imageDirectory: expanded,
+            cacheNamespace: Self.expandedVerificationNamespace,
+            isCancelled: isCancelled
         )
         if issue == nil {
             return ImageHealth(readiness: .verified, issue: nil, image: image)
@@ -251,14 +310,6 @@ public actor RuntimeV2ImageStore {
             issue: issue,
             image: image
         )
-    }
-
-    /// Explicit re-verification: drops the cached success fingerprint first,
-    /// so expanded bytes that changed and changed back, or that share a
-    /// stale fingerprint, are actually re-read.
-    public func reverifyImageHealth(imageID: String) async -> ImageHealth? {
-        await verifier.invalidate(id: imageID)
-        return await imageHealth(imageID: imageID)
     }
 
     /// Rebuilds the expanded boot view from the verified blobs (no download).
@@ -286,12 +337,13 @@ public actor RuntimeV2ImageStore {
         let expanded = try layout.expandedImageDirectory(imageID: imageID)
         // A complete, digest-verified view needs no rebuild (unless forced).
         if !force, try expandedViewComplete(imageID: imageID, manifest: imageManifest, directory: expanded) {
-            if let image = try? Self.decoder.decode(LinuxGuestImage.self, from: imageManifest.legacyManifestData),
-               await verifier.verificationIssue(
-                   image: image, imageDirectory: expanded,
-                   cacheNamespace: Self.expandedVerificationNamespace
-               ) == nil {
-                return expanded
+            if let image = try? Self.decoder.decode(LinuxGuestImage.self, from: imageManifest.legacyManifestData) {
+                let issue = try await verifier.verificationIssueOrCancelled(
+                    image: image, imageDirectory: expanded,
+                    cacheNamespace: Self.expandedVerificationNamespace,
+                    isCancelled: isCancelled
+                )
+                if issue == nil { return expanded }
             }
         }
         let staging = layout.expandedImagesDirectory
@@ -432,7 +484,7 @@ public actor RuntimeV2ImageStore {
                     expected: "\(ref.sha512) (\(ref.bytes) bytes)", actual: "expanded size \(size)"
                 )
             }
-            let digest = try FloeDigest.sha512Hex(ofFileAt: destination)
+            let digest = try FloeDigest.sha512Hex(ofFileAt: destination, isCancelled: isCancelled)
             guard digest == ref.sha512.lowercased() else {
                 throw RuntimeV2Error.blobDigestMismatch(expected: ref.sha512, actual: digest)
             }

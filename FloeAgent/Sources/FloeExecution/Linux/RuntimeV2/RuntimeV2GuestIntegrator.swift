@@ -863,10 +863,38 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         }
     }
 
+    /// Cancellation-aware health. `.cancelled` means the caller's signal fired
+    /// during a real-file hash: no verdict was produced and nothing was
+    /// cached, so the caller must abort rather than treat it as an answer.
+    public func imageHealth(
+        imageID: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async -> LinuxImageHealthCheck? {
+        do {
+            try await ensurePrepared()
+            return await store.images.imageHealth(imageID: imageID, isCancelled: isCancelled)
+        } catch {
+            return nil
+        }
+    }
+
     public func reverifyImageHealth(imageID: String) async -> RuntimeV2ImageStore.ImageHealth? {
         do {
             try await ensurePrepared()
             return await store.images.reverifyImageHealth(imageID: imageID)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Cancellation-aware explicit re-verification (see `imageHealth`).
+    public func reverifyImageHealth(
+        imageID: String,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async -> LinuxImageHealthCheck? {
+        do {
+            try await ensurePrepared()
+            return await store.images.reverifyImageHealth(imageID: imageID, isCancelled: isCancelled)
         } catch {
             return nil
         }

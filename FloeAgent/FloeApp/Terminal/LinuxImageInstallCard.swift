@@ -23,6 +23,10 @@ final class LinuxImageInstallModel: ObservableObject {
     /// Immediate local feedback after a cancel request, until the shared job
     /// task actually unwinds and reports its terminal state.
     @Published private(set) var cancelling = false
+    /// True while the explicit re-verify action reads the installed bytes
+    /// (which can hash a large disk); the card disables a second tap instead
+    /// of silently starting a second full read.
+    @Published private(set) var reverifying = false
     /// One-shot success signal for the owner's `onInstalled` continuation:
     /// set only when THIS image's shared job transitioned from running to
     /// finished with a real-file verified status, never for an unrelated job
@@ -44,6 +48,10 @@ final class LinuxImageInstallModel: ObservableObject {
     var running: Bool { jobs.running.contains(jobID) }
     var failed: Bool { jobs.failures.contains(jobID) }
     var fraction: Double? { jobs.fractions[jobID] }
+    /// Live service-reported phase of THIS image's job, nil when no phase was
+    /// reported yet. Read live from the shared jobs object so the card does
+    /// not need a full state reload to display it.
+    var phase: LinuxGuestImageTransferPhase? { jobs.phases[jobID] }
     var message: String? { jobs.messages[jobID] }
 
     private var jobs: EnvironmentPackageJobs { .shared }
@@ -161,11 +169,13 @@ final class LinuxImageInstallModel: ObservableObject {
     func cancelDownload() {
         // Immediate feedback, then the real cancellation path: the shared
         // job's owner token and the in-flight install task are both
-        // signalled, so the download/extraction stops at its next checkpoint
-        // and a partial candidate is never promoted.
+        // signalled, so the download/extraction/hash stops at its next
+        // checkpoint and a partial candidate is never promoted. The reload
+        // makes the cancelling state visible without waiting for a revision,
+        // which only fires when the job actually ends.
         cancelling = true
         FloePlatformServices.shared.cancelLinuxImagePreparation(imageID: imageID)
-        jobs.cancel(id: jobID)
+        Task { await reload() }
     }
 
     func startGuest(environmentID: String?) async {
@@ -196,8 +206,12 @@ final class LinuxImageInstallModel: ObservableObject {
 
     /// First recovery step: re-verify the installed image without a download.
     /// A transient file I/O condition may clear; the card then shows the
-    /// normal installed state.
+    /// normal installed state. The flag stays published so the card can show
+    /// the check is running instead of accepting a second tap that would
+    /// start another full hash of the same bytes.
     func reverifyImage() async {
+        reverifying = true
+        defer { reverifying = false }
         _ = await FloePlatformServices.shared.reverifyLinuxImage(imageID: imageID)
         await reload()
     }
@@ -224,6 +238,11 @@ final class LinuxImageInstallModel: ObservableObject {
 /// never shows a download button for an installed or running component.
 struct LinuxImageInstallCard: View {
     @ObservedObject var model: LinuxImageInstallModel
+    /// Observed directly: byte progress and the phase of the shared job live
+    /// here, so the card re-renders on every service report instead of only
+    /// when a full state reload happens (which previously left the bar frozen
+    /// at whatever fraction the last revision carried).
+    @ObservedObject private var jobs = EnvironmentPackageJobs.shared
     /// Called once after a successful install so the owner can start Linux.
     var onInstalled: (() async -> Void)? = nil
     /// Whether the card may offer a manual guest start. Settings passes
@@ -254,6 +273,14 @@ struct LinuxImageInstallCard: View {
                 }
             }
         }
+        .onChange(of: EnvironmentPackageJobs.shared.running) { _, _ in
+            // A job can start outside this card (first Linux use auto-prepares
+            // through the same shared job). Refresh the derived state on the
+            // running transition so the card switches to its downloading
+            // presentation immediately; byte updates themselves only need the
+            // job object above.
+            Task { await model.refresh() }
+        }
     }
 
     @ViewBuilder
@@ -273,22 +300,8 @@ struct LinuxImageInstallCard: View {
         case .storageInitializing:
             ProgressView("environment.backend.storage_initializing")
                 .font(.caption)
-        case .downloading(let fraction, let cancelling):
-            if let fraction {
-                ProgressView(value: fraction) {
-                    Text("environment.backend.image_downloading")
-                }
-                .font(.caption)
-            } else {
-                ProgressView("environment.backend.image_downloading")
-            }
-            Button(role: .cancel) {
-                model.cancelDownload()
-            } label: {
-                Label("action.cancel_task", systemImage: "xmark.circle")
-            }
-            .font(.caption)
-            .disabled(cancelling)
+        case .downloading(_, let cancelling):
+            downloadingContent(cancelling: cancelling || model.cancelling)
         case .needsDownload(let failure):
             if let failure {
                 Text(failure)
@@ -343,13 +356,18 @@ struct LinuxImageInstallCard: View {
                 .foregroundStyle(FloeTheme.destructive)
                 .textSelection(.enabled)
             if transient {
-                Button {
-                    Task { await model.reverifyImage() }
-                } label: {
-                    Label("environment.backend.reverify", systemImage: "arrow.clockwise")
+                if model.reverifying {
+                    ProgressView("environment.backend.reverify")
+                        .font(.caption)
+                } else {
+                    Button {
+                        Task { await model.reverifyImage() }
+                    } label: {
+                        Label("environment.backend.reverify", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
                 }
-                .buttonStyle(.bordered)
-                .font(.caption)
             }
             Button {
                 model.repairImage()
@@ -377,6 +395,64 @@ struct LinuxImageInstallCard: View {
             Label("environment.backend.status.running", systemImage: "checkmark.seal.fill")
                 .font(.caption)
                 .foregroundStyle(FloeTheme.success)
+        }
+    }
+
+    /// Live downloading presentation. The fraction and phase come from the
+    /// shared job object (observed above), not from the state snapshot: a
+    /// fraction is only shown while the service reports the download phase, so
+    /// "100% downloaded" can never stand in for a later verification or
+    /// extraction phase. Phase changes clear the fraction in the jobs object,
+    /// which is why a stale associated value is intentionally not used here.
+    @ViewBuilder
+    private func downloadingContent(cancelling: Bool) -> some View {
+        let phase = jobs.phases[model.jobID]
+        if let phase, phase != .downloading {
+            ProgressView()
+                .font(.caption)
+            Text(Self.phaseText(phase))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if let fraction = jobs.fractions[model.jobID] {
+            ProgressView(value: fraction) {
+                Text("environment.backend.image_downloading")
+            }
+            .font(.caption)
+            Text("\(Int((fraction * 100).rounded()))%")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        } else {
+            ProgressView("environment.backend.image_downloading")
+                .font(.caption)
+        }
+        Button(role: .cancel) {
+            model.cancelDownload()
+        } label: {
+            Label("action.cancel_task", systemImage: "xmark.circle")
+        }
+        .font(.caption)
+        .disabled(cancelling)
+    }
+
+    /// Localized label for the service-owned phase. Each phase has its own
+    /// catalog entry in both languages, so only the active app language is
+    /// shown (never inline bilingual product text).
+    static func phaseText(_ phase: LinuxGuestImageTransferPhase) -> String {
+        switch phase {
+        case .checking:
+            return String(localized: "environment.backend.image_phase.checking")
+        case .reconstructing:
+            return String(localized: "environment.backend.image_phase.reconstructing")
+        case .downloading:
+            return String(localized: "environment.backend.image_phase.downloading")
+        case .verifyingArchive:
+            return String(localized: "environment.backend.image_phase.verifying_archive")
+        case .extracting:
+            return String(localized: "environment.backend.image_phase.extracting")
+        case .verifyingImage:
+            return String(localized: "environment.backend.image_phase.verifying_image")
+        case .finalizing:
+            return String(localized: "environment.backend.image_phase.finalizing")
         }
     }
 

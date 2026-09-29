@@ -204,9 +204,17 @@ enum LinuxGuestVolumeSpace {
 }
 
 /// Digest verification for one image directory. Hashing is the expensive part,
-/// so a successful result is cached against the exact file identity (path,
-/// size, modification time and the manifest's declared digest); touching any
+/// so a result is cached against the exact file identity (path, size,
+/// modification time and the manifest's declared digest); touching any
 /// artifact or digest forces a re-hash.
+///
+/// Both successes AND failures are reusable for the same identity. Re-deriving
+/// a failure does not change the verdict, and re-hashing a multi-hundred-MB
+/// disk on every status refresh is expensive repeated I/O (the host benchmark
+/// behind the device errno=12 showed the retired read loop retained buffers
+/// per chunk). The explicit `invalidate(id:)` behind `reverify` is the
+/// recovery path when the local condition was transient: it drops the cached
+/// failure and reads the real bytes again.
 public actor LinuxGuestImageVerifier {
     private struct CacheEntry {
         var fingerprint: String
@@ -220,27 +228,64 @@ public actor LinuxGuestImageVerifier {
 
     /// Typed verification issue for a manifest in `imageDirectory`, or nil
     /// when the image is startable. Every artifact must resolve inside that
-    /// directory.
+    /// directory. A verdict (success or failure) is cached against the file
+    /// identity; `invalidate(id:)` forces a fresh hash.
     ///
-    /// `cacheNamespace` separates the success cache of two views of the same
-    /// image id. The legacy directory and the Runtime v2 expanded view are
-    /// different directories with different file identities; sharing one
-    /// cache key would evict the other on every check and re-hash a
-    /// multi-gigabyte disk each time.
+    /// `cacheNamespace` separates the cache of two views of the same image id.
+    /// The legacy directory and the Runtime v2 expanded view are different
+    /// directories with different file identities; sharing one cache key would
+    /// evict the other on every check and re-hash a multi-gigabyte disk each
+    /// time.
+    ///
+    /// No cancellation check is supplied here, so this cannot be cancelled
+    /// mid-hash. Large-disk callers that own a cancel token use
+    /// `verificationIssueOrCancelled`.
     public func verificationIssue(
         image: LinuxGuestImage,
         imageDirectory: URL,
         cacheNamespace: String = "legacy"
     ) -> LinuxImageVerificationIssue? {
+        do {
+            return try verificationIssueOrCancelled(
+                image: image, imageDirectory: imageDirectory,
+                cacheNamespace: cacheNamespace, isCancelled: nil
+            )
+        } catch {
+            // Unreachable: no cancellation check was supplied, so the throwing
+            // variant has nothing to cancel on. A violated invariant must not
+            // read as healthy bytes.
+            return .ioFailure(
+                role: "verification",
+                error: FloeFileIOError(
+                    stage: .read, posixErrno: EINTR,
+                    detail: "verification cancelled without a cancellation check",
+                    domain: NSPOSIXErrorDomain, code: Int(EINTR)
+                )
+            )
+        }
+    }
+
+    /// Cancellation-aware verification. A cancelled hash throws
+    /// `CancellationError` and writes NOTHING to the cache: cancellation is a
+    /// cooperative stop, not a verdict, so a later check reads the real bytes
+    /// instead of reusing a poisoning failure. Every other outcome (including
+    /// genuine I/O and digest failures) is cached exactly like
+    /// `verificationIssue`.
+    public func verificationIssueOrCancelled(
+        image: LinuxGuestImage,
+        imageDirectory: URL,
+        cacheNamespace: String = "legacy",
+        isCancelled: (@Sendable () -> Bool)?
+    ) throws -> LinuxImageVerificationIssue? {
         if let structural = image.qualificationIssue(imageDirectory: imageDirectory) {
             return structural
         }
         let fingerprint = Self.fingerprint(image: image, imageDirectory: imageDirectory)
         let cacheKey = Self.cacheKey(namespace: cacheNamespace, imageID: image.id)
-        if let cached = cache[cacheKey], cached.fingerprint == fingerprint, cached.issue == nil {
-            return nil
+        if let cached = cache[cacheKey], cached.fingerprint == fingerprint {
+            return cached.issue
         }
-        let issue = Self.verify(image: image, imageDirectory: imageDirectory)
+        let issue = try Self.verify(image: image, imageDirectory: imageDirectory, isCancelled: isCancelled)
         cache[cacheKey] = CacheEntry(fingerprint: fingerprint, issue: issue, verifiedAt: Date())
         return issue
     }
@@ -299,7 +344,11 @@ public actor LinuxGuestImageVerifier {
         return FloeDigest.sha256Hex(Data(parts.joined(separator: "\u{1f}").utf8))
     }
 
-    private static func verify(image: LinuxGuestImage, imageDirectory: URL) -> LinuxImageVerificationIssue? {
+    private static func verify(
+        image: LinuxGuestImage,
+        imageDirectory: URL,
+        isCancelled: (@Sendable () -> Bool)?
+    ) throws -> LinuxImageVerificationIssue? {
         let resolvedRoot = imageDirectory.resolvingSymlinksInPath().standardizedFileURL
         // The manifest itself must be a real file inside the image directory.
         let manifest = imageDirectory.appendingPathComponent("manifest.json")
@@ -343,7 +392,11 @@ public actor LinuxGuestImageVerifier {
             }
             let actual: String
             do {
-                actual = try FloeDigest.sha512Hex(ofFileAt: url)
+                actual = try FloeDigest.sha512Hex(ofFileAt: url, isCancelled: isCancelled)
+            } catch is CancellationError {
+                // A cooperative stop is never a verification verdict and must
+                // not be cached as an I/O or digest failure.
+                throw CancellationError()
             } catch let io as FloeFileIOError {
                 return .ioFailure(role: roleName, error: io)
             } catch {
@@ -717,12 +770,39 @@ public actor LinuxGuestImageInstallationService {
     }
 
     public func status(id: String) async -> ImageStatus {
+        do {
+            return try await status(id: id, isCancelled: nil)
+        } catch {
+            // Unreachable: no cancellation check was supplied. Report a
+            // conservative I/O issue instead of a fabricated healthy state.
+            return ImageStatus(
+                id: id,
+                installed: loadManifest(id: id) != nil,
+                verificationIssue: .ioFailure(
+                    role: "verification",
+                    error: FloeFileIOError(
+                        stage: .read, posixErrno: EINTR,
+                        detail: "verification cancelled without a cancellation check",
+                        domain: NSPOSIXErrorDomain, code: Int(EINTR)
+                    )
+                ),
+                image: loadManifest(id: id),
+                distributable: LinuxGuestImageDistributionCatalog.entry(id: id) != nil
+            )
+        }
+    }
+
+    /// Cancellation-aware status. A cancelled verification throws
+    /// `CancellationError` and caches nothing; `status(id:)` keeps the
+    /// non-throwing contract for UI/CLI readers that have no cancel signal.
+    public func status(id: String, isCancelled: (@Sendable () -> Bool)?) async throws -> ImageStatus {
         let image = loadManifest(id: id)
         var issue: LinuxImageVerificationIssue?
         if let image {
-            issue = await verifier.verificationIssue(
+            issue = try await verifier.verificationIssueOrCancelled(
                 image: image,
-                imageDirectory: imagesRoot.appendingPathComponent(id, isDirectory: true)
+                imageDirectory: imagesRoot.appendingPathComponent(id, isDirectory: true),
+                isCancelled: isCancelled
             )
         }
         let trusted = LinuxGuestImageDistributionCatalog.entry(id: id)
@@ -742,6 +822,14 @@ public actor LinuxGuestImageInstallationService {
         return await status(id: id)
     }
 
+    /// Cancellation-aware re-verification: the explicit re-verify action is
+    /// allowed to stop while a multi-hundred-MB disk is being read, and a
+    /// cancelled attempt never leaves a cached verdict behind.
+    public func reverify(id: String, isCancelled: (@Sendable () -> Bool)?) async throws -> ImageStatus {
+        await verifier.invalidate(id: id)
+        return try await status(id: id, isCancelled: isCancelled)
+    }
+
     /// Imports an already-downloaded zip archive. The expected SHA-512 must be
     /// supplied out of band (qualification record or pinned catalog); an empty
     /// digest is rejected.
@@ -758,6 +846,8 @@ public actor LinuxGuestImageInstallationService {
         at archiveURL: URL,
         expectedSHA512: String,
         expectedImageID: String? = nil,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil,
+        onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
         fileManager: FileManager = .default
     ) async throws -> LinuxGuestImage {
@@ -770,7 +860,20 @@ public actor LinuxGuestImageInstallationService {
         guard archiveBytes > 0, archiveBytes <= limits.maxArchiveBytes else {
             throw LinuxGuestImageInstallError.archiveTooLarge(limit: limits.maxArchiveBytes)
         }
-        let actual = try FloeDigest.sha512Hex(ofFileAt: archiveURL)
+        // Phase: the archive is hashed against the pinned digest. Cancellation
+        // is observed inside the streaming hash, so a multi-hundred-MB archive
+        // never pins the shared job's owner in a non-cancellable read.
+        onPhase?(.verifyingArchive)
+        let actual: String
+        do {
+            actual = try FloeDigest.sha512Hex(
+                ofFileAt: archiveURL,
+                progress: onProgress,
+                isCancelled: isCancelled
+            )
+        } catch is CancellationError {
+            throw LinuxGuestImageInstallError.cancelled
+        }
         guard actual == expected else {
             throw LinuxGuestImageInstallError.archiveDigestMismatch(expected: expected, actual: actual)
         }
@@ -811,6 +914,7 @@ public actor LinuxGuestImageInstallationService {
         do {
             switch archiveURL.pathExtension.lowercased() {
             case "zip":
+                onPhase?(.extracting)
                 try extractZip(archiveURL, to: staging, fileManager: fileManager,
                                extractionBudget: extractionBudget, isCancelled: isCancelled)
             default:
@@ -823,7 +927,7 @@ public actor LinuxGuestImageInstallationService {
             if isCancelled?() == true {
                 throw LinuxGuestImageInstallError.cancelled
             }
-            return try await promote(from: staging, fileManager: fileManager)
+            return try await promote(from: staging, fileManager: fileManager, onPhase: onPhase, isCancelled: isCancelled)
         } catch let installError as LinuxGuestImageInstallError {
             throw installError
         } catch {
@@ -924,22 +1028,31 @@ public actor LinuxGuestImageInstallationService {
     /// a shared-job token). It is captured by the operation that actually
     /// downloads; coalesced subscribers share that operation and its result,
     /// and a subscriber's own cancellation never cancels the shared install.
-    /// Cancellation is observed during the download, between sources, during
-    /// extraction and immediately before promotion — a cancelled install
-    /// never promotes a partially verified candidate and never replaces the
-    /// previously installed image. `cancelInstallTrustedImage(id:)` is the
-    /// explicit owner-side cancel for a caller that only holds the service.
+    /// Cancellation is observed during the download, inside the archive hash,
+    /// between sources, during extraction and immediately before promotion — a
+    /// cancelled install never promotes a partially verified candidate and
+    /// never replaces the previously installed image.
+    /// `cancelInstallTrustedImage(id:)` is the explicit owner-side cancel for
+    /// a caller that only holds the service.
+    ///
+    /// `onPhase` reports what the operation is doing (download, archive
+    /// verification, extraction, image verification, promotion). It is the
+    /// OWNER's channel, like `onProgress`; a coalesced subscriber's callback
+    /// stays silent.
     @discardableResult
     public func installTrustedImage(
         id: String,
         downloader: any LinuxGuestImageDownloading,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in },
+        onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
         fileManager: FileManager = .default
     ) async throws -> LinuxGuestImage {
         try Self.checkInstallCancellation(isCancelled)
-        // Already present and verified: never start a second download.
-        let current = await status(id: id)
+        // Already present and verified: never start a second download. The
+        // check itself is cancellation-aware, so an owner that left during a
+        // large disk re-hash stops here instead of after it.
+        let current = try await status(id: id, isCancelled: isCancelled)
         if current.installed && current.verificationFailure == nil, let image = current.image {
             return image
         }
@@ -954,6 +1067,7 @@ public actor LinuxGuestImageInstallationService {
                 id: id,
                 downloader: downloader,
                 onProgress: onProgress,
+                onPhase: onPhase,
                 isCancelled: isCancelled,
                 fileManager: fileManager
             )
@@ -988,6 +1102,7 @@ public actor LinuxGuestImageInstallationService {
         id: String,
         downloader: any LinuxGuestImageDownloading,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)?,
         isCancelled: (@Sendable () -> Bool)?,
         fileManager: FileManager
     ) async throws -> LinuxGuestImage {
@@ -1008,6 +1123,7 @@ public actor LinuxGuestImageInstallationService {
         try fileManager.createDirectory(at: imagesRoot, withIntermediateDirectories: true)
         let stagingArchive = imagesRoot.appendingPathComponent(".download-\(UUID().uuidString).zip")
         defer { try? fileManager.removeItem(at: stagingArchive) }
+        onPhase?(.downloading)
         try await LinuxGuestImageSourceFetch.fetch(
             image: trusted,
             to: stagingArchive,
@@ -1021,6 +1137,8 @@ public actor LinuxGuestImageInstallationService {
             at: stagingArchive,
             expectedSHA512: trusted.archiveSHA512,
             expectedImageID: trusted.id,
+            onProgress: onProgress,
+            onPhase: onPhase,
             isCancelled: { Task.isCancelled || isCancelled?() == true },
             fileManager: fileManager
         )
@@ -1047,7 +1165,12 @@ public actor LinuxGuestImageInstallationService {
     /// image directory into place. The previously installed image (if any) is
     /// only removed after the new one passed verification, so a failed import
     /// never destroys a working image.
-    private func promote(from staging: URL, fileManager: FileManager) async throws -> LinuxGuestImage {
+    private func promote(
+        from staging: URL,
+        fileManager: FileManager,
+        onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil
+    ) async throws -> LinuxGuestImage {
         let candidate: URL
         if fileManager.fileExists(atPath: staging.appendingPathComponent("manifest.json").path) {
             candidate = staging
@@ -1083,11 +1206,28 @@ public actor LinuxGuestImageInstallationService {
         }
         // The manifest paths must resolve inside the staged image directory;
         // the verifier hashes the actual bytes there, and promotion keeps the
-        // same relative paths intact.
-        if let failure = await verifier.verificationFailure(image: image, imageDirectory: candidate) {
-            throw LinuxGuestImageInstallError.verificationFailed(failure)
+        // same relative paths intact. The verification is cancellation-aware:
+        // cancelling while the staged disk is read aborts with the explicit
+        // `.cancelled` outcome (never a promoted partial candidate, never a
+        // cached verdict).
+        onPhase?(.verifyingImage)
+        let failure: LinuxImageVerificationIssue?
+        do {
+            failure = try await verifier.verificationIssueOrCancelled(
+                image: image, imageDirectory: candidate, isCancelled: isCancelled
+            )
+        } catch is CancellationError {
+            throw LinuxGuestImageInstallError.cancelled
         }
-
+        if let failure {
+            throw LinuxGuestImageInstallError.verificationFailed(failure.message)
+        }
+        // Final checkpoint after the hash: never replace the working image
+        // when the owner left during verification.
+        if isCancelled?() == true {
+            throw LinuxGuestImageInstallError.cancelled
+        }
+        onPhase?(.finalizing)
         let destination = imagesRoot.appendingPathComponent(image.id, isDirectory: true)
         let trash = imagesRoot.appendingPathComponent(".trash-\(UUID().uuidString)", isDirectory: true)
         let hadPrevious = fileManager.fileExists(atPath: destination.path)

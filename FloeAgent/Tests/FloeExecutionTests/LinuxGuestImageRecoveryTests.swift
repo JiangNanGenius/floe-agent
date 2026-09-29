@@ -470,6 +470,182 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
         assertNoStagingLeftovers(in: root.appendingPathComponent("LinuxGuest/images", isDirectory: true))
     }
 
+    // MARK: - Service-reported phases, hash cancellation and verdict caching
+
+    /// The shared install reports what it is doing, in order: download,
+    /// archive verification, extraction, image verification, promotion. The
+    /// UI mirrors these phases; it never invents one, and a later phase cannot
+    /// render as the previous phase's percentage.
+    func testTrustedInstallReportsOrderedPhases() async throws {
+        let id = "floe-phase-fixture-1"
+        let archiveURL = try makePinnedZipFixture(id: id)
+        let root = workRoot.appendingPathComponent("phase-store-1", isDirectory: true)
+        let service = LinuxGuestImageInstallationService(root: root)
+        let phases = PhaseRecorder()
+        let progress = TransferProgressRecorder()
+        let image = try await service.installTrustedImage(
+            id: id,
+            downloader: PhaseFixtureDownloader(archive: archiveURL),
+            onProgress: { received, expected in
+                progress.record(received: received, expected: expected)
+            },
+            onPhase: { phases.record($0) }
+        )
+        XCTAssertEqual(image.id, id)
+        XCTAssertEqual(
+            phases.phases,
+            [.downloading, .verifyingArchive, .extracting, .verifyingImage, .finalizing]
+        )
+        // The archive-verification phase streams its own byte progress (the
+        // bar moves during the hash instead of freezing at "downloaded 100%").
+        let samples = progress.samples
+        XCTAssertFalse(samples.isEmpty)
+        XCTAssertEqual(samples.last?.received, samples.last?.expected)
+        XCTAssertTrue(samples.allSatisfy { $0.received <= $0.expected })
+    }
+
+    /// Owner cancellation that arrives at the archive-hash boundary stops the
+    /// install (the bounded hasher checks the token before every read) and
+    /// never promotes a candidate or leaves staging behind.
+    func testCancellationDuringArchiveHashNeverPromotes() async throws {
+        let id = "floe-hash-cancel-fixture-1"
+        let archiveURL = try makePinnedZipFixture(id: id)
+        let root = workRoot.appendingPathComponent("hash-cancel-store", isDirectory: true)
+        let imagesRoot = root.appendingPathComponent("LinuxGuest/images", isDirectory: true)
+        let service = LinuxGuestImageInstallationService(root: root)
+        let token = CancellationToken()
+        do {
+            _ = try await service.installTrustedImage(
+                id: id,
+                downloader: PhaseFixtureDownloader(archive: archiveURL),
+                onPhase: { phase in
+                    if phase == .verifyingArchive { token.cancel() }
+                },
+                isCancelled: { token.isCancelled }
+            )
+            XCTFail("a cancelled archive hash must not install")
+        } catch let error as LinuxGuestImageInstallError {
+            guard case .cancelled = error else { return XCTFail("unexpected \(error)") }
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: imagesRoot.appendingPathComponent(id).path),
+            "a cancelled install must never promote a candidate"
+        )
+        assertNoStagingLeftovers(in: imagesRoot)
+    }
+
+    /// A verification verdict is cached against the exact file identity, so a
+    /// status refresh does not re-open and re-hash the disk (the repeated
+    /// verification that compounded the device memory pressure). The explicit
+    /// re-verify drops the cache and reports the real current read condition,
+    /// still without any download.
+    func testVerificationFailureIsReusedUntilExplicitReverify() async throws {
+        guard geteuid() != 0 else {
+            throw XCTSkip("simulating an unreadable artifact requires a non-root user")
+        }
+        let serviceRoot = workRoot.appendingPathComponent("store-cache", isDirectory: true)
+        let service = LinuxGuestImageInstallationService(root: serviceRoot, limits: .standard)
+        let imageID = "floe-cache-test-1"
+        let imageDir = try makeInstalledImage(id: imageID, service: service)
+
+        // Tamper the bytes so the first verdict is a content failure.
+        let diskURL = imageDir.appendingPathComponent("disk.img")
+        let handle = try FileHandle(forUpdating: diskURL)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: Data(repeating: 0xAB, count: 64))
+        try handle.close()
+        let first = await service.status(id: imageID)
+        XCTAssertEqual(first.verificationIssue, .digestMismatch(role: "disk"))
+
+        // Make the artifact unreadable WITHOUT changing size or mtime: the
+        // fingerprint is unchanged, so the cached verdict must be reused. A
+        // fresh hash would now fail with an I/O error instead.
+        let originalPermissions = try FileManager.default
+            .attributesOfItem(atPath: diskURL.path)[.posixPermissions]
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: diskURL.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: originalPermissions ?? 0o644], ofItemAtPath: diskURL.path
+            )
+        }
+        let cached = await service.status(id: imageID)
+        XCTAssertEqual(
+            cached.verificationIssue, .digestMismatch(role: "disk"),
+            "the cached verdict must be reused instead of re-hashing on every refresh"
+        )
+
+        let fresh = await service.reverify(id: imageID)
+        guard case .ioFailure(let role, let error)? = fresh.verificationIssue else {
+            return XCTFail("expected an ioFailure after re-verify, got \(String(describing: fresh.verificationIssue))")
+        }
+        XCTAssertEqual(role, "disk")
+        XCTAssertEqual(error.posixErrno, EACCES)
+    }
+
+    /// Cancellation that arrives at the staged-image verification boundary
+    /// stops the large-disk hash at its next read and reports the explicit
+    /// `.cancelled` outcome: nothing is promoted, no verdict is cached and no
+    /// staging remains.
+    func testCancellationDuringStagedVerificationNeverPromotes() async throws {
+        let id = "floe-verify-cancel-fixture-1"
+        let archiveURL = try makePinnedZipFixture(id: id)
+        let root = workRoot.appendingPathComponent("verify-cancel-store", isDirectory: true)
+        let imagesRoot = root.appendingPathComponent("LinuxGuest/images", isDirectory: true)
+        let service = LinuxGuestImageInstallationService(root: root)
+        let token = CancellationToken()
+        do {
+            _ = try await service.installTrustedImage(
+                id: id,
+                downloader: PhaseFixtureDownloader(archive: archiveURL),
+                onPhase: { phase in
+                    if phase == .verifyingImage { token.cancel() }
+                },
+                isCancelled: { token.isCancelled }
+            )
+            XCTFail("a cancelled staged verification must not install")
+        } catch let error as LinuxGuestImageInstallError {
+            guard case .cancelled = error else { return XCTFail("unexpected \(error)") }
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: imagesRoot.appendingPathComponent(id).path),
+            "a cancelled staged verification must never promote a candidate"
+        )
+        assertNoStagingLeftovers(in: imagesRoot)
+    }
+
+    /// A cancelled verification writes no cache entry: the next non-cancelled
+    /// check reads the real bytes and reports the true content verdict
+    /// (cancellation is never cached as corruption or as success).
+    func testCancelledVerificationIsNotCachedAsAVerdict() async throws {
+        let serviceRoot = workRoot.appendingPathComponent("store-cancel-cache", isDirectory: true)
+        let service = LinuxGuestImageInstallationService(root: serviceRoot, limits: .standard)
+        let imageID = "floe-cancel-cache-test-1"
+        let imageDir = try makeInstalledImage(id: imageID, service: service)
+
+        // Tamper the bytes so the real verdict is a digest mismatch.
+        let diskURL = imageDir.appendingPathComponent("disk.img")
+        let handle = try FileHandle(forUpdating: diskURL)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: Data(repeating: 0x7E, count: 64))
+        try handle.close()
+
+        let verifier = LinuxGuestImageVerifier()
+        let image = try JSONDecoder().decode(
+            LinuxGuestImage.self,
+            from: Data(contentsOf: imageDir.appendingPathComponent("manifest.json"))
+        )
+        do {
+            _ = try await verifier.verificationIssueOrCancelled(
+                image: image, imageDirectory: imageDir, isCancelled: { true }
+            )
+            XCTFail("a cancelled verification must throw")
+        } catch is CancellationError {
+            // expected: no verdict, no cache write
+        }
+        let issue = await verifier.verificationIssue(image: image, imageDirectory: imageDir)
+        XCTAssertEqual(issue, .digestMismatch(role: "disk"))
+    }
+
     // MARK: - Diagnostic path redaction
 
     /// The typed hash error keeps stage/domain/code/errno but never exports
@@ -846,5 +1022,65 @@ private actor GatedArchiveDownloader: LinuxGuestImageDownloading {
             throw .localRejection(detail: "fixture copy failed")
         }
         if Task.isCancelled { throw .cancelled }
+    }
+}
+
+/// Copies a fixture archive immediately and reports the transferred bytes, so
+/// an install reaches the verification/extraction phases without a gate.
+private struct PhaseFixtureDownloader: LinuxGuestImageDownloading {
+    let archive: URL
+
+    func download(
+        _ url: URL,
+        to destination: URL,
+        maxBytes: Int64,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws(LinuxGuestImageTransferError) {
+        do {
+            try FileManager.default.copyItem(at: archive, to: destination)
+        } catch {
+            throw .localRejection(detail: "fixture copy failed")
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
+        onProgress(size, size)
+        if Task.isCancelled { throw .cancelled }
+    }
+}
+
+/// Ordered phase log; `onPhase` is a synchronous @Sendable callback, so the
+/// recorder locks instead of using actor hops (which would not preserve order
+/// inside one synchronous call chain).
+private final class PhaseRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [LinuxGuestImageTransferPhase] = []
+
+    func record(_ phase: LinuxGuestImageTransferPhase) {
+        lock.lock()
+        storage.append(phase)
+        lock.unlock()
+    }
+
+    var phases: [LinuxGuestImageTransferPhase] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+/// Byte-progress log for the same synchronous callback.
+private final class TransferProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(received: Int64, expected: Int64)] = []
+
+    func record(received: Int64, expected: Int64) {
+        lock.lock()
+        storage.append((received, expected))
+        lock.unlock()
+    }
+
+    var samples: [(received: Int64, expected: Int64)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

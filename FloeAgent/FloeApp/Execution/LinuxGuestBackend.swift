@@ -189,10 +189,13 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// false for a missing/unverified image or an absent/false declaration.
     let smpCapability: @Sendable (String) async -> Bool
     /// Real-file health: registry + manifest + actual expanded bytes + blob
-    /// availability; nil when the v2 store does not hold the image.
-    let health: @Sendable (String) async -> RuntimeV2ImageStore.ImageHealth?
+    /// availability; nil when the v2 store does not hold the image. The
+    /// optional second argument is the owner's cooperative cancel check;
+    /// `.cancelled` means the hash stopped without a verdict and the caller
+    /// must abort, never treat it as verified or damaged.
+    let health: @Sendable (String, CancellationCheck?) async -> LinuxImageHealthCheck?
     /// Explicit re-verification (drops the cached success fingerprint).
-    let reverifyHealth: @Sendable (String) async -> RuntimeV2ImageStore.ImageHealth?
+    let reverifyHealth: @Sendable (String, CancellationCheck?) async -> LinuxImageHealthCheck?
     /// Rebuilds the expanded view from verified blobs (no download).
     let reconstructExpanded: @Sendable (String, CancellationCheck?) async throws -> Void
     /// Same-id repair of a migrated image from a freshly verified legacy
@@ -338,11 +341,11 @@ enum LinuxGuestBackendAssembly {
             smpCapability: { imageID in
                 await integrator.imageSMPCapable(imageID: imageID)
             },
-            health: { imageID in
-                await integrator.imageHealth(imageID: imageID)
+            health: { imageID, isCancelled in
+                await integrator.imageHealth(imageID: imageID, isCancelled: isCancelled)
             },
-            reverifyHealth: { imageID in
-                await integrator.reverifyImageHealth(imageID: imageID)
+            reverifyHealth: { imageID, isCancelled in
+                await integrator.reverifyImageHealth(imageID: imageID, isCancelled: isCancelled)
             },
             reconstructExpanded: { imageID, isCancelled in
                 try await integrator.reconstructExpandedImage(imageID: imageID, isCancelled: isCancelled)

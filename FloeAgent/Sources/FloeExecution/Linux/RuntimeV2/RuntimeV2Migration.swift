@@ -457,26 +457,22 @@ public actor RuntimeV2EnvironmentMigrator {
                 reason: "round-trip size mismatch (\(newSize) != \(legacySize)); the legacy disk was retained"
             )
         }
-        let legacyHandle = try FileHandle(forReadingFrom: legacyDisk)
-        defer { try? legacyHandle.close() }
-        let newHandle = try FileHandle(forReadingFrom: rematerialized)
-        defer { try? newHandle.close() }
-        var offset: UInt64 = 0
-        let chunk = 4 << 20
-        while offset < UInt64(legacySize) {
-            try Task.checkCancellation()
-            try legacyHandle.seek(toOffset: offset)
-            try newHandle.seek(toOffset: offset)
-            let wanted = min(UInt64(chunk), UInt64(legacySize) - offset)
-            let a = try legacyHandle.read(upToCount: Int(wanted)) ?? Data()
-            let b = try newHandle.read(upToCount: Int(wanted)) ?? Data()
-            guard a == b else {
-                throw RuntimeV2Error.migrationFailed(
-                    id: "legacy-env-\(environmentID)", phase: "verified",
-                    reason: "round-trip content mismatch at offset \(offset); the legacy disk was retained"
-                )
-            }
-            offset += wanted
+        // Bounded streaming proof: hash both disks with the fixed-buffer
+        // streaming hasher instead of the former two-FileHandle chunk loop.
+        // On Darwin the Foundation chunk loop retains autoreleased buffers for
+        // the whole stream (host-measured: 383-704 MiB resident for a 1 GiB
+        // file, read-loop only), the class of condition that can surface as a
+        // read errno=12 on a memory-limited device; device jetsam is not
+        // proven. Digest equality proves byte equality; cancellation is
+        // observed inside the stream.
+        let cancellation: @Sendable () -> Bool = { Task.isCancelled }
+        let legacyDigest = try FloeDigest.sha512Hex(ofFileAt: legacyDisk, isCancelled: cancellation)
+        let newDigest = try FloeDigest.sha512Hex(ofFileAt: rematerialized, isCancelled: cancellation)
+        guard legacyDigest == newDigest else {
+            throw RuntimeV2Error.migrationFailed(
+                id: "legacy-env-\(environmentID)", phase: "verified",
+                reason: "round-trip content digest mismatch; the legacy disk was retained"
+            )
         }
     }
 }

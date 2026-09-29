@@ -15,7 +15,14 @@ import FloeTools
     @Published private(set) var failures: Set<String> = []
     @Published private(set) var revision = 0
     /// Download fraction (0...1) per job id, when the operation reports it.
+    /// Within one phase the value never decreases (see `reportProgress`).
     @Published private(set) var fractions: [String: Double] = [:]
+    /// What the operation is doing right now (download, archive verification,
+    /// extraction, image verification, promotion, local reconstruction or a
+    /// plain re-check) per job id. Published separately from `messages` so a
+    /// transient phase label can never overwrite the job's terminal result or
+    /// its cancellation message.
+    @Published private(set) var phases: [String: LinuxGuestImageTransferPhase] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
 
     func start(id: String, title: String, action: FloePlatformServices.PackageAction) {
@@ -33,6 +40,7 @@ import FloeTools
         messages[id] = title
         failures.remove(id)
         fractions[id] = nil
+        phases[id] = nil
         if let progress {
             progressHandlerBindings[id] = progress
         }
@@ -43,15 +51,57 @@ import FloeTools
             running.remove(id)
             tasks[id] = nil
             progressHandlerBindings[id] = nil
+            phases[id] = nil
             revision += 1
         }
     }
 
     private var progressHandlerBindings: [String: @Sendable (Double) -> Void] = [:]
+    /// Gated per-job progress. Reports carry an operation epoch and a sequence
+    /// stamped by the service; the gate drops a delayed MainActor hop that
+    /// belongs to an older sequence or to a finished job, so a late event can
+    /// never regress the phase or resurrect terminal state.
+    private var jobProgress: [String: LinuxGuestImageJobProgress] = [:]
 
-    /// Called by operations that stream byte-level progress.
+    /// Applies one service report through the gate and mirrors the accepted
+    /// result into the published UI dictionaries.
+    private func applyReport(
+        id: String,
+        epoch: UUID,
+        sequence: UInt64,
+        phase: LinuxGuestImageTransferPhase,
+        fraction: Double?
+    ) {
+        guard var state = jobProgress[id] else { return }
+        guard state.apply(epoch: epoch, sequence: sequence, phase: phase, fraction: fraction) else { return }
+        jobProgress[id] = state
+        phases[id] = state.phase
+        fractions[id] = state.fraction
+        if let accepted = state.fraction {
+            progressHandlerBindings[id]?(accepted)
+        }
+    }
+
+    /// Called by operations that stream byte-level progress in a known phase.
+    /// A phase change starts a new 0...1 scale (download bytes and archive
+    /// verification bytes are different totals); within one phase the fraction
+    /// is monotonic, so a mirror retry or a duplicate callback cannot move the
+    /// bar backwards.
+    func reportProgress(id: String, epoch: UUID, sequence: UInt64, phase: LinuxGuestImageTransferPhase, fraction: Double) {
+        applyReport(id: id, epoch: epoch, sequence: sequence, phase: phase, fraction: fraction)
+    }
+
+    /// Called by operations that report a phase without byte progress.
+    /// Switching to a different phase clears the previous phase's fraction so
+    /// a "downloading 100%" bar cannot masquerade as verification/extraction.
+    func reportPhase(id: String, epoch: UUID, sequence: UInt64, phase: LinuxGuestImageTransferPhase) {
+        applyReport(id: id, epoch: epoch, sequence: sequence, phase: phase, fraction: nil)
+    }
+
+    /// Called by operations that stream byte-level progress without a stamped
+    /// phase (non-image package jobs).
     func reportProgress(id: String, fraction: Double) {
-        let bounded = min(1, max(0, fraction))
+        let bounded = LinuxGuestImageProgress.monotonic(previous: fractions[id], next: fraction)
         fractions[id] = bounded
         progressHandlerBindings[id]?(bounded)
     }
@@ -74,12 +124,14 @@ import FloeTools
 
     /// Runs `operation` under one shared job id. A second caller while the
     /// job is running awaits the same task, so two entry points never start
-    /// duplicate downloads; errors propagate to every awaiter.
+    /// duplicate downloads; errors propagate to every awaiter. The operation
+    /// receives the job's epoch, which every progress/phase report must carry
+    /// so a delayed report can never land on a newer job.
     @discardableResult
     func runShared(
         id: String,
         title: String,
-        operation: @escaping @Sendable () async throws -> String
+        operation: @escaping @Sendable (UUID) async throws -> String
     ) async throws -> String {
         if let existing = sharedThrowingTasks[id] {
             return try await existing.value
@@ -88,12 +140,18 @@ import FloeTools
         messages[id] = title
         failures.remove(id)
         fractions[id] = nil
-        let task = Task { try await operation() }
+        phases[id] = nil
+        let epoch = UUID()
+        jobProgress[id] = LinuxGuestImageJobProgress(epoch: epoch)
+        let task = Task { try await operation(epoch) }
         sharedThrowingTasks[id] = task
         defer {
             sharedThrowingTasks[id] = nil
             running.remove(id)
             progressHandlerBindings[id] = nil
+            phases[id] = nil
+            fractions[id] = nil
+            jobProgress[id] = nil
             revision += 1
         }
         do {
