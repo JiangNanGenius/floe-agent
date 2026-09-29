@@ -253,6 +253,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// sample carries the runtime identity (runtime id + launch generation)
     /// issued by the runtime lease — never a locally observed increment.
     private var linuxLastRuntimeSamples: [String: LinuxGuestRuntimeSample] = [:]
+    // Report an invalid sampling interval once, not every three seconds.
+    // Repeated idle samples must not evict useful crash/installation evidence.
+    private var linuxUnverifiedMetricsReported: Set<String> = []
     /// Latest authoritative runtime state per environment (identity,
     /// liveness, granted shape) read from the runtime owner's session table.
     /// Surfaces list and label VMs from this — never from conversations,
@@ -1563,6 +1566,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             stopLinuxMetricsSampling(environmentID: environmentID)
             linuxBackgroundHold.preferenceDisabled(environmentID)
             linuxSurfaceEntries.removeValue(forKey: environmentID)
+            linuxUnverifiedMetricsReported.remove(environmentID)
             publishLinuxSurfacePager()
             Task { await BackgroundWorkRegistry.shared.remove(id: workID) }
             if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
@@ -1681,6 +1685,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         stopLinuxMetricsSampling(environmentID: environmentID)
         let title = linuxSurfaceEntries[environmentID]?.title ?? "Linux 环境"
         linuxSurfaceEntries.removeValue(forKey: environmentID)
+        linuxUnverifiedMetricsReported.remove(environmentID)
         publishLinuxSurfacePager()
         await FloePlatformServices.shared.stopLinuxGuest(id: environmentID)
         let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
@@ -1861,6 +1866,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         linuxTerminalCounts.removeValue(forKey: environmentID)
         linuxRuntimeStates.removeValue(forKey: environmentID)
         linuxSurfaceEntries.removeValue(forKey: environmentID)
+        linuxUnverifiedMetricsReported.remove(environmentID)
         stopLinuxMetricsSampling(environmentID: environmentID)
         publishLinuxSurfacePager()
         let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
@@ -2315,11 +2321,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                LinuxGuestRuntimeIdentity.match(sample: cached.runtimeIdentity, live: liveIdentity) != .sameBoot {
                 linuxLastRuntimeSamples.removeValue(forKey: environmentID)
             }
-            FloeLogger(category: .app).info(
-                "linuxMetricsSampleDiscarded environment=\(environmentID) reason=runtimeIdentityUnverified"
-            )
+            if linuxUnverifiedMetricsReported.insert(environmentID).inserted {
+                FloeLogger(category: .app).info(
+                    "linuxMetricsSampleDiscarded environment=\(environmentID) reason=runtimeIdentityUnverified"
+                )
+            }
             return
         }
+        linuxUnverifiedMetricsReported.remove(environmentID)
         if let liveState {
             // Keep the cached live state (identity + granted shape) in step
             // with the sample that was just proven to belong to it, so the
@@ -2368,6 +2377,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let holdDecision = linuxBackgroundHold.userClosedPictureInPicture()
         if case .endHoldAndStop(let environmentID) = holdDecision {
             linuxSurfaceEntries.removeValue(forKey: environmentID)
+            linuxUnverifiedMetricsReported.remove(environmentID)
             linuxCommandCounts.removeValue(forKey: environmentID)
             linuxPortCounts.removeValue(forKey: environmentID)
             publishLinuxSurfacePager()
