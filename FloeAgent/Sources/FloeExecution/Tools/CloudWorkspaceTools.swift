@@ -49,6 +49,15 @@ private enum CloudWorkspaceToolSupport {
     /// hostID + path + contentBase64 + port, for file writes.
     static let writeSchema = schema(properties: ["hostID", "path", "contentBase64", "port"], required: ["path", "contentBase64"])
 
+    /// Workspace ID grammar shared by serialized schemas, Swift runtime
+    /// validation and the daemon guard `valid_id` in floe_remote_agent.py.
+    /// JSON Schema patterns must be portable across validators; nothing in this character
+    /// class needs escaping, so a doubled "\\A" made strict cloud providers
+    /// (DeepSeek) reject the tool schema as an invalid regex.
+    static let workspaceIDPattern = #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"#
+    static let workspaceIDPatternFragment =
+        #""workspaceID":{"type":"string","pattern":""# + workspaceIDPattern + #""}"#
+
     static func hostID(_ value: String?) throws -> UUID? {
         guard let value else { return nil }
         guard let id = UUID(uuidString: value) else { throw FloeError.validationFailed("hostID must be a UUID") }
@@ -69,7 +78,7 @@ private enum CloudWorkspaceToolSupport {
 public struct CloudWorkspaceProvisionTool: AgentTool {
     public static let name = "cloudWorkspace.create"
     public static let toolDescription = "Create an isolated Floe-owned cloud workspace on a paired host. Omit workspaceID to generate one. Returns the stable workspace ID to link inside the task's local Cloud folder."
-    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Paired host UUID; omit to use the default host"},"workspaceID":{"type":"string","pattern":"^[\\A-Za-z0-9][\\A-Za-z0-9._-]{0,127}$"},"port":{"type":"integer","minimum":1,"maximum":65535}},"additionalProperties":false}"#
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Paired SSH host UUID; omit to use the default host"},"# + CloudWorkspaceToolSupport.workspaceIDPatternFragment + #","port":{"type":"integer","minimum":1,"maximum":65535}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
     public static let isSideEffecting = true
     private let service: CloudWorkspaceService
@@ -195,7 +204,7 @@ private enum CloudWorkspaceGitSupport {
     /// so read verbs never carry commit-only parameters like message/name.
     private static let propertyFragments: [String: String] = [
         "hostID": #""hostID":{"type":"string","description":"Paired host UUID; omit to use the default host"}"#,
-        "workspaceID": #""workspaceID":{"type":"string","pattern":"^[\\A-Za-z0-9][\\A-Za-z0-9._-]{0,127}$"}"#,
+        "workspaceID": CloudWorkspaceToolSupport.workspaceIDPatternFragment,
         "path": #""path":{"type":"string","description":"Optional path relative to the cloud workspace"}"#,
         "message": #""message":{"type":"string","maxLength":8192}"#,
         "name": #""name":{"type":"string","maxLength":200}"#,
@@ -216,7 +225,7 @@ private enum CloudWorkspaceGitSupport {
 
     static func validate(_ args: CloudWorkspaceGitArguments) throws {
         _ = try CloudWorkspaceToolSupport.hostID(args.hostID)
-        guard args.workspaceID.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"#, options: .regularExpression) != nil else {
+        guard args.workspaceID.range(of: CloudWorkspaceToolSupport.workspaceIDPattern, options: .regularExpression) != nil else {
             throw FloeError.validationFailed("workspaceID is invalid")
         }
     }
@@ -376,7 +385,7 @@ public struct CloudWorkspaceGitBranchTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var hostID: String?; public var workspaceID: String; public var name: String; public var create: Bool?; public var port: Int?
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"workspaceID":{"type":"string"},"name":{"type":"string","maxLength":200},"create":{"type":"boolean","default":false},"port":{"type":"integer","minimum":1,"maximum":65535}},"required":["workspaceID","name"],"additionalProperties":false}"#
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"# + CloudWorkspaceToolSupport.workspaceIDPatternFragment + #","name":{"type":"string","maxLength":200},"create":{"type":"boolean","default":false},"port":{"type":"integer","minimum":1,"maximum":65535}},"required":["workspaceID","name"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesRemoteCommand]
     public static let isSideEffecting = true
     private let service: CloudWorkspaceService
