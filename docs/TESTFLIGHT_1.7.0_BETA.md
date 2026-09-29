@@ -1,16 +1,16 @@
 # Floe 1.7 TestFlight delivery
 
-## Build 235 — uploaded; Apple processing pending
+## Current internal delivery: 1.7.0 (235) — available in Floe QA
 
-截至 2026-09-29 04:16 UTC，Build235 已由[发布任务36516585936](https://github.com/JiangNanGenius/floe-agent/actions/runs/36516585936)完成完整 App 编译、云端 IPA 保留及签名上传。不可变标签 `v1.7.0-beta.92` 对应 `3fdb528251cac8e5c0b37b661f7b86a0b5644bae`。[GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.92) 和 Feather 发布任务36519834873已成功。[Apple 只读核查36520876813](https://github.com/JiangNanGenius/floe-agent/actions/runs/36520876813)显示上传仍为 `PROCESSING`，无错误或警告，尚无 build ID；因此暂不宣称 Floe QA 可安装。
+截至 2026-09-29 04:33 UTC，Build235 已由[发布任务36516585936](https://github.com/JiangNanGenius/floe-agent/actions/runs/36516585936)完成完整 App 编译、云端 IPA 保留及签名上传。不可变标签 `v1.7.0-beta.92` 对应 `3fdb528251cac8e5c0b37b661f7b86a0b5644bae`。[GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.92) 和 Feather 发布任务36519834873已成功。[Apple 核验36522117460](https://github.com/JiangNanGenius/floe-agent/actions/runs/36522117460)于04:33 UTC确认 `VALID`、未过期、仅现有私有 Floe QA 分组，以及 `IN_BETA_TESTING`；已确认内测可安装。
 
-As of 2026-09-29 04:16 UTC, Build235 completed full-App compilation, cloud IPA retention and signed upload. Its immutable tag and source are listed above. GitHub prerelease and Feather publication succeeded. Apple still reports upload `PROCESSING`, with no errors or warnings and no build ID yet; Floe QA installability is not verified.
+As of 2026-09-29 04:33 UTC, Build235 completed full-App compilation, cloud IPA retention and signed upload. Its immutable tag and source are listed above. GitHub prerelease and Feather publication succeeded. Verification run36522117460 at04:33 UTC confirmed Apple `VALID`, unexpired, exactly the existing private Floe QA group and `IN_BETA_TESTING`; internal installation is available.
 
 Unsigned IPA: 739,838,072 bytes; SHA-256 `90b419d71ea041a51f20b0596793149d35c6f3af46fda50dee3c456aa5ac4375`. Retained cloud evidence and the public asset digest agree. Xcode 26.6 (17F113), bundle `org.floeagent.ios`. Local backup download is still in progress. 云端及公开资产摘要一致，本地备份仍在下载。
 
 真实权重测试通过两轮文件工具，但首次搜索回执回答编造，整体测试失败，第二次搜索未执行；平台是 macOS，非 iPad。PPT 静置闪退和字体真机效果仍未解决或验收。Real-weight testing passed two file-tool rounds but failed the first search-answer receipt check; the second search was not reached. That evidence is macOS-host-only. PPT idle crashes and device font behavior remain unresolved or unverified. [Build235 notes](RELEASE_NOTES_1.7.0_BUILD_235.md) · [repair evidence](FLOE_235_FEEDBACK_REPAIR.md).
 
-## Current internal delivery: 1.7.0 (234) — available in Floe QA
+## Previous internal delivery: 1.7.0 (234) — available in Floe QA
 
 **当前内部 TestFlight：1.7.0（234）。** 不可变标签 `v1.7.0-beta.91` 固定源码 `9ec002af1d75a53675b982c9012d6e993cc109cf`。完整 App 编译、云端 IPA 保留、签名与上传成功。[核验任务](https://github.com/JiangNanGenius/floe-agent/actions/runs/36437282899)于 2026-09-28 14:36 UTC 确认 Apple `VALID`、未过期、仅现有私有 Floe QA 分组和 `IN_BETA_TESTING`。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.91)已发布；发布说明标题检查在编译上传之后（发布任务 36429111717）失败，仅分发恢复任务 36437041153 复用原 IPA 重发，未重编译或重复上传 Apple。
 
