@@ -47,6 +47,73 @@ struct ProcUtil
     }
 };
 
+// ---- Explicit cross-thread overlap handshake (labeled mock) -----------------
+// Replaces timing-based "park 30 ms and hope a concurrent partner arrives"
+// overlap detection. The kit thread ARMS once it is parked inside document
+// work and stays parked (bounded) until either a foreign-thread delivery
+// arrives (a real overlap, counted exactly once) or the driver declares the
+// firing window complete (serialized/queued path: no foreign delivery can meet
+// it, so the wait ends with zero overlaps instead of a scheduler gamble).
+struct OverlapGate
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool armed = false;     // kit thread is parked inside document work
+    bool partner = false;   // a foreign-thread session delivery arrived
+    bool fired = false;     // driver finished pushing/firing callbacks
+    bool released = false;  // meeting (or the empty window) is closed
+    int meetings = 0;
+
+    // Kit side: arm the window, signal parked, and wait bounded for a foreign
+    // partner or for end-of-firing. Exactly one meeting is recorded.
+    void armAndWait(std::chrono::milliseconds bound)
+    {
+        std::unique_lock<std::mutex> lk(mutex);
+        armed = true;
+        partner = false;
+        fired = false;
+        released = false;
+        cv.notify_all();
+        cv.wait_for(lk, bound, [&] { return partner || fired; });
+        if (partner)
+            ++meetings;
+        armed = false;
+        released = true;
+        cv.notify_all();
+    }
+    // Driver side: block bounded until the kit thread has armed/parked.
+    bool waitParked(std::chrono::milliseconds bound)
+    {
+        std::unique_lock<std::mutex> lk(mutex);
+        return cv.wait_for(lk, bound, [&] { return armed; });
+    }
+    // Foreign-thread delivery side: enter only while armed, then block bounded
+    // until the kit side closes the meeting. Same-thread (kit) callers must
+    // never enter: serialized delivery cannot overlap itself.
+    void partnerArrive(std::chrono::milliseconds bound)
+    {
+        std::unique_lock<std::mutex> lk(mutex);
+        if (!armed)
+            return;
+        partner = true;
+        cv.notify_all();
+        cv.wait_for(lk, bound, [&] { return released; });
+    }
+    // Driver side: the callback firing window is over.
+    void firingComplete()
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        fired = true;
+        cv.notify_all();
+    }
+    // Driver side: wait until the kit side has left the parked window.
+    bool waitReleased(std::chrono::milliseconds bound)
+    {
+        std::unique_lock<std::mutex> lk(mutex);
+        return cv.wait_for(lk, bound, [&] { return released; });
+    }
+};
+
 // ---- Overlap/thread evidence collected by the harness -----------------------
 struct Evidence
 {
@@ -58,15 +125,57 @@ struct Evidence
     // LOG_* macros route exactly those statements to counters.
     std::atomic<int> dropLogs{0};              // LOG_DBG "poll is gone"
     std::atomic<int> unresolvableDropLogs{0};  // LOG_ERR "unresolvable document"
-    std::atomic<int> overlaps{0};              // callback body && kit work in flight together
+    // Handshake-proven concurrent meetings (OverlapGate::meetings, mirrored).
+    std::atomic<int> overlaps{0};
     std::atomic<int> pendingDroppedWithPoll{0};
+    // Count of poll-service turns that actually invoked >=1 queued callback
+    // (mock-only drain accounting; lets a scenario prove callbacks crossed
+    // more than one drain batch rather than a single swapped turn).
+    std::atomic<int> nonemptyDrains{0};
     ProcUtil::ThreadId kitThread{0};
     ProcUtil::ThreadId appMainThread{0};
-    // Deterministic rendezvous: the callback body and the kit work both park
-    // here; if they can ever be in flight together they meet and record it.
-    std::mutex rendezvousMutex;
-    std::condition_variable rendezvousCv;
-    int rendezvousInside{0};
+    // Set only by the scenario that arms an explicit overlap window (S2).
+    OverlapGate* overlapGate = nullptr;
+    // Bounded completion rendezvous: signaled after every callback body runs,
+    // so a scenario waits for the intended work instead of sleeping a fixed
+    // window and hoping the scheduler drained the queue in time.
+    std::mutex completionMutex;
+    std::condition_variable completionCv;
+    void bumpBodies()
+    {
+        {
+            std::lock_guard<std::mutex> lk(completionMutex);
+            callbackBodies.fetch_add(1, std::memory_order_relaxed);
+        }
+        completionCv.notify_all();
+    }
+    // Wait until callbackBodies >= target or the bound elapses. Returns true
+    // iff the target was reached; never waits past an explicit bounded time.
+    bool waitForBodies(int target, std::chrono::milliseconds bound)
+    {
+        std::unique_lock<std::mutex> lk(completionMutex);
+        return completionCv.wait_for(lk, bound, [&] {
+            return callbackBodies.load(std::memory_order_acquire) >= target;
+        });
+    }
+    // Bounded rendezvous on nonempty drain batches (mock-only accounting).
+    std::mutex drainMutex;
+    std::condition_variable drainCv;
+    void bumpDrain()
+    {
+        {
+            std::lock_guard<std::mutex> lk(drainMutex);
+            nonemptyDrains.fetch_add(1, std::memory_order_relaxed);
+        }
+        drainCv.notify_all();
+    }
+    bool waitForDrains(int target, std::chrono::milliseconds bound)
+    {
+        std::unique_lock<std::mutex> lk(drainMutex);
+        return drainCv.wait_for(lk, bound, [&] {
+            return nonemptyDrains.load(std::memory_order_acquire) >= target;
+        });
+    }
 };
 extern Evidence g_ev;
 
@@ -165,6 +274,8 @@ struct SocketPoll
             std::lock_guard<std::mutex> lock(_mutex);
             std::swap(_newCallbacks, invoke);
         }
+        if (!invoke.empty())
+            g_ev.bumpDrain();
         for (const auto& callback : invoke)
         {
             try

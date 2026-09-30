@@ -70,8 +70,10 @@ jobs:
       # Keep the source callback regression alongside the exact native build.
       - name: Verify pinned kit callback lifecycle regression
         run: |
+          mkdir -p "$RUNNER_TEMP/office-native-bundle/kit-callback-lifecycle-raw"
           python3 FloeAgent/scripts/test_office_kit_lifecycle.py \
             --source "$RUNNER_TEMP/office-native-bundle/source" \
+            --raw-dir "$RUNNER_TEMP/office-native-bundle/kit-callback-lifecycle-raw" \
             > "$RUNNER_TEMP/office-native-bundle/kit-callback-lifecycle-regression.json"
       - name: Prepare pinned Calc exporter sources
         run: |
@@ -143,6 +145,7 @@ jobs:
             ${{ runner.temp }}/office-native-bundle/native-drain-contract.json
             ${{ runner.temp }}/office-native-bundle/scheme-lifecycle-regression.json
             ${{ runner.temp }}/office-native-bundle/kit-callback-lifecycle-regression.json
+            ${{ runner.temp }}/office-native-bundle/kit-callback-lifecycle-raw/*.txt
             ${{ runner.temp }}/office-filter-overlay/filter-overlay.json
             ${{ runner.temp }}/office-filter-overlay/compile.log
             ${{ runner.temp }}/office-filter-overlay/*.compile.log

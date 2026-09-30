@@ -52,14 +52,28 @@ IDENTITY_STORE = "KitSocketPoll::kitThreadId.store("
 
 # Required PASS lines per variant: the defect demonstration on the original,
 # the repair verification on the patched extraction.
+# Deterministic completion-discipline markers (S9), emitted identically by
+# both variants: a forced (gated) delayed first service must defeat a fixed
+# window read, and the strict bounded rendezvous must observe every queued
+# body exactly once across >=3 distinct drain batches. mainPoll is live there
+# in both extractions, so S9 guards the harness rather than the defect.
+DELAYED_DRAIN_MARKERS = [
+    "PASS S9 batch A queued while first service is gated off",
+    "PASS S9 old fixed-window stop before first service loses queued work",
+    "PASS S9 corrected first service drains the held batch in its own turn",
+    "PASS S9 batch B drained in a second service turn",
+    "PASS S9 batch C drained in a third service turn",
+    "PASS S9 strict rendezvous drains all batches exactly once on the kit thread",
+    "PASS S9 queued work crossed multiple drain batches",
+]
 ORIGINAL_MARKERS = [
     "PASS S1 DEFECT null mainPoll with live sibling poll",
     "PASS S2 DEFECT callback body executed inline on app-main thread",
     "PASS S2 DEFECT no callback reached the kit thread",
-    "PASS S2 DEFECT unsynchronized overlap with kit-thread document work",
+    "PASS S2 DEFECT handshake-proven overlap with kit-thread document work",
     "PASS S6 DEFECT orphan-document callbacks ran inline on a foreign thread",
     "PASS S7 DEFECT creator-owner authorized inline execution on a foreign thread",
-]
+] + DELAYED_DRAIN_MARKERS
 PATCHED_MARKERS = [
     "PASS S1 sibling poll survives first-document teardown",
     "PASS S2 all callback bodies executed, on the kit thread",
@@ -75,12 +89,16 @@ PATCHED_MARKERS = [
     "PASS S7 no foreign-thread inline execution from unserviced owner",
     "PASS S8 exactly-once on kit thread across first-service race",
     "PASS S8 no inline execution during first-service window",
-]
+] + DELAYED_DRAIN_MARKERS
 EVIDENCE_RACE = re.compile(
     r"S\d+ evidence bodies=(?P<bodies>\d+) kit=(?P<kit>\d+) foreign=(?P<foreign>\d+)"
     r" inlineAppMain=(?P<inline>\d+) overlaps=(?P<overlaps>\d+) dropped=(?P<dropped>\d+)")
 EVIDENCE_FIRST_SERVICE = re.compile(
     r"S\d+ evidence bodies=(?P<bodies>\d+) kit=(?P<kit>\d+) inlineAppMain=(?P<inline>\d+)")
+# S9 prints bodies/kit/foreign/inlineAppMain/drains (no overlap/dropped fields).
+EVIDENCE_DELAYED_DRAIN = re.compile(
+    r"S9 evidence bodies=(?P<bodies>\d+) kit=(?P<kit>\d+) foreign=(?P<foreign>\d+)"
+    r" inlineAppMain=(?P<inline>\d+) drains=(?P<drains>\d+)")
 
 
 def sha256(path):
@@ -196,21 +214,71 @@ def build_variants(stage):
     return binaries
 
 
-def run_variant(binary, variant, errors):
-    """Run one variant and check its marker set and evidence counters."""
+def _write_raw(raw_dir, variant, tag, content):
+    """Persist the variant's synthetic raw output so a cloud failure is
+    diagnosable even when stdout was redirected to the JSON summary."""
+    if raw_dir is None:
+        return None
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    path = raw_dir / f"kit-lifecycle-{variant}-{tag}.txt"
+    path.write_text(content)
+    return str(path)
+
+
+def run_variant(binary, variant, errors, raw_dir=None):
+    """Run one variant and check its marker set and evidence counters.
+
+    The raw stdout/stderr, exit code and any timeout are captured into the
+    matrix row (and, when raw_dir is given, to disk) on EVERY outcome, so a
+    cloud failure never loses the synthetic output that explains it.
+    """
     prior = len(errors)
+    timeout_seconds = 300
+    stdout = ""
+    stderr = ""
+    returncode = None
+    timed_out = False
     try:
-        ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=300)
-    except subprocess.TimeoutExpired:
-        errors.append(f"{variant}: timeout")
-        return {"variant": variant, "verdict": "FAIL", "detail": "timeout"}
-    output = ran.stdout
+        ran = subprocess.run([str(binary)], capture_output=True, text=True,
+                             timeout=timeout_seconds)
+        stdout = ran.stdout or ""
+        stderr = ran.stderr or ""
+        returncode = ran.returncode
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        errors.append(f"{variant}: timeout after {timeout_seconds}s")
+        _write_raw(raw_dir, variant, "timeout-stdout", stdout)
+        _write_raw(raw_dir, variant, "timeout-stderr", stderr)
+
+    output = stdout
     failures = [line for line in output.splitlines() if line.startswith("FAIL ")]
-    if ran.returncode != 0 or failures:
+
+    row = {
+        "variant": variant,
+        "returnCode": None if timed_out else returncode,
+        "timedOut": timed_out,
+        "rawStdoutChars": len(stdout),
+        "rawStderrChars": len(stderr),
+        "rawStdoutFile": _write_raw(raw_dir, variant, "stdout", stdout),
+        "rawStderrFile": _write_raw(raw_dir, variant, "stderr", stderr),
+        # Keep a bounded inline tail so the evidence is useful even if the
+        # uploaded raw files are unavailable; full output goes to the files.
+        "rawStdoutTail": "\n".join(output.splitlines()[-40:]),
+    }
+    if stderr.strip():
+        row["rawStderrTail"] = "\n".join(stderr.splitlines()[-20:])
+
+    if timed_out or returncode != 0 or failures:
         errors.extend(f"{variant}: {line}" for line in failures)
-        errors.append(f"{variant}: exit {ran.returncode}")
-        return {"variant": variant, "verdict": "FAIL",
-                "detail": "; ".join(failures) or f"exit {ran.returncode}"}
+        if not timed_out:
+            errors.append(f"{variant}: exit {returncode}")
+        row["verdict"] = "FAIL"
+        row["detail"] = ("timeout" if timed_out
+                         else "; ".join(failures) or f"exit {returncode}")
+        return row
+
     markers = ORIGINAL_MARKERS if variant == "original" else PATCHED_MARKERS
     missing = [marker for marker in markers if marker not in output]
     if missing:
@@ -223,8 +291,12 @@ def run_variant(binary, variant, errors):
 
     race = [match.groupdict() for match in EVIDENCE_RACE.finditer(output)]
     first_service = [match.groupdict() for match in EVIDENCE_FIRST_SERVICE.finditer(output)]
-    for row in race:  # S2 carries the race counters
-        numbers = {key: int(value) for key, value in row.items()}
+    delayed = [match.groupdict() for match in EVIDENCE_DELAYED_DRAIN.finditer(output)]
+    for label, rows in (("S2", race), ("S8", first_service), ("S9", delayed)):
+        if len(rows) != 1:
+            errors.append(f"{variant}: expected exactly one {label} evidence row, got {len(rows)}")
+    for rowdata in race:  # S2 carries the race counters
+        numbers = {key: int(value) for key, value in rowdata.items()}
         if variant == "original":
             if not (numbers["inline"] > 0 and numbers["kit"] == 0
                     and numbers["overlaps"] > 0 and numbers["dropped"] == 0):
@@ -233,14 +305,21 @@ def run_variant(binary, variant, errors):
                   and numbers["foreign"] == 0 and numbers["inline"] == 0
                   and numbers["overlaps"] == 0 and numbers["dropped"] == 0):
             errors.append(f"patched S2 evidence does not show exactly-once kit delivery: {numbers}")
-    for row in first_service:  # S8 carries the first-service race counters
-        numbers = {key: int(value) for key, value in row.items()}
+    for rowdata in first_service:  # S8 carries the first-service race counters
+        numbers = {key: int(value) for key, value in rowdata.items()}
         if not (numbers["bodies"] == 30 and numbers["kit"] == 30 and numbers["inline"] == 0):
             errors.append(f"S8 evidence is not exactly-once on the kit thread: {numbers}")
+    for rowdata in delayed:  # S9 forced delayed first service, both variants
+        numbers = {key: int(value) for key, value in rowdata.items()}
+        if not (numbers["bodies"] == 20 and numbers["kit"] == 20
+                and numbers["foreign"] == 0 and numbers["inline"] == 0
+                and numbers["drains"] >= 3):
+            errors.append(f"S9 evidence is not exactly-once across multiple drains: {numbers}")
     detail = (f"{len(markers) - len(missing)}/{len(markers)} markers; "
-              f"{len(race) + len(first_service)} evidence rows")
-    return {"variant": variant, "verdict": "pass" if len(errors) == prior else "FAIL",
-            "detail": detail}
+              f"{len(race) + len(first_service) + len(delayed)} evidence rows")
+    row["detail"] = detail
+    row["verdict"] = "pass" if len(errors) == prior else "FAIL"
+    return row
 
 
 def main():
@@ -249,10 +328,17 @@ def main():
     parser.add_argument("--source", type=Path, help="root of the pinned upstream tree")
     parser.add_argument("--bundle", type=Path,
         help="extracted format-2 Office bundle (its source/ tree is used)")
+    parser.add_argument("--raw-dir", type=Path, default=None,
+        help=("directory to persist each variant's raw stdout/stderr on every "
+              "outcome (pass/fail/timeout), so a cloud failure keeps its "
+              "synthetic output next to the JSON summary"))
     args = parser.parse_args()
     if not args.source and not args.bundle:
         parser.error("one of --source or --bundle is required")
     source_root = (args.source if args.source else args.bundle / "source").resolve()
+    raw_dir = args.raw_dir.resolve() if args.raw_dir else None
+    if raw_dir is not None:
+        raw_dir.mkdir(parents=True, exist_ok=True)
     if os.uname().sysname != "Darwin":
         parser.error("requires macOS (clang++), like the other native host regressions")
 
@@ -272,7 +358,7 @@ def main():
                 try:
                     stage_variants(source_root, section, folder)
                     binaries = build_variants(folder)
-                    matrix = [run_variant(binaries[variant], variant, errors)
+                    matrix = [run_variant(binaries[variant], variant, errors, raw_dir)
                               for variant in ("original", "patched")]
                     summary["matrix"] = matrix
                 except (RuntimeError, ValueError, subprocess.CalledProcessError) as error:
