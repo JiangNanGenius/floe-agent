@@ -34,9 +34,15 @@ All runtime/device capability flags remain false.
 ## Cloud simulator gate
 
 The new `office-floe-simulator.yml` consumes the genuine staged simulator engine
-from [run 36704184429](https://github.com/JiangNanGenius/floe-agent/actions/runs/36704184429)
-without rebuilding the core. At the time of this record the core is still
-compiling; the full Floe App scenario has not run.
+from a verified completed simulator build without rebuilding the core during
+App qualification. [Run 36704184429](https://github.com/JiangNanGenius/floe-agent/actions/runs/36704184429)
+failed after its core build completed: editor configure could not import
+`lxml` through its effective `python3`. Dependencies had been installed into
+the workflow's Python virtual environment, but the child process inherited a
+different PATH. The failure artifact contains logs, not a reusable engine.
+The repair must check the child interpreter before compilation and preserve a
+completed-core checkpoint before downstream editor work. The full Floe App
+PPT scenario has not run; no simulator render or runtime pass is claimed.
 
 The scenario installs the actual Floe App on a fresh task-owned iPad simulator,
 imports one pinned synthetic PPTX through Notes, opens its preview, enters a new
@@ -59,7 +65,8 @@ physical-device testing. Local-model real-weight search answers remain unqualifi
 和上下文显示已修正源码，尚待完整 App 与设备验证。新 Office 原生宿主已编译，
 完整包、4780 个资源与补丁来源已由主线程核验并固定。中文字体用户已确认正常。
 
-PPT 编辑闪退仍缺匹配的系统崩溃栈，不能宣称已修好。真实云端 Xcode 模拟器引擎
-正在编译，随后复用它安装实际 Floe App，完成预览、编辑、静置 120 秒、保存和同一
+PPT 编辑闪退仍缺匹配的系统崩溃栈，不能宣称已修好。首次云端 Xcode 模拟器核心
+编译完成后，编辑器配置因子进程的 Python 环境缺少 `lxml` 而失败；留下的是日志，
+没有可复用的引擎整包。修复环境与核心产物留存后，安装实际 Floe App，完成预览、编辑、静置 120 秒、保存和同一
 文档两次重开测试。受控测试、宿主链接与云模拟器结果分别记录；模拟器通过也不等于
 iPad 真机验收。本地模型真实搜索回答仍未通过资格检查。目前没有 Build240 发布标签。

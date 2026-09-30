@@ -6,7 +6,7 @@
 
 **当前已交付内部构建：1.7.0（239）**。不可变标签 [`v1.7.0-beta.98`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.98) 固定源码 `e03ce0e71f189e261f84e8f8a1cc1cbbaad0cbea`；TestFlight 私有 Floe QA、GitHub 预发布和 Feather 已交付，当前与回滚 238 的 IPA 已核验保留。交付不等于设备验收：PPT 编辑闪退和本地模型搜索仍有反馈；中文 Office 字体用户已确认正常。
 
-**Build240 候选，尚未发布**：[反馈修复与真实 Office 云模拟器验证](FLOE_240_FEEDBACK_REPAIR.md)。Linux 安装/运行状态与实际启动镜像资格、搜索网络边界、上下文显示已审查；新 Office 原生宿主已核验固定。真实 Xcode 模拟器引擎正在编译，随后安装实际 Floe App 完成 PPT 编辑、静置和保存重开；不能把宿主或受控测试当成 PPT 真机通过。
+**Build240 候选，尚未发布**：[反馈修复与真实 Office 云模拟器验证](FLOE_240_FEEDBACK_REPAIR.md)。Linux 安装/运行状态与实际启动镜像资格、搜索网络边界、上下文显示已审查；新 Office 原生宿主已核验固定。首次真实 Xcode 模拟器核心编译后，编辑器配置因 Python 环境错误失败，正在修复构建链路；实际 Floe PPT 编辑、静置和保存重开尚未执行。不能把宿主或受控测试当成 PPT 真机通过。
 
 **历史 Build231 修复记录**：[Office 打开与字体](FLOE_231_OFFICE_REPAIR.md)、[本地模型回复与首条消息导航](FLOE_231_MLX_REPAIR.md)、[Linux 生命周期工具](FLOE_231_LINUX_LIFECYCLE.md)。其中结果属于当时源码与验证范围，当前状态以上面的候选记录为准。
 
