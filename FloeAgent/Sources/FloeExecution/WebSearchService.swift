@@ -10,7 +10,13 @@ public actor WebSearchService {
         configuration: URLSessionConfiguration = .ephemeral,
         configurations: @escaping WebSearchConfigurationResolver = { [] }
     ) {
-        self.session = URLSession(configuration: configuration)
+        // Redirects from provider endpoints are revalidated against the strict
+        // public policy and cross-origin credentials are stripped.
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: SearchProviderRedirectDelegate(),
+            delegateQueue: nil
+        )
         self.configurations = configurations
     }
 
@@ -114,6 +120,56 @@ public actor WebSearchService {
         case failure(String)
     }
 
+    /// Canonical public endpoints of the fixed commercial providers. The
+    /// fake-IP tunnel relaxation is bound to the (provider kind, endpoint)
+    /// pair, not to a host name alone: a `.custom` provider pointing at one
+    /// of these hosts gets no relaxation, and neither does a provider whose
+    /// endpoint was overridden (even to another canonical-looking host).
+    static let canonicalEndpoints: [WebSearchProviderKind: URL] = [
+        .bochaWeb: URL(string: "https://api.bochaai.com/v1/web-search")!,
+        .bochaAI: URL(string: "https://api.bochaai.com/v1/web-search")!,
+        .tencentWSA: URL(string: "https://wsa.tencentcloudapi.com")!,
+        .brave: URL(string: "https://api.search.brave.com/res/v1/web/search")!,
+        .tavily: URL(string: "https://api.tavily.com/search")!,
+        .exa: URL(string: "https://api.exa.ai/search")!,
+        .googleProgrammable: URL(string: "https://customsearch.googleapis.com/customsearch/v1")!
+    ]
+
+    /// Whether the effective request URL produced by `makeRequest` matches the
+    /// canonical contract for its kind on scheme, host, port and path. Query
+    /// and fragment are deliberately ignored: some canonical requests (Brave,
+    /// Google) carry generated query parameters, and fragments are not sent.
+    static func requestURLIsCanonical(_ url: URL?, kind: WebSearchProviderKind) -> Bool {
+        guard let url, let canonical = canonicalEndpoints[kind] else { return false }
+        guard let actual = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let expected = URLComponents(url: canonical, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        return actual.scheme?.lowercased() == expected.scheme?.lowercased()
+            && actual.host?.lowercased() == expected.host?.lowercased()
+            && (actual.port ?? 443) == (expected.port ?? 443)
+            && actual.path == expected.path
+    }
+
+    /// Decide whether this provider configuration may accept addresses in
+    /// the 198.18.0.0/15 fake-IP tunnel range. Requirements:
+    /// 1. the provider kind is one of the fixed built-in commercial kinds;
+    /// 2. the effective endpoint is the kind's canonical endpoint — an
+    ///    explicit endpoint override forfeits the relaxation;
+    /// 3. the scheme is HTTPS and the port is absent or 443.
+    static func allowsTransientTunnel(for configuration: WebSearchProviderConfiguration) -> Bool {
+        guard let canonical = canonicalEndpoints[configuration.kind] else { return false }
+        // An override always forfeits; makeRequest would use it verbatim.
+        guard configuration.endpoint == nil else { return false }
+        guard let components = URLComponents(url: canonical, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+        guard components.scheme?.lowercased() == "https" else { return false }
+        guard let host = components.host?.lowercased(), !host.isEmpty else { return false }
+        if let port = components.port { return port == 443 }
+        return true
+    }
+
     private func run(
         _ configuration: WebSearchProviderConfiguration,
         credential: WebSearchCredential,
@@ -126,7 +182,18 @@ public actor WebSearchService {
             FloeLogger(category: .tools).debug(
                 "webSearchProviderStarted trace=\(traceID) provider=\(configuration.kind.rawValue) host=\(request.url?.host ?? "none") method=\(request.httpMethod ?? "GET")"
             )
-            try PublicNetworkTargetPolicy.validate(request.url!)
+            // Only a fixed built-in provider endpoint (provider kind + canonical
+            // HTTPS host/path + default port) tolerates fake-IP tunnel answers
+            // in 198.18.0.0/15; custom endpoints and endpoint overrides stay
+            // strict. The request URL's generated query is ignored in the match
+            // (Brave/Google encode parameters in the query), but scheme, host,
+            // port and path must equal the canonical contract.
+            let allowsTransient = Self.allowsTransientTunnel(for: configuration)
+                && Self.requestURLIsCanonical(request.url, kind: configuration.kind)
+            try PublicNetworkTargetPolicy.validate(
+                request.url!,
+                allowTransientTunnelAddresses: allowsTransient
+            )
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -398,5 +465,37 @@ public actor WebSearchService {
             if output.count >= max(1, limit) { break }
         }
         return output
+    }
+}
+
+/// Provider requests start at fixed pinned hosts. There is no demonstrated
+/// need for a search provider API to redirect anywhere, so every redirect is
+/// revalidated with the strict public policy (fake-IP answers not honored)
+/// and any cross-origin redirect — including same-host-different-port — is
+/// rejected outright instead of being followed with API keys stripped.
+/// Provider credentials (Authorization bearer, X-Subscription-Token,
+/// X-api-key, X-TC-* signing headers) therefore never leave the origin.
+private final class SearchProviderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url,
+              (try? PublicNetworkTargetPolicy.validate(url)) != nil,
+              Self.origin(task.currentRequest?.url) == Self.origin(url) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    private static func origin(_ url: URL?) -> String? {
+        guard let url, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else {
+            return nil
+        }
+        return "\(scheme)://\(host):\(url.port ?? 443)"
     }
 }

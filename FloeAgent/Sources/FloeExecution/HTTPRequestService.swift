@@ -246,6 +246,16 @@ public struct HTTPRequestService: Sendable {
 /// redirect delegate. DNS failure is fail-closed.
 public enum PublicNetworkTargetPolicy {
     public static func validate(_ url: URL) throws {
+        try validate(url, allowTransientTunnelAddresses: false)
+    }
+
+    /// When `allowTransientTunnelAddresses` is true, DNS answers in the
+    /// 198.18.0.0/15 fake-IP range are accepted for this request. Callers
+    /// grant this only for a fixed built-in provider endpoint bound to a
+    /// specific provider kind (see WebSearchService.allowsTransientTunnel);
+    /// every other non-public range is still rejected and resolution stays
+    /// fail-closed.
+    public static func validate(_ url: URL, allowTransientTunnelAddresses: Bool) throws {
         guard url.scheme?.lowercased() == "https",
               url.user == nil,
               url.password == nil,
@@ -257,37 +267,17 @@ public enum PublicNetworkTargetPolicy {
         guard !deniedSuffixes.contains(where: { host == $0 || host.hasSuffix($0) }) else {
             throw HTTPRequestError.privateNetworkTarget(host)
         }
-
-        var hints = addrinfo(
-            ai_flags: AI_ADDRCONFIG,
-            ai_family: AF_UNSPEC,
-            ai_socktype: SOCK_STREAM,
-            ai_protocol: IPPROTO_TCP,
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
-        var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, "443", &hints, &result) == 0, let first = result else {
+        do {
+            try NetworkDestinationPolicy.validate(
+                host: host,
+                allowTransientTunnel: allowTransientTunnelAddresses,
+                resolve: NetworkDestinationPolicy.systemResolve
+            )
+        } catch NetworkDestinationError.privateTarget {
+            throw HTTPRequestError.privateNetworkTarget(host)
+        } catch {
             throw HTTPRequestError.invalidURL(url.absoluteString)
         }
-        defer { freeaddrinfo(first) }
-
-        var cursor: UnsafeMutablePointer<addrinfo>? = first
-        var foundAddress = false
-        while let current = cursor {
-            guard let address = current.pointee.ai_addr else {
-                cursor = current.pointee.ai_next
-                continue
-            }
-            foundAddress = true
-            if !isPublic(address) {
-                throw HTTPRequestError.privateNetworkTarget(host)
-            }
-            cursor = current.pointee.ai_next
-        }
-        guard foundAddress else { throw HTTPRequestError.invalidURL(url.absoluteString) }
     }
 
     public static func isAllowedHeader(_ name: String) -> Bool {
@@ -296,48 +286,6 @@ public enum PublicNetworkTargetPolicy {
             "proxy-authorization", "proxy-connection", "upgrade", "te", "trailer"
         ]
         return !blocked.contains(name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-    }
-
-    private static func isPublic(_ address: UnsafePointer<sockaddr>) -> Bool {
-        switch Int32(address.pointee.sa_family) {
-        case AF_INET:
-            let ipv4 = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
-                UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
-            }
-            let first = UInt8((ipv4 >> 24) & 0xff)
-            let second = UInt8((ipv4 >> 16) & 0xff)
-            if first == 0 || first == 10 || first == 127 || first >= 224 { return false }
-            if first == 100 && (64...127).contains(second) { return false }
-            if first == 169 && second == 254 { return false }
-            if first == 172 && (16...31).contains(second) { return false }
-            if first == 192 && (second == 0 || second == 168) { return false }
-            if first == 198 && (second == 18 || second == 19 || second == 51) { return false }
-            if first == 203 && second == 0 { return false }
-            return true
-        case AF_INET6:
-            let bytes = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) {
-                withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) }
-            }
-            guard bytes.count == 16 else { return false }
-            if bytes.allSatisfy({ $0 == 0 }) { return false }
-            if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 { return false }
-            if bytes[0] & 0xfe == 0xfc { return false } // unique local fc00::/7
-            if bytes[0] == 0xfe && bytes[1] & 0xc0 == 0x80 { return false } // link local
-            if bytes[0] == 0xff { return false } // multicast
-            if Array(bytes.prefix(4)) == [0x20, 0x01, 0x0d, 0xb8] { return false } // documentation
-            if Array(bytes.prefix(12)) == Array(repeating: 0, count: 10) + [0xff, 0xff] {
-                var mapped = sockaddr_in()
-                mapped.sin_family = sa_family_t(AF_INET)
-                let value = bytes.suffix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-                mapped.sin_addr.s_addr = value.bigEndian
-                return withUnsafePointer(to: &mapped) {
-                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1, isPublic)
-                }
-            }
-            return true
-        default:
-            return false
-        }
     }
 }
 
