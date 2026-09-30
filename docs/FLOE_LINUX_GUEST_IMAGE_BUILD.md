@@ -193,6 +193,9 @@ the template qualification report clean.
 
 ## Distribution mirror (Gitee, sharded)
 
+> Historical distribution evidence only. Gitee now serves source/Release synchronization, not App download acceleration.
+> Gitee 仅保留源码与 Release 的单向同步，不作为软件下载加速源，也不参与 Linux 镜像自动回退。软件只使用经过免登录完整下载及固定摘要核验的独立备用源；当前发布标签不变，新策略随后续构建生效。
+
 The pinned archive (`floe-linux-guest-floe-debian13-riscv64-20260922.2.zip`,
 573,254,199 bytes, SHA-512 `bde2b219…dae04`) exceeds Gitee's 100 MB
 single-attachment cap, so the Gitee mirror release publishes the byte-identical

@@ -40,3 +40,5 @@ PPT 编辑闪退仍缺对应系统崩溃栈。补丁修复了已证实的转发�
 Model update: 41 controlled harness checks passed. Both tracked test files typechecked; the complete Swift Testing suites were not executed locally. Swift 6 object compilation covered the runtime and a reduced local-model module with an injected engine shim. Real MLX engine compilation remains a cloud check. Real-weight diagnostic run 36672679602 is pending, not a pass.
 
 模型更新：41 项受控检查通过，新增测试文件类型检查通过。完整测试套件未在本地运行，真实权重诊断还在进行。
+
+Real-weight result (run 36672679602): the two file-tool turns and receipts passed on macOS, but the first search answer fabricated content instead of using the receipt. The second search was not reached. Overall qualification failed; this is not iPad evidence.

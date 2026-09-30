@@ -1,8 +1,8 @@
 # Floe GitHub → Gitee 发行版镜像（refs 与资产）/ GitHub → Gitee release mirror (refs and assets)
 
-GitHub Releases 是承担信任的唯一主源；Gitee 只是可选的**中国大陆下载镜像**。本页记录两条互相独立、分别可见的门禁、镜像工具的真实行为与限制，以及哪些消费方可以使用分片 URL。
+Gitee 仅保留源码与 Release 的单向同步，不作为软件下载加速源，也不参与 Linux 镜像自动回退。软件只使用经过免登录完整下载及固定摘要核验的独立备用源；当前发布标签不变，新策略随后续构建生效。
 
-GitHub Releases is the single trust-bearing primary; Gitee is only an optional **China download mirror**. This page describes the two separately visible gates, the real behavior and limits of the mirror tool, and which consumers may use shard URLs.
+Gitee remains a one-way source and Release synchronization channel only. It is not an App download accelerator or a Linux automatic fallback. The App uses only separately verified anonymous fallback sources with pinned archive digests. Existing release tags remain unchanged; this policy ships in subsequent builds.
 
 ## 两条独立门禁 / Two separate gates
 

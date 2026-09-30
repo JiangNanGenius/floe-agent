@@ -111,9 +111,9 @@ GitHub 预发布版本为高级测试者和下游打包者提供未签名 IPA：
 > [!WARNING]
 > GitHub IPA 不是 TestFlight/App Store 安装包，通常不能直接安装。Floe Agent 不提供证书、描述文件或代签服务。
 
-### Gitee 中国镜像
+### Gitee source and Release synchronization / 源码与发行版同步
 
-面向 GitHub 较慢的网络，公开单向镜像发布在 [`gitee.com/JiangNanGenius/floe-agent`](https://gitee.com/JiangNanGenius/floe-agent)。GitHub 始终是唯一承担信任的主源，且镜像明确是**部分镜像**：[gitee-mirror](.github/workflows/gitee-mirror.yml) 工作流把 `main` 与发布标签单向从 GitHub 推送到 Gitee 并校验两边 `main` 一致（它从不从 Gitee 拉取，因此 Gitee 永远不能覆盖 GitHub）；发行资产另有独立门禁，逐文件按大小与 SHA-256 校验后复制。Gitee 的发行附件受配额限制：仓库级附件配额实测为 1 GiB，因此 Build 227 约 705 MiB 的未签名 IPA **不**托管在 Gitee，也不存在 Gitee 直装包或 Feather/AltStore 源——只镜像小型发行资产，并在 `GITEE-MIRROR-MANIFEST.json` 中逐资产记录状态。约 573 MB 的 Linux 镜像以一份清单加九个 64 MiB 分片发布（64 MiB 是镜像脚本的分片大小，并非已测定的平台上限）；每个分片按大小与 SHA-512 固定，整包按与目录一致的摘要固定。Linux 客体下载器总是先尝试 GitHub Releases，仅在主源出现有界可用性失败（断网、5xx、408/429）后才联系 Gitee 镜像；明确 4xx、无效响应、本地拒绝或取消一律安全中止；已验证分片保留在稳定暂存目录，中断后可断点续传，重组归档在导入前再次比对整包 SHA-512。详见[镜像限制](docs/FLOE_GITEE_RELEASE_MIRROR.md)与[镜像分发说明](docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md#distribution-mirror-gitee-sharded)。
+Gitee 仅保留源码与 Release 的单向同步，不作为软件下载加速源，也不参与 Linux 镜像自动回退。软件只使用经过免登录完整下载及固定摘要核验的独立备用源；当前发布标签不变，新策略随后续构建生效。 See [synchronization details](docs/FLOE_GITEE_RELEASE_MIRROR.md).
 
 ### Feather 安装源
 
