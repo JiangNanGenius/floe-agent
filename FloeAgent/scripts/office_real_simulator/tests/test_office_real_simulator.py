@@ -1443,6 +1443,155 @@ class CoreCheckpointTests(unittest.TestCase):
         self.assertFalse(loaded['engineBuildRerun'])
         self.assertTrue(loaded['manifestRewritten'])
 
+    def test_optional_unbuilt_dependency_link_is_audited_in_checkpoint(self):
+        root = self.make_build_root()
+        optional = root / 'source/engine/workdir/UnpackedTarball/zxing/zint/backend'
+        optional.parent.mkdir(parents=True)
+        optional.symlink_to('../../zint/backend')
+        record = self.create(root)
+        self.assertEqual(len(record['omittedOptionalLinks']), 1)
+        self.assertEqual(record['omittedOptionalLinks'][0]['path'],
+                         str(optional.relative_to(root)))
+        with tarfile.open(root / 'core-checkpoint' / sim_paths.CORE_CHECKPOINT_TAR) as archive:
+            manifest = json.load(archive.extractfile(sim_paths.CORE_CHECKPOINT_MANIFEST))
+            self.assertEqual(manifest['omittedOptionalLinks'], record['omittedOptionalLinks'])
+            self.assertNotIn(str(optional.relative_to(root)), archive.getnames())
+
+    def test_missing_header_link_cannot_be_omitted(self):
+        root = self.make_build_root()
+        header = root / 'source/engine/workdir/UnpackedTarball/zlib/missing.h'
+        header.symlink_to('absent.h')
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'required dependency'):
+            self.create(root)
+
+    def test_required_subtree_dangling_nonheader_link_cannot_be_omitted(self):
+        root = self.make_build_root()
+        link = root / 'source/engine/instdir/missing-resource'
+        link.symlink_to('absent')
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'required dependency'):
+            self.create(root)
+
+    def test_missing_header_target_without_header_link_suffix_still_fails(self):
+        root = self.make_build_root()
+        link = root / 'source/engine/workdir/UnpackedTarball/zlib/alias'
+        link.symlink_to('absent.h')
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'required dependency'):
+            self.create(root)
+
+    def test_optional_dangling_outside_link_still_fails(self):
+        root = self.make_build_root()
+        link = root / 'source/engine/workdir/UnpackedTarball/zlib/optional'
+        link.symlink_to(self.root / 'missing-external')
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'escapes'):
+            self.create(root)
+
+    def raw_recovery_fixture(self):
+        import retain_unverified_core
+        from types import SimpleNamespace
+        root = self.make_build_root().resolve()
+        path = root / 'qualification.json'
+        q = json.loads(path.read_text())
+        q['phases']['engine-build']['log'] = str(root / 'qualification-logs/engine-build.log')
+        path.write_text(json.dumps(q))
+        output = self.root / 'raw-backup'
+        with mock.patch.object(retain_unverified_core.shutil, 'disk_usage',
+                               return_value=SimpleNamespace(free=20 * 1024**3)), \
+                mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_SHA': 'reviewed-sha'}):
+            record = retain_unverified_core.retain(root, output)
+        shutil.rmtree(root)
+        return root, output, record
+
+    def recover_raw(self, root, output, record, **overrides):
+        import recover_unverified_core
+        from types import SimpleNamespace
+        args = dict(expect_run='123', expect_source='reviewed-sha',
+                    expect_sha=record['archiveSHA256'], expect_size=record['archiveSize'],
+                    toolchain={'sdkVersion': '27.0', 'sdkBuildVersion': '24A430',
+                               'xcodeVersion': 'Xcode 27.0; Build version 27A266a'},
+                    runner=self.fake_runner())
+        args.update(overrides)
+        with mock.patch.object(recover_unverified_core, 'LOCK_PATH', self.lock_path), \
+                mock.patch.object(recover_unverified_core.shutil, 'disk_usage',
+                                  return_value=SimpleNamespace(free=20 * 1024**3)):
+            return recover_unverified_core.recover(
+                output / 'unverified-core.tar.gz', output / 'unverified-core.json',
+                root, self.root / 'converted-checkpoint', **args)
+
+    def test_reviewed_raw_conversion_passes_normal_checkpoint_and_restore(self):
+        root, output, raw = self.raw_recovery_fixture()
+        result = self.recover_raw(root, output, raw)
+        self.assertFalse(result['engineBuildRerun'])
+        self.assertFalse(result['nativeBuildPassed'])
+        self.assertFalse(result['finalQualification'])
+        checkpoint = self.root / 'converted-checkpoint'
+        self.resume_module.restore_checkpoint(
+            checkpoint / sim_paths.CORE_CHECKPOINT_TAR,
+            checkpoint / sim_paths.CORE_CHECKPOINT_JSON,
+            self.make_prepared_destination(), expect_xcode=self.EXPECT_XCODE,
+            expect_sdk='27.0', expect_sdk_build='24A430', runner=self.fake_runner())
+
+    def test_raw_conversion_rejects_source_run_hash_and_size_mismatch(self):
+        root, output, raw = self.raw_recovery_fixture()
+        for args in ({'expect_run': '456'}, {'expect_source': 'other'},
+                     {'expect_sha': '0' * 64}, {'expect_size': 1}):
+            with self.subTest(args=args), self.assertRaisesRegex(ValueError, 'binding mismatch'):
+                self.recover_raw(root, output, raw, **args)
+        self.assertFalse(root.exists())
+
+    def test_raw_conversion_rejects_toolchain_or_platform_mismatch(self):
+        root, output, raw = self.raw_recovery_fixture()
+        with self.assertRaisesRegex(ValueError, 'toolchain mismatch'):
+            self.recover_raw(root, output, raw, toolchain={
+                'sdkVersion': '27.0', 'sdkBuildVersion': 'different',
+                'xcodeVersion': 'Xcode 27.0; Build version 27A266a'})
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'platform/arch gate'):
+            self.recover_raw(root, output, raw, runner=self.fake_runner(vtool=(0, 'platform IOS')))
+
+    def test_raw_conversion_refuses_changed_tar_even_with_matching_record(self):
+        root, output, raw = self.raw_recovery_fixture()
+        with (output / 'unverified-core.tar.gz').open('ab') as stream:
+            stream.write(b'changed')
+        with self.assertRaisesRegex(ValueError, 'hash/size mismatch'):
+            self.recover_raw(root, output, raw)
+
+    def test_raw_member_safety_rejects_duplicates_traversal_special_and_link_ancestors(self):
+        import recover_unverified_core as recovery
+        directory = tarfile.TarInfo('source')
+        directory.type = tarfile.DIRTYPE
+        regular = tarfile.TarInfo('source/file')
+        symlink = tarfile.TarInfo('source/link')
+        symlink.type = tarfile.SYMTYPE
+        symlink.linkname = 'file'
+        child = tarfile.TarInfo('source/link/child')
+        special = tarfile.TarInfo('source/device')
+        special.type = tarfile.CHRTYPE
+        traversal = tarfile.TarInfo('source/../outside')
+        for members in ([directory, regular, regular], [traversal], [special],
+                        [directory, regular, symlink, child]):
+            with self.subTest(members=members), self.assertRaises(ValueError):
+                recovery.inspect_members(members, self.root)
+
+    def test_raw_links_only_convert_contained_absolute_and_relative_targets(self):
+        import recover_unverified_core as recovery
+        link = tarfile.TarInfo('source/include/header.h')
+        link.type = tarfile.SYMTYPE
+        for target in ('../engine/header.h', str(self.root / 'source/engine/header.h')):
+            link.linkname = target
+            self.assertEqual(recovery.link_target(link, self.root), 'source/engine/header.h')
+        for target in ('../../../escape', '/external/path',
+                       str(self.root) + '/../external'):
+            link.linkname = target
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                recovery.link_target(link, self.root)
+
+    def test_raw_missing_or_symlink_hardlink_target_refused(self):
+        import recover_unverified_core as recovery
+        link = tarfile.TarInfo('source/hardlink')
+        link.type = tarfile.LNKTYPE
+        link.linkname = 'source/missing'
+        with self.assertRaisesRegex(ValueError, 'not a regular'):
+            recovery.inspect_members([link], self.root)
+
     def test_create_refuses_final_qualification(self):
         root = self.make_build_root(native_build_passed=True)
         with self.assertRaises(self.checkpoint_module.CheckpointError):

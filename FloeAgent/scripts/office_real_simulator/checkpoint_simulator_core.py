@@ -75,7 +75,7 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def collect_engine_paths(build_root, extra_paths=()):
+def collect_engine_paths(build_root, extra_paths=(), omitted_optional_links=None):
     """Collect the engine build outputs a resume needs.
 
     Mirrors the build-input selection that ``package_office_engine.py`` uses
@@ -95,10 +95,30 @@ def collect_engine_paths(build_root, extra_paths=()):
         if path.name in EXCLUDED:
             return
         if path.is_symlink():
-            target = path.resolve(strict=True)
+            try:
+                target = path.resolve(strict=False)
+            except (OSError, RuntimeError) as error:
+                raise CheckpointError(f'invalid dependency link: {path}') from error
             if not target.is_relative_to(build_root):
                 raise CheckpointError(
                     f'dependency escapes build root: {path.relative_to(build_root)}')
+            if not target.exists():
+                # UnpackedTarball also includes links for disabled optional
+                # dependencies (e.g. zxing -> unbuilt zint/backend). Only the
+                # header-only discovery walk may omit such non-header links.
+                # Required subtrees, headers, configure and linker inputs stay
+                # fail-closed. Record every omission in the hashed manifest.
+                if headers_only and path.suffix not in HEADER_SUFFIXES and \
+                        target.suffix not in HEADER_SUFFIXES and \
+                        not path.name.startswith(('LICENSE', 'COPYING', 'NOTICE')) and \
+                        not target.name.startswith(('LICENSE', 'COPYING', 'NOTICE')):
+                    if omitted_optional_links is not None:
+                        omitted_optional_links.append({
+                            'path': str(path.relative_to(build_root)),
+                            'target': str(target.relative_to(build_root)),
+                            'reason': 'missing optional non-header dependency'})
+                    return
+                raise CheckpointError(f'required dependency link missing: {path}')
             if headers_only and target.is_file() and \
                     target.suffix not in HEADER_SUFFIXES and \
                     not target.name.startswith(('LICENSE', 'COPYING', 'NOTICE')):
@@ -219,7 +239,9 @@ def create_checkpoint(build_root, output_dir, runner=None, toolchain=None):
 
     started = time.time()
     extra_paths = [build_root / line for line in canonical]
-    paths, links = collect_engine_paths(build_root, extra_paths=extra_paths)
+    omitted_optional_links = []
+    paths, links = collect_engine_paths(build_root, extra_paths=extra_paths,
+                                      omitted_optional_links=omitted_optional_links)
     original_member = engine_manifest.ENGINE_LIST_RELATIVE + '.original'
     entries = []
     for path in sorted(paths):
@@ -252,6 +274,7 @@ def create_checkpoint(build_root, output_dir, runner=None, toolchain=None):
         'engineArchiveCount': len(canonical),
         'engineArchiveUniqueCount': len(set(canonical)),
         'files': entries,
+        'omittedOptionalLinks': omitted_optional_links,
     }
     manifest_bytes = json.dumps(manifest, indent=2).encode()
     qualification_bytes = qualification_path.read_bytes()
@@ -336,6 +359,7 @@ def create_checkpoint(build_root, output_dir, runner=None, toolchain=None):
         'finalQualification': False,
         'editorPhasesExecuted': False,
         'coreFileCount': len(entries),
+        'omittedOptionalLinks': omitted_optional_links,
         'coreFileListSHA256': sha256_bytes(manifest_bytes),
         'checkpointSeconds': round(time.time() - started, 1),
         'createdAtUTC': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),

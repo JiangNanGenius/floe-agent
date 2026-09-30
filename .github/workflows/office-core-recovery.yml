@@ -1,0 +1,84 @@
+name: Office manually reviewed core recovery
+# Converts explicitly reviewed quarantine data through normal checkpoint gates.
+# It runs no engine/editor build and produces no runtime qualification.
+on:
+  workflow_dispatch:
+    inputs:
+      raw_run_id:
+        description: Reviewed source run retaining office-real-simulator-unverified-core
+        required: true
+        type: string
+      raw_workflow_sha:
+        description: Exact reviewed source workflow SHA
+        required: true
+        type: string
+      raw_tar_sha256:
+        description: Independently retained inner tar SHA256
+        required: true
+        type: string
+      raw_tar_size:
+        description: Independently retained inner tar size in bytes
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: office-core-manual-recovery
+  cancel-in-progress: false
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  convert:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: office-real-simulator-unverified-core
+          path: ${{ runner.temp }}/reviewed-raw
+          run-id: ${{ inputs.raw_run_id }}
+          github-token: ${{ github.token }}
+      - name: Validate reviewed backup and create normal checkpoint
+        env:
+          RAW_RUN: ${{ inputs.raw_run_id }}
+          RAW_SOURCE: ${{ inputs.raw_workflow_sha }}
+          RAW_SHA: ${{ inputs.raw_tar_sha256 }}
+          RAW_SIZE: ${{ inputs.raw_tar_size }}
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_real_simulator/recover_unverified_core.py \
+            "$RUNNER_TEMP/reviewed-raw/unverified-core.tar.gz" \
+            --record "$RUNNER_TEMP/reviewed-raw/unverified-core.json" \
+            --destination "$RUNNER_TEMP/floe-office-sim" \
+            --output-dir "$RUNNER_TEMP/recovered-checkpoint" \
+            --expect-run "$RAW_RUN" --expect-source "$RAW_SOURCE" \
+            --expect-sha "$RAW_SHA" --expect-size "$RAW_SIZE" \
+            2>&1 | tee "$RUNNER_TEMP/manual-core-recovery.log"
+      - name: Preserve converted completed-core checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-real-simulator-core-checkpoint
+          path: |
+            ${{ runner.temp }}/recovered-checkpoint/simulator-core-checkpoint.tar.gz
+            ${{ runner.temp }}/recovered-checkpoint/simulator-core-checkpoint.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Preserve conversion evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-core-manual-recovery-evidence
+          path: |
+            ${{ runner.temp }}/manual-core-recovery.log
+            ${{ runner.temp }}/reviewed-raw/unverified-core.json
+            ${{ runner.temp }}/recovered-checkpoint/simulator-core-checkpoint.json
+            ${{ runner.temp }}/recovered-checkpoint/manual-recovery.json
+          if-no-files-found: warn
+          retention-days: 30

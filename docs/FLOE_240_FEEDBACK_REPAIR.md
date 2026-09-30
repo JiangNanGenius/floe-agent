@@ -108,3 +108,31 @@ CLI 和平台工具检查：用微型 arm64 模拟器对象验证保存/恢复�
 明确未核验的隔离备份，不允许借此继续编辑器或运行验收；编译每分钟输出日志增长、
 进程树 CPU 与磁盘观测，无法观测的字段保持未知。110 项受控流水线检查通过，
 新的真实云端恢复仍待运行。
+
+Run 36757739330 completed the real core in 10,786.5 seconds, then failed during
+checkpoint collection on a dangling optional dependency link. The emergency
+quarantine artifact retained the compiled source and outputs. It is unverified
+recovery data, not a ready engine or PPT acceptance. The primary reproduced the
+collection failure and limited the fix to missing non-header links in optional
+dependency discovery, with each omission recorded in the hashed manifest.
+Required headers, resources, configure inputs, linker inputs and outside-root
+links still fail. A separate manually dispatched conversion binds the reviewed
+run, workflow source, archive hash/size and actual SDK/Xcode identity; it rejects
+unsafe tar members and then runs the normal checkpoint gates. It runs neither
+the core nor the editor build. 122 controlled pipeline checks and actionlint
+passed. A tiny actual arm64 simulator archive passed conversion/default tools
+and normal restore on local Xcode 27; the synthetic disk budget was substituted
+because the local reserve check correctly blocked the first attempt. This is
+tool-path evidence only. The cloud conversion and actual Floe PPT scenario are
+still pending; no Build240 release has been published.
+
+运行 36757739330 的核心实际在 10,786.5 秒后完成，随后检查点扫描缺失的可选
+依赖链接失败。这次隔离备份成功保住了编译源码和产物，但仍是未核验恢复数据，
+不能作为就绪引擎或 PPT 验收。主线程已复现扫描错误，仅允许在可选依赖发现时
+跳过缺失的非头文件链接，并把每个遗漏写入摘要绑定的清单；必需头文件、资源、
+配置输入、链接输入和越界链接仍失败。独立人工触发的转换绑定已审查运行、工作流
+源码、整包摘要/大小及实际 SDK/Xcode，拒绝不安全归档，再执行正常检查点门槛；
+不重编核心，也不执行编辑器。122 项受控流水线检查与 actionlint 已通过。微型真实
+arm64 模拟器对象已验证转换、默认工具及正常恢复；首次本地检查被磁盘预留正确
+阻止，后续仅在合成测试中替代磁盘预算，生产限制未放宽。这仅是工具路径证据。
+云端转换及实际 Floe PPT 场景尚待完成，目前没有 Build240 发布。
