@@ -33,6 +33,6 @@ All sources retain the same pinned archive digest. Cancellation, integrity failu
 
 ## Delivery / 交付
 
-[Release 36677558252](https://github.com/JiangNanGenius/floe-agent/actions/runs/36677558252) and Feather 36681300582 completed. [TestFlight verification 36682853252](https://github.com/JiangNanGenius/floe-agent/actions/runs/36682853252) confirmed VALID, unexpired, sole private Floe QA and IN_BETA_TESTING. The unsigned IPA is retained in cloud artifact 11081093991; local backup is downloading. SHA-256: `a942766b77e7ef32ed85d09eb8a331da519d9f74b368264698b1ba7ab62475e5`.
+[Release 36677558252](https://github.com/JiangNanGenius/floe-agent/actions/runs/36677558252) and Feather 36681300582 completed. [TestFlight verification 36682853252](https://github.com/JiangNanGenius/floe-agent/actions/runs/36682853252) confirmed VALID, unexpired, sole private Floe QA and IN_BETA_TESTING. The unsigned IPA is retained in cloud artifact 11081093991; local backup is complete and its whole-file hash, bundle ID and build number were verified. SHA-256: `a942766b77e7ef32ed85d09eb8a331da519d9f74b368264698b1ba7ab62475e5`.
 
-完整构建、上传、GitHub 预发布和 Feather 已完成，私有 Floe QA 可安装。云端 IPA 已保留，本地备份仍在下载。这不代表 PPT 或本地搜索真机验收通过。
+完整构建、上传、GitHub 预发布和 Feather 已完成，私有 Floe QA 可安装。云端 IPA 已保留，本地备份及整包摘要、Bundle ID、构建号校验已完成。这不代表 PPT 或本地搜索真机验收通过。
