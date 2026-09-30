@@ -461,7 +461,9 @@ jobs:
           GITEE_URL="https://gitee.com/${GITEE_RELEASE_REPO}.git"
           git remote add gitee "$GITEE_URL"
           CRED_HELPER='!f() { printf "username=JiangNanGenius\n"; printf "password=%s\n" "$(cat "$GITEE_TOKEN_FILE")"; }; f'
-          ggit() { git -c "credential.helper=${CRED_HELPER}" "$@"; }
+          # Avoid chunked-upload rewind failures during the initial history transfer.
+          # Bound stalled connections; never force or move the component tag.
+          ggit() { git -c http.version=HTTP/1.1 -c http.postBuffer=268435456 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=120 -c "credential.helper=${CRED_HELPER}" "$@"; }
 
           REMOTE_SHA="$(ggit ls-remote gitee "refs/tags/${TAG}" | awk '{print $1}')"
           if [ -z "$REMOTE_SHA" ] && [ "$DRY_RUN" = "true" ]; then
