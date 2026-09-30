@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check or explicitly create the public Linux component mirror; never delete data."""
 import argparse
+import base64
 import json
 import os
 import sys
@@ -15,7 +16,7 @@ class RepositoryCheckError(RuntimeError):
     """Only locally authored, non-sensitive diagnostic messages."""
 
 
-def ensure(client, token, create=False):
+def ensure(client, token, create=False, seed_empty=False):
     headers = {"Authorization": "token " + token, "Accept": "application/json"}
     print("Checking Linux mirror repository", flush=True)
     result = client.request("GET", API + "/repos/" + REPOSITORY,
@@ -39,27 +40,50 @@ def ensure(client, token, create=False):
     repository = json.loads(result.body)
     if repository.get("full_name", "").casefold() != REPOSITORY.casefold():
         raise RepositoryCheckError("Unexpected repository identity")
+    if repository.get("owner", {}).get("login", "").casefold() != "jiangnangenius":
+        raise RepositoryCheckError("Unexpected repository owner")
+    if seed_empty:
+        branches = client.request("GET", API + "/repos/" + REPOSITORY + "/branches?per_page=1",
+                                  headers=headers)
+        branch_list = json.loads(branches.body)
+        if branch_list == []:
+            readme = ("# Floe Linux image mirror / Linux 镜像备用源\n\n"
+                      "This repository hosts verified copies of Floe Linux components. "
+                      "GitHub remains the source of truth: https://github.com/JiangNanGenius/floe-agent\n\n"
+                      "本仓库用于存放经过校验的 Linux 镜像副本。镜像、摘要和源码说明将在校验完成后发布到 Releases。\n\n"
+                      "An empty Releases page means the mirror is not ready for downloads. "
+                      "Each published component must retain its source offer and checksum metadata.\n")
+            payload = {"content": base64.b64encode(readme.encode()).decode(),
+                       "message": "Initialize Linux component mirror documentation"}
+            print("Seeding verified empty repository with public README", flush=True)
+            client.request("POST", API + "/repos/" + REPOSITORY + "/contents/README.md",
+                           headers={**headers, "Content-Type": "application/json"},
+                           body=json.dumps(payload).encode(), retries=0, expect=(201,))
+            print("README created; repository is no longer empty", flush=True)
+        elif not isinstance(branch_list, list):
+            raise RepositoryCheckError("Cannot verify repository branches; no README written")
+        else:
+            print("Repository already has a branch; existing content left unchanged", flush=True)
     # Only the visibility booleans are printed; no account or API response data.
     visibility = {key: repository.get(key) if isinstance(repository.get(key), bool) else None
                   for key in ("private", "public", "internal")}
     print("Repository visibility: " + json.dumps(visibility, sort_keys=True), flush=True)
     if repository.get("private") is not False or repository.get("public") is False:
         raise RepositoryCheckError("Mirror is not public; visibility will not be changed automatically")
-    if repository.get("owner", {}).get("login", "").casefold() != "jiangnangenius":
-        raise RepositoryCheckError("Unexpected repository owner")
     return REPOSITORY
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--create", action="store_true")
+    parser.add_argument("--seed-empty", action="store_true")
     args = parser.parse_args()
     token = os.environ.get("GITEE_TOKEN", "")
     if not token:
         print("GITEE_TOKEN is required", file=sys.stderr)
         return 1
     try:
-        print("Verified public repository: " + ensure(HttpClient(timeout=60, retries=1), token, args.create))
+        print("Verified public repository: " + ensure(HttpClient(timeout=60, retries=1), token, args.create, args.seed_empty))
     except Exception as error:
         # API response bodies can contain account metadata; keep them out of logs.
         detail = (" HTTP " + str(error.status)) if isinstance(error, HttpError) else ""

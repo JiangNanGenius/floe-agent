@@ -89,6 +89,11 @@ on:
         required: false
         type: boolean
         default: false
+      seed_linux_repository:
+        description: 'Initialize an empty dedicated Linux repository with public README; leaves existing content and visibility unchanged'
+        required: false
+        type: boolean
+        default: false
       mirror_refs:
         description: 'Also mirror main/tags (set false when only syncing a release)'
         required: false
@@ -412,6 +417,7 @@ jobs:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           TAG: ${{ steps.target.outputs.tag }}
           CREATE: ${{ inputs.create_linux_repository }}
+          SEED: ${{ inputs.seed_linux_repository }}
           DRY_RUN: ${{ inputs.dry_run }}
           DIAGNOSE: ${{ inputs.diagnose_download }}
         run: |
@@ -425,6 +431,7 @@ jobs:
           test "$DIAGNOSE" != "true"
           FLAGS=()
           if [ "$CREATE" = "true" ] && [ "$DRY_RUN" != "true" ]; then FLAGS+=(--create); fi
+          if [ "$SEED" = "true" ] && [ "$DRY_RUN" != "true" ]; then FLAGS+=(--seed-empty); fi
           python3 FloeAgent/scripts/ensure_linux_gitee_repository.py "${FLAGS[@]}"
 
       - name: Ensure the immutable tag exists on Gitee (one-way, never forced)

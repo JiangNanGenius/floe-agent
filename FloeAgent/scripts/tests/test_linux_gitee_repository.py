@@ -58,6 +58,25 @@ class LinuxMirrorRepositoryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ensure(Client(response(full_name="JiangNanGenius/other")), "fixture", create=True)
 
+    def test_empty_private_repository_gets_readme_but_remains_blocked(self):
+        client = Client(response(private=True), SimpleNamespace(status=200, body=b"[]"), response(201))
+        with self.assertRaises(RuntimeError):
+            ensure(client, "fixture", seed_empty=True)
+        self.assertEqual([x[0] for x in client.calls], ["GET", "GET", "POST"])
+        self.assertTrue(client.calls[-1][1].endswith("/contents/README.md"))
+        self.assertEqual(client.calls[-1][2]["retries"], 0)
+
+    def test_existing_branch_is_never_overwritten(self):
+        client = Client(response(), SimpleNamespace(status=200, body=b'[{"name":"main"}]'))
+        ensure(client, "fixture", seed_empty=True)
+        self.assertEqual([x[0] for x in client.calls], ["GET", "GET"])
+
+    def test_unknown_branch_response_does_not_write(self):
+        client = Client(response(), SimpleNamespace(status=200, body=b"{}"))
+        with self.assertRaises(RuntimeError):
+            ensure(client, "fixture", seed_empty=True)
+        self.assertEqual([x[0] for x in client.calls], ["GET", "GET"])
+
 
 if __name__ == "__main__":
     unittest.main()
