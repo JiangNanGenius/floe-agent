@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import os
+from pathlib import Path
 import sys
 
 from sync_release_to_gitee import HttpClient, HttpError
@@ -16,7 +17,7 @@ class RepositoryCheckError(RuntimeError):
     """Only locally authored, non-sensitive diagnostic messages."""
 
 
-def ensure(client, token, create=False, seed_empty=False):
+def ensure(client, token, create=False, seed_empty=False, install_license=False):
     headers = {"Authorization": "token " + token, "Accept": "application/json"}
     print("Checking Linux mirror repository", flush=True)
     result = client.request("GET", API + "/repos/" + REPOSITORY,
@@ -70,6 +71,35 @@ def ensure(client, token, create=False, seed_empty=False):
     print("Repository visibility: " + json.dumps(visibility, sort_keys=True), flush=True)
     if repository.get("private") is not False or repository.get("public") is False:
         raise RepositoryCheckError("Mirror is not public; visibility will not be changed automatically")
+    if install_license:
+        documents = {
+            "LICENSE": (Path(__file__).resolve().parents[2] / "LICENSE").read_bytes(),
+            "THIRD_PARTY_NOTICE.md": (
+                "# Component licenses / 组件许可\n\n"
+                "The LICENSE file contains Floe Agent's Mozilla Public License 2.0. "
+                "It does not relicense the Linux image or its third-party components.\n\n"
+                "Linux images contain independently licensed software. Preserve and consult "
+                "each release's SOURCE-OFFER.md, provenance and package copyright notices "
+                "(including /usr/share/doc/*/copyright inside the guest) for the applicable "
+                "licenses and corresponding source.\n\n"
+                "LICENSE 为 Floe Agent 的 MPL-2.0 许可证，不改变镜像内第三方组件的许可。"
+                "各组件仍遵循其原有许可证；请参阅 Release 的源码提供说明、来源信息及客体内的软件包版权文件。\n"
+            ).encode(),
+        }
+        for name, content in documents.items():
+            url = API + "/repos/" + REPOSITORY + "/contents/" + name
+            existing = client.request("GET", url, headers=headers, allow_404=True)
+            if existing.status != 404:
+                recorded = base64.b64decode(json.loads(existing.body).get("content", ""))
+                if recorded != content:
+                    raise RepositoryCheckError("Existing license document differs; refusing overwrite: " + name)
+                continue
+            client.request("POST", url,
+                           headers={**headers, "Content-Type": "application/json"},
+                           body=json.dumps({"content": base64.b64encode(content).decode(),
+                                            "message": "Add mirror license and component notice"}).encode(),
+                           retries=0, expect=(201,))
+            print("Created " + name, flush=True)
     return REPOSITORY
 
 
@@ -77,13 +107,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--create", action="store_true")
     parser.add_argument("--seed-empty", action="store_true")
+    parser.add_argument("--install-license", action="store_true")
     args = parser.parse_args()
     token = os.environ.get("GITEE_TOKEN", "")
     if not token:
         print("GITEE_TOKEN is required", file=sys.stderr)
         return 1
     try:
-        print("Verified public repository: " + ensure(HttpClient(timeout=60, retries=1), token, args.create, args.seed_empty))
+        print("Verified public repository: " + ensure(HttpClient(timeout=60, retries=1), token, args.create, args.seed_empty, args.install_license))
     except Exception as error:
         # API response bodies can contain account metadata; keep them out of logs.
         detail = (" HTTP " + str(error.status)) if isinstance(error, HttpError) else ""

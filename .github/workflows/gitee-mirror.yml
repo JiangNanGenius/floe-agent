@@ -94,6 +94,11 @@ on:
         required: false
         type: boolean
         default: false
+      install_linux_license:
+        description: Add MPL-2.0 license and component notice without overwriting existing files
+        required: false
+        type: boolean
+        default: false
       mirror_refs:
         description: 'Also mirror main/tags (set false when only syncing a release)'
         required: false
@@ -418,6 +423,7 @@ jobs:
           TAG: ${{ steps.target.outputs.tag }}
           CREATE: ${{ inputs.create_linux_repository }}
           SEED: ${{ inputs.seed_linux_repository }}
+          LICENSE: ${{ inputs.install_linux_license }}
           DRY_RUN: ${{ inputs.dry_run }}
           DIAGNOSE: ${{ inputs.diagnose_download }}
         run: |
@@ -432,6 +438,7 @@ jobs:
           FLAGS=()
           if [ "$CREATE" = "true" ] && [ "$DRY_RUN" != "true" ]; then FLAGS+=(--create); fi
           if [ "$SEED" = "true" ] && [ "$DRY_RUN" != "true" ]; then FLAGS+=(--seed-empty); fi
+          if [ "$LICENSE" = "true" ] && [ "$DRY_RUN" != "true" ]; then FLAGS+=(--install-license); fi
           python3 FloeAgent/scripts/ensure_linux_gitee_repository.py "${FLAGS[@]}"
 
       - name: Ensure the immutable tag exists on Gitee (one-way, never forced)

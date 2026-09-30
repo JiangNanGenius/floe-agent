@@ -25,6 +25,19 @@ class Client:
 
 
 class LinuxMirrorRepositoryTests(unittest.TestCase):
+    def test_license_is_explicit_and_preserves_existing_content(self):
+        client = Client(response(), response(404), response(201), response(404), response(201))
+        ensure(client, "fixture", install_license=True)
+        self.assertEqual([x[0] for x in client.calls], ["GET", "GET", "POST", "GET", "POST"])
+        self.assertTrue(client.calls[2][1].endswith("/contents/LICENSE"))
+        self.assertTrue(client.calls[4][1].endswith("/contents/THIRD_PARTY_NOTICE.md"))
+
+    def test_different_license_is_not_overwritten(self):
+        client = Client(response(), response(content="b3RoZXI="))
+        with self.assertRaises(RuntimeError):
+            ensure(client, "fixture", install_license=True)
+        self.assertEqual([x[0] for x in client.calls], ["GET", "GET"])
+
     def test_existing_repository_is_read_only(self):
         client = Client(response())
         self.assertEqual(ensure(client, "fixture", create=True), REPOSITORY)
