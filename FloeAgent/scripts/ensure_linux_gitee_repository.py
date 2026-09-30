@@ -11,6 +11,10 @@ REPOSITORY = "JiangNanGenius/floe-linux-images"
 API = "https://gitee.com/api/v5"
 
 
+class RepositoryCheckError(RuntimeError):
+    """Only locally authored, non-sensitive diagnostic messages."""
+
+
 def ensure(client, token, create=False):
     headers = {"Authorization": "token " + token, "Accept": "application/json"}
     print("Checking Linux mirror repository", flush=True)
@@ -18,7 +22,7 @@ def ensure(client, token, create=False):
                             headers=headers, allow_404=True)
     if result.status == 404:
         if not create:
-            raise RuntimeError("Linux mirror repository missing; explicit creation is required")
+            raise RepositoryCheckError("Linux mirror repository missing; explicit creation is required")
         print("Repository absent; creating dedicated Linux mirror once", flush=True)
         body = json.dumps({
             "name": "floe-linux-images", "path": "floe-linux-images",
@@ -34,11 +38,11 @@ def ensure(client, token, create=False):
         result = client.request("GET", API + "/repos/" + REPOSITORY, headers=headers)
     repository = json.loads(result.body)
     if repository.get("full_name", "").casefold() != REPOSITORY.casefold():
-        raise RuntimeError("Unexpected repository identity")
+        raise RepositoryCheckError("Unexpected repository identity")
     if repository.get("private") is not False or repository.get("public") is False:
-        raise RuntimeError("Mirror is not public; visibility will not be changed automatically")
+        raise RepositoryCheckError("Mirror is not public; visibility will not be changed automatically")
     if repository.get("owner", {}).get("login", "").casefold() != "jiangnangenius":
-        raise RuntimeError("Unexpected repository owner")
+        raise RepositoryCheckError("Unexpected repository owner")
     return REPOSITORY
 
 
@@ -55,6 +59,8 @@ def main():
     except Exception as error:
         # API response bodies can contain account metadata; keep them out of logs.
         detail = (" HTTP " + str(error.status)) if isinstance(error, HttpError) else ""
+        if isinstance(error, RepositoryCheckError):
+            detail = ": " + str(error)
         print("Repository check failed: " + type(error).__name__ + detail, file=sys.stderr)
         return 1
     return 0
