@@ -67,6 +67,12 @@ jobs:
           python3 FloeAgent/scripts/test_office_forwarding_lifecycle.py \
             --source "$RUNNER_TEMP/office-native-bundle/source" \
             > "$RUNNER_TEMP/office-native-bundle/forwarding-lifecycle-regression.json"
+      # Keep the source callback regression alongside the exact native build.
+      - name: Verify pinned kit callback lifecycle regression
+        run: |
+          python3 FloeAgent/scripts/test_office_kit_lifecycle.py \
+            --source "$RUNNER_TEMP/office-native-bundle/source" \
+            > "$RUNNER_TEMP/office-native-bundle/kit-callback-lifecycle-regression.json"
       - name: Prepare pinned Calc exporter sources
         run: |
           python3 - <<'PY'
@@ -136,6 +142,7 @@ jobs:
             ${{ runner.temp }}/office-native-bundle/bundle-repair.json
             ${{ runner.temp }}/office-native-bundle/native-drain-contract.json
             ${{ runner.temp }}/office-native-bundle/scheme-lifecycle-regression.json
+            ${{ runner.temp }}/office-native-bundle/kit-callback-lifecycle-regression.json
             ${{ runner.temp }}/office-filter-overlay/filter-overlay.json
             ${{ runner.temp }}/office-filter-overlay/compile.log
             ${{ runner.temp }}/office-filter-overlay/*.compile.log
