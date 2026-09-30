@@ -292,6 +292,17 @@ final class ThreadDetailViewModel: ObservableObject {
         return reason.map { "\($0)\n\(recovery)" } ?? recovery
     }
 
+    /// Show context usage only after this run has produced visible assistant text.
+    /// Input-token receipts alone must not reveal an empty indicator while waiting.
+    var hasAssistantOutputForUsage: Bool {
+        guard let run = selectedRun else { return false }
+        if isRunning && liveStreamedText.contains(where: { !$0.isWhitespace }) { return true }
+        return messages.contains {
+            $0.runID == run.id && $0.role == "assistant"
+                && $0.content.contains(where: { !$0.isWhitespace })
+        }
+    }
+
     var usageSummary: ThreadUsageSummary? {
         guard let run = selectedRun else { return nil }
         let records = usageByRun[run.id, default: []]

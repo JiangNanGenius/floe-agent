@@ -652,8 +652,7 @@ struct ThreadDetailView: View {
     /// on iPhone), avoiding the forced compact popover presentation.
     private var usageToolbarHost: some View {
         ZStack {
-            if let usage = viewModel.usageSummary,
-               usage.contextWindowTokens > 0 {
+            if usageAvailability, let usage = viewModel.usageSummary {
                 Button {
                     // Capture the snapshot before presenting: the presented
                     // content must not collapse to an empty view if the run's
@@ -692,7 +691,8 @@ struct ThreadDetailView: View {
     /// `onChange` above also clears the stored flag (otherwise the next run's
     /// usage would immediately re-present the popover).
     private var usageAvailability: Bool {
-        (viewModel.usageSummary?.contextWindowTokens ?? 0) > 0
+        viewModel.hasAssistantOutputForUsage
+            && (viewModel.usageSummary?.contextWindowTokens ?? 0) > 0
     }
 
     private var usageDetailsPresented: Binding<Bool> {
