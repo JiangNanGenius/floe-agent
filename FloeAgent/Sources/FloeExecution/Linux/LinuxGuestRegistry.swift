@@ -180,12 +180,14 @@ public extension LinuxGuestRuntimeV2Integrating {
     /// one vCPU, memory downgrades only — fail closed for any shape THIS
     /// release does not qualify (B4: one hart, independent of the image
     /// manifest), never silently granting a second hart the legacy path
-    /// cannot account for.
+    /// cannot account for. `imageID` (the boot image) is accepted for
+    /// signature compatibility; the legacy bridge cannot evaluate image
+    /// manifests and never widens past one hart, so it is not consulted.
     func acquireShape(
         environmentID: String,
         runtimeID: String,
+        imageID: String,
         request: GuestResourceRequest,
-        imageSMPCapable: Bool,
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission {
         // The release gate is independent of the caller's SMP claim.
@@ -224,12 +226,15 @@ public extension LinuxGuestRuntimeV2Integrating {
     /// validation and drifting the pool accounting. The loose integer goes
     /// through the production release gate, never a clamp: a count outside
     /// the qualified ladder fails before any stop runs, and a second hart
-    /// still requires the environment's verified image to prove SMP.
+    /// still requires the boot image (`imageID`) to prove SMP — which this
+    /// manifest-blind default cannot evaluate, so the vCPU change refuses
+    /// honestly here instead of drifting the pool accounting.
     func planReshape(
         environmentID: String,
         ramMB: Int,
         vcpus: Int,
-        currentVCPUs: Int
+        currentVCPUs: Int,
+        imageID: String
     ) async throws {
         let policy = GuestReleaseShapePolicy.production
         let requested: GuestVCPUCount
@@ -1095,12 +1100,15 @@ public actor TinyEMULinuxGuestRegistry {
                 case .environmentPolicy, .userSpecified, .workerDefault:
                     downgrade = .strict
                 }
-                let imageSMPCapable = await runtimeV2.imageSMPCapable(imageID: descriptor.imageID)
+                // The SMP gate inside acquireShape evaluates the manifest of
+                // exactly the image this descriptor will boot — the pool must
+                // never admit (or refuse) a second hart based on an image the
+                // guest is not going to boot.
                 let granted = try await runtimeV2.acquireShape(
                     environmentID: environmentID,
                     runtimeID: runtimeID,
+                    imageID: descriptor.imageID,
                     request: requestedShape,
-                    imageSMPCapable: imageSMPCapable,
                     downgrade: downgrade
                 )
                 admission = RuntimeV2Admission(
@@ -2694,7 +2702,8 @@ public actor TinyEMULinuxGuestRegistry {
                     environmentID: environmentID,
                     ramMB: ramMB,
                     vcpus: vcpus,
-                    currentVCPUs: previousVCPUs
+                    currentVCPUs: previousVCPUs,
+                    imageID: session.descriptor.imageID
                 )
             } else {
                 try await runtimeV2.planRetier(environmentID: environmentID, ramMB: ramMB)

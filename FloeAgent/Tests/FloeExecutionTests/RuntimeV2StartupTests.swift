@@ -979,7 +979,10 @@ final class RuntimeV2StartupTests: XCTestCase {
         let supports = await registry.supports(environmentID: "env-v2")
         XCTAssertTrue(supports)
         let events = await integrator.events
-        XCTAssertEqual(events, ["acquire:env-v2", "disk:env-v2", "data:env-v2"])
+        // The registry admits starts through the shape-aware admission (the
+        // production path, whose SMP gate evaluates the boot image); the
+        // scripted substrate records it as acquireShape.
+        XCTAssertEqual(events, ["acquireShape:env-v2", "disk:env-v2", "data:env-v2"])
         // The 9P environment share points at the v2 data directory, never at
         // the legacy layer.
         let runtimeImage = ledger.image(for: "env-v2")
@@ -987,7 +990,7 @@ final class RuntimeV2StartupTests: XCTestCase {
 
         await registry.stop(environmentID: "env-v2")
         let stopEvents = await integrator.events
-        XCTAssertEqual(stopEvents, ["acquire:env-v2", "disk:env-v2", "data:env-v2", "stop:env-v2:true", "release:env-v2"])
+        XCTAssertEqual(stopEvents, ["acquireShape:env-v2", "disk:env-v2", "data:env-v2", "stop:env-v2:true", "release:env-v2"])
     }
 
     // MARK: - P0: startup salvage failure is durably non-restartable
@@ -2793,6 +2796,30 @@ final class RuntimeV2StartupTests: XCTestCase {
         func acquireSlot(environmentID: String, runtimeID: String, requestedMB: Int) async throws -> RuntimeV2Admission {
             events.append("acquire:\(environmentID)")
             return RuntimeV2Admission(runtimeID: runtimeID, ramMB: requestedMB, downgraded: false)
+        }
+
+        func acquireShape(
+            environmentID: String, runtimeID: String, imageID: String,
+            request: GuestResourceRequest,
+            downgrade: GuestShapeDowngradePolicy
+        ) async throws -> LinuxGuestShapeAdmission {
+            events.append("acquireShape:\(environmentID)")
+            return LinuxGuestShapeAdmission(
+                runtimeID: runtimeID,
+                ramMB: request.memory.mb,
+                vcpus: request.vcpus.count,
+                downgraded: false
+            )
+        }
+
+        func planReshape(
+            environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int, imageID: String
+        ) async throws {
+            events.append("planReshape:\(environmentID)")
+        }
+
+        func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async {
+            events.append("confirmReshape:\(environmentID)")
         }
 
         func releaseSlot(environmentID: String, runtimeID: String) async {

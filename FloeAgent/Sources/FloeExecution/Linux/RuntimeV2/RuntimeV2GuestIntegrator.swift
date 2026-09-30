@@ -84,15 +84,30 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// granted vCPU count and RAM are the values the machine is created with;
     /// an image whose manifest does not PROVE SMP can never be granted two
     /// harts (the engine's `floe_vm_smp_capable()` is not image evidence).
+    ///
+    /// `imageID` must be the image the start will actually boot — the
+    /// environment descriptor's image id. The caller proves this obligation:
+    /// the working disk is materialized from `prepareWorkingDisk(imageID:)`,
+    /// which for a pinned environment fails closed unless the pinned
+    /// template's root base image IS this image (`templateBaseImageMismatch`),
+    /// and for a base-only environment clones this image's verified rootfs and
+    /// boots its kernel/BIOS; the boot then freezes `baseImageID` into the
+    /// runtime metadata and capture re-checks it. The SMP gate below evaluates
+    /// exactly this image's verified manifest — never a different image and
+    /// never the engine query — so the admission verdict is always about the
+    /// kernel/firmware/disk view the guest will really start with.
     func acquireShape(
-        environmentID: String, runtimeID: String,
-        request: GuestResourceRequest, imageSMPCapable: Bool,
+        environmentID: String, runtimeID: String, imageID: String,
+        request: GuestResourceRequest,
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission
     /// Validates a requested shape change (vCPU and/or RAM) against the pool
     /// quota and the image capability BEFORE the stop/flush/restart path.
+    /// `imageID` is the image the running guest booted (the descriptor image
+    /// it will boot again after the restart, frozen in its runtime metadata);
+    /// the SMP gate evaluates exactly this image.
     func planReshape(
-        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int
+        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int, imageID: String
     ) async throws
     /// Records the shape a completed stop → flush → restart made true.
     func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async
@@ -585,26 +600,21 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     /// Shape-aware admission: the pool grants the real vCPU/RAM shape and the
     /// result carries exactly what was granted, so the boot descriptor is
     /// created with the granted count (never the request and never an
-    /// engine-derived guess).
+    /// engine-derived guess). The SMP gate evaluates the verified manifest of
+    /// `imageID` — the image this start boots (see the protocol requirement);
+    /// the engine gate (`floe_vm_smp_capable`) is deliberately never consulted.
     public func acquireShape(
-        environmentID: String, runtimeID: String,
-        request: GuestResourceRequest, imageSMPCapable: Bool,
+        environmentID: String, runtimeID: String, imageID: String,
+        request: GuestResourceRequest,
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission {
         try await ensurePrepared(isCancelled: { Task.isCancelled })
-        // The image manifest is the capability authority: the caller's flag is
-        // a hint that can never widen an unproven image into SMP. The engine
-        // gate (floe_vm_smp_capable) is deliberately not consulted here.
-        let proven = await provenSMPCapability(environmentID: environmentID)
+        let proven = await imageSMPCapable(imageID: imageID)
         let granted = try await store.pool.acquire(
             environmentID: environmentID, runtimeID: runtimeID,
             request: request, imageSMPCapable: proven, downgrade: downgrade
         )
-        var reason = granted.vcpusDowngradeReason ?? granted.memoryDowngradeReason
-        if request.vcpus == .two, imageSMPCapable, !proven {
-            let note = "the caller claimed SMP but the image manifest does not prove it; the claim was not used"
-            reason = reason.map { "\($0); \(note)" } ?? note
-        }
+        let reason = granted.vcpusDowngradeReason ?? granted.memoryDowngradeReason
         return LinuxGuestShapeAdmission(
             runtimeID: granted.runtimeID,
             ramMB: granted.shape.memory.mb,
@@ -619,15 +629,16 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     /// the image's SMP proof before any disruption. Nothing is stopped if
     /// this throws. The loose integer is validated, never clamped: a count
     /// outside the release ladder throws an actionable error, and a second
-    /// hart still requires the environment's verified base image to prove
-    /// SMP (a manifest `smp=true` claim alone is not enough).
+    /// hart requires the image the guest booted (`imageID`, the descriptor's
+    /// image it will boot again after the restart) to prove SMP — a manifest
+    /// claim on any other image is not authority.
     public func planReshape(
-        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int
+        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int, imageID: String
     ) async throws {
         try await ensurePrepared()
         let policy = await store.pool.releasePolicy
         let resolvedVCPUs = try policy.resolve(requestedVCPUs: vcpus)
-        let proven = await provenSMPCapability(environmentID: environmentID)
+        let proven = await imageSMPCapable(imageID: imageID)
         let request = GuestResourceRequest(
             vcpus: resolvedVCPUs,
             memory: GuestMemoryMiB.smallestHolding(max(0, ramMB)) ?? .m2048,
@@ -745,22 +756,6 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         return try await store.templates.pinEnvironment(
             environmentID: environmentID, templateID: templateID, version: version
         )
-    }
-
-    /// The image whose manifest must prove the capability for this
-    /// environment: the pinned template's root base image when one is pinned
-    /// (the template rootfs boots with that image's kernel/BIOS), else the
-    /// environment's own base image. Anything unresolved answers false.
-    private func provenSMPCapability(environmentID: String) async -> Bool {
-        if let pin = try? await store.templates.environmentPin(environmentID: environmentID) {
-            guard let root = try? await store.templates.baseImageID(
-                templateID: pin.templateID, version: pin.version
-            ) else { return false }
-            return await imageSMPCapable(imageID: root)
-        }
-        guard let row = try? await store.registry.environment(id: environmentID),
-              let imageID = row.baseImageID else { return false }
-        return await imageSMPCapable(imageID: imageID)
     }
 
     public func releaseSlot(environmentID: String, runtimeID: String) async {

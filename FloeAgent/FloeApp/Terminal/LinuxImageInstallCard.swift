@@ -309,7 +309,13 @@ struct LinuxImageInstallCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(String(localized: "terminal.linux.title"), systemImage: "shippingbox")
+            // The title follows the DERIVED state: a fixed "isn't installed"
+            // label here rendered "未安装 Linux" even while a verified guest
+            // was running (Build 240 device feedback). Only the genuine
+            // not-installed states keep that wording; every other state —
+            // including running and installed-stopped — carries the neutral
+            // component title.
+            Label(Self.title(for: model.state), systemImage: "shippingbox")
                 .font(.subheadline.weight(.semibold))
             content
         }
@@ -493,6 +499,22 @@ struct LinuxImageInstallCard: View {
         }
         .font(.caption)
         .disabled(cancelling)
+    }
+
+    /// The card title follows the derived state. Only the genuine
+    /// not-installed entry keeps the explicit "Linux isn't installed" wording;
+    /// a verified component (running, installed-stopped, downloading, repair
+    /// or update states) carries the neutral component title so the card can
+    /// never label a running/installed environment as uninstalled.
+    static func title(for state: LinuxGuestInstallState) -> String {
+        switch state {
+        case .needsDownload:
+            return String(localized: "terminal.linux.title")
+        case .storageInitializing, .storageUnavailable, .downloading,
+             .installedStopped, .updateAvailable, .imageRepairRequired,
+             .repairRequired, .running:
+            return String(localized: "settings.exec.linux.section")
+        }
     }
 
     /// Localized label for the Runtime v2 startup-recovery stage reported by

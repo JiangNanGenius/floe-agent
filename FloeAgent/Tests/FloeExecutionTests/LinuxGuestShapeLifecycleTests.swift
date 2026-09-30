@@ -334,14 +334,14 @@ private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
     }
 
     func acquireShape(
-        environmentID: String, runtimeID: String,
-        request: GuestResourceRequest, imageSMPCapable: Bool,
+        environmentID: String, runtimeID: String, imageID: String,
+        request: GuestResourceRequest,
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission {
         events.append("acquire:\(environmentID)")
         shapeRequests.append(request)
         shapeDowngrades.append(downgrade)
-        imageSMPGates.append(imageSMPCapable)
+        imageSMPGates.append(await imageSMPCapable(imageID: imageID))
         if let acquireError { throw acquireError }
         return LinuxGuestShapeAdmission(
             runtimeID: runtimeID,
@@ -354,7 +354,7 @@ private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
     func imageSMPCapable(imageID: String) async -> Bool { true }
 
     func planReshape(
-        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int
+        environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int, imageID: String
     ) async throws {
         events.append("planReshape:\(environmentID):\(ramMB):\(vcpus)")
         if let planGate { await planGate.arriveAndWait() }

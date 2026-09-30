@@ -352,8 +352,11 @@ struct ExecutionEnvironmentView: View {
 
     /// Reads the App-shared image state, finds the first Linux environment and
     /// reports the real guest state. No state is invented when the service is
-    /// unavailable.
-    private func refreshLinux() async {
+    /// unavailable. `force` (start/stop and other explicit actions) bypasses
+    /// the service-owned status snapshot; a plain view appear reuses a fully
+    /// successful recent read, so repeated re-entry never repeats the
+    /// underlying real-file work.
+    private func refreshLinux(force: Bool = false) async {
         // No storage guard: the install model performs recoverable init and
         // reports its own real state; environment reports below are
         // independent of image storage.
@@ -362,7 +365,7 @@ struct ExecutionEnvironmentView: View {
             linuxImageModel = LinuxImageInstallModel(imageID: imageID)
         }
         await linuxImageModel?.probeOnce()
-        linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID)
+        linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID, force: force)
         linuxUpdateNotice = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
         guard let reports = try? await FloePlatformServices.shared.environmentReports() else { return }
         let linuxReports = reports.filter {
@@ -442,7 +445,7 @@ struct ExecutionEnvironmentView: View {
             }
             linuxEnvironmentID = id
             try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(id: id)
-            await refreshLinux()
+            await refreshLinux(force: true)
             // A user who already enabled background operation keeps it when
             // the environment starts again: refresh the work record and the
             // system continued-processing request against the live guest.
@@ -474,7 +477,7 @@ struct ExecutionEnvironmentView: View {
             title: linuxEnvironmentTitle
         )
         await FloePlatformServices.shared.stopLinuxGuest(id: id)
-        await refreshLinux()
+        await refreshLinux(force: true)
     }
 
     private func runtimeRow(_ entry: RuntimeInventoryEntry) -> some View {

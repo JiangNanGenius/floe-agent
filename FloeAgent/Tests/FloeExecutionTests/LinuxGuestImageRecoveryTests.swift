@@ -747,8 +747,8 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
         }
 
         func acquireShape(
-            environmentID: String, runtimeID: String,
-            request: GuestResourceRequest, imageSMPCapable: Bool,
+            environmentID: String, runtimeID: String, imageID: String,
+            request: GuestResourceRequest,
             downgrade: GuestShapeDowngradePolicy
         ) async throws -> LinuxGuestShapeAdmission {
             LinuxGuestShapeAdmission(
@@ -759,7 +759,7 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
             )
         }
 
-        func planReshape(environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int) async throws {}
+        func planReshape(environmentID: String, ramMB: Int, vcpus: Int, currentVCPUs: Int, imageID: String) async throws {}
         func confirmReshape(environmentID: String, ramMB: Int, vcpus: Int) async {}
         func planRetier(environmentID: String, ramMB: Int) async throws {}
         func confirmTier(environmentID: String, ramMB: Int) async {}

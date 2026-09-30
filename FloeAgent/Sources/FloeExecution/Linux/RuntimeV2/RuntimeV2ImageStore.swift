@@ -160,6 +160,17 @@ public actor RuntimeV2ImageStore {
     /// false with an honest reason. The engine's `floe_vm_smp_capable()` is
     /// deliberately never consulted: engine capability is not evidence that
     /// THIS image's kernel/firmware can use a second hart.
+    ///
+    /// When the stored manifest has no lifted `capabilities` block, the
+    /// declaration is re-derived from the manifest's own verbatim
+    /// `legacyManifestData` (the authenticated installed-manifest bytes the
+    /// verified digests were taken from), so a v2 manifest written before the
+    /// capabilities block existed still answers truthfully about the installed
+    /// image instead of defaulting to false. The embedded bytes are trusted
+    /// only after the coherence check (`manifestDigestsMatch`): they must
+    /// describe exactly the verified artifact digests and the same image id.
+    /// An explicit `smp=false` or a withdrawn declaration in the stored block
+    /// is authoritative and is never overridden by this fallback.
     public func smpCapability(imageID: String) async throws -> (capable: Bool, reason: String) {
         guard try await registry.bootableImage(id: imageID, root: layout.root) != nil else {
             return (false, "image '\(imageID)' is not verified; no capability can be assumed")
@@ -167,7 +178,21 @@ public actor RuntimeV2ImageStore {
         guard let manifest = try manifest(imageID: imageID) else {
             return (false, "no v2 manifest for '\(imageID)'; SMP capability defaults to false")
         }
-        guard let capabilities = manifest.capabilities else {
+        let lifted: Manifest.Capabilities?
+        if let stored = manifest.capabilities {
+            lifted = stored
+        } else if let embedded = try? Self.decoder.decode(
+            LinuxGuestImage.self, from: manifest.legacyManifestData
+        ), Self.manifestDigestsMatch(manifest: manifest, image: embedded) {
+            // Coherence rule: the embedded bytes are trusted only when they
+            // describe exactly the verified artifact digests (and the same
+            // image id); a corrupt or foreign manifest never influences the
+            // verdict.
+            lifted = Self.declaredCapabilities(legacyManifestData: manifest.legacyManifestData)
+        } else {
+            lifted = nil
+        }
+        guard let capabilities = lifted else {
             return (
                 false,
                 "image '\(imageID)' does not declare SMP in its manifest; capability defaults to false "
@@ -525,6 +550,27 @@ public actor RuntimeV2ImageStore {
         if !fileManager.fileExists(atPath: legacyManifestURL.path),
            let existing = try manifest(imageID: imageID),
            try await registry.bootableImage(id: imageID, root: layout.root) != nil {
+            // Capability metadata is not install content. Refresh the stored
+            // declaration from the manifest's own verbatim legacy bytes when
+            // they differ — but only after proving those bytes describe
+            // exactly the artifact digests the verified v2 manifest records
+            // (same coherence rule as the matching-legacy branch below). A
+            // declared `smp_capable`/`smpCapable`/`capabilities.smp` value is
+            // lifted verbatim, including an explicit false or a withdrawn
+            // declaration; artifact digests are never touched.
+            if let embedded = try? Self.decoder.decode(
+                LinuxGuestImage.self, from: existing.legacyManifestData
+            ), Self.manifestDigestsMatch(manifest: existing, image: embedded) {
+                let refreshedCapabilities = Self.declaredCapabilities(legacyManifestData: existing.legacyManifestData)
+                if existing.capabilities != refreshedCapabilities {
+                    var refreshed = existing
+                    refreshed.capabilities = refreshedCapabilities
+                    try Self.encoder.encode(refreshed).write(
+                        to: layout.imageManifestURL(imageID: imageID), options: .atomic
+                    )
+                    await verifier.invalidate(id: imageID)
+                }
+            }
             let stored = (try? await registry.migration(id: migrationID)) ?? nil
             return MigrationReport(
                 imageID: imageID, migrationID: migrationID,
@@ -571,14 +617,22 @@ public actor RuntimeV2ImageStore {
             let declaredCapabilities = Self.declaredCapabilities(legacyManifestData: legacyData)
             if let existing = try manifest(imageID: imageID),
                try await registry.bootableImage(id: imageID, root: layout.root) != nil,
-               manifestMatches(manifest: existing, image: image) {
+               Self.manifestDigestsMatch(manifest: existing, image: image) {
                 // Capability metadata is not install content: a legacy
-                // manifest that now declares a capability (or withdrew one)
-                // refreshes the v2 manifest in place. Artifact digests are
+                // manifest that declares a capability differently (granted OR
+                // withdrawn — an explicit false and an absent key are both
+                // declarations) refreshes the v2 manifest in place. The
+                // verbatim legacy bytes and the lifted capabilities update
+                // TOGETHER, atomically, so the two sources can never diverge:
+                // a stored withdrawal must not keep legacy bytes that the
+                // embedded fallback would resurrect, and a stored declaration
+                // must not sit on bytes that withdrew it. Artifact digests are
                 // untouched and the verified row stays the truth.
-                if existing.capabilities != declaredCapabilities {
+                if existing.capabilities != declaredCapabilities
+                    || existing.legacyManifestData != legacyData {
                     var refreshed = existing
                     refreshed.capabilities = declaredCapabilities
+                    refreshed.legacyManifestData = legacyData
                     try Self.encoder.encode(refreshed).write(
                         to: layout.imageManifestURL(imageID: imageID), options: .atomic
                     )
@@ -614,7 +668,7 @@ public actor RuntimeV2ImageStore {
                     let source = try containedArtifact(
                         path: declared.path, inside: legacyDirectory, migrationID: migrationID
                     )
-                    let role = manifestRole(declared.role)
+                    let role = Self.manifestRole(declared.role)
                     let digest = try await blobs.ingest(
                         sourceURL: source,
                         expectedSHA512: digestRecord.sha512,
@@ -812,17 +866,35 @@ public actor RuntimeV2ImageStore {
                 reason: "the replacement legacy image is not qualified: \(failure)"
             )
         }
-        guard manifestMatches(manifest: existingManifest, image: legacyImage) else {
+        guard Self.manifestDigestsMatch(manifest: existingManifest, image: legacyImage) else {
             throw RuntimeV2Error.migrationFailed(
                 id: migrationID, phase: "discovered",
                 reason: "the replacement image content differs from the installed Runtime v2 manifest; same-id repair refuses instead of rebasing"
+            )
+        }
+        // Capability metadata is not install content: the verified replacement
+        // manifest is the same authenticated content the digest match above
+        // just proved (identical pinned artifact hashes), so its declared
+        // `smp_capable`/`smpCapable`/`capabilities.smp` value — true, explicit
+        // false or withdrawn — becomes the stored lift. The verbatim legacy
+        // bytes and the lifted capabilities update TOGETHER so the embedded
+        // fallback can never resurrect a declaration the replacement
+        // withdrew. Artifact digests are never modified here.
+        let repairedCapabilities = Self.declaredCapabilities(legacyManifestData: legacyData)
+        if existingManifest.capabilities != repairedCapabilities
+            || existingManifest.legacyManifestData != legacyData {
+            var repaired = existingManifest
+            repaired.capabilities = repairedCapabilities
+            repaired.legacyManifestData = legacyData
+            try Self.encoder.encode(repaired).write(
+                to: layout.imageManifestURL(imageID: imageID), options: .atomic
             )
         }
         var replacedAny = false
         for declared in legacyImage.declaredArtifacts {
             try Self.checkReconstructionCancelled(isCancelled)
             guard legacyImage.artifactDigest(role: declared.role) != nil,
-                  let ref = existingManifest.artifacts[manifestRole(declared.role)] else {
+                  let ref = existingManifest.artifacts[Self.manifestRole(declared.role)] else {
                 throw RuntimeV2Error.migrationFailed(
                     id: migrationID, phase: "copied",
                     reason: "no digest record for \(declared.role.rawValue)"
@@ -866,7 +938,7 @@ public actor RuntimeV2ImageStore {
         try fileManager.moveItem(at: legacyDirectory, to: destination)
     }
 
-    private func manifestRole(_ role: LinuxGuestImageArtifact.Role) -> String {
+    private static func manifestRole(_ role: LinuxGuestImageArtifact.Role) -> String {
         role == .disk ? "rootfs" : role.rawValue
     }
 
@@ -889,7 +961,12 @@ public actor RuntimeV2ImageStore {
         return nil
     }
 
-    private func manifestMatches(manifest: Manifest, image: LinuxGuestImage) -> Bool {
+    /// True when the decoded legacy manifest describes exactly the artifact
+    /// digests and byte counts the v2 manifest records (and the same image
+    /// id): the coherence rule every capability refresh and every embedded-
+    /// declaration fallback must satisfy before trusting manifest bytes.
+    private static func manifestDigestsMatch(manifest: Manifest, image: LinuxGuestImage) -> Bool {
+        guard image.id == manifest.imageID else { return false }
         for declared in image.declaredArtifacts {
             guard let record = image.artifactDigest(role: declared.role),
                   let ref = manifest.artifacts[manifestRole(declared.role)],

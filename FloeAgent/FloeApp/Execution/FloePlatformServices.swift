@@ -41,6 +41,15 @@ final class FloePlatformServices: @unchecked Sendable {
     /// its rollback point, the legacy-only status below would wrongly report
     /// "not installed" and offer a re-download; the v2 store is the truth.
     private var linuxImageRuntimeV2: LinuxGuestRuntimeV2ImageStatus?
+    /// Service-owned snapshot of the composed image status. Settings, the
+    /// terminal and first-use preparation all read the same status; this
+    /// cache (invalidated by every mutation and by reconnect) keeps repeated
+    /// view creation from repeating the real-file read, and only a fully
+    /// successful read is ever cached.
+    private let linuxImageStatusCache = LinuxImageStatusSnapshotCache<LinuxGuestImageInstallationService.ImageStatus>()
+    /// How long a completed image-status snapshot may be reused before a read
+    /// re-derives it. Bounded so externally changed bytes are noticed quickly.
+    static let linuxImageStatusCacheMaxAge: TimeInterval = 3
     /// Dynamic, reconnect-safe resolver for the base image a pinned
     /// environment boots with (C5 templates). Owned here so the environment
     /// provider built at launch and the recoverable reconnect path share one
@@ -271,6 +280,9 @@ final class FloePlatformServices: @unchecked Sendable {
     /// the Linux backend assembly when the Runtime v2 substrate exists.
     func setLinuxImageRuntimeV2(_ status: LinuxGuestRuntimeV2ImageStatus?) {
         lock.withLock { linuxImageRuntimeV2 = status }
+        // The truth source changed (launch wiring or a recoverable reconnect):
+        // previously cached composed states may describe another substrate.
+        linuxImageStatusCache.bumpRevision()
     }
 
     /// Updates the pinned-image resolver (production wiring or nil).
@@ -297,15 +309,28 @@ final class FloePlatformServices: @unchecked Sendable {
     /// availability. A migrated image never reports "not installed" merely
     /// because its legacy directory moved, and it never reports "verified"
     /// merely because a registry row exists.
-    func linuxImageStatus(id: String?) async -> LinuxGuestImageInstallationService.ImageStatus? {
+    ///
+    /// `force` bypasses the service-owned snapshot (explicit re-read after an
+    /// action); the default path reuses a fully successful recent read so
+    /// repeated view creation never repeats the underlying real-file work.
+    func linuxImageStatus(id: String?, force: Bool = false) async -> LinuxGuestImageInstallationService.ImageStatus? {
         guard let id, let images = linuxImageBox.value else { return nil }
+        if !force, let entry = linuxImageStatusCache.cached(
+            id: id, maxAge: Self.linuxImageStatusCacheMaxAge
+        ) {
+            return entry.status
+        }
+        let ticket = linuxImageStatusCache.currentRevision
         let legacy = await images.status(id: id)
         guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
               let check = await v2.health(id, nil),
               case .health(let health) = check else {
+            linuxImageStatusCache.storeIfRevisionUnchanged(legacy, id: id, ticket: ticket)
             return legacy
         }
-        return Self.composedImageStatus(legacy: legacy, health: health)
+        let composed = Self.composedImageStatus(legacy: legacy, health: health)
+        linuxImageStatusCache.storeIfRevisionUnchanged(composed, id: id, ticket: ticket)
+        return composed
     }
 
     /// Cancellation-aware variant for the component card: the card's refresh
@@ -330,14 +355,33 @@ final class FloePlatformServices: @unchecked Sendable {
         isCancelled: (@Sendable () -> Bool)?
     ) async throws -> LinuxGuestImageInstallationService.ImageStatus? {
         guard let images = linuxImageBox.value else { return nil }
+        // The card's refresh is cancellable and re-created with the view, so
+        // it reads the SAME service-owned snapshot: a fresh entry answers
+        // immediately. A caller that has already been cancelled keeps its
+        // contract (throw, publish nothing) instead of serving a snapshot.
+        if let entry = linuxImageStatusCache.cached(
+            id: id, maxAge: Self.linuxImageStatusCacheMaxAge
+        ) {
+            if isCancelled?() == true { throw CancellationError() }
+            return entry.status
+        }
+        // A revision ticket bounds the read: when a mutation bumps the
+        // revision while this read is in flight, the result is returned to
+        // THIS caller but never enters the cache.
+        let ticket = linuxImageStatusCache.currentRevision
         let legacy = try await images.status(id: id, isCancelled: isCancelled)
         guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
               let check = await v2.health(id, isCancelled) else {
+            // No v2 substrate: the legacy answer is the whole truth. Only a
+            // completed read is cached; a cancelled read threw above.
+            linuxImageStatusCache.storeIfRevisionUnchanged(legacy, id: id, ticket: ticket)
             return legacy
         }
         switch check {
         case .health(let health):
-            return Self.composedImageStatus(legacy: legacy, health: health)
+            let composed = Self.composedImageStatus(legacy: legacy, health: health)
+            linuxImageStatusCache.storeIfRevisionUnchanged(composed, id: id, ticket: ticket)
+            return composed
         case .cancelled:
             throw CancellationError()
         }
@@ -430,6 +474,8 @@ final class FloePlatformServices: @unchecked Sendable {
         guard await ensureLinuxImageService(),
               let images = linuxImageBox.value else { return nil }
         let id = imageID ?? LinuxGuestImageDistributionCatalog.defaultImageID
+        // A re-verify changes the truth this cache serves.
+        linuxImageStatusCache.bumpRevision()
         let cancelCheck: @Sendable () -> Bool = { Task.isCancelled }
         let legacy: LinuxGuestImageInstallationService.ImageStatus
         do {
@@ -824,6 +870,10 @@ final class FloePlatformServices: @unchecked Sendable {
         ), current.installed && current.verificationIssue == nil {
             return "Linux image \(imageID) is already installed"
         }
+        // From here this call installs, reconstructs or repairs: the cached
+        // composed states describe pre-mutation truth and are dropped, so the
+        // refresh that follows the job re-derives instead of serving stale.
+        linuxImageStatusCache.bumpRevision()
         // Local reconstruction also belongs to the shared job below. Doing
         // it before registering the owner lets concurrent callers replace
         // the expanded view twice and leaves the card without cancellation

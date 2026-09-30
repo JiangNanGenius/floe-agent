@@ -215,6 +215,17 @@ enum LinuxGuestVolumeSpace {
 /// per chunk). The explicit `invalidate(id:)` behind `reverify` is the
 /// recovery path when the local condition was transient: it drops the cached
 /// failure and reads the real bytes again.
+///
+/// Successes are ALSO snapshotted durably next to the verified files (a small
+/// dotfile sidecar per namespace). A status read after an app relaunch replays
+/// the success without re-hashing gigabytes when — and only when — the current
+/// fingerprint matches, so reopening Settings stays immediate instead of
+/// waiting on a full disk read on every view. The fingerprint binds the
+/// manifest's declared digests, the declared byte counts and the actual file
+/// sizes and modification times; any change falls through to a real hash.
+/// Failures are never persisted: a fresh launch always re-reads real bytes
+/// for an unhealthy image, and `invalidate(id:)` deletes the sidecar together
+/// with the memory entry (the explicit reverify/repair path).
 public actor LinuxGuestImageVerifier {
     private struct CacheEntry {
         var fingerprint: String
@@ -222,7 +233,22 @@ public actor LinuxGuestImageVerifier {
         var verifiedAt: Date
     }
 
+    /// Durable success snapshot written beside the verified files.
+    private struct Snapshot: Codable {
+        var version: Int
+        var fingerprint: String
+        var verifiedAt: String
+    }
+
     private var cache: [String: CacheEntry] = [:]
+    /// Sidecar URLs this instance wrote or read, keyed like `cache`; used to
+    /// delete the durable snapshot on invalidation.
+    private var sidecars: [String: URL] = [:]
+
+    static let snapshotVersion = 1
+    static func snapshotFileName(namespace: String) -> String {
+        ".floe-verified-\(namespace).json"
+    }
 
     public init() {}
 
@@ -285,8 +311,24 @@ public actor LinuxGuestImageVerifier {
         if let cached = cache[cacheKey], cached.fingerprint == fingerprint {
             return cached.issue
         }
+        // A durable success snapshot (written beside the verified files after
+        // a real digest pass) replays the success across app relaunches when
+        // the fingerprint still matches, so a status read never re-hashes a
+        // multi-gigabyte disk on every view. Failures are never persisted.
+        if let snapshot = readSnapshot(cacheKey: cacheKey, imageDirectory: imageDirectory, namespace: cacheNamespace),
+           snapshot.fingerprint == fingerprint {
+            let entry = CacheEntry(fingerprint: fingerprint, issue: nil, verifiedAt: Date())
+            cache[cacheKey] = entry
+            return nil
+        }
         let issue = try Self.verify(image: image, imageDirectory: imageDirectory, isCancelled: isCancelled)
         cache[cacheKey] = CacheEntry(fingerprint: fingerprint, issue: issue, verifiedAt: Date())
+        if issue == nil {
+            writeSnapshot(
+                cacheKey: cacheKey, imageDirectory: imageDirectory, namespace: cacheNamespace,
+                fingerprint: fingerprint
+            )
+        }
         return issue
     }
 
@@ -298,6 +340,10 @@ public actor LinuxGuestImageVerifier {
     public func invalidate(id: String) {
         for key in Array(cache.keys) where Self.imageID(fromCacheKey: key) == id {
             cache[key] = nil
+            if let url = sidecars[key] {
+                try? FileManager.default.removeItem(at: url)
+                sidecars[key] = nil
+            }
         }
     }
 
@@ -313,9 +359,47 @@ public actor LinuxGuestImageVerifier {
         cacheNamespace: String
     ) {
         let fingerprint = Self.fingerprint(image: image, imageDirectory: imageDirectory)
-        cache[Self.cacheKey(namespace: cacheNamespace, imageID: image.id)] = CacheEntry(
+        let cacheKey = Self.cacheKey(namespace: cacheNamespace, imageID: image.id)
+        cache[cacheKey] = CacheEntry(
             fingerprint: fingerprint, issue: nil, verifiedAt: Date()
         )
+        writeSnapshot(
+            cacheKey: cacheKey, imageDirectory: imageDirectory, namespace: cacheNamespace,
+            fingerprint: fingerprint
+        )
+    }
+
+    // MARK: durable success snapshots
+
+    private func snapshotURL(imageDirectory: URL, namespace: String) -> URL {
+        imageDirectory.appendingPathComponent(Self.snapshotFileName(namespace: namespace), isDirectory: false)
+    }
+
+    private func readSnapshot(
+        cacheKey: String, imageDirectory: URL, namespace: String
+    ) -> Snapshot? {
+        let url = snapshotURL(imageDirectory: imageDirectory, namespace: namespace)
+        sidecars[cacheKey] = url
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),
+              snapshot.version == Self.snapshotVersion else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private func writeSnapshot(
+        cacheKey: String, imageDirectory: URL, namespace: String, fingerprint: String
+    ) {
+        let snapshot = Snapshot(
+            version: Self.snapshotVersion,
+            fingerprint: fingerprint,
+            verifiedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        let url = snapshotURL(imageDirectory: imageDirectory, namespace: namespace)
+        try? data.write(to: url, options: .atomic)
+        sidecars[cacheKey] = url
     }
 
     private static func cacheKey(namespace: String, imageID: String) -> String {

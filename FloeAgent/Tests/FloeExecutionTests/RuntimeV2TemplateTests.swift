@@ -1131,23 +1131,25 @@ final class RuntimeV2TemplateTests: XCTestCase {
 
         let dual = GuestResourceRequest(vcpus: .two, memory: .m512, origin: .environmentPolicy)
 
-        // A caller claim is not evidence: an image that does not prove SMP is
-        // never granted two harts under the strict policy.
+        // The admission gate evaluates the manifest of exactly the image the
+        // start boots (`imageID`): an image that does not prove SMP is never
+        // granted two harts under the strict policy, no matter what any other
+        // authority claims.
         do {
             _ = try await integrator.acquireShape(
-                environmentID: "env-nosmp", runtimeID: "rt-nosmp",
-                request: dual, imageSMPCapable: true, downgrade: .strict
+                environmentID: "env-nosmp", runtimeID: "rt-nosmp", imageID: baseImageID,
+                request: dual, downgrade: .strict
             )
-            XCTFail("an unproven SMP claim must not be granted")
+            XCTFail("an image that does not prove SMP must not be granted two harts")
         } catch LinuxGuestError.smpUnsupportedByImage(let environmentID) {
             XCTAssertEqual(environmentID, "env-nosmp")
         }
 
-        // A manifest-proven image is granted exactly two harts and the real
+        // A manifest-proven boot image is granted exactly two harts and the real
         // requested RAM.
         let granted = try await integrator.acquireShape(
-            environmentID: "env-smp", runtimeID: "rt-smp",
-            request: dual, imageSMPCapable: true, downgrade: .strict
+            environmentID: "env-smp", runtimeID: "rt-smp", imageID: "smp-image",
+            request: dual, downgrade: .strict
         )
         XCTAssertEqual(granted.vcpus, 2)
         XCTAssertEqual(granted.ramMB, 512)
@@ -1158,14 +1160,15 @@ final class RuntimeV2TemplateTests: XCTestCase {
         // planner validates against the pool, not against a missing session.
         let single = GuestResourceRequest(vcpus: .one, memory: .m512, origin: .environmentPolicy)
         _ = try await integrator.acquireShape(
-            environmentID: "env-nosmp", runtimeID: "rt-nosmp",
-            request: single, imageSMPCapable: false, downgrade: .strict
+            environmentID: "env-nosmp", runtimeID: "rt-nosmp", imageID: baseImageID,
+            request: single, downgrade: .strict
         )
-        // Planning a second hart on the unproven image is refused BEFORE any
-        // stop/restart runs.
+        // Planning a second hart on the unproven boot image is refused BEFORE
+        // any stop/restart runs.
         do {
             try await integrator.planReshape(
-                environmentID: "env-nosmp", ramMB: 1024, vcpus: 2, currentVCPUs: 1
+                environmentID: "env-nosmp", ramMB: 1024, vcpus: 2, currentVCPUs: 1,
+                imageID: baseImageID
             )
             XCTFail("a vCPU change on an unproven image must be refused at plan time")
         } catch LinuxGuestError.invalidConfiguration {
@@ -1173,7 +1176,8 @@ final class RuntimeV2TemplateTests: XCTestCase {
         }
         // The proven image may plan the same change.
         try await integrator.planReshape(
-            environmentID: "env-smp", ramMB: 1024, vcpus: 2, currentVCPUs: 2
+            environmentID: "env-smp", ramMB: 1024, vcpus: 2, currentVCPUs: 2,
+            imageID: "smp-image"
         )
         // Confirming records the shape the restart made true (the lease holds
         // the granted shape, not a tier approximation).
