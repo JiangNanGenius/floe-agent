@@ -1,0 +1,4 @@
+{
+  "en-US": "Build239: removes Gitee from bundled download fallbacks; adds two anonymously verified direct mirrors for the SMP Linux image. Please test download, progress, cancellation and retry when GitHub is unavailable. PPT edit crashes and real-weight local search grounding remain unresolved; Chinese fonts retain the user-confirmed fix.",
+  "zh-Hans": "Build239：移除内置 Gitee 后备下载，默认 SMP Linux 镜像新增两处经过匿名整包摘要验证的直连镜像。请测试 GitHub 不可达时的下载、进度、取消和重试。PPT 编辑闪退及本地模型真实搜索回答仍未确认解决；中文字体保留已确认修复。"
+}
