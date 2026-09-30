@@ -89,6 +89,121 @@ def checked_lock(lock_path):
     return lock, pin
 
 
+SIMULATOR_RECEIPT = 'native-host-simulator.json'
+SIMULATOR_FRAMEWORK = FRAMEWORK
+SIMULATOR_RESOURCES = 'OfficeRuntimeResources'
+
+
+def verify_simulator_host(folder, lock_path=LOCK):
+    """Verify a staged iphonesimulator Office host against the tracked pin.
+
+    This is the simulator sibling of ``checked_lock`` + ``inventory``: the
+    device pin stays untouched, and the simulator host carries its own
+    receipt (``native-host-simulator.json``) produced by
+    ``office_floe_simulator.build_simulator_framework``. Every hash is checked
+    against the on-disk bundle; the tracked engine lock still owns the source
+    commit and the embedding/scheme/forwarding/kit overlay SHAs, so a host
+    built from different sources or overlays can never be embedded.
+    """
+    lock = json.loads(Path(lock_path).read_text())
+    folder = Path(folder)
+    if folder.is_symlink() or not folder.is_dir():
+        raise ValueError('Office simulator host destination is not an owned directory')
+    entries = list(folder.rglob('*'))
+    if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries):
+        raise ValueError('Office simulator host contains an unexpected alias')
+    receipt_path = folder / SIMULATOR_RECEIPT
+    if not receipt_path.is_file():
+        raise ValueError('Office simulator host lacks its qualification receipt')
+    receipt = json.loads(receipt_path.read_text())
+
+    failures = []
+    def check(condition, message):
+        if not condition:
+            failures.append(message)
+
+    check(receipt.get('platform') == 'iphonesimulator', 'simulator host platform mismatch')
+    check(receipt.get('arch') == 'arm64', 'simulator host arch mismatch')
+    check(receipt.get('sourceCommit') == lock['commit'],
+          'simulator host source commit differs from the tracked pin')
+    check(receipt.get('overlaySHA256') == lock['embeddingOverlay']['sha256'],
+          'simulator host embedding overlay differs from the tracked pin')
+    expected_sources = {name: digest(Path(lock_path).parent / 'FloeOfficeNative' / relative(name))
+                        for name in lock['qualifiedHostArtifact']['hostSourceSHA256']}
+    check(receipt.get('hostSourceSHA256') == expected_sources,
+          'simulator host implementation sources differ from this checkout')
+    scheme = lock.get('schemeTaskLifecycleOverlay')
+    if scheme is not None:
+        provenance = receipt.get('schemeTaskLifecycle') or {}
+        check(provenance.get('patchSHA256') == scheme['sha256']
+              and provenance.get('sourceCommit') == lock['commit']
+              and provenance.get('files') == {name: spec['preparedSHA256']
+                                               for name, spec in scheme['files'].items()},
+              'simulator host scheme overlay provenance mismatch')
+    forwarding = lock.get('forwardingLifecycleOverlay')
+    if forwarding is not None:
+        provenance = receipt.get('forwardingLifecycle') or {}
+        check(provenance.get('patchSHA256') == forwarding['sha256']
+              and provenance.get('sourceCommit') == lock['commit']
+              and provenance.get('files') == {name: spec['preparedSHA256']
+                                               for name, spec in forwarding['files'].items()},
+              'simulator host forwarding overlay provenance mismatch')
+    kit = lock.get('kitCallbackLifecycleOverlay')
+    kit_applied = receipt.get('kitCallbackOverlayApplied')
+    check(isinstance(kit_applied, bool), 'simulator host must record kitCallbackOverlayApplied')
+    check(receipt.get('variant') in ('kit', 'nokit')
+          and kit_applied == (receipt.get('variant') == 'kit'),
+          'simulator host variant contradicts its kit overlay claim')
+    if kit is not None and kit_applied:
+        provenance = receipt.get('kitCallbackLifecycle') or {}
+        check(provenance.get('patchSHA256') == kit['sha256']
+              and provenance.get('sourceCommit') == lock['commit']
+              and provenance.get('files') == {name: spec['preparedSHA256']
+                                               for name, spec in kit['files'].items()},
+              'simulator host kit callback overlay provenance mismatch')
+    staged = receipt.get('stagedEngine') or {}
+    check(bool(staged.get('runID')), 'simulator host staged engine run ID missing')
+    check(staged.get('sourceCommit') == lock['commit'],
+          'simulator host staged engine source differs from the tracked pin')
+    check(bool(staged.get('artifactSHA256')), 'simulator host staged engine artifact hash missing')
+    for field in ('sdkVersion', 'sdkBuildVersion', 'xcodeVersion'):
+        check(bool(receipt.get(field)), f'simulator host {field} missing')
+    for field in ('nativeCompilePassed', 'nativeLinkPassed', 'swiftModuleImportPassed'):
+        check(receipt.get(field) is True, f'simulator host {field} is not true')
+    check((receipt.get('filterOverlay') or {}).get('applied') is False,
+          'simulator host must not apply the device-only filter overlay')
+
+    files = {SIMULATOR_RECEIPT: None,
+             SIMULATOR_FRAMEWORK + '/FloeOfficeNative': receipt.get('executableSHA256')}
+    files.update({SIMULATOR_FRAMEWORK + '/' + str(relative(name)): checksum
+                  for name, checksum in (receipt.get('frameworkAuxiliarySHA256') or {}).items()})
+    files.update({SIMULATOR_RESOURCES + '/' + str(relative(name)): checksum
+                  for name, checksum in (receipt.get('runtimeResourceSHA256') or {}).items()})
+    check(bool(files.get(SIMULATOR_FRAMEWORK + '/FloeOfficeNative')),
+          'simulator host receipt lacks the framework executable hash')
+    directories = {SIMULATOR_RESOURCES + '/' + str(relative(name))
+                   for name in (receipt.get('runtimeResourceDirectories') or [])}
+    for name in list(files) + list(directories):
+        directories.update(str(parent) for parent in relative(name).parents if str(parent) != '.')
+    actual_files = {str(path.relative_to(folder)) for path in entries if path.is_file()}
+    actual_directories = {str(path.relative_to(folder)) for path in entries if path.is_dir()}
+    check(actual_files == set(files), 'simulator host file inventory changed')
+    check(actual_directories == directories, 'simulator host directory inventory changed')
+    if actual_files == set(files):
+        for name, checksum in files.items():
+            if checksum is None:
+                continue
+            if digest(folder / name) != checksum:
+                failures.append('simulator host content checksum mismatch: ' + name)
+    if failures:
+        raise ValueError('Office simulator host verification failed: ' + '; '.join(failures))
+    return {'verifiedFiles': len(actual_files), 'verifiedDirectories': len(actual_directories),
+            'variant': receipt.get('variant'),
+            'kitCallbackOverlayApplied': receipt.get('kitCallbackOverlayApplied'),
+            'stagedEngineRunID': staged.get('runID'),
+            'platform': receipt.get('platform'), 'arch': receipt.get('arch')}
+
+
 def inventory(folder, lock, pin):
     manifest_path = folder / 'native-host.json'
     if manifest_path.is_symlink() or digest(manifest_path) != pin['manifestSHA256']:
@@ -213,16 +328,28 @@ def write_project_inputs(folder, output, project_root=ROOT, lock_path=LOCK):
 
 
 def write_project_configuration(folder, output, project_root=ROOT, lock_path=LOCK):
-    """Use the same verified host for Swift import, linking and resource copy."""
+    """Use the same verified host for Swift import, linking and resource copy.
+
+    Simulator lines previously written by ``office_floe_simulator`` (from an
+    explicitly installed, verified iphonesimulator host) are preserved so the
+    device bootstrap can run in any order without disabling a simulator
+    qualification host.
+    """
     lock, pin = checked_lock(lock_path)
     verify_installed(folder, lock, pin)
     name = str(Path(folder).relative_to(project_root))
     if any(char in name for char in '\n\r$#="') or '//' in name:
         raise ValueError('Office source cannot be represented in an Xcode configuration')
+    preserved = []
     output = Path(output)
+    if output.is_file():
+        for line in output.read_text().splitlines():
+            if line.startswith('FLOE_OFFICE_SIM_HOST_DIR') or line.startswith('FLOE_OFFICE_SIM_LDFLAG'):
+                preserved.append(line)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text('// Generated from the verified native Office qualification pin.\n'
-                      'FLOE_OFFICE_HOST_DIR = $(PROJECT_DIR)/' + name + '\n')
+                      'FLOE_OFFICE_HOST_DIR = $(PROJECT_DIR)/' + name + '\n'
+                      + ('\n'.join(preserved) + '\n' if preserved else ''))
 
 
 def main():

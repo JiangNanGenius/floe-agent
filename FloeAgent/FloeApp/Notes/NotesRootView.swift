@@ -171,6 +171,8 @@ struct NotesRootView: View {
                 #if DEBUG
                 await NotesOfficeThumbnailFixture.seedIfRequested(session: session)
                 await OfficeWorkspaceStageFixture.seedIfRequested(environment: environment)
+                // Real-engine cloud simulator qualification fixture (office-floe-simulator).
+                await OfficeRealEngineQualificationFixture.seedIfRequested(session: session)
                 #endif
             }
         }

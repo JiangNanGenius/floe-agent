@@ -95,13 +95,23 @@ def qualification_project(project, linker_list, minimum_ios, frameworks):
     return project
 
 
-def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
+def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK, sdk='iphoneos'):
+    """Compile/link the pinned Mobile UI for one Apple platform SDK.
+
+    The device qualification keeps the pinned ``iphoneos`` behaviour. The
+    cloud Floe-simulator qualification passes ``sdk='iphonesimulator'`` to
+    compile the same overlay-prepared sources against a staged simulator
+    engine; every receipt then records the SDK it actually built for.
+    """
     root, destination = Path(root).resolve(), Path(destination).resolve()
     if destination.exists():
         raise ValueError("Use a new output directory; previous build evidence is preserved")
+    if sdk not in {'iphoneos', 'iphonesimulator'}:
+        raise ValueError(f'Unsupported Office qualification SDK: {sdk}')
     lock = json.loads(Path(lock_path).read_text())
     destination.mkdir(parents=True)
     report = {"sourceCommit": lock["commit"], "overlaySHA256": lock["embeddingOverlay"]["sha256"],
+              "sdk": sdk, "arch": "arm64",
               "nativeCompilePassed": False, "nativeLinkPassed": False,
               "embeddedEditorPassed": False, "deviceRoundtripPassed": False,
               "pptxVisibleRenderPassed": False, "originalFileWritebackPassed": False,
@@ -156,7 +166,7 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     project_path.write_bytes(plistlib.dumps(project))
     report["projectSHA256"] = digest(project_path)
     command = ["xcodebuild", "-project", str(project_path.parent), "-target", "Mobile",
-        "-configuration", "Release", "-sdk", "iphoneos", "-jobs", "2",
+        "-configuration", "Release", "-sdk", sdk, "-jobs", "2",
         "-resultBundlePath", str(destination / "Mobile.xcresult"),
         "ARCHS=arm64", "ONLY_ACTIVE_ARCH=YES", "CODE_SIGNING_ALLOWED=NO",
         "COMPILER_INDEX_STORE_ENABLE=NO", "LOSRCDIR=" + str(source / "engine"),
@@ -172,7 +182,7 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     with (destination / "xcodebuild.log").open("w") as output:
         result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT)
     report["exitCode"] = result.returncode
-    executable = destination / "products/Release-iphoneos/Mobile.app/Mobile"
+    executable = destination / f"products/Release-{sdk}/Mobile.app/Mobile"
     report["nativeCompilePassed"] = result.returncode == 0 and executable.is_file()
     report["nativeLinkPassed"] = report["nativeCompilePassed"]
     report["stage"] = "built" if report["nativeLinkPassed"] else "failed"

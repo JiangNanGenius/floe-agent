@@ -28,6 +28,13 @@ REPO_ROOT = SCRIPT_DIR.parent.parent
 SWIFT_IMPORT_PROBE = SCRIPT_DIR / "fixtures" / "office_native_host_api.swift"
 HOST_PUBLIC_HEADER = HOST / (NAME + ".h")
 SWIFT_IMPORT_TARGET = "arm64-apple-ios26.0"
+# The cloud Floe-simulator qualification type-checks the same probe against
+# the iphonesimulator SDK; the triple must name the simulator environment or
+# the probe would type-check against device UIKit declarations only.
+SWIFT_IMPORT_TARGET_BY_SDK = {
+    'iphoneos': 'arm64-apple-ios26.0',
+    'iphonesimulator': 'arm64-apple-ios26.0-simulator',
+}
 EXCLUDED_SOURCES = {"main.m", "AppDelegate.mm", "SceneDelegate.mm",
     "DocumentBrowserViewController.mm", "TemplateCollectionViewController.mm", "TemplateSectionHeaderView.m"}
 SYSTEM_FRAMEWORKS = ('UIKit', 'Foundation', 'CoreFoundation', 'CoreGraphics', 'CoreText', 'Security')
@@ -111,7 +118,7 @@ def framework_project(project, host_directory):
     return project
 
 
-def verify_swift_import_probe(*, sdk=None):
+def verify_swift_import_probe(*, sdk=None, platform_sdk='iphoneos'):
     """Type-check the *generated* import probe against the real public header.
 
     This is the same Swift-import gate the cloud build runs after linking the
@@ -126,14 +133,21 @@ def verify_swift_import_probe(*, sdk=None):
     ``NSDictionary<NSString *, id> *``, which Swift imports as ``[String: Any]?``
     — and proves every other referenced host API still resolves. This never
     links an engine and never grants a release capability.
+
+    ``platform_sdk`` selects the Apple platform SDK (``iphoneos`` pinned
+    default, ``iphonesimulator`` for the cloud Floe-simulator qualification)
+    and with it the probe target triple; ``sdk`` may still override the SDK
+    *path* explicitly as before.
     """
     header = HOST_PUBLIC_HEADER
     if not header.is_file():
         raise FileNotFoundError(f'missing host public header: {header}')
     if not SWIFT_IMPORT_PROBE.is_file():
         raise FileNotFoundError(f'missing Swift import probe: {SWIFT_IMPORT_PROBE}')
+    if platform_sdk not in SWIFT_IMPORT_TARGET_BY_SDK:
+        raise ValueError(f'Unsupported Swift import probe platform SDK: {platform_sdk}')
     if sdk is None:
-        sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
+        sdk = subprocess.check_output(['xcrun', '--sdk', platform_sdk, '--show-sdk-path'],
                                       text=True).strip()
     modulemap = ('framework module ' + NAME + ' {\n'
                  '  umbrella header "' + NAME + '.h"\n'
@@ -147,7 +161,8 @@ def verify_swift_import_probe(*, sdk=None):
         probe = Path(temporary) / 'ImportProbe.swift'
         shutil.copyfile(SWIFT_IMPORT_PROBE, probe)
         command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk,
-                   '-target', SWIFT_IMPORT_TARGET, '-F', str(framework.parent), str(probe)]
+                   '-target', SWIFT_IMPORT_TARGET_BY_SDK[platform_sdk],
+                   '-F', str(framework.parent), str(probe)]
         result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
         raise AssertionError('generated ImportProbe does not match the Swift-imported host API:\n'
@@ -156,7 +171,8 @@ def verify_swift_import_probe(*, sdk=None):
         'swiftImportProbe': str(SWIFT_IMPORT_PROBE.relative_to(REPO_ROOT)),
         'swiftProbeSHA256': digest(SWIFT_IMPORT_PROBE),
         'hostHeaderSHA256': digest(header),
-        'swiftImportTarget': SWIFT_IMPORT_TARGET,
+        'swiftImportTarget': SWIFT_IMPORT_TARGET_BY_SDK[platform_sdk],
+        'platformSDK': platform_sdk,
         'swiftImportProbeCompiled': True,
         # A type-check of a header-only module is not an engine/device result.
         'engineVisibleRenderPassed': False,
@@ -164,9 +180,27 @@ def verify_swift_import_probe(*, sdk=None):
     }
 
 
-def build_host(root, output, *, build=True, filter_overlay=None):
+def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
+               lock_path=DEFAULT_LOCK):
+    """Build the Floe native Office framework for one Apple platform SDK.
+
+    The pinned device qualification keeps the ``iphoneos`` default. The cloud
+    Floe-simulator qualification passes ``sdk='iphonesimulator'`` against a
+    staged simulator engine; the receipt then records the SDK, the products
+    path and the Swift-import triple it actually used. The xlsx chart/filter
+    overlay stays a device-only input and is never applied to a simulator
+    host (its replacement archives are device objects).
+
+    ``lock_path`` selects the overlay lock the build prepares and reports
+    against. The cloud before/after diagnostic passes a lock copy without the
+    kit callback overlay to build the unpatched variant from the same staged
+    engine; the pinned device flow always uses the tracked default lock.
+    """
+    if sdk not in SWIFT_IMPORT_TARGET_BY_SDK:
+        raise ValueError(f'Unsupported native host SDK: {sdk}')
+    lock_path = Path(lock_path).resolve()
     root, output = Path(root).resolve(), Path(output).resolve()
-    base = qualify(root, output, build=False)
+    base = qualify(root, output, build=False, sdk=sdk, lock_path=lock_path)
     report = {**base, 'kind': 'Floe native framework qualification', 'target': NAME,
               'stage': 'prepare-host', 'hostCompilePassed': False,
               'hostLinkPassed': False, 'swiftModuleImportPassed': False,
@@ -177,7 +211,7 @@ def build_host(root, output, *, build=True, filter_overlay=None):
     # Provenance of the scheme lifecycle overlay carried in the produced host:
     # an older host (absent block) cannot satisfy a new-overlay claim, and
     # bootstrap_office_host enforces it once the host pin records the hash.
-    lock = json.loads(DEFAULT_LOCK.read_text())
+    lock = json.loads(lock_path.read_text())
     scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
     if scheme_overlay is not None:
         report['schemeTaskLifecycle'] = {
@@ -241,12 +275,11 @@ def build_host(root, output, *, build=True, filter_overlay=None):
     save()
     if not build:
         return report
-    lock = json.loads(DEFAULT_LOCK.read_text())
     if shutil.disk_usage(output).free < lock['buildReserveGiB'] * 1024**3:
         raise RuntimeError('Native host build stopped at disk reserve')
     with (output / 'native-host-build.log').open('w') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
-    framework = output / ('products/Release-iphoneos/' + NAME + '.framework')
+    framework = output / (f'products/Release-{sdk}/' + NAME + '.framework')
     executable = framework / NAME
     passed = result.returncode == 0 and executable.is_file()
     report.update(exitCode=result.returncode, hostCompilePassed=passed, hostLinkPassed=passed,
@@ -289,7 +322,7 @@ def build_host(root, output, *, build=True, filter_overlay=None):
     merged, merge_facts = merge_font_config(coolkit.read_bytes())
     coolkit.write_bytes(merged)
     report['fontSubstitutionConfig'] = {
-        'overlaySHA256': digest(DEFAULT_LOCK.parent / 'FloeOfficeFontSubstitutions.xcu'),
+        'overlaySHA256': digest(lock_path.parent / 'FloeOfficeFontSubstitutions.xcu'),
         'aliases': len(structural['aliases']),
         'locales': structural['locales'],
         'aliasOverrides': len(structural['aliasOverrides']),
@@ -308,11 +341,12 @@ def build_host(root, output, *, build=True, filter_overlay=None):
         for path in sorted(resources.rglob('*')) if path.is_dir()]
     report['stage'] = 'host-packaged'
     save()
-    sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
+    sdk_path = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-path'], text=True).strip()
     probe = output / 'ImportProbe.swift'
     shutil.copyfile(SWIFT_IMPORT_PROBE, probe)
     report['swiftProbeSHA256'] = digest(probe)
-    module_command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk, '-target', SWIFT_IMPORT_TARGET,
+    module_command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk_path,
+        '-target', SWIFT_IMPORT_TARGET_BY_SDK[base['sdk']],
         '-F', str(framework.parent), str(probe)]
     with (output / 'swift-import.log').open('w') as log:
         result = subprocess.run(module_command, stdout=log, stderr=subprocess.STDOUT)

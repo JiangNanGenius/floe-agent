@@ -1402,6 +1402,26 @@ final class AppEnvironment: ObservableObject {
             // 30s deadline with a visible spinner — so chat-only usage never
             // installs the handler. Office on-demand prepare is unchanged.
             #if canImport(FloeOfficeNative)
+            // Trace guard for the cloud simulator qualification: one durable,
+            // content-free breadcrumb proving the genuine FloeOfficeNative
+            // framework was linked into this process before any document
+            // opened. A build without the framework never records it, so the
+            // gate can never mistake a stub run for the real engine.
+            Task { @MainActor in
+                OfficeStageRecorder.shared.record(
+                    session: "app-launch",
+                    generation: 0,
+                    stage: "engine.linked",
+                    detail: [
+                        "simulator": {
+                            #if targetEnvironment(simulator)
+                            return "true"
+                            #else
+                            return "false"
+                            #endif
+                        }(),
+                    ])
+            }
             if !ProcessInfo.processInfo.isLowPowerModeEnabled,
                UserDefaults.standard.bool(forKey: "office.prewarm.enabled") {
                 Task { @MainActor in

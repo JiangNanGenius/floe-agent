@@ -1,0 +1,413 @@
+name: Office real Floe simulator qualification
+# Full Floe-app acceptance for the real native Office engine on the cloud
+# iPad simulator. The heavy iphonesimulator engine is built ONCE by the
+# office-real-simulator workflow (build-stage job); this workflow consumes its
+# office-real-simulator-engine artifact from an explicit run ID and never
+# rebuilds the core engine.
+#
+# Flow:
+#   simulator-native-host: restore + verify the staged engine (whole-hash,
+#     source/platform/arch/toolchain gates), apply every current native
+#     overlay (embedding -> scheme -> forwarding -> kit callback) and compile
+#     the genuine FloeOfficeNative.framework for iphonesimulator. The
+#     `kit_overlay` input selects the patched host, the unpatched before/after
+#     diagnostic host, or both (two hosts, one core engine).
+#     floe-app-qualification (one matrix cell per variant, each on its OWN
+#     freshly created task-owned iPad simulator): install the verified host
+#     into Vendor/Office, regenerate the project, build the REAL Floe app and
+#     OfficeRealEngineUITests for the iPad simulator, then drive ONE imported
+#     pinned synthetic PPTX through the App's real Notes entry policy: import
+#     -> first-entry read-only preview -> real host Edit (the preview native
+#     closes and a NEW editable generation mounts) -> insert slide -> idle
+#     120 s -> save/close -> remembered reopen #1 (prepare() auto-drives the
+#     editable generation) -> insert slide -> save/close -> remembered
+#     reopen #2 (its own editable generation paints) -> verify the persisted
+#     four-slide document -> save/close. A build without the engine or a
+#     missing fixture fails the test outright (the stage-only baseline
+#     belongs to OfficeSimulatorStageUITests). Gates (all fail closed):
+#     * typed receipt + named frames resolved from the xcresult attachment
+#       MANIFEST (export names are GUIDs, never assumed to match attachment
+#       names), with containment/symlink/duplicate validation;
+#     * durable App stage trace: real engine.linked, one painted preview ->
+#       edit handoff plus two same-document save/close/reopen chains, each
+#       editable generation with its own mount+paint+ack+save, revision
+#       continuity, and no failure stage;
+#     * pixel analysis of the real simulator frames' DOCUMENT region (chrome
+#       alone never passes; fixture markers must be in the content area);
+#     * persistence: the content-addressed Notes resource the save committed
+#       (valid PPTX, seeded 2 + 2 inserted slides, marker text, changed hash);
+#     * system logs and crash reports retained. The created simulator is shut
+#       down and deleted only after evidence is collected; existing devices
+#       are never touched.
+on:
+  workflow_dispatch:
+    inputs:
+      base_engine_run_id:
+        description: 'Completed office-real-simulator build-stage run ID whose office-real-simulator-engine artifact is reused (the core engine is never rebuilt here)'
+        type: string
+        default: '36704184429'
+      kit_overlay:
+        description: 'Kit runtime overlay variant to qualify (nokit is the before/after diagnostic from the same staged engine)'
+        type: choice
+        options:
+          - kit
+          - nokit
+          - both
+        default: kit
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: office-floe-simulator
+  cancel-in-progress: false
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+  PYTHONDONTWRITEBYTECODE: '1'
+  FIXTURE_SHA256: 4b8ab9081859526bd019323f4b08e1d109f6a4ffa5deb43b71631f3da049fff5
+
+jobs:
+  simulator-native-host:
+    runs-on: xcode-27
+    timeout-minutes: 300
+    outputs:
+      variants: ${{ steps.variants.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve variants
+        id: variants
+        run: |
+          case "${{ inputs.kit_overlay }}" in
+            kit)  matrix='["kit"]' ;;
+            nokit) matrix='["nokit"]' ;;
+            both) matrix='["kit","nokit"]' ;;
+            *) echo "unknown kit_overlay '${{ inputs.kit_overlay }}'" >&2; exit 1 ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight disk and SDK
+        run: |
+          set -o pipefail
+          df -h "$RUNNER_TEMP" | tee "$RUNNER_TEMP/disk-preflight.log"
+          xcrun --sdk iphonesimulator --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      - name: Restore and verify the staged engine (per variant)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ steps.variants.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          for variant in $(python3 -c 'import json,os;print(" ".join(json.loads(os.environ["MATRIX"])))'); do
+            echo "=== restore for variant $variant ==="
+            python3 FloeAgent/scripts/office_floe_simulator/restore_staged_engine.py \
+              --run-id "${{ inputs.base_engine_run_id }}" \
+              --staged "$RUNNER_TEMP/staged-$variant" \
+              --restored "$RUNNER_TEMP/restored-$variant" \
+              --output "$RUNNER_TEMP/restore-$variant.json"
+          done
+
+      - name: Build the genuine FloeOfficeNative framework for iphonesimulator (per variant)
+        run: |
+          set -euo pipefail
+          for variant in $(python3 -c 'import json,os;print(" ".join(json.loads(os.environ["MATRIX"])))'); do
+            echo "=== host build for variant $variant ==="
+            python3 FloeAgent/scripts/office_floe_simulator/build_simulator_framework.py \
+              --restored "$RUNNER_TEMP/restored-$variant" \
+              --output "$RUNNER_TEMP/simhost-$variant" \
+              --variant "$variant" \
+              --base-run-id "${{ inputs.base_engine_run_id }}" \
+              --github-run-id "$GITHUB_RUN_ID"
+          done
+        env:
+          MATRIX: ${{ steps.variants.outputs.matrix }}
+
+      - name: Preserve the simulator native host artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-floe-simulator-host
+          path: |
+            ${{ runner.temp }}/simhost-*/OfficeNativeHostSimulator.zip
+            ${{ runner.temp }}/simhost-*/package-manifest.json
+            ${{ runner.temp }}/simhost-*/native-host-build-report.json
+            ${{ runner.temp }}/restore-*.json
+            ${{ runner.temp }}/disk-preflight.log
+          if-no-files-found: error
+          retention-days: 14
+
+  floe-app-qualification:
+    needs: simulator-native-host
+    if: ${{ !cancelled() && needs.simulator-native-host.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.simulator-native-host.outputs.variants) }}
+    runs-on: xcode-27
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download the verified simulator native host
+        uses: actions/download-artifact@v4
+        with:
+          name: office-floe-simulator-host
+          path: ${{ runner.temp }}/simhost
+
+      - name: Install the simulator Office host and enable simulator linking
+        run: |
+          set -o pipefail
+          zip="$RUNNER_TEMP/simhost/simhost-${{ matrix.variant }}/OfficeNativeHostSimulator.zip"
+          test -f "$zip"
+          python3 FloeAgent/scripts/office_floe_simulator/install_simulator_host.py \
+            --zip "$zip" --repo-root "$GITHUB_WORKSPACE"
+
+      - name: Prepare pinned native components and generate the project
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          brew install xcodegen automake cmake
+          cd FloeAgent
+          python3 scripts/test_office_host_bootstrap.py
+          python3 scripts/test_office_app_load_chain.py
+          bash scripts/bootstrap_native_components.sh
+          python3 scripts/audit_native_runtime_free.py --project
+
+      - name: Restore bundled font cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            FloeAgent/Vendor/Fonts/downloads
+            FloeAgent/FloeApp/Resources/Fonts/Bundled
+          key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
+
+      - name: Fetch and verify bundled fonts
+        run: |
+          cd FloeAgent
+          python3 scripts/fonts/fetch_fonts.py --check || {
+            python3 scripts/fonts/fetch_fonts.py
+            python3 scripts/fonts/fetch_fonts.py --check
+          }
+
+      - name: Verify the committed synthetic fixture is the pinned deterministic file
+        run: |
+          set -o pipefail
+          actual=$(shasum -a 256 FloeAgent/Tests/FloeAgentUITests/floe-sim-qual.pptx | awk '{print $1}')
+          test "$actual" = "$FIXTURE_SHA256"
+
+      - name: Regenerate the simulator project
+        run: |
+          set -o pipefail
+          cd FloeAgent
+          cat Vendor/Office/native-host.xcconfig
+          xcodegen generate
+
+      - name: Build the real Floe app and the real-engine UITests
+        id: build
+        run: |
+          set -o pipefail
+          cd FloeAgent
+          xcodebuild -downloadComponent MetalToolchain
+          xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/FloeSimBuild" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO \
+            -only-testing:FloeAgentUITests/OfficeRealEngineUITests \
+            build-for-testing 2>&1 | tee "$RUNNER_TEMP/floe-sim-build.log"
+
+      - name: Discover the exact app, xctestrun and UITest runner identity
+        id: products
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_real_simulator/discover_products.py \
+            "$RUNNER_TEMP/FloeSimBuild/Build/Products" \
+            --bundle-id org.floeagent.ios \
+            --receipt "$RUNNER_TEMP/products-receipt.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Provision a unique task-owned iPad simulator
+        id: simulator
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_floe_simulator/provision_owned_simulator.py \
+            --sdk-major 27 --run-id "$GITHUB_RUN_ID" --variant "${{ matrix.variant }}" \
+            --output "$RUNNER_TEMP/owned-simulator-${{ matrix.variant }}.json" \
+            | tee "$RUNNER_TEMP/owned-simulator-${{ matrix.variant }}.log"
+          simulator=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["udid"])' \
+            "$RUNNER_TEMP/owned-simulator-${{ matrix.variant }}.json")
+          echo "SIMULATOR=$simulator" >> "$GITHUB_ENV"
+          echo "udid=$simulator" >> "$GITHUB_OUTPUT"
+          echo "Provisioned task-owned iPad simulator: $simulator"
+
+      - name: Run the real import/preview/edit/idle/save/reopen scenario
+        id: scenario
+        timeout-minutes: 60
+        run: |
+          set -o pipefail
+          xctestrun="${{ steps.products.outputs.xctestrun_path }}"
+          test -n "$xctestrun"
+          test -f "$xctestrun"
+          date +%s > "$RUNNER_TEMP/scenario-start.epoch"
+          xcrun simctl io "$SIMULATOR" recordVideo --codec h264 \
+            "$RUNNER_TEMP/scenario-${{ matrix.variant }}.mp4" & echo $! > "$RUNNER_TEMP/video.pid"
+          set +e
+          python3 FloeAgent/scripts/run_test_with_diagnostics.py \
+            --output-dir "$RUNNER_TEMP/runtime-diagnostics" \
+            --timeout 2400 --stall-timeout 600 --startup-stall-timeout 600 \
+            --simulator-id "$SIMULATOR" -- \
+            xcodebuild -skipPackagePluginValidation -skipMacroValidation \
+            -xctestrun "$xctestrun" \
+            -destination "platform=iOS Simulator,id=$SIMULATOR" \
+            -resultBundlePath "$RUNNER_TEMP/office-floe-simulator-${{ matrix.variant }}.xcresult" \
+            -collect-test-diagnostics never \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 1800 \
+            -only-testing:FloeAgentUITests/OfficeRealEngineUITests \
+            CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "$RUNNER_TEMP/scenario.log"
+          rc=${PIPESTATUS[0]}
+          kill "$(cat "$RUNNER_TEMP/video.pid")" 2>/dev/null || true
+          wait 2>/dev/null || true
+          exit "$rc"
+
+      - name: Export attachments and resolve the receipt + named frames from the manifest
+        if: always()
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/attachments" "$RUNNER_TEMP/curated"
+          if test -d "$RUNNER_TEMP/office-floe-simulator-${{ matrix.variant }}.xcresult"; then
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/office-floe-simulator-${{ matrix.variant }}.xcresult" \
+              --output-path "$RUNNER_TEMP/attachments"
+          else
+            echo "result bundle missing" >&2
+            exit 1
+          fi
+          python3 FloeAgent/scripts/office_floe_simulator/resolve_attachments.py \
+            --attachments "$RUNNER_TEMP/attachments" \
+            --output "$RUNNER_TEMP/curated" \
+            --simulator "$SIMULATOR" \
+            --runner-bundle-id "${{ steps.products.outputs.runner_bundle_id }}" \
+            --report "$RUNNER_TEMP/attachment-resolution.json"
+          ls -la "$RUNNER_TEMP/curated"
+
+      - name: Pull the durable App trace and persistence evidence from the container
+        if: always()
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          container="$(xcrun simctl get_app_container "$SIMULATOR" org.floeagent.ios data 2>/dev/null || true)"
+          if test -z "$container"; then
+            echo "app container unavailable on $SIMULATOR" \
+              | tee "$RUNNER_TEMP/evidence/container-unavailable.log" >&2
+            exit 1
+          fi
+          echo "$container" > "$RUNNER_TEMP/evidence/container.path"
+          support="$container/Library/Application Support/FloeAgent"
+          cp "$support/OfficeDiagnostics/office-stage.jsonl" \
+            "$RUNNER_TEMP/evidence/office-stage.jsonl"
+          cp "$support/OfficeDiagnostics/office-real-engine-import.json" \
+            "$RUNNER_TEMP/evidence/office-real-engine-import.json"
+          if test -d "$support/Notes/Resources"; then
+            find "$support/Notes/Resources" -maxdepth 1 -type f -exec cp {} "$RUNNER_TEMP/evidence/" \;
+          else
+            echo "Notes Resources directory missing" >&2
+            exit 1
+          fi
+          ls "$RUNNER_TEMP/evidence"
+
+      - name: Collect Office system logs and crash reports
+        if: always()
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          xcrun simctl spawn "$SIMULATOR" log show --last 45m --style compact \
+            --predicate 'eventMessage CONTAINS "[FloeOfficeStage]" OR eventMessage CONTAINS "[FloeOffice]"' \
+            > "$RUNNER_TEMP/evidence/office-system.log" 2>&1 || true
+          reports="$HOME/Library/Logs/DiagnosticReports"
+          if test -d "$reports"; then
+            find "$reports" -maxdepth 1 -name 'Floe Agent*' -mmin -60 \
+              -exec cp {} "$RUNNER_TEMP/evidence/" \; || true
+          fi
+
+      - name: Gate - durable App stage trace (native render, edit ack, save)
+        if: always()
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_floe_simulator/verify_real_engine_trace.py \
+            "$RUNNER_TEMP/evidence/office-stage.jsonl" \
+            --receipt "$RUNNER_TEMP/curated/office-real-engine-receipt.json" \
+            --fixture-sha256 "$FIXTURE_SHA256" \
+            --output "$RUNNER_TEMP/gates/trace-gate.json"
+
+      - name: Gate - real rendered frames (document-region pixel analysis)
+        if: always()
+        run: |
+          set -o pipefail
+          python3 -m venv "$RUNNER_TEMP/office-python"
+          "$RUNNER_TEMP/office-python/bin/pip" install pillow==11.3.0
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_floe_simulator/check_floe_render.py \
+            "$RUNNER_TEMP/curated" \
+            --output "$RUNNER_TEMP/gates/render-gate.json"
+
+      - name: Gate - saved Notes resource persisted the edits
+        if: always()
+        run: |
+          set -o pipefail
+          container="$(xcrun simctl get_app_container "$SIMULATOR" org.floeagent.ios data 2>/dev/null || true)"
+          test -n "$container"
+          python3 FloeAgent/scripts/office_floe_simulator/check_saved_document.py \
+            "$container/Library/Application Support/FloeAgent/Notes/Resources" \
+            --import-receipt "$RUNNER_TEMP/evidence/office-real-engine-import.json" \
+            --output "$RUNNER_TEMP/gates/persistence-gate.json"
+
+      - name: Preserve the full qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-floe-simulator-${{ matrix.variant }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/gates
+            ${{ runner.temp }}/curated
+            ${{ runner.temp }}/attachments/manifest.json
+            ${{ runner.temp }}/attachment-resolution.json
+            ${{ runner.temp }}/products-receipt.json
+            ${{ runner.temp }}/owned-simulator-${{ matrix.variant }}.json
+            ${{ runner.temp }}/owned-simulator-${{ matrix.variant }}.log
+            ${{ runner.temp }}/owned-simulator-release-${{ matrix.variant }}.json
+            ${{ runner.temp }}/scenario.log
+            ${{ runner.temp }}/floe-sim-build.log
+            ${{ runner.temp }}/scenario-${{ matrix.variant }}.mp4
+            ${{ runner.temp }}/evidence
+            ${{ runner.temp }}/runtime-diagnostics
+            ${{ runner.temp }}/office-floe-simulator-${{ matrix.variant }}.xcresult
+            FloeAgent/Vendor/Office/native-host.xcconfig
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Release the task-owned simulator (own device only)
+        if: always()
+        run: |
+          set -o pipefail
+          receipt="$RUNNER_TEMP/owned-simulator-${{ matrix.variant }}.json"
+          if test -f "$receipt"; then
+            # Evidence, logs and the app container were pulled above first.
+            python3 FloeAgent/scripts/office_floe_simulator/release_owned_simulator.py \
+              --receipt "$receipt" --allow-missing \
+              | tee "$RUNNER_TEMP/owned-simulator-release-${{ matrix.variant }}.json"
+          else
+            echo "no owned-simulator provisioning receipt; nothing to release"
+          fi

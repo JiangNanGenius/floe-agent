@@ -295,6 +295,20 @@ targets:
           - $(inherited)
           - -framework
           - FloeOfficeNative
+        # Real Office on the simulator is opt-in per build: only when a verified
+        # iphonesimulator host was explicitly installed (the generated
+        # Vendor/Office/native-host.xcconfig sets these variables) does the
+        # simulator link FloeOfficeNative. Normal simulator builds leave both
+        # variables undefined/empty, canImport(FloeOfficeNative) stays false and
+        # every Office surface keeps its honest no-engine state.
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]":
+          - $(inherited)
+          - $(FLOE_OFFICE_SIM_HOST_DIR)
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]":
+          - -framework
+          - CPDFium
+          - $(FLOE_OFFICE_SIM_LDFLAG)
+          - $(inherited)
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG

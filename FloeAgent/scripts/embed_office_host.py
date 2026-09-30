@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Copy the verified native Office product into Floe's generated device app."""
+"""Copy the verified native Office product into Floe's generated app.
+
+Device builds embed the pinned ``iphoneos`` host (unchanged pinned flow).
+Simulator builds embed the verified ``iphonesimulator`` host only when one was
+explicitly installed (``FLOE_OFFICE_SIM_HOST_DIR``); otherwise they keep the
+long-standing honest skip. Both paths re-verify every pinned hash at build
+time — embedding never trusts the presence of a directory alone.
+"""
 import json
 import os
 from pathlib import Path
 import plistlib
 import shutil
 import subprocess
-from bootstrap_office_host import ROOT, LOCK, FRAMEWORK, checked_lock, verify_installed
+from bootstrap_office_host import (ROOT, LOCK, FRAMEWORK, checked_lock,
+                                   verify_installed, verify_simulator_host)
 from office_font_config import (BEGIN_MARK, language_packaging_failures,
                                 language_resource_report, validate_merged_config)
 
@@ -130,8 +138,57 @@ def embed(source, app, lock_path=LOCK, *, signing_identity=None):
             'runtimeOpened': False, 'deviceRoundtripPassed': False}
 
 
+def embed_simulator(source, app):
+    """Embed the verified iphonesimulator Office host into the simulator app.
+
+    The simulator host carries its own receipt and pin gates
+    (``bootstrap_office_host.verify_simulator_host``); the device pin and the
+    device host are never consulted here. Simulator bundles are not code
+    signed, so no signing step runs on this path.
+    """
+    source, app = Path(source), Path(app)
+    verified = verify_simulator_host(source, LOCK)
+    if app.is_symlink() or app.suffix != '.app':
+        raise ValueError('Office simulator embedding requires a generated Floe app bundle')
+    info = plistlib.loads((app / 'Info.plist').read_bytes())
+    if info.get('CFBundleIdentifier') != 'org.floeagent.ios':
+        raise ValueError('Office simulator embedding destination is not Floe')
+    resources = source / 'OfficeRuntimeResources'
+    outputs = [(source / FRAMEWORK, app / 'Frameworks' / FRAMEWORK)]
+    outputs += [(path, app / path.name) for path in sorted(resources.iterdir())]
+    for _, target in outputs:
+        if target.is_symlink() or any(parent.is_symlink() for parent in target.parents if parent != app and parent.is_relative_to(app)):
+            raise ValueError('Office simulator app output contains an unexpected alias')
+    for original, target in outputs:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+        if original.is_dir():
+            shutil.copytree(original, target)
+        else:
+            shutil.copy2(original, target)
+    framework = app / 'Frameworks' / FRAMEWORK
+    (framework / 'FloeOfficeNative').chmod(0o755)
+    bundled_fonts = embed_bundled_fonts(app)
+    payload = verify_font_and_language_payload(app, resources)
+    return {**verified, 'embeddedFramework': True, 'signedFramework': False,
+            'simulatorHost': True, 'bundledFonts': bundled_fonts, **payload,
+            'runtimeOpened': False, 'deviceRoundtripPassed': False}
+
+
 def main():
-    if os.environ.get('PLATFORM_NAME') != 'iphoneos':
+    platform_name = os.environ.get('PLATFORM_NAME')
+    if platform_name == 'iphonesimulator':
+        host_dir = os.environ.get('FLOE_OFFICE_SIM_HOST_DIR', '').strip()
+        if not host_dir:
+            print('Native Office simulator host not installed; simulator embedding skipped')
+            return
+        app = Path(os.environ['TARGET_BUILD_DIR']) / os.environ['WRAPPER_NAME']
+        print(json.dumps(embed_simulator(Path(host_dir), app), indent=2))
+        return
+    if platform_name != 'iphoneos':
         print('Native Office has no Simulator slice; device embedding skipped')
         return
     _, pin = checked_lock(LOCK)

@@ -4,9 +4,11 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前已交付内部构建：1.7.0（230）**。不可变标签 [`v1.7.0-beta.87`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87) 固定源码 `06c15e35`；[发布记录](TESTFLIGHT_1.7.0_BETA.md)分别记录云端构建、IPA、Apple 处理及私有 Floe QA 可安装状态。最新设备反馈仍报告 PPT/Excel 无法打开、Word 中文字体异常和本地模型无回复；这些不能标为真机验收通过。
+**当前已交付内部构建：1.7.0（239）**。不可变标签 [`v1.7.0-beta.98`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.98) 固定源码 `e03ce0e71f189e261f84e8f8a1cc1cbbaad0cbea`；TestFlight 私有 Floe QA、GitHub 预发布和 Feather 已交付，当前与回滚 238 的 IPA 已核验保留。交付不等于设备验收：PPT 编辑闪退和本地模型搜索仍有反馈；中文 Office 字体用户已确认正常。
 
-**Build 231 候选修复，尚未交付**：[Office 打开与字体](FLOE_231_OFFICE_REPAIR.md)、[本地模型回复与首条消息导航](FLOE_231_MLX_REPAIR.md)、[Linux 生命周期工具](FLOE_231_LINUX_LIFECYCLE.md)。Office 原生宿主已云端重建并校验固定产物；本地模型续答解析修复通过组件测试与云端 macOS 真实权重两轮工具回执验证，iPad 仍待验收。双核启动与 Guest 软重启仍未完成，不能把工具入口存在视作底层能力可用。
+**Build240 候选，尚未发布**：[反馈修复与真实 Office 云模拟器验证](FLOE_240_FEEDBACK_REPAIR.md)。Linux 安装/运行状态与实际启动镜像资格、搜索网络边界、上下文显示已审查；新 Office 原生宿主已核验固定。真实 Xcode 模拟器引擎正在编译，随后安装实际 Floe App 完成 PPT 编辑、静置和保存重开；不能把宿主或受控测试当成 PPT 真机通过。
+
+**历史 Build231 修复记录**：[Office 打开与字体](FLOE_231_OFFICE_REPAIR.md)、[本地模型回复与首条消息导航](FLOE_231_MLX_REPAIR.md)、[Linux 生命周期工具](FLOE_231_LINUX_LIFECYCLE.md)。其中结果属于当时源码与验证范围，当前状态以上面的候选记录为准。
 
 **历史内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
