@@ -2995,9 +2995,33 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // a quoted sample can never be promoted into a required invocation.
         // The classifier itself rejects explanatory prose, how-to questions
         // and negations.
+        // A curated live-web search turn must produce a real `web.search`
+        // receipt: an assistant reply that only renders the call as fenced
+        // JSON leaves nothing executable (fenced lines are samples, never
+        // commands), so no receipt can exist and the prose would stand as a
+        // fabricated answer. Requiring the invocation when the curated policy
+        // classified the turn as a live-web search AND `web.search` is in the
+        // presented set lets the bounded repair name the canonical tool, and
+        // an unparseable attempt fails honestly instead. Definitional and
+        // capability questions keep the informational path: they carry no
+        // execution cue, and the inventory gate matches the fuzzy-action
+        // branch.
+        // Definitional/explanatory questions carry no execution cue (unlike
+        // the fuzzy-action branch, which requires an action verb first), so
+        // they must keep the ordinary conversational path.
+        let asksForDefinitionOrExplanation = containsAny(commandText, [
+            "什么是", "是什么", "什么意思", "什么叫", "如何理解", "怎么理解",
+            "为什么", "为何物", "explain what", "what is", "what are",
+            "what does", "why is", "why are", "how does", "meaning of"
+        ])
+        let webSearchInvocationRequired = searchRequested
+            && !asksForDefinitionOrExplanation
+            && selectedTools.contains(where: { $0.name == LocalModelToolPolicy.webSearchToolName })
+            && (!inventoryRequested || explicitToolExecutionRequested)
         let requiredInvocation = request.toolResults.isEmpty && (
             (fuzzyActionRequested && (!inventoryRequested || explicitToolExecutionRequested))
             || namedToolExecutionRequested
+            || webSearchInvocationRequired
         )
         let invocationPriority: String
         if requiredInvocation, !selectedTools.isEmpty {

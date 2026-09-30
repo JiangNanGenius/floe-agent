@@ -75,9 +75,13 @@ enum RunStateLocalizer {
         }
     }
 
-    /// Whether the state name is terminal (completed or failed).
+    /// Whether the state name is terminal. `checkpointed` is a durable,
+    /// non-running parked state (continue launches a fresh resume task), so
+    /// persisted reads must treat it as terminal and stop the running/
+    /// waiting affordances instead of leaving the composer in steering-only
+    /// mode against a parked run.
     static func isTerminal(_ stateName: String) -> Bool {
-        ["completed", "failed", "recoveryFailed", "interrupted", "cancelled", "noProgress", "budgetLimited", "truncated"].contains(stateName)
+        ["completed", "failed", "recoveryFailed", "interrupted", "cancelled", "noProgress", "budgetLimited", "truncated", "checkpointed"].contains(stateName)
     }
 
     static func attentionSymbol(for stateName: String) -> String? {

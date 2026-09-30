@@ -400,6 +400,13 @@ public actor ConversationRunService {
         if case .failed(let failure) = state {
             return failure.isRecoverable ? "recoveryFailed" : "failed"
         }
+        // A parked terminal state is state-authoritative: a transient liveness
+        // phase (`.persisting` while the final checkpoint writes, or
+        // `.waitingForRecovery` published for the parked state) must never
+        // mask it as "committingResults"/"interrupted"; the durable state is
+        // `checkpointed` and that is the name the completion classifier keys
+        // on.
+        if case .checkpointed = state { return "checkpointed" }
         if isReviewingApproval { return "reviewingApproval" }
         switch liveness.phase {
         case .retrying:

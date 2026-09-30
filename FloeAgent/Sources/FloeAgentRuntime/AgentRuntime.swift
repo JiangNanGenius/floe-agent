@@ -732,6 +732,7 @@ public actor FloeAgentRuntime {
         registerPlanFreshnessReminder()
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal)))
         await runModelTurn()
+        await quiesceCancellingRun()
     }
 
     /// The checklist reminder nags on evidence, not on a fixed clock: it
@@ -816,7 +817,56 @@ public actor FloeAgentRuntime {
                 message: "Checkpoint write failed during cancel: \(error.localizedDescription)"
             )))
         }
+        // 6. Release any model loop waiting in `quiesceCancellingRun`. The
+        // loop can exit on `modelTurnContinuationRequested == false` while
+        // this cancel still owns the terminal transition; without the
+        // handshake callers snapshot a transient `.cancelling` state, which
+        // the presentation layer projects as "committingResults"/"interrupted"
+        // and the completion classifier then misreads as an internal error.
+        if let continuation = cancelCompletion {
+            cancelCompletion = nil
+            continuation.resume()
+        }
     }
+
+    /// Set while `start`/`resume` wait for an in-flight caller cancel to reach
+    /// its terminal transition. Only ever resumed by `cancel()` step 6, on
+    /// both the checkpointed and failed paths. The actor runs exactly one
+    /// model loop at a time (the state machine admits a single live loop), so
+    /// at most one waiter exists; storing a second continuation would mean
+    /// that invariant broke, and it must never silently replace the first.
+    private var cancelCompletion: CheckedContinuation<Void, Never>?
+
+    /// A caller cancel can win the race with the model loop's exit: the loop
+    /// stops on `modelTurnContinuationRequested == false` while `cancel()` is
+    /// still persisting the final checkpoint. The runtime owns that terminal
+    /// transition, so wait for it before reporting completion; otherwise the
+    /// caller snapshots a transient `.cancelling` state and misclassifies a
+    /// clean user stop as an internal error.
+    private func quiesceCancellingRun() async {
+        guard case .cancelling = state else { return }
+        await withCheckedContinuation { continuation in
+            // Re-check on the actor: `cancel()` may have finished between the
+            // guard and the continuation being stored.
+            if case .cancelling = state {
+                if cancelCompletion == nil {
+                    cancelCompletion = continuation
+                } else {
+                    // Unreachable while the single-loop invariant holds; keep
+                    // the first waiter and surface the violation instead of
+                    // leaking a continuation.
+                    logger.error(
+                        "cancelCompletionOverwrite run=\(runID.uuidString)"
+                    )
+                    continuation.resume()
+                }
+            } else {
+                continuation.resume()
+            }
+        }
+    }
+
+
 
     /// streamingModel → paused. paused → streamingModel via `resumeFromPause`.
     public func pause() async {
@@ -848,6 +898,7 @@ public actor FloeAgentRuntime {
             resumedFromCheckpoint: false
         )))
         await runModelTurn()
+        await quiesceCancellingRun()
     }
 
     private func checkpointFromPause() async {
@@ -991,6 +1042,7 @@ public actor FloeAgentRuntime {
         let goal = messages.last(where: { $0.role == "user" })?.content ?? ""
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal, resumedFromCheckpoint: true)))
         await runModelTurn()
+        await quiesceCancellingRun()
     }
 
     /// Provider protocols require every assistant tool call to be followed by
