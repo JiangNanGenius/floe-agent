@@ -18,11 +18,16 @@ Usage:
       --artifact-zip ./host/OfficeNativeHost.zip [--artifact-id <id>] [--apply]
 
 `--apply` refuses any artifact whose manifest was not built from the current
-host sources, whose overlay differs, or whose compile/link/Swift-import
-qualification did not pass. Without `--apply` the script only reports what
-would change, so it is safe to run in review. `qualifiedHostArtifact` carries
-`pendingHostRebuild: true` while the pinned framework predates the sources;
-`--apply` clears it once the rebuilt artifact is recorded.
+host sources, whose embedding or scheme/forwarding/kit-callback lifecycle
+overlays differ or lack exact provenance (patch sha, engine commit, prepared
+file hashes), or whose compile/link/Swift-import qualification did not pass.
+Without `--apply` the script only reports what would change, so it is safe to
+run in review. `qualifiedHostArtifact` carries `pendingHostRebuild: true`
+while the pinned framework predates the sources; `--apply` clears it once the
+rebuilt artifact is recorded and records each verified overlay claim,
+including `kitCallbackOverlaySHA256`. Locks built before an overlay was
+tracked (no tracked section and no claim) keep working for backward
+compatibility.
 """
 
 import argparse
@@ -44,6 +49,54 @@ REBUILD_WORKFLOW = ".github/workflows/office-native-host.yml"
 SOURCE_AHEAD_MARKER = "SOURCE AHEAD OF ARTIFACT"
 
 QUALIFICATION_KEYS = ("hostCompilePassed", "hostLinkPassed", "swiftModuleImportPassed")
+
+# Lifecycle overlays recorded by a host build, in application order. Each entry
+# maps the tracked engine-lock overlay section to the claim key the host pin
+# carries (bootstrap_office_host.py enforces the claim against this lock) and
+# to the exact-provenance block the artifact manifest carries (the patch that
+# was applied, the engine commit it applied to, and the prepared file hashes
+# the host actually compiled). A pin that claims an overlay must be backed by
+# a manifest containing exactly this provenance; an absent claim keeps hosts
+# built before the overlay was tracked usable (backward compatibility).
+LIFECYCLE_OVERLAYS = (
+    ("schemeTaskLifecycleOverlay", "schemeOverlaySHA256", "schemeTaskLifecycle",
+     "scheme lifecycle overlay"),
+    ("forwardingLifecycleOverlay", "forwardingOverlaySHA256", "forwardingLifecycle",
+     "forwarding lifecycle overlay"),
+    ("kitCallbackLifecycleOverlay", "kitCallbackOverlaySHA256", "kitCallbackLifecycle",
+     "kit callback lifecycle overlay"),
+)
+
+
+def lifecycle_provenance(overlay: dict, commit: str) -> dict:
+    """The exact manifest block a host must carry for a tracked overlay."""
+    return {
+        "patchSHA256": overlay["sha256"],
+        "sourceCommit": commit,
+        "files": {name: spec["preparedSHA256"] for name, spec in overlay["files"].items()},
+    }
+
+
+def lifecycle_provenance_failures(manifest: dict, overlay: dict, commit: str,
+                                  block: str, label: str) -> list:
+    """Fail-closed comparison of one manifest lifecycle block.
+
+    Reports a distinct reason for a missing block and for a changed patch,
+    source commit or prepared-file hash set, so a host can never be pinned on
+    an unstated or partial overlay claim.
+    """
+    provenance = manifest.get(block)
+    if not isinstance(provenance, dict):
+        return [f"the artifact carries no {label} provenance"]
+    expected = lifecycle_provenance(overlay, commit)
+    failures = []
+    if provenance.get("patchSHA256") != expected["patchSHA256"]:
+        failures.append(f"the {label} patch differs from the locked one")
+    if provenance.get("sourceCommit") != expected["sourceCommit"]:
+        failures.append(f"the {label} was applied to a different engine commit")
+    if provenance.get("files") != expected["files"]:
+        failures.append(f"the {label} prepared file hashes differ from the locked source")
+    return failures
 
 
 def digest(path: Path) -> str:
@@ -71,16 +124,28 @@ def source_hashes() -> dict:
 
 
 def check(lock_path: Path) -> int:
-    pin = lock_pin(lock_path)
+    lock_path = Path(lock_path)
+    lock = json.loads(lock_path.read_text())
+    pin = lock["qualifiedHostArtifact"]
     expected = pin["hostSourceSHA256"]
     actual = {name: source_hashes().get(name) for name in expected}
     mismatched = sorted(name for name, value in actual.items() if value != expected[name])
-    overlay = json.loads(Path(lock_path).read_text()).get("schemeTaskLifecycleOverlay")
-    if overlay and pin.get("schemeOverlaySHA256") != overlay["sha256"]:
-        mismatched.append("schemeTaskLifecycleOverlay")
-    forwarding = json.loads(Path(lock_path).read_text()).get("forwardingLifecycleOverlay")
-    if forwarding and pin.get("forwardingOverlaySHA256") != forwarding["sha256"]:
-        mismatched.append("forwardingLifecycleOverlay")
+    # A tracked lifecycle overlay that the pin does not honestly claim (or
+    # claims with a different patch) means the pinned framework predates those
+    # sources: the check must report SOURCE AHEAD rather than match a host that
+    # cannot contain the overlay. Old locks without a claim stay accepted while
+    # no overlay section is tracked for them (backward compatibility).
+    for section, claim_key, _, label in LIFECYCLE_OVERLAYS:
+        overlay = lock.get(section)
+        claim = pin.get(claim_key)
+        if overlay is None:
+            # A claim without a tracked overlay cannot be verified; an old lock
+            # without either carries no claim and stays accepted.
+            if claim is not None:
+                mismatched.append(label + " claim without a tracked overlay")
+            continue
+        if claim != overlay["sha256"]:
+            mismatched.append(label)
     pending = pin.get("pendingHostRebuild") is True
     status = capability_status(pin)
     for flag in status["unproven"]:
@@ -174,26 +239,19 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         failures.append("the artifact was built from a different engine commit")
     if manifest.get("overlaySHA256") != pin["overlaySHA256"]:
         failures.append("the embedding overlay differs from the locked one")
-    scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
-    if scheme_overlay:
-        expected_scheme = {
-            "patchSHA256": scheme_overlay["sha256"],
-            "sourceCommit": lock["commit"],
-            "files": {name: value["preparedSHA256"]
-                      for name, value in scheme_overlay["files"].items()},
-        }
-        if manifest.get("schemeTaskLifecycle") != expected_scheme:
-            failures.append("the scheme lifecycle overlay provenance differs from the locked source")
-    forwarding_overlay = lock.get("forwardingLifecycleOverlay")
-    if forwarding_overlay:
-        expected_forwarding = {
-            "patchSHA256": forwarding_overlay["sha256"],
-            "sourceCommit": lock["commit"],
-            "files": {name: value["preparedSHA256"]
-                      for name, value in forwarding_overlay["files"].items()},
-        }
-        if manifest.get("forwardingLifecycle") != expected_forwarding:
-            failures.append("the forwarding lifecycle overlay provenance differs from the locked source")
+    # Every tracked lifecycle overlay must be present in the host with exact
+    # provenance (patch sha, engine commit, prepared file hashes). The kit
+    # callback overlay is covered here too: a host missing it, carrying a
+    # changed patch or different prepared bytes can never be pinned. All
+    # failures are collected before the lock is touched, so a rejected artifact
+    # never mutates the pin.
+    claimed_overlay_shas = {}
+    for section, claim_key, block, label in LIFECYCLE_OVERLAYS:
+        overlay = lock.get(section)
+        if not overlay:
+            continue
+        failures.extend(lifecycle_provenance_failures(manifest, overlay, lock["commit"], block, label))
+        claimed_overlay_shas[claim_key] = overlay["sha256"]
     for key in QUALIFICATION_KEYS:
         if manifest.get(key) is not True:
             failures.append(f"qualification flag {key} did not pass")
@@ -241,10 +299,11 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     updated["verifiedResourceFiles"] = len(hashes["runtimeResourceSHA256"])
     updated["verifiedResourceDirectories"] = hashes["runtimeResourceDirectories"]
     updated["hostSourceSHA256"] = {name: sources[name] for name in pin["hostSourceSHA256"]}
-    if scheme_overlay:
-        updated["schemeOverlaySHA256"] = scheme_overlay["sha256"]
-    if forwarding_overlay:
-        updated["forwardingOverlaySHA256"] = forwarding_overlay["sha256"]
+    # Record the exact overlay shas the accepted manifest proved, including the
+    # kit callback overlay; bootstrap_office_host.py then requires hosts to
+    # carry the same provenance.
+    for claim_key, sha in claimed_overlay_shas.items():
+        updated[claim_key] = sha
     if rebuilt_overlay:
         updated["filterOverlay"] = rebuilt_overlay
     updated["runID"] = manifest.get("runID", pin.get("runID"))

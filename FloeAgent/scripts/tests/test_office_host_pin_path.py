@@ -87,7 +87,10 @@ class OfficeHostPinPath(unittest.TestCase):
 
     def make_artifact(self, folder: Path, *, matching_sources: bool, qualified: bool = True,
                       tamper_resources: bool = False, omit_overlay_key: bool = False,
-                      omit_scheme: bool = False, omit_forwarding: bool = False) -> Path:
+                      omit_scheme: bool = False, omit_forwarding: bool = False,
+                      omit_kit: bool = False, kit_patch: str = None,
+                      kit_commit: str = None, kit_files: dict = None,
+                      lock_obj: dict = None) -> Path:
         root = folder / "OfficeNativeHost"
         framework = root / "FloeOfficeNative.framework"
         framework.mkdir(parents=True)
@@ -98,7 +101,7 @@ class OfficeHostPinPath(unittest.TestCase):
         resources.mkdir(parents=True)
         (resources / "fundamentalrc").write_text("rc", encoding="utf-8")
 
-        lock = json.loads(LOCK.read_text())
+        lock = lock_obj if lock_obj is not None else json.loads(LOCK.read_text())
         pin = lock["qualifiedHostArtifact"]
         sources = {name: digest(HOST_SOURCES / name) for name in pin["hostSourceSHA256"]}
         if not matching_sources:
@@ -143,6 +146,17 @@ class OfficeHostPinPath(unittest.TestCase):
                 "files": {name: value["preparedSHA256"]
                           for name, value in forwarding["files"].items()},
             }
+        # The kit callback overlay is tracked in the production lock; a host
+        # built from it must carry exact patch/commit/prepared-file provenance.
+        kit = lock.get("kitCallbackLifecycleOverlay")
+        if kit and not omit_kit:
+            manifest["kitCallbackLifecycle"] = {
+                "patchSHA256": kit_patch if kit_patch is not None else kit["sha256"],
+                "sourceCommit": kit_commit if kit_commit is not None else lock["commit"],
+                "files": (kit_files if kit_files is not None
+                          else {name: value["preparedSHA256"]
+                                for name, value in kit["files"].items()}),
+            }
         # The overlay archive is reassembled for every host build; the manifest
         # carries the rebuilt values in the pin's key space.
         if pin.get("filterOverlay"):
@@ -184,6 +198,126 @@ class OfficeHostPinPath(unittest.TestCase):
             self.assertEqual(completed.returncode, 1, completed.stdout)
             self.assertIn("scheme lifecycle overlay provenance", completed.stderr)
             self.assertEqual(lock.read_bytes(), LOCK.read_bytes())
+
+    def test_check_is_strictly_read_only(self) -> None:
+        """--check never writes the lock, ahead or matched.
+
+        A lock with an omitted kit claim is source ahead, even after the
+        shipped pin is refreshed; after accepting a fully-proven artifact into a
+        copy the same check must pass, and in both states the lock bytes are
+        exactly preserved.
+        """
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            ahead = folder / "ahead.lock.json"
+            ahead_lock = json.loads(LOCK.read_text())
+            ahead_lock['qualifiedHostArtifact'].pop('kitCallbackOverlaySHA256', None)
+            ahead.write_text(json.dumps(ahead_lock), encoding='utf-8')
+            ahead_bytes = ahead.read_bytes()
+            completed = self.run_script("--lock", str(ahead), "--check")
+            self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+            self.assertIn("SOURCE AHEAD OF ARTIFACT", completed.stdout)
+            self.assertIn("kit callback lifecycle overlay", completed.stdout)
+            self.assertEqual(ahead.read_bytes(), ahead_bytes)
+
+            matched = folder / "matched.lock.json"
+            matched.write_bytes(LOCK.read_bytes())
+            artifact = self.make_artifact(folder, matching_sources=True)
+            completed = self.run_script("--lock", str(matched), "--artifact-zip",
+                                        str(artifact), "--apply")
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            applied_bytes = matched.read_bytes()
+            completed = self.run_script("--lock", str(matched), "--check")
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual(matched.read_bytes(), applied_bytes)
+
+    def test_apply_refuses_missing_kit_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            lock = folder / "lock.json"
+            lock.write_bytes(LOCK.read_bytes())
+            artifact = self.make_artifact(folder, matching_sources=True, omit_kit=True)
+            completed = self.run_script("--lock", str(lock), "--artifact-zip", str(artifact), "--apply")
+            self.assertEqual(completed.returncode, 1, completed.stdout)
+            self.assertIn("kit callback lifecycle overlay provenance", completed.stderr)
+            # A rejected artifact never mutates the pin.
+            self.assertEqual(lock.read_bytes(), LOCK.read_bytes())
+
+    def test_apply_refuses_a_changed_kit_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            lock = folder / "lock.json"
+            lock.write_bytes(LOCK.read_bytes())
+            artifact = self.make_artifact(folder, matching_sources=True, kit_patch="c" * 64)
+            completed = self.run_script("--lock", str(lock), "--artifact-zip", str(artifact), "--apply")
+            self.assertEqual(completed.returncode, 1, completed.stdout)
+            self.assertIn("kit callback lifecycle overlay patch differs", completed.stderr)
+            self.assertEqual(lock.read_bytes(), LOCK.read_bytes())
+
+    def test_apply_refuses_kit_provenance_from_another_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            lock = folder / "lock.json"
+            lock.write_bytes(LOCK.read_bytes())
+            artifact = self.make_artifact(folder, matching_sources=True,
+                                          kit_commit="0" * 40)
+            completed = self.run_script("--lock", str(lock), "--artifact-zip", str(artifact), "--apply")
+            self.assertEqual(completed.returncode, 1, completed.stdout)
+            self.assertIn("kit callback lifecycle overlay", completed.stderr)
+            self.assertIn("different engine commit", completed.stderr)
+            self.assertEqual(lock.read_bytes(), LOCK.read_bytes())
+
+    def test_apply_refuses_changed_kit_prepared_files(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            lock = folder / "lock.json"
+            lock.write_bytes(LOCK.read_bytes())
+            tracked = json.loads(LOCK.read_text())["kitCallbackLifecycleOverlay"]["files"]
+            changed = {name: ("1" * 64) for name in tracked}
+            artifact = self.make_artifact(folder, matching_sources=True, kit_files=changed)
+            completed = self.run_script("--lock", str(lock), "--artifact-zip", str(artifact), "--apply")
+            self.assertEqual(completed.returncode, 1, completed.stdout)
+            self.assertIn("kit callback lifecycle overlay prepared file hashes differ",
+                          completed.stderr)
+            self.assertEqual(lock.read_bytes(), LOCK.read_bytes())
+
+    def test_check_rejects_a_kit_claim_without_a_tracked_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            legacy = json.loads(LOCK.read_text())
+            legacy.pop("kitCallbackLifecycleOverlay", None)
+            legacy["qualifiedHostArtifact"]["kitCallbackOverlaySHA256"] = "9" * 64
+            path = Path(folder) / "dangling.lock.json"
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            completed = self.run_script("--lock", str(path), "--check")
+            self.assertEqual(completed.returncode, 1, completed.stdout)
+            self.assertIn("kit callback lifecycle overlay", completed.stdout)
+            self.assertIn("claim without a tracked overlay", completed.stdout)
+
+    def test_old_lock_without_a_kit_overlay_keeps_backward_compatibility(self) -> None:
+        """Locks predating the kit overlay accept hosts without kit provenance.
+
+        No tracked section and no pin claim means the host was built before the
+        overlay existed; such a pin stays usable, --check passes and --apply
+        neither requires nor records kitCallbackOverlaySHA256.
+        """
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            legacy = json.loads(LOCK.read_text())
+            legacy.pop("kitCallbackLifecycleOverlay", None)
+            legacy["qualifiedHostArtifact"].pop("kitCallbackOverlaySHA256", None)
+            lock = folder / "legacy.lock.json"
+            lock.write_text(json.dumps(legacy), encoding="utf-8")
+            completed = self.run_script("--lock", str(lock), "--check")
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            artifact = self.make_artifact(folder, matching_sources=True, omit_kit=True,
+                                          lock_obj=legacy)
+            completed = self.run_script("--lock", str(lock), "--artifact-zip",
+                                        str(artifact), "--apply")
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            updated = json.loads(lock.read_text())["qualifiedHostArtifact"]
+            self.assertNotIn("kitCallbackOverlaySHA256", updated)
+            completed = self.run_script("--lock", str(lock), "--check")
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_apply_refuses_an_artifact_from_other_sources(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -270,6 +404,10 @@ class OfficeHostPinPath(unittest.TestCase):
             self.assertEqual(updated["filterOverlay"]["archiveSHA256"], "b" * 64)
             self.assertEqual(updated["filterOverlay"]["patchSHA256"], before["patchSHA256"])
             self.assertEqual(updated["filterOverlay"]["sourceFiles"], before["sourceFiles"])
+            # The verified kit callback overlay is recorded in the pin so
+            # bootstrap_office_host.py can require hosts to carry its provenance.
+            kit = json.loads(LOCK.read_text())["kitCallbackLifecycleOverlay"]["sha256"]
+            self.assertEqual(updated["kitCallbackOverlaySHA256"], kit)
             self.assertNotIn("SOURCE AHEAD OF ARTIFACT", updated["note"])
             self.assertEqual(
                 updated["hostSourceSHA256"],
