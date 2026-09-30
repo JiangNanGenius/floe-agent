@@ -39,6 +39,10 @@ def ensure(client, token, create=False):
     repository = json.loads(result.body)
     if repository.get("full_name", "").casefold() != REPOSITORY.casefold():
         raise RepositoryCheckError("Unexpected repository identity")
+    # Only the visibility booleans are printed; no account or API response data.
+    visibility = {key: repository.get(key) if isinstance(repository.get(key), bool) else None
+                  for key in ("private", "public", "internal")}
+    print("Repository visibility: " + json.dumps(visibility, sort_keys=True), flush=True)
     if repository.get("private") is not False or repository.get("public") is False:
         raise RepositoryCheckError("Mirror is not public; visibility will not be changed automatically")
     if repository.get("owner", {}).get("login", "").casefold() != "jiangnangenius":
