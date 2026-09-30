@@ -43,6 +43,25 @@ class MobileQualificationTests(unittest.TestCase):
                 shadow_sources(root, root / 'shadow', {'files': {'ios/alias/file.cpp': digest(prepared)}})
             self.assertEqual(original.read_text(), 'original')
 
+    def test_overlapping_lifecycle_overlay_checks_final_hash(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            name = 'ios/Mobile/DocumentViewController.mm'
+            original = root / 'source' / name
+            original.parent.mkdir(parents=True)
+            original.write_text('original')
+            prepared = root / 'prepared/native' / name
+            prepared.parent.mkdir(parents=True)
+            prepared.write_text('final forwarding source')
+            intermediate = {'files': {name: '0' * 64}}
+            lifecycle = [{'files': {name: {'preparedSHA256': digest(prepared)}}}]
+            shadow_sources(root, root / 'shadow', intermediate, lifecycle)
+            self.assertEqual((root / 'shadow' / name).read_bytes(), prepared.read_bytes())
+            self.assertEqual(original.read_text(), 'original')
+            prepared.write_text('tampered')
+            with self.assertRaisesRegex(ValueError, 'does not compile'):
+                shadow_sources(root, root / 'bad-shadow', intermediate, lifecycle)
+
     def setUp(self):
         self.project = {"objects": {
             "mobile": {"isa": "PBXNativeTarget", "name": "Mobile", "dependencies": ["extension"],

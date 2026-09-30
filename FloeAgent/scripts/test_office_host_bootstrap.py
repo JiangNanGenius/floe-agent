@@ -84,6 +84,49 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'filter qualification'):
             verify_installed(self.host, lock, pin)
 
+    def forwarding_fixture(self, claim='forwarded-overlay'):
+        value = json.loads(self.lock.read_text())
+        value['forwardingLifecycleOverlay'] = {
+            'sha256': 'forwarded-overlay',
+            'files': {'ios/Mobile/DocumentViewController.mm': {'preparedSHA256': 'prepared-forwarded'}}}
+        value['qualifiedHostArtifact']['forwardingOverlaySHA256'] = claim
+        self.lock.write_text(json.dumps(value))
+        return value
+
+    def test_forwarding_claim_must_match_the_lock(self):
+        self.forwarding_fixture(claim='stale-claim')
+        with self.assertRaisesRegex(ValueError, 'forwarding overlay claim'):
+            checked_lock(self.lock)
+
+    def test_forwarding_claim_requires_a_lock_section(self):
+        value = json.loads(self.lock.read_text())
+        value['qualifiedHostArtifact']['forwardingOverlaySHA256'] = 'forwarded-overlay'
+        self.lock.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'forwarding overlay claim'):
+            checked_lock(self.lock)
+
+    def test_forwarding_claim_requires_manifest_provenance(self):
+        self.forwarding_fixture()
+        lock, pin = checked_lock(self.lock)
+        with self.assertRaisesRegex(ValueError, 'forwarding overlay provenance'):
+            verify_installed(self.host, lock, pin)
+
+    def test_forwarding_claim_accepts_matching_provenance(self):
+        self.forwarding_fixture()
+        report_path = self.host / 'native-host.json'
+        report = json.loads(report_path.read_text())
+        report['forwardingLifecycle'] = {
+            'patchSHA256': 'forwarded-overlay', 'sourceCommit': 'pinned-source',
+            'files': {'ios/Mobile/DocumentViewController.mm': 'prepared-forwarded'}}
+        report_path.write_text(json.dumps(report))
+        self.pin['manifestSHA256'] = digest(report_path)
+        value = json.loads(self.lock.read_text())
+        value['qualifiedHostArtifact']['manifestSHA256'] = self.pin['manifestSHA256']
+        self.lock.write_text(json.dumps(value))
+        lock, pin = checked_lock(self.lock)
+        verify_installed(self.host, lock, pin)
+
+
     def test_header_dependency_changes_require_rebuilt_host(self):
         patch = self.root / 'filter.patch'
         patch.write_text('filter')

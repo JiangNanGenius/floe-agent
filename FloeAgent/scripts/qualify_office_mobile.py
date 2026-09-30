@@ -13,12 +13,12 @@ from prepare_office_native_sources import prepare, DEFAULT_LOCK
 from office_release_gates import false_capabilities
 
 
-def shadow_sources(root, shadow, overlay, extra_overlay=None):
+def shadow_sources(root, shadow, overlay, extra_overlays=None):
     """Give every patched subtree an owned copy; never write through aliases."""
     root, shadow = Path(root).resolve(), Path(shadow).resolve()
     source = root / "source"
     names = list(overlay["files"])
-    extra_files = list(extra_overlay["files"]) if extra_overlay else []
+    extra_files = [name for extra in (extra_overlays or []) for name in extra["files"]]
     for name in names + extra_files:
         relative = Path(name)
         if relative.is_absolute() or ".." in relative.parts or len(relative.parts) < 2:
@@ -41,7 +41,14 @@ def shadow_sources(root, shadow, overlay, extra_overlay=None):
                     link.symlink_to(resolved)
         else:
             target.symlink_to(child.resolve(strict=True))
-    for name, checksum in overlay["files"].items():
+    # prepared/native already holds the final state of every overlapping file.
+    # Merge expected hashes before checking; comparing the final DVC against
+    # the intermediate embedding hash would reject every forwarding build.
+    expected = dict(overlay["files"])
+    for extra in (extra_overlays or []):
+        expected.update({name: spec["preparedSHA256"]
+                         for name, spec in extra["files"].items()})
+    for name, checksum in expected.items():
         path = shadow / name
         if any(parent.is_symlink() for parent in path.parents if parent != shadow and parent.is_relative_to(shadow)):
             raise ValueError("Native overlay parent is a source alias")
@@ -50,18 +57,6 @@ def shadow_sources(root, shadow, overlay, extra_overlay=None):
         shutil.copyfile(root / "prepared/native" / name, path)
         if digest(path) != checksum:
             raise ValueError("Qualification does not compile the prepared overlay")
-    # Scheme lifecycle files were prepared alongside the embedding overlay and
-    # must overwrite the compiled tree too; otherwise the build would link the
-    # original MobileSocket even though prepared/native was patched.
-    for name, spec in (extra_overlay["files"].items() if extra_overlay else []):
-        path = shadow / name
-        if any(parent.is_symlink() for parent in path.parents if parent != shadow and parent.is_relative_to(shadow)):
-            raise ValueError("Scheme overlay parent is a source alias")
-        if path.is_symlink():
-            path.unlink()
-        shutil.copyfile(root / "prepared/native" / name, path)
-        if digest(path) != spec["preparedSHA256"]:
-            raise ValueError("Qualification does not compile the prepared scheme overlay")
 
 
 def qualification_project(project, linker_list, minimum_ios, frameworks):
@@ -129,10 +124,16 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     save()
     source = root / "source"
     shadow = destination / "source"
-    shadow_sources(root, shadow, overlay, lock.get("schemeTaskLifecycleOverlay"))
+    lifecycle_overlays = [entry for entry in (lock.get("schemeTaskLifecycleOverlay"),
+                                              lock.get("forwardingLifecycleOverlay"))
+                          if entry is not None]
+    shadow_sources(root, shadow, overlay, lifecycle_overlays)
     scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
     if scheme_overlay is not None:
         report["schemeTaskLifecycleOverlaySHA256"] = scheme_overlay["sha256"]
+    forwarding_overlay = lock.get("forwardingLifecycleOverlay")
+    if forwarding_overlay is not None:
+        report["forwardingLifecycleOverlaySHA256"] = forwarding_overlay["sha256"]
     # configure normally creates this root alias; the old qualified archive
     # retained the ICU data but omitted the alias. Use its one actual data file.
     icu = shadow / "ICU.dat"

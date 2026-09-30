@@ -278,6 +278,64 @@ class OfficeEngineBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "patch checksum"):
             prepare(root, lock)
 
+    def forwarding_fixture(self):
+        """An embedding overlay plus a forwarding overlay on the same file."""
+        root, lock_path, name, old, new = self.overlay_fixture()
+        newer = "public API input\nforwarded lifecycle input\n"
+        patch_text = "".join(difflib.unified_diff(new.splitlines(True), newer.splitlines(True),
+                                                  fromfile="a/" + name, tofile="b/" + name))
+        patch = lock_path.parent / "forwarding.patch"
+        patch.write_text(patch_text)
+        sha = lambda value: hashlib.sha256(value.encode()).hexdigest()
+        data = json.loads(lock_path.read_text())
+        data["forwardingLifecycleOverlay"] = {
+            "patch": patch.name, "sha256": sha(patch_text),
+            "files": {name: {"originalSHA256": sha(new), "preparedSHA256": sha(newer)}}}
+        lock_path.write_text(json.dumps(data))
+        return root, lock_path, name, old, new, newer
+
+    def test_forwarding_overlay_applies_after_embedding_and_replays(self):
+        root, lock, name, old, new, newer = self.forwarding_fixture()
+        result = prepare(root, lock)
+        self.assertEqual((root / "source" / name).read_text(), old)
+        prepared = root / "prepared/native" / name
+        self.assertEqual(prepared.read_text(), newer)
+        forwarding = result["forwardingLifecycle"]
+        data = json.loads(lock.read_text())
+        self.assertEqual(forwarding["patchSHA256"],
+                         data["forwardingLifecycleOverlay"]["sha256"])
+        self.assertEqual(forwarding["files"][name],
+                         data["forwardingLifecycleOverlay"]["files"][name]["preparedSHA256"])
+        # The receipt's embedding group still records the intermediate state.
+        self.assertEqual(result["files"][name],
+                         data["embeddingOverlay"]["files"][name]["preparedSHA256"])
+        self.assertEqual(prepare(root, lock), result)
+
+    def test_forwarding_overlay_rejects_drifted_embedding_input(self):
+        root, lock, name, _, _, _ = self.forwarding_fixture()
+        data = json.loads(lock.read_text())
+        data["forwardingLifecycleOverlay"]["files"][name]["originalSHA256"] = "wrong"
+        lock.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "forwarding lifecycle overlay input"):
+            prepare(root, lock)
+        self.assertFalse((root / "prepared/native").exists())
+
+    def test_forwarding_overlay_checks_patch_digest(self):
+        root, lock, _, _, _, _ = self.forwarding_fixture()
+        (lock.parent / "forwarding.patch").write_text("changed patch")
+        with self.assertRaisesRegex(ValueError, "forwarding lifecycle patch checksum"):
+            prepare(root, lock)
+        self.assertFalse((root / "prepared/native").exists())
+
+    def test_forwarding_overlay_does_not_overwrite_manual_edits(self):
+        root, lock, name, _, _, _ = self.forwarding_fixture()
+        prepare(root, lock)
+        target = root / "prepared/native" / name
+        target.write_text("manual change")
+        with self.assertRaisesRegex(ValueError, "was edited"):
+            prepare(root, lock)
+        self.assertEqual(target.read_text(), "manual change")
+
     def test_unqualified_build_is_rejected(self):
         (self.root / "qualification.json").write_text('{"nativeBuildPassed": false}')
         with self.assertRaisesRegex(ValueError, "unqualified"):

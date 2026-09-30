@@ -1,0 +1,221 @@
+diff --git a/ios/Mobile/DocumentViewController.mm b/ios/Mobile/DocumentViewController.mm
+index e2a0364..2771c97 100644
+--- a/ios/Mobile/DocumentViewController.mm
++++ b/ios/Mobile/DocumentViewController.mm
+@@ -40,6 +40,10 @@ @interface DocumentViewController() <WKNavigationDelegate, WKUIDelegate, WKScrip
+     NSURL *downloadAsTmpURL;
+     BOOL floeClosing;
+     BOOL floeClosed;
++    // YES from the HULLO check-and-set until the forwarder itself finishes
++    // its retirement cleanup. Covers the window where BYE/bye already closed
++    // pipe end 0 but the consumer thread is still alive.
++    BOOL floeForwarderActive;
+ }
+ 
+ @end
+@@ -69,6 +73,7 @@ - (void)viewDidLoad {
+     [super viewDidLoad];
+     closeNotificationPipeForForwardingThread[0] = -1;
+     closeNotificationPipeForForwardingThread[1] = -1;
++    floeForwarderActive = NO;
+ 
+     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
+     WKUserContentController *userContentController = [[WKUserContentController alloc] init];
+@@ -315,11 +320,60 @@ - (void)userContentController:(WKUserContentController *)userContentController d
+         if ([message.body isEqualToString:@"HULLO"]) {
+             // Now we know that the JS has started completely
+ 
++            // FLOE_FORWARDING_LIFECYCLE_BEGIN
++            // Forwarding-thread ownership and lifetime contract. HULLO, BYE,
++            // bye and dismissDocumentViewController all run on the main
++            // queue; the forwarder runs on a background queue and touches
++            // shared state only as noted.
++            // - floeClosing/floeClosed (main queue only): a closing document
++            //   never accepts a forwarder; its close pipe can never be
++            //   signaled again and the thread would leak.
++            // - floeForwarderActive: set inside the synchronized check-and-set
++            //   below before the thread is dispatched, cleared only by the
++            //   forwarder itself as the last step of its retirement. This
++            //   covers the whole window in which a consumer exists — in
++            //   particular after BYE/bye closed and reset pipe end 0 while
++            //   the forwarder was still running, where a pipe-fd check would
++            //   wrongly admit a second consumer.
++            // - Pipe end 0 is created/closed on the main queue only; pipe
++            //   end 1 and the client fd are closed by the forwarder exactly
++            //   once, at its retirement. Fake socket numbers are never
++            //   reused (pinned fakeSocketAllocate), so a retirement close
++            //   can never hit a recycled fd; a repeated close of an already
++            //   closed fake fd is a benign EBADF.
++            // A repeated HULLO (page reload, wake-from-sleep re-delivery;
++            // tdf#122543) must never start a second consumer on the same
++            // fakeClientFd: two consumers race on one record queue and the
++            // loser observes -1 lengths, which the loop below used to turn
++            // into std::length_error and process death.
++            if (floeClosing || floeClosed) {
++                LOG_ERR("HULLO for a closing document; not starting the forwarding thread");
++                return;
++            }
++            @synchronized (self) {
++                if (floeForwarderActive) {
++                    LOG_ERR("Duplicate HULLO for an already forwarded document; keeping the existing consumer");
++                    return;
++                }
++                floeForwarderActive = YES;
++            }
++            // FLOE_FORWARDING_LIFECYCLE_END
++
+             // Contact the permanently (during app lifetime) listening COOLWSD server
+             // "public" socket
+             assert(coolwsd_server_socket_fd != -1);
+             rc = fakeSocketConnect(self.document->fakeClientFd, coolwsd_server_socket_fd);
+-            assert(rc != -1);
++            if (rc == -1) {
++                // One behavior in debug and release (the upstream
++                // assert(rc != -1) only fired in debug builds): a dead
++                // socket gets no forwarder, and the ownership flag is
++                // cleared so a later HULLO can retry.
++                LOG_ERR("HULLO connect failed; not starting the forwarding thread");
++                @synchronized (self) {
++                    floeForwarderActive = NO;
++                }
++                return;
++            }
+ 
+             // Create a socket pair to notify the below thread when the document has been closed
+             fakeSocketPipe2(closeNotificationPipeForForwardingThread);
+@@ -328,48 +382,98 @@ - (void)userContentController:(WKUserContentController *)userContentController d
+             dispatch_async(dispatch_get_global_queue( DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                            ^{
+                                ProcUtil::setThreadName("app2js");
++                               // Snapshot the fds at thread start: the ownership guard
++                               // above keeps them stable for the thread's whole life, and
++                               // the snapshot is immune to any future ivar reinitialization.
++                               const int notificationFd = self->closeNotificationPipeForForwardingThread[1];
++                               const int clientFd = self.document->fakeClientFd;
++                               // Single retirement block for every exit path: the forwarder
++                               // is the sole closer of pipe end 1 and of the client fd and
++                               // closes each exactly once, then clears the ownership flag.
++                               // Upstream leaked both fds on the EOF path and never cleared
++                               // ownership state at all.
++                               bool notificationClosed = false;
++                               bool clientClosed = false;
++                               auto retireForwarder = [&]() {
++                                   if (!notificationClosed) {
++                                       notificationClosed = true;
++                                       fakeSocketClose(notificationFd);
++                                   }
++                                   if (!clientClosed) {
++                                       clientClosed = true;
++                                       fakeSocketClose(clientFd);
++                                   }
++                                   @synchronized (self) {
++                                       self->floeForwarderActive = NO;
++                                   }
++                               };
+                                while (true) {
+                                    struct pollfd p[2];
+-                                   p[0].fd = self.document->fakeClientFd;
++                                   p[0].fd = clientFd;
+                                    p[0].events = POLLIN;
+-                                   p[1].fd = self->closeNotificationPipeForForwardingThread[1];
++                                   p[1].fd = notificationFd;
+                                    p[1].events = POLLIN;
+                                    if (fakeSocketPoll(p, 2, -1) > 0) {
+-                                       if (p[1].revents == POLLIN) {
+-                                           // The code below handling the "BYE" fake Websocket
+-                                           // message has closed the other end of the
+-                                           // closeNotificationPipeForForwardingThread. Let's close
+-                                           // the other end too just for cleanliness, even if a
+-                                           // FakeSocket as such is not a system resource so nothing
+-                                           // is saved by closing it.
+-                                           fakeSocketClose(self->closeNotificationPipeForForwardingThread[1]);
+-
+-                                           // Close our end of the fake socket connection to the
+-                                           // ClientSession thread, so that it terminates
+-                                           fakeSocketClose(self.document->fakeClientFd);
+-
+-                                           return;
+-                                       }
+-                                       if (p[0].revents == POLLIN) {
+-                                           int n = fakeSocketAvailableDataLength(self.document->fakeClientFd);
+-                                           // I don't want to check for n being -1 here, even if
+-                                           // that will lead to a crash (std::length_error from the
+-                                           // below std::vector constructor), as n being -1 is a
+-                                           // sign of something being wrong elsewhere anyway, and I
+-                                           // prefer to fix the root cause. Let's see how well this
+-                                           // works out. See tdf#122543 for such a case.
+-                                           if (n == 0)
+-                                               return;
+-                                           std::vector<char> buf(n);
+-                                           n = fakeSocketRead(self.document->fakeClientFd, buf.data(), n);
+-                                           [self.document send2JS:buf.data() length:n];
+-                                       }
+-                                   }
+-                                   else
+-                                       break;
+-                               }
+-                               assert(false);
+-                           });
++                                        // Bitmask checks, never equality: a peer shutdown adds
++                                        // POLLHUP to POLLIN and a dead fd reports POLLNVAL; the
++                                        // upstream equality tests spun forever on both.
++                                        if (p[1].revents & (POLLIN | POLLNVAL)) {
++                                            // The code handling the "BYE" fake Websocket
++                                            // message (or an open failure) has closed the
++                                            // other end of the notification pipe. Retire:
++                                            // close our pipe end and the engine connection.
++                                            retireForwarder();
++                                            return;
++                                        }
++                                        if (p[0].revents & POLLNVAL) {
++                                            // Only this thread closes the client fd, so this
++                                            // is defensive; retire without using it again.
++                                            LOG_ERR("Forwarding poll observed an invalid client socket; retiring");
++                                            retireForwarder();
++                                            return;
++                                        }
++                                        if (p[0].revents & (POLLIN | POLLHUP)) {
++                                            int n = fakeSocketAvailableDataLength(clientFd);
++                                            if (n < 0) {
++                                                // A second consumer raced the only record away
++                                                // (EAGAIN) or the socket is inconsistent
++                                                // (EBADF). Upstream constructed
++                                                // std::vector<char>(n) here, throwing
++                                                // std::length_error and terminating the
++                                                // whole process (tdf#122543).
++                                                LOG_ERR("Forwarding observed a negative available length; retiring");
++                                                retireForwarder();
++                                                return;
++                                            }
++                                            if (n == 0) {
++                                                // Clean EOF: the engine side is gone.
++                                                retireForwarder();
++                                                return;
++                                            }
++                                            std::vector<char> buf(n);
++                                            n = fakeSocketRead(clientFd, buf.data(), n);
++                                            if (n <= 0) {
++                                                // EAGAIN when a second consumer drained the
++                                                // record first, or EOF. Never forward a
++                                                // negative length: send2JS builds
++                                                // std::string(buffer, length), which throws
++                                                // std::length_error for -1.
++                                                if (n < 0)
++                                                    LOG_ERR("Forwarding read failed after a readable poll; retiring");
++                                                retireForwarder();
++                                                return;
++                                            }
++                                            [self.document send2JS:buf.data() length:n];
++                                        }
++                                    }
++                                    else
++                                        break;
++                                }
++                               // An infinite-timeout fakeSocketPoll only stops when nothing
++                               // is left to wait for; retire quietly. Upstream had
++                               // assert(false) here, aborting debug builds on a normal exit.
++                               retireForwarder();
++                            });
+ 
+             // First we simply send the Online C++ parts the URL and the appDocId. This corresponds
+             // to the GET request with Upgrade to WebSocket.

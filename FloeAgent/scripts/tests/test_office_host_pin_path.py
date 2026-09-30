@@ -87,7 +87,7 @@ class OfficeHostPinPath(unittest.TestCase):
 
     def make_artifact(self, folder: Path, *, matching_sources: bool, qualified: bool = True,
                       tamper_resources: bool = False, omit_overlay_key: bool = False,
-                      omit_scheme: bool = False) -> Path:
+                      omit_scheme: bool = False, omit_forwarding: bool = False) -> Path:
         root = folder / "OfficeNativeHost"
         framework = root / "FloeOfficeNative.framework"
         framework.mkdir(parents=True)
@@ -136,6 +136,13 @@ class OfficeHostPinPath(unittest.TestCase):
                 "files": {name: value["preparedSHA256"]
                           for name, value in scheme["files"].items()},
             }
+        forwarding = lock.get("forwardingLifecycleOverlay")
+        if forwarding and not omit_forwarding:
+            manifest["forwardingLifecycle"] = {
+                "patchSHA256": forwarding["sha256"], "sourceCommit": lock["commit"],
+                "files": {name: value["preparedSHA256"]
+                          for name, value in forwarding["files"].items()},
+            }
         # The overlay archive is reassembled for every host build; the manifest
         # carries the rebuilt values in the pin's key space.
         if pin.get("filterOverlay"):
@@ -155,6 +162,17 @@ class OfficeHostPinPath(unittest.TestCase):
                 if path.is_file():
                     archive.write(path, path.relative_to(folder))
         return archive_path
+
+    def test_apply_refuses_missing_forwarding_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            lock = folder / "lock.json"
+            lock.write_bytes(LOCK.read_bytes())
+            artifact = self.make_artifact(folder, matching_sources=True, omit_forwarding=True)
+            completed = self.run_script("--lock", str(lock), "--artifact-zip", str(artifact), "--apply")
+            self.assertEqual(completed.returncode, 1, completed.stdout)
+            self.assertIn("forwarding lifecycle overlay provenance", completed.stderr)
+            self.assertEqual(lock.read_bytes(), LOCK.read_bytes())
 
     def test_apply_refuses_missing_scheme_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -185,6 +185,16 @@ def build_host(root, output, *, build=True, filter_overlay=None):
             'sourceCommit': lock['commit'],
             'files': {name: spec['preparedSHA256']
                       for name, spec in scheme_overlay['files'].items()}}
+    # Same contract for the forwarding lifecycle overlay: the produced host
+    # records the exact patched source it compiled, so a future pin carrying
+    # forwardingOverlaySHA256 cannot be satisfied by a pre-overlay host.
+    forwarding_overlay = lock.get("forwardingLifecycleOverlay")
+    if forwarding_overlay is not None:
+        report['forwardingLifecycle'] = {
+            'patchSHA256': forwarding_overlay['sha256'],
+            'sourceCommit': lock['commit'],
+            'files': {name: spec['preparedSHA256']
+                      for name, spec in forwarding_overlay['files'].items()}}
     report.update(run_identity())
     receipt = output / 'native-host.json'
 

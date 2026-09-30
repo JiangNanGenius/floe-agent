@@ -78,6 +78,9 @@ def check(lock_path: Path) -> int:
     overlay = json.loads(Path(lock_path).read_text()).get("schemeTaskLifecycleOverlay")
     if overlay and pin.get("schemeOverlaySHA256") != overlay["sha256"]:
         mismatched.append("schemeTaskLifecycleOverlay")
+    forwarding = json.loads(Path(lock_path).read_text()).get("forwardingLifecycleOverlay")
+    if forwarding and pin.get("forwardingOverlaySHA256") != forwarding["sha256"]:
+        mismatched.append("forwardingLifecycleOverlay")
     pending = pin.get("pendingHostRebuild") is True
     status = capability_status(pin)
     for flag in status["unproven"]:
@@ -181,6 +184,16 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
         }
         if manifest.get("schemeTaskLifecycle") != expected_scheme:
             failures.append("the scheme lifecycle overlay provenance differs from the locked source")
+    forwarding_overlay = lock.get("forwardingLifecycleOverlay")
+    if forwarding_overlay:
+        expected_forwarding = {
+            "patchSHA256": forwarding_overlay["sha256"],
+            "sourceCommit": lock["commit"],
+            "files": {name: value["preparedSHA256"]
+                      for name, value in forwarding_overlay["files"].items()},
+        }
+        if manifest.get("forwardingLifecycle") != expected_forwarding:
+            failures.append("the forwarding lifecycle overlay provenance differs from the locked source")
     for key in QUALIFICATION_KEYS:
         if manifest.get(key) is not True:
             failures.append(f"qualification flag {key} did not pass")
@@ -230,6 +243,8 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     updated["hostSourceSHA256"] = {name: sources[name] for name in pin["hostSourceSHA256"]}
     if scheme_overlay:
         updated["schemeOverlaySHA256"] = scheme_overlay["sha256"]
+    if forwarding_overlay:
+        updated["forwardingOverlaySHA256"] = forwarding_overlay["sha256"]
     if rebuilt_overlay:
         updated["filterOverlay"] = rebuilt_overlay
     updated["runID"] = manifest.get("runID", pin.get("runID"))

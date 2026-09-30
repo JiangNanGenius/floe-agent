@@ -13,7 +13,7 @@ DEFAULT_LOCK = Path(__file__).resolve().parent.parent / "ThirdParty/Collabora/en
 
 
 def expected_receipt(lock):
-    """Build the receipt, including the scheme lifecycle overlay when pinned."""
+    """Build the receipt, including the lifecycle overlays when pinned."""
     overlay = lock["embeddingOverlay"]
     receipt = {"sourceCommit": lock["commit"], "patchSHA256": overlay["sha256"],
                "requiredFrameworks": overlay["requiredFrameworks"],
@@ -26,15 +26,28 @@ def expected_receipt(lock):
             "patchSHA256": scheme_overlay["sha256"],
             "files": {name: data["preparedSHA256"]
                       for name, data in scheme_overlay["files"].items()}}
+    forwarding_overlay = lock.get("forwardingLifecycleOverlay")
+    if forwarding_overlay is not None:
+        receipt["forwardingLifecycle"] = {
+            "patchSHA256": forwarding_overlay["sha256"],
+            "files": {name: data["preparedSHA256"]
+                      for name, data in forwarding_overlay["files"].items()}}
     return receipt
 
 
 def prepared_files(lock):
-    """Every file the preparation must own: name -> prepared checksum."""
+    """Every file the preparation must own: name -> prepared checksum.
+
+    Overlays merge in application order (embedding, scheme, forwarding); on
+    overlap the later overlay's output is the expected final state.
+    """
     files = dict(lock["embeddingOverlay"]["files"])
     scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
     if scheme_overlay is not None:
         files.update(scheme_overlay["files"])
+    forwarding_overlay = lock.get("forwardingLifecycleOverlay")
+    if forwarding_overlay is not None:
+        files.update(forwarding_overlay["files"])
     return files
 
 
@@ -66,6 +79,16 @@ def prepare(root, lock_path=DEFAULT_LOCK):
                 raise ValueError(
                     f"Office source does not match the scheme lifecycle overlay: {name}")
 
+    forwarding_overlay = lock.get("forwardingLifecycleOverlay")
+    forwarding_patch = None
+    if forwarding_overlay is not None:
+        forwarding_patch = contained(lock_path.parent, forwarding_overlay["patch"])
+        if digest(forwarding_patch) != forwarding_overlay["sha256"]:
+            raise ValueError("Office forwarding lifecycle patch checksum mismatch")
+        # Its input hashes describe the embedding-prepared state (it applies
+        # after the embedding overlay), verified against the staged files
+        # below rather than the pristine pinned sources.
+
     receipt = expected_receipt(lock)
     destination = root / "prepared/native"
     if destination.exists() or destination.is_symlink():
@@ -73,12 +96,8 @@ def prepare(root, lock_path=DEFAULT_LOCK):
             raise ValueError("Existing native preparation is not owned by this overlay")
         if json.loads((destination / "overlay.json").read_text()) != receipt:
             raise ValueError("Existing native preparation uses a different overlay")
-        expected = {name: checksum
-                    for group in (receipt["files"],
-                                  receipt.get("schemeTaskLifecycle", {}).get("files", {}))
-                    for name, checksum in group.items()}
-        for name, checksum in expected.items():
-            if digest(contained(destination, name)) != checksum:
+        for name, checksum in prepared_files(lock).items():
+            if digest(contained(destination, name)) != checksum["preparedSHA256"]:
                 raise ValueError("Prepared native source was edited; preserve it and use a fresh bundle")
         return receipt
     with tempfile.TemporaryDirectory(dir=root / "prepared", prefix=".native-") as folder:
@@ -94,6 +113,18 @@ def prepare(root, lock_path=DEFAULT_LOCK):
             subprocess.run(["git", "apply", "--check", str(scheme_patch)],
                            cwd=stage, check=True, capture_output=True)
             subprocess.run(["git", "apply", str(scheme_patch)],
+                           cwd=stage, check=True, capture_output=True)
+        if forwarding_patch is not None:
+            # Applies after the embedding (and scheme) overlays; its declared
+            # input state is the embedding-prepared file, checked here so a
+            # drifted embedding overlay fails before the patch is applied.
+            for name, hashes in forwarding_overlay["files"].items():
+                if digest(contained(stage, name)) != hashes["originalSHA256"]:
+                    raise ValueError(
+                        f"Office prepared source does not match the forwarding lifecycle overlay input: {name}")
+            subprocess.run(["git", "apply", "--check", str(forwarding_patch)],
+                           cwd=stage, check=True, capture_output=True)
+            subprocess.run(["git", "apply", str(forwarding_patch)],
                            cwd=stage, check=True, capture_output=True)
         expected = {name: data["preparedSHA256"]
                     for name, data in prepared_files(lock).items()}

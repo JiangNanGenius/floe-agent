@@ -45,6 +45,12 @@ def checked_lock(lock_path):
         overlay = lock.get('schemeTaskLifecycleOverlay')
         if overlay is None or scheme_claim != overlay['sha256']:
             raise ValueError('Native host scheme overlay claim does not match its lock')
+    # Same contract for the forwarding lifecycle overlay.
+    forwarding_claim = pin.get('forwardingOverlaySHA256')
+    if forwarding_claim is not None:
+        overlay = lock.get('forwardingLifecycleOverlay')
+        if overlay is None or forwarding_claim != overlay['sha256']:
+            raise ValueError('Native host forwarding overlay claim does not match its lock')
     for name, checksum in pin['hostSourceSHA256'].items():
         relative(name)
         if digest(lock_path.parent / 'FloeOfficeNative' / name) != checksum:
@@ -95,6 +101,16 @@ def inventory(folder, lock, pin):
                 or provenance.get('sourceCommit') != lock['commit']
                 or provenance.get('files') != expected_files):
             raise ValueError('Native Office host lacks the pinned scheme overlay provenance')
+    forwarding_claim = pin.get('forwardingOverlaySHA256')
+    if forwarding_claim is not None:
+        overlay = lock['forwardingLifecycleOverlay']
+        provenance = report.get('forwardingLifecycle', {})
+        expected_files = {name: spec['preparedSHA256']
+                          for name, spec in overlay['files'].items()}
+        if (provenance.get('patchSHA256') != forwarding_claim
+                or provenance.get('sourceCommit') != lock['commit']
+                or provenance.get('files') != expected_files):
+            raise ValueError('Native Office host lacks the pinned forwarding overlay provenance')
     if 'filterOverlay' in pin:
         selected = report.get('filterOverlay', {})
         if (not selected.get('compilePassed') or not selected.get('archiveReplacementPassed')
