@@ -7,6 +7,7 @@ or:  python3 scripts/office_real_simulator/tests/test_office_real_simulator.py
 These validate pinned inputs and local logic only; they never execute a build
 and must not claim a simulator result.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 PKG_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = PKG_DIR.parent.parent.parent
@@ -533,7 +535,8 @@ class ProvenanceBindingTests(unittest.TestCase):
 
 class RestoreEndToEndTests(unittest.TestCase):
     def make_archive(self, tmp, lock, provenance_overrides=None,
-                     manifest_overrides=None, with_symlink=False):
+                     manifest_overrides=None, with_symlink=False,
+                     with_engine_list=False):
         root = Path(tmp) / 'pkg'
         (root / 'source/engine').mkdir(parents=True)
         archive_member = root / 'source/engine/libx.a'
@@ -554,6 +557,27 @@ class RestoreEndToEndTests(unittest.TestCase):
                  'sha256': digest},
             ],
         }
+        if with_engine_list:
+            # The real upstream list carries old-runner-absolute paths and .o
+            # inputs; the package retains the 1:1 linkerInputs order.
+            list_dir = root / 'source/engine/workdir/CustomTarget/ios'
+            list_dir.mkdir(parents=True)
+            object_member = root / 'source/engine/liby.o'
+            object_member.write_bytes(b'fake-object')
+            old_root = '/old/runner/work/_temp/floe-office-sim'
+            list_path = list_dir / 'ios-all-static-libs.list'
+            list_path.write_bytes(
+                f'{old_root}/source/engine/libx.a\n'
+                f'{old_root}/source/engine/liby.o\n'.encode())
+            for path, data in (
+                    ('source/engine/liby.o', b'fake-object'),
+                    ('source/engine/workdir/CustomTarget/ios/'
+                     'ios-all-static-libs.list', list_path.read_bytes())):
+                manifest['files'].append({
+                    'path': path, 'size': len(data),
+                    'sha256': hashlib.sha256(data).hexdigest()})
+            manifest['linkerInputs'] = ['source/engine/libx.a',
+                                        'source/engine/liby.o']
         if with_symlink:
             (root / 'source/lobuilddir-symlink').symlink_to('engine', target_is_directory=True)
             manifest['files'].append({'path': 'source/lobuilddir-symlink', 'symlink': 'engine'})
@@ -666,6 +690,32 @@ class RestoreEndToEndTests(unittest.TestCase):
                 with self.assertRaises(restore_simulator_bundle.RestoreError):
                     restore_simulator_bundle.restore(
                         tarball, Path(tmp) / 'restored', provenance_path)
+
+    def test_restore_rewrites_engine_manifest_for_destination(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            tarball, provenance_path, _ = self.make_archive(
+                tmp, self.lock(), with_engine_list=True)
+            destination = Path(tmp) / 'restored'
+            lock_path = Path(tmp) / 'lock.json'
+            lock_path.write_text(json.dumps(self.lock()))
+            with mock.patch.object(restore_simulator_bundle,
+                                   'archive_simulator_facts',
+                                   return_value=(True, {'simulatorOnly': True})), \
+                 mock.patch.object(restore_simulator_bundle, 'LOCK_PATH',
+                                   lock_path):
+                report = restore_simulator_bundle.restore(
+                    tarball, destination, provenance_path)
+            rewritten = (destination / 'source/engine/workdir/CustomTarget/ios/'
+                         'ios-all-static-libs.list').read_text().splitlines()
+            self.assertEqual(rewritten, [
+                str((destination / 'source/engine/libx.a').resolve()),
+                str((destination / 'source/engine/liby.o').resolve()),
+            ])
+            rewrite = report['engineArchiveManifestRewrite']
+            self.assertTrue(rewrite['present'])
+            self.assertTrue(rewrite['pairingUsed'])
+            self.assertEqual(rewrite['rewrittenRoot'], str(destination.resolve()))
 
 
 class GeneratedScenarioTests(unittest.TestCase):
@@ -790,6 +840,1087 @@ class RenderGateTests(unittest.TestCase):
             blank.save(tmp / 'Screenshot 01-preview.png')
             result = check_render.check_render(tmp)
             self.assertFalse(result['renderPassed'])
+
+
+def probe_payload(executable, lxml='5.4.0', polib='1.2.0', imports_ok=True,
+                  import_error=None, prefix=None, base_prefix='/base/python',
+                  pyvenv_cfg=True):
+    if prefix is None:
+        prefix = str(Path(executable).parent.parent)
+    payload = {
+        'executable': executable,
+        'whichPython3': executable,
+        'prefix': prefix,
+        'basePrefix': base_prefix,
+        'baseExecutable': base_prefix,
+        'pyvenvCfg': pyvenv_cfg,
+        'versions': {'lxml': lxml, 'polib': polib},
+        'importsOk': imports_ok,
+    }
+    if import_error:
+        payload['importError'] = import_error
+    return json.dumps(payload)
+
+
+class ChildPythonBindingTests(unittest.TestCase):
+    """The child `python3` (the one configure actually invokes) is the venv."""
+
+    def make_venv_bin(self, tmp):
+        bin_dir = Path(tmp) / 'office-python/bin'
+        bin_dir.mkdir(parents=True)
+        python3 = bin_dir / 'python3'
+        python3.write_text('#!/bin/sh\n')
+        return bin_dir, str(python3.resolve())
+
+    def test_child_path_selects_prepared_python(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, expected = self.make_venv_bin(tmp)
+            seen = []
+
+            def runner(command, env):
+                seen.append((list(command), dict(env)))
+                return 0, probe_payload(expected)
+
+            report = build_simulator_engine.verify_child_python(
+                bin_dir, runner=runner, base_env={'PATH': '/usr/bin'})
+            self.assertTrue(report['passed'], report['failures'])
+            self.assertEqual(report['configurePython3'], expected)
+            self.assertEqual(report['lxmlVersion'], '5.4.0')
+            self.assertEqual(report['polibVersion'], '1.2.0')
+            for command, env in seen:
+                first = env['PATH'].split(os.pathsep)[0]
+                self.assertEqual(os.path.realpath(first),
+                                 os.path.realpath(str(bin_dir)), env['PATH'])
+                self.assertEqual(env['FLOE_OFFICE_PYTHON_BIN'],
+                                 os.path.abspath(str(bin_dir)))
+            self.assertTrue(any(command[:2] == ['/usr/bin/env', 'python3']
+                                for command, _ in seen),
+                            'the exact configure mechanism must be probed')
+
+    def test_configure_resolving_elsewhere_fails(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, expected = self.make_venv_bin(tmp)
+
+            def runner(command, env):
+                if command[:2] == ['/usr/bin/env', 'python3']:
+                    return 0, probe_payload('/usr/bin/python3')
+                return 0, probe_payload(expected)
+
+            report = build_simulator_engine.verify_child_python(
+                bin_dir, runner=runner, base_env={'PATH': '/usr/bin'})
+            self.assertFalse(report['passed'])
+            self.assertIn('prepared venv bin', ' '.join(report['failures']))
+
+    def test_same_resolved_executable_but_base_prefix_rejected(self):
+        # The coordinator's review case: base and venv interpreters can share
+        # a resolved executable (venv python is a symlink) while site-packages
+        # differ; identity must come from sys.prefix/pyvenv.cfg, not realpath.
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, expected = self.make_venv_bin(tmp)
+
+            def runner(command, env):
+                return 0, probe_payload(expected, prefix='/base/python',
+                                        base_prefix='/base/python',
+                                        pyvenv_cfg=False)
+
+            report = build_simulator_engine.verify_child_python(
+                bin_dir, runner=runner, base_env={'PATH': '/usr/bin'})
+            self.assertFalse(report['passed'])
+            joined = ' '.join(report['failures'])
+            self.assertIn('no pyvenv.cfg', joined)
+            self.assertIn('base interpreter', joined)
+
+    def test_prefix_mismatch_rejected(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, expected = self.make_venv_bin(tmp)
+
+            def runner(command, env):
+                return 0, probe_payload(expected, prefix='/somewhere/else')
+
+            report = build_simulator_engine.verify_child_python(
+                bin_dir, runner=runner, base_env={'PATH': '/usr/bin'})
+            self.assertFalse(report['passed'])
+            self.assertIn('sys.prefix', ' '.join(report['failures']))
+
+    def test_missing_lxml_fails_before_build(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, expected = self.make_venv_bin(tmp)
+
+            def runner(command, env):
+                return 0, probe_payload(expected, imports_ok=False,
+                                        import_error='ModuleNotFoundError: No module named lxml')
+
+            report = build_simulator_engine.verify_child_python(
+                bin_dir, runner=runner, base_env={'PATH': '/usr/bin'})
+            self.assertFalse(report['passed'])
+            self.assertIn('cannot import lxml/polib', ' '.join(report['failures']))
+
+    def test_unpinned_version_fails(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir, expected = self.make_venv_bin(tmp)
+
+            def runner(command, env):
+                return 0, probe_payload(expected, lxml='5.3.0')
+
+            report = build_simulator_engine.verify_child_python(
+                bin_dir, runner=runner, base_env={'PATH': '/usr/bin'})
+            self.assertFalse(report['passed'])
+            self.assertIn('lxml version', ' '.join(report['failures']))
+
+    def test_preflight_fails_closed_on_python_check(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'build'
+            source = root / 'source'
+            (source / 'engine').mkdir(parents=True)
+            (source / 'engine/configure.ac').write_text('AC_INIT\n')
+            with mock.patch.object(build_simulator_engine, 'sdk_info',
+                                   return_value={'sdkPath': '/sdk',
+                                                 'sdkVersion': '27.0',
+                                                 'sdkBuildVersion': '24A430'}), \
+                 mock.patch.object(build_simulator_engine, 'toolchain_info',
+                                   return_value={'clang': 'c', 'xcodebuild': 'x',
+                                                 'xcodeVersion': 'Xcode 27.0'}):
+                report = build_simulator_engine.preflight(
+                    root, source, python_bin='/venv/bin',
+                    python_check={'passed': False,
+                                  'failures': ['no lxml for python3']})
+            self.assertFalse(report['preflightPassed'])
+            self.assertFalse(report['pythonEnvironmentReady'])
+            self.assertIn('no lxml for python3', report['pythonEnvironmentFailures'])
+
+
+class RealVenvBindingTests(unittest.TestCase):
+    """Real venv + real subprocesses: the symlinked venv bin must win.
+
+    ``venv/bin/python`` is a symlink to the base interpreter, so a realpath
+    based default_python_bin silently selects the base bin (the original
+    review defect).  No network or heavy dependency: the venv gets controlled
+    lxml/polib fixture packages with the pinned dist-info versions, and the
+    probe runs exactly as the build driver runs it.
+    """
+
+    def make_fixture_venv(self, tmp):
+        venv = Path(tmp) / 'venv'
+        subprocess.run([sys.executable, '-m', 'venv', '--without-pip',
+                        str(venv)], check=True)
+        purelib = subprocess.run(
+            [str(venv / 'bin/python'), '-c',
+             "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            check=True, capture_output=True, text=True).stdout.strip()
+        for name, version in (('lxml', '5.4.0'), ('polib', '1.2.0')):
+            package = Path(purelib) / name
+            package.mkdir(parents=True)
+            (package / '__init__.py').write_text(f"__version__ = '{version}'\n")
+            dist = Path(purelib) / f'{name}-{version}.dist-info'
+            dist.mkdir()
+            (dist / 'METADATA').write_text(
+                f'Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n')
+        return venv
+
+    def test_symlinked_venv_python_is_selected_and_verified(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = self.make_fixture_venv(tmp)
+            report = build_simulator_engine.verify_child_python(venv / 'bin')
+            self.assertTrue(report['passed'], report['failures'])
+            self.assertEqual(report['lxmlVersion'], '5.4.0')
+            self.assertEqual(report['polibVersion'], '1.2.0')
+            self.assertEqual(
+                os.path.realpath(os.path.dirname(report['configurePython3'])),
+                os.path.realpath(str(venv / 'bin')))
+
+            script = (
+                'import json, sys; sys.path.insert(0, %r); '
+                'import build_simulator_engine as b; '
+                'bin_dir = b.default_python_bin(); '
+                'print(json.dumps({"default": bin_dir, '
+                '"check": b.verify_child_python(bin_dir)}))'
+                % str(PKG_DIR)
+            )
+            child = subprocess.run([str(venv / 'bin/python'), '-c', script],
+                                   check=True, capture_output=True, text=True)
+            payload = json.loads(child.stdout.strip().splitlines()[-1])
+            self.assertEqual(os.path.realpath(payload['default']),
+                             os.path.realpath(str(venv / 'bin')))
+            self.assertNotEqual(os.path.realpath(payload['default']),
+                                os.path.realpath(str(Path(sys.executable).parent)))
+            self.assertTrue(payload['check']['passed'],
+                            payload['check'].get('failures'))
+
+
+class EngineManifestTests(unittest.TestCase):
+    """The real pinned list format: absolute runner-root paths plus .o files."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        import engine_manifest
+        self.module = engine_manifest
+        engine = self.root / 'source/engine'
+        engine.mkdir(parents=True)
+        (engine / 'libsc.a').write_bytes(b'a')
+        (engine / 'workdir/LinkTarget').mkdir(parents=True)
+        (engine / 'workdir/LinkTarget/liboox.a').write_bytes(b'b')
+        (engine / 'workdir/obj').mkdir(parents=True)
+        (engine / 'workdir/obj/builtins.o').write_bytes(b'c')
+
+    def test_canonicalize_absolute_and_engine_relative(self):
+        lines = [
+            str(self.root / 'source/engine/libsc.a'),
+            'workdir/LinkTarget/liboox.a',
+            str(self.root / 'source/engine/workdir/obj/builtins.o'),
+        ]
+        canonical = self.module.canonicalize(self.root, lines)
+        self.assertEqual(canonical, [
+            'source/engine/libsc.a',
+            'source/engine/workdir/LinkTarget/liboox.a',
+            'source/engine/workdir/obj/builtins.o',
+        ])
+
+    def test_canonicalize_rejects_outside_root(self):
+        with self.assertRaises(self.module.ManifestError):
+            self.module.canonicalize(self.root, ['/etc/hosts'])
+
+    def test_canonicalize_rejects_missing_unsupported_and_empty(self):
+        with self.assertRaises(self.module.ManifestError):
+            self.module.canonicalize(self.root, ['/old/runner/libx.a'])
+        dynamic = self.root / 'source/engine/libfoo.dylib'
+        dynamic.write_bytes(b'd')
+        with self.assertRaises(self.module.ManifestError):
+            self.module.canonicalize(self.root, [str(dynamic)])
+        with self.assertRaises(self.module.ManifestError):
+            self.module.canonicalize(self.root, [])
+
+    def test_rewrite_uses_linker_input_order_for_old_root(self):
+        dest = self.root / 'dest'
+        (dest / 'source/engine/workdir/obj').mkdir(parents=True)
+        (dest / 'source/engine/libsc.a').write_bytes(b'a')
+        (dest / 'source/engine/workdir/obj/builtins.o').write_bytes(b'c')
+        raw = (b'/old/runner/work/_temp/floe-office-sim/source/engine/libsc.a\n'
+               b'/old/runner/work/_temp/floe-office-sim/source/engine/workdir/'
+               b'obj/builtins.o\n')
+        rewritten, evidence = self.module.rewrite_for_destination(
+            dest, raw,
+            ['source/engine/libsc.a', 'source/engine/workdir/obj/builtins.o'])
+        self.assertEqual(rewritten.decode().splitlines(), [
+            str((dest / 'source/engine/libsc.a').resolve()),
+            str((dest / 'source/engine/workdir/obj/builtins.o').resolve()),
+        ])
+        self.assertTrue(evidence['pairingUsed'])
+
+    def test_rewrite_falls_back_to_resolution_and_fails_closed(self):
+        dest = self.root / 'dest2'
+        (dest / 'source/engine').mkdir(parents=True)
+        (dest / 'source/engine/libsc.a').write_bytes(b'a')
+        rewritten, evidence = self.module.rewrite_for_destination(
+            dest, b'source/engine/libsc.a\n', None)
+        self.assertEqual(rewritten.decode().strip(),
+                         str((dest / 'source/engine/libsc.a').resolve()))
+        self.assertFalse(evidence['pairingUsed'])
+        with self.assertRaises(self.module.ManifestError):
+            self.module.rewrite_for_destination(dest, b'/old/runner/libx.a\n', None)
+
+
+class CoreCheckpointTests(unittest.TestCase):
+    """Synthetic completed-core checkpoint contract; no real engine is built."""
+
+    EXPECT_XCODE = 'Xcode 27.0\nBuild version 27A266a\n'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.lock = {'commit': 'abc', 'sourcePatchSHA256': 'p',
+                     'repository': 'repo', 'buildReserveGiB': 6,
+                     'minimumFreeGiB': 12, 'platform': 'iphoneos-arm64'}
+        self.lock_path = self.root / 'engine.lock.json'
+        self.lock_path.write_text(json.dumps(self.lock))
+        import checkpoint_simulator_core
+        import resume_simulator_core
+        self.checkpoint_module = checkpoint_simulator_core
+        self.resume_module = resume_simulator_core
+        patcher = mock.patch.object(checkpoint_simulator_core, 'LOCK_PATH',
+                                    self.lock_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(resume_simulator_core, 'LOCK_PATH',
+                                    self.lock_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_runner(self, vtool=(0, '  platform IOSSIMULATOR\n'),
+                    lipo=(0, 'arm64\n')):
+        def run(command, cwd=None):
+            command = list(command)
+            if command[:2] == ['lipo', '-archs']:
+                return lipo
+            if command[:2] == ['ar', 'x'] and cwd:
+                (Path(cwd) / 'a.o').write_bytes(b'fake')
+                return 0, ''
+            if command[0] == 'vtool':
+                return vtool
+            return 1, f'unexpected command {command}'
+        return run
+
+    def make_build_root(self, native_build_passed=False,
+                        engine_build_completed=True, platform='iphonesimulator-arm64',
+                        commit='abc'):
+        root = self.root / f'build-{len(list(self.root.glob("build-*")))}'
+        engine = root / 'source/engine'
+        (engine / 'workdir/CustomTarget/ios').mkdir(parents=True)
+        (engine / 'config_host').mkdir(parents=True)
+        (engine / 'config_host/config_host.mk').write_text('# config\n')
+        # Exact editor-configure inputs verified against the pinned
+        # online.mirror configure.ac (CHK_FILE_VAR / setuprc / config_host.mk).
+        (engine / 'config_host.mk').write_text('export ENABLE_DBGUTIL=\n')
+        (engine / 'instdir/program').mkdir(parents=True)
+        (engine / 'instdir/program/setuprc').write_text('[Version]\n')
+        poco = engine / 'workdir/UnpackedTarball/poco/include/Poco'
+        poco.mkdir(parents=True)
+        (poco / 'Poco.h').write_text('// poco\n')
+        zstd = engine / 'workdir/UnpackedTarball/zstd/lib'
+        zstd.mkdir(parents=True)
+        (zstd / 'zstd.h').write_text('// zstd\n')
+        # The REAL upstream list mixes absolute runner-root paths (from
+        # engine/bin/lo-all-static-libs) with engine-relative entries, and it
+        # includes individual .o inputs as well as .a archives.
+        absolute_archive = engine / 'workdir/LinkTarget/StaticLibrary/libsc.a'
+        absolute_archive.parent.mkdir(parents=True, exist_ok=True)
+        absolute_archive.write_bytes(b'archive-sc')
+        (engine / 'workdir/LinkTarget/StaticLibrary/libPocoFoundation.a').write_bytes(b'poco')
+        (engine / 'workdir/LinkTarget/StaticLibrary/libzstd.a').write_bytes(b'zstd')
+        engine_relative = Path('workdir/LinkTarget/StaticLibrary/liboox.a')
+        (engine / engine_relative).write_bytes(b'archive-oox')
+        object_input = engine / ('workdir/UnpackedTarball/nss/nss/lib/'
+                                 'ckfw/builtins/out/builtins.o')
+        object_input.parent.mkdir(parents=True, exist_ok=True)
+        object_input.write_bytes(b'object-builtins')
+        manifest = engine / 'workdir/CustomTarget/ios/ios-all-static-libs.list'
+        raw_lines = [
+            str(absolute_archive),
+            str(engine_relative),
+            str(object_input),
+        ]
+        manifest.write_text('\n'.join(raw_lines) + '\n')
+        # A portable relative symlink inside a packed subtree.
+        (engine / 'workdir/UnpackedTarball/zlib').mkdir(parents=True)
+        (engine / 'workdir/UnpackedTarball/zlib/zlib.h').write_text('/* z */\n')
+        (engine / 'include').mkdir()
+        (engine / 'include/zlib.h').symlink_to(
+            '../workdir/UnpackedTarball/zlib/zlib.h')
+        qualification = {
+            'commit': commit,
+            'platform': platform,
+            'sdkVersion': '27.0',
+            'sdkBuildVersion': '24A430',
+            'xcodeVersion': 'Xcode 27.0; Build version 27A266a;',
+            'engineBuildCompleted': engine_build_completed,
+            'nativeBuildPassed': native_build_passed,
+            'phases': {'engine-configure': {'seconds': 55.7},
+                       'engine-build': {'seconds': 10512.9}},
+            'stage': 'engine-build',
+        }
+        (root / 'qualification.json').write_text(json.dumps(qualification))
+        return root
+
+    def create(self, root):
+        return self.checkpoint_module.create_checkpoint(
+            root, root / 'core-checkpoint', runner=self.fake_runner())
+
+    def make_prepared_destination(self, name='dest'):
+        dest = self.root / name
+        (dest / 'source/engine').mkdir(parents=True)
+        (dest / 'source/engine/configure.ac').write_text('AC_INIT\n')
+        return dest
+
+    def test_create_and_restore_round_trip(self):
+        root = self.make_build_root()
+        raw_manifest = (root / 'source/engine/workdir/CustomTarget/ios/'
+                        'ios-all-static-libs.list').read_bytes()
+        record = self.create(root)
+        self.assertEqual(record['checkpointKind'],
+                         sim_paths.CORE_CHECKPOINT_KIND)
+        self.assertTrue(record['engineBuildCompleted'])
+        self.assertFalse(record['nativeBuildPassed'])
+        self.assertFalse(record['finalQualification'])
+        self.assertFalse(record['editorPhasesExecuted'])
+        self.assertGreater(record['checkpointSize'], 0)
+        self.assertEqual(record['nativeBuildPassed'], False)
+        self.assertEqual(record['engineArchiveSuffixes'], ['.a', '.o'])
+        self.assertEqual(record['engineArchiveManifestOriginalSHA256'],
+                         hashlib.sha256(raw_manifest).hexdigest())
+        self.assertNotEqual(record['engineArchiveManifestOriginalSHA256'],
+                            record['engineArchiveManifestCanonicalSHA256'])
+        self.assertIsNone(record['engineArchiveManifestRewrittenSHA256'])
+        archive = root / 'core-checkpoint' / sim_paths.CORE_CHECKPOINT_TAR
+        checkpoint = root / 'core-checkpoint' / sim_paths.CORE_CHECKPOINT_JSON
+        self.assertTrue(archive.is_file())
+        member_name = 'source/engine/workdir/CustomTarget/ios/ios-all-static-libs.list'
+        with tarfile.open(archive) as tar:
+            names = set(tar.getnames())
+            self.assertIn(sim_paths.CORE_CHECKPOINT_MANIFEST, names)
+            self.assertIn(sim_paths.CORE_CHECKPOINT_QUALIFICATION, names)
+            self.assertIn(member_name, names)
+            self.assertIn(member_name + '.original', names)
+            self.assertIn('qualification.json', names)
+            canonical = tar.extractfile(member_name).read()
+            original = tar.extractfile(member_name + '.original').read()
+        self.assertEqual(original, raw_manifest)
+        self.assertTrue(canonical.endswith(b'\n'))
+        canonical_lines = canonical.decode().splitlines()
+        self.assertEqual(canonical_lines, [
+            'source/engine/workdir/LinkTarget/StaticLibrary/libsc.a',
+            'source/engine/workdir/LinkTarget/StaticLibrary/liboox.a',
+            'source/engine/workdir/UnpackedTarball/nss/nss/lib/ckfw/'
+            'builtins/out/builtins.o',
+        ])
+        self.assertNotIn(str(root).encode(), canonical)
+
+        dest = self.make_prepared_destination()
+        report = self.resume_module.restore_checkpoint(
+            archive, checkpoint, dest,
+            expect_xcode='Xcode 27.0\nBuild version 27A266a\n',
+            expect_sdk='27.0', expect_sdk_build='24A430',
+            runner=self.fake_runner())
+        self.assertEqual(report['checkpointKind'],
+                         sim_paths.CORE_CHECKPOINT_KIND)
+        self.assertFalse(report['engineConfigureRerun'])
+        self.assertFalse(report['engineBuildRerun'])
+        self.assertTrue(report['editorPhasesOnly'])
+        self.assertTrue(report['engineBuildCompleted'])
+        self.assertEqual(report['resumePhases'], list(sim_paths.EDITOR_PHASES))
+        self.assertTrue((dest / sim_paths.CORE_RESUME_REPORT).is_file())
+        qualification = json.loads((dest / 'qualification.json').read_text())
+        self.assertTrue(qualification['engineBuildCompleted'])
+        self.assertFalse(qualification['nativeBuildPassed'])
+        link = dest / 'source/engine/include/zlib.h'
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link),
+                         '../workdir/UnpackedTarball/zlib/zlib.h')
+        restored_list = (dest / 'source/engine/workdir/CustomTarget/ios/'
+                         'ios-all-static-libs.list')
+        rewritten_lines = restored_list.read_text().splitlines()
+        self.assertTrue(all(Path(line).is_absolute() for line in rewritten_lines))
+        for line in rewritten_lines:
+            self.assertTrue(Path(line).exists(), line)
+        self.assertEqual(
+            report['engineArchiveManifestRewrittenSHA256'],
+            hashlib.sha256(restored_list.read_bytes()).hexdigest())
+        self.assertEqual(report['engineArchiveManifestOriginalSHA256'],
+                         record['engineArchiveManifestOriginalSHA256'])
+        self.assertEqual(report['engineArchiveManifestCanonicalSHA256'],
+                         record['engineArchiveManifestCanonicalSHA256'])
+        self.assertTrue(report['manifestRewritten'])
+        self.assertEqual(report['sdkBuildVersion'], '24A430')
+        self.assertEqual(report['expectSDKBuild'], '24A430')
+        self.assertTrue(report['toolchainVerified'])
+        self.assertTrue((dest / 'source/engine/workdir/UnpackedTarball/nss/nss/'
+                         'lib/ckfw/builtins/out/builtins.o').is_file())
+        self.assertEqual(
+            (dest / 'source/engine/workdir/CustomTarget/ios/'
+                   'ios-all-static-libs.list.original').read_bytes(),
+            raw_manifest)
+        loaded = self.resume_module.load_resume_report(dest)
+        self.assertIsNotNone(loaded)
+        self.assertFalse(loaded['engineBuildRerun'])
+        self.assertTrue(loaded['manifestRewritten'])
+
+    def test_create_refuses_final_qualification(self):
+        root = self.make_build_root(native_build_passed=True)
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_before_engine_build_completed(self):
+        root = self.make_build_root(engine_build_completed=False)
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_wrong_source_commit(self):
+        root = self.make_build_root(commit='other')
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_wrong_platform(self):
+        root = self.make_build_root(platform='iphoneos-arm64')
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_empty_engine_manifest(self):
+        root = self.make_build_root()
+        (root / 'source/engine/workdir/CustomTarget/ios/'
+                'ios-all-static-libs.list').write_text('\n')
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_device_platform_sample(self):
+        root = self.make_build_root()
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.checkpoint_module.create_checkpoint(
+                root, root / 'core-checkpoint',
+                runner=self.fake_runner(vtool=(0, '  platform IOS\n')))
+
+    def _append_manifest_line(self, root, line):
+        manifest = (root / 'source/engine/workdir/CustomTarget/ios/'
+                    'ios-all-static-libs.list')
+        manifest.write_text(manifest.read_text() + line + '\n')
+
+    def test_create_refuses_entry_outside_build_root(self):
+        root = self.make_build_root()
+        self._append_manifest_line(root, '/etc/hosts')
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_missing_entry(self):
+        root = self.make_build_root()
+        self._append_manifest_line(root, '/nonexistent/runner/source/engine/libx.a')
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_unsupported_suffix(self):
+        root = self.make_build_root()
+        dynamic = root / 'source/engine/libfoo.dylib'
+        dynamic.write_bytes(b'dylib')
+        self._append_manifest_line(root, str(dynamic))
+        with self.assertRaises(self.checkpoint_module.CheckpointError):
+            self.create(root)
+
+    def test_create_refuses_missing_editor_configure_input(self):
+        root = self.make_build_root()
+        (root / 'source/engine/config_host.mk').unlink()
+        with self.assertRaises(self.checkpoint_module.CheckpointError) as ctx:
+            self.create(root)
+        self.assertIn('editor-configure inputs', str(ctx.exception))
+
+    def _record_and_archive(self):
+        root = self.make_build_root()
+        self.create(root)
+        checkpoint_path = root / 'core-checkpoint' / sim_paths.CORE_CHECKPOINT_JSON
+        return (root / 'core-checkpoint' / sim_paths.CORE_CHECKPOINT_TAR,
+                checkpoint_path, json.loads(checkpoint_path.read_text()))
+
+    def test_restore_rejects_hash_mismatch(self):
+        archive, checkpoint_path, _ = self._record_and_archive()
+        with archive.open('ab') as stream:
+            stream.write(b'tamper')
+        dest = self.make_prepared_destination()
+        with self.assertRaises(self.resume_module.CheckpointError):
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+
+    def test_restore_rejects_manifest_hash_mismatch(self):
+        archive, checkpoint_path, record = self._record_and_archive()
+        record['coreManifestSHA256'] = '0' * 64
+        checkpoint_path.write_text(json.dumps(record))
+        dest = self.make_prepared_destination()
+        with self.assertRaises(self.resume_module.CheckpointError):
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+
+    def test_restore_rejects_canonical_manifest_hash_mismatch(self):
+        archive, checkpoint_path, record = self._record_and_archive()
+        record['engineArchiveManifestCanonicalSHA256'] = '0' * 64
+        checkpoint_path.write_text(json.dumps(record))
+        dest = self.make_prepared_destination()
+        with self.assertRaises(self.resume_module.CheckpointError):
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+
+    def test_restore_rejects_tampered_member(self):
+        import io
+        archive, checkpoint_path, record = self._record_and_archive()
+        tampered = archive.with_suffix('.tampered')
+        target = 'source/engine/config_host/config_host.mk'
+        with tarfile.open(archive) as source_tar, \
+                tarfile.open(tampered, 'w:gz') as target_tar:
+            for member in source_tar.getmembers():
+                if member.name == target:
+                    data = b'# replaced\n'
+                    member.size = len(data)
+                    target_tar.addfile(member, io.BytesIO(data))
+                elif member.isfile():
+                    target_tar.addfile(member, source_tar.extractfile(member))
+                else:
+                    target_tar.addfile(member)
+        tampered.replace(archive)
+        record['checkpointSHA256'] = self.resume_module.artifact_sha256(archive)
+        record['checkpointSize'] = archive.stat().st_size
+        checkpoint_path.write_text(json.dumps(record))
+        dest = self.make_prepared_destination()
+        with self.assertRaises(self.resume_module.CheckpointError) as ctx:
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+        self.assertIn('hash/size mismatch', str(ctx.exception))
+
+    def test_restore_rejects_wrong_source_commit(self):
+        archive, checkpoint_path, record = self._record_and_archive()
+        record['sourceCommit'] = 'evil'
+        checkpoint_path.write_text(json.dumps(record))
+        dest = self.make_prepared_destination()
+        with self.assertRaises(self.resume_module.CheckpointError):
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+
+    def test_restore_rejects_wrong_platform_and_arch(self):
+        for override in ({'platform': 'iphoneos'}, {'arch': 'x86_64'},
+                         {'checkpointKind': 'staged-engine'},
+                         {'nativeBuildPassed': True},
+                         {'finalQualification': True},
+                         {'editorPhasesExecuted': True},
+                         {'engineBuildCompleted': False}):
+            archive, checkpoint_path, record = self._record_and_archive()
+            record.update(override)
+            checkpoint_path.write_text(json.dumps(record))
+            dest = self.make_prepared_destination('dest-' + list(override)[0])
+            with self.assertRaises(self.resume_module.CheckpointError, msg=override):
+                self.resume_module.restore_checkpoint(
+                    archive, checkpoint_path, dest,
+                    expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                    expect_sdk_build='24A430',
+                    runner=self.fake_runner())
+
+    def test_restore_rejects_wrong_runner_toolchain(self):
+        archive, checkpoint_path, _ = self._record_and_archive()
+        cases = (
+            ('Xcode 27.0\nBuild version 27A266a\n', '27.0', '26A999'),  # same SDK
+            ('Xcode 99.0\nBuild version 27A266a\n', '27.0', '24A430'),
+            ('Xcode 27.0\nBuild version 27A266a\n', '26.0', '24A430'),
+        )
+        for xcode, sdk, sdk_build in cases:
+            dest = self.make_prepared_destination(
+                ('dest-' + xcode + '-' + sdk + '-' + sdk_build).replace(' ', ''))
+            with self.assertRaises(self.resume_module.CheckpointError, msg=(xcode, sdk, sdk_build)):
+                self.resume_module.restore_checkpoint(
+                    archive, checkpoint_path, dest,
+                    expect_xcode=xcode, expect_sdk=sdk,
+                    expect_sdk_build=sdk_build,
+                    runner=self.fake_runner())
+
+    def test_restore_rejects_same_sdk_version_different_build(self):
+        # The coordinator's review case: equal SDK version is not toolchain
+        # identity; the actual SDK build must match.
+        archive, checkpoint_path, record = self._record_and_archive()
+        record['sdkBuildVersion'] = '24A430'
+        checkpoint_path.write_text(json.dumps(record))
+        dest = self.make_prepared_destination()
+        with self.assertRaises(self.resume_module.CheckpointError) as ctx:
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='25B111', runner=self.fake_runner())
+        self.assertIn('SDK build', str(ctx.exception))
+
+    def test_restore_refuses_existing_engine_outputs(self):
+        archive, checkpoint_path, _ = self._record_and_archive()
+        dest = self.make_prepared_destination()
+        (dest / 'source/engine/workdir/CustomTarget/ios').mkdir(parents=True)
+        (dest / 'source/engine/workdir/CustomTarget/ios/'
+                'ios-all-static-libs.list').write_text('x\n')
+        with self.assertRaises(self.resume_module.CheckpointError):
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+
+    def test_restore_refuses_partial_qualification(self):
+        archive, checkpoint_path, _ = self._record_and_archive()
+        dest = self.make_prepared_destination()
+        (dest / 'qualification.json').write_text('{}')
+        with self.assertRaises(self.resume_module.CheckpointError):
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+
+    def test_tar_member_validation(self):
+        import io
+        evil = self.root / 'evil.tar'
+        with tarfile.open(evil, 'w:gz') as archive:
+            for name, link, kind in (('../escape', None, 'file'),
+                                     ('/abs/path', None, 'file'),
+                                     ('safe/dir', '/etc', 'symlink'),
+                                     ('safe/dir2', '../../outside', 'symlink')):
+                info = tarfile.TarInfo(name)
+                if kind == 'file':
+                    info.size = 1
+                    archive.addfile(info, io.BytesIO(b'x'))
+                else:
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = link
+                    archive.addfile(info)
+        with tarfile.open(evil) as archive:
+            failures = self.resume_module.validate_tar_members(
+                archive.getmembers(), self.root / 'dest')
+        self.assertEqual(len(failures), 4, failures)
+
+    def test_restore_rejects_escaping_archive(self):
+        import io
+        archive, checkpoint_path, record = self._record_and_archive()
+        evil = archive.with_suffix('.evil')
+        with tarfile.open(archive) as source_tar, \
+                tarfile.open(evil, 'w:gz') as target_tar:
+            for member in source_tar.getmembers():
+                if member.name == 'source/engine/include/zlib.h' and member.issym():
+                    member.linkname = '../../../../outside'
+                target_tar.addfile(
+                    member,
+                    source_tar.extractfile(member) if member.isfile() else None)
+        evil.replace(archive)
+        record['checkpointSHA256'] = self.resume_module.artifact_sha256(archive)
+        record['checkpointSize'] = archive.stat().st_size
+        checkpoint_path.write_text(json.dumps(record))
+        dest = self.make_prepared_destination()
+        with self.assertRaises(self.resume_module.CheckpointError):
+            self.resume_module.restore_checkpoint(
+                archive, checkpoint_path, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430',
+                runner=self.fake_runner())
+
+
+class CoreResumePlanTests(unittest.TestCase):
+    """A resumed build never plans engine phases, even for --phases all."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.lock = {'commit': 'abc', 'sourcePatchSHA256': 'p',
+                     'repository': 'repo'}
+        self.lock_path = self.root / 'engine.lock.json'
+        self.lock_path.write_text(json.dumps(self.lock))
+        import build_simulator_engine
+        import resume_simulator_core
+        self.module = build_simulator_engine
+        self.resume_module = resume_simulator_core
+        patcher = mock.patch.object(resume_simulator_core, 'LOCK_PATH',
+                                    self.lock_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def make_resumed_root(self):
+        root = self.root / 'resumed'
+        source = root / 'source'
+        (source / 'engine').mkdir(parents=True)
+        (source / 'engine/configure.ac').write_text('AC_INIT\n')
+        manifest = source / 'engine/workdir/CustomTarget/ios'
+        manifest.mkdir(parents=True)
+        (source / 'engine/libx.a').write_bytes(b'x')
+        # The resumed root retains the exact editor-configure inputs.
+        (source / 'engine/config_host.mk').write_text('export ENABLE_DBGUTIL=\n')
+        (source / 'engine/instdir/program').mkdir(parents=True)
+        (source / 'engine/instdir/program/setuprc').write_text('[Version]\n')
+        (source / 'engine/workdir/UnpackedTarball/poco/include/Poco').mkdir(
+            parents=True)
+        (source / 'engine/workdir/UnpackedTarball/poco/include/Poco/'
+                'Poco.h').write_text('// poco\n')
+        (source / 'engine/workdir/UnpackedTarball/zstd/lib').mkdir(parents=True)
+        (source / 'engine/workdir/UnpackedTarball/zstd/lib/zstd.h').write_text(
+            '// zstd\n')
+        (source / 'engine/workdir/LinkTarget/StaticLibrary').mkdir(parents=True)
+        (source / 'engine/workdir/LinkTarget/StaticLibrary/'
+                'libPocoFoundation.a').write_bytes(b'poco')
+        (source / 'engine/workdir/LinkTarget/StaticLibrary/'
+                'libzstd.a').write_bytes(b'zstd')
+        # The resumed root carries the destination-absolute (rewritten) list.
+        (manifest / 'ios-all-static-libs.list').write_text(
+            str((source / 'engine/libx.a').resolve()) + '\n')
+        subprocess.run(['git', 'init', '-q', str(source)], check=True)
+        subprocess.run(['git', '-C', str(source), 'config', 'user.email',
+                        'test@example.com'], check=True)
+        subprocess.run(['git', '-C', str(source), 'config', 'user.name',
+                        'Test'], check=True)
+        subprocess.run(['git', '-C', str(source), 'commit', '-q',
+                        '--allow-empty', '-m', 'prepared'], check=True)
+        manifest_bytes = (manifest / 'ios-all-static-libs.list').read_bytes()
+        report = {
+            'checkpointKind': sim_paths.CORE_CHECKPOINT_KIND,
+            'checkpointSHA256': 'sha',
+            'sourceCommit': 'abc',
+            'platform': 'iphonesimulator',
+            'arch': 'arm64',
+            'engineConfigureRerun': False,
+            'engineBuildRerun': False,
+            'editorPhasesOnly': True,
+            'toolchainVerified': True,
+            'coreManifestVerified': True,
+            'engineBuildCompleted': True,
+            'manifestRewritten': True,
+            'engineArchiveManifestRewrittenSHA256':
+                hashlib.sha256(manifest_bytes).hexdigest(),
+        }
+        (root / sim_paths.CORE_RESUME_REPORT).write_text(json.dumps(report))
+        (root / 'qualification.json').write_text(json.dumps({
+            'commit': 'abc', 'platform': 'iphonesimulator-arm64',
+            'engineBuildCompleted': True, 'nativeBuildPassed': False,
+            'phases': {'engine-configure': {'seconds': 1},
+                       'engine-build': {'seconds': 2}},
+        }))
+        return root
+
+    def test_resume_plan_excludes_engine_phases(self):
+        resume = {'checkpointKind': sim_paths.CORE_CHECKPOINT_KIND}
+        self.assertEqual(self.module.resume_phase_plan(resume),
+                         list(sim_paths.EDITOR_PHASES))
+        self.assertEqual(self.module.resume_phase_plan(None), None)
+
+    def test_build_with_resume_never_runs_engine_phases(self):
+        root = self.make_resumed_root()
+        recorded = []
+
+        def fake_phase_runner(name, cwd, command, qualification_path, log_dir,
+                              env):
+            recorded.append(name)
+
+        with mock.patch.object(self.module, 'verify_child_python',
+                               return_value={'passed': True,
+                                             'failures': [],
+                                             'pythonBin': '/venv/bin'}), \
+             mock.patch.object(self.module, 'REQUIRED_TOOLS', ()), \
+             mock.patch.object(self.module, 'sdk_info',
+                               return_value={'sdkPath': '/sdk',
+                                             'sdkVersion': '27.0',
+                                             'sdkBuildVersion': '24A430'}), \
+             mock.patch.object(self.module, 'toolchain_info',
+                               return_value={'clang': 'c',
+                                             'xcodebuild': 'x',
+                                             'xcodeVersion': 'Xcode 27.0'}):
+            report = self.module.build(root, mode='all',
+                                       phase_runner=fake_phase_runner)
+        self.assertEqual(recorded, list(sim_paths.EDITOR_PHASES))
+        self.assertFalse(report['enginePhasesRerun'])
+        self.assertEqual(report['phasePlan'], list(sim_paths.EDITOR_PHASES))
+        self.assertTrue(report['resumedFromCheckpoint']['engineBuildRerun']
+                        is False)
+
+    def test_fresh_all_checks_editor_inputs_after_engine_build(self):
+        from contextlib import ExitStack
+        root = self.make_resumed_root()
+        (root / sim_paths.CORE_RESUME_REPORT).unlink()
+        (root / 'qualification.json').unlink()
+        for relative in sim_paths.EDITOR_CONFIGURE_INPUTS:
+            (root / relative).unlink()
+        recorded = []
+
+        def fake_phase_runner(name, cwd, command, qualification_path, log_dir,
+                              env):
+            recorded.append(name)
+            if name == 'engine-build':
+                for relative in sim_paths.EDITOR_CONFIGURE_INPUTS:
+                    (root / relative).write_bytes(b'generated by engine build')
+            if name == 'editor-autogen':
+                self.assertTrue(all((root / relative).is_file()
+                                    for relative in sim_paths.EDITOR_CONFIGURE_INPUTS))
+
+        with ExitStack() as patches:
+            patches.enter_context(mock.patch.object(
+                self.module, 'verify_child_python',
+                return_value={'passed': True, 'failures': [],
+                              'pythonBin': '/venv/bin'}))
+            patches.enter_context(mock.patch.object(self.module, 'REQUIRED_TOOLS', ()))
+            patches.enter_context(mock.patch.object(
+                self.module, 'sdk_info', return_value={'sdkPath': '/sdk',
+                    'sdkVersion': '27.0', 'sdkBuildVersion': '24A430'}))
+            patches.enter_context(mock.patch.object(
+                self.module, 'toolchain_info', return_value={'xcodeVersion': 'Xcode 27.0'}))
+            report = self.module.build(root, mode='all', phase_runner=fake_phase_runner)
+        self.assertEqual(recorded, list(sim_paths.ENGINE_PHASES + sim_paths.EDITOR_PHASES))
+        self.assertTrue(report['engineBuildCompleted'])
+        self.assertTrue(report['nativeBuildPassed'])
+
+    def test_editor_mode_without_core_refuses(self):
+        root = self.root / 'no-core'
+        source = root / 'source'
+        (source / 'engine').mkdir(parents=True)
+        (source / 'engine/configure.ac').write_text('AC_INIT\n')
+        subprocess.run(['git', 'init', '-q', str(source)], check=True)
+        subprocess.run(['git', '-C', str(source), 'config', 'user.email',
+                        'test@example.com'], check=True)
+        subprocess.run(['git', '-C', str(source), 'config', 'user.name',
+                        'Test'], check=True)
+        subprocess.run(['git', '-C', str(source), 'commit', '-q',
+                        '--allow-empty', '-m', 'prepared'], check=True)
+        with mock.patch.object(self.module, 'verify_child_python',
+                               return_value={'passed': True,
+                                             'failures': [],
+                                             'pythonBin': '/venv/bin'}), \
+             mock.patch.object(self.module, 'REQUIRED_TOOLS', ()), \
+             mock.patch.object(self.module, 'sdk_info',
+                               return_value={'sdkPath': '/sdk',
+                                             'sdkVersion': '27.0',
+                                             'sdkBuildVersion': '24A430'}), \
+             mock.patch.object(self.module, 'toolchain_info',
+                               return_value={'clang': 'c',
+                                             'xcodebuild': 'x',
+                                             'xcodeVersion': 'Xcode 27.0'}):
+            with self.assertRaises(RuntimeError):
+                self.module.build(root, mode='editor',
+                                  phase_runner=lambda *args: None)
+
+
+class CheckpointWorkflowContractTests(unittest.TestCase):
+    """The workflow must preserve the core before editor configure can fail."""
+
+    @classmethod
+    def setUpClass(cls):
+        import yaml
+        cls.workflow = yaml.safe_load(WORKFLOW.read_text())
+        cls.text = WORKFLOW.read_text()
+        cls.steps = cls.workflow['jobs']['build-stage']['steps']
+        cls.names = [step.get('name', '') for step in cls.steps]
+
+    def step_index(self, name):
+        return self.names.index(name)
+
+    def test_resume_core_input_declared(self):
+        inputs = self.workflow[True]['workflow_dispatch']['inputs']
+        self.assertIn('resume_core_run_id', inputs)
+
+    def test_venv_on_github_path(self):
+        helpers = next(step for step in self.steps
+                       if step.get('name') == 'Python build helpers')
+        self.assertIn('GITHUB_PATH', helpers['run'])
+
+    def test_cheap_preflight_before_engine_build(self):
+        preflight_index = self.step_index(
+            'Cheap dependency preflight before the heavy core build')
+        engine_index = self.step_index(
+            'Build the REAL engine core for iphonesimulator (disk-reserve watchdog)')
+        self.assertLess(preflight_index, engine_index)
+        self.assertIn('--preflight-only', self.steps[preflight_index]['run'])
+        self.assertIn('--python-bin', self.steps[preflight_index]['run'])
+
+    def test_checkpoint_created_and_uploaded_before_editor(self):
+        checkpoint_index = self.step_index(
+            'Create the completed-core checkpoint before editor phases')
+        upload_index = self.step_index(
+            'Preserve the completed-core checkpoint as an artifact')
+        editor_index = self.step_index(
+            'Build the editor/browser from the completed core')
+        self.assertLess(self.step_index(
+            'Build the REAL engine core for iphonesimulator (disk-reserve watchdog)'),
+            checkpoint_index)
+        self.assertLess(checkpoint_index, editor_index)
+        self.assertLess(upload_index, editor_index)
+        checkpoint_step = self.steps[checkpoint_index]
+        self.assertIn('checkpoint_simulator_core.py', checkpoint_step['run'])
+        upload = self.steps[upload_index]
+        self.assertEqual(upload['with']['name'],
+                         sim_paths.CORE_CHECKPOINT_ARTIFACT)
+        self.assertEqual(upload['with']['if-no-files-found'], 'error')
+        self.assertEqual(upload.get('id'), 'preserve_checkpoint')
+
+    def test_engine_step_split_from_editor_step(self):
+        engine_step = self.steps[self.step_index(
+            'Build the REAL engine core for iphonesimulator (disk-reserve watchdog)')]
+        editor_step = self.steps[self.step_index(
+            'Build the editor/browser from the completed core')]
+        self.assertIn('--phases engine', engine_step['run'])
+        self.assertIn('--phases editor', editor_step['run'])
+        # The editor must run after either a preserved fresh checkpoint or a
+        # validated restore.
+        condition = str(editor_step['if'])
+        self.assertIn('steps.engine.outcome', condition)
+        self.assertIn('steps.checkpoint.outcome', condition)
+        self.assertIn('steps.preserve_checkpoint.outcome', condition)
+        self.assertIn('steps.restore_core.outcome', condition)
+
+    def editor_runs(self, engine, checkpoint, upload, restore, cancelled=False):
+        """Evaluate the real editor `if` expression with step outcomes."""
+        editor = self.steps[self.step_index(
+            'Build the editor/browser from the completed core')]
+        expression = str(editor['if']).strip()
+        self.assertTrue(expression.startswith('${{') and expression.endswith('}}'),
+                        expression)
+        body = expression[3:-2].strip()
+        for step_id, value in (('engine', engine), ('checkpoint', checkpoint),
+                               ('preserve_checkpoint', upload),
+                               ('restore_core', restore)):
+            body = body.replace(f"steps.{step_id}.outcome == 'success'",
+                                str(bool(value)))
+        body = body.replace('!cancelled()', str(not cancelled))
+        body = body.replace('&&', ' and ').replace('||', ' or ')
+        return bool(eval(body))  # noqa: S307 - test-only, our own literal
+
+    def test_editor_blocked_when_checkpoint_or_upload_fails(self):
+        editor_step = self.steps[self.step_index(
+            'Build the editor/browser from the completed core')]
+        condition = str(editor_step['if'])
+        # No success()/always() bypass, and each fresh-core prerequisite is an
+        # explicit success conjunction so a failed checkpoint creation or a
+        # failed artifact upload skips the editor.
+        self.assertNotIn('always()', condition)
+        self.assertIn("steps.engine.outcome == 'success'", condition)
+        self.assertIn("steps.checkpoint.outcome == 'success'", condition)
+        self.assertIn("steps.preserve_checkpoint.outcome == 'success'", condition)
+        # Truth table: a failed checkpoint creation or a failed checkpoint
+        # artifact upload must not let the editor proceed.
+        self.assertFalse(self.editor_runs(True, False, False, False))
+        self.assertFalse(self.editor_runs(True, True, False, False))
+        self.assertFalse(self.editor_runs(True, False, True, False))
+        self.assertFalse(self.editor_runs(False, False, False, False))
+        self.assertFalse(self.editor_runs(True, True, True, False, cancelled=True))
+        self.assertTrue(self.editor_runs(True, True, True, False))
+        # A validated restore (resume path) is the only other entry point.
+        self.assertTrue(self.editor_runs(False, False, False, True))
+        self.assertFalse(self.editor_runs(False, False, False, False))
+
+    def test_wget_provisioned_before_preflight(self):
+        brew_step = next(step for step in self.steps
+                         if step.get('name') == 'Prepare native build toolchain')
+        self.assertIn('wget', brew_step['run'])
+        self.assertLess(self.names.index('Prepare native build toolchain'),
+                        self.names.index(
+                            'Cheap dependency preflight before the heavy core build'))
+
+    def test_resume_download_and_restore_wired(self):
+        download = next(step for step in self.steps
+                        if step.get('name', '').startswith('Download the completed-core'))
+        self.assertEqual(download['with']['name'],
+                         sim_paths.CORE_CHECKPOINT_ARTIFACT)
+        self.assertIn('resume_core_run_id', download['if'])
+        restore = next(step for step in self.steps
+                       if step.get('name', '').startswith('Restore the completed core'))
+        self.assertIn('resume_simulator_core.py', restore['run'])
+        self.assertIn('--expect-xcode', restore['run'])
+        self.assertIn('--expect-sdk', restore['run'])
+        # SDK build identity, not just the version.
+        self.assertIn('--expect-sdk-build', restore['run'])
+        self.assertIn('--show-sdk-build-version', restore['run'])
+        self.assertIn('resume_core_run_id', restore['if'])
+
+    def test_checkpoint_artifact_not_reused_for_staged_engine(self):
+        # The recovery checkpoint is a separate deliverable; the runtime still
+        # consumes only the final staged engine artifact.
+        runtime_steps = self.workflow['jobs']['runtime']['steps']
+        download = next(step for step in runtime_steps
+                        if step.get('uses', '').startswith('actions/download-artifact'))
+        self.assertEqual(download['with']['name'],
+                         'office-real-simulator-engine')
 
 
 if __name__ == '__main__':

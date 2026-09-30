@@ -24,11 +24,30 @@ name: Office PPT real simulator qualification
 # commit / deployment patch / platform / arch / toolchain identity are checked
 # against the current engine.lock.json before anything is built. A mismatch
 # fails; the source is never silently substituted.
+#
+# resume_core_run_id: when set, build-stage downloads that previous run's
+# office-real-simulator-core-checkpoint artifact (packed immediately at the
+# successful engine-build boundary, BEFORE editor configure can fail),
+# validates whole-archive SHA-256/size, source commit/repository/patch,
+# platform/arch, SDK and Xcode identity against engine.lock.json and this
+# runner, restores the compiled core over a freshly prepared pinned checkout,
+# and then runs editor phases only. engine-configure/engine-build are
+# structurally excluded on a resumed run (never recompiles the core).
+#
+# Python binding: configure.ac runs /usr/bin/env python3 -c "import lxml" and
+# hard-fails on Darwin. The prepared venv is placed on PATH (GITHUB_PATH) and
+# every build-driver phase child gets the same PATH prepended; a cheap
+# preflight proves the child `python3` imports the pinned lxml/polib with the
+# exact configure mechanism BEFORE the ~175 min engine build starts.
 on:
   workflow_dispatch:
     inputs:
       reuse_staged_run_id:
         description: Optional previous run ID whose staged engine artifact is reused (skips the heavy build)
+        type: string
+        default: ''
+      resume_core_run_id:
+        description: Optional previous run ID whose completed-core checkpoint is restored (skips engine configure/build only)
         type: string
         default: ''
 permissions:
@@ -57,13 +76,22 @@ jobs:
           node-version: '22'
 
       - name: Prepare native build toolchain
+        # wget is required by the engine's external-tarball fetch rules and is
+        # checked by the cheap preflight below; install it explicitly instead
+        # of relying on the runner image.
         run: |
-          brew install autoconf automake libtool pkg-config make gperf bison flex nasm
+          brew install autoconf automake libtool pkg-config make gperf bison flex nasm wget
 
       - name: Python build helpers
         run: |
+          set -o pipefail
           python3 -m venv "$RUNNER_TEMP/office-python"
           "$RUNNER_TEMP/office-python/bin/pip" install polib==1.2.0 lxml==5.4.0
+          # The driver runs under this interpreter, but its children (perl
+          # ./autogen.sh, ./configure) historically inherited the runner PATH,
+          # so configure's /usr/bin/env python3 missed lxml (run 36704184429).
+          # Put the prepared venv first for every later step as well.
+          echo "$RUNNER_TEMP/office-python/bin" >> "$GITHUB_PATH"
 
       - name: Preflight disk, SDK and architecture
         run: |
@@ -90,13 +118,103 @@ jobs:
             "$RUNNER_TEMP/floe-office-sim" \
             --output "$RUNNER_TEMP/prepare-receipt.json"
 
-      - name: Build the REAL engine for iphonesimulator (disk-reserve watchdog)
-        id: engine
+      - name: Cheap dependency preflight before the heavy core build
+        # Fails in seconds, not after ~175 minutes, if the child interpreter
+        # cannot import the pinned lxml/polib the way configure.ac does, or if
+        # a required tool/SDK/disk prerequisite is missing.
         run: |
           set -o pipefail
           "$RUNNER_TEMP/office-python/bin/python" \
             FloeAgent/scripts/office_real_simulator/build_simulator_engine.py \
-            "$RUNNER_TEMP/floe-office-sim" 2>&1 | tee "$RUNNER_TEMP/engine-build-driver.log"
+            "$RUNNER_TEMP/floe-office-sim" \
+            --preflight-only \
+            --python-bin "$RUNNER_TEMP/office-python/bin" \
+            --output "$RUNNER_TEMP/core-preflight.json" \
+            2>&1 | tee "$RUNNER_TEMP/core-preflight-driver.log"
+
+      - name: Download the completed-core checkpoint from the named run
+        id: download_core
+        if: ${{ inputs.resume_core_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: office-real-simulator-core-checkpoint
+          path: ${{ runner.temp }}/core-checkpoint
+          run-id: ${{ inputs.resume_core_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Restore the completed core over the prepared checkout (editor steps only)
+        id: restore_core
+        if: ${{ inputs.resume_core_run_id != '' }}
+        run: |
+          set -o pipefail
+          toolchain=$(xcodebuild -version | python3 -c "import sys; sys.path.insert(0, 'FloeAgent/scripts/office_real_simulator'); from sim_paths import normalize_xcode_version; print(normalize_xcode_version(sys.stdin.read()))")
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          # SDK build identity, not just the version: xcrun --sdk iphonesimulator
+          # --show-sdk-build-version (e.g. 24A430).
+          sdk_build=$(xcrun --sdk iphonesimulator --show-sdk-build-version)
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/resume_simulator_core.py \
+            "$RUNNER_TEMP/core-checkpoint/simulator-core-checkpoint.tar.gz" \
+            "$RUNNER_TEMP/core-checkpoint/simulator-core-checkpoint.json" \
+            "$RUNNER_TEMP/floe-office-sim" \
+            --expect-xcode "$toolchain" --expect-sdk "$sdk" \
+            --expect-sdk-build "$sdk_build" \
+            --output "$RUNNER_TEMP/core-checkpoint-restore.json" \
+            2>&1 | tee "$RUNNER_TEMP/core-restore-driver.log"
+
+      - name: Build the REAL engine core for iphonesimulator (disk-reserve watchdog)
+        id: engine
+        if: ${{ inputs.resume_core_run_id == '' }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/build_simulator_engine.py \
+            "$RUNNER_TEMP/floe-office-sim" \
+            --python-bin "$RUNNER_TEMP/office-python/bin" \
+            --phases engine 2>&1 | tee "$RUNNER_TEMP/engine-build-driver.log"
+
+      - name: Create the completed-core checkpoint before editor phases
+        id: checkpoint
+        if: ${{ steps.engine.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/checkpoint_simulator_core.py \
+            "$RUNNER_TEMP/floe-office-sim" \
+            --output-dir "$RUNNER_TEMP/floe-office-sim/core-checkpoint" \
+            2>&1 | tee "$RUNNER_TEMP/core-checkpoint-driver.log"
+
+      - name: Preserve the completed-core checkpoint as an artifact
+        # A dedicated artifact, uploaded at the engine-build boundary BEFORE
+        # editor configure runs, so the ~175 min core survives a later editor
+        # failure (run 36704184429 collected logs only because no checkpoint
+        # existed). Upload failure fails this step loudly.
+        id: preserve_checkpoint
+        if: ${{ steps.checkpoint.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-real-simulator-core-checkpoint
+          path: |
+            ${{ runner.temp }}/floe-office-sim/core-checkpoint/simulator-core-checkpoint.tar.gz
+            ${{ runner.temp }}/floe-office-sim/core-checkpoint/simulator-core-checkpoint.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Build the editor/browser from the completed core
+        # Strictly gated: an editor run is allowed only when this run built the
+        # core AND its checkpoint was both created and preserved as an artifact
+        # (so a failed checkpoint/upload cannot silently spend more time without
+        # the recovery contract), or when a checkpoint was validated and
+        # restored into this workspace. It never runs engine configure/build.
+        if: ${{ !cancelled() && ((steps.engine.outcome == 'success' && steps.checkpoint.outcome == 'success' && steps.preserve_checkpoint.outcome == 'success') || steps.restore_core.outcome == 'success') }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/build_simulator_engine.py \
+            "$RUNNER_TEMP/floe-office-sim" \
+            --python-bin "$RUNNER_TEMP/office-python/bin" \
+            --phases editor 2>&1 | tee "$RUNNER_TEMP/editor-build-driver.log"
 
       - name: Stage the engine with the IOSSIMULATOR platform/arch gate
         if: success()
@@ -115,7 +233,14 @@ jobs:
           mkdir -p "$stage/qualification-logs" "$stage/fixture"
           cp "$RUNNER_TEMP/disk-preflight.log" "$stage/" || true
           cp "$RUNNER_TEMP/prepare-receipt.json" "$stage/" || true
+          cp "$RUNNER_TEMP/core-preflight.json" "$stage/" || true
+          cp "$RUNNER_TEMP/core-preflight-driver.log" "$stage/" || true
           cp "$RUNNER_TEMP/engine-build-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/editor-build-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/core-checkpoint-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/floe-office-sim/core-checkpoint/simulator-core-checkpoint.json" "$stage/" || true
+          cp "$RUNNER_TEMP/core-checkpoint-restore.json" "$stage/" || true
+          cp "$RUNNER_TEMP/core-restore-driver.log" "$stage/" || true
           cp "$RUNNER_TEMP/stage-driver.log" "$stage/" || true
           cp "$RUNNER_TEMP/floe-office-sim/office-engine-iphonesimulator-arm64.tar.gz" "$stage/" || true
           cp "$RUNNER_TEMP/floe-office-sim/simulator-provenance.json" "$stage/" || true

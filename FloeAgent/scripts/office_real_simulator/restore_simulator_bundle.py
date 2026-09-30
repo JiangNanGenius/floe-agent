@@ -29,6 +29,7 @@ from pathlib import Path
 import sys
 import tarfile
 
+import engine_manifest
 from sim_paths import LOCK_PATH
 from stage_simulator_engine import archive_simulator_facts, pick_samples
 
@@ -205,6 +206,30 @@ def restore(archive_path, destination, provenance_path=None, reuse=False,
         if not ok:
             raise RestoreError(f'restored archive fails platform/arch gate: {name} {facts}')
 
+    # The upstream engine manifest is consumed by ios/Mobile.xcodeproj as
+    # ``-filelist`` and normally carries build-runner-absolute paths plus .o
+    # inputs.  A restore into a different root must make it point at this
+    # destination; the packaged 1:1 linkerInputs order is authoritative when
+    # present, otherwise entries are resolved relative to the destination.
+    # Verification (hashes above) happens first; the rewrite is recorded.
+    engine_list = destination / engine_manifest.ENGINE_LIST_RELATIVE
+    manifest_rewrite = {'present': False}
+    if engine_list.is_file():
+        original_bytes = engine_list.read_bytes()
+        try:
+            rewritten_bytes, evidence = engine_manifest.rewrite_for_destination(
+                destination, original_bytes, manifest.get('linkerInputs'))
+        except engine_manifest.ManifestError as error:
+            raise RestoreError(f'engine archive manifest is not portable: {error}')
+        engine_list.write_bytes(rewritten_bytes)
+        manifest_rewrite = {
+            'present': True,
+            'originalSHA256': hashlib.sha256(original_bytes).hexdigest(),
+            'rewrittenSHA256': hashlib.sha256(rewritten_bytes).hexdigest(),
+            'rewrittenRoot': str(destination),
+            **evidence,
+        }
+
     report = {
         'archive': str(archive_path),
         'destination': str(destination),
@@ -221,6 +246,7 @@ def restore(archive_path, destination, provenance_path=None, reuse=False,
         'provenanceSDKVersion': provenance.get('sdkVersion') if provenance else None,
         'reusedRun': bool(reuse),
         'hostKind': 'upstream-mobile-host-only',
+        'engineArchiveManifestRewrite': manifest_rewrite,
     }
     (destination / 'restore-report.json').write_text(
         json.dumps(report, indent=2) + '\n')
