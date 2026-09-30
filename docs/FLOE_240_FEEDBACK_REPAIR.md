@@ -52,6 +52,22 @@ Python 3.12, and 77 full-Floe pipeline tests, plus actionlint. These are
 controlled checks, not a real engine run. The full Floe App PPT scenario has
 not run; no simulator render or runtime pass is claimed.
 
+Recovery run [36729016248](https://github.com/JiangNanGenius/floe-agent/actions/runs/36729016248)
+completed the core in 12,265.5 seconds; it did not remain hung. The next
+checkpoint step failed because its optional tool runner was passed as `None`.
+The primary's earlier injected-runner tests missed the actual CLI default path.
+The retained artifact again contains only logs; there is no reusable compiled
+core and the PPT scenario has not started. The primary reproduced that CLI
+failure and fixed optional-runner resolution for both creation and restore.
+The next candidate checks actual checkpoint CLIs and platform tools on a tiny
+synthetic arm64 simulator archive before building Office, and rejects an
+actual iPhoneOS archive. Local Xcode 27 tool checks passed; these are not an
+Office build or PPT test. The workflow now retains an explicitly unverified
+recovery archive if normal checkpoint retention fails; it cannot unlock editor
+or runtime acceptance. Phase output reports measured log growth and process-tree
+CPU once a minute, with unavailable observations left unknown. 110 controlled
+pipeline tests passed; the real cloud recovery remains a separate gate.
+
 The scenario installs the actual Floe App on a fresh task-owned iPad simulator,
 imports one pinned synthetic PPTX through Notes, opens its preview, enters a new
 editable native generation, inserts a slide, waits 120 seconds, saves and closes,
@@ -82,3 +98,13 @@ PPT 编辑闪退仍缺匹配的系统崩溃栈，不能宣称已修好。首次�
 检查，尚待云端实际运行。真实引擎就绪后，安装实际 Floe App，完成预览、编辑、
 静置 120 秒、保存和同一文档两次重开测试。受控测试、宿主链接与云模拟器结果分别记录；模拟器通过也不等于
 iPad 真机验收。本地模型真实搜索回答仍未通过资格检查。目前没有 Build240 发布标签。
+
+恢复运行 36729016248 的核心实际在 12,265.5 秒后成功完成，未永久卡死；随后保存
+脚本把空的可选工具调用函数当函数执行，检查点失败。此前注入工具函数的测试遗漏了
+实际 CLI 默认路径，是主线程审查遗漏。附件再次仅有日志，没有可复用核心，PPT 场景
+仍未执行。主线程复现后已修正创建和恢复的默认工具路径，并新增昂贵编译前的实际
+CLI 和平台工具检查：用微型 arm64 模拟器对象验证保存/恢复，并确认拒绝真机平台
+对象。本地 Xcode 27 检查已通过，但不是 Office 或 PPT 验收。检查点留存失败时新增
+明确未核验的隔离备份，不允许借此继续编辑器或运行验收；编译每分钟输出日志增长、
+进程树 CPU 与磁盘观测，无法观测的字段保持未知。110 项受控流水线检查通过，
+新的真实云端恢复仍待运行。

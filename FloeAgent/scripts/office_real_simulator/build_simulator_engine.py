@@ -321,6 +321,40 @@ def resume_phase_plan(resume_report):
     return plan
 
 
+def phase_progress(name, pid, log_path, elapsed, previous_size):
+    """Report measured log growth and process-tree CPU, never a health verdict."""
+    stat = Path(log_path).stat()
+    snapshot = {'phase': name, 'elapsedSeconds': round(elapsed, 1),
+                'logBytes': stat.st_size,
+                'logDeltaBytes': stat.st_size - previous_size,
+                'logModifiedAgoSeconds': round(max(0, time.time() - stat.st_mtime), 1),
+                'processCount': None, 'treeCPUPercent': None}
+    try:
+        result = subprocess.run(['ps', '-axo', 'pid=,ppid=,pcpu=,stat='],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            rows = []
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) == 4:
+                    rows.append((int(fields[0]), int(fields[1]),
+                                 float(fields[2]), fields[3]))
+            owned = {pid}
+            while True:
+                extended = owned | {row[0] for row in rows if row[1] in owned}
+                if extended == owned:
+                    break
+                owned = extended
+            processes = [row for row in rows if row[0] in owned]
+            snapshot['processCount'] = len(processes)
+            snapshot['treeCPUPercent'] = round(sum(row[2] for row in processes), 1)
+            snapshot['processStates'] = sorted({row[3] for row in processes})
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        # Null measurements are unknown, never zero/healthy claims.
+        pass
+    return snapshot
+
+
 def run_phase(name, cwd, command, qualification_path, log_dir, env=None):
     """Run one phase under the disk-reserve watchdog; fail fast on reserve."""
     report = json.loads(Path(qualification_path).read_text())
@@ -334,6 +368,9 @@ def run_phase(name, cwd, command, qualification_path, log_dir, env=None):
                                    stdout=log, stderr=subprocess.STDOUT,
                                    start_new_session=True, env=full_env,
                                    text=True)
+        last_progress = 0.0
+        previous_size = 0
+        phase_started = time.monotonic()
         try:
             while process.poll() is None:
                 free = free_gib(cwd)
@@ -345,6 +382,14 @@ def run_phase(name, cwd, command, qualification_path, log_dir, env=None):
                     process.wait()
                     raise RuntimeError(
                         f'{name} stopped at disk reserve ({round(free,2)} GiB free)')
+                now = time.monotonic()
+                if now - last_progress >= 60:
+                    snapshot = phase_progress(name, process.pid, log_path,
+                                              now - phase_started, previous_size)
+                    snapshot['freeGiB'] = round(free, 2)
+                    print(json.dumps(snapshot), flush=True)
+                    previous_size = snapshot['logBytes']
+                    last_progress = now
                 time.sleep(5)
         except RuntimeError:
             raise

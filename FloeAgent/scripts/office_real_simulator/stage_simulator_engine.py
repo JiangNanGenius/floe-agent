@@ -58,12 +58,15 @@ def _member_sample(members):
     return [names[index] for index in indexes][:MEMBER_SAMPLE_SIZE]
 
 
-def archive_simulator_facts(path, runner=run_tool):
+def archive_simulator_facts(path, runner=None):
     """Prove one static archive is arm64/IOSSIMULATOR only.
 
     Returns ``(ok, facts)``; facts is a dict on success and a reason string on
     failure so a caller can surface the exact blocker.
     """
+    # Checkpoint creation and restore explicitly pass their optional runner.
+    # The CLI supplies None; resolve it here instead of calling it as a tool.
+    runner = run_tool if runner is None else runner
     archive = Path(path).resolve()
     if not archive.is_file():
         return False, f'archive missing: {archive}'

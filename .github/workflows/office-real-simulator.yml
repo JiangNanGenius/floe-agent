@@ -162,6 +162,14 @@ jobs:
             --output "$RUNNER_TEMP/core-checkpoint-restore.json" \
             2>&1 | tee "$RUNNER_TEMP/core-restore-driver.log"
 
+      - name: Verify real checkpoint CLI and platform tools before the core
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/verify_checkpoint_tools.py \
+            --output "$RUNNER_TEMP/checkpoint-tool-preflight.json" \
+            2>&1 | tee "$RUNNER_TEMP/checkpoint-tool-preflight-driver.log"
+
       - name: Build the REAL engine core for iphonesimulator (disk-reserve watchdog)
         id: engine
         if: ${{ inputs.resume_core_run_id == '' }}
@@ -201,6 +209,27 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+      - name: Quarantine completed core if checkpoint retention failed
+        id: retain_raw_core
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' && (steps.checkpoint.outcome != 'success' || steps.preserve_checkpoint.outcome != 'success') }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/retain_unverified_core.py \
+            "$RUNNER_TEMP/floe-office-sim" \
+            --output-dir "$RUNNER_TEMP/unverified-core-recovery" \
+            2>&1 | tee "$RUNNER_TEMP/unverified-core-driver.log"
+
+      - name: Preserve unverified core for manual recovery only
+        if: ${{ !cancelled() && steps.retain_raw_core.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-real-simulator-unverified-core
+          path: ${{ runner.temp }}/unverified-core-recovery
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
       - name: Build the editor/browser from the completed core
         # Strictly gated: an editor run is allowed only when this run built the
         # core AND its checkpoint was both created and preserved as an artifact
@@ -235,9 +264,13 @@ jobs:
           cp "$RUNNER_TEMP/prepare-receipt.json" "$stage/" || true
           cp "$RUNNER_TEMP/core-preflight.json" "$stage/" || true
           cp "$RUNNER_TEMP/core-preflight-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/checkpoint-tool-preflight.json" "$stage/" || true
+          cp "$RUNNER_TEMP/checkpoint-tool-preflight-driver.log" "$stage/" || true
           cp "$RUNNER_TEMP/engine-build-driver.log" "$stage/" || true
           cp "$RUNNER_TEMP/editor-build-driver.log" "$stage/" || true
           cp "$RUNNER_TEMP/core-checkpoint-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/unverified-core-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/unverified-core-recovery/unverified-core.json" "$stage/" || true
           cp "$RUNNER_TEMP/floe-office-sim/core-checkpoint/simulator-core-checkpoint.json" "$stage/" || true
           cp "$RUNNER_TEMP/core-checkpoint-restore.json" "$stage/" || true
           cp "$RUNNER_TEMP/core-restore-driver.log" "$stage/" || true

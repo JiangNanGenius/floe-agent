@@ -1055,6 +1055,41 @@ class RealVenvBindingTests(unittest.TestCase):
                             payload['check'].get('failures'))
 
 
+class PhaseProgressTests(unittest.TestCase):
+    def test_stagnant_log_and_own_process_tree_are_measured_separately(self):
+        import build_simulator_engine
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'engine.log'
+            log.write_text('unchanged')
+            result = SimpleNamespace(returncode=0, stdout=(
+                '100 1 0.0 S\n101 100 45.0 R\n102 101 55.0 R\n'
+                '900 1 99.0 R\n'))
+            with mock.patch.object(build_simulator_engine.subprocess, 'run',
+                                   return_value=result):
+                stagnant = build_simulator_engine.phase_progress(
+                    'engine-build', 100, log, 120, log.stat().st_size)
+                self.assertEqual(stagnant['logDeltaBytes'], 0)
+                self.assertEqual(stagnant['processCount'], 3)
+                self.assertEqual(stagnant['treeCPUPercent'], 100.0)
+                log.write_text('unchanged plus new output')
+                growth = build_simulator_engine.phase_progress(
+                    'engine-build', 100, log, 180, stagnant['logBytes'])
+                self.assertGreater(growth['logDeltaBytes'], 0)
+
+    def test_failed_process_probe_is_unknown_not_zero(self):
+        import build_simulator_engine
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'engine.log'
+            log.write_text('output')
+            with mock.patch.object(build_simulator_engine.subprocess, 'run',
+                                   side_effect=OSError('unavailable')):
+                snapshot = build_simulator_engine.phase_progress(
+                    'engine-build', 100, log, 60, 0)
+            self.assertIsNone(snapshot['treeCPUPercent'])
+            self.assertIsNone(snapshot['processCount'])
+
+
 class EngineManifestTests(unittest.TestCase):
     """The real pinned list format: absolute runner-root paths plus .o files."""
 
@@ -1240,6 +1275,81 @@ class CoreCheckpointTests(unittest.TestCase):
         (dest / 'source/engine').mkdir(parents=True)
         (dest / 'source/engine/configure.ac').write_text('AC_INIT\n')
         return dest
+
+    def test_cli_create_and_default_restore_use_real_tool_adapter(self):
+        import contextlib
+        import io
+        import stage_simulator_engine
+        from types import SimpleNamespace
+        root = self.make_build_root()
+        output = root / 'core-checkpoint'
+        calls = []
+        fake = self.fake_runner()
+
+        # Keep the actual CLI -> default runner -> subprocess boundary. The
+        # prior injected-runner tests hid run 36729016248's None callback.
+        def subprocess_adapter(command, cwd=None, **kwargs):
+            calls.append(list(command))
+            code, text = fake(command, cwd=cwd)
+            return SimpleNamespace(returncode=code, stdout=text, stderr='')
+
+        with mock.patch.object(stage_simulator_engine.subprocess, 'run',
+                               side_effect=subprocess_adapter), \
+                mock.patch.object(sys, 'argv', ['checkpoint_simulator_core.py',
+                                               str(root), '--output-dir', str(output)]), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.checkpoint_module.main()
+            record = json.loads(stdout.getvalue())
+            dest = self.make_prepared_destination('default-tools')
+            self.resume_module.restore_checkpoint(
+                output / sim_paths.CORE_CHECKPOINT_TAR,
+                output / sim_paths.CORE_CHECKPOINT_JSON, dest,
+                expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+                expect_sdk_build='24A430')
+        self.assertTrue(record['allSampledObjectsIOSSIMULATOR'])
+        self.assertFalse(record['nativeBuildPassed'])
+        self.assertTrue(any(command[0] == 'lipo' for command in calls))
+        self.assertTrue(any(command[0] == 'ar' for command in calls))
+        self.assertTrue(any(command[0] == 'vtool' for command in calls))
+
+    def test_unverified_retention_does_not_follow_links_or_qualify(self):
+        import retain_unverified_core
+        from types import SimpleNamespace
+        root = self.make_build_root()
+        git = root / 'source/.git'
+        git.mkdir()
+        (git / 'config').write_text('excluded')
+        outside = self.root / 'outside.txt'
+        outside.write_text('synthetic unrelated data')
+        (root / 'source/outside-link').symlink_to(outside)
+        output = self.root / 'quarantine'
+        with mock.patch.object(retain_unverified_core.shutil, 'disk_usage',
+                               return_value=SimpleNamespace(free=20 * 1024**3)):
+            record = retain_unverified_core.retain(root, output)
+        self.assertFalse(record['reuseAllowed'])
+        self.assertFalse(record['nativeBuildPassed'])
+        self.assertFalse(record['finalQualification'])
+        archive_path = output / 'unverified-core.tar.gz'
+        with tarfile.open(archive_path) as archive:
+            self.assertNotIn('source/.git/config', archive.getnames())
+            self.assertTrue(archive.getmember('source/outside-link').issym())
+            self.assertNotIn('outside.txt', archive.getnames())
+            self.assertIn('source/engine/workdir/LinkTarget/StaticLibrary/libsc.a',
+                          archive.getnames())
+        self.assertEqual(hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                         record['archiveSHA256'])
+        failures = self.resume_module.verify_checkpoint_record(
+            archive_path, record, self.lock)
+        self.assertTrue(any('checkpoint kind' in failure for failure in failures))
+
+    def test_unverified_retention_refuses_incomplete_or_recursive_root(self):
+        import retain_unverified_core
+        root = self.make_build_root(engine_build_completed=False)
+        with self.assertRaisesRegex(ValueError, 'no completed'):
+            retain_unverified_core.retain(root, self.root / 'quarantine')
+        root = self.make_build_root()
+        with self.assertRaisesRegex(ValueError, 'outside the build root'):
+            retain_unverified_core.retain(root, root / 'recursive-output')
 
     def test_create_and_restore_round_trip(self):
         root = self.make_build_root()
@@ -1813,6 +1923,30 @@ class CheckpointWorkflowContractTests(unittest.TestCase):
         self.assertLess(preflight_index, engine_index)
         self.assertIn('--preflight-only', self.steps[preflight_index]['run'])
         self.assertIn('--python-bin', self.steps[preflight_index]['run'])
+
+    def test_unverified_fallback_preserves_data_without_unlocking_editor(self):
+        retain = self.steps[self.step_index(
+            'Quarantine completed core if checkpoint retention failed')]
+        upload = self.steps[self.step_index(
+            'Preserve unverified core for manual recovery only')]
+        self.assertIn("steps.engine.outcome == 'success'", retain['if'])
+        self.assertIn("steps.checkpoint.outcome != 'success'", retain['if'])
+        self.assertIn("steps.preserve_checkpoint.outcome != 'success'", retain['if'])
+        self.assertIn('!cancelled()', retain['if'])
+        self.assertIn('retain_unverified_core.py', retain['run'])
+        self.assertEqual(upload['with']['name'],
+                         'office-real-simulator-unverified-core')
+        editor = self.steps[self.step_index(
+            'Build the editor/browser from the completed core')]
+        self.assertNotIn('retain_raw_core', editor['if'])
+
+    def test_default_checkpoint_cli_tools_checked_before_expensive_build(self):
+        index = self.step_index(
+            'Verify real checkpoint CLI and platform tools before the core')
+        self.assertLess(index, self.step_index(
+            'Build the REAL engine core for iphonesimulator (disk-reserve watchdog)'))
+        self.assertIn('verify_checkpoint_tools.py', self.steps[index]['run'])
+        self.assertIn('checkpoint-tool-preflight.json', self.steps[index]['run'])
 
     def test_checkpoint_created_and_uploaded_before_editor(self):
         checkpoint_index = self.step_index(
