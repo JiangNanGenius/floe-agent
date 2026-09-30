@@ -292,15 +292,17 @@ final class ThreadDetailViewModel: ObservableObject {
         return reason.map { "\($0)\n\(recovery)" } ?? recovery
     }
 
-    /// Show context usage only after this run has produced visible assistant text.
-    /// Input-token receipts alone must not reveal an empty indicator while waiting.
-    var hasAssistantOutputForUsage: Bool {
-        guard let run = selectedRun else { return false }
-        if isRunning && liveStreamedText.contains(where: { !$0.isWhitespace }) { return true }
-        return messages.contains {
-            $0.runID == run.id && $0.role == "assistant"
-                && $0.content.contains(where: { !$0.isWhitespace })
-        }
+    /// The model's window is known before its first usage receipt arrives.
+    /// Keep the toolbar available while waiting, without inventing token usage.
+    var contextUsageSummary: ThreadUsageSummary? {
+        if let usageSummary { return usageSummary }
+        let modelID = selectedRun?.modelID ?? selectedModelID ?? center.modelPreferences.defaultAgentModelID
+        let window = center.configuredModelProfile(modelID: modelID)?.limits.contextTokens ?? 0
+        guard window > 0 else { return nil }
+        return ThreadUsageSummary(
+            inputTokens: 0, outputTokens: 0, contextTokens: 0,
+            contextWindowTokens: window, isEstimatedLive: false
+        )
     }
 
     var usageSummary: ThreadUsageSummary? {

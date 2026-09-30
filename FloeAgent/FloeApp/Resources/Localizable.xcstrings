@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "chat.context_usage.pending": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for model usage"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待模型返回用量"
+          }
+        }
+      }
+    },
     "composer.expand_editor": {
       "localizations": {
         "en": {
@@ -19081,4 +19097,3 @@
   },
   "version": "1.0"
 }
-

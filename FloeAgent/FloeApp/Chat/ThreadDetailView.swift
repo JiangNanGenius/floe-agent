@@ -652,7 +652,7 @@ struct ThreadDetailView: View {
     /// on iPhone), avoiding the forced compact popover presentation.
     private var usageToolbarHost: some View {
         ZStack {
-            if usageAvailability, let usage = viewModel.usageSummary {
+            if usageAvailability, let usage = viewModel.contextUsageSummary {
                 Button {
                     // Capture the snapshot before presenting: the presented
                     // content must not collapse to an empty view if the run's
@@ -667,7 +667,9 @@ struct ThreadDetailView: View {
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("查看上下文用量")
                 .accessibilityValue(
-                    "\(TokenUnitFormatter.string(usage.contextTokens)) / \(TokenUnitFormatter.string(usage.contextWindowTokens))"
+                    usage.contextTokens > 0
+                        ? "\(TokenUnitFormatter.string(usage.contextTokens)) / \(TokenUnitFormatter.string(usage.contextWindowTokens))"
+                        : String(localized: "chat.context_usage.pending")
                 )
             }
         }
@@ -691,8 +693,7 @@ struct ThreadDetailView: View {
     /// `onChange` above also clears the stored flag (otherwise the next run's
     /// usage would immediately re-present the popover).
     private var usageAvailability: Bool {
-        viewModel.hasAssistantOutputForUsage
-            && (viewModel.usageSummary?.contextWindowTokens ?? 0) > 0
+        (viewModel.contextUsageSummary?.contextWindowTokens ?? 0) > 0
     }
 
     private var usageDetailsPresented: Binding<Bool> {
@@ -930,13 +931,19 @@ private struct ContextUsageDetails: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("上下文窗口", systemImage: "circle.dotted")
                 .font(.headline)
-            Text("\(TokenUnitFormatter.string(summary.contextTokens)) / \(TokenUnitFormatter.string(summary.contextWindowTokens))")
+            Text("\(summary.contextTokens > 0 ? TokenUnitFormatter.string(summary.contextTokens) : "—") / \(TokenUnitFormatter.string(summary.contextWindowTokens))")
                 .font(.title3.monospacedDigit().weight(.semibold))
-            ProgressView(value: summary.contextFraction)
-                .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
-            Text("本轮输入 \(TokenUnitFormatter.string(summary.inputTokens)) · 输出 \(TokenUnitFormatter.string(summary.outputTokens))")
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
+            if summary.contextTokens > 0 {
+                ProgressView(value: summary.contextFraction)
+                    .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
+                Text("本轮输入 \(TokenUnitFormatter.string(summary.inputTokens)) · 输出 \(TokenUnitFormatter.string(summary.outputTokens))")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("chat.context_usage.pending")
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(16)
         .frame(minWidth: 240)
