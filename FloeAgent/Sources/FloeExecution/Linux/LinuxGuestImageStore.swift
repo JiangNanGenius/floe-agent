@@ -468,10 +468,10 @@ public enum LinuxGuestImageTransferError: Error, LocalizedError, Sendable, Equat
     }
 }
 
-/// One verified piece of a sharded mirror archive. Mirrors such as Gitee cap
-/// individual attachments (100 MB on Gitee), so an archive larger than the cap
-/// is published as fixed-size pieces; the manifest pins every piece's size and
-/// SHA-512, exactly the same trust model as the archive itself.
+/// One verified piece of a sharded mirror archive. Hosts that cap individual
+/// attachment sizes publish an archive larger than the cap as fixed-size
+/// pieces; the manifest pins every piece's size and SHA-512, exactly the same
+/// trust model as the archive itself.
 public struct LinuxGuestImageShard: Sendable, Codable, Equatable {
     public var index: Int
     /// Asset path relative to the shard manifest URL's directory.
@@ -545,14 +545,19 @@ public struct LinuxGuestImageShardManifest: Sendable, Codable, Equatable {
     }
 }
 
-/// One public mirror of the pinned archive. `archiveURL` is the direct asset
-/// (used when present and within limits) and `shardManifestURL` provides the
-/// verified piece set used to reconstruct the exact same bytes.
+/// One public mirror of the pinned archive.
+///
+/// `archiveURL` is the direct whole-archive asset: the default way a mirror is
+/// consumed. `shardManifestURL` is OPTIONAL and, when present, names a
+/// verified piece set that reconstructs the exact same bytes; it is used only
+/// for hosts that cannot serve the whole archive directly (attachment-size
+/// caps). Every path — direct or reconstructed — is verified against the one
+/// shared pinned `archiveSHA512`.
 public struct LinuxGuestImageMirror: Sendable, Equatable {
     public var archiveURL: URL
-    public var shardManifestURL: URL
+    public var shardManifestURL: URL?
 
-    public init(archiveURL: URL, shardManifestURL: URL) {
+    public init(archiveURL: URL, shardManifestURL: URL? = nil) {
         self.archiveURL = archiveURL
         self.shardManifestURL = shardManifestURL
     }
@@ -562,9 +567,9 @@ public struct LinuxGuestImageMirror: Sendable, Equatable {
 /// manifest the user can edit): the archive digest is the trust anchor, and
 /// provenance names where the guest source and build configuration live.
 /// `archiveURL` is the trust-bearing primary source and `mirrors` are ordered
-/// public mirrors (e.g. Gitee) that are contacted *only* after a bounded
-/// availability failure of every earlier source. Every source serves the
-/// exact same bytes: they all verify against one shared `archiveSHA512`.
+/// public mirrors that are contacted *only* after a bounded availability
+/// failure of every earlier source. Every source serves the exact same bytes:
+/// they all verify against one shared `archiveSHA512`.
 public struct LinuxGuestTrustedImage: Sendable, Equatable {
     public var id: String
     /// Trust-bearing primary archive URL (GitHub Releases).
@@ -605,9 +610,29 @@ public enum LinuxGuestImageDistributionCatalog {
         LinuxGuestTrustedImage(
             id: defaultImageID,
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!,
-            // The SMP image has no Gitee mirror asset yet; the GitHub release
-            // is the only verified source, so no mirror URLs are invented here.
-            mirrors: [],
+            mirrors: [
+                // Established anonymous GitHub-archive accelerator. The
+                // complete 587,162,397-byte archive was fetched anonymously
+                // and verified byte-for-byte against the pinned SHA-512
+                // before this URL was pinned (Build 238 mirror verification);
+                // long-term public operating history is recorded upstream.
+                // Contacted only after the primary fails with a bounded
+                // availability error, and the result is re-verified here
+                // against the same digest.
+                LinuxGuestImageMirror(
+                    archiveURL: URL(string: "https://gh-proxy.com/https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!
+                ),
+                // Independently operated established accelerator. The complete
+                // archive was likewise fetched anonymously (no proxy env) and
+                // verified byte-for-byte against the pinned SHA-512 before
+                // pinning (Build 238 mirror verification). Second in order:
+                // contacted only after the primary and the first mirror fail
+                // with bounded availability errors; bytes are re-verified
+                // against the same digest.
+                LinuxGuestImageMirror(
+                    archiveURL: URL(string: "https://ghproxy.net/https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!
+                )
+            ],
             archiveSHA512: "4f19064f764ed400194a830b38af57236c5cd3145f463f2352834c0c834c90f7d4c6df078cd7d831acf42b6620de09d758c62dc3dbed90694f5ea63ff21d84a8",
             provenance: LinuxGuestImageProvenance(
                 sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-smp-20260928.1",
@@ -619,16 +644,12 @@ public enum LinuxGuestImageDistributionCatalog {
         LinuxGuestTrustedImage(
             id: "floe-debian13-riscv64-20260922.2",
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/floe-linux-guest-floe-debian13-riscv64-20260922.2.zip")!,
-            mirrors: [
-                // Public Gitee China mirror. Byte-identical asset; the
-                // reconstructed archive is verified against the same pinned
-                // SHA-512 before import. Contacted only after the primary
-                // fails with a bounded availability error.
-                LinuxGuestImageMirror(
-                    archiveURL: URL(string: "https://gitee.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/floe-linux-guest-floe-debian13-riscv64-20260922.2.zip")!,
-                    shardManifestURL: URL(string: "https://gitee.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/shard-manifest.json")!
-                )
-            ],
+            // No preinstalled fallback URLs: only established, independently
+            // verified anonymous mirrors may be pinned here, and this legacy
+            // single-hart image currently has none. A candidate mirror is
+            // added only after its endpoint and operating history are
+            // verified; the GitHub release stays the trust-bearing primary.
+            mirrors: [],
             archiveSHA512: "bde2b2198bf5f70411b12587b9e6b4b42a183671b5564b90319eae7bbd2ae7eb09f686e0d4009096eba0da3b75a89c65bc7c45ac31ac61146482377fc0bdae04",
             provenance: LinuxGuestImageProvenance(
                 sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260922.2",

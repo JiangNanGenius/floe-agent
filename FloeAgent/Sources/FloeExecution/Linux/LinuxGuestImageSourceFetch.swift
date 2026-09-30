@@ -3,16 +3,20 @@
 // The contract is deliberately narrow and fail-closed:
 //
 //  1. The trust-bearing primary (GitHub Releases) is always contacted first.
-//  2. A mirror (Gitee) is contacted *only* when the primary fails with a
-//     bounded availability error (`LinuxGuestImageTransferError
+//  2. A mirror is contacted *only* when the primary (or every earlier mirror)
+//     fails with a bounded availability error (`LinuxGuestImageTransferError
 //     .allowsNextSource`): a connectivity loss or a 5xx/408/429 answer.
 //  3. A definite answer (4xx), an invalid response, a local rejection, a
 //     cancellation, an unclassified error, or anything content-shaped never
 //     switches sources.
-//  4. A mirror's shard manifest is downloaded and re-validated against the
-//     pinned image id and archive digest before any piece is fetched; the
-//     reconstructed archive then goes through the same immutable whole-
-//     archive SHA-512 verification (`importArchive`) as the primary path.
+//  4. A mirror serves the archive DIRECTLY at its `archiveURL` by default.
+//     When a shard manifest URL is additionally pinned, a bounded
+//     availability failure of the direct request reconstructs the same bytes
+//     from the manifest's verified piece set instead. The shard manifest is
+//     re-validated against the pinned image id and archive digest before any
+//     piece is fetched.
+//  5. However the bytes arrive, they go through the same immutable
+//     whole-archive SHA-512 verification (`importArchive`) as the primary.
 //
 // This file performs no downloads itself; the app supplies the downloader.
 
@@ -96,13 +100,54 @@ enum LinuxGuestImageSourceFetch {
         onProgress: @escaping @Sendable (Int64, Int64) -> Void,
         isCancelled: (@Sendable () -> Bool)?
     ) async throws(LinuxGuestImageTransferError) {
+        // 1 — direct whole-archive request first.
+        try checkCancelled(isCancelled)
+        do {
+            try await downloader.download(
+                mirror.archiveURL,
+                to: stagingArchive,
+                maxBytes: maxBytes,
+                onProgress: onProgress
+            )
+            return
+        } catch let error where error.allowsNextSource {
+            guard let shardManifestURL = mirror.shardManifestURL else {
+                // No piece set pinned for this mirror: let the outer loop
+                // decide whether another mirror may be contacted.
+                throw error
+            }
+            FloeLogger(category: .tools).info(
+                "mirror direct archive unavailable, reconstructing from pinned pieces: \(error.errorDescription ?? "?")"
+            )
+            // 2 — verified reconstruction from the pinned piece set.
+            try await fetchShardedMirror(
+                shardManifestURL: shardManifestURL,
+                image: trusted,
+                to: stagingArchive,
+                maxBytes: maxBytes,
+                downloader: downloader,
+                onProgress: onProgress,
+                isCancelled: isCancelled
+            )
+        }
+    }
+
+    private static func fetchShardedMirror(
+        shardManifestURL: URL,
+        image trusted: LinuxGuestTrustedImage,
+        to stagingArchive: URL,
+        maxBytes: Int64,
+        downloader: any LinuxGuestImageDownloading,
+        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
+        isCancelled: (@Sendable () -> Bool)?
+    ) async throws(LinuxGuestImageTransferError) {
         // Download the manifest beside the release assets.
         try checkCancelled(isCancelled)
         let manifestFile = stagingArchive.deletingLastPathComponent()
             .appendingPathComponent(".shards-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: manifestFile) }
         try await downloader.download(
-            mirror.shardManifestURL,
+            shardManifestURL,
             to: manifestFile,
             maxBytes: maxManifestBytes,
             onProgress: { _, _ in }
@@ -130,7 +175,7 @@ enum LinuxGuestImageSourceFetch {
             throw .localRejection(detail: "the mirrored archive (\(manifest.archiveBytes) bytes) exceeds the \(maxBytes) byte import limit")
         }
 
-        let baseURL = mirror.shardManifestURL.deletingLastPathComponent()
+        let baseURL = shardManifestURL.deletingLastPathComponent()
         // Package-owned reconstruction: pieces are fetched through the plain
         // download seam, individually verified, and the assembled archive is
         // re-checked against the pinned SHA-512; verified pieces survive an
@@ -141,7 +186,8 @@ enum LinuxGuestImageSourceFetch {
             baseURL: baseURL,
             manifest: manifest,
             to: stagingArchive,
-            onProgress: onProgress
+            onProgress: onProgress,
+            isCancelled: isCancelled
         )
     }
 

@@ -1,8 +1,8 @@
 // FloeExecution — verified reconstruction of a sharded mirror archive.
 //
-// A mirror whose attachment cap is below the archive size (Gitee caps single
-// attachments at 100 MB) publishes the exact same pinned bytes as a manifest
-// plus fixed-size pieces. This file owns the reconstruction policy:
+// A mirror that cannot serve the whole archive directly (hosts that cap
+// individual attachment sizes) publishes the exact same pinned bytes as a
+// manifest plus fixed-size pieces. This file owns the reconstruction policy:
 //
 //  * The staging directory is *stable*: it is derived from the image id and
 //    the pinned archive SHA-512, never from a random UUID. A later retry of
@@ -47,12 +47,16 @@ enum LinuxGuestImageShardFetch {
 
     /// Reconstructs `manifest`'s archive into `destination`, reusing verified
     /// pieces from the stable staging directory and fetching the rest.
+    ///
+    /// Cancellation is observed on both the surrounding task and the optional
+    /// OWNER token (`isCancelled`); either one aborts the reconstruction.
     static func fetch(
         downloader: any LinuxGuestImageDownloading,
         baseURL: URL,
         manifest: LinuxGuestImageShardManifest,
         to destination: URL,
-        onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void
+        onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void,
+        isCancelled: (@Sendable () -> Bool)? = nil
     ) async throws(LinuxGuestImageTransferError) {
         let fileManager = FileManager.default
         let staging = stagingDirectory(
@@ -73,7 +77,8 @@ enum LinuxGuestImageShardFetch {
                 manifest: manifest,
                 staging: staging,
                 to: destination,
-                onProgress: onProgress
+                onProgress: onProgress,
+                isCancelled: isCancelled
             )
             // Success: the archive is reconstructed and staging is removed.
             try? fileManager.removeItem(at: staging)
@@ -93,6 +98,17 @@ enum LinuxGuestImageShardFetch {
         }
     }
 
+    /// Cooperative cancellation check shared by the piece loop and assembly:
+    /// the surrounding task OR the owner token can stop the reconstruction,
+    /// and the outcome is always the explicit `.cancelled` class.
+    private static func checkCancelled(
+        _ isCancelled: (@Sendable () -> Bool)?
+    ) throws(LinuxGuestImageTransferError) {
+        if Task.isCancelled || isCancelled?() == true {
+            throw .cancelled
+        }
+    }
+
     // MARK: internals
 
     private static func fetchReusingVerifiedPieces(
@@ -101,7 +117,8 @@ enum LinuxGuestImageShardFetch {
         manifest: LinuxGuestImageShardManifest,
         staging: URL,
         to destination: URL,
-        onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void
+        onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void,
+        isCancelled: (@Sendable () -> Bool)?
     ) async throws(LinuxGuestImageTransferError) {
         let expected = Int64(manifest.archiveBytes)
 
@@ -114,11 +131,7 @@ enum LinuxGuestImageShardFetch {
 
         var received: Int64 = 0
         for shard in manifest.shards {
-            do {
-                try Task.checkCancellation()
-            } catch {
-                throw .cancelled
-            }
+            try checkCancelled(isCancelled)
             guard let pieceRemote = pieceURL(baseURL: baseURL, name: shard.name) else {
                 throw .responseInvalid(detail: "shard #\(shard.index) has an unusable path '\(shard.name)'")
             }
@@ -137,7 +150,8 @@ enum LinuxGuestImageShardFetch {
                 to: pieceFile,
                 receivedSoFar: received,
                 expectedTotal: expected,
-                onProgress: onProgress
+                onProgress: onProgress,
+                isCancelled: isCancelled
             )
             received += Int64(shard.bytes)
         }
@@ -146,7 +160,8 @@ enum LinuxGuestImageShardFetch {
             manifest: manifest,
             staging: staging,
             to: destination,
-            expectedBytes: expected
+            expectedBytes: expected,
+            isCancelled: isCancelled
         )
     }
 
@@ -206,7 +221,8 @@ enum LinuxGuestImageShardFetch {
         to pieceFile: URL,
         receivedSoFar: Int64,
         expectedTotal: Int64,
-        onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void
+        onProgress: @escaping @Sendable (_ received: Int64, _ expected: Int64) -> Void,
+        isCancelled: (@Sendable () -> Bool)?
     ) async throws(LinuxGuestImageTransferError) {
         var lastAvailabilityFailure: LinuxGuestImageTransferError?
         for attempt in 0..<maxPieceAttempts {
@@ -214,9 +230,11 @@ enum LinuxGuestImageShardFetch {
                 try? FileManager.default.removeItem(at: pieceFile)
                 do {
                     try await Task.sleep(nanoseconds: retryDelayNanoseconds)
-                    try Task.checkCancellation()
+                    try checkCancelled(isCancelled)
+                } catch let error as LinuxGuestImageTransferError {
+                    throw error
                 } catch {
-                    throw LinuxGuestImageTransferError.cancelled
+                    throw .cancelled
                 }
             }
             do {
@@ -254,7 +272,8 @@ enum LinuxGuestImageShardFetch {
         manifest: LinuxGuestImageShardManifest,
         staging: URL,
         to destination: URL,
-        expectedBytes: Int64
+        expectedBytes: Int64,
+        isCancelled: (@Sendable () -> Bool)?
     ) async throws(LinuxGuestImageTransferError) {
         let fileManager = FileManager.default
         do {
@@ -273,11 +292,7 @@ enum LinuxGuestImageShardFetch {
 
         var written: Int64 = 0
         for shard in manifest.shards {
-            do {
-                try Task.checkCancellation()
-            } catch {
-                throw .cancelled
-            }
+            try checkCancelled(isCancelled)
             guard let pieceFile = pieceFileURL(staging: staging, name: shard.name) else {
                 throw .responseInvalid(detail: "shard #\(shard.index) escapes the staging directory")
             }

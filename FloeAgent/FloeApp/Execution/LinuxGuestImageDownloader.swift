@@ -8,7 +8,7 @@
 //
 // Redirects are HTTPS-only so a pinned URL cannot be bounced to another
 // scheme; only a bounded availability error lets the package coordinator
-// switch from GitHub to the Gitee mirror.
+// switch from the primary source to the next pinned mirror.
 
 import Foundation
 import FloeExecution

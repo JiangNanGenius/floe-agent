@@ -1,18 +1,23 @@
-// FloeExecutionTests — primary→mirror ordering, bounded fallback and the
+// FloeExecutionTests — primary→mirror ordering, bounded failover and the
 // fail-closed contract for the pinned Linux image download.
 //
 // These checks pin the device-facing mirror promises without a network:
-//   * GitHub is contacted first; Gitee second and only after a bounded
-//     primary availability failure;
-//   * a definite answer, invalid response, local rejection or cancellation
-//     never falls back;
-//   * a mirror manifest that does not pin the trusted archive is rejected
-//     before any piece is fetched;
-//   * a piece that fails its pinned SHA-512 fails closed and purges staging.
+//   * the shipping catalog pins no Gitee (or other unverified) URLs;
+//   * the primary is contacted first; a mirror is contacted only after a
+//     bounded primary availability failure;
+//   * with multiple mirrors, order is strict: a failed first mirror moves to
+//     the second and a successful second mirror finishes the job;
+//   * a definite answer, invalid/content-shaped response, local rejection or
+//     cancellation never switches sources, including from one mirror to the
+//     next;
+//   * a mirror serves the archive directly; when a shard manifest URL is also
+//     pinned, a direct availability failure reconstructs from verified pieces;
+//   * a manifest that does not pin the trusted digest is rejected before any
+//     piece is fetched, and a piece digest failure fails closed.
 //
 // Reconstruction itself (resume, purge, assembly, whole-archive digest) is
 // covered by LinuxGuestShardStagingTests; here the source fetch coordinator
-// is exercised end to end with synthetic, genuinely pinned pieces.
+// is exercised end to end with synthetic, genuinely pinned bytes.
 
 import Foundation
 import os
@@ -21,40 +26,58 @@ import FloeCore
 @testable import FloeExecution
 
 final class LinuxGuestImageMirrorContractTests: XCTestCase {
-    // MARK: catalog ordering
+    // MARK: shipping catalog
 
-    func testPinnedImageOrdersGitHubFirstAndGiteeSecond() {
-        // The mirror contract applies to the mirrored entry: the current SMP
-        // default ships GitHub-primary only. The remote audit (Build 238)
-        // verified WHY: the Gitee release `floe-linux-guest-smp-20260928.1`
-        // exists but its image upload FAILED — GITEE-MIRROR-MANIFEST.json
-        // records `"state": "failed"` for the 587 MB archive (the repo sits at
-        // 1010.5 MiB of a 1 GiB quota), and no shard-manifest/pieces exist.
-        // No mirror URL may be invented, so no mirror is pinned; while the
-        // legacy single-hart image keeps its verified Gitee mirror fallback.
+    func testShippingCatalogContainsNoGiteeURLs() {
+        // Gitee stays an independent distribution channel (its CI
+        // synchronization is untouched), but no Gitee download URL may ship in
+        // the App catalog: Gitee is not an automatic fallback/accelerator.
+        var urls: [URL] = []
+        for image in LinuxGuestImageDistributionCatalog.bundled {
+            urls.append(image.archiveURL)
+            for mirror in image.mirrors {
+                urls.append(mirror.archiveURL)
+                if let shardManifestURL = mirror.shardManifestURL {
+                    urls.append(shardManifestURL)
+                }
+            }
+        }
+        for url in urls {
+            XCTAssertNotEqual(url.host, "gitee.com", "no Gitee host may be preinstalled: \(url)")
+            XCTAssertFalse(url.absoluteString.lowercased().contains("gitee"),
+                           "no Gitee URL may be preinstalled: \(url)")
+            XCTAssertEqual(url.scheme, "https", "every pinned URL must be HTTPS")
+        }
+    }
+
+    func testDefaultSMPImagePinsTwoVerifiedDirectMirrors() {
         let current = LinuxGuestImageDistributionCatalog.entry(
             id: LinuxGuestImageDistributionCatalog.defaultImageID
         )
         guard let current else { return XCTFail("the catalog pins no default image") }
         XCTAssertEqual(current.archiveURL.host, "github.com", "GitHub Releases is the trust-bearing primary")
-        XCTAssertEqual(current.archiveURL.scheme, "https")
-        XCTAssertEqual(current.mirrors.count, 0, "the SMP default pins no unverified mirror")
+        XCTAssertEqual(current.mirrors.count, 2, "two independently verified direct mirrors are pinned")
+        XCTAssertEqual(current.mirrors.map { $0.archiveURL.host }, ["gh-proxy.com", "ghproxy.net"],
+                       "mirrors keep the declared, verified order")
 
-        let trusted = LinuxGuestImageDistributionCatalog.entry(id: "floe-debian13-riscv64-20260922.2")
-        guard let trusted else { return XCTFail("the catalog pins no mirrored image") }
+        for mirror in current.mirrors {
+            XCTAssertEqual(mirror.archiveURL.scheme, "https")
+            XCTAssertNil(mirror.shardManifestURL, "both verified mirrors are direct whole-archive mirrors")
+            XCTAssertNotEqual(mirror.archiveURL, current.archiveURL, "a mirror never replaces the primary URL")
+            // Each direct mirror addresses the exact same pinned archive bytes.
+            XCTAssertTrue(
+                mirror.archiveURL.absoluteString.hasSuffix(current.archiveURL.absoluteString),
+                "the accelerator URL must name the exact primary archive path"
+            )
+        }
+    }
 
-        XCTAssertEqual(trusted.archiveURL.host, "github.com", "GitHub Releases is the trust-bearing primary")
-        XCTAssertEqual(trusted.archiveURL.scheme, "https")
-        XCTAssertEqual(trusted.mirrors.count, 1, "one Gitee mirror is pinned")
-
-        let mirror = trusted.mirrors[0]
-        XCTAssertEqual(mirror.archiveURL.host, "gitee.com")
-        XCTAssertEqual(mirror.shardManifestURL.host, "gitee.com")
-        XCTAssertEqual(mirror.shardManifestURL.scheme, "https")
-        XCTAssertEqual(mirror.shardManifestURL.lastPathComponent, LinuxGuestImageShardManifest.assetName)
-
-        // The mirror never replaces the primary: a separate ordered entry.
-        XCTAssertNotEqual(trusted.archiveURL, mirror.archiveURL)
+    func testLegacyImagePinsNoMirror() {
+        let legacy = LinuxGuestImageDistributionCatalog.entry(id: "floe-debian13-riscv64-20260922.2")
+        guard let legacy else { return XCTFail("the catalog no longer lists the legacy image") }
+        XCTAssertEqual(legacy.archiveURL.host, "github.com")
+        XCTAssertEqual(legacy.mirrors.count, 0,
+                       "no mirror may ship for the legacy image without verified byte availability")
     }
 
     // MARK: classification
@@ -66,7 +89,7 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
             .serverUnavailable(status: nil, detail: "x"),
         ]
         for error in fallback {
-            XCTAssertTrue(error.allowsNextSource, "\(error) must activate a mirror")
+            XCTAssertTrue(error.allowsNextSource, "\(error) must activate the next source")
         }
 
         let closed: [LinuxGuestImageTransferError] = [
@@ -89,15 +112,18 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         }
     }
 
-    // MARK: coordinator fallback
+    // MARK: ordered direct-mirror failover
 
-    func testPrimaryNetworkFailureFallsBackToGiteeAndReconstructs() async {
-        let fixture = makeFixture()
-        let downloader = ScriptedMirrorDownloader(
-            primaryFailure: .networkFailure(detail: "primary unreachable"),
-            manifest: fixture.manifest,
-            pieces: fixture.pieces
-        )
+    /// The core multi-mirror proof: primary unavailable → first direct mirror
+    /// unavailable → second direct mirror serves the pinned bytes. Sources are
+    /// contacted strictly in declared order and no other source is invented.
+    func testPrimaryAndFirstMirrorUnavailableFailOverToSecondDirectMirror() async {
+        let fixture = makeFixture(mirrorCount: 2)
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "primary unreachable"))),
+            .init(match: { $0.host == "mirror1.example" }, outcome: .failure(.serverUnavailable(status: 503, detail: "busy"))),
+            .init(match: { $0.host == "mirror2.example" }, outcome: .payload(fixture.archive)),
+        ])
         let destination = makeDestination()
         defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
 
@@ -110,64 +136,48 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
                 onProgress: { _, _ in }
             )
         } catch {
-            return XCTFail("a bounded primary network failure must fall back: \(error)")
+            return XCTFail("availability failures must fail over in order: \(error)")
         }
 
-        let hosts = await downloader.calls.map(\.host)
-        XCTAssertEqual(hosts.first, "primary.example", "the primary is contacted first")
-        let orderedCalls = await downloader.calls.map(\.url)
-        XCTAssertTrue(orderedCalls.contains(fixture.trusted.mirrors[0].shardManifestURL), "the Gitee manifest is fetched")
-        XCTAssertTrue(orderedCalls.contains { $0.absoluteString.hasSuffix(fixture.pieceNames[0]) }, "the first piece is fetched")
-        let bytes = try? Data(contentsOf: destination)
-        let expected = fixture.pieceNames.compactMap { fixture.pieces[$0] }.reduce(Data(), +)
-        XCTAssertEqual(bytes, expected, "the staged archive was reconstructed from verified mirror pieces")
+        let hosts = downloader.calls.map(\.url.host)
+        XCTAssertEqual(hosts, ["primary.example", "mirror1.example", "mirror2.example"],
+                       "sources are contacted strictly in primary, mirror1, mirror2 order")
+        XCTAssertEqual(try? Data(contentsOf: destination), fixture.archive,
+                       "the second mirror's bytes are the staged archive")
     }
 
-    func testPrimaryServerUnavailableFallsBack() async {
-        let fixture = makeFixture()
-        let downloader = ScriptedMirrorDownloader(
-            primaryFailure: .serverUnavailable(status: 503, detail: "busy"),
-            manifest: fixture.manifest,
-            pieces: fixture.pieces
-        )
+    func testPrimaryNetworkFailureFailsOverToDirectMirror() async {
+        let fixture = makeFixture(mirrorCount: 1)
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { $0.host == "mirror1.example" }, outcome: .payload(fixture.archive)),
+        ])
         let destination = makeDestination()
         defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
 
-        do {
-            try await LinuxGuestImageSourceFetch.fetch(
-                image: fixture.trusted,
-                to: destination,
-                maxBytes: 1024,
-                downloader: downloader,
-                onProgress: { _, _ in }
-            )
-        } catch {
-            return XCTFail("a primary 5xx must fall back: \(error)")
-        }
-        let expected = fixture.pieceNames.compactMap { fixture.pieces[$0] }.reduce(Data(), +)
-        let actual = try? Data(contentsOf: destination)
-        XCTAssertEqual(actual, expected)
+        try? await LinuxGuestImageSourceFetch.fetch(
+            image: fixture.trusted,
+            to: destination,
+            maxBytes: 1024,
+            downloader: downloader,
+            onProgress: { _, _ in }
+        )
+        XCTAssertEqual(downloader.calls.map(\.url.host), ["primary.example", "mirror1.example"])
+        XCTAssertEqual(try? Data(contentsOf: destination), fixture.archive)
     }
 
-    /// The current default image pins NO mirror (the remote mirror asset for
-    /// it does not exist — verified against the live Gitee release). An
-    /// unreachable primary therefore fails closed with the primary's own
-    /// error and never contacts anyone else: no fallback URL may be invented.
     func testUnreachablePrimaryWithoutPinnedMirrorFailsClosed() async {
-        let fixture = makeFixture()
-        var unmirrored = fixture.trusted
-        unmirrored.mirrors = []
-        let downloader = ScriptedMirrorDownloader(
-            primaryFailure: .networkFailure(detail: "primary unreachable"),
-            manifest: fixture.manifest,
-            pieces: fixture.pieces
-        )
+        let fixture = makeFixture(mirrorCount: 0)
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { _ in true }, outcome: .failure(.responseInvalid(detail: "must not be contacted"))),
+        ])
         let destination = makeDestination()
         defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
 
         do {
             try await LinuxGuestImageSourceFetch.fetch(
-                image: unmirrored,
+                image: fixture.trusted,
                 to: destination,
                 maxBytes: 1024,
                 downloader: downloader,
@@ -175,46 +185,189 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
             )
             XCTFail("with no pinned mirror an unavailable primary must fail, never invent a source")
         } catch let error as LinuxGuestImageInstallError {
-            guard case .downloadFailed = error else {
-                return XCTFail("expected the bounded download failure, got \(error)")
-            }
+            guard case .downloadFailed = error else { return XCTFail("expected the bounded download failure, got \(error)") }
         } catch {
             return XCTFail("unexpected error \(error)")
         }
-        let calls = await downloader.calls
-        XCTAssertEqual(calls.map(\.host), ["primary.example"],
+        XCTAssertEqual(downloader.calls.map(\.url.host), ["primary.example"],
                        "only the primary is contacted when no mirror is pinned")
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path),
                        "no partial archive may survive a closed failure")
     }
 
+    // MARK: no-switch contract
+
     func testDefiniteAnswerDoesNotFallBack() async {
         // 404: another host cannot turn a pinned missing asset into the bytes.
-        try await assertNoFallback(primaryFailure: .responseRejected(status: 404, detail: "missing"))
+        await assertNoFallback(primaryFailure: .responseRejected(status: 404, detail: "missing"))
     }
 
     func testInvalidResponseDoesNotFallBack() async {
-        try await assertNoFallback(primaryFailure: .responseInvalid(detail: "bad framing"))
+        await assertNoFallback(primaryFailure: .responseInvalid(detail: "bad framing"))
     }
 
     func testLocalRejectionDoesNotFallBack() async {
-        try await assertNoFallback(primaryFailure: .localRejection(detail: "out of space"))
+        await assertNoFallback(primaryFailure: .localRejection(detail: "out of space"))
     }
 
     func testCancellationDoesNotFallBack() async {
-        try await assertNoFallback(primaryFailure: .cancelled)
+        await assertNoFallback(primaryFailure: .cancelled)
+    }
+
+    /// A content-shaped fault from the first mirror must not move to the
+    /// second mirror: wrong bytes from one host are never "repaired" by
+    /// trying another, since the pinned digest — not the host — is on trial.
+    func testMirrorContentFaultDoesNotSwitchToNextMirror() async {
+        let fixture = makeFixture(mirrorCount: 2)
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { $0.host == "mirror1.example" },
+                  outcome: .failure(.responseInvalid(detail: "archive content fault"))),
+            .init(match: { $0.host == "mirror2.example" }, outcome: .payload(fixture.archive)),
+        ])
+        let destination = makeDestination()
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+
+        do {
+            try await LinuxGuestImageSourceFetch.fetch(
+                image: fixture.trusted,
+                to: destination,
+                maxBytes: 1024,
+                downloader: downloader,
+                onProgress: { _, _ in }
+            )
+            XCTFail("a mirror content fault must fail closed")
+        } catch let error as LinuxGuestImageInstallError {
+            guard case .downloadFailed = error else { return XCTFail("unexpected \(error)") }
+        } catch {
+            return XCTFail("unexpected error \(error)")
+        }
+        XCTAssertEqual(downloader.calls.map(\.url.host), ["primary.example", "mirror1.example"],
+                       "a content fault on mirror1 must never contact mirror2")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    /// Owner cancellation landing between the failed primary and the mirror
+    /// loop stops the install: no mirror is contacted.
+    func testOwnerCancellationBetweenSourcesStopsFailover() async {
+        let fixture = makeFixture(mirrorCount: 2)
+        let token = CancellationToken()
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" },
+                  outcome: .failure(.networkFailure(detail: "offline")),
+                  onRequest: { token.cancel() }),
+            .init(match: { $0.host == "mirror1.example" }, outcome: .payload(fixture.archive)),
+            .init(match: { $0.host == "mirror2.example" }, outcome: .payload(fixture.archive)),
+        ])
+        let destination = makeDestination()
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+
+        do {
+            try await LinuxGuestImageSourceFetch.fetch(
+                image: fixture.trusted,
+                to: destination,
+                maxBytes: 1024,
+                downloader: downloader,
+                onProgress: { _, _ in },
+                isCancelled: { token.isCancelled }
+            )
+            XCTFail("an owner cancel between sources must stop the failover")
+        } catch let error as LinuxGuestImageInstallError {
+            guard case .cancelled = error else { return XCTFail("expected cancelled, got \(error)") }
+        } catch let error as LinuxGuestImageTransferError {
+            // The between-sources checkpoint throws the transfer class; both
+            // spellings mean the same cooperative stop.
+            guard case .cancelled = error else { return XCTFail("expected cancelled, got \(error)") }
+        } catch {
+            return XCTFail("unexpected error \(error)")
+        }
+        XCTAssertEqual(downloader.calls.map(\.url.host), ["primary.example"],
+                       "no mirror is contacted after an owner cancel")
+    }
+
+    // MARK: direct → shard fallback within one mirror
+
+    /// Direct request fails with a bounded availability error; the pinned
+    /// shard manifest validates and the archive is reconstructed from pieces.
+    func testDirectFailureReconstructsFromPinnedShardManifest() async {
+        let fixture = makeShardMirrorFixture()
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { $0.host == "shard-mirror.example" && $0.lastPathComponent == "archive.zip" },
+                  outcome: .failure(.serverUnavailable(status: 502, detail: "direct busy"))),
+            .init(match: { $0.lastPathComponent == LinuxGuestImageShardManifest.assetName },
+                  outcome: .payload(fixture.encodedManifest)),
+            .init(match: { $0.lastPathComponent == fixture.pieceNames[0].split(separator: "/").last.map(String.init) },
+                  outcome: .payload(fixture.pieces[fixture.pieceNames[0]]!)),
+            .init(match: { $0.lastPathComponent == fixture.pieceNames[1].split(separator: "/").last.map(String.init) },
+                  outcome: .payload(fixture.pieces[fixture.pieceNames[1]]!)),
+        ])
+        let destination = makeDestination()
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+
+        do {
+            try await LinuxGuestImageSourceFetch.fetch(
+                image: fixture.trusted,
+                to: destination,
+                maxBytes: 1024,
+                downloader: downloader,
+                onProgress: { _, _ in }
+            )
+        } catch {
+            return XCTFail("a direct failure must reconstruct from the pinned piece set: \(error)")
+        }
+        let suffixes = downloader.calls.map(\.url.lastPathComponent)
+        XCTAssertEqual(suffixes.filter { $0 == LinuxGuestImageShardManifest.assetName }.count, 1)
+        let expected = fixture.pieceNames.compactMap { fixture.pieces[$0] }.reduce(Data(), +)
+        XCTAssertEqual(try? Data(contentsOf: destination), expected, "reconstructed bytes match the pinned archive")
+    }
+
+    /// Direct request fails and the mirror pins no shard manifest: the
+    /// availability error falls through to the NEXT mirror instead of being
+    /// treated as a closed failure.
+    func testDirectFailureWithoutShardManifestFallsThroughToNextMirror() async {
+        let fixture = makeFixture(mirrorCount: 2)
+        // mirror1 stays a direct-only mirror (the default); mirror2 serves.
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { $0.host == "mirror1.example" },
+                  outcome: .failure(.serverUnavailable(status: 503, detail: "busy"))),
+            .init(match: { $0.host == "mirror2.example" }, outcome: .payload(fixture.archive)),
+        ])
+        let destination = makeDestination()
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+
+        do {
+            try await LinuxGuestImageSourceFetch.fetch(
+                image: fixture.trusted,
+                to: destination,
+                maxBytes: 1024,
+                downloader: downloader,
+                onProgress: { _, _ in }
+            )
+        } catch {
+            return XCTFail("a direct-only mirror's availability failure must reach the next mirror: \(error)")
+        }
+        XCTAssertEqual(downloader.calls.map(\.url.host),
+                       ["primary.example", "mirror1.example", "mirror2.example"])
+        XCTAssertEqual(try? Data(contentsOf: destination), fixture.archive)
     }
 
     func testUntrustedShardManifestIsRejectedBeforePieces() async {
-        let fixture = makeFixture()
+        let fixture = makeShardMirrorFixture()
         // Manifest pins a different archive digest: rejected before pieces.
-        var manifest = fixture.manifest
-        manifest.archiveSHA512 = String(repeating: "a", count: 128)
-        let downloader = ScriptedMirrorDownloader(
-            primaryFailure: .networkFailure(detail: "offline"),
-            manifest: manifest,
-            pieces: fixture.pieces
-        )
+        var badManifest = fixture.manifest
+        badManifest.archiveSHA512 = String(repeating: "a", count: 128)
+        let encodedBad = try! JSONEncoder().encode(badManifest)
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { $0.lastPathComponent == "archive.zip" },
+                  outcome: .failure(.serverUnavailable(status: 502, detail: "busy"))),
+            .init(match: { $0.lastPathComponent == LinuxGuestImageShardManifest.assetName },
+                  outcome: .payload(encodedBad)),
+            .init(match: { $0.lastPathComponent.hasPrefix("part-") },
+                  outcome: .failure(.responseInvalid(detail: "piece must never be requested"))),
+        ])
         let destination = makeDestination()
         defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
 
@@ -232,19 +385,24 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         } catch {
             return XCTFail("unexpected error \(error)")
         }
-        let suffixes = await downloader.calls.map(\.url.lastPathComponent)
-        XCTAssertFalse(suffixes.contains { fixture.pieceNames.contains($0) }, "no piece may be fetched for an untrusted manifest")
+        let suffixes = downloader.calls.map(\.url.lastPathComponent)
+        XCTAssertFalse(suffixes.contains { $0.hasPrefix("part-") }, "no piece may be fetched for an untrusted manifest")
         XCTAssertTrue(suffixes.contains(LinuxGuestImageShardManifest.assetName))
     }
 
     func testPieceIntegrityFailureFailsClosed() async {
-        let fixture = makeFixture()
-        let downloader = ScriptedMirrorDownloader(
-            primaryFailure: .networkFailure(detail: "offline"),
-            manifest: fixture.manifest,
-            pieces: fixture.pieces,
-            pieceFailure: (fixture.pieceNames[1], .responseInvalid(detail: "shard SHA-512 mismatch"))
-        )
+        let fixture = makeShardMirrorFixture()
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { $0.lastPathComponent == "archive.zip" },
+                  outcome: .failure(.serverUnavailable(status: 502, detail: "busy"))),
+            .init(match: { $0.lastPathComponent == LinuxGuestImageShardManifest.assetName },
+                  outcome: .payload(fixture.encodedManifest)),
+            .init(match: { $0.lastPathComponent == "part-00.bin" },
+                  outcome: .payload(fixture.pieces[fixture.pieceNames[0]]!)),
+            .init(match: { $0.lastPathComponent == "part-01.bin" },
+                  outcome: .failure(.responseInvalid(detail: "shard SHA-512 mismatch"))),
+        ])
         let destination = makeDestination()
         defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
 
@@ -272,6 +430,49 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
+
+    /// Owner cancellation observed right after the manifest download stops
+    /// reconstruction before the first piece is fetched.
+    func testOwnerCancellationAfterManifestStopsBeforePieces() async {
+        let fixture = makeShardMirrorFixture()
+        let token = CancellationToken()
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(.networkFailure(detail: "offline"))),
+            .init(match: { $0.lastPathComponent == "archive.zip" },
+                  outcome: .failure(.serverUnavailable(status: 502, detail: "busy"))),
+            .init(match: { $0.lastPathComponent == LinuxGuestImageShardManifest.assetName },
+                  outcome: .payload(fixture.encodedManifest),
+                  onRequest: { token.cancel() }),
+            .init(match: { $0.lastPathComponent.hasPrefix("part-") },
+                  outcome: .failure(.responseInvalid(detail: "piece must never be requested"))),
+        ])
+        let destination = makeDestination()
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+
+        do {
+            try await LinuxGuestImageSourceFetch.fetch(
+                image: fixture.trusted,
+                to: destination,
+                maxBytes: 1024,
+                downloader: downloader,
+                onProgress: { _, _ in },
+                isCancelled: { token.isCancelled }
+            )
+            XCTFail("owner cancellation after the manifest must stop reconstruction")
+        } catch let error as LinuxGuestImageInstallError {
+            guard case .cancelled = error else { return XCTFail("expected cancelled, got \(error)") }
+        } catch let error as LinuxGuestImageTransferError {
+            // The post-manifest checkpoint throws the transfer spelling.
+            guard case .cancelled = error else { return XCTFail("expected cancelled, got \(error)") }
+        } catch {
+            return XCTFail("unexpected error \(error)")
+        }
+        let suffixes = downloader.calls.map(\.url.lastPathComponent)
+        XCTAssertFalse(suffixes.contains { $0.hasPrefix("part-") }, "no piece may be fetched after cancellation")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    // MARK: manifest validation
 
     func testShardManifestValidationChecksContiguityAndSizes() {
         let digest = String(repeating: "b", count: 128)
@@ -309,14 +510,49 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
 
     // MARK: helpers
 
-    private struct Fixture {
+    private final class CancellationToken: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        var isCancelled: Bool { lock.withLock { cancelled } }
+        func cancel() { lock.withLock { cancelled = true } }
+    }
+
+    private struct DirectFixture {
+        let trusted: LinuxGuestTrustedImage
+        let archive: Data
+    }
+
+    private func makeFixture(mirrorCount: Int) -> DirectFixture {
+        let archive = Data("first-piece second-piece".utf8)
+        let digest = FloeDigest.sha512Hex(archive)
+        let mirrors = (0..<mirrorCount).map { index in
+            LinuxGuestImageMirror(
+                archiveURL: URL(string: "https://mirror\(index + 1).example/archive.zip")!
+            )
+        }
+        let trusted = LinuxGuestTrustedImage(
+            id: "img",
+            archiveURL: URL(string: "https://primary.example/archive.zip")!,
+            mirrors: mirrors,
+            archiveSHA512: digest,
+            provenance: LinuxGuestImageProvenance(
+                sourceURL: "https://primary.example/tag",
+                license: "test",
+                distributionAllowed: true
+            )
+        )
+        return DirectFixture(trusted: trusted, archive: archive)
+    }
+
+    private struct ShardMirrorFixture {
         let trusted: LinuxGuestTrustedImage
         let manifest: LinuxGuestImageShardManifest
+        let encodedManifest: Data
         let pieces: [String: Data]
         let pieceNames: [String]
     }
 
-    private func makeFixture() -> Fixture {
+    private func makeShardMirrorFixture() -> ShardMirrorFixture {
         let pieceNames = ["shards/part-00.bin", "shards/part-01.bin"]
         let pieceBytes = [Data("first-piece ".utf8), Data("second-piece".utf8)]
         let archive = pieceBytes.reduce(Data(), +)
@@ -335,13 +571,15 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
                 )
             }
         )
+        let encodedManifest = try! JSONEncoder().encode(manifest)
+        let manifestURL = URL(string: "https://shard-mirror.example/tag/shard-manifest.json")!
         let trusted = LinuxGuestTrustedImage(
             id: "img",
             archiveURL: URL(string: "https://primary.example/archive.zip")!,
             mirrors: [
                 LinuxGuestImageMirror(
-                    archiveURL: URL(string: "https://gitee.example/archive.zip")!,
-                    shardManifestURL: URL(string: "https://gitee.example/shard-manifest.json")!
+                    archiveURL: URL(string: "https://shard-mirror.example/archive.zip")!,
+                    shardManifestURL: manifestURL
                 )
             ],
             archiveSHA512: archiveDigest,
@@ -351,21 +589,22 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
                 distributionAllowed: true
             )
         )
-        return Fixture(
+        return ShardMirrorFixture(
             trusted: trusted,
             manifest: manifest,
+            encodedManifest: encodedManifest,
             pieces: Dictionary(uniqueKeysWithValues: zip(pieceNames, pieceBytes)),
             pieceNames: pieceNames
         )
     }
 
     private func assertNoFallback(primaryFailure: LinuxGuestImageTransferError) async {
-        let fixture = makeFixture()
-        let downloader = ScriptedMirrorDownloader(
-            primaryFailure: primaryFailure,
-            manifest: fixture.manifest,
-            pieces: fixture.pieces
-        )
+        let fixture = makeFixture(mirrorCount: 2)
+        let downloader = ScriptedDownloader(rules: [
+            .init(match: { $0.host == "primary.example" }, outcome: .failure(primaryFailure)),
+            .init(match: { $0.host == "mirror1.example" }, outcome: .payload(fixture.archive)),
+            .init(match: { $0.host == "mirror2.example" }, outcome: .payload(fixture.archive)),
+        ])
         let destination = makeDestination()
         defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
 
@@ -387,8 +626,7 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         } catch {
             return XCTFail("unexpected error \(error)")
         }
-        let hosts = await downloader.calls.map(\.host)
-        XCTAssertEqual(hosts, ["primary.example"], "only the primary is contacted")
+        XCTAssertEqual(downloader.calls.map(\.url.host), ["primary.example"], "only the primary is contacted")
     }
 
     private func makeDestination() -> URL {
@@ -401,31 +639,40 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
 
 // MARK: - fake downloader
 
-/// Scripted downloader for the coordinator. The primary request fails with the
-/// supplied classification; the manifest request writes the JSON manifest; a
-/// piece request writes that piece's real bytes (or fails with a per-piece
-/// classification). Route recognition is exact, and the call log is ordered.
-private final class ScriptedMirrorDownloader: LinuxGuestImageDownloading, @unchecked Sendable {
-    struct Call: Sendable { let url: URL; var host: String { url.host ?? "?" } }
+/// Generic scripted downloader. Rules are evaluated in order; the first rule
+/// whose predicate matches the URL either writes a payload to the destination
+/// or fails with the classified error. An unmatched URL fails closed as an
+/// invalid response. `onRequest` lets a rule flip a cancellation token at a
+/// precise point in the ordered call sequence. The call log is ordered.
+private final class ScriptedDownloader: LinuxGuestImageDownloading, @unchecked Sendable {
+    struct Call: Sendable { let url: URL }
 
-    let primaryFailure: LinuxGuestImageTransferError
-    let manifest: LinuxGuestImageShardManifest
-    let pieces: [String: Data]
-    let pieceFailure: (name: String, failure: LinuxGuestImageTransferError)?
+    enum Outcome: Sendable {
+        case payload(Data)
+        case failure(LinuxGuestImageTransferError)
+    }
 
-    private var recordedCalls: [Call] = []
+    struct Rule: Sendable {
+        let matches: @Sendable (URL) -> Bool
+        let outcome: Outcome
+        let onRequest: (@Sendable () -> Void)?
+
+        init(
+            match: @escaping @Sendable (URL) -> Bool,
+            outcome: Outcome,
+            onRequest: (@Sendable () -> Void)? = nil
+        ) {
+            self.matches = match
+            self.outcome = outcome
+            self.onRequest = onRequest
+        }
+    }
+
+    private let rules: [Rule]
     private let callLock = OSAllocatedUnfairLock(initialState: [Call]())
 
-    init(
-        primaryFailure: LinuxGuestImageTransferError,
-        manifest: LinuxGuestImageShardManifest,
-        pieces: [String: Data],
-        pieceFailure: (name: String, failure: LinuxGuestImageTransferError)? = nil
-    ) {
-        self.primaryFailure = primaryFailure
-        self.manifest = manifest
-        self.pieces = pieces
-        self.pieceFailure = pieceFailure
+    init(rules: [Rule]) {
+        self.rules = rules
     }
 
     var calls: [Call] {
@@ -439,42 +686,24 @@ private final class ScriptedMirrorDownloader: LinuxGuestImageDownloading, @unche
         onProgress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws(LinuxGuestImageTransferError) {
         callLock.withLock { $0.append(Call(url: url)) }
-
-        if url.host == "primary.example" {
-            throw primaryFailure
+        guard let rule = rules.first(where: { $0.matches(url) }) else {
+            throw .responseInvalid(detail: "unexpected request \(url.absoluteString)")
         }
-        if url.lastPathComponent == LinuxGuestImageShardManifest.assetName {
-            let encoded: Data
+        rule.onRequest?()
+        switch rule.outcome {
+        case .failure(let error):
+            throw error
+        case .payload(let payload):
             do {
-                encoded = try JSONEncoder().encode(manifest)
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try payload.write(to: destination)
             } catch {
-                throw LinuxGuestImageTransferError.responseInvalid(detail: "cannot encode manifest: \(error.localizedDescription)")
+                throw .localRejection(detail: error.localizedDescription)
             }
-            try await write(encoded, to: destination)
-            return
-        }
-        guard let name = pieces.keys.first(where: { url.absoluteString.hasSuffix($0) }) else {
-            throw .responseInvalid(detail: "unexpected request \(url.lastPathComponent)")
-        }
-        if let pieceFailure, pieceFailure.name == name {
-            throw pieceFailure.failure
-        }
-        guard let payload = pieces[name] else {
-            throw .responseInvalid(detail: "no payload for \(name)")
-        }
-        try await write(payload, to: destination)
-        onProgress(Int64(payload.count), Int64(payload.count))
-    }
-
-    private func write(_ payload: Data, to destination: URL) async throws(LinuxGuestImageTransferError) {
-        do {
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try payload.write(to: destination)
-        } catch {
-            throw LinuxGuestImageTransferError.localRejection(detail: error.localizedDescription)
+            onProgress(Int64(payload.count), Int64(payload.count))
         }
     }
 }
