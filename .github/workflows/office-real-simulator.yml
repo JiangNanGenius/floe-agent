@@ -1,0 +1,366 @@
+name: Office PPT real simulator qualification
+# REAL engine, REAL host: this workflow builds the pinned Collabora engine
+# natively for iphonesimulator (arm64), links the genuine upstream iOS app
+# (ios/Mobile.xcodeproj), seeds a synthetic PPTX into its Documents, and then
+# drives the real UI: preview open -> rapid close -> reopen -> enter edit ->
+# insert slide -> idle 120 s -> Save -> leave edit -> close -> reopen -> close.
+# Rapid preview close/reopen runs before edit because the reported device
+# failure path is the second native open. Render is proven by pixel analysis of
+# simulator frames (fixture marker colors must appear); persistence by reading
+# the saved PPTX back out of the host container and a phase receipt extracted
+# from the xcresult attachment (a UI test's FileManager documents belong to the
+# runner, never the host app container).
+#
+# Scope honesty: the host is the UPSTREAM Mobile app, not Floe
+# (hostKind = upstream-mobile-host-only). Floe's project.yml links Office only
+# for iphoneos and embed_office_host.py skips the simulator; full-app
+# integration is deliberately not claimed. No mock/stub engine is used: if the
+# native simulator build fails, the job fails with that exact blocker.
+#
+# reuse_staged_run_id: when set, build-stage is skipped entirely and runtime
+# downloads the named previous run's staged engine. The download is flat (the
+# artifact's contents land directly in the staged directory), the whole-tarball
+# SHA-256 is bound to the retained simulator-provenance.json, and source
+# commit / deployment patch / platform / arch / toolchain identity are checked
+# against the current engine.lock.json before anything is built. A mismatch
+# fails; the source is never silently substituted.
+on:
+  workflow_dispatch:
+    inputs:
+      reuse_staged_run_id:
+        description: Optional previous run ID whose staged engine artifact is reused (skips the heavy build)
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: office-real-simulator
+  cancel-in-progress: false
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+  PYTHONDONTWRITEBYTECODE: '1'
+  FIXTURE_NAME: floe-sim-qual.pptx
+jobs:
+  build-stage:
+    # Skipped when a previous run's staged engine is reused.
+    if: ${{ inputs.reuse_staged_run_id == '' }}
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Prepare native build toolchain
+        run: |
+          brew install autoconf automake libtool pkg-config make gperf bison flex nasm
+
+      - name: Python build helpers
+        run: |
+          python3 -m venv "$RUNNER_TEMP/office-python"
+          "$RUNNER_TEMP/office-python/bin/pip" install polib==1.2.0 lxml==5.4.0
+
+      - name: Preflight disk, SDK and architecture
+        run: |
+          set -o pipefail
+          df -h "$RUNNER_TEMP" | tee "$RUNNER_TEMP/disk-preflight.log"
+          xcrun --sdk iphonesimulator --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-version
+          uname -m
+
+      - name: Generate the synthetic PPTX
+        run: |
+          set -o pipefail
+          expected_sha=$(python3 -c "import sys; sys.path.insert(0, 'FloeAgent/scripts/office_real_simulator'); from sim_paths import FIXTURE_SHA256; print(FIXTURE_SHA256)")
+          python3 FloeAgent/scripts/office_real_simulator/make_fixture.py \
+            --output "$RUNNER_TEMP/fixture/$FIXTURE_NAME" \
+            --receipt "$RUNNER_TEMP/fixture/fixture-receipt.json" \
+            --expected-sha256 "$expected_sha"
+
+      - name: Fetch pinned source and apply the deployment overlay
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/prepare_simulator_source.py \
+            "$RUNNER_TEMP/floe-office-sim" \
+            --output "$RUNNER_TEMP/prepare-receipt.json"
+
+      - name: Build the REAL engine for iphonesimulator (disk-reserve watchdog)
+        id: engine
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/build_simulator_engine.py \
+            "$RUNNER_TEMP/floe-office-sim" 2>&1 | tee "$RUNNER_TEMP/engine-build-driver.log"
+
+      - name: Stage the engine with the IOSSIMULATOR platform/arch gate
+        if: success()
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/stage_simulator_engine.py \
+            "$RUNNER_TEMP/floe-office-sim" \
+            | tee "$RUNNER_TEMP/stage-driver.log"
+
+      - name: Assemble the reusable staged-engine bundle
+        if: always()
+        run: |
+          set -o pipefail
+          stage="$RUNNER_TEMP/office-real-sim-engine-bundle"
+          mkdir -p "$stage/qualification-logs" "$stage/fixture"
+          cp "$RUNNER_TEMP/disk-preflight.log" "$stage/" || true
+          cp "$RUNNER_TEMP/prepare-receipt.json" "$stage/" || true
+          cp "$RUNNER_TEMP/engine-build-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/stage-driver.log" "$stage/" || true
+          cp "$RUNNER_TEMP/floe-office-sim/office-engine-iphonesimulator-arm64.tar.gz" "$stage/" || true
+          cp "$RUNNER_TEMP/floe-office-sim/simulator-provenance.json" "$stage/" || true
+          cp "$RUNNER_TEMP/floe-office-sim/qualification.json" "$stage/" || true
+          cp -R "$RUNNER_TEMP/floe-office-sim/qualification-logs/." "$stage/qualification-logs/" || true
+          cp "$RUNNER_TEMP/fixture/$FIXTURE_NAME" "$stage/fixture/" || true
+          cp "$RUNNER_TEMP/fixture/fixture-receipt.json" "$stage/fixture/" || true
+          du -sh "$stage"
+
+      - name: Preserve build/stage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-real-simulator-engine
+          path: ${{ runner.temp }}/office-real-sim-engine-bundle
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  runtime:
+    needs: build-stage
+    # Run when build-stage succeeded (same-run artifact) or was skipped because
+    # a previous run's artifact is being reused. Never run after a build
+    # failure when there is nothing validated to reuse, and never after a
+    # cancelled workflow.
+    if: ${{ !cancelled() && ((inputs.reuse_staged_run_id != '' && needs.build-stage.result == 'skipped') || (inputs.reuse_staged_run_id == '' && needs.build-stage.result == 'success')) }}
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch the staged engine (this run or a pinned previous run)
+        # actions/download-artifact extracts the artifact CONTENTS directly
+        # into `path`; there is no artifact-name subdirectory. Doing this in an
+        # empty directory makes the flat layout deterministic.
+        uses: actions/download-artifact@v4
+        with:
+          name: office-real-simulator-engine
+          path: ${{ runner.temp }}/staged
+          run-id: ${{ inputs.reuse_staged_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Locate and validate the flat staged artifact layout
+        id: staged
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_real_simulator/staged_layout.py \
+            "$RUNNER_TEMP/staged" \
+            --json "$RUNNER_TEMP/staged-layout.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Restore the exact-source bundle (pin + provenance + toolchain binding)
+        env:
+          REUSE_RUN: ${{ inputs.reuse_staged_run_id }}
+        run: |
+          set -o pipefail
+          toolchain=$(xcodebuild -version | python3 -c "import sys; sys.path.insert(0, 'FloeAgent/scripts/office_real_simulator'); from sim_paths import normalize_xcode_version; print(normalize_xcode_version(sys.stdin.read()))")
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          args=("${{ steps.staged.outputs.engineTarball }}"
+                "$RUNNER_TEMP/restored"
+                --provenance "${{ steps.staged.outputs.provenance }}")
+          if [ -n "$REUSE_RUN" ]; then
+            args+=(--reuse --expect-xcode "$toolchain" --expect-sdk "$sdk")
+          fi
+          python3 FloeAgent/scripts/office_real_simulator/restore_simulator_bundle.py \
+            "${args[@]}" | tee "$RUNNER_TEMP/restore-driver.log"
+
+      - name: Generate the qualification scenario inside the real UITests target
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_real_simulator/qualification_ui_test.py \
+            "$RUNNER_TEMP/restored/source"
+
+      - name: Regenerate the pinned synthetic PPTX in this job
+        run: |
+          set -o pipefail
+          expected_sha=$(python3 -c "import sys; sys.path.insert(0, 'FloeAgent/scripts/office_real_simulator'); from sim_paths import FIXTURE_SHA256; print(FIXTURE_SHA256)")
+          python3 FloeAgent/scripts/office_real_simulator/make_fixture.py \
+            --output "$RUNNER_TEMP/fixture/$FIXTURE_NAME" \
+            --receipt "$RUNNER_TEMP/fixture/fixture-receipt.json" \
+            --expected-sha256 "$expected_sha"
+
+      - name: Render gate dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/office-python"
+          "$RUNNER_TEMP/office-python/bin/pip" install pillow==11.3.0
+
+      - name: Select or create the iPad simulator (iOS 27 runtime)
+        id: simulator
+        run: |
+          set -o pipefail
+          simulator=$(xcrun simctl list devices -j | \
+            python3 FloeAgent/scripts/select_test_simulator.py \
+              --sdk-major 27 --name "iPad Pro" --family iPad --create)
+          echo "SIMULATOR=$simulator" >> "$GITHUB_ENV"
+          xcrun simctl shutdown "$simulator" || true
+          xcrun simctl boot "$simulator"
+          xcrun simctl bootstatus "$simulator" -b
+
+      - name: Build the real host app and UITest bundle
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$RUNNER_TEMP/restored/source/ios/Mobile.xcodeproj" \
+            -scheme Mobile \
+            -destination "platform=iOS Simulator,id=$SIMULATOR" \
+            -derivedDataPath "$RUNNER_TEMP/RealSimulatorBuild" \
+            -only-testing:MobileUITests/FloeRealSimulatorQualification \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO \
+            build-for-testing 2>&1 | tee "$RUNNER_TEMP/host-build.log"
+
+      - name: Discover the exact host app, xctestrun and runner identity
+        id: products
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_real_simulator/discover_products.py \
+            "$RUNNER_TEMP/RealSimulatorBuild/Build/Products" \
+            --receipt "$RUNNER_TEMP/products-receipt.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Install the host and seed the synthetic PPTX
+        run: |
+          set -o pipefail
+          fixture_sha=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["sha256"])' \
+            "$RUNNER_TEMP/fixture/fixture-receipt.json")
+          python3 FloeAgent/scripts/office_real_simulator/seed_simulator.py \
+            "$SIMULATOR" "${{ steps.products.outputs.app_path }}" \
+            "$RUNNER_TEMP/fixture/$FIXTURE_NAME" \
+            --expected-sha256 "$fixture_sha" \
+            --output "$RUNNER_TEMP/seed-receipt.json"
+
+      - name: Run preview/close/reopen/edit/idle/save/reopen on the simulator
+        id: run_scenario
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          date +%s > "$RUNNER_TEMP/scenario-start.epoch"
+          # Screen recording for the scenario window (best effort).
+          xcrun simctl io "$SIMULATOR" recordVideo --codec h264 \
+            "$RUNNER_TEMP/scenario.mp4" & echo $! > "$RUNNER_TEMP/video.pid"
+          set +e
+          python3 FloeAgent/scripts/run_test_with_diagnostics.py \
+            --output-dir "$RUNNER_TEMP/runtime-diagnostics" \
+            --timeout 1200 --stall-timeout 300 --startup-stall-timeout 300 \
+            --simulator-id "$SIMULATOR" -- \
+            xcodebuild -skipPackagePluginValidation -skipMacroValidation \
+            -xctestrun "${{ steps.products.outputs.xctestrun_path }}" \
+            -destination "platform=iOS Simulator,id=$SIMULATOR" \
+            -resultBundlePath "$RUNNER_TEMP/office-real-simulator.xcresult" \
+            -collect-test-diagnostics never \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 600 \
+            -only-testing:MobileUITests/FloeRealSimulatorQualification \
+            CODE_SIGNING_ALLOWED=NO test-without-building \
+            2>&1 | tee "$RUNNER_TEMP/scenario.log"
+          rc=${PIPESTATUS[0]}
+          kill "$(cat "$RUNNER_TEMP/video.pid")" 2>/dev/null || true
+          wait 2>/dev/null || true
+          exit "$rc"
+
+      - name: Export simulator frames and attachments from the result bundle
+        if: always()
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/screenshots"
+          if test -d "$RUNNER_TEMP/office-real-simulator.xcresult"; then
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/office-real-simulator.xcresult" \
+              --output-path "$RUNNER_TEMP/screenshots" || true
+          fi
+          ls "$RUNNER_TEMP/screenshots"
+
+      - name: Extract the phase receipt (xcresult attachment, else runner container)
+        if: always()
+        run: |
+          set -o pipefail
+          python3 FloeAgent/scripts/office_real_simulator/extract_receipt.py \
+            --attachments "$RUNNER_TEMP/screenshots" \
+            --simulator "$SIMULATOR" \
+            --runner-bundle-id "${{ steps.products.outputs.runner_bundle_id }}" \
+            --output "$RUNNER_TEMP/receipt.json" \
+            --report "$RUNNER_TEMP/receipt-source.json"
+
+      - name: Render gate - real slide pixels and marker colors
+        if: always()
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/check_render.py \
+            "$RUNNER_TEMP/screenshots" \
+            --output "$RUNNER_TEMP/render-gate.json"
+
+      - name: Persistence gate - saved PPTX slides, hash and phase receipt
+        if: always()
+        run: |
+          set -o pipefail
+          seeded_sha=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["fixtureSHA256"])' \
+            "$RUNNER_TEMP/seed-receipt.json")
+          receipt_source=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("source") or "unresolved")' \
+            "$RUNNER_TEMP/receipt-source.json" 2>/dev/null || echo "unresolved")
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/check_persistence.py \
+            "$SIMULATOR" "$seeded_sha" \
+            --receipt "$RUNNER_TEMP/receipt.json" \
+            --receipt-source "$receipt_source" \
+            --output "$RUNNER_TEMP/persistence-gate.json"
+
+      - name: Collect app/runner containers, system logs and crash reports
+        if: always()
+        run: |
+          set -o pipefail
+          started=$(cat "$RUNNER_TEMP/scenario-start.epoch" 2>/dev/null || echo "")
+          "$RUNNER_TEMP/office-python/bin/python" \
+            FloeAgent/scripts/office_real_simulator/collect_evidence.py \
+            "$SIMULATOR" "$RUNNER_TEMP/evidence" \
+            ${started:+--started-epoch "$started"} \
+            --video "$RUNNER_TEMP/scenario.mp4" \
+            --minutes 30 \
+            --runner-bundle-id "${{ steps.products.outputs.runner_bundle_id }}" \
+            --runner-app-path "${{ steps.products.outputs.runner_app_path }}" \
+            | tee "$RUNNER_TEMP/evidence-driver.log"
+
+      - name: Preserve runtime qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: office-real-simulator-runtime-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/staged-layout.json
+            ${{ runner.temp }}/products-receipt.json
+            ${{ runner.temp }}/restore-driver.log
+            ${{ runner.temp }}/host-build.log
+            ${{ runner.temp }}/scenario.log
+            ${{ runner.temp }}/receipt.json
+            ${{ runner.temp }}/receipt-source.json
+            ${{ runner.temp }}/render-gate.json
+            ${{ runner.temp }}/persistence-gate.json
+            ${{ runner.temp }}/seed-receipt.json
+            ${{ runner.temp }}/fixture
+            ${{ runner.temp }}/screenshots
+            ${{ runner.temp }}/evidence
+            ${{ runner.temp }}/runtime-diagnostics
+            ${{ runner.temp }}/office-real-simulator.xcresult
+          if-no-files-found: warn
+          retention-days: 14
