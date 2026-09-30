@@ -32,14 +32,21 @@ def expected_receipt(lock):
             "patchSHA256": forwarding_overlay["sha256"],
             "files": {name: data["preparedSHA256"]
                       for name, data in forwarding_overlay["files"].items()}}
+    kit_overlay = lock.get("kitCallbackLifecycleOverlay")
+    if kit_overlay is not None:
+        receipt["kitCallbackLifecycle"] = {
+            "patchSHA256": kit_overlay["sha256"],
+            "files": {name: data["preparedSHA256"]
+                      for name, data in kit_overlay["files"].items()}}
     return receipt
 
 
 def prepared_files(lock):
     """Every file the preparation must own: name -> prepared checksum.
 
-    Overlays merge in application order (embedding, scheme, forwarding); on
-    overlap the later overlay's output is the expected final state.
+    Overlays merge in application order (embedding, scheme, forwarding, kit
+    callback lifecycle); on overlap the later overlay's output is the expected
+    final state.
     """
     files = dict(lock["embeddingOverlay"]["files"])
     scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
@@ -48,6 +55,9 @@ def prepared_files(lock):
     forwarding_overlay = lock.get("forwardingLifecycleOverlay")
     if forwarding_overlay is not None:
         files.update(forwarding_overlay["files"])
+    kit_overlay = lock.get("kitCallbackLifecycleOverlay")
+    if kit_overlay is not None:
+        files.update(kit_overlay["files"])
     return files
 
 
@@ -89,6 +99,16 @@ def prepare(root, lock_path=DEFAULT_LOCK):
         # after the embedding overlay), verified against the staged files
         # below rather than the pristine pinned sources.
 
+    kit_overlay = lock.get("kitCallbackLifecycleOverlay")
+    kit_patch = None
+    if kit_overlay is not None:
+        kit_patch = contained(lock_path.parent, kit_overlay["patch"])
+        if digest(kit_patch) != kit_overlay["sha256"]:
+            raise ValueError("Office kit callback lifecycle patch checksum mismatch")
+        # Its input hashes describe the pristine pinned kit sources (the file
+        # set is disjoint from the earlier overlays), verified against the
+        # staged files below so a drifted source fails before the patch runs.
+
     receipt = expected_receipt(lock)
     destination = root / "prepared/native"
     if destination.exists() or destination.is_symlink():
@@ -125,6 +145,18 @@ def prepare(root, lock_path=DEFAULT_LOCK):
             subprocess.run(["git", "apply", "--check", str(forwarding_patch)],
                            cwd=stage, check=True, capture_output=True)
             subprocess.run(["git", "apply", str(forwarding_patch)],
+                           cwd=stage, check=True, capture_output=True)
+        if kit_patch is not None:
+            # Applies last; the kit file set is disjoint from every earlier
+            # overlay, and its declared input state is the pristine pinned
+            # source, checked here so a drifted source fails before the patch.
+            for name, hashes in kit_overlay["files"].items():
+                if digest(contained(stage, name)) != hashes["originalSHA256"]:
+                    raise ValueError(
+                        f"Office prepared source does not match the kit callback lifecycle overlay input: {name}")
+            subprocess.run(["git", "apply", "--check", str(kit_patch)],
+                           cwd=stage, check=True, capture_output=True)
+            subprocess.run(["git", "apply", str(kit_patch)],
                            cwd=stage, check=True, capture_output=True)
         expected = {name: data["preparedSHA256"]
                     for name, data in prepared_files(lock).items()}

@@ -1,0 +1,116 @@
+--- a/kit/Kit.cpp
++++ b/kit/Kit.cpp
+@@ -3394,6 +3394,72 @@
+ bool KitSocketPoll::pushToMainThread(COKitCallback callback, COKitCallbackType eType,
+                                      const char* p, void* data) // static
+ {
++#if DOCS_SHARE_PROCESS
++    // The kit servicing thread is one shared thread recorded where it
++    // actually services the polls, so this identity test is stable across
++    // poll creation, first-service re-threading and teardown. A per-poll
++    // owner cannot provide it: a never-serviced poll still carries its
++    // creator thread, and SocketPoll::_owner is re-written without
++    // synchronization. mainPoll cannot provide it either: it tracks only the
++    // last-built poll and ANY poll's destructor clears it unconditionally, so
++    // it can be null for the whole remaining lifetime of a document that
++    // outlives a closed sibling - for example the iOS preview->edit second
++    // open.
++    if (kitThreadId.load(std::memory_order_acquire) == ProcUtil::getThreadId())
++        return false;
++
++    // The callback addresses exactly one document; resolve which. The two
++    // registered entry points are the only producers of these events.
++    const Document* doc = nullptr;
++    if (callback == &Document::GlobalCallback)
++        doc = static_cast<const Document*>(data);
++    else if (callback == &Document::ViewCallback)
++        doc = static_cast<const CallbackDescriptor*>(data)->getDoc();
++    if (!doc)
++    {
++        LOG_ERR("Dropping COKit callback with unresolvable document");
++        return true;
++    }
++
++    // Queue to the document's OWN poll. That poll shares ownership of the
++    // Document (setDocument is called exactly once, at session creation), so
++    // the raw callback data stays valid until drained, and if the poll dies
++    // first its queue - and this callback - is destroyed with it instead of
++    // running against a torn-down document. Queueing to any other poll would
++    // let the pointer outlive the document it addresses.
++    std::shared_ptr<std::string> copy;
++    if (p)
++        copy = std::make_shared<std::string>(p, strlen(p));
++
++    std::vector<std::shared_ptr<KitSocketPoll>> live;
++    {
++        std::unique_lock<std::mutex> lock(KSPollsMutex);
++        live.reserve(KSPolls.size());
++        for (const auto& weak : KSPolls)
++            if (auto poll = weak.lock())
++                live.push_back(std::move(poll));
++    }
++
++    for (const auto& poll : live)
++    {
++        if (poll->getDocument().get() != doc)
++            continue;
++        if (poll->addCallback([callback, eType, data, copy = std::move(copy)] {
++                LOG_TRC("Unusual process callback in main thread");
++                callback(eType, copy ? copy->c_str() : nullptr, data);
++            }))
++            return true;
++        break;
++    }
++
++    // No live poll owns this document: it is being torn down on the kit
++    // thread. Running inline here would execute Document/Session code on a
++    // foreign thread concurrently with that teardown. Dropping matches the
++    // pinned handling of callbacks whose document or session is already gone
++    // (KitWebSocketHandler::handleMessage, Document::drainCallbacks).
++    LOG_DBG("Dropping COKit callback for a document whose poll is gone");
++    return true;
++#else
+     if (mainPoll && mainPoll->getThreadOwner() != ProcUtil::getThreadId())
+     {
+         LOG_TRC("Unusual push callback to main thread");
+@@ -3407,10 +3473,15 @@
+         return true;
+     }
+     return false;
++#endif
+ }
+ 
+ KitSocketPoll *KitSocketPoll::mainPoll = nullptr;
+ 
++#if DOCS_SHARE_PROCESS
++std::atomic<ProcUtil::ThreadId> KitSocketPoll::kitThreadId{0};
++#endif
++
+ bool pushToMainThread(COKitCallback cb, COKitCallbackType eType, const char *p, void *data)
+ {
+     return KitSocketPoll::pushToMainThread(cb, eType, p, data);
+@@ -3448,6 +3519,10 @@
+     else
+         return static_cast<KitSocketPoll*>(data)->kitPoll(timeoutUs);
+ #else
++    // Record the one shared kit servicing thread where it actually services
++    // the polls; pushToMainThread authorizes inline execution for this
++    // thread alone. Idempotent store, independent of any poll's lifecycle.
++    KitSocketPoll::kitThreadId.store(ProcUtil::getThreadId(), std::memory_order_release);
+     std::unique_lock<std::mutex> lock(KitSocketPoll::KSPollsMutex);
+     std::vector<std::shared_ptr<KitSocketPoll>> v;
+     v.reserve(KitSocketPoll::KSPolls.size());
+--- a/kit/Kit.hpp
++++ b/kit/Kit.hpp
+@@ -197,6 +197,11 @@
+                                  void* data);
+ 
+ #if DOCS_SHARE_PROCESS
++    /// The one shared kit servicing thread, recorded by pollCallback where the
++    /// polls are actually serviced. Stable across poll lifecycle, unlike
++    /// mainPoll or any single poll's mutable owner.
++    static std::atomic<ProcUtil::ThreadId> kitThreadId;
++
+     static std::mutex KSPollsMutex;
+     static std::condition_variable KSPollsCV;
+     static std::vector<std::weak_ptr<KitSocketPoll>> KSPolls;

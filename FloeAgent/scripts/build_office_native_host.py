@@ -195,6 +195,16 @@ def build_host(root, output, *, build=True, filter_overlay=None):
             'sourceCommit': lock['commit'],
             'files': {name: spec['preparedSHA256']
                       for name, spec in forwarding_overlay['files'].items()}}
+    # Same contract for the kit callback lifecycle overlay: the host records
+    # the exact patched Kit sources it compiled, so a future pin carrying
+    # kitCallbackOverlaySHA256 cannot be satisfied by a pre-overlay host.
+    kit_overlay = lock.get("kitCallbackLifecycleOverlay")
+    if kit_overlay is not None:
+        report['kitCallbackLifecycle'] = {
+            'patchSHA256': kit_overlay['sha256'],
+            'sourceCommit': lock['commit'],
+            'files': {name: spec['preparedSHA256']
+                      for name, spec in kit_overlay['files'].items()}}
     report.update(run_identity())
     receipt = output / 'native-host.json'
 

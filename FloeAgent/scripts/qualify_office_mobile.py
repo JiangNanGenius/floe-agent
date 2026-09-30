@@ -125,7 +125,8 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     source = root / "source"
     shadow = destination / "source"
     lifecycle_overlays = [entry for entry in (lock.get("schemeTaskLifecycleOverlay"),
-                                              lock.get("forwardingLifecycleOverlay"))
+                                              lock.get("forwardingLifecycleOverlay"),
+                                              lock.get("kitCallbackLifecycleOverlay"))
                           if entry is not None]
     shadow_sources(root, shadow, overlay, lifecycle_overlays)
     scheme_overlay = lock.get("schemeTaskLifecycleOverlay")
@@ -134,6 +135,9 @@ def qualify(root, destination, *, build=True, lock_path=DEFAULT_LOCK):
     forwarding_overlay = lock.get("forwardingLifecycleOverlay")
     if forwarding_overlay is not None:
         report["forwardingLifecycleOverlaySHA256"] = forwarding_overlay["sha256"]
+    kit_overlay = lock.get("kitCallbackLifecycleOverlay")
+    if kit_overlay is not None:
+        report["kitCallbackLifecycleOverlaySHA256"] = kit_overlay["sha256"]
     # configure normally creates this root alias; the old qualified archive
     # retained the ICU data but omitted the alias. Use its one actual data file.
     icu = shadow / "ICU.dat"
