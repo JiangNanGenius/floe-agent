@@ -1,6 +1,6 @@
 # Build 238 repair evidence / 修复证据
 
-Status: candidate work, not yet an App release. 当前为候选修复，尚未交付新版 App。
+Status (2026-09-30): full App build, signed upload, GitHub prerelease and Feather publication completed. Apple processing and local artifact retention are being verified. 完整 App 构建、签名上传、GitHub 预发布及 Feather 已完成；Apple 处理与本地产物留存正在核验。
 
 ## Linux
 
@@ -32,13 +32,26 @@ The reported PPT edit crash still lacks a matching system crash stack. This patc
 
 PPT 编辑闪退仍缺对应系统崩溃栈。补丁修复了已证实的转发缺陷，尚不能断言它解释了所有闪退；PPT 编辑、保存重开和真机效果仍待验收。
 
-## Pending / 未完成
+## Delivery and remaining checks / 交付与待核验
 
-- The dedicated Gitee repository is public and contains the MPL-2.0 license and component notice. Image upload and anonymous download verification are still in progress. Gitee 专用仓库已公开并包含许可证及组件声明，镜像上传和匿名下载仍在验证。
-- Full-App compilation, IPA preservation, TestFlight availability and release delivery have not started for this candidate. 此候选的完整 App 编译、IPA 保留、TestFlight 可用性及发布尚未开始。
+Immutable source: `b0467f8350b09441c78d8a381d59620fec5deb3b`, tag `v1.7.0-beta.97`, build 238. [Release workflow](https://github.com/JiangNanGenius/floe-agent/actions/runs/36672864766) passed; [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.97) and Feather workflow 36676089499 completed. The unsigned IPA is 739,902,215 bytes. Local artifact downloads remain in progress.
 
-Model update: 41 controlled harness checks passed. Both tracked test files typechecked; the complete Swift Testing suites were not executed locally. Swift 6 object compilation covered the runtime and a reduced local-model module with an injected engine shim. Real MLX engine compilation remains a cloud check. Real-weight diagnostic run 36672679602 is pending, not a pass.
+不可变源码及标签如上。完整 App 编译、签名上传、GitHub 预发布及 Feather 已完成；本地备份尚未完成，不能写成已保留。
 
-模型更新：41 项受控检查通过，新增测试文件类型检查通过。完整测试套件未在本地运行，真实权重诊断还在进行。
+Apple discovery at 2026-09-30 06:03 UTC reported build 238 as PROCESSING, without a build ID or errors/warnings. VALID, expiry and private Floe QA availability remain to be verified; installability is not yet confirmed.
 
-Real-weight result (run 36672679602): the two file-tool turns and receipts passed on macOS, but the first search answer fabricated content instead of using the receipt. The second search was not reached. Overall qualification failed; this is not iPad evidence.
+Apple 当前记录为 PROCESSING，无错误或警告，尚需核实 VALID、未过期及私有 Floe QA 可用性；不能据此声称可安装。
+
+Gitee remains a source/Release synchronization target only. It will not be included as an App acceleration or fallback source in subsequent changes. The already frozen build 238 is unchanged.
+
+Gitee 仅保留源码与 Release 同步用途；后续代码移除其内置加速及后备下载角色。已冻结的 Build238 不作替换。
+
+## Local model / 本地模型
+
+41 controlled harness checks passed. Both tracked test files typechecked; complete Swift Testing suites were not executed locally. Swift 6 object compilation covered the runtime and a reduced local-model module with an injected engine shim.
+
+41 项受控检查及新增测试文件类型检查通过；完整测试套件未在本地运行。Swift 6 对象编译覆盖运行时及注入引擎替身的精简模型模块。
+
+Real-weight run 36672679602: two file-tool turns and receipts passed on macOS, but the first search answer fabricated content instead of using its receipt. The second search was not reached. Overall qualification failed; this is not iPad evidence.
+
+真实权重测试两轮文件工具及回执通过，但首次搜索回答编造内容，第二次搜索未执行，整体资格检查失败。平台为 macOS，不是 iPad 验收。
