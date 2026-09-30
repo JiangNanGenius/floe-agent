@@ -1,7 +1,7 @@
 # Linux download source qualification / Linux 下载源核验
 
-This change follows frozen build 238; it is not part of tag `v1.7.0-beta.97`.
-此改动晚于已冻结的 Build238，不属于该标签。
+This change ships in Build239, immutable source `e03ce0e71f189e261f84e8f8a1cc1cbbaad0cbea`, tag `v1.7.0-beta.98`.
+此改动已随 Build239 发布，源码及标签如上，不改变 Build238。
 
 Gitee remains synchronized for source and Releases but is removed from bundled download fallbacks, including the legacy image entry. GitHub remains the primary source. The proposed SMP fallback order is `gh-proxy.com`, then `ghproxy.net`.
 Gitee 继续同步源码及 Release，但从内置下载后备源移除，包括旧镜像条目。GitHub 仍为主源，SMP 后备顺序为上述两个站点。
@@ -30,3 +30,9 @@ A [November 2023 firsthand report](https://github.com/lzwme/scoop-proxy-cn/issue
 
 All sources retain the same pinned archive digest. Cancellation, integrity failure and local disk errors must not silently trigger another download source. Only bounded availability failures advance to the next endpoint. No Gitee URLs will be added after synchronization completes.
 所有来源共用固定摘要；取消、完整性失败、本地磁盘错误不能悄悄换源，仅明确的可用性错误推进后备列表。Gitee 同步完成也不再加入软件来源。
+
+## Delivery / 交付
+
+[Release 36677558252](https://github.com/JiangNanGenius/floe-agent/actions/runs/36677558252) and Feather 36681300582 completed. [TestFlight verification 36682853252](https://github.com/JiangNanGenius/floe-agent/actions/runs/36682853252) confirmed VALID, unexpired, sole private Floe QA and IN_BETA_TESTING. The unsigned IPA is retained in cloud artifact 11081093991; local backup is downloading. SHA-256: `a942766b77e7ef32ed85d09eb8a331da519d9f74b368264698b1ba7ab62475e5`.
+
+完整构建、上传、GitHub 预发布和 Feather 已完成，私有 Floe QA 可安装。云端 IPA 已保留，本地备份仍在下载。这不代表 PPT 或本地搜索真机验收通过。
