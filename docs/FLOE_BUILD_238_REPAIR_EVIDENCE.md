@@ -55,3 +55,5 @@ Gitee 仅保留源码与 Release 同步用途；后续代码移除其内置加�
 Real-weight run 36672679602: two file-tool turns and receipts passed on macOS, but the first search answer fabricated content instead of using its receipt. The second search was not reached. Overall qualification failed; this is not iPad evidence.
 
 真实权重测试两轮文件工具及回执通过，但首次搜索回答编造内容，第二次搜索未执行，整体资格检查失败。平台为 macOS，不是 iPad 验收。
+
+TestFlight update: [verification 36677944422](https://github.com/JiangNanGenius/floe-agent/actions/runs/36677944422) confirmed Build238 VALID, unexpired, in the sole private Floe QA group and IN_BETA_TESTING. 内测分发已核实，可供既有私有组安装；不代表真机功能验收。
