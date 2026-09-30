@@ -156,3 +156,25 @@ does not compile the core again. PPT execution remains pending.
 头文件链接及对应目标，并把遗漏和来源证据写入检查点清单。未知头文件、构建
 文件变化和必需输入仍失败。127 项受控检查及实际依赖链接审计已通过。原失败
 保留，恢复继续复用同一核心备份，不重新编译核心；PPT 场景仍待执行。
+
+Conversion 36787219632 succeeded at workflow source
+`2fc7ea1e9140cbbddaf0d9e3bd54134aca8d411a` and preserved a normal core checkpoint.
+Its tar is 498,083,817 bytes, SHA256
+`01d5257441f06da77fbb4675f917557d15b1bfea2e28a7da90f1c35d1692eb09`.
+Primary checked the engine pin and deployment patch, SDK 27.0 build 24A430,
+Xcode 27.0 build 27A266a, 369 linker entries, and all 11 archive samples showing
+arm64/IOSSIMULATOR. The hashed manifest contains 59,317 entries and audits 60
+unused ZXing links, including the exact 36 reviewed headers. The artifact is a
+completed core only: editor construction and actual Floe PPT execution remain
+pending. Resume must validate the whole tar and per-file hashes before running
+editor phases; the core is reused.
+
+转换 36787219632 已成功，源码为
+`2fc7ea1e9140cbbddaf0d9e3bd54134aca8d411a`，正常核心检查点已云端保留。
+内层包大小 498,083,817 字节，SHA256 为
+`01d5257441f06da77fbb4675f917557d15b1bfea2e28a7da90f1c35d1692eb09`。
+主线程核对固定引擎与部署补丁、SDK 27.0/24A430、Xcode 27.0/27A266a、369 个
+链接输入及 11 份实际归档样本的 arm64/IOSSIMULATOR 平台证明。摘要绑定的清单
+包含 59,317 项，审计 60 个未使用的 ZXing 链接，其中头文件恰为已审查的 36 项。
+这仅是完成核心的检查点，编辑器构建与实际 Floe PPT 场景仍待执行；恢复时必须
+再验证整包与逐文件摘要，随后仅运行编辑器阶段，复用核心。
