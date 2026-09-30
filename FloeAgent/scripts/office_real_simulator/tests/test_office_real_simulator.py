@@ -1464,6 +1464,71 @@ class CoreCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'required dependency'):
             self.create(root)
 
+    def make_unused_zxing_header(self, root):
+        upstream = PKG_DIR / 'tests/fixtures/zxing'
+        recipe_dir = root / 'source/engine/external/zxing'
+        recipe_dir.mkdir(parents=True)
+        for name in ('UnpackedTarball_zxing.mk', 'StaticLibrary_zxing.mk'):
+            shutil.copyfile(upstream / name, recipe_dir / name)
+        unpacked = root / 'source/engine/workdir/UnpackedTarball/zxing'
+        link = unpacked / 'core/src/libzint/aztec.h'
+        link.parent.mkdir(parents=True)
+        link.symlink_to('../../../zint/backend/aztec.h')
+        return link
+
+    def test_unused_zxing_header_requires_exact_audited_source_recipes(self):
+        root = self.make_build_root()
+        link = self.make_unused_zxing_header(root)
+        record = self.create(root)
+        omission = record['omittedOptionalLinks'][0]
+        self.assertEqual(omission['path'], str(link.relative_to(root)))
+        self.assertEqual(omission['dependencyRecipeSHA256'],
+                         self.checkpoint_module.ZXING_RECIPE_SHA256)
+        dest = self.make_prepared_destination()
+        output = root / 'core-checkpoint'
+        self.resume_module.restore_checkpoint(
+            output / sim_paths.CORE_CHECKPOINT_TAR,
+            output / sim_paths.CORE_CHECKPOINT_JSON, dest,
+            expect_xcode=self.EXPECT_XCODE, expect_sdk='27.0',
+            expect_sdk_build='24A430', runner=self.fake_runner())
+
+    def test_missing_zxing_header_with_changed_recipe_still_fails(self):
+        root = self.make_build_root()
+        self.make_unused_zxing_header(root)
+        recipe = root / 'source/engine/external/zxing/StaticLibrary_zxing.mk'
+        with recipe.open('a') as stream:
+            stream.write('\n# different inputs\n')
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'required dependency'):
+            self.create(root)
+
+    def test_pinned_zxing_nested_font_header_link_is_audited(self):
+        root = self.make_build_root()
+        link = self.make_unused_zxing_header(root)
+        link.unlink()
+        nested = link.parent / 'fonts/normal_woff2.h'
+        nested.parent.mkdir()
+        nested.symlink_to('../../../../zint/backend/fonts/normal_woff2.h')
+        record = self.create(root)
+        self.assertEqual(record['omittedOptionalLinks'][0]['path'],
+                         str(nested.relative_to(root)))
+
+    def test_missing_zxing_header_with_different_target_still_fails(self):
+        root = self.make_build_root()
+        link = self.make_unused_zxing_header(root)
+        link.unlink()
+        link.symlink_to('../../../zint/backend/different.h')
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'required dependency'):
+            self.create(root)
+
+    def test_unknown_zxing_header_not_in_reviewed_tar_still_fails(self):
+        root = self.make_build_root()
+        known = self.make_unused_zxing_header(root)
+        known.unlink()
+        unknown = known.parent / 'unreviewed.h'
+        unknown.symlink_to('../../../zint/backend/unreviewed.h')
+        with self.assertRaisesRegex(self.checkpoint_module.CheckpointError, 'required dependency'):
+            self.create(root)
+
     def test_required_subtree_dangling_nonheader_link_cannot_be_omitted(self):
         root = self.make_build_root()
         link = root / 'source/engine/instdir/missing-resource'

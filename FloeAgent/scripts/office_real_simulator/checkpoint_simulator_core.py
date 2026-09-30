@@ -57,6 +57,55 @@ EXCLUDED = {'.git', 'node_modules', '.DS_Store'}
 ENGINE_SUBTREES = ('config_host', 'include', 'instdir',
                    'workdir/CustomTarget/ios', 'workdir/UnoApiHeadersTarget')
 COPYRIGHT_PATTERNS = ('COPYING*', 'LICENSE*', 'NOTICE*')
+# Audited at engine pin 27b21dc1. Its unpack recipe explicitly documents the
+# dangling experimental-submodule links as unused; its static-library recipe
+# builds no libzint objects. Only exact links and byte-identical recipes can
+# authorize omission of these headers, never an arbitrary missing header.
+ZXING_RECIPE_SHA256 = {
+    'source/engine/external/zxing/UnpackedTarball_zxing.mk':
+        'cff0aa5e8c97c88145fd69a1545b5df2b49e1ad2474a7a785b1ee19d9e041893',
+    'source/engine/external/zxing/StaticLibrary_zxing.mk':
+        '94b6fc709b4fee331846f4f7d12ca93dc1ab598b05e3935e53e37df278275340',
+}
+
+ZXING_UNUSED_HEADER_LINKS = {
+    'aztec.h',
+    'big5.h',
+    'channel_precalcs.h',
+    'code128.h',
+    'common.h',
+    'dmatrix.h',
+    'dmatrix_trace.h',
+    'eci.h',
+    'eci_sb.h',
+    'filemem.h',
+    'fonts/normal_woff2.h',
+    'fonts/upcean_woff2.h',
+    'gb18030.h',
+    'gb2312.h',
+    'gbk.h',
+    'general_field.h',
+    'gs1.h',
+    'gs1_lint.h',
+    'iso3166.h',
+    'iso4217.h',
+    'ksx1001.h',
+    'large.h',
+    'maxicode.h',
+    'output.h',
+    'pdf417.h',
+    'pdf417_tabs.h',
+    'pdf417_trace.h',
+    'qr.h',
+    'raster_font.h',
+    'reedsol.h',
+    'reedsol_logs.h',
+    'rss.h',
+    'sjis.h',
+    'zfiletypes.h',
+    'zint.h',
+    'zintconfig.h',
+}
 
 
 class CheckpointError(ValueError):
@@ -73,6 +122,25 @@ def sha256_file(path):
         for chunk in iter(lambda: stream.read(1 << 20), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def unused_zxing_header(path, target, build_root):
+    unpacked = build_root / 'source/engine/workdir/UnpackedTarball/zxing'
+    libzint = unpacked / 'core/src/libzint'
+    if not path.is_relative_to(libzint) or \
+            path.relative_to(libzint).as_posix() not in ZXING_UNUSED_HEADER_LINKS or \
+            target != unpacked / 'zint/backend' / path.relative_to(libzint):
+        return None
+    for relative, digest in ZXING_RECIPE_SHA256.items():
+        recipe = build_root / relative
+        if not recipe.is_file() or sha256_file(recipe) != digest:
+            return None
+    return {'path': str(path.relative_to(build_root)),
+            'target': str(target.relative_to(build_root)),
+            'reason': 'unused experimental zint link in audited pinned ZXing recipes',
+            'dependencyTarSHA256':
+                '64e4139103fdbc57752698ee15b5f0b0f7af9a0331ecbdc492047e0772c417ba',
+            'dependencyRecipeSHA256': dict(ZXING_RECIPE_SHA256)}
 
 
 def collect_engine_paths(build_root, extra_paths=(), omitted_optional_links=None):
@@ -108,6 +176,12 @@ def collect_engine_paths(build_root, extra_paths=(), omitted_optional_links=None
                 # header-only discovery walk may omit such non-header links.
                 # Required subtrees, headers, configure and linker inputs stay
                 # fail-closed. Record every omission in the hashed manifest.
+                audited_unused = unused_zxing_header(path, target, build_root) \
+                    if headers_only else None
+                if audited_unused is not None:
+                    if omitted_optional_links is not None:
+                        omitted_optional_links.append(audited_unused)
+                    return
                 if headers_only and path.suffix not in HEADER_SUFFIXES and \
                         target.suffix not in HEADER_SUFFIXES and \
                         not path.name.startswith(('LICENSE', 'COPYING', 'NOTICE')) and \

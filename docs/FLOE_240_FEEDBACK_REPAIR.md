@@ -136,3 +136,23 @@ still pending; no Build240 release has been published.
 arm64 模拟器对象已验证转换、默认工具及正常恢复；首次本地检查被磁盘预留正确
 阻止，后续仅在合成测试中替代磁盘预算，生产限制未放宽。这仅是工具路径证据。
 云端转换及实际 Floe PPT 场景尚待完成，目前没有 Build240 发布。
+
+Conversion run 36785511666 verified the raw archive hash, source, toolchain and
+safe extraction, then correctly rejected a missing ZXing `libzint/aztec.h` link.
+Primary checked the pinned upstream unpack/static-library recipes and the actual
+dependency tarball against its pinned SHA256. The recipes explicitly document
+unused experimental-submodule links; the library builds no libzint objects.
+The correction permits only the 36 reviewed header link/target mappings when
+both recipe hashes match, recording each omission and its source evidence in
+the checkpoint manifest. Unknown headers, changed recipes and required inputs
+still fail. 127 controlled checks and the actual dependency-link audit passed.
+The original cloud failure is retained; recovery reuses the same raw core and
+does not compile the core again. PPT execution remains pending.
+
+转换运行 36785511666 已核验备份摘要、源码、工具链及安全解包，随后正确拒绝缺失
+的 ZXing `libzint/aztec.h` 链接。主线程核对固定版本的两份上游构建文件，并按固定
+摘要验证实际依赖原包：上游明确说明这些实验子模块链接不用于构建，静态库也不
+编译 libzint 对象。修正仅允许两份构建文件摘要匹配时，跳过逐项审查的 36 个
+头文件链接及对应目标，并把遗漏和来源证据写入检查点清单。未知头文件、构建
+文件变化和必需输入仍失败。127 项受控检查及实际依赖链接审计已通过。原失败
+保留，恢复继续复用同一核心备份，不重新编译核心；PPT 场景仍待执行。
