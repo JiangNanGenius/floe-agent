@@ -1,0 +1,4 @@
+{
+  "en-US": "Build 238: Linux version/status correction, bounded Delta I/O and data-preserving environment repair; rebuilt Office forwarding lifecycle; bounded local search-call correction and stop-state recovery. Chinese font resources are unchanged after positive user feedback. Please test Linux download/repair/boot, two search turns, stop/resume and PPT preview-to-edit/save/reopen. PPT crash resolution and real-weight local search accuracy remain unverified on device. Gitee mirror verification is a separate follow-up.",
+  "zh-Hans": "Build238：修正 Linux 版本状态、采用有界 Delta 读写并提供保留数据的环境修复；重建 Office 转发生命周期；本地搜索调用有限纠正和停止状态恢复。中文字体按已确认正常版本保留。请测试 Linux 下载修复启动、两轮搜索、停止继续，以及 PPT 预览转编辑和保存重开。PPT 闪退消失及真实权重搜索准确性尚未完成真机验收，Gitee 镜像验证独立跟进。"
+}

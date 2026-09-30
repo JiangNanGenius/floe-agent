@@ -34,6 +34,9 @@ PPT 编辑闪退仍缺对应系统崩溃栈。补丁修复了已证实的转发�
 
 ## Pending / 未完成
 
-- Local-model tool/receipt and cancellation checks are in progress; no new real-weight search pass is claimed. 本地模型工具回执及取消状态验证进行中，不宣称真实权重搜索通过。
 - The dedicated Gitee repository is public and contains the MPL-2.0 license and component notice. Image upload and anonymous download verification are still in progress. Gitee 专用仓库已公开并包含许可证及组件声明，镜像上传和匿名下载仍在验证。
 - Full-App compilation, IPA preservation, TestFlight availability and release delivery have not started for this candidate. 此候选的完整 App 编译、IPA 保留、TestFlight 可用性及发布尚未开始。
+
+Model update: 41 controlled harness checks passed. Both tracked test files typechecked; the complete Swift Testing suites were not executed locally. Swift 6 object compilation covered the runtime and a reduced local-model module with an injected engine shim. Real MLX engine compilation remains a cloud check. Real-weight diagnostic run 36672679602 is pending, not a pass.
+
+模型更新：41 项受控检查通过，新增测试文件类型检查通过。完整测试套件未在本地运行，真实权重诊断还在进行。
