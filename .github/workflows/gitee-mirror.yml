@@ -78,6 +78,17 @@ on:
         required: false
         type: boolean
         default: false
+      release_repository:
+        description: 'Release destination (Linux component repository has independent attachment quota)'
+        required: false
+        type: choice
+        options: [floe-agent, floe-linux-images]
+        default: floe-agent
+      create_linux_repository:
+        description: 'Create the dedicated public Linux mirror if missing; never modifies existing repository visibility'
+        required: false
+        type: boolean
+        default: false
       mirror_refs:
         description: 'Also mirror main/tags (set false when only syncing a release)'
         required: false
@@ -248,6 +259,8 @@ jobs:
     # Bounded by the largest asset class (an app IPA is ~750 MB: download,
     # upload and verify are sequential streams, never held in RAM).
     timeout-minutes: 360
+    env:
+      GITEE_RELEASE_REPO: JiangNanGenius/${{ github.event_name == 'workflow_dispatch' && inputs.release_repository || 'floe-agent' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -393,12 +406,34 @@ jobs:
           rm -f "${RUNNER_TEMP}/upload-probe.bin"
           echo "diagnostic complete (probe exit ${PROBE_EXIT})"
 
+      - name: Check release mirror repository
+        if: ${{ steps.target.outputs.skip != 'true' }}
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+          CREATE: ${{ inputs.create_linux_repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          DIAGNOSE: ${{ inputs.diagnose_download }}
+        run: |
+          set -euo pipefail
+          case "$GITEE_RELEASE_REPO" in
+            JiangNanGenius/floe-agent) exit 0 ;;
+            JiangNanGenius/floe-linux-images) ;;
+            *) echo "Unsupported mirror repository" >&2; exit 1 ;;
+          esac
+          case "$TAG" in floe-linux-guest-*|floe-linux-template-*) ;; *) echo "Linux mirror only accepts Linux components" >&2; exit 1;; esac
+          test "$DIAGNOSE" != "true"
+          FLAGS=()
+          if [ "$CREATE" = "true" ] && [ "$DRY_RUN" != "true" ]; then FLAGS+=(--create); fi
+          python3 FloeAgent/scripts/ensure_linux_gitee_repository.py "${FLAGS[@]}"
+
       - name: Ensure the immutable tag exists on Gitee (one-way, never forced)
         if: ${{ steps.target.outputs.skip != 'true' && !(github.event_name == 'workflow_dispatch' && inputs.diagnose_download) }}
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           TAG: ${{ steps.target.outputs.tag }}
           SHA: ${{ steps.tagcommit.outputs.sha }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
         run: |
           set -euo pipefail
           : "${GITEE_TOKEN:?GITEE_TOKEN secret is required}"
@@ -409,12 +444,16 @@ jobs:
           GITEE_TOKEN_FILE="$TOKEN_FILE"
           export GITEE_TOKEN_FILE
 
-          GITEE_URL="https://gitee.com/JiangNanGenius/floe-agent.git"
+          GITEE_URL="https://gitee.com/${GITEE_RELEASE_REPO}.git"
           git remote add gitee "$GITEE_URL"
           CRED_HELPER='!f() { printf "username=JiangNanGenius\n"; printf "password=%s\n" "$(cat "$GITEE_TOKEN_FILE")"; }; f'
           ggit() { git -c "credential.helper=${CRED_HELPER}" "$@"; }
 
           REMOTE_SHA="$(ggit ls-remote gitee "refs/tags/${TAG}" | awk '{print $1}')"
+          if [ -z "$REMOTE_SHA" ] && [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: immutable tag would be pushed"
+            exit 0
+          fi
           if [ -z "$REMOTE_SHA" ]; then
             echo "pushing tag ${TAG} to Gitee (no force)"
             ggit push gitee "refs/tags/${TAG}:refs/tags/${TAG}"
@@ -454,6 +493,7 @@ jobs:
 
           FLAGS=(
             --tag "$TAG"
+            --gitee-repo "$GITEE_RELEASE_REPO"
             --ref-sha "$TAG_SHA"
             --ref-verified true
             --verify "$VERIFY"
