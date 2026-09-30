@@ -178,3 +178,26 @@ editor phases; the core is reused.
 包含 59,317 项，审计 60 个未使用的 ZXing 链接，其中头文件恰为已审查的 36 项。
 这仅是完成核心的检查点，编辑器构建与实际 Floe PPT 场景仍待执行；恢复时必须
 再验证整包与逐文件摘要，随后仅运行编辑器阶段，复用核心。
+
+
+### Editor staging portability (2026-09-30)
+
+Resume 36789644676 restored the verified core and skipped core compilation.
+Editor autogen, configure and browser build succeeded, but staging rejected an
+external `source/compile` symlink created by upstream Automake. Its artifact
+contains failure evidence only, not a reusable staged engine. The candidate
+reinstalls Libtool helpers/macros and Automake auxiliary files using their
+`--copy` options before configure, without changing packager containment rules.
+A real local autotools fixture reproduced the original failure, then packaged
+portable helper copies and still rejected an unrelated external link. All 128
+focused pipeline checks and actionlint passed. This is local tooling evidence,
+not completed cloud staging, full-App compilation or PPT runtime acceptance.
+The next editor-only resume reuses checkpoint 36787219632; no core rebuild.
+
+续编 36789644676 已恢复核验过的核心并跳过核心编译。编辑器生成、配置和浏览器
+构建通过，打包阶段拒绝上游 Automake 生成的外部 `source/compile` 链接；该次
+产物只有失败证据，不能当可复用引擎。候选修复在配置前让 Libtool 和 Automake
+以 `--copy` 安装辅助文件及宏，保持打包器的路径边界检查。主线程使用实际本地
+构建工具复现原失败，验证复制后可打包、无关外部链接仍被拒绝；128 项定向检查
+及 actionlint 通过。这是本地工具路径证据，不是云端打包、完整 App 或 PPT
+运行验收。后续仅续编编辑器，继续复用 36787219632 核心检查点。

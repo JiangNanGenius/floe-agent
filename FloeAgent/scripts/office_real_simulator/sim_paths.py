@@ -84,7 +84,8 @@ PINNED_PYTHON_PACKAGES = (('lxml', '5.4.0'), ('polib', '1.2.0'))
 
 # Canonical phase names.  ENGINE_PHASES must never appear in a resumed plan.
 ENGINE_PHASES = ('engine-configure', 'engine-build')
-EDITOR_PHASES = ('editor-autogen', 'editor-configure', 'editor-build')
+EDITOR_PHASES = ('editor-autogen', 'editor-libtool-copy', 'editor-automake-copy',
+                 'editor-configure', 'editor-build')
 
 # Exact engine-build outputs the pinned top-level online ``configure`` reads
 # after ``--with-lo-builddir`` (verified against

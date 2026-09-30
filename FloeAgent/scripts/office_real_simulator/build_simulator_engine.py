@@ -6,11 +6,13 @@ Phases (each recorded in qualification.json with timing and free space):
 1. engine-configure  - CPiOS distro + --enable-ios-simulator in source/engine
 2. engine-build      - gmake -j2 (hundreds of native static archives)
 3. editor-autogen    - online ./autogen.sh (creates the top-level configure)
-4. editor-configure  - online --enable-iosapp (creates the top-level symlinks
+4. editor-libtool-copy / editor-automake-copy - reinstall generated helpers
+                       as regular files, not external Homebrew symlinks
+5. editor-configure  - online --enable-iosapp (creates the top-level symlinks
                        and ios/Mobile/Config.xcconfig consumed by Xcode;
                        configure.ac hard-fails on Darwin unless
                        ``/usr/bin/env python3 -c "import lxml"`` succeeds)
-5. editor-build      - gmake builds browser/dist for the app
+6. editor-build      - gmake builds browser/dist for the app
 
 A watchdog stops a phase if free space falls to the reserve (engine.lock.json
 pins: minimum 12 GiB, reserve 6 GiB) and terminates the whole process group, so
@@ -468,6 +470,12 @@ def build(build_root, python_bin=None, mode='all', python_runner=None,
                              ['perl', './autogen.sh', *ENGINE_CONFIGURE_ARGS]),
         'engine-build': (engine_dir, ['gmake', '-j2']),
         'editor-autogen': (source, ['./autogen.sh']),
+        # Upstream autogen installs links into the runner's Homebrew prefix.
+        # Ask the same tools to install portable copies before packaging;
+        # the packager must continue rejecting every escaping dependency.
+        'editor-libtool-copy': (source, ['glibtoolize', '--copy', '--force']),
+        'editor-automake-copy': (source, ['automake', '--add-missing', '--copy',
+                                        '--force-missing']),
         'editor-configure': (source, ['./configure', *editor_configure_args]),
         'editor-build': (source, ['gmake', '-j2']),
     }

@@ -2019,6 +2019,11 @@ class CoreResumePlanTests(unittest.TestCase):
         def fake_phase_runner(name, cwd, command, qualification_path, log_dir,
                               env):
             recorded.append(name)
+            if name == 'editor-libtool-copy':
+                self.assertEqual(command, ['glibtoolize', '--copy', '--force'])
+            if name == 'editor-automake-copy':
+                self.assertEqual(command, ['automake', '--add-missing', '--copy',
+                                           '--force-missing'])
 
         with mock.patch.object(self.module, 'verify_child_python',
                                return_value={'passed': True,
@@ -2269,6 +2274,74 @@ class CheckpointWorkflowContractTests(unittest.TestCase):
                         if step.get('uses', '').startswith('actions/download-artifact'))
         self.assertEqual(download['with']['name'],
                          'office-real-simulator-engine')
+
+
+class PortableEditorAuxiliaryTests(unittest.TestCase):
+    """Real autotools installation, then the unchanged packager boundary."""
+
+    @unittest.skipUnless(all(shutil.which(t) for t in
+        ('glibtoolize', 'automake', 'aclocal', 'autoheader', 'autoreconf')),
+        'requires the actual editor autotools')
+    def test_real_auxiliary_copies_package_without_external_links(self):
+        import package_office_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'build'
+            source = root / 'source'
+            source.mkdir(parents=True)
+            (source / 'configure.ac').write_text(
+                'AC_INIT([portable], [1])\nAC_CONFIG_SRCDIR([main.c])\n'
+                'AC_CONFIG_HEADERS([config.h])\n'
+                'AC_CONFIG_MACRO_DIRS([m4])\nAM_INIT_AUTOMAKE([foreign])\n'
+                'AC_PROG_CC\nLT_INIT\nAC_CONFIG_FILES([Makefile])\nAC_OUTPUT\n')
+            (source / 'Makefile.am').write_text(
+                'bin_PROGRAMS = portable\nportable_SOURCES = main.c\n')
+            (source / 'main.c').write_text('int main(void) { return 0; }\n')
+            (source / 'm4').mkdir()
+            def run(command):
+                result = subprocess.run(command, cwd=source,
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0,
+                                 result.stdout + result.stderr)
+            # These are the actual commands in the pinned upstream autogen.
+            for command in (['glibtoolize'], ['aclocal'], ['autoheader'],
+                            ['automake', '--add-missing'], ['autoreconf']):
+                run(command)
+            self.assertTrue((source / 'compile').is_symlink())
+            self.assertFalse((source / 'compile').resolve().is_relative_to(root))
+            for name in package_office_engine.REQUIRED:
+                path = source / name
+                if path.suffix:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('fixture\n')
+                else:
+                    path.mkdir(parents=True, exist_ok=True)
+            library = source / 'engine/libfixture.a'
+            library.write_bytes(b'packager-only fixture; no platform claim')
+            (source / 'engine/workdir/CustomTarget/ios/ios-all-static-libs.list').write_text(
+                str(library) + '\n')
+            (root / 'qualification.json').write_text(json.dumps({
+                'nativeBuildPassed': True, 'commit': 'fixture'}))
+            # Reproduce the original cloud failure before changing tool flags.
+            with self.assertRaisesRegex(ValueError, 'Dependency escapes build root'):
+                package_office_engine.package(root)
+            run(['glibtoolize', '--copy', '--force'])
+            run(['automake', '--add-missing', '--copy', '--force-missing'])
+            for helper in ('compile', 'config.guess', 'config.sub', 'install-sh',
+                           'missing', 'depcomp', 'ltmain.sh', 'm4/libtool.m4'):
+                self.assertTrue((source / helper).is_file(), helper)
+                self.assertFalse((source / helper).is_symlink(), helper)
+            manifest = package_office_engine.package(root)
+            entries = {item['path']: item for item in manifest['files']}
+            self.assertIn('sha256', entries['source/compile'])
+            self.assertIn('sha256', entries['source/m4/libtool.m4'])
+            with tarfile.open(root / 'office-engine-ios-arm64.tar.gz') as archive:
+                self.assertTrue(archive.getmember('source/compile').isfile())
+                self.assertEqual(archive.extractfile('source/compile').read(),
+                                 (source / 'compile').read_bytes())
+            (source / 'unreviewed-link').symlink_to(Path(tmp) / 'outside')
+            (Path(tmp) / 'outside').write_text('outside')
+            with self.assertRaisesRegex(ValueError, 'Dependency escapes build root'):
+                package_office_engine.package(root)
 
 
 if __name__ == '__main__':
