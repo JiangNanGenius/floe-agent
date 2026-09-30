@@ -63,7 +63,7 @@ def restore_staged_engine(run_id, staged_dir, restored_dir):
     expect_xcode, expect_sdk = current_toolchain()
     report = restore_simulator_bundle.restore(
         layout['engineTarball'], restored_dir,
-        provenance=layout['provenance'],
+        provenance_path=layout['provenance'],
         reuse=True, expect_xcode=expect_xcode, expect_sdk=expect_sdk)
     report['baseEngineRunID'] = str(run_id)
     report['engineArtifactName'] = ENGINE_ARTIFACT_NAME

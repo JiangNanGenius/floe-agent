@@ -227,3 +227,39 @@ cloud staging and actual Floe PPT execution remain unverified.
 138 项定向检查覆盖打包、重定位和拒绝情况。本地 Python 3.9 测试接口失败
 保留，合成包测试先验证成员，再使用兼容接口。引擎二进制未变，云端打包与
 实际 Floe PPT 场景仍未验收。
+
+
+### Verified staging and Floe restore adapter (2026-09-30)
+
+Build-stage 36792170654 succeeded at workflow source
+`1e1804ead683b0168f4536521f9725623da31ce6`: the core was restored, both portable
+helper phases passed, and editor construction plus simulator staging passed.
+The reusable engine tar is 599,783,656 bytes, SHA256
+`486f42173ece2d3845ee5a78df23536c98160bee0f7f35cc86e7111e99d98a73`.
+Cloud provenance records 72,539 manifest entries, 369 linker inputs, 11 actual
+arm64/IOSSIMULATOR archive samples, SDK 27.0/24A430 and Xcode 27.0/27A266a.
+Its two normalized asset aliases are audited. The upstream host runtime is a
+separate diagnostic; this staging success is not actual Floe PPT acceptance.
+
+Before dispatching the full Floe workflow, primary reproduced an adapter bug:
+`restore_staged_engine` passed `provenance` to an API expecting `provenance_path`.
+The candidate fixes that keyword. A test calls the real default restore API
+and confirms invalid provenance is rejected; a signature-bound mock checks
+forwarding. All 79 focused Floe pipeline checks and actionlint pass. Retained
+initial failures include that real TypeError and a local `/var` versus
+`/private/var` fixture-path assertion corrected to match path resolution.
+These checks prove adapter/qualification contracts only, not App or PPT runtime.
+
+36792170654 的构建打包阶段已成功，源码为
+`1e1804ead683b0168f4536521f9725623da31ce6`：恢复核心、辅助文件复制、编辑器构建
+与模拟器打包均通过。引擎包大小 599,783,656 字节，SHA256 为
+`486f42173ece2d3845ee5a78df23536c98160bee0f7f35cc86e7111e99d98a73`。
+云端记录 72,539 项清单、369 个链接输入、11 个实际 arm64/IOSSIMULATOR 归档
+样本以及 SDK 27.0/24A430、Xcode 27.0/27A266a，两处资源链接规范均有审计。
+上游宿主运行仅是独立诊断；打包成功不代表实际 Floe PPT 验收。
+
+启动完整 Floe 前，主线程复现恢复适配器误传 `provenance` 参数；实际接口要求
+`provenance_path`，候选已纠正。测试调用真实默认恢复函数确认错误来源被拒绝，
+并绑定实际签名核验转发；79 项定向检查和 actionlint 通过。原 TypeError 与
+本地 `/var`、`/private/var` 合成路径断言失败均保留，后者按真实路径解析修正。
+这只证明适配器和资格合同，不代表 App 或 PPT 已运行。

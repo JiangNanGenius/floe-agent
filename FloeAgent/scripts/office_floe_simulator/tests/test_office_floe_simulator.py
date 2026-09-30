@@ -1200,5 +1200,47 @@ class VariantLockTests(unittest.TestCase):
                 variant='bogus', base_run_id='1')
 
 
+class RestoreApiContractTests(unittest.TestCase):
+    def test_actual_restore_api_rejects_bad_provenance(self):
+        from unittest import mock
+        import restore_staged_engine as adapter
+        import restore_simulator_bundle as actual
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / 'staged'
+            staged.mkdir()
+            (staged / sim_paths.STAGED_ENGINE_TAR).write_bytes(b'invalid archive')
+            provenance = dict(sourceCommit=LOCK['commit'], repository=LOCK['repository'],
+                deploymentPatchSHA256=LOCK['sourcePatchSHA256'], platform='iphonesimulator',
+                arch='arm64', sdkVersion='27.0', sdkBuildVersion='24A430',
+                xcodeVersion='Xcode 27.0; Build version 27A266a', deploymentTarget='26.0',
+                artifactSHA256='invalid', artifactSize=15, platformSampleSize=1,
+                allSampledObjectsIOSSIMULATOR=True)
+            (staged / sim_paths.STAGED_PROVENANCE).write_text(json.dumps(provenance))
+            with mock.patch.object(adapter, 'download_artifact', return_value=staged), \
+                 mock.patch.object(adapter, 'current_toolchain',
+                     return_value=('Xcode 27.0; Build version 27A266a', '27.0')):
+                # Calls the real default restore function: an unexpected
+                # keyword must never be hidden by a generic mock accepting it.
+                with self.assertRaisesRegex(actual.RestoreError, 'provenance binding failed'):
+                    adapter.restore_staged_engine('fixture-run', staged, Path(tmp) / 'restore')
+
+    def test_adapter_binds_to_actual_restore_signature(self):
+        from unittest import mock
+        import restore_staged_engine as adapter
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp)
+            for name in (sim_paths.STAGED_ENGINE_TAR, sim_paths.STAGED_PROVENANCE):
+                (staged / name).write_text('fixture')
+            with mock.patch.object(adapter, 'download_artifact', return_value=staged), \
+                 mock.patch.object(adapter, 'current_toolchain', return_value=('Xcode fixture', 'fixture')), \
+                 mock.patch.object(adapter.restore_simulator_bundle, 'restore',
+                     autospec=True, return_value={}) as restore:
+                result = adapter.restore_staged_engine('fixture-run', staged, staged / 'restored')
+            restore.assert_called_once_with(str((staged / sim_paths.STAGED_ENGINE_TAR).resolve()),
+                staged / 'restored', provenance_path=str((staged / sim_paths.STAGED_PROVENANCE).resolve()),
+                reuse=True, expect_xcode='Xcode fixture', expect_sdk='fixture')
+            self.assertEqual(result['baseEngineRunID'], 'fixture-run')
+
+
 if __name__ == '__main__':
     unittest.main()
