@@ -180,6 +180,34 @@ public typealias LinuxGuestSoftRestartPerformer = @Sendable (
     _ config: LinuxGuestLifecycleConfig?
 ) async throws -> LinuxGuestLifecycleReceipt
 
+/// Outcome of a VERIFIED environment-disk repair: the preserved bytes were
+/// proven (provenance + content) and captured into the environment delta, and
+/// the durable repair exclusion lifted. Nothing was deleted.
+public struct LinuxGuestRepairReceipt: Sendable, Equatable {
+    public var environmentID: String
+    public var resolution: String
+    public var preservedPath: String?
+    public var restoredGeneration: UInt64?
+    public var diskDigestSHA512: String?
+    public var detail: String
+
+    public init(
+        environmentID: String,
+        resolution: String,
+        preservedPath: String? = nil,
+        restoredGeneration: UInt64? = nil,
+        diskDigestSHA512: String? = nil,
+        detail: String
+    ) {
+        self.environmentID = environmentID
+        self.resolution = resolution
+        self.preservedPath = preservedPath
+        self.restoredGeneration = restoredGeneration
+        self.diskDigestSHA512 = diskDigestSHA512
+        self.detail = detail
+    }
+}
+
 /// The service consumed by the lifecycle tools.
 public protocol LinuxGuestLifecycleControlling: Sendable {
     func status(environmentID: String) async throws -> LinuxGuestLifecycleReceipt
@@ -203,6 +231,31 @@ public protocol LinuxGuestLifecycleControlling: Sendable {
         config: LinuxGuestLifecycleConfig?,
         cancellation: CancellationToken?
     ) async throws -> LinuxGuestLifecycleReceipt
+    /// VERIFIED repair of this environment's durable guest disk after a stop
+    /// whose delta capture failed: the preserved bytes are proven and captured
+    /// into the environment delta, the repair exclusion lifts, and nothing is
+    /// deleted. Refused while a guest instance or lifecycle operation owns the
+    /// environment. A backend without a repair substrate refuses honestly.
+    func repair(
+        environmentID: String,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestRepairReceipt
+}
+
+public extension LinuxGuestLifecycleControlling {
+    /// Default: a controller without a verified repair substrate refuses
+    /// honestly instead of pretending. The production lifecycle manager
+    /// overrides this with the serialized, verified repair path.
+    func repair(
+        environmentID: String,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestRepairReceipt {
+        throw LinuxGuestLifecycleError.capabilityUnsupported(
+            environmentID: environmentID,
+            requestedVCPUs: 1,
+            reason: "this build does not support verified environment disk repair"
+        )
+    }
 }
 
 /// Serializes safe lifecycle operations around one injected guest controller.
@@ -892,6 +945,54 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
             imageID: status.imageID,
             servicesStopped: serviceCount,
             detail: "hard-restarted: the old TinyEMU instance was stopped and verified, then a fresh instance booted"
+        )
+    }
+
+    // MARK: verified disk repair
+
+    /// VERIFIED repair of an environment whose last stop could not save its
+    /// delta (repairRequired). Serializes with every other lifecycle operation
+    /// on the environment and refuses while ANY guest instance or lifecycle
+    /// operation owns it, so the provenance + content verification runs
+    /// against a quiet, stopped disk. The controller's repair is the existing
+    /// Runtime v2 verified restore: preserved bytes are proven, captured into
+    /// the environment delta, and the durable exclusion lifts — the
+    /// quarantine is never deleted and no lease is bypassed.
+    public func repair(
+        environmentID: String,
+        cancellation: CancellationToken? = nil
+    ) async throws -> LinuxGuestRepairReceipt {
+        try beginOperation(environmentID)
+        defer { endOperation(environmentID) }
+        try Self.throwIfCancelled(cancellation)
+        // A repairRequired environment owns NO guest capacity, so a missing
+        // activity fact is the normal case; only a live or starting guest
+        // (or a quarantined survivor of a stop that never confirmed) refuses.
+        let detail = await activity(environmentID)
+        if detail?.running == true || detail?.starting == true {
+            throw LinuxGuestLifecycleError.capabilityUnsupported(
+                environmentID: environmentID,
+                requestedVCPUs: 1,
+                reason: "a guest instance is running or starting; stop it and let it settle before repairing the disk"
+            )
+        }
+        if detail?.quarantined == true {
+            throw LinuxGuestLifecycleError.stopFailedQuarantined(
+                environmentID: environmentID,
+                detail: "the guest is quarantined after a stop that never confirmed; retry stopLinux first so the repair can verify a quiet disk"
+            )
+        }
+        let report = try await controller.restoreRepair(environmentID: environmentID)
+        FloeLogger(category: .tools).info(
+            "Linux guest repair completed environment=\(environmentID) resolution=\(report.resolution)"
+        )
+        return LinuxGuestRepairReceipt(
+            environmentID: environmentID,
+            resolution: report.resolution,
+            preservedPath: report.preservedPath,
+            restoredGeneration: report.restoredGeneration,
+            diskDigestSHA512: report.diskDigestSHA512,
+            detail: "preserved bytes were proven (provenance + content) and captured into the environment delta; the repair exclusion lifted; nothing was deleted"
         )
     }
 }

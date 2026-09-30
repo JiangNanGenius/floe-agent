@@ -224,11 +224,13 @@ public func registerExecutionTools(
         ToolCatalog.register(StopLinuxGuestLifecycleTool.self)
         ToolCatalog.register(SoftRestartLinuxGuestLifecycleTool.self)
         ToolCatalog.register(HardRestartLinuxGuestLifecycleTool.self)
+        ToolCatalog.register(RepairLinuxGuestLifecycleTool.self)
         registry.register(StartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
         registry.register(LinuxGuestStatusLifecycleTool(lifecycle: linuxLifecycle))
         registry.register(StopLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
         registry.register(SoftRestartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
         registry.register(HardRestartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
+        registry.register(RepairLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
     }
     return service
 }

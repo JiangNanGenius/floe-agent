@@ -1,14 +1,15 @@
 // FloeExecution — model-facing Linux lifecycle tools.
 //
-// Five explicit capabilities over one owned Linux guest:
+// Six explicit capabilities over one owned Linux guest:
 //   environment.startLinux / .linuxStatus / .stopLinux /
-//   .softRestartLinux / .hardRestartLinux
+//   .softRestartLinux / .hardRestartLinux / .repairLinux
 //
 // They share one injected `LinuxGuestLifecycleControlling` service and render
 // its truthful receipt. They never accept an image URL or script, never delete
 // the environment, and surface the typed refusal as a nonzero-result failure
 // instead of a thrown pipeline error. Disruptive operations carry risk labels
-// and go through the existing approval/risk system.
+// and go through the existing approval/risk system. `repairLinux` resolves a
+// repairRequired environment through the verified Runtime v2 restore only.
 
 import Foundation
 import FloeCore
@@ -310,6 +311,68 @@ public struct HardRestartLinuxGuestLifecycleTool: AgentTool {
                 environmentID: environmentID,
                 config: config,
                 cancellation: context.cancellation
+            )
+        }
+    }
+}
+
+// MARK: - verified disk repair
+
+public struct RepairLinuxGuestLifecycleTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public init() {}
+    }
+
+    public static let name = "environment.repairLinux"
+    public static let toolDescription =
+        "Repair this environment's Linux disk after a stop that could not save its state (the guest reports repairRequired): the complete working disk preserved in recovery/quarantine is verified — its recorded boot base (provenance) and every byte (content digest) — and then captured into the environment delta, lifting the repair exclusion so the guest can boot again. Refused while a guest instance or lifecycle operation owns the environment; nothing is deleted and the preserved quarantine stays until the verified capture commits. This is the ONLY repair path: it never discards data, never re-downloads the image, and never swaps the environment's base."
+    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.writesFiles]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+
+    private let lifecycle: any LinuxGuestLifecycleControlling
+
+    public init(lifecycle: any LinuxGuestLifecycleControlling) {
+        self.lifecycle = lifecycle
+    }
+
+    public func validate(_ args: Arguments) throws {}
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard let environmentID = LinuxLifecycleToolSupport.environmentID(context) else {
+            return ToolExecutionOutput(
+                digesting: "status=notOwned\nno environment is in scope for this Linux lifecycle call",
+                exitStatus: 127
+            )
+        }
+        do {
+            let receipt = try await lifecycle.repair(
+                environmentID: environmentID,
+                cancellation: context.cancellation
+            )
+            var lines = [
+                "resolution=\(receipt.resolution)",
+                "environmentID=\(receipt.environmentID)",
+            ]
+            if let path = receipt.preservedPath { lines.append("preservedPath=\(path)") }
+            if let generation = receipt.restoredGeneration {
+                lines.append("restoredGeneration=\(generation)")
+            }
+            if let digest = receipt.diskDigestSHA512 { lines.append("diskSHA512=\(digest)") }
+            lines.append("detail=\(receipt.detail)")
+            return ToolExecutionOutput(digesting: lines.joined(separator: "\n"), exitStatus: 0)
+        } catch FloeError.cancelled {
+            return ToolExecutionOutput(digesting: "status=cancelled", exitStatus: 130)
+        } catch let error as LinuxGuestLifecycleError {
+            return ToolExecutionOutput(
+                digesting: LinuxLifecycleRendering.failure(status: "repairRefused", error: error),
+                exitStatus: 125
+            )
+        } catch {
+            return ToolExecutionOutput(
+                digesting: LinuxLifecycleRendering.failure(status: "failed", error: error),
+                exitStatus: 1
             )
         }
     }

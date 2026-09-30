@@ -930,6 +930,13 @@ public protocol LinuxGuestControlling: Sendable {
     /// Releases guest state before the environment's data is deleted.
     func deleteGuest(environmentID: String) async
     func guestIsRunning(environmentID: String) async -> Bool
+    /// VERIFIED repair of this environment's durable guest disk after a stop
+    /// that could not save its delta: the preserved bytes are proven
+    /// (provenance + content) and captured into the environment delta before
+    /// the repair exclusion lifts. Refuses while a guest is running. Throws
+    /// with the honest reason when the bytes cannot be proven or no repair
+    /// exclusion exists; nothing is deleted and the quarantine is preserved.
+    func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport
     /// Image/last-error state for honest UI and shell output.
     func guestStatus(environmentID: String) async -> LinuxGuestStatus
     /// Stops guests started by this task id (task ownership teardown).
@@ -1051,6 +1058,15 @@ public extension LinuxGuestControlling {
         expectedOwnerRunID: String
     ) async -> LinuxGuestTransientReleaseOutcome {
         .refused(reason: "this Linux guest service does not support scoped transient release")
+    }
+
+    /// Default: no repair substrate, so the resolution refuses honestly
+    /// instead of pretending. The production TinyEMU service overrides this
+    /// with the Runtime v2 verified restore.
+    func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        throw LinuxGuestError.invalidConfiguration(
+            "this Linux guest backend does not support environment disk repair"
+        )
     }
 
     /// Default: this backend cannot hold an environment across a whole

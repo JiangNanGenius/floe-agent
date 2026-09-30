@@ -34,6 +34,20 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     /// When set, a start really boots this RAM instead of the requested shape
     /// (a scripted external preemption / silent downgrade).
     var forcedStartMemoryMB: Int?
+    /// Scripted verified-repair outcome (nil = refuse like a substrate-less
+    /// backend).
+    var scriptedRepair: RuntimeV2Store.RepairResolutionReport?
+    private(set) var repairCalls = 0
+
+    func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        repairCalls += 1
+        guard let scriptedRepair else {
+            throw LinuxGuestError.invalidConfiguration(
+                "this Linux guest backend does not support environment disk repair"
+            )
+        }
+        return scriptedRepair
+    }
 
     func own(_ environmentID: String, imageID: String = "floe-image") {
         ownedImages[environmentID] = imageID
@@ -170,6 +184,9 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     func sessionInfo(sessionID: String) async -> LinuxGuestSessionInfo? { nil }
 
     // test controls
+    func setScriptedRepair(_ report: RuntimeV2Store.RepairResolutionReport?) {
+        scriptedRepair = report
+    }
     func setServices(_ environmentID: String, _ count: Int) {
         active[environmentID]?.services = count
     }
@@ -849,5 +866,75 @@ final class LinuxLifecycleToolDispatchTests: XCTestCase {
         XCTAssertTrue(output.summary.contains("status=invalidArgument"))
         let isActive = await controller.isActive(environmentID)
         XCTAssertFalse(isActive)
+    }
+
+    // MARK: - verified disk repair
+
+    /// The repair renders the verified restore outcome, and a substrate-less
+    /// backend refuses honestly instead of pretending.
+    func testRepairToolReceiptOnVerifiedRestore() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setScriptedRepair(RuntimeV2Store.RepairResolutionReport(
+            resolution: "restored",
+            preservedPath: "recovery/quarantine/runtime-vm-rt-x",
+            diskDigestSHA512: String(repeating: "b", count: 128),
+            restoredGeneration: 4
+        ))
+        let manager = LinuxGuestLifecycleManager(controller: controller)
+        let tool = RepairLinuxGuestLifecycleTool(lifecycle: manager)
+
+        let output = try await tool.execute(.init(), context: context())
+        XCTAssertEqual(output.exitStatus, 0)
+        XCTAssertTrue(output.summary.contains("resolution=restored"))
+        XCTAssertTrue(output.summary.contains("preservedPath=recovery/quarantine/runtime-vm-rt-x"))
+        XCTAssertTrue(output.summary.contains("restoredGeneration=4"))
+        XCTAssertTrue(output.summary.contains("diskSHA512="))
+        let repairCalls = await controller.repairCalls
+        XCTAssertEqual(repairCalls, 1)
+    }
+
+    /// Repair refuses while a guest instance is running: the verification
+    /// must see a quiet disk.
+    func testRepairRefusedWhileGuestRunning() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setScriptedRepair(RuntimeV2Store.RepairResolutionReport(
+            resolution: "restored"
+        ))
+        let manager = LinuxGuestLifecycleManager(controller: controller)
+        _ = try await manager.start(
+            environmentID: environmentID, config: .init(), ownerTaskID: "run-1"
+        )
+
+        do {
+            _ = try await manager.repair(environmentID: environmentID, cancellation: nil)
+            XCTFail("repair must refuse while a guest is running")
+        } catch let error as LinuxGuestLifecycleError {
+            guard case .capabilityUnsupported = error else {
+                return XCTFail("expected capabilityUnsupported, got \(error)")
+            }
+        }
+        let repairCalls = await controller.repairCalls
+        XCTAssertEqual(repairCalls, 0, "no restore ran against a live guest")
+    }
+
+    /// The model tool surfaces the running-guest refusal as a repairRefused
+    /// nonzero receipt, never a thrown pipeline error.
+    func testRepairToolRefusalReceiptWhileRunning() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setScriptedRepair(RuntimeV2Store.RepairResolutionReport(
+            resolution: "restored"
+        ))
+        let manager = LinuxGuestLifecycleManager(controller: controller)
+        _ = try await manager.start(
+            environmentID: environmentID, config: .init(), ownerTaskID: "run-1"
+        )
+        let tool = AnyAgentTool(RepairLinuxGuestLifecycleTool(lifecycle: manager))
+
+        let output = try await tool.run(Data("{}".utf8), context())
+        XCTAssertEqual(output.exitStatus, 125)
+        XCTAssertTrue(output.summary.contains("status=repairRefused"))
     }
 }

@@ -161,6 +161,13 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     func completeStopResult(
         environmentID: String, runtimeID: String, imageID: String, clean: Bool
     ) async -> RuntimeV2StopOutcome
+    /// VERIFIED repair resolution for an environment the store excludes after
+    /// a failed stop capture: provenance + content verification of the
+    /// preserved bytes, capture into the environment delta, durable commit.
+    /// Throws `RuntimeV2Error.repairResolutionUnavailable` when no exclusion
+    /// exists or the preserved bytes cannot be proven; the preserved bytes and
+    /// the exclusion are never touched on any failure path.
+    func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport
 }
 
 public extension LinuxGuestRuntimeV2Integrating {
@@ -195,6 +202,15 @@ public extension LinuxGuestRuntimeV2Integrating {
     func repairImageFromLegacyInstall(imageID: String, isCancelled: (@Sendable () -> Bool)?) async throws {
         throw RuntimeV2Error.imageNotFound(imageID)
     }
+
+    /// Conservative default for conformers without a repair substrate: the
+    /// resolution refuses honestly instead of inventing a repair.
+    func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        throw RuntimeV2Error.repairResolutionUnavailable(
+            environmentID: environmentID,
+            reason: "this Runtime v2 substrate does not support repair resolution"
+        )
+    }
 }
 
 /// Production integrator backed by a RuntimeV2Store.
@@ -216,17 +232,23 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         /// focused tests to prove concurrent first uses share a single
         /// preparation). nil = normal.
         public var prepareAndRecover: (@Sendable (String) async throws -> Void)?
+        /// Replaces the bounded backoff between stop-capture retry attempts
+        /// (tests inject a no-op so the retry loop is deterministic;
+        /// production sleeps). nil = the production backoff schedule.
+        public var captureRetryDelay: (@Sendable (Int) async -> Void)?
 
         public init(
             recordShutdown: (@Sendable (RuntimeV2DeltaStore.ShutdownRecord, String) async throws -> Void)? = nil,
             markRepairRequired: (@Sendable (String, String) async throws -> Void)? = nil,
             placeRepairHold: (@Sendable (String, String, String, String?) async throws -> Void)? = nil,
-            prepareAndRecover: (@Sendable (String) async throws -> Void)? = nil
+            prepareAndRecover: (@Sendable (String) async throws -> Void)? = nil,
+            captureRetryDelay: (@Sendable (Int) async -> Void)? = nil
         ) {
             self.recordShutdown = recordShutdown
             self.markRepairRequired = markRepairRequired
             self.placeRepairHold = placeRepairHold
             self.prepareAndRecover = prepareAndRecover
+            self.captureRetryDelay = captureRetryDelay
         }
 
         public static let production = Seams()
@@ -983,25 +1005,49 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             // pinned, else the verified base image rootfs. A pin that moved
             // while the guest ran is a provenance mismatch and refuses the
             // capture (the disk is preserved instead of being rewritten).
-            let bootBase = try await store.templates.bootBase(
-                matching: meta, expectedImageID: imageID
-            )
-            let info = try await store.deltas.capture(
-                environmentID: environmentID,
-                workingDisk: diskURL,
-                baseRootfs: bootBase.diskURL,
-                baseImageID: meta.baseImageID,
-                baseRootfsSHA512: bootBase.digest,
-                templatePin: bootBase.templatePin
-            )
-            try await store.deltas.recordShutdown(
-                RuntimeV2DeltaStore.ShutdownRecord(
+            //
+            // A typed, known-transient access fault while opening or reading
+            // either capture input (the stopped working disk or the base
+            // rootfs) is retried a bounded number of times before the disk is
+            // quarantined. The Build 238 device receipt recorded a raw,
+            // errno-free "cannot open file" failure at this stage — its cause
+            // is NOT proven, and these retries make no claim about it; they
+            // only absorb faults whose errno classifies as transient once the
+            // delta store reports typed errors. Provenance conflicts, digest
+            // verdicts and every permanent or untyped error still fail closed
+            // on the FIRST attempt — the disk is preserved, never rewritten,
+            // and the environment is marked repairRequired exactly as before.
+            // Nothing is deleted during retries and the staged delta writes
+            // are idempotent against the previous generation.
+            let info: RuntimeV2DeltaStore.DeltaInfo
+            do {
+                info = try await captureWithTransientRetry(
+                    environmentID: environmentID, directory: directory,
+                    diskURL: diskURL, meta: meta, imageID: imageID
+                )
+            } catch {
+                let reason = await preserveAfterFailedCapture(
                     environmentID: environmentID, runtimeID: runtimeID,
-                    stoppedAt: Date(), clean: true,
-                    deltaGeneration: info.header.generation
-                ),
-                environmentID: environmentID
-            )
+                    directory: directory, error: error
+                )
+                return .retainedForRepair(reason: reason)
+            }
+            do {
+                try await store.deltas.recordShutdown(
+                    RuntimeV2DeltaStore.ShutdownRecord(
+                        environmentID: environmentID, runtimeID: runtimeID,
+                        stoppedAt: Date(), clean: true,
+                        deltaGeneration: info.header.generation
+                    ),
+                    environmentID: environmentID
+                )
+            } catch {
+                let reason = await preserveAfterFailedCapture(
+                    environmentID: environmentID, runtimeID: runtimeID,
+                    directory: directory, error: error
+                )
+                return .retainedForRepair(reason: reason)
+            }
             try? fileManager.removeItem(at: directory)
             await releaseLease(environmentID: environmentID, runtimeID: runtimeID)
             return .captured(generation: info.header.generation)
@@ -1012,6 +1058,79 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             )
             return .retainedForRepair(reason: reason)
         }
+    }
+
+    /// Total capture attempts for one clean stop: the initial try plus two
+    /// bounded retries, only ever consumed by a transient access fault.
+    static let captureAttempts = 3
+
+    /// Production backoff between capture retry attempts (milliseconds). A
+    /// real pause lets a momentary access condition (a busy file, a short
+    /// memory-pressure window) clear; bounded so a stop can never stall
+    /// unreasonably. Tests replace the delay through `Seams.captureRetryDelay`.
+    static let captureRetryBackoffMs: [UInt64] = [250, 1000]
+
+    /// True only for a typed, known-transient file access fault. Provenance
+    /// conflicts, structural verdicts and untyped errors are permanent for
+    /// this stop and must never be retried.
+    static func isTransientCaptureIO(_ error: Error) -> Bool {
+        guard let io = error as? FloeFileIOError else { return false }
+        return io.isTransientAccessFailure
+    }
+
+    private func captureWithTransientRetry(
+        environmentID: String, directory: URL, diskURL: URL,
+        meta: RuntimeV2WorkingDirectory.Meta, imageID: String
+    ) async throws -> RuntimeV2DeltaStore.DeltaInfo {
+        var lastError: Error?
+        for attempt in 1...Self.captureAttempts {
+            do {
+                // A capture attempt re-resolves the boot base: an interrupted
+                // expanded view rebuild recovers instead of poisoning the
+                // retry with a stale URL.
+                let bootBase = try await store.templates.bootBase(
+                    matching: meta, expectedImageID: imageID
+                )
+                return try await store.deltas.capture(
+                    environmentID: environmentID,
+                    workingDisk: diskURL,
+                    baseRootfs: bootBase.diskURL,
+                    baseImageID: meta.baseImageID,
+                    baseRootfsSHA512: bootBase.digest,
+                    templatePin: bootBase.templatePin
+                )
+            } catch {
+                lastError = error
+                let retryable = attempt < Self.captureAttempts
+                    && Self.isTransientCaptureIO(error)
+                    && fileManager.fileExists(atPath: diskURL.path)
+                if !retryable { throw error }
+                await store.logs.log(
+                    "runtime v2 stop capture transient fault environment=\(environmentID) attempt=\(attempt)/\(Self.captureAttempts): \(error.localizedDescription); retrying"
+                )
+                if let delay = seams.captureRetryDelay {
+                    await delay(attempt)
+                } else {
+                    let ms = Self.captureRetryBackoffMs[
+                        min(attempt - 1, Self.captureRetryBackoffMs.count - 1)
+                    ]
+                    try? await Task.sleep(nanoseconds: ms * 1_000_000)
+                }
+            }
+        }
+        // Unreachable: the loop throws on the final attempt. Kept explicit so
+        // the signature stays total without force-unwrapping in the hot path.
+        struct ExhaustedCaptureRetries: Error {}
+        _ = lastError
+        throw ExhaustedCaptureRetries()
+    }
+
+    /// VERIFIED repair resolution for an environment the store excludes after
+    /// a failed stop capture. See `RuntimeV2Store.restoreRepair`: the preserved
+    /// bytes are proven (provenance + content) before anything moves, and any
+    /// failure leaves the exclusion and the bytes fully in place.
+    public func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        try await store.restoreRepair(environmentID: environmentID)
     }
 
     /// Failed-capture retention. The complete stopped disk moves into

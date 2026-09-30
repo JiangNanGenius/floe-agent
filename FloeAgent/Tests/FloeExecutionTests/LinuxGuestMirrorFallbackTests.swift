@@ -25,9 +25,13 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
 
     func testPinnedImageOrdersGitHubFirstAndGiteeSecond() {
         // The mirror contract applies to the mirrored entry: the current SMP
-        // default ships GitHub-primary only (no Gitee mirror asset is
-        // published for it, and none may be invented), while the legacy
-        // single-hart image keeps its verified Gitee mirror as the fallback.
+        // default ships GitHub-primary only. The remote audit (Build 238)
+        // verified WHY: the Gitee release `floe-linux-guest-smp-20260928.1`
+        // exists but its image upload FAILED — GITEE-MIRROR-MANIFEST.json
+        // records `"state": "failed"` for the 587 MB archive (the repo sits at
+        // 1010.5 MiB of a 1 GiB quota), and no shard-manifest/pieces exist.
+        // No mirror URL may be invented, so no mirror is pinned; while the
+        // legacy single-hart image keeps its verified Gitee mirror fallback.
         let current = LinuxGuestImageDistributionCatalog.entry(
             id: LinuxGuestImageDistributionCatalog.defaultImageID
         )
@@ -143,6 +147,45 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         let expected = fixture.pieceNames.compactMap { fixture.pieces[$0] }.reduce(Data(), +)
         let actual = try? Data(contentsOf: destination)
         XCTAssertEqual(actual, expected)
+    }
+
+    /// The current default image pins NO mirror (the remote mirror asset for
+    /// it does not exist — verified against the live Gitee release). An
+    /// unreachable primary therefore fails closed with the primary's own
+    /// error and never contacts anyone else: no fallback URL may be invented.
+    func testUnreachablePrimaryWithoutPinnedMirrorFailsClosed() async {
+        let fixture = makeFixture()
+        var unmirrored = fixture.trusted
+        unmirrored.mirrors = []
+        let downloader = ScriptedMirrorDownloader(
+            primaryFailure: .networkFailure(detail: "primary unreachable"),
+            manifest: fixture.manifest,
+            pieces: fixture.pieces
+        )
+        let destination = makeDestination()
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+
+        do {
+            try await LinuxGuestImageSourceFetch.fetch(
+                image: unmirrored,
+                to: destination,
+                maxBytes: 1024,
+                downloader: downloader,
+                onProgress: { _, _ in }
+            )
+            XCTFail("with no pinned mirror an unavailable primary must fail, never invent a source")
+        } catch let error as LinuxGuestImageInstallError {
+            guard case .downloadFailed = error else {
+                return XCTFail("expected the bounded download failure, got \(error)")
+            }
+        } catch {
+            return XCTFail("unexpected error \(error)")
+        }
+        let calls = await downloader.calls
+        XCTAssertEqual(calls.map(\.host), ["primary.example"],
+                       "only the primary is contacted when no mirror is pinned")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path),
+                       "no partial archive may survive a closed failure")
     }
 
     func testDefiniteAnswerDoesNotFallBack() async {

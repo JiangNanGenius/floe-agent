@@ -577,6 +577,66 @@ public actor TinyEMULinuxGuestRegistry {
         sessions[environmentID]?.handle.emulatorCPUSample()
     }
 
+    /// VERIFIED repair of this environment's durable guest disk after a stop
+    /// whose delta capture failed (the environment is repair-excluded and the
+    /// complete working disk is preserved in quarantine). The Runtime v2
+    /// substrate proves the preserved bytes — provenance (the exact boot base
+    /// the capture would bind to) plus a full content digest — before
+    /// capturing them into the environment delta and lifting the exclusion.
+    ///
+    /// Ownership: the repair holds the registry's per-environment lifecycle
+    /// ownership AND the `teardownsInFlight` exclusion marker across EVERY
+    /// await, exactly like a destructive teardown — the manager's
+    /// serialization alone cannot protect a direct registry call, and actor
+    /// reentrancy would otherwise admit a second concurrent restore, or a
+    /// start the moment the first restore lifts the exclusion while its
+    /// capture is still running. A live VM, an in-flight start, a stop, a
+    /// shape change or another lifecycle transaction refuses; nothing is
+    /// deleted and the quarantine is preserved on every failure path.
+    public func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        guard sessions[environmentID] == nil else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        guard !startingEnvironments.contains(environmentID) else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        guard teardownsInFlight.insert(environmentID).inserted else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        let lifecycleToken = nextLifecycleOperationToken()
+        await acquireLifecycle(
+            environmentID: environmentID, token: lifecycleToken, isShapeChange: false
+        )
+        defer {
+            teardownsInFlight.remove(environmentID)
+            releaseLifecycle(environmentID: environmentID, token: lifecycleToken)
+        }
+        // Revalidate after the await: the environment must still be quiet
+        // before the verified restore runs (from here the actor interleaves
+        // only at the substrate awaits, both under this ownership).
+        guard sessions[environmentID] == nil,
+              !startingEnvironments.contains(environmentID) else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        guard let runtimeV2 else {
+            throw LinuxGuestError.invalidConfiguration(
+                "this build has no Runtime v2 guest substrate; the preserved disk cannot be repaired here"
+            )
+        }
+        let report = try await runtimeV2.restoreRepair(environmentID: environmentID)
+        // The environment is repaired and stopped: the recorded failure that
+        // blocked every start is resolved; clear it so the next status/start
+        // reports truthfully. The quarantine entry itself is consumed by the
+        // store's durable resolution record, never deleted here.
+        lastErrors[environmentID] = nil
+        lastImpacts[environmentID] =
+            "repair restored environment \(environmentID): preserved bytes at \(report.preservedPath ?? "unknown") were proven and captured into the delta (generation \(report.restoredGeneration ?? 0))"
+        FloeLogger(category: .tools).info(
+            "Linux guest repair restored environment=\(environmentID) preservedPath=\(report.preservedPath ?? "-") generation=\(report.restoredGeneration ?? 0)"
+        )
+        return report
+    }
+
     /// Guests currently holding an admission slot. Running sessions and starts
     /// in flight both count.
     public var activeGuestCount: Int { guestReservations.count }
@@ -3099,6 +3159,10 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
 
     public func guestIsRunning(environmentID: String) async -> Bool {
         await registry.status(environmentID: environmentID).running
+    }
+
+    public func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        try await registry.restoreRepair(environmentID: environmentID)
     }
 
     /// Lease-based activity truth for the heavy-runtime arbiter's probe:

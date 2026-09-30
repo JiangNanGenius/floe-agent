@@ -3194,6 +3194,91 @@
         }
       }
     },
+    "environment.backend.repair.nothing_recoverable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No preserved bytes remain to restore."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可恢复的保留数据。"
+          }
+        }
+      }
+    },
+    "environment.backend.repair.restore": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair disk (restore preserved data)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修复磁盘（恢复已保留的数据）"
+          }
+        }
+      }
+    },
+    "environment.backend.repair.restored": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disk repaired: preserved data verified and captured (delta generation %lld). Nothing was deleted."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "磁盘已修复：保留数据已校验并捕获（增量代次 %lld）。未删除任何数据。"
+          }
+        }
+      }
+    },
+    "environment.backend.repair.section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disk repair"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "磁盘修复"
+          }
+        }
+      }
+    },
+    "environment.backend.repair.working": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying and restoring the preserved disk…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在校验并恢复已保留的磁盘…"
+          }
+        }
+      }
+    },
     "environment.backend.runtime_version": {
       "extractionState": "manual",
       "localizations": {

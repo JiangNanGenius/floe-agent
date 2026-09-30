@@ -364,6 +364,13 @@ private struct EnvironmentDetailView: View {
     /// answers, never the host kernel or an image-side guess.
     @State private var guestKernel: String?
     @State private var guestDistribution: String?
+    /// Durable repair exclusion for this environment's guest disk (a stop
+    /// could not save its delta; the complete working disk is preserved in
+    /// recovery/quarantine). nil when the environment is not repair-excluded.
+    @State private var repairHold: RuntimeV2RepairHoldStore.Hold?
+    @State private var repairRecoverable: RuntimeV2RepairHoldStore.RecoverableState?
+    @State private var repairBusy = false
+    @State private var repairMessage: String?
     @Environment(\.dismiss) private var dismiss
     private var record: ContainerRecord { (current ?? report).record }
     private var writable: Bool { record.kind.isWritableLayer && record.state == .active && !record.requiresRebuild && !busy && !jobs.running.contains(report.id) }
@@ -500,6 +507,37 @@ private struct EnvironmentDetailView: View {
                     Text("environment.backend.native_hint")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                }
+            }
+            // VERIFIED disk repair: only present while a durable repair
+            // exclusion exists for this environment. The action restores the
+            // preserved bytes through the proven capture path — nothing is
+            // deleted and no reset/re-download is offered here.
+            if backendSelection == .linuxVM, let hold = repairHold {
+                Section("environment.backend.repair.section") {
+                    Text(hold.reason)
+                        .font(.caption)
+                        .foregroundStyle(FloeTheme.pending)
+                    if case .recoverable(let preservedPath) = repairRecoverable {
+                        Text(preservedPath)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    } else {
+                        Text("environment.backend.repair.nothing_recoverable")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("environment.backend.repair.restore", systemImage: "wrench.and.screwdriver") {
+                        repairLinuxDisk()
+                    }
+                    .disabled(repairBusy || guestStatus?.running == true)
+                    if repairBusy { ProgressView("environment.backend.repair.working") }
+                    if let repairMessage {
+                        Text(repairMessage)
+                            .font(.caption)
+                            .foregroundStyle(FloeTheme.destructive)
+                    }
                 }
             }
             if busy { ProgressView("正在处理…") }
@@ -819,7 +857,32 @@ private struct EnvironmentDetailView: View {
         componentUpdateNeeded = await FloePlatformServices.shared.linuxComponentUpdateNeeded(
             id: imageID
         )
+        repairHold = await FloePlatformServices.shared.linuxRepairHoldStatus(id: report.id)
+        repairRecoverable = await FloePlatformServices.shared.linuxRepairRecoverable(id: report.id)
         await refreshGuestRuntimes()
+    }
+
+    /// VERIFIED repair of this environment's guest disk: the preserved bytes
+    /// are proven (provenance + content) and captured into the environment
+    /// delta, then the exclusion lifts. Nothing is deleted; failure keeps the
+    /// quarantine and shows the honest reason.
+    @MainActor private func repairLinuxDisk() {
+        guard !repairBusy else { return }
+        repairBusy = true
+        repairMessage = nil
+        Task {
+            defer { repairBusy = false }
+            do {
+                let report = try await FloePlatformServices.shared.restoreLinuxEnvironmentRepair(id: report.id)
+                repairMessage = String(
+                    format: String(localized: "environment.backend.repair.restored"),
+                    report.restoredGeneration ?? 0
+                )
+            } catch {
+                repairMessage = error.localizedDescription
+            }
+            await reloadGuestStatus()
+        }
     }
 
     /// Shared-component runtime version: the runner version recorded in the

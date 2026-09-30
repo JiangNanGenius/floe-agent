@@ -297,6 +297,10 @@ private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
     /// Scripted admission failure: the pool/integrator refuses the typed
     /// request (release/image/capacity), which must surface without a boot.
     private let acquireError: Error?
+    /// When set, `restoreRepair` parks here after recording the call, so a
+    /// registry-level test can drive a concurrent restore/start against the
+    /// parked repair's ownership.
+    private let repairGate: LifecycleGate?
     private(set) var events: [String] = []
     /// The typed requests admission actually received (vCPUs/RAM/origin).
     private(set) var shapeRequests: [GuestResourceRequest] = []
@@ -304,6 +308,7 @@ private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
     private(set) var shapeDowngrades: [GuestShapeDowngradePolicy] = []
     /// The image-SMP gate the caller supplied for each admission.
     private(set) var imageSMPGates: [Bool] = []
+    private(set) var repairCalls = 0
 
     init(
         expandedRoot: URL,
@@ -311,7 +316,8 @@ private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
         planGate: LifecycleGate? = nil,
         stopOutcome: RuntimeV2StopOutcome = .captured(generation: 1),
         workingDiskError: Error? = nil,
-        acquireError: Error? = nil
+        acquireError: Error? = nil,
+        repairGate: LifecycleGate? = nil
     ) {
         self.expandedRoot = expandedRoot
         self.root = root
@@ -319,6 +325,7 @@ private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
         self.stopOutcome = stopOutcome
         self.workingDiskError = workingDiskError
         self.acquireError = acquireError
+        self.repairGate = repairGate
     }
 
     func acquireSlot(environmentID: String, runtimeID: String, requestedMB: Int) async throws -> RuntimeV2Admission {
@@ -406,6 +413,18 @@ private actor ShapeV2Integrator: LinuxGuestRuntimeV2Integrating {
     func recordRunnerCapabilities(_ capabilities: String, environmentID: String) async {}
     func workingDiskCapacityBytes(environmentID: String, runtimeID: String) async -> Int64? { 1024 }
     func queuedStarts() async -> Int { 0 }
+
+    func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        events.append("restoreRepair:\(environmentID)")
+        repairCalls += 1
+        if let repairGate { await repairGate.arriveAndWait() }
+        return RuntimeV2Store.RepairResolutionReport(
+            resolution: "restored",
+            preservedPath: "recovery/quarantine/runtime-vm-test",
+            diskDigestSHA512: String(repeating: "a", count: 128),
+            restoredGeneration: 7
+        )
+    }
 }
 
 // MARK: - fixtures
@@ -1687,5 +1706,83 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         let dual = GuestRunEntryShapePlanner.plan(selection: .dualCore, signals: signals)
         XCTAssertNil(dual.effectiveRequest)
         XCTAssertNil(ShellGuestRunShapeIntent.from(plan: dual, environmentID: "env-4", runID: "run-4"))
+    }
+
+    /// A repair parked inside its substrate await keeps the registry's
+    /// per-environment lifecycle ownership AND the teardown exclusion marker:
+    /// a direct concurrent restore refuses, a direct start refuses (the disk
+    /// must stay untouched until the verified capture commits), and the
+    /// parked restore still completes with its report once the gate opens.
+    func testParkedRepairRefusesConcurrentRestoreAndStart() async throws {
+        let environmentID = "env-repair-park"
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-repair-park-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let book = ShapeSessionBook()
+        let gate = LifecycleGate()
+        let v2 = ShapeV2Integrator(
+            expandedRoot: work.appendingPathComponent("expanded", isDirectory: true),
+            root: work,
+            repairGate: gate
+        )
+        let registry = makeRegistry(
+            environmentID: environmentID,
+            images: ["shape-image": shapeImage()],
+            factory: ShapeSessionFactory(book: book) { _, token in
+                token.hasPrefix("hello-") ? shapeCaps(token) : shapeOKReply(token)
+            },
+            runtimeV2: v2
+        )
+
+        let repair = Task { () -> Result<RuntimeV2Store.RepairResolutionReport, Error> in
+            do {
+                return .success(try await registry.restoreRepair(environmentID: environmentID))
+            } catch {
+                return .failure(error)
+            }
+        }
+        await gate.awaitArrival()
+        XCTAssertEqual(gate.arrivalCount, 1, "the repair did not reach the substrate")
+        let repairCallsWhileParked = await v2.repairCalls
+        XCTAssertEqual(repairCallsWhileParked, 1)
+        // A direct concurrent restore must refuse: the environment's teardown
+        // exclusion is owned by the parked repair across its await.
+        do {
+            _ = try await registry.restoreRepair(environmentID: environmentID)
+            XCTFail("a concurrent restore must be refused while the repair owns the environment")
+        } catch {
+            assertGuestBusy(error)
+        }
+
+        // A direct start must refuse: no VM may boot over a disk whose
+        // verified capture has not committed.
+        do {
+            _ = try await registry.start(environmentID: environmentID, taskID: "task-repair")
+            XCTFail("a start must be refused while the repair owns the environment")
+        } catch {
+            guard let linux = error as? LinuxGuestError else {
+                return XCTFail("expected a LinuxGuestError, got \(error)")
+            }
+            guard case .stopFailed = linux else {
+                return XCTFail("expected the teardown-in-flight refusal, got \(linux)")
+            }
+        }
+
+        gate.open()
+        let result = await repair.value
+        let report: RuntimeV2Store.RepairResolutionReport
+        switch result {
+        case .success(let value): report = value
+        case .failure(let error): return XCTFail("the parked repair must complete: \(error)")
+        }
+        XCTAssertEqual(report.resolution, "restored")
+        XCTAssertEqual(report.restoredGeneration, 7)
+        let totalRepairCalls = await v2.repairCalls
+        XCTAssertEqual(totalRepairCalls, 1, "exactly one substrate restore ran")
+
+        // The recorded last error that blocked every start is cleared.
+        let status = await registry.status(environmentID: environmentID)
+        XCTAssertNil(status.lastError)
     }
 }

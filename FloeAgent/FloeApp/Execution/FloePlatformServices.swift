@@ -659,21 +659,61 @@ final class FloePlatformServices: @unchecked Sendable {
 
     /// Explicit runner-update state for the installed component, read from
     /// the image manifest's optional runner metadata. nil when the component
-    /// is current, not installed, or carries no runner record. After the
-    /// Runtime v2 migration moved the legacy directory aside, the verbatim
-    /// manifest is read from the expanded view instead.
+    /// is current, not installed, or carries no runner record. The Runtime v2
+    /// EXPANDED manifest is read FIRST — it is the substrate the guest
+    /// actually boots, so a migrated image never misreports "outdated" from a
+    /// stale legacy directory — and the legacy manifest is the fallback for
+    /// an unmigrated install.
     func linuxComponentUpdateNeeded(id: String?) async -> String? {
         guard let id, let images = linuxImageBox.value else { return nil }
-        let manifest = images.imagesDirectory
-            .appendingPathComponent(id, isDirectory: true)
-            .appendingPathComponent("manifest.json")
-        var data = try? Data(contentsOf: manifest)
-        if data == nil, let v2 = lock.withLock({ linuxImageRuntimeV2 }) {
+        var data: Data?
+        if let v2 = lock.withLock({ linuxImageRuntimeV2 }) {
+            // The expanded view is the substrate the guest boots; its verbatim
+            // manifest is the runner-truth source for a migrated image.
             data = try? Data(contentsOf: v2.expandedImagesRoot
                 .appendingPathComponent(id, isDirectory: true)
                 .appendingPathComponent("manifest.json"))
         }
+        if data == nil {
+            data = try? Data(contentsOf: images.imagesDirectory
+                .appendingPathComponent(id, isDirectory: true)
+                .appendingPathComponent("manifest.json"))
+        }
         return LinuxComponentUpdatePolicy.updateNeededReason(manifestData: data)
+    }
+
+    /// Durable repair exclusion for one Linux environment's guest disk, nil
+    /// when the environment is not repair-excluded. Inspection only.
+    func linuxRepairHoldStatus(id: String?) async -> RuntimeV2RepairHoldStore.Hold? {
+        guard let id else { return nil }
+        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }) else { return nil }
+        return await v2.repairHoldStatus(id)
+    }
+
+    /// What repairing this environment's guest disk would recover (the
+    /// preserved bytes' layout-relative path, or nothing). Inspection only.
+    func linuxRepairRecoverable(id: String?) async -> RuntimeV2RepairHoldStore.RecoverableState {
+        guard let id else { return .nothingToRecover }
+        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }) else { return .nothingToRecover }
+        return await v2.repairRecoverable(id)
+    }
+
+    /// VERIFIED repair of a Linux environment's guest disk after a stop that
+    /// could not save its delta: the preserved bytes are proven (provenance +
+    /// content) and captured into the environment delta, the durable
+    /// exclusion lifts, and nothing is deleted. This is the only repair path
+    /// — it never discards data, never re-downloads the image and never
+    /// swaps the environment's base. The call runs through the ONE
+    /// serialized Linux control service (the same registry lifecycle
+    /// ownership the model-facing repair tool uses), so a UI repair, a tool
+    /// repair and a guest start can never interleave.
+    func restoreLinuxEnvironmentRepair(id: String) async throws -> RuntimeV2Store.RepairResolutionReport {
+        guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling else {
+            throw FloeError.invalidConfiguration(
+                String(localized: "environment.backend.image_store_unavailable")
+            )
+        }
+        return try await guests.restoreRepair(environmentID: id)
     }
 
     /// Narrow install entry for the pinned Floe Linux image, reachable from

@@ -201,6 +201,13 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// Same-id repair of a migrated image from a freshly verified legacy
     /// install (blobs re-placed, expanded rebuilt).
     let repairFromLegacyInstall: @Sendable (String, CancellationCheck?) async throws -> Void
+    /// Durable repair exclusion for one environment after a stop that could
+    /// not save its delta (nil = the environment is not repair-excluded).
+    /// Inspection only: never changes state.
+    let repairHoldStatus: @Sendable (String) async -> RuntimeV2RepairHoldStore.Hold?
+    /// What a repair resolution would account for: the preserved bytes'
+    /// layout-relative path, or nothing. Inspection only.
+    let repairRecoverable: @Sendable (String) async -> RuntimeV2RepairHoldStore.RecoverableState
     /// The latest startup-recovery stage the shared preparation pass
     /// reported (nil before any pass). Diagnostic progress truth for the
     /// storage-initializing presentation; never a state machine.
@@ -376,6 +383,17 @@ enum LinuxGuestBackendAssembly {
             },
             repairFromLegacyInstall: { imageID, isCancelled in
                 try await integrator.repairImageFromLegacyInstall(imageID: imageID, isCancelled: isCancelled)
+            },
+            // Environment-disk repair EXCLUSION truth (inspection only). The
+            // RESOLUTION itself deliberately has no closure here: it must run
+            // through the one serialized control service (registry lifecycle
+            // ownership), exactly like the model-facing repair tool, never
+            // through a raw store call that could bypass the exclusion.
+            repairHoldStatus: { environmentID in
+                await store.repairHoldStatus(environmentID: environmentID)
+            },
+            repairRecoverable: { environmentID in
+                await store.verifyRecoverable(environmentID: environmentID)
             },
             preparationStage: {
                 await integrator.preparationStage()

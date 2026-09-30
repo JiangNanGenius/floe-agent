@@ -35,6 +35,20 @@ public actor RuntimeV2DeltaStore {
     private static let dataMagic = Array("FLDLTDAT".utf8)
     private static let fileHeaderBytes = 8 + 8 + 4 + 4
 
+    /// Test-only fault injection for the working-disk block read loop. Called
+    /// (actor-isolated, synchronously) before every block read of the
+    /// WORKING disk; throw to simulate an open/read fault with a typed errno
+    /// at exactly that stage. nil in production. The probe never intercepts
+    /// base-rootfs reads or staged writes: the stop-capture retry contract is
+    /// proven against working-disk access faults.
+    var workingDiskReadProbe: (@Sendable (URL) throws -> Void)?
+
+    /// Installs or removes the test-only read probe. A method, not a bare
+    /// property set, because a cross-actor mutation must enter the actor.
+    func installWorkingDiskReadProbe(_ probe: (@Sendable (URL) throws -> Void)?) {
+        workingDiskReadProbe = probe
+    }
+
     public struct DeltaHeader: Codable, Sendable, Equatable {
         public var version: Int
         public var environmentID: String
@@ -407,50 +421,106 @@ public actor RuntimeV2DeltaStore {
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
         let stagedData = staging.appendingPathComponent("delta.data")
         try fileManager.createFile(atPath: stagedData.path, contents: nil)
-        let dataHandle = try FileHandle(forWritingTo: stagedData)
+        let dataHandle: FileHandle
+        do {
+            dataHandle = try FileHandle(forWritingTo: stagedData)
+        } catch {
+            throw FloeFileIOError(stage: .open, underlying: error, path: stagedData.path)
+        }
+        // The handle must close on EVERY exit after this point — including a
+        // header-write or synchronize failure — so a failed capture never
+        // leaks the staged file descriptor.
+        var dataHandleClosed = false
+        defer { if !dataHandleClosed { try? dataHandle.close() } }
         var fileHeader = Data(Self.dataMagic)
         withUnsafeBytes(of: generation.littleEndian) { fileHeader.append(contentsOf: $0) }
         withUnsafeBytes(of: UInt32(blockSize).littleEndian) { fileHeader.append(contentsOf: $0) }
         withUnsafeBytes(of: UInt32(blockCount).littleEndian) { fileHeader.append(contentsOf: $0) }
+        // A staged-write failure (typically a full disk) stays raw: it is a
+        // local, non-transient condition that must never trigger the
+        // stop-capture retry, and the caller preserves the working disk
+        // either way.
         try dataHandle.write(contentsOf: fileHeader)
 
-        let baseHandle = try FileHandle(forReadingFrom: baseRootfs)
+        let baseHandle: FileHandle
+        do {
+            baseHandle = try FileHandle(forReadingFrom: baseRootfs)
+        } catch {
+            throw FloeFileIOError(stage: .open, underlying: error, path: baseRootfs.path)
+        }
         defer { try? baseHandle.close() }
-        let workingHandle = try FileHandle(forReadingFrom: workingDisk)
+        let workingHandle: FileHandle
+        do {
+            workingHandle = try FileHandle(forReadingFrom: workingDisk)
+        } catch {
+            throw FloeFileIOError(stage: .open, underlying: error, path: workingDisk.path)
+        }
         defer { try? workingHandle.close() }
 
         var bitmap = [UInt8](repeating: 0, count: (blockCount + 7) / 8)
         var payloadBytes: Int64 = 0
-        let zeroBlock = Data(count: Int(blockSize))
+        // The block loop reads through raw POSIX pread/pwrite into TWO reused
+        // block buffers: whatever the disk size, the capture never holds more
+        // than two blocks plus one staged-write in flight. Per-block
+        // FileHandle.read NSData accumulation is exactly the bounded-lifetime
+        // gap that turned a large-image hash into an errno-12 ENOMEM, and a
+        // stop capture over a multi-GiB sparse disk iterates thousands of
+        // blocks.
+        let blockBytes = Int(blockSize)
+        let workingBuffer = UnsafeMutableRawPointer.allocate(byteCount: blockBytes, alignment: 512)
+        let baseBuffer = UnsafeMutableRawPointer.allocate(byteCount: blockBytes, alignment: 512)
+        defer {
+            workingBuffer.deallocate()
+            baseBuffer.deallocate()
+        }
+        let zeroBlock = Data(count: blockBytes)
+        var stagedOffset = Int64(fileHeader.count)
         do {
             for extent in try dataExtents(of: workingDisk, fileSize: workingSize) {
                 var offset = extent.lowerBound - (extent.lowerBound % blockSize)
                 while offset < extent.upperBound {
                     try Task.checkCancellation()
-                    let index = Int(offset / blockSize)
-                    let workingBlock = try readBlock(
-                        from: workingHandle, at: offset, size: blockSize, fileSize: workingSize
-                    )
-                    let baseBlock: Data
-                    if offset < baseSize {
-                        baseBlock = try readBlock(from: baseHandle, at: offset, size: blockSize, fileSize: baseSize)
-                    } else {
-                        baseBlock = zeroBlock
+                    if let probe = workingDiskReadProbe {
+                        try probe(workingDisk)
                     }
-                    if workingBlock != baseBlock {
+                    let index = Int(offset / blockSize)
+                    let wanted = Int(min(blockSize, workingSize - offset))
+                    try Self.readBlock(
+                        into: workingBuffer, from: workingHandle.fileDescriptor,
+                        at: offset, wanted: wanted, bufferCapacity: blockBytes,
+                        fileSize: workingSize
+                    )
+                    let differs: Bool
+                    if offset < baseSize {
+                        try Self.readBlock(
+                            into: baseBuffer, from: baseHandle.fileDescriptor,
+                            at: offset, wanted: Int(min(blockSize, baseSize - offset)),
+                            bufferCapacity: blockBytes, fileSize: baseSize
+                        )
+                        differs = memcmp(workingBuffer, baseBuffer, blockBytes) != 0
+                    } else {
+                        differs = zeroBlock.withUnsafeBytes {
+                            memcmp(workingBuffer, $0.baseAddress!, blockBytes) != 0
+                        }
+                    }
+                    if differs {
                         bitmap[index / 8] |= UInt8(1 << (index % 8))
-                        try dataHandle.write(contentsOf: workingBlock)
+                        try Self.writeAll(
+                            dataHandle.fileDescriptor, buffer: workingBuffer,
+                            count: blockBytes, at: stagedOffset
+                        )
+                        stagedOffset += blockSize
                         payloadBytes += blockSize
                     }
                     offset += blockSize
                 }
             }
         } catch {
-            try? dataHandle.close()
             throw error
         }
         try dataHandle.synchronize()
         try dataHandle.close()
+        dataHandleClosed = true
 
         let header = DeltaHeader(
             environmentID: environmentID,
@@ -557,17 +627,98 @@ public actor RuntimeV2DeltaStore {
         return (UInt64(littleEndian: generation), raw.subdata(in: Self.fileHeaderBytes..<raw.count))
     }
 
-    private func readBlock(
-        from handle: FileHandle, at offset: Int64, size: Int64, fileSize: Int64
-    ) throws -> Data {
-        try handle.seek(toOffset: UInt64(offset))
-        let wanted = Int(min(size, fileSize - offset))
-        var block = try handle.read(upToCount: wanted) ?? Data()
-        if block.count < Int(size) {
-            block.append(Data(count: Int(size) - block.count))
+    /// Reads exactly `wanted` bytes at `offset` through pread(2) into a reused
+    /// caller-owned buffer (no per-block Foundation allocation, so a large
+    /// capture's memory stays bounded however many blocks the disk holds),
+    /// then zeroes the buffer tail up to `bufferCapacity` so a partial tail
+    /// block compares like the sparse read it replaces. EINTR retries; any
+    /// other failure becomes a typed, path-free error with the real POSIX
+    /// errno. EOF before `wanted` bytes — the file shrank under the capture —
+    /// is NOT zero-padded: fabricated zeros would corrupt the recorded delta,
+    /// so it fails and the caller preserves the disk.
+    private static func readBlock(
+        into buffer: UnsafeMutableRawPointer,
+        from descriptor: Int32,
+        at offset: Int64,
+        wanted: Int,
+        bufferCapacity: Int,
+        fileSize: Int64
+    ) throws {
+        guard wanted > 0 else {
+            memset(buffer, 0, bufferCapacity)
+            return
         }
-        return block
+        var filled = 0
+        while filled < wanted {
+            let count = pread(
+                descriptor, buffer.advanced(by: filled), wanted - filled,
+                offset + Int64(filled)
+            )
+            if count < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                throw FloeFileIOError(
+                    stage: .read,
+                    posixErrno: code,
+                    detail: Self.posixDetail(code),
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(code)
+                )
+            }
+            if count == 0 {
+                throw FloeFileIOError(
+                    stage: .read,
+                    posixErrno: 0,
+                    detail: "short read: EOF at byte \(offset + Int64(filled)) of a \(fileSize) byte file",
+                    domain: nil,
+                    code: nil
+                )
+            }
+            filled += count
+        }
+        if filled < bufferCapacity {
+            memset(buffer + filled, 0, bufferCapacity - filled)
+        }
     }
+
+    /// Writes exactly `count` bytes at `offset` through pwrite(2), retrying
+    /// EINTR. Staged-write failures (a full disk) stay raw NSError with the
+    /// real POSIX domain/code: they are local, non-transient conditions that
+    /// must never trigger the stop-capture retry. A short write is impossible
+    /// to represent in a sparse delta, so it fails instead of padding.
+    private static func writeAll(
+        _ descriptor: Int32,
+        buffer: UnsafeRawPointer,
+        count: Int,
+        at offset: Int64
+    ) throws {
+        var written = 0
+        while written < count {
+            let n = pwrite(
+                descriptor, buffer.advanced(by: written), count - written,
+                offset + Int64(written)
+            )
+            if n < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+            if n == 0 {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain, code: 0,
+                    userInfo: [NSLocalizedDescriptionKey: "short write at byte \(offset + Int64(written))"]
+                )
+            }
+            written += n
+        }
+    }
+
+    #if canImport(Darwin) || canImport(Glibc)
+    private static func posixDetail(_ code: Int32) -> String {
+        guard let message = strerror(code) else { return "errno \(code)" }
+        return String(cString: message)
+    }
+    #endif
 
     /// Allocated extents of a sparse file as block-aligned byte ranges. Uses
     /// SEEK_DATA/SEEK_HOLE where the volume supports it; otherwise treats the
