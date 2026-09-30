@@ -201,3 +201,29 @@ The next editor-only resume reuses checkpoint 36787219632; no core rebuild.
 构建工具复现原失败，验证复制后可打包、无关外部链接仍被拒绝；128 项定向检查
 及 actionlint 通过。这是本地工具路径证据，不是云端打包、完整 App 或 PPT
 运行验收。后续仅续编编辑器，继续复用 36787219632 核心检查点。
+
+
+### Pinned generated asset aliases (2026-09-30)
+
+Run 36790727108 passed restored-core validation and the portable helper phases,
+then completed the editor build. Staging stopped at the generated QuickLook
+asset alias. The pinned configure recipe creates exactly two Contents.json
+aliases using source-root-relative targets instead of alias-directory-relative
+ones. Candidate staging now validates the exact recipe and target SHA256,
+normalizes only these two aliases, and records their old/new targets and hashes
+inside qualification/provenance. Missing, modified or unexpected aliases,
+symlinked parents and unrelated outside dependencies still fail. The actual
+pinned recipe/asset bytes passed the production normalizer locally; 138 focused
+checks cover packaging, relocation and rejection cases. The initial local
+Python 3.9 test API failure was retained and the synthetic extraction test now
+validates tar members before using the supported API. No engine binary changed;
+cloud staging and actual Floe PPT execution remain unverified.
+
+36790727108 已通过核心恢复、辅助文件复制和编辑器构建，打包在 QuickLook
+生成图标链接处停止。固定上游配置脚本生成的两个 Contents.json 链接误用源码
+根目录相对路径；候选打包步骤核验配置脚本与目标摘要，只规范这两个确切链接，
+在资格和来源记录中保留原目标、新目标及摘要。缺失、变更、意外链接、父目录
+链接与无关外部依赖仍拒绝。主线程已用实际固定上游文件验证生产规范函数；
+138 项定向检查覆盖打包、重定位和拒绝情况。本地 Python 3.9 测试接口失败
+保留，合成包测试先验证成员，再使用兼容接口。引擎二进制未变，云端打包与
+实际 Floe PPT 场景仍未验收。

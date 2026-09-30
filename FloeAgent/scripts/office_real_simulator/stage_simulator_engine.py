@@ -20,6 +20,7 @@ The heavy artifact is staged once; runtime retries download this same file.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -35,6 +36,17 @@ import package_office_engine  # noqa: E402
 ARTIFACT_NAME = 'office-engine-iphonesimulator-arm64.tar.gz'
 SAMPLE_SIZE = 12
 MEMBER_SAMPLE_SIZE = 5
+
+# Pinned configure.ac creates these two links relative to the source root,
+# although symlink resolution is relative to the asset directory. Normalize
+# only the exact generated aliases, with recipe and target bytes bound below.
+ASSET_CONFIGURE_SHA256 = 'dc5b8c9e3ec424efca9650e59cbbf27c8d3386e3fcdd0de7fe987941a656b888'
+ASSET_TARGET_SHA256 = '6d2789aa71ac42a5c775306b46c45609c9a627da135ec468f519544c509ffa19'
+ASSET_TARGET = 'ios/Mobile/Assets.xcassets/Empty.appiconset/Contents.json'
+ASSET_LINKS = (
+    'ios/Mobile/Assets.xcassets/AppIcon.appiconset/Contents.json',
+    'ios/FakeQuickLook/Assets.xcassets/Icon.imageset/Contents.json',
+)
 
 
 def sha256(path):
@@ -145,15 +157,55 @@ def archive_path_for(source_root, manifest_name):
     return source_root / manifest_name
 
 
+def normalize_asset_links(source_root):
+    """Repair the two pinned generated asset aliases; reject any drift."""
+    if Path(source_root).is_symlink():
+        raise ValueError('asset normalization refuses a symlinked source')
+    source = Path(source_root).resolve(strict=True)
+    recipe = source / 'configure.ac'
+    target = source / ASSET_TARGET
+    for path in (recipe, target, *(source / name for name in ASSET_LINKS)):
+        if any(parent.is_symlink() for parent in path.parents
+               if parent.is_relative_to(source) and parent != source):
+            raise ValueError('asset normalization refuses a symlinked parent')
+    if recipe.is_symlink() or sha256(recipe) != ASSET_CONFIGURE_SHA256:
+        raise ValueError('asset normalization configure recipe differs from pin')
+    if target.is_symlink() or not target.is_file() or sha256(target) != ASSET_TARGET_SHA256:
+        raise ValueError('asset normalization target differs from pin')
+    planned = []
+    for name in ASSET_LINKS:
+        link = source / name
+        relative = os.path.relpath(target, link.parent)
+        if not link.is_symlink() or os.readlink(link) not in (ASSET_TARGET, relative):
+            raise ValueError(f'asset normalization unexpected alias: {name}')
+        planned.append((link, relative, os.readlink(link)))
+    # Validate both aliases before mutating either one.
+    audit = []
+    for link, relative, original in planned:
+        if original != relative:
+            link.unlink()
+            link.symlink_to(relative)
+        audit.append({'path': str(link.relative_to(source)),
+                      'originalTarget': original, 'normalizedTarget': relative,
+                      'targetSHA256': ASSET_TARGET_SHA256,
+                      'configureSHA256': ASSET_CONFIGURE_SHA256})
+    return audit
+
+
 def stage(build_root):
     build_root = Path(build_root).resolve()
+    lock = json.loads(LOCK_PATH.read_text())
+    qualification = json.loads((build_root / 'qualification.json').read_text())
+    if qualification.get('commit') != lock['commit']:
+        raise RuntimeError('qualification source differs from engine pin')
+    qualification['normalizedAssetLinks'] = normalize_asset_links(build_root / 'source')
+    (build_root / 'qualification.json').write_text(json.dumps(qualification, indent=2) + '\n')
     # Generic packager writes source/relative layout and the hardcoded name.
     manifest = package_office_engine.package(build_root)
     packed = build_root / 'office-engine-ios-arm64.tar.gz'
     destination = build_root / ARTIFACT_NAME
     packed.replace(destination)
 
-    lock = json.loads(LOCK_PATH.read_text())
     if manifest['sourceCommit'] != lock['commit']:
         raise RuntimeError(
             f"packaged source {manifest['sourceCommit']} != pinned "
@@ -197,6 +249,7 @@ def stage(build_root):
         'xcodeVersion': qualification.get('xcodeVersion'),
         'deploymentTarget': '26.0',
         'deploymentPatchSHA256': lock['sourcePatchSHA256'],
+        'normalizedAssetLinks': qualification['normalizedAssetLinks'],
         'manifestEntryCount': len(manifest['files']),
         'linkerInputCount': len(manifest['linkerInputs']),
         'platformSampleSize': len(sample_results),

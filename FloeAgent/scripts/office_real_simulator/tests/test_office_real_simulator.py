@@ -2344,5 +2344,127 @@ class PortableEditorAuxiliaryTests(unittest.TestCase):
                 package_office_engine.package(root)
 
 
+class AssetAliasNormalizationTests(unittest.TestCase):
+    """Synthetic recipe bytes; production pin checks remain enabled in CLI."""
+
+    def setUp(self):
+        import stage_simulator_engine
+        self.module = stage_simulator_engine
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / 'build'
+        self.source = self.root / 'source'
+        self.source.mkdir(parents=True)
+        recipe = self.source / 'configure.ac'
+        recipe.write_text('synthetic configure recipe\n')
+        self.target = self.source / self.module.ASSET_TARGET
+        self.target.parent.mkdir(parents=True)
+        self.target.write_text('{"info":{"version":1}}\n')
+        for name in self.module.ASSET_LINKS:
+            link = self.source / name
+            link.parent.mkdir(parents=True)
+            link.symlink_to(self.module.ASSET_TARGET)
+        for attr, path in (('ASSET_CONFIGURE_SHA256', recipe),
+                           ('ASSET_TARGET_SHA256', self.target)):
+            patcher = mock.patch.object(self.module, attr,
+                hashlib.sha256(path.read_bytes()).hexdigest())
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_normalized_assets_package_and_relocate(self):
+        import package_office_engine
+        for name in package_office_engine.REQUIRED:
+            path = self.source / name
+            if path.suffix:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture\n')
+            else:
+                path.mkdir(parents=True, exist_ok=True)
+        library = self.source / 'engine/libfixture.a'
+        library.write_bytes(b'fixture')
+        (self.source / 'engine/workdir/CustomTarget/ios/ios-all-static-libs.list').write_text(
+            str(library) + '\n')
+        (self.root / 'qualification.json').write_text(json.dumps({
+            'nativeBuildPassed': True, 'commit': 'fixture'}))
+        with self.assertRaises(FileNotFoundError):
+            package_office_engine.package(self.root)
+        audit = self.module.normalize_asset_links(self.source)
+        self.assertEqual(len(audit), 2)
+        self.assertEqual({a['originalTarget'] for a in audit},
+                         {self.module.ASSET_TARGET})
+        package_office_engine.package(self.root)
+        relocated = self.root.parent / 'relocated'
+        relocated.mkdir()
+        with tarfile.open(self.root / 'office-engine-ios-arm64.tar.gz') as archive:
+            import resume_simulator_core
+            self.assertEqual(resume_simulator_core.validate_tar_members(
+                archive.getmembers(), relocated), [])
+            # The supported local Python 3.9 lacks tarfile's filter keyword;
+            # validate this synthetic packager output before either API path.
+            options = {'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}
+            archive.extractall(relocated, **options)
+        for name in self.module.ASSET_LINKS:
+            self.assertEqual((relocated / 'source' / name).read_bytes(),
+                             self.target.read_bytes())
+
+    def test_idempotent(self):
+        self.module.normalize_asset_links(self.source)
+        audit = self.module.normalize_asset_links(self.source)
+        self.assertTrue(all(a['originalTarget'] == a['normalizedTarget'] for a in audit))
+
+    def test_changed_recipe_refused(self):
+        (self.source / 'configure.ac').write_text('changed')
+        with self.assertRaisesRegex(ValueError, 'recipe differs'):
+            self.module.normalize_asset_links(self.source)
+
+    def test_changed_target_refused(self):
+        self.target.write_text('changed')
+        with self.assertRaisesRegex(ValueError, 'target differs'):
+            self.module.normalize_asset_links(self.source)
+
+    def test_wrong_second_alias_does_not_mutate_first(self):
+        first, second = [self.source / name for name in self.module.ASSET_LINKS]
+        second.unlink()
+        second.symlink_to('/etc/passwd')
+        with self.assertRaisesRegex(ValueError, 'unexpected alias'):
+            self.module.normalize_asset_links(self.source)
+        self.assertEqual(os.readlink(first), self.module.ASSET_TARGET)
+
+    def test_missing_alias_refused(self):
+        (self.source / self.module.ASSET_LINKS[0]).unlink()
+        with self.assertRaisesRegex(ValueError, 'unexpected alias'):
+            self.module.normalize_asset_links(self.source)
+
+    def test_regular_file_alias_refused(self):
+        link = self.source / self.module.ASSET_LINKS[0]
+        link.unlink()
+        link.write_text('replacement')
+        with self.assertRaisesRegex(ValueError, 'unexpected alias'):
+            self.module.normalize_asset_links(self.source)
+
+    def test_symlinked_target_refused(self):
+        self.target.unlink()
+        self.target.symlink_to('/etc/passwd')
+        with self.assertRaisesRegex(ValueError, 'target differs'):
+            self.module.normalize_asset_links(self.source)
+
+    def test_symlinked_source_refused(self):
+        alias = self.root / 'source-alias'
+        alias.symlink_to(self.source)
+        with self.assertRaisesRegex(ValueError, 'symlinked source'):
+            self.module.normalize_asset_links(alias)
+
+    def test_symlinked_asset_parent_refused(self):
+        link = self.source / self.module.ASSET_LINKS[0]
+        folder = link.parent
+        link.unlink()
+        folder.rmdir()
+        outside = self.root / 'outside'
+        outside.mkdir()
+        folder.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, 'symlinked parent'):
+            self.module.normalize_asset_links(self.source)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
