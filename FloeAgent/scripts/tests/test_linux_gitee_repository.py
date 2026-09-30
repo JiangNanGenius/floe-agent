@@ -26,7 +26,7 @@ class Client:
 
 class LinuxMirrorRepositoryTests(unittest.TestCase):
     def test_license_is_explicit_and_preserves_existing_content(self):
-        client = Client(response(), response(404), response(201), response(404), response(201))
+        client = Client(response(), SimpleNamespace(status=200, body=b"[]"), response(201), response(404), response(201))
         ensure(client, "fixture", install_license=True)
         self.assertEqual([x[0] for x in client.calls], ["GET", "GET", "POST", "GET", "POST"])
         self.assertTrue(client.calls[2][1].endswith("/contents/LICENSE"))

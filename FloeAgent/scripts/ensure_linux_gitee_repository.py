@@ -89,8 +89,12 @@ def ensure(client, token, create=False, seed_empty=False, install_license=False)
         for name, content in documents.items():
             url = API + "/repos/" + REPOSITORY + "/contents/" + name
             existing = client.request("GET", url, headers=headers, allow_404=True)
-            if existing.status != 404:
-                recorded = base64.b64decode(json.loads(existing.body).get("content", ""))
+            entry = json.loads(existing.body) if existing.status != 404 else None
+            # Gitee also returns HTTP 200 with [] for a missing content path.
+            if entry not in (None, []):
+                if not isinstance(entry, dict) or entry.get("type") != "file":
+                    raise RepositoryCheckError("Unexpected license content response: " + name)
+                recorded = base64.b64decode(entry.get("content", ""))
                 if recorded != content:
                     raise RepositoryCheckError("Existing license document differs; refusing overwrite: " + name)
                 continue
