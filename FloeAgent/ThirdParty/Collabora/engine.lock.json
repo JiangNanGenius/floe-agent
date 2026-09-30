@@ -3,12 +3,12 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "36669967005",
+    "runID": "36710867608",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 11077229362,
-    "workflowCommit": "8adb96ad318fe64e665e310177b83886a5f14043",
-    "archiveSHA256": "718d49a91bc4605f4f9a50d71daa92bf15bdea5d4fd8298830c3fdc20d5cf501",
-    "executableSHA256": "27413bbe7b7b6bfafe4c1d5b6a31e254071d00f29e0dd349c2a93874756950e0",
+    "artifactID": 11093859090,
+    "workflowCommit": "16f0b0f6e1a324f4bc8ff4e7a07458751e093b2a",
+    "archiveSHA256": "af875ca0e2031ecdc0bfc41a9e0c686a09e7e7d6d7824e418e49b2a18c1b9253",
+    "executableSHA256": "aaa9aae96d5af6afe5b685c380e72418fd7f52dbc97cf464d5ca2db016d249e5",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "21240fe24342aa51194fd3baf16591a806856d74aa9ba28aa1941c980d1de721",
@@ -18,7 +18,7 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "45c0887ee53d11f28aec2028d3956681dd6215f3237e950a9b0bac889523a50c",
+    "manifestSHA256": "b87ef73e92044b1c5327bbccd2097db939002685a96273e2d48ad1a8d586f924",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "21240fe24342aa51194fd3baf16591a806856d74aa9ba28aa1941c980d1de721",
       "Info.plist": "2eb182ee435d827e9eec83734faeaebb32a1589bf45615c646d402d818eb73a9",
@@ -31,7 +31,7 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Cloud-verified existing host; compile/link only, PPT device acceptance remains unverified.",
+    "note": "Run 36710867608 compiled and linked the kit callback lifecycle overlay. Primary verified all 4780 resources, arm64 iPhoneOS platform and retained archive. Framework evidence only; PPT editor runtime and physical-device acceptance remain pending.",
     "filterOverlay": {
       "patchSHA256": "4d426890632f0fc72996917f3af268af9c81bb211ff85937999d951c5e341989",
       "sourceFiles": {
@@ -100,17 +100,17 @@
           "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
         }
       },
-      "archiveSHA256": "1e50dcd4b99fa4a872fe23ed062af430b179a221c876759e0070768501547518",
+      "archiveSHA256": "7be75f14fa4af35d72646349b3c6cdb53f7461f915e943eb19556c368d19760a",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "1e50dcd4b99fa4a872fe23ed062af430b179a221c876759e0070768501547518",
+      "selectedArchiveSHA256": "7be75f14fa4af35d72646349b3c6cdb53f7461f915e943eb19556c368d19760a",
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "1e50dcd4b99fa4a872fe23ed062af430b179a221c876759e0070768501547518",
-        "libooxlo.a": "982d313e67fbf5e693a428d8d0a8b70b50bb1ceba49b3deac3ed72da2e082207"
+        "libscfiltlo.a": "7be75f14fa4af35d72646349b3c6cdb53f7461f915e943eb19556c368d19760a",
+        "libooxlo.a": "c97e01402d48a1c28d5bd7ab876dc70280de41cd46e782a619b1e3642d98e155"
       },
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "982d313e67fbf5e693a428d8d0a8b70b50bb1ceba49b3deac3ed72da2e082207",
+          "archiveSHA256": "c97e01402d48a1c28d5bd7ab876dc70280de41cd46e782a619b1e3642d98e155",
           "objectSHA256ByMember": {
             "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77",
             "chartexport.o": "af7da7bb40ebc0af6204c5980be4b5963f96d642f1c37276674b463b4f237168"
@@ -130,7 +130,8 @@
       "originalFileWritebackPassed": false
     },
     "schemeOverlaySHA256": "0d41d552707a3fcbcf1a94bcd1bc89e86386d74838f4a912a9e7de92dc6ad14a",
-    "forwardingOverlaySHA256": "f30782622b4dd84cd0abdd23818a84d95123c7186790fc785534499214a65395"
+    "forwardingOverlaySHA256": "f30782622b4dd84cd0abdd23818a84d95123c7186790fc785534499214a65395",
+    "kitCallbackOverlaySHA256": "88147bee22cb533142dda0eb11810ec2d46bb2198e603c945ffe43072efb78bf"
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
@@ -285,7 +286,7 @@
         "preparedSHA256": "3754d754f819140a75bca4cd2f9865588096672ba5338e45df77ddc053d7e1a5"
       }
     },
-    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered \u2014 including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
+    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered — including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
   },
   "kitCallbackLifecycleOverlay": {
     "patch": "patches/ios-kit-callback-lifecycle.patch",
