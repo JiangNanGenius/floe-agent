@@ -1779,6 +1779,97 @@ def build_smp_test():
     return a.blob(), a
 
 
+# Store-path benchmark fixtures. The existing perf payload is pure ALU
+# (plus two coordination words), so it never exercises the machine-wide
+# guest-RAM store lock. These payloads perform a fixed number of word
+# stores per iteration to measure the store path:
+#   store_work_single.bin  one hart does 2*STORE_ITERS iterations
+#   store_diff_dual.bin    both harts do STORE_ITERS, each to its OWN
+#                          64-byte line (no false sharing)
+#   store_same_dual.bin    both harts do STORE_ITERS, writing the SAME
+#                          64-byte line at the same offsets
+# Equal total work across the three: single == dual in store count.
+SBUF0 = FLAGS + 0x1000        # private line for hart 0
+SBUF1 = FLAGS + 0x2000        # private line for hart 1 (diff payload)
+SBUF_SAME = FLAGS + 0x3000    # shared line (same payload)
+STORE_ITERS = 4000000
+
+
+def _store_loop(a, iters, base_hart0, base_hart1, dual):
+    """Shared body: emit the store loop with the base per hart."""
+    a.li("t1", 0x5A5A5A5A)
+    if dual:
+        a.li("s1", iters)
+        # base = (hartid == 0) ? base_hart0 : base_hart1
+        a.li("s3", base_hart0)
+        a.li("s4", base_hart1)
+        a.bne("s0", "zero", "sw_h1_base")
+        a.j("sw_base_done")
+        a.label("sw_h1_base")
+        a.mv("s3", "s4")
+        a.label("sw_base_done")
+    else:
+        # 2x the per-hart work so single and dual retire the same stores
+        a.li("s1", iters * 2)
+        a.li("s3", base_hart0)
+    a.label("sw_loop")
+    a.sw("t1", "s3", 0)
+    a.sw("t1", "s3", 8)
+    a.sw("t1", "s3", 16)
+    a.sw("t1", "s3", 24)
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "sw_loop")
+
+
+def build_store_work(dual, same_line=False, idle_hart1=False):
+    """Fixed-store-count payload; print/store only, no assertions.
+
+    idle_hart1 builds the 2-vCPU / one-active-hart shape: hart 1 parks in
+    WFI immediately and hart 0 runs 2*STORE_ITERS iterations."""
+    a = Asm()
+    a.label("_start")
+    setup_stack(a)
+    a.csrr("s0", 0xF14)
+    if idle_hart1:
+        a.bne("s0", "zero", "sw_park")
+        _store_loop(a, STORE_ITERS, SBUF0, SBUF0, False)
+        a.j("sw_poweroff")
+    else:
+        if dual:
+            base0 = SBUF_SAME if same_line else SBUF0
+            base1 = SBUF_SAME if same_line else SBUF1
+            _store_loop(a, STORE_ITERS, base0, base1, True)
+        else:
+            _store_loop(a, STORE_ITERS, SBUF0, SBUF0, False)
+        if dual:
+            # hart 1 publishes completion and parks; hart 0 waits (bounded)
+            a.bne("s0", "zero", "sw_h1_done")
+            a.li("s5", 100000000)
+            a.label("sw_wait")
+            a.li("t0", FINAL)
+            a.lw("t1", "t0", 4)
+            a.bne("t1", "zero", "sw_done")
+            a.addi("s5", "s5", -1)
+            a.bne("s5", "zero", "sw_wait")
+            a.j("sw_done")
+            a.label("sw_h1_done")
+            a.li("t0", FINAL)
+            a.li("t1", 1)
+            a.sw("t1", "t0", 4)       # FINAL[1] = 1
+            a.j("sw_done")
+    a.label("sw_done")
+    a.bne("s0", "zero", "sw_park")
+    a.label("sw_poweroff")
+    a.li("t0", HTIF)
+    a.li("t1", 1)
+    a.sw("t1", "t0", 0)
+    a.sw("zero", "t0", 4)
+    a.label("sw_park")
+    a.wfi()
+    a.j("sw_park")
+    return a.blob(), a
+
+
 def build_perf(dual):
     a = Asm()
     a.label("_start")
@@ -1880,7 +1971,15 @@ def main():
     for name, (blob, asm) in [("smp_test.bin", build_smp_test()),
                               ("mmio_solo.bin", build_mmio_solo()),
                               ("perf_dual.bin", build_perf(True)),
-                              ("perf_single.bin", build_perf(False))]:
+                              ("perf_single.bin", build_perf(False)),
+                              ("store_work_single.bin",
+                               build_store_work(False)),
+                              ("store_diff_dual.bin",
+                               build_store_work(True, same_line=False)),
+                              ("store_same_dual.bin",
+                               build_store_work(True, same_line=True)),
+                              ("store_idle_dual.bin",
+                               build_store_work(True, idle_hart1=True))]:
         with open(f"{outdir}/{name}", "wb") as f:
             f.write(blob)
         # FAILCODE holds the caller PC of the failing check; resolve it here

@@ -2067,10 +2067,20 @@ static void glue(riscv_cpu_set_mhartid, MAX_XLEN)(RISCVCPUState *s,
 static void glue(riscv_cpu_smp_attach, MAX_XLEN)(RISCVCPUState *s,
                                                  RISCVSMPCpuArray *smp)
 {
+    /* A single-hart machine gets no SMP block and no DMA invalidation
+      hook at all: every fast path then tests only s->smp exactly like
+      the pristine engine (the header contract says the nb_harts == 1
+      behavior is upstream-identical). Attaching the block for a
+      one-hart machine only made every guest-RAM store take the machine
+      atomic spinlock, which the multi-hart gates in
+      riscv_smp_locked_store/riscv_smp_pte_write_bits never needed. */
+    if (smp && smp->nb_harts <= 1)
+        smp = NULL;
     s->smp = smp;
     /* publish the DMA invalidation hook to the devices on this map */
     s->mem_map->smp = smp;
-    s->mem_map->smp_dma_note_store = glue(riscv_smp_dma_note_store, MAX_XLEN);
+    s->mem_map->smp_dma_note_store =
+        smp ? glue(riscv_smp_dma_note_store, MAX_XLEN) : NULL;
 }
 
 const RISCVCPUClass glue(riscv_cpu_class, MAX_XLEN) = {

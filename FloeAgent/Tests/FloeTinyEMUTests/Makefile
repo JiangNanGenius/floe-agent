@@ -19,10 +19,12 @@ BUILD ?= ../../../Local/Scratch/floetinyemu-smp-tests/build
 MACOS ?= 1
 
 PAYLOADS := $(BUILD)/smp_test.bin $(BUILD)/perf_dual.bin $(BUILD)/perf_single.bin \
-            $(BUILD)/mmio_solo.bin
+            $(BUILD)/mmio_solo.bin $(BUILD)/store_work_single.bin \
+            $(BUILD)/store_diff_dual.bin $(BUILD)/store_same_dual.bin \
+            $(BUILD)/store_idle_dual.bin
 
 .PHONY: all test clean payloads lib
-all: $(BUILD)/smp_host_test payloads
+all: $(BUILD)/smp_host_test $(BUILD)/smp_bench payloads
 
 payloads: $(PAYLOADS)
 
@@ -52,6 +54,12 @@ $(BUILD)/libfloevm.a: $(ENGINE_INPUTS) | $(BUILD)
 
 $(BUILD)/smp_host_test: smp_host_test.c $(BUILD)/libfloevm.a
 	cc -O2 -Wall -I$(TINYEMU_DIR)/adapter -o $@ smp_host_test.c \
+	    $(BUILD)/libfloevm.a -lpthread -lm
+
+# Measurement-only host (no pass/fail gates). Run it from $(BUILD) after
+# `make payloads` so the .bin fixtures are in the working directory.
+$(BUILD)/smp_bench: smp_bench.c $(BUILD)/libfloevm.a
+	cc -O2 -Wall -I$(TINYEMU_DIR)/adapter -o $@ smp_bench.c \
 	    $(BUILD)/libfloevm.a -lpthread -lm
 
 $(BUILD)/stop_test_disk.img: | $(BUILD)
