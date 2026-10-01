@@ -698,3 +698,42 @@ pending. No Build240 release or tag is created by this host qualification.
 设备宿主固定项更新为此已核验整包，运行能力标志仍为 false。完整 App 云
 模拟器 PPT 验收及用户物理 iPad 验收仍待完成；此宿主资格不创建 Build240
 标签或发布。
+
+## Full-App PPT acceptance, run 36843561563
+
+Source `4ff2eef7a66a84a59b5c33ff574c27f5ed8b0763` passed the genuine Floe App
+scenario on a task-owned iPad mini (A17 Pro), iOS 27.0 cloud Simulator. All 17
+phases succeeded, including 120.35 seconds idle, two real insertions and two
+reopens. All three cloud gates passed. Primary review re-exported the GUID
+attachments: the receipt and all five frames byte-match cloud evidence, with
+no runner fallback. The native trace replay and real Notes-resource replay
+passed locally; three own generation-2 editable sessions committed revisions
+2, 3 and 4. Four-slide persisted PPTX files and original marker content were
+verified. Actual preview and final four-slide editor frames were viewed.
+
+Optional duplicate local pixel computation was stopped after more than ten
+minutes; no local pixel PASS is claimed. The unchanged cloud gate operated on
+the same byte-identical frames. An initial persistence replay included four
+container metadata files and correctly failed; that output remains. Replaying
+the byte-identical actual Notes resources passed without modifying the gate.
+Original cloud failures remain failures. This simulator acceptance permits
+preparing Build240 internal delivery, but is not physical iPad acceptance or
+proof that every user PPT is fixed. The qualification App was versioned 239;
+the delivery candidate changes build metadata separately.
+
+## 完整 App PPT 云验收，运行 36843561563
+
+源码 `4ff2eef7a66a84a59b5c33ff574c27f5ed8b0763` 在本任务所属的云端
+iPad mini (A17 Pro)、iOS 27.0 模拟器运行实际 Floe App，17 个阶段全部
+通过，包含静置 120.35 秒、两次真实插页及两次重开。云端三项门槛全部通过。
+主线程重新导出 GUID 附件，回执及五帧与云端证据逐字节一致，没有 runner
+回退；原生事件链及实际手记资源本地复核通过。三个各自代际 2 的编辑实例
+提交版本 2、3、4，真实四页 PPTX 和原内容标记均已核对，并亲看预览和最终
+四页编辑器截图。
+
+本地重复像素计算超过十分钟后停止，不宣称本地像素检查通过；采用未修改
+的云端校验器对同字节五帧的通过结果。首次本地保存文件复核误传含四份
+容器元数据的目录，校验器正确拒绝，原错误保留；仅用字节一致的实际手记
+资源复核后通过，没有修改门槛。旧云端失败不改写。此模拟器资格允许准备
+Build240 内测交付，不等于物理 iPad 或全部用户 PPT 已修好；资格 App 的
+版本仍为 239，交付候选另行修改构建元数据。
