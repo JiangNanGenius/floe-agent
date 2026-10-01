@@ -710,7 +710,11 @@ static NSString *FloeRenderProbeScript() {
 // baseline samples stay in the page; the payload carries the correlation id
 // only.
 static NSString *FloeEditSurfaceArmScript(NSString *token) {
-    NSData *encoded = [NSJSONSerialization dataWithJSONObject:(token ?: @"") options:0 error:nil];
+    // A JavaScript string literal is a JSON fragment, not an array/dictionary
+    // root. Without this option Foundation raises an Objective-C exception
+    // before the edit-surface evaluation can even be submitted to WebKit.
+    NSData *encoded = [NSJSONSerialization dataWithJSONObject:(token ?: @"")
+                                                    options:NSJSONWritingFragmentsAllowed error:nil];
     NSString *literal = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding] ?: @"\"\"";
     NSString *source = [NSString stringWithUTF8String:R"FLOE_JS(
 (() => {

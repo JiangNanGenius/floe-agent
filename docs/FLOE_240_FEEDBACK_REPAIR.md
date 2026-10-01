@@ -391,3 +391,43 @@ does not reproduce or resolve the user's physical-device editing crash.
 失败运行改判成功。原日志、截图、无障碍树、录像和 xcresult 全部保留。
 本次尚未验证可编辑代际切换、静置、保存和重开，也不能据此宣称已复现或
 解决用户真机的编辑闪退。
+
+
+## Actual edit-entry exception, 2026-10-01
+
+[Full Floe simulator run 36802940235](https://github.com/JiangNanGenius/floe-agent/actions/runs/36802940235)
+compiled the complete App and UI tests, rendered the imported Notes PPT preview,
+and successfully clicked the host Edit action. The preview close acknowledged
+and the second native generation opened. The App then terminated during edit
+entry. The original xcresult diagnostics contain the uncaught
+`NSInvalidArgumentException`: `Invalid top-level type in JSON write`, with
+`armEditSurfaceEvidenceWithCompletion:` and `runEditEntryAndReport` in the
+native stack. The failure screenshot shows the simulator home screen. No edit,
+idle, save or reopen acceptance is claimed; all failed gates remain retained.
+
+The primary reproduced the exception by compiling the extracted production
+function against real Foundation. Its JSON root is a string token; the write
+now explicitly allows JSON fragments. A compiled production-function regression
+checks token round trips, escaping, Chinese text, empty strings and nil. Nine
+focused native-entry tests and 85 pipeline checks passed, along with Swift
+parsing and actionlint. The UI test now waits for the mounted editor to become
+ready and detects a foreground exit rather than treating mounting as edit
+acknowledgement. Cloud log collection includes App process messages.
+The corrected full-App scenario and a refreshed device-host pin are still
+required. This is a matched simulator exception, not a matched physical-device
+crash stack or a Build240 delivery.
+
+## 真实进入编辑异常，2026-10-01
+
+完整 Floe 云模拟器运行 36802940235 已编译 App 和交互测试、渲染手记中导入的
+PPT 预览并点击真实“编辑”。预览关闭已确认，第二代原生编辑实例已打开，随后 App
+在进入编辑时退出。原始 xcresult 诊断记录了未捕获的 NSInvalidArgumentException：
+JSON 写入的顶层对象类型无效；原生栈指向编辑绘制证据脚本生成和编辑进入函数。
+失败截图为模拟器桌面。编辑、静置、保存及重开验收均未通过，原始失败完整保留。
+
+主线程提取生产函数，用真实 Foundation 编译复现该异常；字符串根对象现明确使用
+JSON fragment 写入选项。新增编译生产函数的回归验证转义、中文、空字符串、nil
+及 token 往返。9 项原生进入编辑定向测试、85 项流水线检查、Swift 语法及 actionlint
+通过。交互测试等待真实可操作编辑状态，并识别 App 离开前台；云日志包含 App
+进程信息。修正版完整 App 场景及新的设备宿主 pin 仍待核验；模拟器匹配异常不能
+替代真机崩溃栈或 Build240 交付验收。

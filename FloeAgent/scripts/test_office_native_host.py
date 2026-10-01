@@ -110,6 +110,46 @@ class OfficeEditEntryDeferralTests(unittest.TestCase):
         self.assertIn('baseline.images.get(key) !== image', source)
         self.assertIn('canvasRepainted = changedSamples >= 4;', source)
 
+    def test_edit_surface_arm_serializes_real_foundation_string_fragments(self):
+        """Compile the production function; source matching missed this crash."""
+        import sys
+        if sys.platform != 'darwin':
+            self.skipTest('actual Foundation serialization requires macOS')
+        fragment = host_fragment(self.source(), '// FLOE_EDIT_SURFACE_ARM_SCRIPT_BEGIN',
+                                 '// FLOE_EDIT_SURFACE_ARM_SCRIPT_END')
+        harness = r'''#import <Foundation/Foundation.h>
+__PRODUCTION__
+int main() { @autoreleasepool {
+    NSArray *tokens = @[@"session:2", @"quote\" slash\\ newline\n 中文", @""];
+    for (NSString *token in tokens) {
+        @try {
+            NSString *script = FloeEditSurfaceArmScript(token);
+            NSString *prefix = @"window.__floeArmEditSurface(";
+            NSRange start = [script rangeOfString:prefix];
+            NSRange end = [script rangeOfString:@") === true;" options:0
+                range:NSMakeRange(NSMaxRange(start), script.length - NSMaxRange(start))];
+            NSString *literal = [script substringWithRange:NSMakeRange(NSMaxRange(start),
+                end.location - NSMaxRange(start))];
+            NSError *error = nil;
+            id decoded = [NSJSONSerialization JSONObjectWithData:[literal dataUsingEncoding:NSUTF8StringEncoding]
+                options:NSJSONReadingFragmentsAllowed error:&error];
+            if (error || ![decoded isEqual:token]) return 3;
+        } @catch (NSException *exception) { NSLog(@"%@", exception); return 4; }
+    }
+    @try { if (!FloeEditSurfaceArmScript(nil)) return 5; }
+    @catch (NSException *exception) { return 6; }
+    return 0;
+} }
+'''
+        with tempfile.TemporaryDirectory(prefix='floe-arm-foundation-') as folder:
+            source = Path(folder) / 'probe.mm'
+            binary = Path(folder) / 'probe'
+            source.write_text(harness.replace('__PRODUCTION__', fragment))
+            subprocess.run(['xcrun', 'clang++', '-fobjc-arc', '-framework', 'Foundation',
+                            str(source), '-o', str(binary)], check=True, capture_output=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_render_ready_never_precedes_the_edit_entry_ack(self):
         """The deferred entry's acknowledgement settles before the ready signal."""
         source = self.source()

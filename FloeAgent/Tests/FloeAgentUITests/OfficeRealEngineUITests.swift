@@ -249,8 +249,19 @@ final class OfficeRealEngineUITests: XCTestCase {
                     phase, "preview must expose exactly one host Edit button")
         edit.tap()
         let editor = anyElement(app, "office.editor.native")
-        try require(editor.waitForExistence(timeout: 120), phase,
-                    "editable native canvas did not appear after the host Edit action")
+        let back = anyElement(app, "office.editor.back")
+        let deadline = Date().addingTimeInterval(120)
+        while Date() < deadline {
+            try require(app.state == .runningForeground, phase,
+                        "Floe left the foreground during native edit entry")
+            // The controller mounts before permission and paint settle. The
+            // host back action stays disabled until the real session canAct;
+            // a mounted view alone cannot acknowledge a working editor.
+            if editor.exists && back.exists && back.isEnabled && !edit.exists { return }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        try require(false, phase,
+                    "editable native canvas did not become ready after the host Edit action")
     }
 
     /// Insert one Impress slide through the real notebookbar control and

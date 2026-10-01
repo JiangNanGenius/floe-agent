@@ -337,11 +337,11 @@ jobs:
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/evidence"
           xcrun simctl spawn "$SIMULATOR" log show --last 45m --style compact \
-            --predicate 'eventMessage CONTAINS "[FloeOfficeStage]" OR eventMessage CONTAINS "[FloeOffice]"' \
+            --predicate 'process == "Floe Agent" OR process == "FloeApp" OR eventMessage CONTAINS "[FloeOfficeStage]" OR eventMessage CONTAINS "[FloeOffice]"' \
             > "$RUNNER_TEMP/evidence/office-system.log" 2>&1 || true
           reports="$HOME/Library/Logs/DiagnosticReports"
           if test -d "$reports"; then
-            find "$reports" -maxdepth 1 -name 'Floe Agent*' -mmin -60 \
+            find "$reports" -maxdepth 2 \( -name 'Floe*' -o -name 'floe*' -o -name 'com.apple.WebKit*' \) -type f -mmin -60 \
               -exec cp {} "$RUNNER_TEMP/evidence/" \; || true
           fi
 
