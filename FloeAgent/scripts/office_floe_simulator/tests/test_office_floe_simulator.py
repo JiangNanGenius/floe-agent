@@ -550,6 +550,60 @@ class AttachmentResolverTests(unittest.TestCase):
             self.assertFalse(report['resolved'])
             self.assertTrue(any('receipt' in f.lower() for f in report['failures']))
 
+    def test_xcode_occurrence_uuid_names_resolve(self):
+        identifier = '01234567-89AB-CDEF-0123-456789ABCDEF'
+        mapping = {f'{token}_0_{identifier}.png': f'frame-{index}.png'
+                   for index, token in enumerate(resolve_attachments.FRAME_TOKENS)}
+        mapping[f'{self.RECEIPT_NAME}_12_{identifier.lower()}.json'] = 'receipt.json'
+        files = {name: _png_with_document_content() for name in mapping.values()
+                 if name.endswith('.png')}
+        files['receipt.json'] = b'{"phases": []}'
+        with tempfile.TemporaryDirectory() as tmp:
+            exports = Path(tmp) / 'exports'
+            exports.mkdir()
+            self._export(exports, files, self._manifest(mapping))
+            report = resolve_attachments.resolve(exports, Path(tmp) / 'curated')
+            self.assertTrue(report['resolved'], report['failures'])
+            self.assertEqual(report['receipt']['source'], 'xcresult-attachment')
+
+    def test_export_suffix_does_not_accept_similar_or_malformed_names(self):
+        identifier = '01234567-89AB-CDEF-0123-456789ABCDEF'
+        for name in [f'01-preview-extra_0_{identifier}.png',
+                     f'01-preview_0_{identifier}-extra.png',
+                     f'01-preview_x_{identifier}.png',
+                     '01-preview_0_not-a-uuid.png',
+                     f'prefix01-preview_0_{identifier}.png']:
+            with self.subTest(name=name):
+                self.assertFalse(resolve_attachments._name_matches(name, '01-preview'))
+
+    def test_suffixed_duplicate_receipt_cannot_use_container_fallback(self):
+        from unittest.mock import patch
+        identifier = '01234567-89AB-CDEF-0123-456789ABCDEF'
+        manifest = self._manifest({f'{self.RECEIPT_NAME}.json': 'first.json',
+                                  f'{self.RECEIPT_NAME}_0_{identifier}.json': 'second.json'})
+        with tempfile.TemporaryDirectory() as tmp:
+            exports = Path(tmp) / 'exports'
+            exports.mkdir()
+            self._export(exports, {'first.json': b'{}', 'second.json': b'{}'}, manifest)
+            with patch.object(resolve_attachments, 'runner_receipt_path') as fallback:
+                report = resolve_attachments.resolve(exports, Path(tmp) / 'curated',
+                                                     simulator='owned', runner_bundle_id='runner')
+            fallback.assert_not_called()
+            self.assertFalse(report['resolved'])
+            self.assertTrue(any('ambiguous' in failure for failure in report['failures']))
+
+    def test_suffixed_and_bare_frame_names_are_ambiguous(self):
+        identifier = '01234567-89AB-CDEF-0123-456789ABCDEF'
+        with tempfile.TemporaryDirectory() as tmp:
+            exports = Path(tmp)
+            manifest = self._manifest({'01-preview.png': 'first.png',
+                                      f'01-preview_0_{identifier}.png': 'second.png'})
+            self._export(exports, {'first.png': b'image', 'second.png': b'image'}, manifest)
+            entries = resolve_attachments.load_manifest(exports)
+            path, errors = resolve_attachments.find_named(entries, exports, '01-preview')
+            self.assertIsNone(path)
+            self.assertTrue(any('ambiguous' in error for error in errors))
+
     def test_missing_frame_fails_closed(self):
         frames = {f'{token}.png': f'{token}.png'
                   for token in resolve_attachments.FRAME_TOKENS[1:]}

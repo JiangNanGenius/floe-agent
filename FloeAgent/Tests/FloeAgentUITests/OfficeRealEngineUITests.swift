@@ -214,7 +214,12 @@ final class OfficeRealEngineUITests: XCTestCase {
                 return true
             }
             if preview.exists && expectPreview {
-                return false
+                // Mounting the controller precedes its first render. The
+                // real App exposes Edit only after readiness; wait for that
+                // existing affordance before capturing the preview frame.
+                // Pixel and per-generation trace gates still judge the paint.
+                let edit = anyElement(app, "office.preview.edit")
+                if edit.exists && edit.isEnabled && edit.isHittable { return false }
             }
             // prepare() must first open a preview before requestEditing()
             // mounts the remembered editable generation. On a reopen, wait
@@ -240,6 +245,8 @@ final class OfficeRealEngineUITests: XCTestCase {
         let edit = anyElement(app, "office.preview.edit")
         try require(edit.waitForExistence(timeout: 30), phase,
                     "preview Edit action missing")
+        try require(app.buttons.matching(identifier: "office.preview.edit").count == 1,
+                    phase, "preview must expose exactly one host Edit button")
         edit.tap()
         let editor = anyElement(app, "office.editor.native")
         try require(editor.waitForExistence(timeout: 120), phase,

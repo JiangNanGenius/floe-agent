@@ -350,3 +350,44 @@ executed, and no physical-device crash fix or Build240 delivery is claimed.
 复现传递模块缺失，补充路径后通过。初始探针意外序列化了搜索路径，未复现
 失败，该结果另行保留。这些定向检查不等于完整 App 构建。PPT 预览、编辑、
 静置、保存及重开尚未实际执行，不能宣称真机闪退已修好或 Build240 已交付。
+
+### First full-App simulator execution and evidence-guided corrections (2026-10-01)
+
+Run 36798851422 compiled the actual App and test bundles, installed them on a
+fresh iPad simulator, and imported the fixture through Notes. Its durable trace
+records native PPT preview decoding and visible rendering in generation 1;
+the failure screenshot shows the two-slide document and the host Edit button.
+The test stopped before tapping Edit: the accessibility hierarchy shows that
+the virtual header's identifier overwrote Edit, Back and other child identifiers.
+The header now declares a containing accessibility element to keep child controls
+individually identifiable. Actual runtime verification of that change is pending.
+The original preview frame was also captured while still opening; the scenario
+now waits for the real preview's enabled, hittable Edit affordance before capturing
+that frame, without changing the product's preview-to-edit entry policy.
+
+The actual Xcode attachment manifest adds an occurrence index and UUID to the
+suggested attachment name. The resolver now recognizes only that exact suffix
+format, preserving path/symlink, ambiguity, missing-frame and receipt gates.
+Duplicate receipt exports cannot be hidden by the runner-container fallback.
+All 85 pipeline logic tests and Swift syntax checks pass. Reprocessing the actual
+failed export finds its receipt and original preview frame, but still rejects
+the absent edit/idle/reopen frames; it does not turn the failed run into a pass.
+Original logs, screenshots, hierarchy, recording and xcresult remain retained.
+This run has not tested editable generation handoff, idle, save or reopen, and
+does not reproduce or resolve the user's physical-device editing crash.
+
+运行 36798851422 已编译实际 App 与测试包，在新建 iPad 模拟器安装，并通过
+手记导入同一 PPT。持久日志记录第一代预览的原生解码及可见渲染，失败截图
+也显示两页文档和顶栏“编辑”按钮。测试在点击编辑前停止：实际无障碍树显示
+虚拟顶栏的标识覆盖了编辑、返回等子控件标识。现将顶栏声明为包含子控件的
+无障碍容器，保留控件独立标识；该改动仍待实际运行验证。原预览截图还拍在
+打开过程中，场景现等待真正预览中的编辑按钮可用、可点击后再截图，不改变
+产品的预览到编辑入口。
+
+实际 Xcode 附件清单会给建议名称追加序号和 UUID。解析器现只识别该确切
+后缀，路径、符号链接、重名、缺图及回执检查继续保留；重名回执不能用测试
+容器副本掩盖。85 项流水线逻辑测试和 Swift 语法检查通过。重新解析实际失败
+导出后已找到原回执和预览截图，但仍拒绝缺失的编辑、静置、重开截图，不把
+失败运行改判成功。原日志、截图、无障碍树、录像和 xcresult 全部保留。
+本次尚未验证可编辑代际切换、静置、保存和重开，也不能据此宣称已复现或
+解决用户真机的编辑闪退。

@@ -39,6 +39,7 @@ The independent upstream ``office_real_simulator`` pipeline is untouched.
 import argparse
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -110,8 +111,15 @@ def safe_export_path(attachments_dir, exported_name):
 
 
 def _name_matches(suggested, token):
-    """Exact token match tolerating the export tool's added extension."""
-    return suggested == token or _strip_extension(suggested) == token
+    """Match only a name or Xcode's exact name_index_UUID export spelling."""
+    name = _strip_extension(suggested)
+    if suggested == token or name == token:
+        return True
+    # Actual Xcode 27 exports append an occurrence index and attachment UUID
+    # to suggestedHumanReadableName; exportedFileName has a different UUID.
+    # A prefix/substring match would accept unrelated or ambiguous evidence.
+    identifier = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+    return re.fullmatch(re.escape(token) + r'_[0-9]+_' + identifier, name) is not None
 
 
 def find_named(entries, attachments_dir, token):
@@ -162,7 +170,9 @@ def resolve(attachments_dir, output_dir, *, simulator=None,
     receipt_path, receipt_errors = find_named(
         entries, attachments_dir, RECEIPT_ATTACHMENT_NAME)
     receipt_source = 'xcresult-attachment'
-    if receipt_path is None:
+    if receipt_path is None and not any(
+            _name_matches(entry['suggestedHumanReadableName'], RECEIPT_ATTACHMENT_NAME)
+            for entry in entries):
         fallback = runner_receipt_path(simulator, runner_bundle_id)
         if fallback is not None:
             receipt_path, receipt_source = fallback, 'runner-container'
@@ -172,6 +182,9 @@ def resolve(attachments_dir, output_dir, *, simulator=None,
                 failures.append(
                     f'runner container fallback unavailable '
                     f'({runner_bundle_id or "no runner bundle id"})')
+    elif receipt_path is None:
+        # An ambiguous export must not be hidden by a runner-container copy.
+        failures += receipt_errors
     if receipt_path is not None:
         target = output_dir / RECEIPT_FILENAME
         shutil.copyfile(receipt_path, target)

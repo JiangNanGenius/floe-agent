@@ -2474,6 +2474,10 @@ struct OfficeDocumentEditorView: View {
                         .background(.bar)
                         Divider()
                     }
+                    // Give the header its own accessibility container. An
+                    // identifier on a virtual VStack otherwise propagates to
+                    // its buttons and hides their Edit/Back identifiers.
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("office.editor.header")
                 }
             }
