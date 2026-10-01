@@ -354,6 +354,8 @@ final class OfficeFileSession: ObservableObject {
     /// ready once the host observed a decoded document tile on a sized canvas;
     /// the open event and the engine permission are not render evidence.
     private var renderGate: OfficeVisibleRenderGate?
+    /// Actual document-action readiness, including the same-generation paint gate.
+    var documentActionsReady: Bool { canAct && (renderGate?.permitsSave ?? false) }
     /// Bounded Swift-side safety net for a host that reports neither render
     /// outcome. It only fires while this session still awaits a render.
     private var renderWatchdog: Task<Void, Never>?
@@ -1990,8 +1992,9 @@ final class OfficeFileSession: ObservableObject {
             // Installed through the runtime selectors: the framework is pinned
             // separately from this source, so the app must keep compiling
             // against a host that predates the visible-render contract (see
-            // `hostSupportsVisibleRender`). The host reports one of these
-            // exactly once; neither is an open or save event.
+            // `hostSupportsVisibleRender`). Each callback fires at most once;
+            // a late real paint may follow the bounded unverified notice.
+            // Neither callback is an open or save event.
             let ready: @convention(block) (NSString?, TimeInterval) -> Void = { [weak self, weak native] docType, elapsed in
                 Task { @MainActor in
                     // Reachability of this repair, per watchdog state: the
@@ -2298,6 +2301,9 @@ struct OfficeDocumentSurface: View {
                 OfficeControllerSurface(controller: controller)
                     .id(ObjectIdentifier(controller))
                     .accessibilityIdentifier(session.readOnly ? "office.preview.native" : "office.editor.native")
+                    .accessibilityValue(session.documentActionsReady
+                        ? OfficeInkText.t("文档已就绪", "Document ready")
+                        : OfficeInkText.t("文档尚未就绪", "Document not ready"))
             }
             if session.phase == .failed {
                 ContentUnavailableView {

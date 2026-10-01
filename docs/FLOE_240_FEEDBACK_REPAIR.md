@@ -584,3 +584,66 @@ already-editable-probe 分支；不会再次触发编辑、修改权限，也不
 85 项流水线测试通过。日志校验器及渲染、代际、生命周期、版本连续性和
 落盘门槛均未改变，原始失败保留，新的完整 App 运行仍须验证补记结果。
 本节是云模拟器证据，不代表 Build240 已交付或用户真机闪退验收通过。
+
+
+## Late render observation and truthful exit checks, 2026-10-01
+
+[Full-App run 36825093835](https://github.com/JiangNanGenius/floe-agent/actions/runs/36825093835)
+compiled, but its complete retained xcresult shows actual render deadlines,
+not just a card-selection failure. The first preview timed out without decoded
+tiles. Its editable generation later painted and committed Notes revision 2.
+On the first reopen, the editable generation reached its 25-second deadline
+while guarded edit entry was still running. The original trace then records
+`save.refused permitsSave=false`; the final screenshot remains inside the
+four-slide editor with the unverified-render warning. No second commit or
+completed second reopen was accepted. The original run stays **failed**.
+
+The native probe previously stopped permanently at the notice deadline, so a
+later actual paint could never repair the App's render gate. The candidate
+keeps the original notice deadline and observes only that same generation for
+at most 60 additional seconds. A real render and the entry's own acknowledgement
+remain required; blank skeletons, silent evaluations and elapsed time cannot
+permit saving. Cancellation stops observation, and the final recovery bound
+settles a still-pending entry. Original failure events remain in the trace and
+continue to fail qualification; the verifier has not changed.
+
+The App exposes its existing document-action readiness to accessibility. The
+UI test requires that readiness before preview/edit frames and now verifies
+that both native surfaces and the editor back action disappeared, with the
+Notes library actually hittable, before claiming save-and-close. An existing
+Notes button behind the editor can no longer satisfy the exit check.
+
+The original extracted native probe reproduces the lost late-paint assertion.
+Object compilation and execution of the shipped probe and failure callbacks
+pass nine Foundation/dispatch lifecycle cases, including delayed entry
+acknowledgement, missing paint, missing JS callbacks and cancellation. The
+recovery timer alone is scaled for this component harness. Focused native,
+render-readiness and pipeline checks pass. A rebuilt and fully verified device
+host pin, a fresh full-App simulator scenario and physical iPad acceptance
+remain pending. This is not Build240 delivery or a claim that all PPT crashes
+are resolved.
+
+## 迟到渲染观察与真实退出检查，2026-10-01
+
+完整 App 运行 36825093835 已编译，但完整 xcresult 显示实际渲染超时，
+不能只归因于卡片定位。首次预览未解码文档瓦片即超时；随后编辑实例实际
+绘制并提交手记版本 2。第一次重开时，编辑实例在原生进入编辑尚未结束时
+达到 25 秒期限。原日志随后记录保存被拒绝；最终截图仍在四页编辑器内，
+显示未验证渲染警告。没有第二次提交或完整第二次重开验收，原运行仍失败。
+
+原生探针原来在提示超时后永久停止，因此迟到的真实绘制无法修复 App 的
+渲染门槛。候选保留原提示期限，仅对同一代际继续观察最多 60 秒；仍必须
+观察真实渲染和进入编辑的确认，空白骨架、无回调或时间流逝均不能允许保存。
+关闭会取消观察，恢复观察最终到期则结束尚未完成的进入等待。原始失败事件
+仍保留并阻止资格通过，校验器没有放宽。
+
+App 将已有文档操作就绪状态提供给无障碍接口，测试在截图及编辑前要求
+该状态。保存退出须确认原生预览、编辑器及返回按钮真正消失，且手记列表
+实际可点击；编辑器背后仍存在的“新建手记”不再被误判为退出成功。
+
+提取原版探针已实际复现迟到绘制被丢弃；修正版探针及失败回调经对象编译
+和执行通过九项 Foundation/dispatch 生命周期案例，包括迟到编辑确认、
+未绘制、无 JS 回调及取消。组件测试只缩短恢复计时，不是实际引擎验收。
+定向原生、渲染规则和流水线检查通过，设备宿主整包重新核验固定、完整
+App 云模拟器场景及用户真机验收仍待完成；不代表 Build240 已交付或所有
+PPT 闪退均已解决。

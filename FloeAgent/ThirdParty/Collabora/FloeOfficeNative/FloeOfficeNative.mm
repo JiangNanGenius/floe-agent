@@ -445,8 +445,8 @@ typedef NS_OPTIONS(NSUInteger, FloeProbeProgressClass) {
     FloeProbeProgressEditSurface = 1 << 6, // post-entry edit-surface paint
 };
 
-/// Upper bound on progress breadcrumbs per probe session. The open window is
-/// bounded (25 s), so this only protects the App's 512-event trace from a
+/// Upper bound on progress breadcrumbs per probe session, including bounded
+/// late-render observation. This protects the App's 512-event trace from a
 /// stuck session.
 static const NSUInteger FloeRenderProbeMaxProgressBreadcrumbs = 10;
 /// While no new readiness class appears, the probe still refreshes the
@@ -483,7 +483,7 @@ static NSDictionary<NSString *, id> *FloeRenderProbeDiagnosticFacts(NSDictionary
     dispatch_once(&once, ^{
         keys = @[@"stage", @"failure", @"format", @"readOnly", @"requiresVisibleRender",
                  @"docType", @"docLoaded", @"fileBasedView", @"tiles", @"decodedTiles",
-                 @"attempts", @"elapsed", @"deadline", @"editSurfacePainted",
+                 @"attempts", @"elapsed", @"deadline", @"recoveryObservation", @"editSurfacePainted",
                  @"editSurfaceNewDecodes", @"editSurfaceChangedSamples",
                  @"editSurfaceLayoutChanged", @"editSurfaceLayout",
                  @"evalStalled", @"evalPendingSeconds"];
@@ -1336,6 +1336,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 - (void)renderProbeDidObserveVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics;
 - (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics;
+- (void)renderProbeDidEndRecovery:(NSDictionary<NSString *, id> *)diagnostics;
 /// The open-permission/entry report settled for this open generation. The
 /// deferred edit entry settles it; the visible-render ready must never precede
 /// that acknowledgement (an entry that ends in a password prompt or a refusal
@@ -1388,6 +1389,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     NSUInteger _attempts;
     BOOL _finished;
     BOOL _cancelled;
+    BOOL _deadlineReported;
     /// The first-paint trigger was delivered; it fires at most once per session.
     BOOL _firstPaintReported;
     NSMutableDictionary<NSString *, id> *_lastFacts;
@@ -1457,11 +1459,39 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
     dispatch_source_set_event_handler(_deadlineTimer, ^{
         FloeOfficeRenderProbe *probe = weakSelf;
         if (!probe || probe->_finished || probe->_cancelled) return;
-        [probe finishWithStage:@"deadline"];
-        [probe reportFailureIfRequiredWithReason:@"no-visible-render"];
+        [probe reportRenderDeadlineWithReason:@"no-visible-render"];
     });
     dispatch_resume(_deadlineTimer);
     [self poll];
+}
+
+/// Keep the original notice deadline: an unpainted document never becomes
+/// ready or savable because time passed. A presentation can still finish its
+/// guarded entry and paint afterwards, so observe this SAME generation for at
+/// most 60 more seconds. No reload, duplicate entry or overlapping JS poll.
+/// The second wall-clock timer also bounds an evaluation that never returns.
+- (void)reportRenderDeadlineWithReason:(NSString *)reason {
+    if (_finished || _cancelled || _deadlineReported) return;
+    _deadlineReported = YES;
+    [_lastFacts setObject:@"deadline" forKey:@"stage"];
+    if (!self.requiresVisibleRender) {
+        [self finishWithStage:@"deadline"];
+        [self reportFailureIfRequiredWithReason:reason];
+        return;
+    }
+    [_lastFacts setObject:@YES forKey:@"recoveryObservation"];
+    [self reportFailureIfRequiredWithReason:reason];
+    if (_finished || _cancelled || !_deadlineTimer) return;
+    __weak FloeOfficeRenderProbe *weakSelf = self;
+    dispatch_source_set_timer(_deadlineTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
+                              DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler(_deadlineTimer, ^{
+        FloeOfficeRenderProbe *probe = weakSelf;
+        if (!probe || probe->_finished || probe->_cancelled) return;
+        [probe finishWithStage:@"recovery-deadline"];
+        [probe.controller renderProbeDidEndRecovery:probe.diagnostics];
+    });
 }
 
 - (void)invalidateDeadlineTimer {
@@ -1565,6 +1595,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                 if (ready && probe.expectsDeferredEditEntry && ![probe.controller hasSettledOpenPermission])
                     ready = NO;
                 if (ready) {
+                    [probe->_lastFacts removeObjectForKey:@"failure"];
                     [probe finishWithStage:@"visible-render"];
                     [probe.controller renderProbeDidObserveVisibleRender:probe.diagnostics];
                     return;
@@ -1582,11 +1613,11 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
                                               @"errorCode": @(error.code)}
                                 renderFacts:(FloeRenderFacts){0}];
         }
-        if (probe->_startedAt && -[probe->_startedAt timeIntervalSinceNow] >= probe.deadline) {
-            [probe finishWithStage:@"deadline"];
-            [probe reportFailureIfRequiredWithReason:error ? @"probe-error" : @"no-visible-render"];
-            return;
+        if (!probe->_deadlineReported && probe->_startedAt
+            && -[probe->_startedAt timeIntervalSinceNow] >= probe.deadline) {
+            [probe reportRenderDeadlineWithReason:error ? @"probe-error" : @"no-visible-render"];
         }
+        if (probe->_finished || probe->_cancelled) return;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ [weakSelf poll]; });
     }];
@@ -2189,7 +2220,9 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 }
 - (void)renderProbeDidFail:(NSError *)error diagnostics:(NSDictionary<NSString *, id> *)diagnostics {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
-    self.renderProbeFinished = YES;
+    // The notice is bounded, but observing a late paint remains live. Keep a
+    // pending guarded entry owned by this generation until recovery ends.
+    self.renderProbeFinished = NO;
     self.renderDiagnostics = diagnostics;
     // The bounded last probe state rides along: the App's durable trace then
     // names the furthest readiness class even when the probe never painted.
@@ -2197,11 +2230,17 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
         [FloeRenderProbeDiagnosticFacts(diagnostics) mutableCopy];
     facts[@"failure"] = diagnostics[@"failure"] ?: @"unknown";
     [self floeStage:@"visible-render-failed" facts:facts];
-    // A still-pending edit entry settles here without forcing an entry: the
-    // engine never proved a paint, and the render gate owns the bounded
-    // outcome. The report still settles exactly once.
-    [self settlePendingEditEntryWithoutEntry];
+    // The failure callback produces the existing recoverable notice. Only a
+    // later real same-generation paint may repair it; the original failure
+    // breadcrumb remains and qualification must not rewrite it into a pass.
     if (self.onVisibleRenderFailed) self.onVisibleRenderFailed(error);
+}
+- (void)renderProbeDidEndRecovery:(NSDictionary<NSString *, id> *)diagnostics {
+    NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");
+    self.renderProbeFinished = YES;
+    self.renderDiagnostics = diagnostics;
+    [self floeStage:@"render-recovery-ended" facts:FloeRenderProbeDiagnosticFacts(diagnostics)];
+    [self settlePendingEditEntryWithoutEntry];
 }
 - (void)renderProbeDidFinishWithoutVisibleRender:(NSDictionary<NSString *, id> *)diagnostics {
     NSAssert(NSThread.isMainThread, @"Office render probes are main-queue owned");

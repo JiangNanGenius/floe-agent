@@ -67,7 +67,9 @@ FOUNDATION_EXPORT NSNotificationName const FloeOfficeNativeRuntimeDidFailNotific
 /// host deadline. The working copy is retained; the caller must fail visibly
 /// with retry/recovery instead of presenting a blank ready editor. Fired at
 /// most once per session and never for a session the host read-only script
-/// intentionally renders without document tiles.
+/// intentionally renders without document tiles. The same generation remains
+/// observed for at most 60 additional seconds: only a real paint can then fire
+/// onVisibleRenderReady and repair the notice. Closing cancels that observation.
 @property (nonatomic, copy, nullable) void (^onVisibleRenderFailed)(NSError *error);
 /// Format/type/open/render/save diagnostics for logging and qualification.
 /// Contains only engine state and counters, never document contents.

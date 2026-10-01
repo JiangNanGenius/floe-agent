@@ -220,6 +220,13 @@ final class OfficeRealEngineUITests: XCTestCase {
         return card
     }
 
+    /// The App's document-action readiness includes real same-generation
+    /// render evidence. A mounted canvas or recoverable notice cannot pass.
+    func documentIsReady(_ surface: XCUIElement) -> Bool {
+        guard let value = surface.value as? String else { return false }
+        return value == "文档已就绪" || value == "Document ready"
+    }
+
     /// Open the imported fixture card. `expectPreview` enforces the App's
     /// real entry policy: the first entry MUST be the read-only preview; a
     /// remembered reopen MUST present the editable surface directly (no Edit
@@ -234,7 +241,7 @@ final class OfficeRealEngineUITests: XCTestCase {
         let preview = anyElement(app, "office.preview.native")
         let deadline = Date().addingTimeInterval(240)
         while Date() < deadline {
-            if editor.exists {
+            if editor.exists && documentIsReady(editor) {
                 try require(!expectPreview, phase,
                             "first entry opened directly in edit; the real entry policy requires a preview")
                 return true
@@ -245,7 +252,7 @@ final class OfficeRealEngineUITests: XCTestCase {
                 // existing affordance before capturing the preview frame.
                 // Pixel and per-generation trace gates still judge the paint.
                 let edit = anyElement(app, "office.preview.edit")
-                if edit.exists && edit.isEnabled && edit.isHittable { return false }
+                if documentIsReady(preview) && edit.exists && edit.isEnabled && edit.isHittable { return false }
             }
             // prepare() must first open a preview before requestEditing()
             // mounts the remembered editable generation. On a reopen, wait
@@ -283,7 +290,7 @@ final class OfficeRealEngineUITests: XCTestCase {
             // The controller mounts before permission and paint settle. The
             // host back action stays disabled until the real session canAct;
             // a mounted view alone cannot acknowledge a working editor.
-            if editor.exists && back.exists && back.isEnabled && !edit.exists { return }
+            if editor.exists && documentIsReady(editor) && back.exists && back.isEnabled && !edit.exists { return }
             Thread.sleep(forTimeInterval: 0.5)
         }
         try require(false, phase,
@@ -328,7 +335,22 @@ final class OfficeRealEngineUITests: XCTestCase {
                     "editor back action missing")
         back.tap()
         let library = app.buttons["notes.create"]
-        try require(library.waitForExistence(timeout: 60), closePhase,
+        let deadline = Date().addingTimeInterval(60)
+        var dismissed = false
+        while Date() < deadline {
+            try require(app.state == .runningForeground, closePhase,
+                        "Floe left the foreground during save-and-close")
+            // Notes remains in the outer split-view accessibility tree behind
+            // its editor. Existence alone falsely acknowledged a refused save.
+            if !anyElement(app, "office.editor.native").exists
+                && !anyElement(app, "office.preview.native").exists
+                && !back.exists && library.exists && library.isHittable {
+                dismissed = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        try require(dismissed, closePhase,
                     "Notes library did not return after save-and-close")
         mark(savePhase, true, "save-and-dismiss committed")
         mark(closePhase, true)
