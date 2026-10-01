@@ -4,7 +4,7 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前可安装内部构建：1.7.0（240）**。不可变标签 [`v1.7.0-beta.99`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.99) 固定源码 `9bd9a23706698d71cc7f80f59084770f0227b382`；TestFlight 私有 Floe QA 已核验 `VALID`、未过期及 `IN_BETA_TESTING`，GitHub 预发布和 Feather 已交付。云端 IPA 已核验保留，本地备份仍在下载；239/238 原产物继续保留。交付不等于物理设备验收，中文 Office 字体用户已确认正常。
+**当前可安装内部构建：1.7.0（240）**。不可变标签 [`v1.7.0-beta.99`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.99) 固定源码 `9bd9a23706698d71cc7f80f59084770f0227b382`；TestFlight 私有 Floe QA 已核验 `VALID`、未过期及 `IN_BETA_TESTING`，GitHub 预发布和 Feather 已交付。云端与本地完整 IPA 均已留存，本地全摘要、源码记录、bundle、版本和 SDK 已核验；239/238 原产物继续保留。交付不等于物理设备验收，中文 Office 字体用户已确认正常。
 
 **Build240 验证边界**：[反馈修复与完整 Floe 云模拟器验证](FLOE_240_FEEDBACK_REPAIR.md)已完成实际 PPT 导入、编辑插页、静置120.35秒、保存关闭和两次重开，回执、真实文档帧及四页落盘通过。Linux 状态、搜索边界和上下文显示变化已完整 App 编译，设备行为仍待用户反馈；模拟器通过不能替代用户真机或全部文档验收，本地真实模型搜索回答尚未通过。详见[内测交付记录](TESTFLIGHT_1.7.0_BETA.md)。
 
