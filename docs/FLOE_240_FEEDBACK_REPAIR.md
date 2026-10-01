@@ -647,3 +647,29 @@ App 将已有文档操作就绪状态提供给无障碍接口，测试在截图�
 定向原生、渲染规则和流水线检查通过，设备宿主整包重新核验固定、完整
 App 云模拟器场景及用户真机验收仍待完成；不代表 Build240 已交付或所有
 PPT 闪退均已解决。
+
+## Font transport recovery, 2026-10-01
+
+Device-host run 36833209832 failed before native compilation in both attempts:
+the first failed fetching Source Han Sans TC, while the second fetched TC but
+failed fetching SC with curl 56 / HTTP 500. The font manifest and versions
+remain unchanged. The downloader now retries transport errors as well as
+HTTP errors, with a bounded retry window and per-transfer timeout. Failed
+partial files are never promoted to the download cache.
+
+Three focused checks pass, including real curl recovery after a local server
+drops its first connection, permanent failure without partial-file promotion,
+and existing-cache reuse. The original downloader needed a separate fallback
+curl process for the same dropped connection. This is transport evidence,
+not a successful cloud host build or PPT acceptance; those remain pending.
+
+## 字体下载传输恢复，2026-10-01
+
+设备宿主运行 36833209832 两次均在原生编译前失败：首次下载思源黑体繁体包
+失败，第二次繁体包成功，但简体包出现 curl 56 / HTTP 500。字体清单和版本
+未改变。下载器新增传输错误重试，并限制重试窗口及每次传输时间；失败的
+临时文件不会被提交为完整下载缓存。
+
+三项定向检查通过，包括真实 curl 从本地服务首次断开连接中恢复、永久
+失败不提交临时文件，以及复用已有缓存。同样的断连在原版函数中需要另启
+回退 curl 进程。此证据只覆盖传输恢复，云宿主构建及完整 PPT 验收仍待完成。

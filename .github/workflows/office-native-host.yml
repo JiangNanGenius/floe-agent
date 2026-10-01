@@ -27,6 +27,7 @@ jobs:
           node-version: '22'
       - name: Stage and verify pinned fonts for real family checks
         run: |
+          python3 FloeAgent/scripts/fonts/test_fetch_fonts.py
           python3 FloeAgent/scripts/fonts/fetch_fonts.py --check || {
             python3 FloeAgent/scripts/fonts/fetch_fonts.py
             python3 FloeAgent/scripts/fonts/fetch_fonts.py --check

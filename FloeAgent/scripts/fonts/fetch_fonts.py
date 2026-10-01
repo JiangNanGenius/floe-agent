@@ -49,7 +49,11 @@ def download(url: str, dest: Path) -> None:
         return
     print(f"    downloading: {url}")
     cmd = [
-        "curl", "-fL", "--retry", "3", "--retry-delay", "5",
+        # GitHub/CDN failures can surface as transport errors (e.g. curl 56),
+        # which curl's default HTTP retry policy does not cover. Bound both
+        # the retry window and each transfer; never promote a failed .part.
+        "curl", "-fL", "--retry", "3", "--retry-all-errors",
+        "--retry-delay", "5", "--retry-max-time", "120", "--max-time", "300",
         "-C", "-", "--connect-timeout", "30",
         "-A", "FloeAgent-FontFetcher/1.0",
         "-o", str(dest) + ".part", url,
