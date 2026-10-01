@@ -1,6 +1,18 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (237) — available in Floe QA
+## Current internal delivery: 1.7.0 (240) — available in Floe QA
+
+2026-10-01 12:07 UTC：[发布任务36854144598](https://github.com/JiangNanGenius/floe-agent/actions/runs/36854144598)完成设备 App 编译、云端未签名 IPA 留存、Office 宿主包核验、私有符号留存和签名上传。[Apple 核验36859708033](https://github.com/JiangNanGenius/floe-agent/actions/runs/36859708033)确认 `VALID`、未过期、仅现有私有 Floe QA 组和 `IN_BETA_TESTING`，内测可安装。[更新说明36859539572](https://github.com/JiangNanGenius/floe-agent/actions/runs/36859539572)已核对中英文读回。[GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.99) 和 [Feather36858333656](https://github.com/JiangNanGenius/floe-agent/actions/runs/36858333656)均成功，实际源条目的源码、大小、摘要和发布 IPA URL 一致。
+
+At 2026-10-01 12:07 UTC, device-App compilation, cloud unsigned-IPA retention, Office payload verification, private symbols and signed upload passed. Apple verification confirmed `VALID`, unexpired, exactly the existing private Floe QA group and `IN_BETA_TESTING`: available for internal installation. English and Simplified Chinese notes were read back; GitHub prerelease and the actual Feather source match the same unsigned IPA.
+
+Immutable tag `v1.7.0-beta.99`: `9bd9a23706698d71cc7f80f59084770f0227b382`. Unsigned IPA: 739,927,308 bytes; SHA-256 `d2dcea33a6a3ae4e81a09c102eddd07c379c0e2ad48e8eb008356cc9b9b1bd64`. Xcode 26.6 (17F113), bundle `org.floeagent.ios`, version 1.7.0/build240. Cloud retention and public asset hashes are verified; local backup download remains in progress. 云端与公开产物已核验，本地备份仍在下载，尚未声称本地完整留存。
+
+[完整 Floe 云模拟器36843561563](https://github.com/JiangNanGenius/floe-agent/actions/runs/36843561563)已通过实际 PPT 导入、预览、编辑插页、静置120.35秒、保存关闭和两次重开；原始回执、五帧文档图像、原生确认链、连续手记版本和实际四页落盘均已核对。发布源码相对资格源码仅修改构建号、生成工程和发布文案。模拟器资格不能代替物理 iPad 验收；Build239 真机系统栈仍未匹配，Linux、搜索和上下文变化待用户设备反馈。本地真实模型搜索回答仍未验收。
+
+Full Floe cloud Simulator PPT acceptance passed with real import, preview, editing, slide insertion, 120.35 seconds idle, saving and two reopens. Source-bound receipts, five document frames, native acknowledgement chain, continuous Notes revisions and the actual four-slide file were reviewed. Release-source differences are build metadata, generated project and release copy only. Physical iPad acceptance remains pending, including Linux, search and context behavior; the Build239 physical crash stack and real-weight search-answer acceptance remain unresolved. [Build240 notes](RELEASE_NOTES_1.7.0_BUILD_240.md) · [repair evidence](FLOE_240_FEEDBACK_REPAIR.md).
+
+## Previous internal delivery: 1.7.0 (237) — available in Floe QA
 
 2026-09-29 19:19 UTC：[发布任务36611042867](https://github.com/JiangNanGenius/floe-agent/actions/runs/36611042867)完成完整 App 编译、保留 IPA、签名上传；[Apple 核验36618326467](https://github.com/JiangNanGenius/floe-agent/actions/runs/36618326467)确认 `VALID`、未过期、仅现有私有 Floe QA 组和 `IN_BETA_TESTING`，内测可安装。[GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.96) 与 [Feather36616814251](https://github.com/JiangNanGenius/floe-agent/actions/runs/36616814251)已成功，实际源条目的下载地址、大小、摘要和源码一致。
 
