@@ -702,11 +702,16 @@ class AttachmentResolverTests(unittest.TestCase):
 
 
 def _png_with_document_content(*, chrome_only=False, uniform=None,
-                               include_markers=True):
-    """Synthesize a 1000x700 frame; only its central document crop varies.
+                               include_markers=True, variant='editor'):
+    """Synthesize a 1000x700 frame with per-frame slideshow variants.
 
     The excluded top/side bands always carry dense colored chrome to prove
-    chrome cannot satisfy the document-region gate.
+    chrome cannot satisfy the document-region gate. Presentation variants add
+    the real slideshow letterbox (black bands) so the gate's still-presenting
+    / exited rules can be exercised; page identity uses the pinned fixture
+    markers inside the document region: blue title + orange bar (slide 1),
+    green oval (slide 2). The edited deck order is
+    [fixture slide 1, inserted blank, fixture slide 2].
     """
     from PIL import Image
     width, height = 1000, 700
@@ -724,14 +729,38 @@ def _png_with_document_content(*, chrome_only=False, uniform=None,
             pixels[x, y] = (234, 88, 12)
     if uniform is None and not chrome_only:
         # Real drawn content inside the document region: text-like dark
-        # glyphs and, for the preview, the marker colors.
-        for y in range(int(height * 0.35), int(height * 0.80), 6):
-            for x in range(int(width * 0.30), int(width * 0.72)):
-                pixels[x, y] = (30, 30, 30)
-        if include_markers:
-            for y in range(int(height * 0.30), int(height * 0.34)):
-                for x in range(int(width * 0.30), int(width * 0.55)):
-                    pixels[x, y] = (29, 78, 216)
+        # glyphs plus the variant's fixture markers. The inserted blank
+        # intermediate deliberately has NO ink: it is the one token allowed
+        # to be empty because it is explicitly asserted marker-free.
+        if variant != 'presenting-blank':
+            for y in range(int(height * 0.35), int(height * 0.80), 6):
+                for x in range(int(width * 0.30), int(width * 0.72)):
+                    pixels[x, y] = (30, 30, 30)
+        if include_markers and variant != 'presenting-blank':
+            if variant in ('preview', 'editor', 'fixture-slide1', 'presenting-page1',
+                           'presenting-blueonly'):
+                for y in range(int(height * 0.30), int(height * 0.34)):
+                    for x in range(int(width * 0.30), int(width * 0.55)):
+                        pixels[x, y] = (29, 78, 216)
+            if variant in ('editor', 'fixture-slide1', 'presenting-page1'):
+                for y in range(int(height * 0.36), int(height * 0.39)):
+                    for x in range(int(width * 0.30), int(width * 0.55)):
+                        pixels[x, y] = (234, 88, 12)
+            if variant in ('fixture-slide2', 'presenting-page2'):
+                cy, cx, radius = int(height * 0.55), int(width * 0.50), 60
+                for y in range(cy - radius, cy + radius):
+                    for x in range(cx - radius, cx + radius):
+                        if (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2:
+                            pixels[x, y] = (16, 160, 64)
+    if variant in ('presenting-page1', 'presenting-blank', 'presenting-page2',
+                   'presenting-blueonly'):
+        # Real slideshow letterbox bands (top/bottom of the whole frame).
+        for y in range(0, int(height * 0.05)):
+            for x in range(width):
+                pixels[x, y] = (0, 0, 0)
+        for y in range(int(height * 0.95), height):
+            for x in range(width):
+                pixels[x, y] = (0, 0, 0)
     buffer = io.BytesIO()
     image.save(buffer, format='PNG')
     return buffer.getvalue()
@@ -744,9 +773,22 @@ class FloeRenderGateTests(unittest.TestCase):
             (root / f'{token}.png').write_bytes(body)
         return root
 
+    SLIDESHOW_VARIANTS = {
+        '01-preview': 'preview',
+        '02-edit': 'editor',
+        '10-slideshow-page1': 'presenting-page1',
+        '11-slideshow-blank-page': 'presenting-blank',
+        '12-slideshow-page2': 'presenting-page2',
+        '13-slideshow-exit': 'editor',
+        '03-idle-120s': 'editor',
+        '04-reopen': 'editor',
+        '05-persisted': 'editor',
+    }
+
     def _all_frames(self, **kwargs):
-        body = _png_with_document_content(**kwargs)
-        return {token: body for token in check_floe_render.EXPECTED_FRAMES}
+        return {token: _png_with_document_content(
+                    variant=self.SLIDESHOW_VARIANTS.get(token, 'editor'), **kwargs)
+                for token in check_floe_render.EXPECTED_FRAMES}
 
     def test_real_fixture_frames_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -795,6 +837,69 @@ class FloeRenderGateTests(unittest.TestCase):
             self.assertFalse(result['renderPassed'])
             self.assertTrue(any('marker colors absent' in f
                                 for f in result['failures']))
+
+    def test_slideshow_page1_requires_both_fixture_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self._all_frames()
+            frames['10-slideshow-page1'] = _png_with_document_content(
+                variant='presenting-blueonly')
+            curated = self._curated(Path(tmp), frames)
+            result = check_floe_render.check_floe_render(curated)
+            self.assertFalse(result['renderPassed'])
+            self.assertTrue(any('fixture slide 1 markers incomplete' in f
+                                for f in result['failures']))
+
+    def test_slideshow_blank_intermediate_with_markers_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self._all_frames()
+            frames['11-slideshow-blank-page'] = _png_with_document_content(
+                variant='presenting-page1')
+            curated = self._curated(Path(tmp), frames)
+            result = check_floe_render.check_floe_render(curated)
+            self.assertFalse(result['renderPassed'])
+            self.assertTrue(any('inserted blank page carries fixture markers' in f
+                                for f in result['failures']))
+
+    def test_slideshow_page2_requires_green_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self._all_frames()
+            frames['12-slideshow-page2'] = _png_with_document_content(
+                variant='presenting-blank')
+            curated = self._curated(Path(tmp), frames)
+            result = check_floe_render.check_floe_render(curated)
+            self.assertFalse(result['renderPassed'])
+            self.assertTrue(any('green oval absent' in f
+                                for f in result['failures']))
+
+    def test_slideshow_page2_wrong_page_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self._all_frames()
+            frames['12-slideshow-page2'] = frames['10-slideshow-page1']
+            curated = self._curated(Path(tmp), frames)
+            result = check_floe_render.check_floe_render(curated)
+            self.assertFalse(result['renderPassed'])
+            self.assertTrue(any('are the same frame' in f
+                                for f in result['failures']))
+
+    def test_slideshow_exit_still_presenting_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self._all_frames()
+            frames['13-slideshow-exit'] = frames['12-slideshow-page2']
+            curated = self._curated(Path(tmp), frames)
+            result = check_floe_render.check_floe_render(curated)
+            self.assertFalse(result['renderPassed'])
+            self.assertTrue(any('slideshow letterbox still present' in f
+                                for f in result['failures']))
+
+    def test_slideshow_blank_intermediate_not_required_to_have_ink(self):
+        # The inserted blank page is the explicit expected-blank intermediate:
+        # it is accepted for that ONE token when it is marker-free, still
+        # letterboxed and different from both content pages.
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = self._all_frames()
+            curated = self._curated(Path(tmp), frames)
+            result = check_floe_render.check_floe_render(curated)
+            self.assertTrue(result['renderPassed'], result['failures'])
 
 
 class OwnedSimulatorSafetyTests(unittest.TestCase):

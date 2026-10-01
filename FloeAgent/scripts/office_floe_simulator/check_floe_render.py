@@ -13,11 +13,17 @@ self-contained (the host-only pipeline is intentionally not modified):
 
 * the DOCUMENT region of EVERY frame (the central crop, excluding the
   notebookbar/toolbars and sidebars) must contain drawn, non-blank pixels —
-  chrome alone can never satisfy any frame;
+  chrome alone can never satisfy any frame (the one explicitly expected
+  inserted blank page is asserted marker-free instead);
 * the fixture preview frame must additionally show the pinned fixture marker
   colors INSIDE the document region, proving the real fixture slide rendered
   in the content area rather than marker-colored app chrome;
-* every named frame must be present and readable.
+* the slideshow frames must prove page identity through the real deck order
+  [fixture slide 1, inserted blank, fixture slide 2]: slide 1 needs the blue
+  title AND orange bar, the intermediate must be marker-free, slide 2 needs
+  the green oval, every presented frame needs the slideshow letterbox, the
+  exit frame must NOT have it, and distinct pages must not be the same frame;
+* every named frame must be present and readable from real attachments.
 
 It is a presence/blankness gate, not a reference pixel diff.
 """
@@ -27,12 +33,26 @@ from pathlib import Path
 
 from PIL import Image
 
-# Named frames in lifecycle order.
-EXPECTED_FRAMES = ('01-preview', '02-edit', '03-idle-120s', '04-reopen',
+# Named frames in lifecycle order. The slideshow frames are explicit content
+# identity checks for the real presented deck; `11-slideshow-blank-page` is
+# the inserted blank page observed between fixture slide 1 and fixture
+# slide 2, and is asserted marker-FREE (it must never be counted as content).
+EXPECTED_FRAMES = ('01-preview', '02-edit', '10-slideshow-page1',
+                   '11-slideshow-blank-page', '12-slideshow-page2',
+                   '13-slideshow-exit', '03-idle-120s', '04-reopen',
                    '05-persisted')
+# The inserted blank intermediate is allowed to have an empty document region
+# ONLY because it is explicitly asserted marker-free below; every other frame
+# must satisfy the drawn-content proof.
+BLANK_INTERMEDIATE_FRAMES = ('11-slideshow-blank-page',)
+# Frames that must additionally show the pinned fixture marker colors inside
+# the document region: the read-only preview. A slideshow whose virtual
+# device never painted cannot satisfy the slideshow marker rules below.
+MARKER_REQUIRED_FRAMES = ('01-preview',)
 MARKER_COLORS = {
     'blue-title': (29, 78, 216),
     'orange-bar': (234, 88, 12),
+    'green-oval': (16, 160, 64),
 }
 COLOR_TOLERANCE = 70
 MIN_MARKER_PIXELS = 40
@@ -43,6 +63,16 @@ MIN_NONWHITE_FRACTION = 0.0015  # 0.15% of the analysed document region
 MIN_LUMA_STDDEV = 8.0
 MIN_INK_FRACTION = 0.0010  # pixels separated from the background luma
 INK_DELTA = 35
+# The real slideshow letterboxes the slide (black bands above/below); the
+# editor canvas does not. `PRESENTATION_MIN_BLACK` proves a slideshow frame
+# really is fullscreen, `EXIT_MAX_BLACK` proves the exit frame no longer is,
+# so editor chrome mounted behind a still-active canvas cannot fake an exit.
+PRESENTATION_MIN_BLACK = 0.04
+EXIT_MAX_BLACK = 0.02
+# Cross-frame page identity: distinct pages must not be pixel-identical.
+MIN_CROSS_FRAME_DIFF = 0.01
+DIFF_PIXEL_DELTA = 90
+BLACK_MAX_CHANNEL = 16
 
 # Document/central crop (left, top, right, bottom). The Floe header and the
 # native notebookbar reach ~22% from the top and sidebars/slide rails occupy
@@ -74,8 +104,42 @@ def document_crop(image):
                        int(width * right), int(height * bottom)))
 
 
+def full_frame_band_fractions(image, divisor=8):
+    """Black/white shares of the WHOLE frame (downsampled).
+
+    The slideshow letterbox lives outside the document crop, so the
+    presentation/exited state is judged here instead of in the crop.
+    """
+    small = image.convert('RGB').resize(
+        (max(1, image.width // divisor), max(1, image.height // divisor)))
+    pixels = list(small.getdata())
+    count = len(pixels)
+    black = sum(1 for r, g, b in pixels
+                if r <= BLACK_MAX_CHANNEL and g <= BLACK_MAX_CHANNEL
+                and b <= BLACK_MAX_CHANNEL)
+    white = sum(1 for r, g, b in pixels if r >= 245 and g >= 245 and b >= 245)
+    return round(black / count, 5), round(white / count, 5)
+
+
+def frame_diff_ratio(first_path, second_path, divisor=8):
+    """Fraction of downsampled pixels that differ strongly between frames."""
+    with Image.open(first_path) as first_image:
+        first = first_image.convert('RGB').resize(
+            (max(1, first_image.width // divisor),
+             max(1, first_image.height // divisor)))
+    with Image.open(second_path) as second_image:
+        second = second_image.convert('RGB').resize(first.size)
+    first_pixels = list(first.getdata())
+    second_pixels = list(second.getdata())
+    count = len(first_pixels)
+    changed = sum(
+        1 for a, b in zip(first_pixels, second_pixels)
+        if color_distance(a, b) > DIFF_PIXEL_DELTA)
+    return round(changed / count, 5)
+
+
 def analyse_frame(path):
-    """Analyse ONLY the document region of one frame.
+    """Analyse the document region plus the full-frame letterbox bands.
 
     A frame passes the blankness check only when its document region has
     non-white pixels, real luma VARIATION (a flat background of any shade
@@ -99,6 +163,7 @@ def analyse_frame(path):
     for name, target in MARKER_COLORS.items():
         markers[name] = sum(1 for pixel in pixels
                             if color_distance(pixel, target) <= COLOR_TOLERANCE)
+    black_fraction, white_fraction = full_frame_band_fractions(image)
     return {
         'documentSize': list(document.size),
         'documentNonwhitePixels': nonwhite,
@@ -107,6 +172,8 @@ def analyse_frame(path):
         'backgroundLuma': round(background, 2),
         'documentInkFraction': round(ink_fraction, 5),
         'documentMarkerPixels': markers,
+        'fullBlackFraction': black_fraction,
+        'fullWhiteFraction': white_fraction,
     }
 
 
@@ -141,10 +208,99 @@ def content_proof_failures(token, facts):
     return failures
 
 
+def slideshow_identity_failures(by_token):
+    """Explicit page/exit identity rules for the presented deck.
+
+    The deck order after the real Insert Page action is
+    [fixture slide 1, inserted blank, fixture slide 2]:
+    * page 1 must present the blue title AND orange bar inside the document
+      region and must NOT show the green oval (wrong page / chrome rejected);
+    * the intermediate page must be marker-free and differ from both content
+      pages (a marker-bearing blank or the same frame as page 1 fails);
+    * page 2 must present the green oval (still without the orange bar) and
+      must differ from page 1 (a repeat/wrong page fails);
+    * the exit frame must NOT carry the slideshow letterbox and must differ
+      from the last presented page (chrome mounted behind a still-active
+      canvas cannot fake the exit).
+    """
+    failures = []
+    page1 = by_token.get('10-slideshow-page1')
+    blank = by_token.get('11-slideshow-blank-page')
+    page2 = by_token.get('12-slideshow-page2')
+    exit_frame = by_token.get('13-slideshow-exit')
+
+    def marker(facts, name):
+        return (facts.get('documentMarkerPixels') or {}).get(name, 0)
+
+    def require_presenting(token, facts):
+        if facts['fullBlackFraction'] < PRESENTATION_MIN_BLACK:
+            failures.append(
+                f'{token}: slideshow letterbox missing '
+                f"({facts['fullBlackFraction']} < {PRESENTATION_MIN_BLACK}); "
+                'editor chrome is not a presented page')
+
+    if page1 is not None:
+        require_presenting('10-slideshow-page1', page1)
+        if marker(page1, 'blue-title') < MIN_MARKER_PIXELS \
+                or marker(page1, 'orange-bar') < MIN_MARKER_PIXELS:
+            failures.append(
+                '10-slideshow-page1: fixture slide 1 markers incomplete in the '
+                f"document region ({page1['documentMarkerPixels']})")
+        if marker(page1, 'green-oval') >= MIN_MARKER_PIXELS:
+            failures.append(
+                '10-slideshow-page1: green fixture marker shown on slide 1 '
+                '(wrong page)')
+    if blank is not None:
+        require_presenting('11-slideshow-blank-page', blank)
+        if any(marker(blank, name) >= MIN_MARKER_PIXELS
+               for name in MARKER_COLORS):
+            failures.append(
+                '11-slideshow-blank-page: inserted blank page carries fixture '
+                f"markers ({blank['documentMarkerPixels']})")
+    if page2 is not None:
+        require_presenting('12-slideshow-page2', page2)
+        if marker(page2, 'green-oval') < MIN_MARKER_PIXELS:
+            failures.append(
+                '12-slideshow-page2: fixture slide 2 green oval absent from the '
+                f"document region ({page2['documentMarkerPixels']})")
+        if marker(page2, 'orange-bar') >= MIN_MARKER_PIXELS:
+            failures.append(
+                '12-slideshow-page2: slide 1 orange bar still shown on page 2 '
+                '(wrong page)')
+    if exit_frame is not None:
+        if exit_frame['fullBlackFraction'] >= EXIT_MAX_BLACK:
+            failures.append(
+                '13-slideshow-exit: slideshow letterbox still present '
+                f"({exit_frame['fullBlackFraction']} >= {EXIT_MAX_BLACK}); "
+                'the presentation did not exit')
+
+    def cross_frame(token, first_token, second_token):
+        first = by_token.get(first_token)
+        second = by_token.get(second_token)
+        if first is None or second is None:
+            return
+        ratio = frame_diff_ratio(first['path'], second['path'])
+        if ratio < MIN_CROSS_FRAME_DIFF:
+            failures.append(
+                f'{token}: {first_token} and {second_token} are the same frame '
+                f'(diff {ratio} < {MIN_CROSS_FRAME_DIFF})')
+
+    cross_frame('10-slideshow-page1 vs 12-slideshow-page2',
+                '10-slideshow-page1', '12-slideshow-page2')
+    cross_frame('11-slideshow-blank-page vs 10-slideshow-page1',
+                '11-slideshow-blank-page', '10-slideshow-page1')
+    cross_frame('11-slideshow-blank-page vs 12-slideshow-page2',
+                '11-slideshow-blank-page', '12-slideshow-page2')
+    cross_frame('13-slideshow-exit vs 12-slideshow-page2',
+                '13-slideshow-exit', '12-slideshow-page2')
+    return failures
+
+
 def check_floe_render(curated_dir):
     curated_dir = Path(curated_dir)
     frames = []
     failures = []
+    by_token = {}
     for token in EXPECTED_FRAMES:
         path = find_frame(curated_dir, token)
         if path is None:
@@ -159,9 +315,10 @@ def check_floe_render(curated_dir):
                            'error': str(error)})
             continue
         entry = {'frame': token, 'path': str(path), 'found': True, **facts}
-        content_failures = content_proof_failures(token, facts)
-        failures.extend(content_failures)
-        if token == '01-preview':
+        if token not in BLANK_INTERMEDIATE_FRAMES:
+            content_failures = content_proof_failures(token, facts)
+            failures.extend(content_failures)
+        if token in MARKER_REQUIRED_FRAMES:
             hit = {name: count for name, count in facts['documentMarkerPixels'].items()
                    if count >= MIN_MARKER_PIXELS}
             entry['documentMarkersDetected'] = sorted(hit)
@@ -170,6 +327,8 @@ def check_floe_render(curated_dir):
                     f"{token}: fixture marker colors absent from the document region "
                     f"({facts['documentMarkerPixels']})")
         frames.append(entry)
+        by_token[token] = entry
+    failures.extend(slideshow_identity_failures(by_token))
     return {
         'curatedDir': str(curated_dir),
         'documentRegion': list(DOCUMENT_REGION),

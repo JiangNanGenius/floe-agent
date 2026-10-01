@@ -52,23 +52,34 @@ FIXTURE_NOTE_TITLE = Path(FIXTURE_BASENAME).stem
 SCENARIO_PHASES = (
     'import',
     'preview-open',
-    'preview-close',
-    'reopen-before-edit',
     'enter-edit',
     'insert-slide',
+    'slideshow-start',
+    'slideshow-page1',
+    'slideshow-blank-page',
+    'slideshow-page2',
+    'slideshow-exit',
     'idle-120s',
     'save',
     'leave-edit',
     'close',
     'reopen',
     'edit-again',
+    'insert-slide-again',
     'save-again',
     'close-after-reopen',
+    'reopen-2',
+    'verify-persisted',
+    'save-final',
+    'close-final',
 )
 SCENARIO_NATIVE_SEQUENCE = (
-    'import PPTX through the real Notes importer -> open preview -> close '
-    '(rapid) -> reopen -> enter edit -> insert slide -> idle 120 s -> save '
-    '-> leave edit -> close -> reopen -> edit again -> save -> close'
+    'import PPTX through the real Notes importer -> open preview -> '
+    'enter edit -> insert slide -> present (fixture slide 1 markers, the '
+    'inserted blank page, fixture slide 2 green oval, touch quit back to the '
+    'same session) -> idle 120 s -> save '
+    '-> leave edit -> close -> reopen -> edit again -> insert slide -> save -> close '
+    '-> second remembered reopen and persisted verification -> save -> close'
 )
 
 # Scenario timings (seconds).

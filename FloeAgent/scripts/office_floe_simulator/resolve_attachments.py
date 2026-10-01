@@ -47,7 +47,9 @@ import sys
 RECEIPT_ATTACHMENT_NAME = 'office-real-engine-receipt'
 RECEIPT_FILENAME = 'office-real-engine-receipt.json'
 # Named simulator frames the scenario attaches, in lifecycle order.
-FRAME_TOKENS = ('01-preview', '02-edit', '03-idle-120s', '04-reopen',
+FRAME_TOKENS = ('01-preview', '02-edit', '10-slideshow-page1',
+                '11-slideshow-blank-page', '12-slideshow-page2',
+                '13-slideshow-exit', '03-idle-120s', '04-reopen',
                 '05-persisted')
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.data')
 

@@ -16,7 +16,12 @@ import UIKit
 /// offer.
 ///
 /// Sequence: import -> preview -> real host Edit (the preview native closes
-/// and a NEW editable generation mounts) -> insert slide (2 -> 3) -> idle
+/// and a NEW editable generation mounts) -> insert slide (2 -> 3) -> real
+/// presentation of the resulting [fixture slide 1, inserted blank, fixture
+/// slide 2] deck (document-region markers for each page, slideshow letterbox
+/// required at every step, touch quit proven by the letterbox gone, the
+/// editable surface ready and the real thumbnail rail interactive on the
+/// SAME document identity) -> idle
 /// 120 s -> save/close -> remembered reopen #1 (auto editable generation) ->
 /// insert slide (3 -> 4) -> save/close -> remembered reopen #2 (its OWN
 /// editable generation paints) -> verify the persisted 4-slide document ->
@@ -40,6 +45,11 @@ final class OfficeRealEngineUITests: XCTestCase {
         "preview-open",
         "enter-edit",
         "insert-slide",
+        "slideshow-start",
+        "slideshow-page1",
+        "slideshow-blank-page",
+        "slideshow-page2",
+        "slideshow-exit",
         "idle-120s",
         "save",
         "leave-edit",
@@ -104,6 +114,142 @@ final class OfficeRealEngineUITests: XCTestCase {
             throw NSError(domain: "OfficeRealEngineUITests", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: message])
         }
+    }
+
+    // MARK: - Slideshow pixel evidence (real presentation frames)
+
+    /// Facts about one simulator frame, measured in the same document region
+    /// the cloud pixel gate analyses. Presentation frames are identified by
+    /// the slideshow letterbox (black fraction) so editor chrome behind a
+    /// still-active canvas can never satisfy "presentation exited", and page
+    /// identity comes from the pinned fixture markers INSIDE the document
+    /// region: blue title + orange bar (fixture slide 1), the green oval
+    /// (fixture slide 2). Chrome/UI accent pixels outside the region are
+    /// deliberately ignored.
+    struct SlideshowFrameFacts {
+        var cropBlue = 0
+        var cropOrange = 0
+        var cropGreen = 0
+        var colored = 0
+        var total = 0
+        var blackFraction = 0.0
+        var whiteFraction = 0.0
+        var rgba: [UInt8] = []
+
+        var cropMarkerCount: Int { cropBlue + cropOrange + cropGreen }
+        var isPresenting: Bool { blackFraction > 0.04 && whiteFraction > 0.5 }
+        var isFixtureSlideOne: Bool { cropBlue > 50 && cropOrange > 100 && cropGreen < 2000 }
+        var isFixtureSlideTwo: Bool { cropGreen > 2000 && cropOrange < 50 }
+        var isInsertedBlank: Bool { cropMarkerCount < 20 }
+    }
+
+    func slideshowFrameFacts(_ image: UIImage, divisor: Int = 4) -> SlideshowFrameFacts {
+        var facts = SlideshowFrameFacts()
+        guard let cg = image.cgImage else { return facts }
+        let width = max(1, cg.width / divisor), height = max(1, cg.height / divisor)
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(data: &bytes, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return facts
+        }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let x0 = Int(Double(width) * 0.20), x1 = Int(Double(width) * 0.80)
+        let y0 = Int(Double(height) * 0.22), y1 = Int(Double(height) * 0.90)
+        var black = 0, white = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = (y * width + x) * 4
+                let r = Int(bytes[index]), g = Int(bytes[index + 1]), b = Int(bytes[index + 2])
+                if r <= 16 && g <= 16 && b <= 16 { black += 1 }
+                if r >= 245 && g >= 245 && b >= 245 { white += 1 }
+                if max(r, g, b) - min(r, g, b) > 40 { facts.colored += 1 }
+                if x >= x0 && x < x1 && y >= y0 && y < y1 {
+                    if abs(r - 234) + abs(g - 88) + abs(b - 12) <= 36 { facts.cropOrange += 1 }
+                    if abs(r - 29) + abs(g - 78) + abs(b - 216) <= 36 { facts.cropBlue += 1 }
+                    if abs(r - 16) + abs(g - 160) + abs(b - 64) <= 36 { facts.cropGreen += 1 }
+                }
+            }
+        }
+        facts.total = width * height
+        facts.blackFraction = Double(black) / Double(max(1, facts.total))
+        facts.whiteFraction = Double(white) / Double(max(1, facts.total))
+        facts.rgba = bytes
+        return facts
+    }
+
+    func slideshowDiffRatio(_ first: [UInt8], _ second: [UInt8]) -> Double {
+        guard !first.isEmpty, first.count == second.count else { return 0 }
+        var changed = 0, total = 0
+        var index = 0
+        while index < first.count {
+            let delta = abs(Int(first[index]) - Int(second[index]))
+                + abs(Int(first[index + 1]) - Int(second[index + 1]))
+                + abs(Int(first[index + 2]) - Int(second[index + 2]))
+            if delta > 90 { changed += 1 }
+            total += 1
+            index += 4
+        }
+        return total > 0 ? Double(changed) / Double(total) : 0
+    }
+
+    /// Advance exactly one slideshow page through the real canvas tap. The
+    /// first tap can be consumed as a pointer move that only reveals the
+    /// slideshow controls, so an unchanged frame is retried (bounded); the
+    /// first observed change returns immediately, therefore a verified step
+    /// never skips a page. `nil` means no verified single-page advance.
+    func advanceOneSlideshowPage(_ app: XCUIApplication,
+                                 from previous: SlideshowFrameFacts) -> SlideshowFrameFacts? {
+        let deadline = Date().addingTimeInterval(24)
+        var taps = 0
+        while Date() < deadline {
+            if taps < 3 {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.45)).tap()
+                taps += 1
+            }
+            Thread.sleep(forTimeInterval: 2.0)
+            let facts = slideshowFrameFacts(XCUIScreen.main.screenshot().image)
+            if slideshowDiffRatio(previous.rgba, facts.rgba) > 0.01 && facts.isPresenting {
+                return facts
+            }
+        }
+        return nil
+    }
+
+    /// Poll the real editor frame until the fixture slide 1 markers are
+    /// inside the document region. The canvas can repaint white for a moment
+    /// right after an insertion; a captioned frame must show the document,
+    /// not that transient blank state. Fails closed when the markers never
+    /// appear.
+    func waitForFixtureSlideMarkers(_ app: XCUIApplication, timeout: TimeInterval,
+                                    phase: String) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try require(app.state == .runningForeground, phase,
+                        "Floe left the foreground waiting for the fixture slide")
+            let facts = slideshowFrameFacts(XCUIScreen.main.screenshot().image)
+            if facts.cropBlue > 50 && facts.cropOrange > 100 { return }
+            Thread.sleep(forTimeInterval: 1.0)
+        }
+        try require(false, phase,
+                    "fixture slide markers did not appear in the editor document region")
+    }
+
+    /// Stable per-document tab identity from the Notes tab chrome. The uuid
+    /// suffix is shared by `notes.tab.<uuid>` and `notes.tab.close.<uuid>`;
+    /// the presentation must return to the SAME document identity.
+    func documentTabIDs(_ app: XCUIApplication) -> Set<String> {
+        let prefix = "notes.tab."
+        return Set(app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix))
+            .allElementsBoundByIndex
+            .compactMap { element -> String? in
+                let identifier = element.identifier
+                guard identifier.hasPrefix(prefix) else { return nil }
+                return String(identifier.dropFirst(prefix.count))
+                    .components(separatedBy: ".").last
+            })
     }
 
     // MARK: - Element helpers
@@ -398,6 +544,11 @@ final class OfficeRealEngineUITests: XCTestCase {
             // 1) First entry MUST be the read-only preview (real entry policy).
             _ = try openFixture(app, expectPreview: true, phase: "preview-open")
             mark("preview-open", true)
+            // Make the preview frame deterministic: select the fixture's
+            // FIRST slide through the real thumbnail rail (the generation
+            // can mount mid-carousel), so the marker pixels really live in
+            // the analysed document region.
+            try showFixtureSlide(app, phase: "preview-open")
             shot("01-preview")
 
             // 2) Real host Edit action: the preview native closes and a NEW
@@ -408,7 +559,126 @@ final class OfficeRealEngineUITests: XCTestCase {
             // 3) Real content change: insert a slide (2 -> 3).
             try insertSlide(app, expected: 3, phase: "insert-slide")
             mark("insert-slide", true)
+            try waitForFixtureSlideMarkers(app, timeout: 20, phase: "insert-slide")
             shot("02-edit")
+
+            // 3b) Real presentation: the App's 放映 action drives the
+            //     genuine slideshow. The real insert order is
+            //     [fixture slide 1, inserted blank slide, fixture slide 2]
+            //     (Insert Page adds after the current page), so the
+            //     presentation must be observed deterministically as:
+            //       page 1  = fixture slide 1 (blue title + orange bar)
+            //       page 2  = the inserted blank slide (negative control,
+            //                 never accepted as content)
+            //       page 3  = fixture slide 2 (green oval)
+            //     Every step requires the slideshow letterbox (still
+            //     presenting) and markers INSIDE the document region, so app
+            //     chrome, an editor frame behind the canvas, or tapping to an
+            //     arbitrary colored page can never satisfy the phase.
+            let presentationStart = anyElement(app, "office.presentation.start")
+            try require(presentationStart.waitForExistence(timeout: 20) && presentationStart.isEnabled
+                        && presentationStart.isHittable, "slideshow-start",
+                        "the real presentation control is not actionable")
+            let tabsBeforePresentation = documentTabIDs(app)
+            try require(!tabsBeforePresentation.isEmpty, "slideshow-start",
+                        "the document tab identity is missing before presenting")
+            presentationStart.tap()
+            mark("slideshow-start", true)
+            Thread.sleep(forTimeInterval: 5)
+
+            let pageOneFacts = slideshowFrameFacts(XCUIScreen.main.screenshot().image)
+            shot("10-slideshow-page1")
+            try require(app.state == .runningForeground, "slideshow-page1",
+                        "Floe left the foreground while presenting")
+            try require(pageOneFacts.isPresenting && pageOneFacts.isFixtureSlideOne,
+                        "slideshow-page1",
+                        "presented fixture slide 1 is missing in its document region: "
+                            + "black=\(pageOneFacts.blackFraction) blue=\(pageOneFacts.cropBlue) "
+                            + "orange=\(pageOneFacts.cropOrange) green=\(pageOneFacts.cropGreen)")
+            mark("slideshow-page1", true,
+                 "blue=\(pageOneFacts.cropBlue) orange=\(pageOneFacts.cropOrange) "
+                    + "black=\(pageOneFacts.blackFraction)")
+
+            guard let blankFacts = advanceOneSlideshowPage(app, from: pageOneFacts) else {
+                throw NSError(domain: "OfficeRealEngineUITests", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                            "no verified single-page advance from fixture slide 1"])
+            }
+            shot("11-slideshow-blank-page")
+            try require(app.state == .runningForeground, "slideshow-blank-page",
+                        "Floe left the foreground while presenting")
+            try require(blankFacts.isPresenting && blankFacts.isInsertedBlank,
+                        "slideshow-blank-page",
+                        "page 2 is not the expected inserted blank page (wrong page or chrome): "
+                            + "black=\(blankFacts.blackFraction) blue=\(blankFacts.cropBlue) "
+                            + "orange=\(blankFacts.cropOrange) green=\(blankFacts.cropGreen)")
+            mark("slideshow-blank-page", true,
+                 "inserted blank page observed as page 2 (no fixture markers)")
+
+            guard let pageTwoFacts = advanceOneSlideshowPage(app, from: blankFacts) else {
+                throw NSError(domain: "OfficeRealEngineUITests", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                            "no verified single-page advance from the blank page"])
+            }
+            shot("12-slideshow-page2")
+            try require(app.state == .runningForeground, "slideshow-page2",
+                        "Floe left the foreground while presenting")
+            try require(pageTwoFacts.isPresenting && pageTwoFacts.isFixtureSlideTwo,
+                        "slideshow-page2",
+                        "presented fixture slide 2 green oval missing in its document region: "
+                            + "black=\(pageTwoFacts.blackFraction) blue=\(pageTwoFacts.cropBlue) "
+                            + "orange=\(pageTwoFacts.cropOrange) green=\(pageTwoFacts.cropGreen)")
+            try require(slideshowDiffRatio(pageOneFacts.rgba, pageTwoFacts.rgba) > 0.01,
+                        "slideshow-page2",
+                        "fixture slide 2 frame is identical to slide 1 (wrong page)")
+            mark("slideshow-page2", true,
+                 "green=\(pageTwoFacts.cropGreen) black=\(pageTwoFacts.blackFraction)")
+
+            // Touch quit path of the real slideshow: a vertical swipe ends
+            // the presentation (Escape is unavailable to XCUITest on iOS).
+            // Exit is proven by the letterbox being GONE (the editor chrome
+            // mounted behind a still-active canvas cannot satisfy this), the
+            // editable surface ready, and the real edit thumbnail rail being
+            // interactive (tap + selected) on the SAME document identity.
+            let editorSurface = anyElement(app, "office.editor.native")
+            let editorBack = anyElement(app, "office.editor.back")
+            var presentationExited = false
+            let exitAttempts: [(CGFloat, CGFloat)] = [(0.25, 0.92), (0.92, 0.25)]
+            let exitDeadline = Date().addingTimeInterval(45)
+            var exitAttempt = 0
+            var exitFacts = blankFacts
+            while Date() < exitDeadline && !presentationExited {
+                if exitAttempt < exitAttempts.count {
+                    let from = app.coordinate(withNormalizedOffset:
+                                                CGVector(dx: 0.5, dy: exitAttempts[exitAttempt].0))
+                    let to = app.coordinate(withNormalizedOffset:
+                                              CGVector(dx: 0.5, dy: exitAttempts[exitAttempt].1))
+                    from.press(forDuration: 0.05, thenDragTo: to)
+                    exitAttempt += 1
+                }
+                Thread.sleep(forTimeInterval: 2.5)
+                exitFacts = slideshowFrameFacts(XCUIScreen.main.screenshot().image)
+                if app.state == .runningForeground && !exitFacts.isPresenting
+                    && exitFacts.blackFraction < 0.02
+                    && editorSurface.exists && documentIsReady(editorSurface)
+                    && editorBack.exists && editorBack.isEnabled {
+                    presentationExited = true
+                }
+            }
+            try require(presentationExited, "slideshow-exit",
+                        "presentation letterbox/overlay did not exit (black=\(exitFacts.blackFraction))")
+            // Real edit rail interaction: the fixture slide 1 thumbnail must
+            // be visible, hittable and become SELECTED through the app's own
+            // thumbnail control after the presentation exits.
+            try showFixtureSlide(app, phase: "slideshow-exit")
+            let tabsAfterPresentation = documentTabIDs(app)
+            try require(!tabsAfterPresentation.isEmpty
+                        && tabsAfterPresentation == tabsBeforePresentation,
+                        "slideshow-exit",
+                        "document identity changed across the presentation: "
+                            + "\(tabsBeforePresentation) -> \(tabsAfterPresentation)")
+            shot("13-slideshow-exit")
+            mark("slideshow-exit", true, "same document, editable rail selected")
 
             // 4) Idle 120 s with the editable canvas still alive.
             mark("idle-120s", true, "idle start")
@@ -432,6 +702,9 @@ final class OfficeRealEngineUITests: XCTestCase {
             mark("edit-again", true)
             try insertSlide(app, expected: 4, phase: "insert-slide-again")
             mark("insert-slide-again", true)
+            // The canvas repaints white for a moment after the insertion;
+            // capture only after the real fixture content is back.
+            try waitForFixtureSlideMarkers(app, timeout: 20, phase: "insert-slide-again")
             shot("04-reopen")
             try saveAndClose(app, savePhase: "save-again", closePhase: "close-after-reopen")
 
