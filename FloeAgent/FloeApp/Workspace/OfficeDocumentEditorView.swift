@@ -1161,6 +1161,17 @@ final class OfficeFileSession: ObservableObject {
             hostReadOnly = true
         } else if hostReadOnly == false {
             // Backing permission editable and the engine's edit UI is live.
+            // The host may already have completed its guarded mobile entry
+            // before this probe. Record that observed entry just as we record
+            // an explicit enterEditMode result above; do not call it again.
+            // An unknown UI mode (allowed for non-presentation documents)
+            // must not produce a verified entry breadcrumb.
+            if probe.isEditMode == true {
+                recordStage("edit.entry", ["readOnly": "false",
+                                           "pendingPassword": "false",
+                                           "uiEdit": "true",
+                                           "branch": "already-editable-probe"])
+            }
             engineSessionReadOnly = false
             readOnly = false
             editUnavailableReason = nil

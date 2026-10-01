@@ -533,3 +533,54 @@ xcresult 无障碍树包含“页面预览 1、2、3”，第二页已选中；�
 渲染失败。真实插入、静置 120 秒、保存关闭、两次重开、原生代际、回执
 及四页落盘门槛均保留。Swift 语法检查与 85 项流水线逻辑测试通过；修正版
 完整 App 场景及用户真机验收仍待验证。
+
+## Edit, idle and saved reopens observed; trace qualification still failed, 2026-10-01
+
+[Full-App run 36821043378](https://github.com/JiangNanGenius/floe-agent/actions/runs/36821043378)
+compiled and passed the actual Notes PPT interaction test. Its complete retained
+xcresult contains all 17 successful scenario phases, including 120.27 seconds
+of idle, saving and two reopens. All five document-region frame checks and the
+four-slide persisted-resource check passed. The primary independently exported
+the xcresult attachments again, resolved the GUID manifest without a runner
+fallback, and matched the receipt and all five frames byte-for-byte to the cloud
+copies. The final frame displays the original content and four thumbnails.
+
+The run remains **failed** at the durable trace gate. All three editable
+generation-2 windows contain editable confirmation, their own real paint,
+save, commit and close, with Notes revisions continuing 1 → 2 → 3 → 4. None
+contains `edit.entry`: the actual App permission branch returns when the host
+has already entered edit mode, without recording that observed entry. The
+unchanged verifier therefore refuses the preview-to-edit chain.
+
+The App now records that entry only when backing permission is editable and
+the probe explicitly reports an active edit UI, labelled
+`branch=already-editable-probe`. It does not invoke editing again, change
+permissions or emit the breadcrumb for an unknown UI mode. Object compilation
+and execution of the exact extracted production branch reproduce the missing
+event before the change and verify the corrected true/false/unknown cases.
+Swift syntax and 85 pipeline tests pass. The trace verifier and all rendering,
+generation, lifecycle, revision and persistence gates remain unchanged; the
+original failure is retained. A fresh full-App run must validate the new
+producer. This is cloud-simulator evidence, not Build240 delivery or physical
+iPad crash acceptance.
+
+## 已完成编辑、静置和保存重开，日志资格仍失败，2026-10-01
+
+完整 App 运行 36821043378 已编译并通过真实手记 PPT 交互测试。完整留存
+xcresult 包含全部 17 个成功阶段，包括静置 120.27 秒、保存和两次重开；
+五张文档区域截图及四页文件落盘检查均通过。主线程再次导出原始附件，按
+GUID 清单解析回执和截图，未使用 runner 回退；全部内容与云端副本逐字节
+一致。最终截图可见原有内容和四页缩略图。
+
+原运行仍因持久日志门槛而失败。三次第二代编辑实例都记录可编辑确认、
+自身实际绘制、保存、提交和关闭，手记版本链连续为 1 → 2 → 3 → 4；
+但均缺少 edit.entry。实际 App 在宿主已进入编辑模式时直接接受探针结果，
+漏记了这个已观察到的进入状态，因此未修改的校验器拒绝预览到编辑链路。
+
+现只在底层权限可编辑且探针明确确认编辑界面已启用时补记该状态，标明
+already-editable-probe 分支；不会再次触发编辑、修改权限，也不会为未知
+界面状态记录已验证进入。提取原版和修正版生产分支进行对象编译及执行，
+复现原版漏记，并验证修正版的真、假、未知三种探针结果；Swift 语法和
+85 项流水线测试通过。日志校验器及渲染、代际、生命周期、版本连续性和
+落盘门槛均未改变，原始失败保留，新的完整 App 运行仍须验证补记结果。
+本节是云模拟器证据，不代表 Build240 已交付或用户真机闪退验收通过。
