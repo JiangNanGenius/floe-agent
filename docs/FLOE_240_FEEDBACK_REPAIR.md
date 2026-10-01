@@ -431,3 +431,31 @@ JSON fragment 写入选项。新增编译生产函数的回归验证转义、中
 通过。交互测试等待真实可操作编辑状态，并识别 App 离开前台；云日志包含 App
 进程信息。修正版完整 App 场景及新的设备宿主 pin 仍待核验；模拟器匹配异常不能
 替代真机崩溃栈或 Build240 交付验收。
+
+## Rebuilt device host retained and pinned, 2026-10-01
+
+Device-host run 36807680175 built the edit-entry JSON fix from source
+`f5656f18456f96207e8e12ed4a9d61e57af522e3`. The primary retained the complete
+126,572,466-byte inner archive (SHA-256
+`f76a9975886f135dce977938680c0c395432d5eaf46e6d925e58c61fcb5268fa`)
+and independently verified all 4,785 files, including 4,780 runtime resources,
+source hashes and lifecycle-overlay provenance. Actual binary load commands
+confirm arm64 iOS, minimum OS 26.0 and SDK 27.0. The device-host pin now records
+this artifact. All runtime capability claims remain false.
+
+The previous corrected simulator run 36807569442 stopped before App compilation:
+bootstrap correctly rejected the old device pin against the changed host source.
+Its original failure remains retained. The next full-App scenario uses the new
+pin and the same verified simulator engine; no heavy engine rebuild is required.
+PPT editing, idle, saving, reopening and physical-device acceptance remain pending.
+
+## 新设备宿主完整留存并固定，2026-10-01
+
+设备宿主运行 36807680175 已从 f5656f18 源码构建进入编辑的 JSON 异常修正。
+主线程完整保留 126,572,466 字节内层 ZIP，核验全部 4,785 文件、其中 4,780
+运行资源的摘要，以及源码和生命周期补丁来源。实际二进制为 arm64 iOS，
+最低系统 26.0、SDK 27.0；组件锁定版本已更新，运行能力声明仍全部为未通过。
+
+前一修正版模拟器运行 36807569442 在 App 编译前被旧设备 pin 的源码校验
+正确阻止，原始失败保留。下一完整 App 场景使用新 pin 和已核验的同一模拟器
+引擎，不重编核心。PPT 编辑、静置、保存、重开及真机验收仍待实际验证。
