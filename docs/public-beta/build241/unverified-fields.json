@@ -1,0 +1,66 @@
+{
+  "generatedFor": "Build241 external TestFlight preparation (candidate only)",
+  "asOf": "2026-10-02",
+  "status": "prepared_not_submitted",
+  "nothingDispatchedOrSubmitted": true,
+  "verifiedFacts": {
+    "bundleIdentifier": "org.floeagent.ios",
+    "marketingVersion": "1.7.0",
+    "currentInternalDelivery": {
+      "build": "240",
+      "tag": "v1.7.0-beta.99",
+      "tagCommit": "9bd9a23706698d71cc7f80f59084770f0227b382",
+      "unsignedIpaSha256": "d2dcea33a6a3ae4e81a09c102eddd07c379c0e2ad48e8eb008356cc9b9b1bd64",
+      "toolchain": "Xcode 26.6 (17F113), SDK iphoneos26.5",
+      "source": "docs/TESTFLIGHT_1.7.0_BETA.md"
+    },
+    "appleReadOnlyDiscover": {
+      "githubActionsRun": 36903484959,
+      "result": "SUCCESS",
+      "highestBuild": "240",
+      "audience": "APP_STORE_ELIGIBLE",
+      "note": "read-only; no write was performed by this task"
+    },
+    "editorAcceptance": {
+      "cloudSimulatorRun": 36843561563,
+      "result": "PASS",
+      "scope": "Office editor import/preview/edit/idle/save/reopen; this is not slideshow presentation evidence"
+    },
+    "userReported": "Build240 basically stable; user-confirmed, not a substitute for new qualification of Build241"
+  },
+  "candidate": {
+    "build": "241",
+    "marketingVersion": "1.7.0",
+    "tag": "v1.7.0",
+    "status": "planned_candidate_only_not_an_actual_apple_build_or_tag",
+    "tagState": "absent in local and remote tags as of 2026-10-02",
+    "sourceCommit": null
+  },
+  "unverifiedFields": [
+    {"field": "target.sourceCommit", "value": null, "reason": "freeze SHA pending main thread; do not fabricate"},
+    {"field": "apple.buildId", "value": null, "reason": "Build241 has not been uploaded; ascending discover shows highest build 240"},
+    {"field": "apple.processingState", "value": null, "reason": "no Build241 upload/processing record exists"},
+    {"field": "apple.buildAudienceType", "value": null, "reason": "must be APP_STORE_ELIGIBLE at inspect time; not yet determinable"},
+    {"field": "apple.betaReviewState", "value": null, "reason": "no external review submission exists for Build241"},
+    {"field": "externalGroup.id", "value": null, "reason": "publictest1 is only a historical route/lookup clue; existence, external uniqueness and id must be confirmed live by read-only inspect before any use"},
+    {"field": "externalGroup.publicLinkEnabled", "value": null, "reason": "read only; changing the public link is separately opted in and currently not requested"},
+    {"field": "supportURL", "value": null, "reason": "read from existing trusted App Store Connect settings; not present in the current draft metadata"},
+    {"field": "privacyPolicyURL", "value": null, "reason": "read from existing trusted App Store Connect settings; not present in the current draft metadata"},
+    {"field": "feedbackEmail", "value": null, "reason": "read from existing trusted App Store Connect settings; do not invent"},
+    {"field": "reviewContact", "value": null, "reason": "read-only; the helper reports only missing field names and never prints contact values"},
+    {"field": "artifact.sha256", "value": null, "reason": "no Build241 signed/unsigned IPA or retained artifact exists yet"},
+    {"field": "qualification.slideshow", "value": null, "reason": "a local single-object patch verification exists; production iOS/iOS-Simulator producer/consumer integration is still in preparation and not released; the old pin must not be cited and frozen-build presentation frames must be re-verified"},
+    {"field": "qualification.vmEfficiency", "value": null, "reason": "Linux VM efficiency measurement not complete; no performance claim is made"},
+    {"field": "qualification.localModelBeta", "value": null, "reason": "downloaded MLX local models are marked Beta/optional and not recommended as a daily default; not newly qualified for Build241"},
+    {"field": "reviewNotes.finalText", "value": null, "reason": "only clearly marked drafts exist (review-notes.en-US.md / review-notes.zh-Hans.md); submit requires a final non-draft notes file via review_notes_path, validated at 1..4000 characters with no draft markers or unreplaced placeholders"}
+  ],
+  "notes": [
+    "The helper's inspect operation prints only sanitized status, missing field names and public URLs.",
+    "No dispatch, upload, review submission, public-link change, tester notification or remote settings change was performed by this preparation task.",
+    "Rejected-recovery POST semantics, review-notes PATCH and public-link enablement are covered by fixtures only; none has been exercised against App Store Connect.",
+    "Review notes are a single prepared text file (review_notes_path / --review-notes). inspect and submit reject draft markers and unreplaced placeholders, and validate 1..4000 characters against Apple's documented limit. Explicit submit PATCHes only the notes attribute of the already existing betaAppReviewDetails/{id}, requires a byte-identical readback, and never creates a review detail or changes contact/demo fields; the previous note text is never echoed, only presence/match booleans.",
+    "Apple requires a description for every existing betaAppLocalization before beta review. inspect fails closed when an empty description is not covered by the prepared input; a covered empty description is reported as fixable and is PATCHed only by an explicit submit. inspect never creates a missing localization.",
+    "Build241 / normal v1.7.0 is a planned final-source candidate, not an existing App Store Connect build or tag; no tag, build or artifact may be described as existing until actually observed.",
+    "Pending Apple GUI login does not block this read-only/API-side preparation; it does block the real submission, which stays with the main thread."
+  ]
+}

@@ -1,5 +1,22 @@
 # 下一版公开 TestFlight Beta：材料准备
 
+## 本轮（Build241，2026-10-02）— 准备中，尚未送审
+
+当前候选：Build 241 / marketing 1.7.0 / 候选 tag `v1.7.0`。该候选只是规划中的最终源码，不是实际存在的 Apple 构建或 tag；2026-10-02 时 tag 在本地与远端都不存在，冻结 SHA 由主线程确认，不得编造，材料在冻结前不得写为已生效。Build241 尚未上传，Apple 只读 discover（GitHub Actions run 36903484959，SUCCESS）显示最高构建为 Build 240、`APP_STORE_ELIGIBLE`。Apple GUI 登录尚未完成，但不阻塞本只读/API 侧准备；真实提交仍由主线程决定。
+
+本轮新增独立于既有内部 Floe QA 流程的送审工具与材料：
+
+- [`FloeAgent/scripts/public_testflight.py`](../FloeAgent/scripts/public_testflight.py)：默认 `inspect` 只读，输出经过脱敏的状态、缺失字段名与公开 URL；显式 `submit` 在写任何数据前校验不可变 tag/commit、bundle、版本、构建号、`VALID`/未过期、`APP_STORE_ELIGIBLE` 以及唯一既存外部组；候选构建必须匹配预发布关系 `platform=IOS`，`demoAccountRequired` 未确认或为 true 而缺凭据时阻断，重复 locale 与分页环 fail-closed，启用的公开链接只回读真实 URL；所有列表完整分页，所有写入回读核验；已有 pending/approved 提交只报告不重复 POST，审核拒绝后需显式 `--allow-resubmit-rejected` 才做一次恢复提交。提供合法新 description 时可修复对应已存在 locale 的空描述，未覆盖 locale 或缺失 localization 仍阻断。审核联系人、隐私/支持 URL、feedback 邮箱只读，未知保留待补。
+- 审核说明闭环：`submit` 必须提供 `--review-notes` / workflow `review_notes_path` 最终文本文件；helper 校验 1..4000 字符（Apple 官方上限）并拒绝 draft 横幅、`placeholder`、`TBD`/`FROZEN`/`待核验` 等未替换占位。`inspect` 只输出与现有 `betaAppReviewDetail.notes` 的 presence/match/pending 布尔与字符数，从不回显旧说明或新说明正文；显式 `submit` 只 PATCH 既有 `betaAppReviewDetails/{id}` 的 `notes` 字段，要求同字节回读一致后才挂外部组并创建审核提交，绝不创建 review detail、不改联系人/demo 字段；说明已一致时不发 PATCH。仓库内中英文审核说明在冻结前保持明确 draft 标记，两种操作都会被工具拒绝，待主线程冻结事实后一次替换。
+- [`.github/workflows/public-testflight.yml`](../.github/workflows/public-testflight.yml)：仅 `workflow_dispatch`，复用现有 App Store Connect secrets 注入、短期 JWT 与 token masking；`submit` 需 `operation=submit`、`confirm=submit-external-review` 且 `review_notes_path` 非空。`review_notes_path` 默认空值，保证默认 `inspect` 有效且 `submit` 必须显式给出最终文件。公开链接开启与拒绝后重提是独立、默认关闭的显式选项。
+- [Build241 双语送审材料](public-beta/build241/README.md)：`whats-new.json`、`beta-description.json`、中英文审核说明草稿及[未核验字段清单](public-beta/build241/unverified-fields.json)。材料如实说明 BYOK、无云端额度、下载的 MLX 本地模型属于 Beta 且暂不推荐日常、Apple 系统模型为独立路径、核心手记/文档无需 AI 服务；放映修复与 VM 效率测量仍待完成，不宣称已通过新资格，也不在给 Apple 的正文中讨论内部工程细节。
+
+放映修复状态：主线程已审查真实 22 phase/9 帧严格 UI 测试门槛，现有修复属于**本地 single-object 补丁验证**；生产 iOS／iOS 模拟器 producer/consumer 集成仍由后续 job 准备，尚未发布，不得引用旧 pin 或宣称已发布。Linux VM 效率测量未完成。
+
+本轮未执行：dispatch workflow、上传、提交审核、开启公开链接、通知测试者或更改任何远程设置。以下历史章节保留自 Build191 时代，仅作历史记录；其中的截图、验收和运行号不代表 Build241。
+
+## 历史材料（截至 Build191，保留原文）
+
 状态：材料草稿，尚未提交外部 Beta 审核、开启公开链接或邀请外部测试者。内部交付线已推进到 1.7.0（build 219，已构建并上传；Apple 处理与 Floe QA 组可用状态由交付记录单独核实）；本文中 175/178/186/187/188 的验收与截图描述均为当时记录，不再代表当前构建。只有最终安装包验证完成后才能冻结送审材料。
 
 [15 页中英文审核演示 PDF](public-beta/floe-public-beta-review-guide.pdf)已同步 Build 188 云端验收状态，保留[Markdown 原稿](public-beta/review-walkthrough.md)及[可导入的双语测试附件](public-beta/sample-files/README.md)。新增带来源标注的 Build 186 完整 App iPad Word／Excel／PPT 封面截图；其整体 UI 验收失败与未执行冷启动段均明确记录。175 的真实 Agent 演示保持原版本标注，不能充当 188 验收。Root 已逐页检查全部 15 页，未观察到排版溢出或裁切；文本、页数、尺寸及哈希记录见[验证记录](public-beta/review-guide-validation.json)。本地模型 iPad 聊天稳定性仍需真机复核。iCloud 根目录副本仅核对本地哈希，不声明远端设备已同步。

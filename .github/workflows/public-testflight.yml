@@ -1,0 +1,204 @@
+name: Public TestFlight External Review
+
+# Fail-closed external/public TestFlight preparation and submission.
+#
+# `inspect` is read-only. `submit` additionally requires operation=submit and
+# confirm=submit-external-review; it never touches the private internal
+# Floe QA group managed by xcode-cloud-control.yml.
+#
+# Defaults are off: no public link change, no resubmission of a rejected
+# build. The helper itself re-verifies the immutable tag/commit, bundle,
+# version, build, VALID/unexpired state, APP_STORE_ELIGIBLE audience and the
+# single existing external group before any write, and paginates/readbacks
+# every mutation.
+#
+# review_notes_path is empty by default. submit requires it and the helper
+# only accepts final product text (1..4000 characters, no draft markers or
+# unreplaced placeholders); it PATCHes only the existing
+# betaAppReviewDetails/{id}.notes and verifies a byte-identical readback before
+# the group attach and review POST.
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "inspect (read-only, default) or submit (explicit external review submission)"
+        required: true
+        default: inspect
+        type: choice
+        options:
+          - inspect
+          - submit
+      version:
+        description: "Frozen marketing version, e.g. 1.7.0"
+        required: true
+        type: string
+      build:
+        description: "Frozen build number (CFBundleVersion), e.g. 241"
+        required: true
+        type: string
+      tag:
+        description: "Immutable source tag, e.g. v1.7.0"
+        required: true
+        type: string
+      source_sha:
+        description: "40-hex commit the tag must resolve to (frozen source SHA)"
+        required: true
+        type: string
+      notes_path:
+        description: "Bilingual What to Test JSON (en-US, zh-Hans)"
+        required: true
+        default: docs/public-beta/build241/whats-new.json
+        type: string
+      description_path:
+        description: "Bilingual Beta App Description JSON; leave empty to skip"
+        required: false
+        default: docs/public-beta/build241/beta-description.json
+        type: string
+      review_notes_path:
+        description: "Prepared Beta App Review notes text file (final 1..4000-char product text, no draft markers). Required for submit; leave empty for inspect without comparison"
+        required: false
+        default: ""
+        type: string
+      group_name:
+        description: "Existing external beta group name to reuse (lookup clue only; it must exist and be unique)"
+        required: true
+        default: publictest1
+        type: string
+      artifact_sha256:
+        description: "Optional retained unsigned IPA SHA-256 recorded with the submission"
+        required: false
+        type: string
+      artifact_source_sha:
+        description: "Optional source SHA recorded with the artifact; must equal source_sha"
+        required: false
+        type: string
+      enable_public_link:
+        description: "Explicit opt-in: enable the public link on the same existing external group (default off)"
+        required: false
+        default: false
+        type: boolean
+      allow_resubmit_rejected:
+        description: "Explicit opt-in: allow one recovery POST after a REJECTED submission (default off)"
+        required: false
+        default: false
+        type: boolean
+      confirm:
+        description: "Type submit-external-review to allow operation=submit"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-testflight-external-review
+  cancel-in-progress: false
+
+jobs:
+  public-testflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the dispatched ref with tags (the helper verifies the tag)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate inputs and immutable tag before any credential use
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          NOTES_PATH: ${{ inputs.notes_path }}
+          DESCRIPTION_PATH: ${{ inputs.description_path }}
+          REVIEW_NOTES_PATH: ${{ inputs.review_notes_path }}
+          ENABLE_PUBLIC_LINK: ${{ inputs.enable_public_link }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in
+            inspect|submit) ;;
+            *) echo "Unsupported operation" >&2; exit 2 ;;
+          esac
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must be x.y.z" >&2; exit 2; }
+          [[ "$BUILD" =~ ^[0-9]+$ ]] || { echo "build must be numeric" >&2; exit 2; }
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] || { echo "invalid tag" >&2; exit 2; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "source_sha must be 40 lowercase hex" >&2; exit 2; }
+          test "$(git rev-parse --verify "$TAG^{commit}")" = "$SOURCE_SHA" || { echo "tag does not resolve to source_sha" >&2; exit 2; }
+          test -f "$NOTES_PATH" || { echo "notes_path not found" >&2; exit 2; }
+          if test -n "$DESCRIPTION_PATH"; then test -f "$DESCRIPTION_PATH" || { echo "description_path not found" >&2; exit 2; }; fi
+          if test -n "$REVIEW_NOTES_PATH"; then test -f "$REVIEW_NOTES_PATH" || { echo "review_notes_path not found" >&2; exit 2; }; fi
+          if test "$OPERATION" = submit; then
+            test "$CONFIRM" = "submit-external-review" || { echo "confirm must be submit-external-review for submit" >&2; exit 2; }
+            test -n "$REVIEW_NOTES_PATH" || { echo "review_notes_path is required for submit" >&2; exit 2; }
+          fi
+          if test "$OPERATION" != submit && test "$ENABLE_PUBLIC_LINK" = "true"; then
+            echo "public link changes are only valid with operation=submit" >&2
+            exit 2
+          fi
+          echo "validated operation=$OPERATION version=$VERSION build=$BUILD tag=$TAG"
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_API_PRIVATE_KEY_BASE64"
+          test -n "$ASC_KEY_ID"
+          echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Generate short-lived API token
+        id: auth
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+        run: |
+          set -euo pipefail
+          TOKEN="$(python3 FloeAgent/scripts/generate_asc_jwt.py)"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect or explicitly submit the external build
+        env:
+          ASC_TOKEN: ${{ steps.auth.outputs.token }}
+          OPERATION: ${{ inputs.operation }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          NOTES_PATH: ${{ inputs.notes_path }}
+          DESCRIPTION_PATH: ${{ inputs.description_path }}
+          REVIEW_NOTES_PATH: ${{ inputs.review_notes_path }}
+          GROUP_NAME: ${{ inputs.group_name }}
+          ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
+          ARTIFACT_SOURCE_SHA: ${{ inputs.artifact_source_sha }}
+          ENABLE_PUBLIC_LINK: ${{ inputs.enable_public_link }}
+          ALLOW_RESUBMIT_REJECTED: ${{ inputs.allow_resubmit_rejected }}
+        run: |
+          set -euo pipefail
+          args=(
+            --operation "$OPERATION"
+            --bundle-id org.floeagent.ios
+            --version "$VERSION"
+            --build "$BUILD"
+            --tag "$TAG"
+            --source-sha "$SOURCE_SHA"
+            --group-name "$GROUP_NAME"
+            --repo-root "$GITHUB_WORKSPACE"
+            --notes "$NOTES_PATH"
+          )
+          if test -n "$DESCRIPTION_PATH"; then args+=(--description "$DESCRIPTION_PATH"); fi
+          if test -n "$REVIEW_NOTES_PATH"; then args+=(--review-notes "$REVIEW_NOTES_PATH"); fi
+          if test -n "$ARTIFACT_SHA256"; then args+=(--artifact-sha256 "$ARTIFACT_SHA256"); fi
+          if test -n "$ARTIFACT_SOURCE_SHA"; then args+=(--artifact-source-sha "$ARTIFACT_SOURCE_SHA"); fi
+          if test "$OPERATION" = submit; then args+=(--confirm-submit); fi
+          if test "$ENABLE_PUBLIC_LINK" = "true"; then args+=(--enable-public-link); fi
+          if test "$ALLOW_RESUBMIT_REJECTED" = "true"; then args+=(--allow-resubmit-rejected); fi
+          python3 FloeAgent/scripts/public_testflight.py "${args[@]}" \
+            | tee "$RUNNER_TEMP/public-testflight-report.json"
