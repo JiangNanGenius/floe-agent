@@ -291,3 +291,31 @@ its original logs are retained for diagnosis and do not establish the Floe crash
 79 项完整 Floe 流水线检查与 actionlint 通过。这是受控准备检查，尚非 App
 运行或 PPT 验收。独立上游 Mobile 运行也在文档浏览交互中丢失应用连接而失败，
 原日志保留继续诊断，不能据此确定 Floe 闪退根因。
+
+
+### Actual simulator framework build and report-contract repair (2026-10-01)
+
+Full Floe run 36794761818 passed restoration and genuine framework compilation,
+linking and Swift module import. Its actual load command records IOSSIMULATOR,
+minimum iOS 26.0 and SDK 27.0. Packaging then failed with a missing
+`swiftImportTarget` field: the compiler used the simulator target, but the producer
+did not record it. Primary reproduced the packager failure using the retained
+actual cloud build report. The producer now records the target from the exact
+import-probe command; packaging does not guess missing fields. Controlled tests
+exercise both platform targets, unsuccessful probes, and the producer-to-package-
+verification path. All 81 full Floe pipeline checks, 3 native project checks and
+actionlint pass. The workflow also retains the native build/import logs and
+complete qualification report on failure. The earlier run retained the report,
+not a reusable framework package, so only the short native host build must run
+again from the same verified engine. No heavy core rebuild is needed. Actual
+Floe App compilation and PPT execution have not yet occurred.
+
+完整 Floe 运行 36794761818 已通过恢复及真实框架编译、链接、Swift 模块导入，
+实际加载命令记录 IOSSIMULATOR、最低 iOS 26.0、SDK 27.0。之后打包因缺少
+`swiftImportTarget` 字段失败：编译确实用了模拟器目标，但构建器未写入回执。
+主线程用保存的实际云构建报告复现错误，现直接从真实导入命令记录目标，
+打包器仍拒绝缺失字段。受控测试覆盖两种平台目标、导入失败和生产回执到打包
+核验的衔接；81 项完整 Floe 流水线检查、3 项原生工程检查及 actionlint 通过。
+流水线同时补充保留原生构建、导入日志及完整资格报告。旧运行只保留了报告，
+没有可复用框架包，因此需从同一已核验引擎重跑短时宿主编译，重核心不再构建。
+实际 Floe App 编译与 PPT 运行仍未完成。

@@ -180,6 +180,21 @@ def verify_swift_import_probe(*, sdk=None, platform_sdk='iphoneos'):
     }
 
 
+def check_built_framework_import(output, framework, sdk):
+    """Probe the built module and record the exact compiler target used."""
+    sdk_path = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-path'], text=True).strip()
+    probe = output / 'ImportProbe.swift'
+    shutil.copyfile(SWIFT_IMPORT_PROBE, probe)
+    module_command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk_path,
+        '-target', SWIFT_IMPORT_TARGET_BY_SDK[sdk],
+        '-F', str(framework.parent), str(probe)]
+    with (output / 'swift-import.log').open('w') as log:
+        result = subprocess.run(module_command, stdout=log, stderr=subprocess.STDOUT)
+    return {'swiftImportTarget': module_command[module_command.index('-target') + 1],
+            'swiftProbeSHA256': digest(probe),
+            'swiftModuleImportPassed': result.returncode == 0}
+
+
 def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
                lock_path=DEFAULT_LOCK):
     """Build the Floe native Office framework for one Apple platform SDK.
@@ -341,19 +356,10 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
         for path in sorted(resources.rglob('*')) if path.is_dir()]
     report['stage'] = 'host-packaged'
     save()
-    sdk_path = subprocess.check_output(['xcrun', '--sdk', sdk, '--show-sdk-path'], text=True).strip()
-    probe = output / 'ImportProbe.swift'
-    shutil.copyfile(SWIFT_IMPORT_PROBE, probe)
-    report['swiftProbeSHA256'] = digest(probe)
-    module_command = ['xcrun', 'swiftc', '-typecheck', '-sdk', sdk_path,
-        '-target', SWIFT_IMPORT_TARGET_BY_SDK[base['sdk']],
-        '-F', str(framework.parent), str(probe)]
-    with (output / 'swift-import.log').open('w') as log:
-        result = subprocess.run(module_command, stdout=log, stderr=subprocess.STDOUT)
-    report.update(swiftModuleImportPassed=result.returncode == 0,
-                  stage='qualified-host' if result.returncode == 0 else 'swift-import-failed')
+    report.update(check_built_framework_import(output, framework, base['sdk']))
+    report['stage'] = 'qualified-host' if report['swiftModuleImportPassed'] else 'swift-import-failed'
     save()
-    if result.returncode:
+    if not report['swiftModuleImportPassed']:
         raise RuntimeError('Native framework Swift import failed; inspect swift-import.log')
     return report
 

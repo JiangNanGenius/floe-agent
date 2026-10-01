@@ -1200,6 +1200,55 @@ class VariantLockTests(unittest.TestCase):
                 variant='bogus', base_run_id='1')
 
 
+class BuiltModuleReceiptTests(unittest.TestCase):
+    def probe(self, output, framework, sdk, returncode=0):
+        from unittest import mock
+        import build_office_native_host as producer
+        with mock.patch.object(producer.subprocess, 'check_output', return_value='/fixture/sdk'), \
+             mock.patch.object(producer.subprocess, 'run',
+                 return_value=subprocess.CompletedProcess([], returncode)) as run:
+            facts = producer.check_built_framework_import(output, framework, sdk)
+        command = run.call_args.args[0]
+        self.assertEqual(facts['swiftImportTarget'], command[command.index('-target') + 1])
+        self.assertEqual(facts['swiftProbeSHA256'], producer.digest(output / 'ImportProbe.swift'))
+        return facts
+
+    def test_actual_producer_probe_reports_platform_and_failure(self):
+        for sdk, target in [('iphoneos', 'arm64-apple-ios26.0'),
+                            ('iphonesimulator', 'arm64-apple-ios26.0-simulator')]:
+            for code in (0, 1):
+                with self.subTest(sdk=sdk, code=code), tempfile.TemporaryDirectory() as tmp:
+                    output = Path(tmp)
+                    facts = self.probe(output, output / 'FloeOfficeNative.framework', sdk, code)
+                    self.assertEqual(facts['swiftImportTarget'], target)
+                    self.assertEqual(facts['swiftModuleImportPassed'], code == 0)
+
+    def test_producer_receipt_packages_and_verifies_without_invented_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = make_fake_host_bundle(root)
+            report = json.loads((seed / 'native-host-simulator.json').read_text())
+            output = root / 'output'
+            build = output / 'build'
+            products = build / 'products/Release-iphonesimulator'
+            products.mkdir(parents=True)
+            framework = products / 'FloeOfficeNative.framework'
+            shutil.move(seed / framework.name, framework)
+            shutil.move(seed / 'OfficeRuntimeResources', build / 'OfficeRuntimeResources')
+            probe_facts = self.probe(build, framework, 'iphonesimulator')
+            report.update(probe_facts, sdk='iphonesimulator', platformLoadCommands='fixture')
+            restored = root / 'restored'
+            restored.mkdir()
+            (restored / 'restore-report.json').write_text(json.dumps({
+                'sourceCommit': LOCK['commit'], 'provenanceArtifactSHA256': 'a' * 64}))
+            bundle, receipt = build_simulator_framework.package_host(report, restored, output,
+                variant='kit', kit_applied=True, base_run_id='fixture-run',
+                identity={'sdkVersion': '27.0', 'sdkBuildVersion': 'fixture', 'xcodeVersion': 'fixture'})
+            self.assertEqual(receipt['swiftImportTarget'], probe_facts['swiftImportTarget'])
+            self.assertTrue(bootstrap_office_host.verify_simulator_host(bundle)['kitCallbackOverlayApplied'])
+            self.assertFalse(receipt['nativeEditorRuntimeVerified'])
+
+
 class RestoreApiContractTests(unittest.TestCase):
     def test_actual_restore_api_rejects_bad_provenance(self):
         from unittest import mock

@@ -137,6 +137,9 @@ jobs:
             ${{ runner.temp }}/simhost-*/OfficeNativeHostSimulator.zip
             ${{ runner.temp }}/simhost-*/package-manifest.json
             ${{ runner.temp }}/simhost-*/native-host-build-report.json
+            ${{ runner.temp }}/simhost-*/build/qualification.json
+            ${{ runner.temp }}/simhost-*/build/native-host-build.log
+            ${{ runner.temp }}/simhost-*/build/swift-import.log
             ${{ runner.temp }}/restore-*.json
             ${{ runner.temp }}/disk-preflight.log
           if-no-files-found: error
