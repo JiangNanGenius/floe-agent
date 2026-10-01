@@ -268,9 +268,20 @@ final class OfficeRealEngineUITests: XCTestCase {
     /// require the slide count to advance.
     func insertSlide(_ app: XCUIApplication, expected: Int, phase: String) throws {
         let insert = firstElementWaiting(
-            app, ["Insert Slide", "New Slide", "Insert Page", "insertpage",
-                  "插入幻灯片", "新建幻灯片"], timeout: 60)
+            app, ["Insert Slide", "New Slide", "Insert Page", "New Page", "insertpage",
+                  "插入幻灯片", "新建幻灯片", "新建页面"], timeout: 60)
+        // The pinned mobile bottom toolbar labels .uno:InsertPage "New Page";
+        // the presentation sidebar uses "Insert Slide". Drive the existing UI
+        // in either layout, then require the real document count to advance.
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "office-controls-\(phase)"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        try require(app.state == .runningForeground, phase,
+                    "Floe left the foreground before inserting a slide")
         try require(insert != nil, phase, "Impress Insert Slide control missing")
+        try require(insert!.isEnabled && insert!.isHittable, phase,
+                    "Impress Insert Slide control is not actionable")
         insert!.tap()
         let advanced = waitForSlideCount(app, expected: expected, timeout: 30)
         var inventory: [String] = []

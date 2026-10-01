@@ -459,3 +459,37 @@ PPT editing, idle, saving, reopening and physical-device acceptance remain pendi
 前一修正版模拟器运行 36807569442 在 App 编译前被旧设备 pin 的源码校验
 正确阻止，原始失败保留。下一完整 App 场景使用新 pin 和已核验的同一模拟器
 引擎，不重编核心。PPT 编辑、静置、保存、重开及真机验收仍待实际验证。
+
+## Corrected App reaches editable rendering, 2026-10-01
+
+Full-App run 36812220870 compiled and executed the corrected App. Its retained
+trace records the real preview close acknowledgement, a new editable generation,
+edit permission, edit acknowledgement, and visible rendering after the edit
+surface was armed (82 changed samples, Impress layout). The failure screenshot
+shows the App displaying the two-slide document in its mobile editor. The old
+JSON exception is absent from this run's exported App stdout. These observations
+cover this execution only; they do not establish physical-device crash acceptance.
+
+The scenario stopped while searching for an Insert Slide control. The pinned
+runtime bundle defines the mobile bottom-toolbar insertion control as
+`.uno:InsertPage`, labelled `New Page`; the test's label list omitted it. The test
+now recognizes that existing UI label, checks that the control is actionable,
+and retains an accessibility hierarchy at insertion for subsequent diagnosis.
+It still requires the actual slide count to advance. No product control, edit
+entry, idle deadline, save/reopen chain or persistence/render gate was changed.
+The original failed run, complete xcresult, screenshots and diagnostics remain
+retained. Insertion, 120-second idle, saving and reopening remain unverified.
+
+## 修正版 App 已进入可编辑渲染，2026-10-01
+
+完整 App 运行 36812220870 已编译并实际运行修正版。完整留存日志记录真实
+预览关闭确认、新编辑代际、编辑权限和确认，以及绘制监测启用后的可见渲染
+（82 个变化采样点、Impress 布局）。失败截图仍显示 App 中的两页 PPT 编辑器；
+本次导出的 App 输出没有旧 JSON 异常。这些证据只覆盖本次模拟器运行，
+不能替代用户真机闪退验收。
+
+场景在查找插入幻灯片控件时停止。固定运行包中，移动底栏的插入控件对应
+.uno:InsertPage，标签为 New Page，原测试查找列表漏了该标签。现补齐现有
+控件标签、验证控件可用且可点击，并留存插入时的无障碍树；仍要求真实页数
+增加。产品控件、编辑入口、静置时长、保存重开及渲染和落盘门槛均未改变。
+原失败完整 xcresult、截图和诊断保留；插入、静置 120 秒、保存和重开仍待验证。
