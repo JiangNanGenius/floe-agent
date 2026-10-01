@@ -263,3 +263,31 @@ These checks prove adapter/qualification contracts only, not App or PPT runtime.
 并绑定实际签名核验转发；79 项定向检查和 actionlint 通过。原 TypeError 与
 本地 `/var`、`/private/var` 合成路径断言失败均保留，后者按真实路径解析修正。
 这只证明适配器和资格合同，不代表 App 或 PPT 已运行。
+
+
+### Full Floe restore-to-preparation integrity repair (2026-10-01)
+
+The first full Floe workflow 36793506615 restored and verified the staged engine,
+then failed before native-framework compilation: restoration rewrote the upstream
+linker list, whereas Floe native preparation rechecks the original manifest.
+Primary reproduced this exact mismatch using both production functions.
+Floe restoration now keeps source inputs immutable; native preparation creates
+its separate relocated linker list from the verified ordered inputs. The upstream
+Mobile diagnostic retains its existing direct-list rewrite. Whole-package,
+per-file, source, toolchain and platform gates remain enforced. Two new regression
+checks cover repeated preparation, corrupted original-list hashes, and changed
+archive/list rejection. All 140 simulator pipeline checks and 79 full Floe
+pipeline checks pass; actionlint passes. These are controlled preparation checks,
+not App runtime or PPT acceptance. The separate upstream Mobile runtime also
+failed with loss of application connection during document-browser interaction;
+its original logs are retained for diagnosis and do not establish the Floe crash cause.
+
+首次完整 Floe 流水线 36793506615 已恢复并核验引擎，但在原生框架编译前失败：
+恢复步骤改写了上游链接清单，Floe 准备步骤却按原始清单摘要重新核验。
+主线程调用两处真实生产函数复现了同一错误。Floe 恢复现保留源输入不变，
+准备步骤从已核验的有序输入生成独立的重定位清单；上游 Mobile 诊断仍沿用
+直接改写入口。整包、逐文件、源码、工具链和平台检查均保留。新增回归覆盖
+重复准备、原清单摘要损坏及归档/清单修改拒绝，140 项模拟器流水线检查、
+79 项完整 Floe 流水线检查与 actionlint 通过。这是受控准备检查，尚非 App
+运行或 PPT 验收。独立上游 Mobile 运行也在文档浏览交互中丢失应用连接而失败，
+原日志保留继续诊断，不能据此确定 Floe 闪退根因。

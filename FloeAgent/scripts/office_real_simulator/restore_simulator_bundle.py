@@ -123,7 +123,7 @@ def verify_current_toolchain(provenance, expect_xcode=None, expect_sdk=None):
 
 
 def restore(archive_path, destination, provenance_path=None, reuse=False,
-            expect_xcode=None, expect_sdk=None):
+            expect_xcode=None, expect_sdk=None, *, rewrite_engine_list=True):
     archive_path = Path(archive_path).resolve()
     destination = Path(destination).resolve()
     if destination.exists():
@@ -214,7 +214,11 @@ def restore(archive_path, destination, provenance_path=None, reuse=False,
     # Verification (hashes above) happens first; the rewrite is recorded.
     engine_list = destination / engine_manifest.ENGINE_LIST_RELATIVE
     manifest_rewrite = {'present': False}
-    if engine_list.is_file():
+    # The upstream Mobile project consumes this source file directly. Floe's
+    # embedding preparation instead creates prepared/ios-all-static-libs.list
+    # from verified linkerInputs and rechecks the pristine source manifest.
+    # Its caller must retain the original bytes for those repeated checks.
+    if engine_list.is_file() and rewrite_engine_list:
         original_bytes = engine_list.read_bytes()
         try:
             rewritten_bytes, evidence = engine_manifest.rewrite_for_destination(
@@ -229,6 +233,8 @@ def restore(archive_path, destination, provenance_path=None, reuse=False,
             'rewrittenRoot': str(destination),
             **evidence,
         }
+    elif engine_list.is_file():
+        manifest_rewrite['reason'] = 'immutable inputs; embedding prepares a separate linker list'
 
     report = {
         'archive': str(archive_path),

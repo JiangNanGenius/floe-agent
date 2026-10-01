@@ -64,7 +64,8 @@ def restore_staged_engine(run_id, staged_dir, restored_dir):
     report = restore_simulator_bundle.restore(
         layout['engineTarball'], restored_dir,
         provenance_path=layout['provenance'],
-        reuse=True, expect_xcode=expect_xcode, expect_sdk=expect_sdk)
+        reuse=True, expect_xcode=expect_xcode, expect_sdk=expect_sdk,
+        rewrite_engine_list=False)
     report['baseEngineRunID'] = str(run_id)
     report['engineArtifactName'] = ENGINE_ARTIFACT_NAME
     report['consumedBy'] = 'office_floe_simulator.restore_staged_engine'

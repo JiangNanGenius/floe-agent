@@ -1238,7 +1238,8 @@ class RestoreApiContractTests(unittest.TestCase):
                 result = adapter.restore_staged_engine('fixture-run', staged, staged / 'restored')
             restore.assert_called_once_with(str((staged / sim_paths.STAGED_ENGINE_TAR).resolve()),
                 staged / 'restored', provenance_path=str((staged / sim_paths.STAGED_PROVENANCE).resolve()),
-                reuse=True, expect_xcode='Xcode fixture', expect_sdk='fixture')
+                reuse=True, expect_xcode='Xcode fixture', expect_sdk='fixture',
+                rewrite_engine_list=False)
             self.assertEqual(result['baseEngineRunID'], 'fixture-run')
 
 

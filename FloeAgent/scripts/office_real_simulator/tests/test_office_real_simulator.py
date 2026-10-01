@@ -718,6 +718,66 @@ class RestoreEndToEndTests(unittest.TestCase):
             self.assertEqual(rewrite['rewrittenRoot'], str(destination.resolve()))
 
 
+    def test_floe_restore_keeps_inputs_immutable_for_native_preparation(self):
+        import verify_office_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            tarball, provenance_path, _ = self.make_archive(
+                tmp, self.lock(), with_engine_list=True)
+            destination = (Path(tmp) / 'restored').resolve()
+            lock_path = Path(tmp) / 'lock.json'
+            lock_path.write_text(json.dumps(self.lock()))
+            with mock.patch.object(restore_simulator_bundle, 'archive_simulator_facts',
+                                   return_value=(True, {'simulatorOnly': True})), \
+                 mock.patch.object(restore_simulator_bundle, 'LOCK_PATH', lock_path):
+                report = restore_simulator_bundle.restore(tarball, destination,
+                    provenance_path, rewrite_engine_list=False)
+            original_list = destination / 'source/engine/workdir/CustomTarget/ios/ios-all-static-libs.list'
+            self.assertIn('/old/runner/', original_list.read_text())
+            self.assertFalse(report['engineArchiveManifestRewrite']['present'])
+            verified = verify_office_engine.verify(destination, prepare=True)
+            self.assertEqual(verified['linkerInputsVerified'], 2)
+            self.assertEqual((destination / 'prepared/ios-all-static-libs.list').read_text().splitlines(),
+                [str(destination / 'source/engine/libx.a'), str(destination / 'source/engine/liby.o')])
+            # Repeated preparation must still verify pristine manifest inputs.
+            verify_office_engine.verify(destination, prepare=True)
+            for name in (original_list, destination / 'source/engine/libx.a'):
+                original = name.read_bytes()
+                name.write_bytes(b'changed input')
+                with self.assertRaisesRegex(ValueError, 'Changed or missing file'):
+                    verify_office_engine.verify(destination, prepare=True)
+                name.write_bytes(original)
+
+    def test_floe_restore_still_checks_original_list_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tarball, provenance_path, _ = self.make_archive(tmp, self.lock(),
+                with_engine_list=True)
+            # Keep transport provenance correct while corrupting the file's
+            # manifest checksum, proving immutable mode retains per-file gates.
+            changed = Path(tmp) / 'changed.tar.gz'
+            with tarfile.open(tarball) as source, tarfile.open(changed, 'w:gz') as target:
+                for member in source.getmembers():
+                    content = source.extractfile(member) if member.isfile() else None
+                    if member.name == 'bundle-manifest.json':
+                        data = json.loads(content.read())
+                        entry = next(item for item in data['files']
+                                     if item['path'].endswith('ios-all-static-libs.list'))
+                        entry['sha256'] = '0' * 64
+                        payload = json.dumps(data).encode()
+                        member.size = len(payload)
+                        content = __import__('io').BytesIO(payload)
+                    target.addfile(member, content)
+            provenance = json.loads(provenance_path.read_text())
+            provenance.update(artifactSHA256=restore_simulator_bundle.artifact_sha256(changed),
+                              artifactSize=changed.stat().st_size)
+            provenance_path.write_text(json.dumps(provenance))
+            lock_path = Path(tmp) / 'lock.json'
+            lock_path.write_text(json.dumps(self.lock()))
+            with mock.patch.object(restore_simulator_bundle, 'LOCK_PATH', lock_path):
+                with self.assertRaisesRegex(restore_simulator_bundle.RestoreError, 'hash/size mismatch'):
+                    restore_simulator_bundle.restore(changed, Path(tmp) / 'restored',
+                        provenance_path, rewrite_engine_list=False)
+
+
 class GeneratedScenarioTests(unittest.TestCase):
     def test_swift_scenario_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
