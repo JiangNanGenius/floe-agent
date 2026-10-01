@@ -673,3 +673,28 @@ not a successful cloud host build or PPT acceptance; those remain pending.
 三项定向检查通过，包括真实 curl 从本地服务首次断开连接中恢复、永久
 失败不提交临时文件，以及复用已有缓存。同样的断连在原版函数中需要另启
 回退 curl 进程。此证据只覆盖传输恢复，云宿主构建及完整 PPT 验收仍待完成。
+
+## Verified bounded-render host, 2026-10-01
+
+Device host run 36835213892 succeeded from source
+`91540d6ed4d2b1ef519392fc34f037fe2e33e354`. The complete archive is saved
+locally: 126576751 bytes, SHA-256
+`ba70c370ce6e744116f578c5393d606741713f271054e831a3d0803dc05dad01`.
+Primary verification matched the independently downloaded manifest and checked
+all 4785 files, including 4780 resources, source hashes and overlay provenance.
+The actual binary is arm64 IOS, minimum OS 26.0, SDK 27.0. The device host pin
+now selects this verified archive; runtime capability flags remain false.
+Full-App cloud simulator PPT qualification and physical iPad acceptance remain
+pending. No Build240 release or tag is created by this host qualification.
+
+## 有界渲染宿主整包核验，2026-10-01
+
+设备宿主运行 36835213892 从源码
+`91540d6ed4d2b1ef519392fc34f037fe2e33e354` 构建成功。完整压缩包已本地
+留存，126576751 字节，SHA-256 为
+`ba70c370ce6e744116f578c5393d606741713f271054e831a3d0803dc05dad01`。
+主线程核对独立下载的清单，并验证全部 4785 文件，其中包含 4780 项资源、
+源码摘要及补丁来源。实际二进制为 arm64 IOS，最低系统 26.0，SDK 27.0。
+设备宿主固定项更新为此已核验整包，运行能力标志仍为 false。完整 App 云
+模拟器 PPT 验收及用户物理 iPad 验收仍待完成；此宿主资格不创建 Build240
+标签或发布。
