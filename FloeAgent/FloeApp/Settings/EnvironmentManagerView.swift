@@ -51,7 +51,7 @@ import FloeTools
         }
         tasks[id] = Task {
             do { messages[id] = try await operation() }
-            catch is CancellationError { messages[id] = "任务已取消；重新读取依赖以确认当前状态" }
+            catch is CancellationError { messages[id] = String(localized: "envmgr.job_cancelled") }
             catch { messages[id] = error.localizedDescription; failures.insert(id) }
             running.remove(id)
             tasks[id] = nil
@@ -118,7 +118,7 @@ import FloeTools
     }
     func cancel(id: String) {
         guard let task = tasks[id] else { return }
-        messages[id] = "正在取消并等待事务结束…"
+        messages[id] = String(localized: "envmgr.cancelling")
         task.cancel()
     }
     func cancelAndWait(id: String) async {
@@ -170,7 +170,7 @@ import FloeTools
             messages[id] = result
             return result
         } catch is CancellationError {
-            messages[id] = "任务已取消；重新读取依赖以确认当前状态"
+            messages[id] = String(localized: "envmgr.job_cancelled")
             throw CancellationError()
         } catch {
             messages[id] = error.localizedDescription
@@ -191,16 +191,16 @@ struct EnvironmentManagerView: View {
     var body: some View {
         List {
             Section {
-                Text("会话 → 项目 → 共享 → 基础").font(.headline)
-                Text("依赖按层查找，安装只写入所选环境。容器用于管理依赖、数据和生命周期。").font(.subheadline).foregroundStyle(.secondary)
+                Text("envmgr.layer_title").font(.headline)
+                Text("envmgr.layer_note").font(.subheadline).foregroundStyle(.secondary)
             }
             Section {
                 NavigationLink {
                     EnvironmentTemplatesView()
                 } label: {
-                    Label("软件模板 / Software templates", systemImage: "shippingbox.and.arrow.backward")
+                    Label("envmgr.templates_label", systemImage: "shippingbox.and.arrow.backward")
                 }
-                Text("查看云端验证的预装软件模板，并用精确版本新建环境。 / Verified preinstalled software templates; create an environment pinned to an exact version.")
+                Text("envmgr.templates_note")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -221,10 +221,10 @@ struct EnvironmentManagerView: View {
                 Text("environment.capabilities.summary")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if loading { ProgressView("读取环境与容量…") }
+            if loading { ProgressView("envmgr.loading") }
             if let error {
                 Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive)
-                    Button("重试") { Task { await reload() } }
+                    Button("envmgr.retry") { Task { await reload() } }
                 }
             }
             ForEach(ContainerKind.allCases, id: \.self) { kind in
@@ -239,11 +239,17 @@ struct EnvironmentManagerView: View {
                                     Image(systemName: Self.icon(kind)).foregroundStyle(FloeTheme.primary).frame(width: 28)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(displayName(for: report)).font(.headline)
-                                        Text(report.issue == nil ? "\(report.packages.count) 个本层依赖 · \(ByteCountFormatter.string(fromByteCount: report.bytes, countStyle: .file))" : "读取失败 · 点击查看恢复信息")
+                                        Text(report.issue == nil
+                                             ? String.localizedStringWithFormat(
+                                                String(localized: "envmgr.row_summary"),
+                                                Int64(report.packages.count),
+                                                ByteCountFormatter.string(fromByteCount: report.bytes, countStyle: .file)
+                                             )
+                                             : String(localized: "envmgr.row_failed"))
                                             .font(.caption).foregroundStyle(.secondary)
-                                        Text(report.record.requiresRebuild ? "需要重建依赖" : Self.state(report.record.state)).font(.caption)
+                                        Text(report.record.requiresRebuild ? String(localized: "envmgr.needs_rebuild") : Self.state(report.record.state)).font(.caption)
                                     }
-                                    if jobs.running.contains(report.id) { Spacer(); ProgressView().accessibilityLabel("软件包任务正在运行") }
+                                    if jobs.running.contains(report.id) { Spacer(); ProgressView().accessibilityLabel(Text("envmgr.running_label")) }
                                 }.padding(.vertical, 4)
                             }
                         }
@@ -251,13 +257,24 @@ struct EnvironmentManagerView: View {
                 }
             }
             if !loading && reports.isEmpty && error == nil {
-                ContentUnavailableView("尚无项目或会话环境", systemImage: "shippingbox", description: Text("打开工作区或在会话中运行本地工具后，对应环境会出现在这里。"))
+                ContentUnavailableView(
+                    "envmgr.empty_title",
+                    systemImage: "shippingbox",
+                    description: Text("envmgr.empty_hint")
+                )
             }
         }
         .navigationTitle("environment.manager.title")
-        .searchable(text: $query, prompt: "搜索环境名称或 ID")
+        .searchable(text: $query, prompt: "envmgr.search_prompt")
         .refreshable { await reload() }
-        .toolbar { Button("刷新", systemImage: "arrow.clockwise") { Task { await reload() } }.disabled(loading) }
+        .toolbar {
+            Button {
+                Task { await reload() }
+            } label: {
+                Label("envmgr.refresh", systemImage: "arrow.clockwise")
+            }
+            .disabled(loading)
+        }
         .task { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }
     }
@@ -276,13 +293,13 @@ struct EnvironmentManagerView: View {
         catch { self.error = String(describing: error) }
     }
     static func title(_ kind: ContainerKind) -> String {
-        switch kind { case .session: "会话"; case .project: "项目"; case .shared: "共享依赖"; case .template: "模板" }
+        switch kind { case .session: String(localized: "envmgr.kind.session"); case .project: String(localized: "envmgr.kind.project"); case .shared: String(localized: "envmgr.kind.shared"); case .template: String(localized: "envmgr.kind.template") }
     }
     static func icon(_ kind: ContainerKind) -> String {
         switch kind { case .session: "bubble.left.and.bubble.right"; case .project: "folder"; case .shared: "square.stack.3d.up"; case .template: "doc.on.doc" }
     }
     static func state(_ state: ContainerState) -> String {
-        switch state { case .active: "可用"; case .stopped: "已停止"; case .deleting: "正在删除" }
+        switch state { case .active: String(localized: "envmgr.state.active"); case .stopped: String(localized: "envmgr.state.stopped"); case .deleting: String(localized: "envmgr.state.deleting") }
     }
 }
 
@@ -418,19 +435,19 @@ private struct EnvironmentDetailView: View {
     var body: some View {
         List {
             Section("environment.manager.selected") {
-                LabeledContent("类型", value: EnvironmentManagerView.title(record.kind))
-                LabeledContent("状态", value: EnvironmentManagerView.state(record.state))
+                LabeledContent("envdetail.type", value: EnvironmentManagerView.title(record.kind))
+                LabeledContent("envdetail.status", value: EnvironmentManagerView.state(record.state))
                 if let issue = (current ?? report).issue { Label(issue, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive) }
-                LabeledContent((current ?? report).issue == nil ? "本层容量" : "上次记录的容量", value: ByteCountFormatter.string(fromByteCount: (current ?? report).bytes, countStyle: .file))
-                if record.requiresRebuild { Label(record.rebuildReason ?? "依赖需要重建；数据已保留", systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.pending) }
-                DisclosureGroup("环境标识与归属") {
+                LabeledContent((current ?? report).issue == nil ? String(localized: "envdetail.size") : String(localized: "envdetail.last_size"), value: ByteCountFormatter.string(fromByteCount: (current ?? report).bytes, countStyle: .file))
+                if record.requiresRebuild { Label(record.rebuildReason ?? String(localized: "envdetail.rebuild_default"), systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.pending) }
+                DisclosureGroup("envdetail.identity") {
                     Text(record.id).textSelection(.enabled)
-                    if let owner = record.ownerID { LabeledContent("所属项目或会话", value: owner) }
-                    if let parent = record.parentID { LabeledContent("父环境", value: parent) }
-                    LabeledContent("基础层版本", value: record.baseRevision)
+                    if let owner = record.ownerID { LabeledContent("envdetail.owner", value: owner) }
+                    if let parent = record.parentID { LabeledContent("envdetail.parent", value: parent) }
+                    LabeledContent("envdetail.base_version", value: record.baseRevision)
                 }.font(.caption)
             }
-            if busy { ProgressView("正在处理…") }
+            if busy { ProgressView("envdetail.working") }
             // App-shared Linux runtime component: the verified base image and
             // its runner version belong to the app, not to any one
             // conversation's environment, so they are presented once and
@@ -478,10 +495,10 @@ private struct EnvironmentDetailView: View {
                         if status.running {
                             LabeledContent("environment.backend.active_vm", value: activeVMSummary)
                             if let kernel = guestKernel {
-                                LabeledContent("内核", value: kernel)
+                                LabeledContent("envdetail.kernel", value: kernel)
                             }
                             if let distribution = guestDistribution {
-                                LabeledContent("系统", value: distribution)
+                                LabeledContent("envdetail.system", value: distribution)
                             }
                             LabeledContent("Python", value: guestRuntimes["Python"] ?? String(localized: "settings.exec.runtime.not_installed"))
                                 .foregroundStyle(guestRuntimes["Python"] == nil ? .secondary : .primary)
@@ -540,14 +557,14 @@ private struct EnvironmentDetailView: View {
                     }
                 }
             }
-            if busy { ProgressView("正在处理…") }
+            if busy { ProgressView("envdetail.working") }
             if let error { Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive); Button("action.reload") { Task { await reload() } } } }
             if let message = jobs.messages[report.id] {
                 Section("environment.packages.tasks") {
                     Text(message).font(.subheadline).textSelection(.enabled)
                         .foregroundStyle(jobs.failures.contains(report.id) ? FloeTheme.destructive : .primary)
                     if jobs.running.contains(report.id) {
-                        ProgressView("正在处理所选环境")
+                        ProgressView("envdetail.working_selected")
                         Button("action.cancel_task", role: .cancel) { jobs.cancel(id: report.id) }
                     }
                 }
@@ -559,7 +576,7 @@ private struct EnvironmentDetailView: View {
                     Label("services.title", systemImage: "server.rack")
                 }
             }
-            Section("语言依赖") {
+            Section {
                 ForEach(EnvironmentLanguagePackageService.Language.allCases) { language in
                     NavigationLink {
                         EnvironmentLanguagePackagesView(environmentID: report.id, language: language)
@@ -569,6 +586,8 @@ private struct EnvironmentDetailView: View {
                 }
                 Text("environment.packages.language.summary")
                     .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("envdetail.language_deps")
             }
             Section("environment.packages.linux.title") {
                 if linuxAvailable {
@@ -610,7 +629,7 @@ private struct EnvironmentDetailView: View {
                                 Text(package.name)
                                 HStack(spacing: 6) {
                                     Text(package.version).font(.caption).foregroundStyle(.secondary)
-                                    Text(package.autoInstalled ? "自动（依赖）" : "手动安装")
+                                    Text(package.autoInstalled ? String(localized: "envdetail.auto_install") : String(localized: "envdetail.manual_install"))
                                         .font(.caption2)
                                         .padding(.horizontal, 5).padding(.vertical, 1)
                                         .background(.quaternary, in: Capsule())
@@ -644,7 +663,7 @@ private struct EnvironmentDetailView: View {
             }
             if record.kind.isWritableLayer {
                 Section("environment.lifecycle.title") {
-                    Button(record.state == .stopped ? "恢复环境" : "停止此环境的任务", systemImage: record.state == .stopped ? "play" : "stop") {
+                    Button(record.state == .stopped ? "envdetail.resume" : "envdetail.stop_tasks", systemImage: record.state == .stopped ? "play" : "stop") {
                         perform {
                             if record.state == .stopped { try await FloePlatformServices.shared.resumeEnvironment(id: report.id) }
                             else { try await FloePlatformServices.shared.stopEnvironment(id: report.id) }
@@ -654,13 +673,13 @@ private struct EnvironmentDetailView: View {
                     Button("environment.template.save", systemImage: "doc.on.doc") {
                         perform { try await FloePlatformServices.shared.saveEnvironmentTemplate(id: report.id, name: templateName); templateName = "" }
                     }.disabled(busy || jobs.running.contains(report.id) || record.state != .stopped || record.requiresRebuild || templateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Text("先停止环境，再保存模板，确保依赖副本一致。").font(.caption).foregroundStyle(.secondary)
+                    Text("envdetail.template_hint").font(.caption).foregroundStyle(.secondary)
                     Button("environment.delete.action", role: .destructive) { confirmDelete = true }.disabled(busy)
                 }
             }
         }
         .navigationTitle(record.name ?? displayName)
-        .searchable(text: $query, prompt: "搜索软件包")
+        .searchable(text: $query, prompt: "envdetail.search_packages")
         .task {
             await reload()
             backendSelection = record.executionBackend ?? .native
@@ -683,11 +702,11 @@ private struct EnvironmentDetailView: View {
             }
             Button("action.cancel", role: .cancel) { pendingLinuxRemoval = nil }
         } message: { Text("environment.packages.linux.remove_message") }
-        .confirmationDialog("删除此容器？", isPresented: $confirmDelete, titleVisibility: .visible) {
+        .confirmationDialog("envdetail.delete_title", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("environment.delete.stop_and_delete", role: .destructive) {
                 perform { try await FloePlatformServices.shared.deleteEnvironment(id: report.id); dismiss() }
             }
-        } message: { Text("将停止此环境的任务并删除其依赖和容器数据。有子会话的项目须先清理子会话；停止失败时保留数据。") }
+        } message: { Text("envdetail.delete_message") }
     }
     private func matches(_ name: String) -> Bool { query.isEmpty || name.localizedCaseInsensitiveContains(query) }
 

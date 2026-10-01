@@ -170,7 +170,7 @@ struct DiagnosticsAboutView: View {
             } header: {
                 Text("settings.diagnostics.legal")
             } footer: {
-                Text(verbatim: "一个入口列出随包全部第三方声明，包含 TinyEMU/slirp 完整许可与其他依赖。 / One entry lists every bundled third-party notice, including the complete TinyEMU/slirp notices and the other dependencies.")
+                Text("settings.diagnostics.legal.footer")
             }
 
             if let errorMessage {

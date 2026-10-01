@@ -28,8 +28,12 @@ struct LinuxPortForwardSection: View {
     @State private var expandedRuleID: UUID?
 
     var body: some View {
-        Section("TCP 端口转发") {
-            Text("每条规则把客户机的一个 TCP 端口发布到本机；主机端口可固定或动态分配（49152–65535），每台 VM 最多 \(LinuxPortForwardLimits.maximumRulesPerEnvironment) 条。默认绑定 \(LinuxPortForwardLimits.defaultBindAddress)（局域网可访问）。应用不会做 UPnP/NAT 映射，也不会展示公网地址。")
+        Section {
+            Text(String.localizedStringWithFormat(
+                String(localized: "portforward.footer"),
+                Int64(LinuxPortForwardLimits.maximumRulesPerEnvironment),
+                LinuxPortForwardLimits.defaultBindAddress
+            ))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -43,7 +47,7 @@ struct LinuxPortForwardSection: View {
                 newHostPort = ""
                 showingAdd = true
             } label: {
-                Label("添加端口转发规则", systemImage: "plus.circle")
+                Label("portforward.add_rule", systemImage: "plus.circle")
             }
             .frame(minHeight: FloeTheme.minimumTarget)
 
@@ -62,6 +66,8 @@ struct LinuxPortForwardSection: View {
             Text(center.addressSummary(environmentID: environmentID))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        } header: {
+            Text("portforward.title")
         }
         .sheet(isPresented: $showingAdd) { addSheet }
     }
@@ -71,23 +77,30 @@ struct LinuxPortForwardSection: View {
         let preview = center.preview(environmentID: environmentID, ruleID: rule.id)
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(rule.label.isEmpty ? "端口 \(rule.guestPort)" : rule.label)
+                Text(rule.label.isEmpty
+                     ? String.localizedStringWithFormat(String(localized: "portforward.port"), Int64(rule.guestPort))
+                     : rule.label)
                     .font(.body)
                 Spacer()
-                Text(rule.isDynamic ? "动态" : "固定")
+                Text(rule.isDynamic ? "portforward.dynamic" : "portforward.fixed")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 6) {
-                Text("客户机 \(rule.guestPort)")
+                Text(String.localizedStringWithFormat(
+                    String(localized: "portforward.guest_port"), Int64(rule.guestPort)
+                ))
                 Text("→")
-                Text("主机 \(preview.map { String($0.plan.hostPort) } ?? rule.requestedHostPortText)")
+                Text(String.localizedStringWithFormat(
+                    String(localized: "portforward.host_port"),
+                    preview.map { String($0.plan.hostPort) } ?? rule.requestedHostPortText
+                ))
                 if preview?.isApplied == true {
-                    Label("已生效", systemImage: "checkmark.circle.fill")
+                    Label("portforward.applied", systemImage: "checkmark.circle.fill")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.success)
                 } else {
-                    Text("待应用")
+                    Text("portforward.pending")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                 }
@@ -107,18 +120,18 @@ struct LinuxPortForwardSection: View {
                             UIPasteboard.general.string = url.absoluteString
                             copiedRuleID = rule.id
                         } label: {
-                            Label(copiedRuleID == rule.id ? "已复制" : "复制", systemImage: "doc.on.doc")
+                            Label(copiedRuleID == rule.id ? "portforward.copied" : "portforward.copy", systemImage: "doc.on.doc")
                         }
                         .buttonStyle(.borderless)
                         .frame(minHeight: FloeTheme.minimumTarget)
                     }
                     if preview.lanURL == nil {
-                        Text("尚未检测到本机局域网地址；显示的是仅本机可用的回环地址。")
+                        Text("portforward.loopback_hint")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("当前没有可用的本地地址")
+                    Text("portforward.no_local_address")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -135,25 +148,29 @@ struct LinuxPortForwardSection: View {
                                 .resizable()
                                 .scaledToFit()
                                 .frame(maxWidth: 160, maxHeight: 160)
-                                .accessibilityLabel("端口转发地址二维码")
+                                .accessibilityLabel(Text("portforward.qr_label"))
                         }
-                        Text("二维码内容为该地址本身，不包含任何公网映射。")
+                        Text("portforward.qr_hint")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     } label: {
-                        Text("显示二维码")
+                        Text("portforward.show_qr")
                             .font(FloeTheme.Typography.metadata)
                     }
                 }
                 if preview.wasRemapped, let requested = rule.requestedHostPort {
-                    Text("固定端口 \(requested) 已被占用，已改用 \(preview.plan.hostPort)。")
+                    Text(String.localizedStringWithFormat(
+                        String(localized: "portforward.remapped"),
+                        Int64(requested),
+                        Int64(preview.plan.hostPort)
+                    ))
                         .font(.caption2)
                         .foregroundStyle(FloeTheme.pending)
                 }
             }
 
             HStack {
-                Toggle("启用", isOn: Binding(
+                Toggle("portforward.enable", isOn: Binding(
                     get: { rule.isEnabled },
                     set: { enabled in
                         Task {
@@ -174,7 +191,7 @@ struct LinuxPortForwardSection: View {
                 Button(role: .destructive) {
                     Task { await center.removeRule(environmentID: environmentID, ruleID: rule.id) }
                 } label: {
-                    Label("删除", systemImage: "trash")
+                    Label("portforward.delete", systemImage: "trash")
                 }
                 .buttonStyle(.borderless)
                 .frame(minHeight: FloeTheme.minimumTarget)
@@ -186,28 +203,34 @@ struct LinuxPortForwardSection: View {
     private var addSheet: some View {
         NavigationStack {
             Form {
-                Section("新规则") {
-                    TextField("名称（可选）", text: $newLabel)
-                    TextField("客户机端口", text: $newGuestPort)
+                Section {
+                    TextField("portforward.name_optional", text: $newLabel)
+                    TextField("portforward.guest_port_field", text: $newGuestPort)
                         .keyboardType(.numberPad)
-                    TextField("固定主机端口（留空为动态分配）", text: $newHostPort)
+                    TextField("portforward.host_port_field", text: $newHostPort)
                         .keyboardType(.numberPad)
-                    Text("主机端口必须在 \(LinuxPortForwardLimits.minimumHostPort)–\(LinuxPortForwardLimits.maximumHostPort) 之间；留空时自动从该范围分配最小空闲端口。")
+                    Text(String.localizedStringWithFormat(
+                        String(localized: "portforward.host_port_hint"),
+                        Int64(LinuxPortForwardLimits.minimumHostPort),
+                        Int64(LinuxPortForwardLimits.maximumHostPort)
+                    ))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                } header: {
+                    Text("portforward.new_rule")
                 }
                 if let errorMessage {
                     Text(errorMessage)
                         .foregroundStyle(FloeTheme.destructive)
                 }
             }
-            .navigationTitle("添加端口转发")
+            .navigationTitle("portforward.add_title")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showingAdd = false }
+                    Button("action.cancel") { showingAdd = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("添加") { submit() }
+                    Button("portforward.add") { submit() }
                 }
             }
         }
@@ -217,7 +240,7 @@ struct LinuxPortForwardSection: View {
         errorMessage = nil
         guard let guestPort = Int(newGuestPort.trimmingCharacters(in: .whitespaces)),
               (1...65_535).contains(guestPort) else {
-            errorMessage = "客户机端口必须是 1–65535 的整数。"
+            errorMessage = String(localized: "portforward.guest_invalid")
             return
         }
         let trimmedHost = newHostPort.trimmingCharacters(in: .whitespaces)
@@ -228,7 +251,11 @@ struct LinuxPortForwardSection: View {
                   LinuxPortForwardLimits.isAllowedHostPort(parsed) {
             hostPort = parsed
         } else {
-            errorMessage = "固定主机端口必须在 \(LinuxPortForwardLimits.minimumHostPort)–\(LinuxPortForwardLimits.maximumHostPort) 之间，或留空使用动态分配。"
+            errorMessage = String.localizedStringWithFormat(
+                String(localized: "portforward.host_invalid"),
+                Int64(LinuxPortForwardLimits.minimumHostPort),
+                Int64(LinuxPortForwardLimits.maximumHostPort)
+            )
             return
         }
         let label = newLabel.trimmingCharacters(in: .whitespaces)
@@ -239,7 +266,11 @@ struct LinuxPortForwardSection: View {
                     environmentID: environmentID,
                     guestPort: guestPort,
                     requestedHostPort: hostPort,
-                    label: label.isEmpty ? "端口 \(guestPort)" : label
+                    label: label.isEmpty
+                        ? String.localizedStringWithFormat(
+                            String(localized: "portforward.port"), Int64(guestPort)
+                        )
+                        : label
                 )
             } catch {
                 errorMessage = error.localizedDescription

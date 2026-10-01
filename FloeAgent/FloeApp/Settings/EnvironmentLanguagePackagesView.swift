@@ -39,10 +39,10 @@ struct EnvironmentLanguagePackagesView: View {
                 Text(language == .python ? sources.pythonIndex : sources.nodeRegistry)
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Text(language == .python
-                     ? "安装到此环境私有的受管 venv（/floe/env/python/venv）：此环境的 shell、Python 工具与本页共用同一套包，不同环境彼此隔离。优先安装 riscv64 预构建 wheel；无预构建的源码包需要 guest 内有编译工具链（dev-document 模板已含 build-essential）。镜像系统层的包只在“继承的依赖”中只读展示。"
-                     : "安装到此环境私有的 node_modules（/floe/env/usr/lib/node_modules），不同环境彼此隔离。真实 npm/pnpm 会执行安装脚本、安装原生二进制并创建 CLI 符号链接；失败时保留原有依赖。App 自带运行时不在此卸载。")
+                     ? String(localized: "langpkg.python_note")
+                     : String(localized: "langpkg.node_note"))
                     .font(.subheadline).foregroundStyle(.secondary)
-                Text("这里只展示环境中安装的依赖；App 自带运行时不在此卸载。").font(.caption).foregroundStyle(.secondary)
+                Text("langpkg.runtime_note").font(.caption).foregroundStyle(.secondary)
             }
             if language == .node {
                 Section("packages.node.manager") {
@@ -136,13 +136,11 @@ struct EnvironmentLanguagePackagesView: View {
 
     private var writableTitle: String {
         language == .python
-            ? String(localized: "此环境 venv 内（Guest 实时查询）")
-            : String(localized: "此环境 node_modules（Guest 实时查询）")
+            ? String(localized: "langpkg.writable.python")
+            : String(localized: "langpkg.writable.node")
     }
     private var inheritedTitle: String {
-        language == .python
-            ? String(localized: "镜像/父层继承（只读）")
-            : String(localized: "镜像/父层继承（只读）")
+        String(localized: "langpkg.inherited")
     }
     /// Honest provenance + freshness line. The Linux guest answers live only
     /// while running; a stopped screen keeps the previous rows but says when
@@ -151,11 +149,11 @@ struct EnvironmentLanguagePackagesView: View {
         let time = collectedAt.map { DateFormatter.listTime.string(from: $0) } ?? "—"
         switch guestRunning {
         case true:
-            return String(localized: "正在运行 · Guest 实时清单 · 更新于 \(time)")
+            return String.localizedStringWithFormat(String(localized: "langpkg.fresh.running"), time)
         case false:
-            return String(localized: "已停止 · 显示上次 Guest 清单 · 更新于 \(time)")
+            return String.localizedStringWithFormat(String(localized: "langpkg.fresh.stopped"), time)
         default:
-            return String(localized: "等待 Guest 状态 · 更新于 \(time)")
+            return String.localizedStringWithFormat(String(localized: "langpkg.fresh.waiting"), time)
         }
     }
 

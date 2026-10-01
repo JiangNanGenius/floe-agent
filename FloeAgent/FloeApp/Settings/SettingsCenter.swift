@@ -300,11 +300,11 @@ final class SettingsCenter: ObservableObject {
             .init(id: "javascript", displayName: "JavaScript (JavaScriptCore)", source: .bundled, capability: js,
                   detail: "JavaScriptCore framework"),
             .init(id: "python", displayName: "Python 3", source: .component, capability: localPython,
-                  detail: "Linux guest (Debian python3, shared venv per environment)"),
+                  detail: String(localized: "settings.exec.runtime.detail.python_linux")),
             .init(id: "node", displayName: "Node.js", source: .component, capability: node,
-                  detail: "Linux guest (apt nodejs/npm per environment)"),
-            .init(id: "python-remote", displayName: "Python (remote host)", source: .remote, capability: remotePython,
-                  detail: "paired SSH host"),
+                  detail: String(localized: "settings.exec.runtime.detail.node_linux")),
+            .init(id: "python-remote", displayName: String(localized: "settings.exec.python_remote"), source: .remote, capability: remotePython,
+                  detail: String(localized: "settings.exec.runtime.detail.ssh")),
         ]
         let project = layers
             .filter { layer in

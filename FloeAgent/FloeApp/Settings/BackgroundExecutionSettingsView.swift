@@ -28,7 +28,7 @@ struct BackgroundExecutionSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("后台执行方式", selection: Binding(
+                Picker("agent.background_execution", selection: Binding(
                     get: { center.backgroundExecution },
                     set: { preference in
                         Task { await center.setBackgroundExecution(preference) }
@@ -45,14 +45,14 @@ struct BackgroundExecutionSettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(center.backgroundExecution.subtitle)
                     if !statusPiPEnabled {
-                        Text("此版本未启用状态画中画：选择画中画会改用普通后台任务（持续处理 + 检查点恢复）。")
+                        Text("background.pip_unavailable")
                     }
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             }
             if center.backgroundExecution == .pictureInPicture, statusPiPEnabled {
-                Section("画中画状态") {
+                Section {
                     Label(
                         videoService.preparationState.localizedDescription,
                         systemImage: videoService.isPiPActive ? "pip.fill" : "pip"
@@ -62,13 +62,15 @@ struct BackgroundExecutionSettingsView: View {
                             .foregroundStyle(FloeTheme.destructive)
                             .font(.footnote)
                     }
-                    Text("任务运行时，画面只嵌在任务或画布工具栏内；离开 Floe 时，系统会自动进入画中画，也可在工具栏手动启动或关闭。Floe 在前台时不会创建独立悬浮卡片。")
+                    Text("background.pip_note")
                         .foregroundStyle(.secondary)
                         .font(.footnote)
+                } header: {
+                    Text("background.pip_section")
                 }
             }
         }
-        .navigationTitle("后台执行")
+        .navigationTitle("background.settings.title")
         .task { await center.loadBackgroundExecution() }
     }
 }

@@ -87,7 +87,7 @@ struct SettingsRootView: View {
             // detail column is never blank.
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 List(SettingsSection.visibleCases, selection: $selection) { section in
-                    Label(section.title, systemImage: section.systemImage)
+                    settingsRowLabel(for: section)
                         .tag(section)
                         .accessibilityIdentifier("settings.section.\(section.rawValue)")
                 }
@@ -116,7 +116,7 @@ struct SettingsRootView: View {
             NavigationStack {
                 List(SettingsSection.visibleCases) { section in
                     NavigationLink(value: section) {
-                        Label(section.title, systemImage: section.systemImage)
+                        settingsRowLabel(for: section)
                     }
                     .accessibilityIdentifier("settings.section.\(section.rawValue)")
                     .frame(minHeight: FloeTheme.minimumTarget)
@@ -144,6 +144,25 @@ struct SettingsRootView: View {
             }
         } message: {
             Text(environment.settingsCenter.settingsSaveError ?? "请稍后重试。")
+        }
+    }
+
+    /// The on-device model entry carries an explicit Beta marker without
+    /// renaming the row itself; cloud models never share that marker.
+    @ViewBuilder
+    private func settingsRowLabel(for section: SettingsSection) -> some View {
+        if section == .localModels {
+            HStack {
+                Label(section.title, systemImage: section.systemImage)
+                Spacer()
+                Text("localmodels.beta_badge")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(FloeTheme.pending)
+                    // Leave room for the compact-list chevron on iPhone.
+                    .padding(.trailing, 22)
+            }
+        } else {
+            Label(section.title, systemImage: section.systemImage)
         }
     }
 

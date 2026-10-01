@@ -28,7 +28,7 @@ struct ExecutionEnvironmentView: View {
     @State private var linuxImageModel: LinuxImageInstallModel? = LinuxImageInstallModel(imageID: LinuxGuestImageDistributionCatalog.defaultImageID)
     @State private var linuxImageStatus: LinuxGuestImageInstallationService.ImageStatus?
     @State private var linuxEnvironmentID: String?
-    @State private var linuxEnvironmentTitle = "Linux 环境"
+    @State private var linuxEnvironmentTitle = String(localized: "exec.linux.env_title")
     @State private var linuxGuestStatus: LinuxGuestStatus?
     @State private var linuxBusy = false
     @State private var linuxError: String?
@@ -96,7 +96,7 @@ struct ExecutionEnvironmentView: View {
                 } label: {
                     Label("environment.manager.entry", systemImage: "shippingbox")
                 }
-                Text("查看每层依赖与容量，安装或卸载软件包，停止、恢复环境和保存模板。")
+                Text("exec.packages.detail")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
 
@@ -139,30 +139,32 @@ struct ExecutionEnvironmentView: View {
     /// termination; the caption says what the system actually does.
     @ViewBuilder
     private func linuxBackgroundSection(environmentID: String) -> some View {
-        Section("Linux 后台运行") {
-            Toggle("允许后台运行", isOn: backgroundSessionBinding(environmentID: environmentID))
+        Section {
+            Toggle("exec.linux.allow_background", isOn: backgroundSessionBinding(environmentID: environmentID))
                 .frame(minHeight: FloeTheme.minimumTarget)
-            Text("开启后，离开 Floe 时系统会用持续处理任务为该环境争取后台时间，并在后台准备状态画中画；关闭画中画会安全停止该 VM 并刷新磁盘，但保留此偏好。应用被系统回收后环境仍会停止（磁盘保留），重新打开后可再次启动。系统不保证无限后台执行。")
+            Text("exec.linux.background_note")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            LabeledContent("后台任务状态") {
+            LabeledContent("exec.linux.background_status") {
                 Text(linuxBackgroundWork?.progressText ?? (center.environment.backgroundRunCoordinator
                     .linuxBackgroundSessionIsEnabled(environmentID: environmentID)
-                    ? String(localized: "environment.backend.checking") : "未开启"))
+                    ? String(localized: "environment.backend.checking") : String(localized: "exec.linux.not_enabled")))
                     .foregroundStyle(.secondary)
             }
             if let work = linuxBackgroundWork {
-                LabeledContent("已运行", value: work.elapsedTimeLabel())
+                LabeledContent("exec.linux.elapsed", value: work.elapsedTimeLabel())
                 metricsRows(work.metrics)
-                LabeledContent("命令 / 服务 / 端口") {
+                LabeledContent("exec.linux.command_service_port") {
                     Text("\(work.activeCommandCount) / \(work.activeServiceCount) / \(work.portForwardCount)")
                         .foregroundStyle(.secondary)
                 }
             }
-            LabeledContent("托管服务") {
+            LabeledContent("exec.linux.managed_services") {
                 Text(activeServiceCount.map(String.init) ?? "—")
                     .foregroundStyle(.secondary)
             }
+        } header: {
+            Text("exec.linux.background_section")
         }
     }
 
@@ -171,19 +173,21 @@ struct ExecutionEnvironmentView: View {
     @ViewBuilder
     private var notificationDiagnosticsSection: some View {
         let diagnostics = center.environment.backgroundRunCoordinator.notificationDiagnostics()
-        Section("任务通知") {
-            LabeledContent("通知授权", value: diagnostics.authorizationSummary)
-            LabeledContent("待发送", value: String(diagnostics.pendingCount))
-            LabeledContent("上次调度失败") {
+        Section {
+            LabeledContent("exec.notifications.authorization", value: diagnostics.authorizationSummary)
+            LabeledContent("exec.notifications.pending", value: String(diagnostics.pendingCount))
+            LabeledContent("exec.notifications.last_failure") {
                 Text(diagnostics.lastFailureSummary)
                     .foregroundStyle(.secondary)
             }
             if let at = diagnostics.lastScheduledAt {
-                LabeledContent("上次发送", value: at.formatted(date: .abbreviated, time: .standard))
+                LabeledContent("exec.notifications.last_sent", value: at.formatted(date: .abbreviated, time: .standard))
             }
-            Text("完成、失败、取消和等待审批都会成为持久事件；授权未就绪时排队，不会丢弃。前台与后台都通过系统通知中心展示，点击会跳转到对应任务或环境。")
+            Text("exec.notifications.note")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        } header: {
+            Text("exec.notifications.section")
         }
     }
 
@@ -204,10 +208,10 @@ struct ExecutionEnvironmentView: View {
     /// Only measured Linux runtime values are shown; a missing sample renders "—".
     @ViewBuilder
     private func metricsRows(_ metrics: BackgroundWorkMetrics?) -> some View {
-        LabeledContent("模拟器 CPU", value: percentText(metrics?.emulatorCPUFraction))
-        LabeledContent("客户机 CPU", value: percentText(metrics?.guestCPUFraction))
-        LabeledContent("客户机内存", value: memoryText(metrics))
-        LabeledContent("网络流量", value: networkText(metrics))
+        LabeledContent("exec.metrics.emulator_cpu", value: percentText(metrics?.emulatorCPUFraction))
+        LabeledContent("exec.metrics.guest_cpu", value: percentText(metrics?.guestCPUFraction))
+        LabeledContent("exec.metrics.guest_memory", value: memoryText(metrics))
+        LabeledContent("exec.metrics.network", value: networkText(metrics))
     }
 
     private func percentText(_ fraction: Double?) -> String {
@@ -284,7 +288,7 @@ struct ExecutionEnvironmentView: View {
                 LabeledContent("environment.backend.network", value: networkLabel(network))
             }
             if let kernel = guestKernel {
-                LabeledContent(ExecutionEnvironmentText.t("内核", "Kernel"), value: kernel)
+                LabeledContent("exec.kernel", value: kernel)
             }
             if let python = guestRuntimes["Python"] {
                 LabeledContent("Python", value: python)
@@ -293,7 +297,7 @@ struct ExecutionEnvironmentView: View {
                 LabeledContent("Node", value: node)
             }
             if let guestVCPUs {
-                LabeledContent(ExecutionEnvironmentText.t("客户机 vCPU", "Guest vCPUs"),
+                LabeledContent("exec.vcpu.label",
                                value: "\(guestVCPUs)")
                 Text(guestShapeCapacityNote)
                     .font(.footnote)
@@ -325,20 +329,17 @@ struct ExecutionEnvironmentView: View {
         }
     }
 
-    /// The honest per-release core ceiling for a running guest. The message is
-    /// shown only next to a real granted count, so it never pretends a stopped
-    /// guest was measured.
+    /// The honest per-release core ceiling for a running Linux environment.
+    /// The message is shown only next to a real granted count, so it never
+    /// pretends a stopped environment was measured.
     private var guestShapeCapacityNote: String {
         let maximum = GuestReleaseShapePolicy.production.maximumSupportedVCPUs
         if maximum <= 1 {
-            return ExecutionEnvironmentText.t(
-                "本版本最多交付 \(maximum) 核客户机；明确选择 2 核会提示错误，不会静默降级为单核。",
-                "This release delivers at most \(maximum) guest core(s); an explicit 2-core request shows an error and never silently falls back to one core."
-            )
+            return String(localized: "exec.vcpu.note_single")
         }
-        return ExecutionEnvironmentText.t(
-            "本版本支持最多 \(maximum) 核客户机，但仅当已安装镜像的清单证明 SMP 时才会授予 2 核；双核已通过 S0–S4 正确性验证，等量工作基准在 2 核上更慢（约 0.88×），不会声称加速。显式选择 2 核在镜像无 SMP 证据时会报错，不会静默降级为单核。",
-            "This release supports up to \(maximum)-core guests, but 2 cores are granted only when the installed image manifest proves SMP. Dual-core passed the S0–S4 correctness contract; the equal-work benchmark is slower on two cores (about 0.88×) and no speedup is claimed. An explicit 2-core request on an image without SMP evidence shows an error and never silently falls back to one core."
+        return String.localizedStringWithFormat(
+            String(localized: "exec.vcpu.note_dual"),
+            Int64(maximum)
         )
     }
 
@@ -556,12 +557,4 @@ struct ExecutionEnvironmentView: View {
     }
 }
 
-/// Inline en/zh strings for the core-count honesty note. Same pattern as
-/// `IDELanguageRunText`: usable in both languages without depending on an
-/// unmerged `Localizable.xcstrings` entry; a later change may move these
-/// keys into the catalog.
-enum ExecutionEnvironmentText {
-    static var isChinese: Bool { Locale.current.identifier.hasPrefix("zh") }
-    static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
-}
 #endif

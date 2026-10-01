@@ -62,7 +62,7 @@ final class LocalModelsCenter: ObservableObject {
                 guard var model = configured.first(where: {
                     $0.remoteModelID == remoteModelID
                 }) else {
-                    throw FloeError.notFound("本地模型配置尚未建立，请刷新后重试")
+                    throw FloeError.notFound(String(localized: "localmodels.config_not_ready"))
                 }
                 model.isEnabled = isEnabled
                 try await configurationStore.saveModel(model)
@@ -124,7 +124,7 @@ final class LocalModelsCenter: ObservableObject {
                     )
                 }
                 guard var model = configured.first(where: { $0.remoteModelID == remoteModelID }) else {
-                    throw FloeError.notFound("本地模型配置尚未建立，请刷新后重试")
+                    throw FloeError.notFound(String(localized: "localmodels.config_not_ready"))
                 }
                 model.isHiddenFromPrimaryPicker = isHidden
                 try await configurationStore.saveModel(model)
@@ -184,7 +184,7 @@ final class LocalModelsCenter: ObservableObject {
         Task {
             guard await store.isInstalled(id: entry.id) else {
                 await refresh()
-                errorMessage = "本地模型文件不完整或已被移除，请重新下载。"
+                errorMessage = String(localized: "localmodels.files_incomplete")
                 FloeLogger(category: .providers).warning(
                     "localModelLoadRejected model=\(entry.id) reason=inventoryMismatch"
                 )
@@ -273,7 +273,13 @@ final class LocalModelsCenter: ObservableObject {
     private static func incompatibleMessage(mappedBytes: UInt64, availableBytes: UInt64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .memory
-        return "当前运行空间可能不足：该模型约需 \(formatter.string(fromByteCount: Int64(mappedBytes)))，目前可用 \(formatter.string(fromByteCount: Int64(availableBytes)))。可关闭大型 App 后刷新，或选择较小的模型。"
+        let needed = formatter.string(fromByteCount: Int64(mappedBytes))
+        let available = formatter.string(fromByteCount: Int64(availableBytes))
+        return String.localizedStringWithFormat(
+            String(localized: "localmodels.memory_note"),
+            needed,
+            available
+        )
     }
 
     func download(_ entry: LocalModelCatalogEntry) {
@@ -366,7 +372,7 @@ struct LocalModelsSettingsView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Apple Foundation Model").font(.headline)
-                                Text("由 Apple Intelligence 管理 · 无需下载")
+                                Text("localmodels.apple_subtitle")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -387,7 +393,7 @@ struct LocalModelsSettingsView: View {
                             .labelsHidden()
                             .accessibilityIdentifier("localModel.enabled.appleFoundation")
                             if center.appleFoundationAvailability.isAvailable {
-                                Label("可用", systemImage: "checkmark.circle.fill")
+                                Label("localmodels.available", systemImage: "checkmark.circle.fill")
                                     .foregroundStyle(.green)
                             }
                         }
@@ -409,9 +415,9 @@ struct LocalModelsSettingsView: View {
                             center.appleFoundationAvailability {
                             HStack(spacing: 12) {
                                 Label(Self.contextLabel(context), systemImage: "circle.dotted")
-                                if vision { Label("视觉", systemImage: "eye") }
-                                if tools { Label("工具", systemImage: "wrench.and.screwdriver") }
-                                if reasoning { Label("推理", systemImage: "brain") }
+                                if vision { Label("localmodels.vision", systemImage: "eye") }
+                                if tools { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
+                                if reasoning { Label("localmodels.reasoning", systemImage: "brain") }
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -425,9 +431,9 @@ struct LocalModelsSettingsView: View {
                     }
                     .padding(.vertical, 4)
                 } header: {
-                    Text("系统模型")
+                    Text("localmodels.system_section")
                 } footer: {
-                    Text("可用性由系统实时报告；模型尚在下载时不会循环重试。")
+                    Text("localmodels.apple_footer")
                 }
             }
             Section {
@@ -442,7 +448,7 @@ struct LocalModelsSettingsView: View {
                             Spacer()
                             if center.removingIDs.contains(entry.id) {
                                 ProgressView().controlSize(.small)
-                                Text("正在删除…").font(.caption).foregroundStyle(.secondary)
+                                Text("localmodels.removing").font(.caption).foregroundStyle(.secondary)
                             } else if center.activeDownloads.contains(entry.id) {
                                 Button("localmodels.pause") { center.pause(entry) }
                                     .buttonStyle(.borderless)
@@ -455,13 +461,13 @@ struct LocalModelsSettingsView: View {
                                 switch center.runtimeState {
                                 case .loading(let id) where id == entry.id:
                                     ProgressView().controlSize(.small)
-                                    Text("正在加载…").font(.caption).foregroundStyle(.secondary)
+                                    Text("localmodels.loading").font(.caption).foregroundStyle(.secondary)
                                 case .ready(let id) where id == entry.id:
                                     Button("action.uninstall") { center.unload(entry) }
                                         .buttonStyle(.borderless)
                                         .accessibilityIdentifier("localModel.unload.\(entry.id)")
                                 default:
-                                    Button("加载") { center.load(entry) }
+                                    Button("localmodels.load") { center.load(entry) }
                                         .buttonStyle(.borderless)
                                         .disabled(center.incompatibleReasons[entry.id] != nil)
                                         .accessibilityIdentifier("localModel.load.\(entry.id)")
@@ -469,7 +475,7 @@ struct LocalModelsSettingsView: View {
                                 if center.benchmarkingIDs.contains(entry.id) {
                                     ProgressView().controlSize(.small)
                                 } else {
-                                    Button("测速") { center.benchmark(entry) }
+                                    Button("localmodels.benchmark") { center.benchmark(entry) }
                                         .buttonStyle(.borderless)
                                         .disabled(center.incompatibleReasons[entry.id] != nil)
                                         .accessibilityIdentifier("localModel.benchmark.\(entry.id)")
@@ -535,20 +541,25 @@ struct LocalModelsSettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }.padding(.vertical, 4)
+                } header: {
+                    Label("localmodels.beta_badge", systemImage: "testtube.2")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("localmodels.not_recommended")
+                        Text("localmodels.footer")
+                    }
                 }
-            } footer: {
-                Text("模型需要手动下载并只保存在本机。本地推理仅处理文字，不加载视觉组件；图片先由辅助读图模型生成摘要，辅助模型不可用时再由系统 OCR 转成工作区文字文件。多个任务会自动排队。")
             }
             let retiredInstalled = CuratedLocalModelCatalog.retiredEntries.filter {
                 center.installedIDs.contains($0.id)
             }
             if !retiredInstalled.isEmpty {
-                Section("已停用模型") {
+                Section {
                     ForEach(retiredInstalled) { entry in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(entry.displayName)
-                                Text("该型号已从推荐列表移除，可删除已下载文件。")
+                                Text("localmodels.retired_note")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -563,6 +574,8 @@ struct LocalModelsSettingsView: View {
                             }
                         }
                     }
+                } header: {
+                    Text("localmodels.retired_section")
                 }
             }
             if let errorMessage = center.errorMessage {
@@ -573,7 +586,7 @@ struct LocalModelsSettingsView: View {
         .task { await center.refresh() }
         .refreshable { await center.refresh() }
         .confirmationDialog(
-            "删除本地模型？",
+            "localmodels.remove_title",
             isPresented: Binding(
                 get: { pendingRemoval != nil },
                 set: { if !$0 { pendingRemoval = nil } }
@@ -581,14 +594,20 @@ struct LocalModelsSettingsView: View {
             titleVisibility: .visible
         ) {
             if let entry = pendingRemoval {
-                Button("删除 \(entry.displayName)", role: .destructive) {
+                Button(
+                    String.localizedStringWithFormat(
+                        String(localized: "localmodels.remove_button"),
+                        entry.displayName
+                    ),
+                    role: .destructive
+                ) {
                     center.remove(entry)
                     pendingRemoval = nil
                 }
             }
             Button("action.cancel", role: .cancel) { pendingRemoval = nil }
         } message: {
-            Text("删除后需要重新下载模型文件。此操作不会自动恢复。")
+            Text("localmodels.remove_message")
         }
     }
 
@@ -617,12 +636,26 @@ struct LocalModelsSettingsView: View {
 
     private static func benchmarkLabel(_ result: LocalModelBenchmarkResult) -> String {
         let speed = result.tokensPerSecond.map {
-            "\($0.formatted(.number.precision(.fractionLength(1)))) 字符片段/秒"
-        } ?? "速度未测得"
-        let first = result.timeToFirstTokenMs.map {
-            "首次回复 \((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2)))) 秒"
-        } ?? "首次回复耗时未测得"
-        return "体验测试：\(speed) · \(first) · 适合同时运行 \(result.recommendedConcurrentTasks) 个任务"
+            String.localizedStringWithFormat(
+                String(localized: "localmodels.tokens_per_second"),
+                $0.formatted(.number.precision(.fractionLength(1)))
+            )
+        } ?? String(localized: "localmodels.speed_unmeasured")
+        let first: String
+        if let ms = result.timeToFirstTokenMs {
+            first = String.localizedStringWithFormat(
+                String(localized: "localmodels.first_reply"),
+                (Double(ms) / 1_000).formatted(.number.precision(.fractionLength(2)))
+            )
+        } else {
+            first = String(localized: "localmodels.first_reply_unmeasured")
+        }
+        return String.localizedStringWithFormat(
+            String(localized: "localmodels.benchmark_summary"),
+            speed,
+            first,
+            Int64(result.recommendedConcurrentTasks)
+        )
     }
 
     private var shouldShowAppleFoundationModel: Bool {
@@ -633,10 +666,18 @@ struct LocalModelsSettingsView: View {
     }
 
     private static func contextLabel(_ tokens: Int) -> String {
+        let value: String
         if tokens >= 1_000_000 {
-            return "上下文 \((Double(tokens) / 1_000_000).formatted(.number.precision(.fractionLength(1))))M"
+            value = (Double(tokens) / 1_000_000).formatted(.number.precision(.fractionLength(1))) + "M"
+        } else {
+            value = (Double(tokens) / 1_000).formatted(
+                .number.precision(.fractionLength(tokens >= 10_000 ? 0 : 1))
+            ) + "K"
         }
-        return "上下文 \((Double(tokens) / 1_000).formatted(.number.precision(.fractionLength(tokens >= 10_000 ? 0 : 1))))K"
+        return String.localizedStringWithFormat(
+            String(localized: "localmodels.context"),
+            value
+        )
     }
 }
 #endif

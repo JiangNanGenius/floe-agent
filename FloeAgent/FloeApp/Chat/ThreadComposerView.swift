@@ -472,7 +472,7 @@ struct ThreadComposerView: View {
             draftStore.flush()
         }
         .confirmationDialog(
-            "切换到本地模型？",
+            "composer.local.confirm.title",
             isPresented: Binding(
                 get: { pendingLocalCapabilityModel != nil },
                 set: { if !$0 { pendingLocalCapabilityModel = nil } }
@@ -480,9 +480,14 @@ struct ThreadComposerView: View {
             titleVisibility: .visible
         ) {
             if let model = pendingLocalCapabilityModel {
-                Button("继续切换到 \(model.displayName)") {
+                Button(role: nil) {
                     pendingLocalCapabilityModel = nil
                     chooseOnDeviceModel(model)
+                } label: {
+                    Text(verbatim: String(
+                        format: String(localized: "composer.local.confirm.continue"),
+                        model.displayName
+                    ))
                 }
             }
             Button("action.cancel", role: .cancel) {
@@ -491,13 +496,19 @@ struct ThreadComposerView: View {
         } message: {
             if pendingLocalCapabilityModel?.remoteModelID
                 == AppleFoundationModelIdentity.remoteModelID {
-                Text("Apple Foundation Model 目前只支持文字聊天和 Apple 设备能力。附图会先交给已配置的辅助读图模型生成视觉摘要；没有可用辅助模型时才降级为系统 OCR，并会明确说明限制。网页、Python、浏览器、SSH、云工作区、Git 等其他 Floe 工具在此模型下不可用。")
+                Text("composer.local.confirm.message.apple")
             } else {
-                Text("本地模型仅处理文字，不加载视觉组件，也不会获得 image.inspect。附图会由已配置的辅助读图模型生成视觉摘要并保存到工作区；辅助模型不可用时降级为系统 OCR 并说明原因。它适合搜索、文件读取、PDF 文字处理与本地计算。")
+                // Reuse the standalone not-recommended line below the concrete
+                // capability description instead of inventing a second wording.
+                Text(verbatim:
+                    String(localized: "composer.local.confirm.message.mlx")
+                    + "\n\n"
+                    + String(localized: "localmodels.not_recommended")
+                )
             }
         }
         .confirmationDialog(
-            "切换本地模型？",
+            "composer.local.confirm.title",
             isPresented: Binding(
                 get: { pendingLocalModelSwitch != nil },
                 set: { if !$0 { pendingLocalModelSwitch = nil } }
@@ -505,9 +516,14 @@ struct ThreadComposerView: View {
             titleVisibility: .visible
         ) {
             if let pendingLocalModelSwitch {
-                Button("切换到 \(pendingLocalModelSwitch.target.displayName)") {
+                Button {
                     applyModelSelection(pendingLocalModelSwitch.target)
                     self.pendingLocalModelSwitch = nil
+                } label: {
+                    Text(verbatim: String(
+                        format: String(localized: "composer.local.switch.confirm"),
+                        pendingLocalModelSwitch.target.displayName
+                    ))
                 }
             }
             Button("action.cancel", role: .cancel) {
@@ -515,7 +531,11 @@ struct ThreadComposerView: View {
             }
         } message: {
             if let pendingLocalModelSwitch {
-                Text("当前已加载 \(pendingLocalModelSwitch.residentName)。下次使用本地模型时会先释放它，再加载 \(pendingLocalModelSwitch.target.displayName)；正在执行的任务不会被中断。")
+                Text(verbatim: String(
+                    format: String(localized: "composer.local.switch.message"),
+                    pendingLocalModelSwitch.residentName,
+                    pendingLocalModelSwitch.target.displayName
+                ))
             }
         }
     }
@@ -1019,7 +1039,7 @@ struct ThreadComposerView: View {
             if let modelName {
                 Menu {
                     ForEach(modelMenuGroups) { group in
-                        Section(group.title) {
+                        Section {
                             ForEach(group.models) { model in
                                 Button {
                                     chooseModel(model)
@@ -1031,12 +1051,15 @@ struct ThreadComposerView: View {
                                     }
                                 }
                             }
+                        } header: {
+                            modelMenuSectionHeader(group)
                         }
                     }
                 } label: {
                     composerChip(
                         title: modelName,
-                        systemImage: preparingLocalModelID == nil ? "cpu" : "hourglass"
+                        systemImage: preparingLocalModelID == nil ? "cpu" : "hourglass",
+                        betaBadge: selectedModelIsMLX
                     )
                 }
                 .disabled(preparingLocalModelID != nil)
@@ -1048,25 +1071,59 @@ struct ThreadComposerView: View {
         }
     }
 
+    /// True only when the currently selected model is a downloaded MLX
+    /// device model — never the Apple system model or a cloud model.
+    private var selectedModelIsMLX: Bool {
+        guard let selected = models.first(where: { $0.id == selectedModelID }) else {
+            return false
+        }
+        return selected.providerID == ProviderProfile.onDeviceProviderID
+            && selected.remoteModelID != AppleFoundationModelIdentity.remoteModelID
+    }
+
     private struct ModelMenuGroup: Identifiable {
         let id: String
-        let title: String
+        let title: LocalizedStringKey
+        /// Cloud provider display name appended to the cloud group header;
+        /// nil for the on-device groups.
+        let cloudProvider: String?
+        /// Non-nil only for the downloaded MLX device-model group; the Apple
+        /// system model and cloud groups are never marked Beta.
+        let beta: Bool
         let models: [ModelProfile]
     }
 
-    /// Keep device-local models visibly separate, then identify every cloud
-    /// group by its configured provider instead of presenting one ambiguous
-    /// flat list of model names.
+    /// Keep downloaded device (MLX) models, the Apple system model and each
+    /// cloud provider visibly separate. Only the MLX group carries the Beta
+    /// marker; the Apple system model is identified by its exact identity and
+    /// cloud models by their provider.
     private var modelMenuGroups: [ModelMenuGroup] {
         var groups: [ModelMenuGroup] = []
-        let local = models.filter {
+        let onDevice = models.filter {
             $0.providerID == ProviderProfile.onDeviceProviderID
         }
-        if !local.isEmpty {
+        let mlx = onDevice.filter {
+            $0.remoteModelID != AppleFoundationModelIdentity.remoteModelID
+        }
+        if !mlx.isEmpty {
             groups.append(ModelMenuGroup(
-                id: "local",
-                title: "本地与 Apple Intelligence",
-                models: local.sorted(by: modelDisplayOrder)
+                id: "local-mlx",
+                title: "composer.model.group.on_device",
+                cloudProvider: nil,
+                beta: true,
+                models: mlx.sorted(by: modelDisplayOrder)
+            ))
+        }
+        let apple = onDevice.filter {
+            $0.remoteModelID == AppleFoundationModelIdentity.remoteModelID
+        }
+        if !apple.isEmpty {
+            groups.append(ModelMenuGroup(
+                id: "local-apple",
+                title: "composer.model.group.apple",
+                cloudProvider: nil,
+                beta: false,
+                models: apple.sorted(by: modelDisplayOrder)
             ))
         }
         let cloud = Dictionary(grouping: models.filter {
@@ -1081,11 +1138,31 @@ struct ThreadComposerView: View {
             guard let providerModels = cloud[providerID] else { continue }
             groups.append(ModelMenuGroup(
                 id: providerID.uuidString,
-                title: "云端 · \(providerDisplayName(id: providerID, providers: providers))",
+                title: "composer.model.group.cloud_prefix",
+                cloudProvider: providerDisplayName(id: providerID, providers: providers),
+                beta: false,
                 models: providerModels.sorted(by: modelDisplayOrder)
             ))
         }
         return groups
+    }
+
+    /// Section header inside the model menu; the cloud header also shows its
+    /// provider name, and the MLX group carries the short Beta marker.
+    @ViewBuilder
+    private func modelMenuSectionHeader(_ group: ModelMenuGroup) -> some View {
+        HStack(spacing: 6) {
+            if let providerName = group.cloudProvider {
+                Text(verbatim: "\(String(localized: "composer.model.group.cloud_prefix")) · \(providerName)")
+            } else {
+                Text(group.title)
+            }
+            if group.beta {
+                Text("localmodels.beta_badge")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(FloeTheme.pending)
+            }
+        }
     }
 
     private func providerDisplayName(
@@ -1093,7 +1170,7 @@ struct ThreadComposerView: View {
         providers: [ProviderProfile]
     ) -> String {
         guard let provider = providers.first(where: { $0.id == id }) else {
-            return "未知供应商"
+            return String(localized: "composer.model.group.unknown_provider")
         }
         let custom = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         return custom.flatMap { $0.isEmpty ? nil : $0 }
@@ -1156,7 +1233,9 @@ struct ThreadComposerView: View {
             } catch HeavyRuntimeArbiter.ArbiterError.deferredByCaller {
                 return
             } catch {
-                attachmentError = presentableComposerError(error, operation: "切换本地模型")
+                attachmentError = presentableComposerError(
+                    error, operation: String(localized: "composer.op.switch_local_model")
+                )
                 return
             }
             let residentModelID = await environment.localModelRuntime.residentModelID()
@@ -1175,7 +1254,9 @@ struct ThreadComposerView: View {
                     )
                     applyModelSelection(model)
                 } catch {
-                    attachmentError = presentableComposerError(error, operation: "加载本地模型")
+                    attachmentError = presentableComposerError(
+                        error, operation: String(localized: "composer.op.load_local_model")
+                    )
                 }
             case .confirmReplacement(let currentModelID):
                 let residentName = models.first {
@@ -1373,19 +1454,36 @@ struct ThreadComposerView: View {
         }
     }
 
-    private func composerChip(title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(FloeTheme.Typography.metadata)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            // A model may include an availability explanation. Keep the other
-            // controls reachable in narrow document/Canvas assistant panes.
-            .frame(maxWidth: embedded ? 200 : 280, alignment: .leading)
-            .accessibilityLabel(title)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(FloeTheme.groupedSurface, in: Capsule())
+    private func composerChip(
+        title: String,
+        systemImage: String,
+        betaBadge: Bool = false
+    ) -> some View {
+        HStack(spacing: 6) {
+            Label(title, systemImage: systemImage)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if betaBadge {
+                Text("localmodels.beta_badge")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(FloeTheme.pending)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .font(FloeTheme.Typography.metadata)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        // A model may include an availability explanation. Keep the other
+        // controls reachable in narrow document/Canvas assistant panes.
+        .frame(maxWidth: embedded ? 200 : 280, alignment: .leading)
+        .accessibilityLabel(betaBadge
+            ? "\(title) \(String(localized: "localmodels.beta_badge"))"
+            : title)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(FloeTheme.groupedSurface, in: Capsule())
     }
 
     // MARK: - Attachments
@@ -1516,9 +1614,16 @@ struct ThreadComposerView: View {
         )
         if nsError.domain == NSCocoaErrorDomain,
            nsError.code == CocoaError.fileReadCorruptFile.rawValue {
-            return "\(operation)失败：文件引用已失效或内容不可读，请重新选择该文件。"
+            return String(
+                format: String(localized: "composer.op.error.reference_failed"),
+                operation
+            )
         }
-        return "\(operation)失败：\(error.localizedDescription)"
+        return String(
+            format: String(localized: "composer.op.error.failed"),
+            operation,
+            error.localizedDescription
+        )
     }
 
     /// VoiceOver-readable microphone state (never color alone).
