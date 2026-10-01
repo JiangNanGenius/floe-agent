@@ -319,3 +319,34 @@ Floe App compilation and PPT execution have not yet occurred.
 流水线同时补充保留原生构建、导入日志及完整资格报告。旧运行只保留了报告，
 没有可复用框架包，因此需从同一已核验引擎重跑短时宿主编译，重核心不再构建。
 实际 Floe App 编译与 PPT 运行仍未完成。
+
+### Simulator framework retained; unit-test module search repair (2026-10-01)
+
+Full Floe run 36795882429 passed genuine simulator framework compilation, linking,
+Swift import, packaging, and App dependency installation. Primary retained its
+framework package and independently checked all 4785 files, including all 4780
+resources, their hashes, source/overlay provenance, and the actual arm64
+IOSSIMULATOR binary (minimum iOS 26.0, SDK 27.0). This does not establish editor
+runtime acceptance. The App test build then failed: `FloeAppTests` imports the App
+module, whose enabled `FloeOfficeNative` dependency was absent from the test
+target's framework search paths. The test target now reads the same qualified
+host configuration and uses the appropriate device or simulator framework path.
+The test target remains enabled. Actual Xcode 27 build settings confirm both
+platform paths; a small object-compilation probe using the retained framework's
+real headers reproduces the missing transitive module before adding the path and
+passes afterward. An initial probe inadvertently serialized its search path and
+did not reproduce the failure; that result is retained separately. These focused
+checks are not a complete App build. PPT preview/edit/idle/save/reopen has not
+executed, and no physical-device crash fix or Build240 delivery is claimed.
+
+完整 Floe 运行 36795882429 已通过真实模拟器框架编译、链接、Swift 导入、
+打包及 App 依赖安装。主线程已本地保留框架包，独立核验全部 4785 个文件，
+包括 4780 项资源的逐项摘要、源码与补丁来源，以及实际 arm64 IOSSIMULATOR
+二进制（最低 iOS 26.0、SDK 27.0）；这尚非编辑器运行验收。随后 App 测试构建
+失败：`FloeAppTests` 导入 App 模块时，测试目标缺少其已启用的
+`FloeOfficeNative` 框架路径。现让测试目标读取同一已核验宿主配置，按真机或
+模拟器平台选择框架路径，仍保留该测试目标。实际 Xcode 27 构建设置确认两种
+平台路径生效；使用已保留框架真实头文件的小型对象编译探针，在缺少路径时
+复现传递模块缺失，补充路径后通过。初始探针意外序列化了搜索路径，未复现
+失败，该结果另行保留。这些定向检查不等于完整 App 构建。PPT 预览、编辑、
+静置、保存及重开尚未实际执行，不能宣称真机闪退已修好或 Build240 已交付。

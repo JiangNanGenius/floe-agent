@@ -489,6 +489,9 @@ targets:
     type: bundle.unit-test
     platform: iOS
     deploymentTarget: "26.0"
+    configFiles:
+      Debug: Vendor/Office/native-host.xcconfig
+      Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
@@ -532,6 +535,14 @@ targets:
         SWIFT_VERSION: "6.0"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Floe Agent.app/Floe Agent"
         BUNDLE_LOADER: "$(TEST_HOST)"
+        # Importing FloeApp also loads its enabled native Office module.
+        # Test targets do not inherit the application's framework paths.
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(inherited)
+          - $(FLOE_OFFICE_HOST_DIR)
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]":
+          - $(inherited)
+          - $(FLOE_OFFICE_SIM_HOST_DIR)
 
 schemes:
   FloeAgent:
