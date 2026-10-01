@@ -152,14 +152,40 @@ final class OfficeRealEngineUITests: XCTestCase {
                 NSPredicate(format: "label CONTAINS %@", ofCount)).firstMatch.exists {
                 return true
             }
-            let predicate = NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@",
-                                        page, slide)
+            // The actual zh-Hans mobile Impress accessibility tree labels
+            // thumbnail nodes "页面预览 N". Keep the exact page-number label;
+            // "页面预览 3" must never match page 30 or a toolbar tooltip.
+            let localizedPage = "页面预览 \(expected)"
+            let predicate = NSPredicate(
+                format: "label CONTAINS %@ OR label CONTAINS %@ OR label == %@",
+                page, slide, localizedPage)
             if app.descendants(matching: .any).matching(predicate).firstMatch.exists {
                 return true
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
         return false
+    }
+
+    /// New Page inserts a deliberately blank slide. Select the original
+    /// fixture slide through the real thumbnail rail before render evidence,
+    /// so every frame proves preserved document content rather than a blank
+    /// inserted page. Page-count and persisted-file gates still prove edits.
+    func showFixtureSlide(_ app: XCUIApplication, phase: String) throws {
+        let thumbnail = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == %@ OR label == %@",
+                        "页面预览 1", "preview of page 1")).firstMatch
+        try require(thumbnail.waitForExistence(timeout: 30) && thumbnail.isHittable,
+                    phase, "original fixture slide thumbnail unavailable")
+        thumbnail.tap()
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            try require(app.state == .runningForeground, phase,
+                        "Floe left the foreground selecting the fixture slide")
+            if thumbnail.isSelected { return }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        try require(false, phase, "original fixture slide was not selected")
     }
 
     func anyElement(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
@@ -284,16 +310,13 @@ final class OfficeRealEngineUITests: XCTestCase {
                     "Impress Insert Slide control is not actionable")
         insert!.tap()
         let advanced = waitForSlideCount(app, expected: expected, timeout: 30)
-        var inventory: [String] = []
-        let allButtons = app.descendants(matching: .button)
-        if allButtons.firstMatch.waitForExistence(timeout: 5) {
-            for index in 0..<min(allButtons.count, 120) {
-                inventory.append(allButtons.element(boundBy: index).label)
-            }
-        }
-        OfficeRealEngineUITests.receipt["buttonInventory.\(phase)"] = inventory
+        // The toolbar changes after insertion. Do not iterate a live query
+        // using a count from an earlier snapshot: shrinking controls can abort
+        // XCTest before the document-count assertion and receipt are written.
+        // The pre-tap hierarchy above already retains the control inventory.
         try require(advanced, phase,
                     "slide count did not reach \(expected) after Insert Slide")
+        try showFixtureSlide(app, phase: phase)
     }
 
     /// Save through the real editor back action (save-and-dismiss in the
@@ -398,6 +421,7 @@ final class OfficeRealEngineUITests: XCTestCase {
             try require(waitForSlideCount(app, expected: 4, timeout: 60),
                         "verify-persisted",
                         "persisted document did not show the four saved slides")
+            try showFixtureSlide(app, phase: "verify-persisted")
             mark("verify-persisted", true)
             shot("05-persisted")
             try saveAndClose(app, savePhase: "save-final", closePhase: "close-final")

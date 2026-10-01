@@ -493,3 +493,43 @@ retained. Insertion, 120-second idle, saving and reopening remain unverified.
 控件标签、验证控件可用且可点击，并留存插入时的无障碍树；仍要求真实页数
 增加。产品控件、编辑入口、静置时长、保存重开及渲染和落盘门槛均未改变。
 原失败完整 xcresult、截图和诊断保留；插入、静置 120 秒、保存和重开仍待验证。
+
+## Actual insertion observed; scenario harness corrected, 2026-10-01
+
+[Full-App run 36816042307](https://github.com/JiangNanGenius/floe-agent/actions/runs/36816042307)
+compiled and clicked the real `New Page` button. The complete retained xcresult
+accessibility tree contains `页面预览 1`, `页面预览 2` (selected) and
+`页面预览 3`; its recording shows a newly inserted blank slide between the two
+original slides. This demonstrates insertion in this simulator execution.
+The test missed the Chinese thumbnail label, then aborted while enumerating a
+changing button query using an earlier count. The original run remains failed:
+it produced no completed scenario receipt, idle/save/reopen chain or four-slide
+persistence acceptance. Its App stdout contains neither the earlier JSON
+exception nor an uncaught-exception entry; that absence covers only this run.
+
+The test now recognizes the exact Chinese thumbnail label and removes the
+racy optional diagnostic enumeration, while retaining the pre-tap hierarchy
+and actual page-count assertion. After insertion and on the final reopen, it
+selects the original content slide through the real thumbnail UI and requires
+its selected state before capturing content frames. This preserves the strict
+document-region rendering check when the inserted slide is intentionally
+blank. The real insertion, 120-second idle, save/close, two reopens, native
+generation, receipt and four-slide persisted-file gates remain unchanged.
+Swift syntax validation and 85 pipeline logic tests pass; the corrected
+full-App scenario and physical-device acceptance remain pending.
+
+## 已观察到真实插页，修正场景测试，2026-10-01
+
+完整 App 运行 36816042307 已编译并点击真实 New Page 按钮。完整留存的
+xcresult 无障碍树包含“页面预览 1、2、3”，第二页已选中；录像显示两张
+原有幻灯片之间新增了一张空白页。这证明本次模拟器运行已实际插页。测试
+漏识别中文缩略图标签，随后用旧数量枚举动态按钮列表时中止。原运行仍为
+失败：没有完整场景回执、静置与保存重开链，也没有四页文档落盘验收。
+本次 App 输出没有旧 JSON 异常或未捕获异常记录，只能说明本次运行。
+
+测试现识别精确中文缩略图标签，移除不稳定的可选诊断枚举，保留点击前
+无障碍树和真实页数断言。插入后及最终重开时，通过真实缩略图界面选回
+原有内容页，并等待已选中状态再拍内容帧，避免把刻意插入的空白页当作
+渲染失败。真实插入、静置 120 秒、保存关闭、两次重开、原生代际、回执
+及四页落盘门槛均保留。Swift 语法检查与 85 项流水线逻辑测试通过；修正版
+完整 App 场景及用户真机验收仍待验证。
