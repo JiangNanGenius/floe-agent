@@ -949,6 +949,8 @@ static VirtMachine *riscv_machine_init(const VirtMachineParams *p)
         s->nb_harts = nb_harts;
     }
     s->smp_atomic_lock = 0;
+    /* FLOE-SMP: plain stores start on the lock-free arm/drain path. */
+    __atomic_store_n(&s->smp.armed, 0, __ATOMIC_SEQ_CST);
     pthread_mutex_init(&s->smp_device_lock, NULL);
     s->smp.nb_harts = s->nb_harts;
     s->smp.atomic_lock = &s->smp_atomic_lock;

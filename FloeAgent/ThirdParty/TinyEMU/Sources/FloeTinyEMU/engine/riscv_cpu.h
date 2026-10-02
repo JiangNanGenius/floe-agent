@@ -57,12 +57,20 @@ typedef struct RISCVCPUState RISCVCPUState;
  * construction; device_lock serializes individual device MMIO callbacks
  * (never around the interpreter loop). With nb_harts == 1 all fast paths
  * stay identical to the upstream single-hart behavior. atomic_lock is an
- * int * here so this header stays free of pthread.h. */
+ * int * here so this header stays free of pthread.h.
+ *
+ * FLOE-SMP arm/drain fast store: armed == 0 lets a plain
+ * guest-RAM store run without atomic_lock; each hart marks in_store while
+ * it is inside such a store, and LR/SC/AMO set armed = 1 and drain every
+ * other hart's in_store before they read or write guest RAM. When the last
+ * reservation is consumed/cleared, armed returns to 0. Every field is
+ * accessed with __atomic and the handshake is a seq_cst Dekker pattern. */
 typedef struct RISCVSMPCpuArray {
     int nb_harts;
     RISCVCPUState *cpus[RISCV_SMP_MAX_HARTS];
     void *atomic_lock;
     void *device_lock;
+    int armed; /* 0 = plain stores may skip atomic_lock */
     /* FLOE-SMP diagnostics (host tests assert these):
      * lock_order_violations counts device-lock acquisitions made while
      * the hart already holds the atomic lock. That order (atomic ->

@@ -8,7 +8,11 @@
  *   2. dual-hart functional run (vcpu_count=2): both harts execute,
  *      AMO atomicity (400 == 2 x 200 concurrent amoadd.w), LR/SC
  *      atomicity (200 == 2 x 100 concurrent lr/sc), CLINT IPI + WFI wake,
- *      cross-hart code visibility, FDT with 2 CPU nodes, per-hart stats
+ *      cross-hart code visibility, FDT with 2 CPU nodes, per-hart stats,
+ *      plus the fast-store ordering phase (FAST-OK: a plain store that
+ *      completed while no reservation was live must be observed by a
+ *      later LR, whose SC then succeeds) and the ordinary-store /
+ *      AMO+store / VA-alias adversarial phases
  *   3. UP compatibility (vcpu_count=0 and 1): same payload prints UP-OK,
  *      FDT has exactly 1 CPU node
  *   4. stop/cancel: destroy a running 2-hart VM from another thread
@@ -289,6 +293,9 @@ static void test_smp_functional(void)
     CHECK(strstr(out, "CODE-OK\n") != NULL, "CODE-OK missing (cross-hart code)");
     CHECK(strstr(out, "ADV-OK\n") != NULL,
           "ADV-OK missing (ordinary-store/AMO+store/VA-alias adversarial)");
+    CHECK(strstr(out, "FAST-OK\n") != NULL,
+          "FAST-OK missing (plain fast store before a later LR/SC must be "
+          "observed by the LR and the SC must succeed)");
     CHECK(strstr(out, "AMOMMIO-OK\n") != NULL,
           "AMOMMIO-OK missing (MMIO AMO must be one device critical section)");
     CHECK(strstr(out, "PTEAD-OK\n") != NULL,
