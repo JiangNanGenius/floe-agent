@@ -94,14 +94,15 @@
       "unsignedIpaBytes": 739946669,
       "toolchain": "Xcode26.6(17F113), SDKiphoneos26.5",
       "releaseRun": 36960844524,
-      "appleVerificationRun": 36965230524,
+      "appleVerificationRun": 36965265558,
       "processingState": "VALID",
       "expired": false,
       "audience": "APP_STORE_ELIGIBLE",
       "group": "existing private Floe QA",
       "internalBetaState": "IN_BETA_TESTING",
       "source": "docs/TESTFLIGHT_1.7.0_BETA.md",
-      "appleBuildID": "8b268daf-57b6-4645-b3ad-be2aa6d22c1c"
+      "appleBuildID": "8b268daf-57b6-4645-b3ad-be2aa6d22c1c",
+      "applePreparationRun": 36965230524
     },
     "githubRelease": {
       "url": "https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0",

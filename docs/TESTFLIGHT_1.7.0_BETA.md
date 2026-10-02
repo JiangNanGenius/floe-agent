@@ -2,7 +2,9 @@
 
 ## Current delivery: 1.7.0 (241) — normal GitHub Release and private Floe QA
 
-2026-10-02：[发布任务36960844524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36960844524)完成设备 App 编译、签名前云端 IPA 留存、签名上传与[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)，`draft=false`、`prerelease=false`，也是当前 latest。不可变 `v1.7.0` 对应源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。[Apple 准备与核验36965230524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36965230524)读回中英文测试说明，并确认 Build241（`8b268daf-57b6-4645-b3ad-be2aa6d22c1c`）`VALID`、未过期、`APP_STORE_ELIGIBLE`，仅现有私有 Floe QA 组且 `IN_BETA_TESTING`。Feather 实际条目的下载地址、源码、大小和摘要一致；公开 TestFlight 仍缺实际隐私政策网址，尚未送审，不能称为公开可安装。
+2026-10-02：[发布任务36960844524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36960844524)完成设备 App 编译、签名前云端 IPA 留存、签名上传与[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)，`draft=false`、`prerelease=false`，也是当前 latest。不可变 `v1.7.0` 对应源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。[Apple 准备36965230524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36965230524)读回中英文测试说明；[核验36965265558](https://github.com/JiangNanGenius/floe-agent/actions/runs/36965265558)确认 Build241（`8b268daf-57b6-4645-b3ad-be2aa6d22c1c`）`VALID`、未过期、`APP_STORE_ELIGIBLE`，仅现有私有 Floe QA 组且 `IN_BETA_TESTING`。Feather 实际条目的下载地址、源码、大小和摘要一致；公开 TestFlight 仍缺实际隐私政策网址，尚未送审，不能称为公开可安装。
+
+Gitee 镜像受附件配额限制，未完成 IPA 镜像；实际 IPA 主源为 GitHub，Feather 直接引用该同源未签名文件。恢复过程中首次临时下载日志被覆盖，限制已记录；完整最终工件与云端来源证明均已核验。
 
 The normal GitHub Release is published, not a draft or prerelease, and is the latest release. Apple confirmed the valid, unexpired Build241 is available to the existing private Floe QA group. English and Simplified Chinese test notes were read back. Public TestFlight review has not been submitted: the actual privacy-policy URL is still missing.
 
