@@ -3,12 +3,12 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "36835213892",
+    "runID": "36957310043",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 11148623889,
-    "workflowCommit": "91540d6ed4d2b1ef519392fc34f037fe2e33e354",
-    "archiveSHA256": "ba70c370ce6e744116f578c5393d606741713f271054e831a3d0803dc05dad01",
-    "executableSHA256": "e1932ff3008ee1415e81482cf8812040dc4d52b424a53d27b991c878571c2628",
+    "artifactID": 11207131424,
+    "workflowCommit": "e8a62b03bb96811b177c654c28579326372974dc",
+    "archiveSHA256": "3115226652b62140a34e8043452393cfff2cd7c90ece418fd3e9e2fd5f2163c1",
+    "executableSHA256": "a18d340a430456430c10961cd286a744792b6eee411467b40062936559e66d49",
     "overlaySHA256": "4ac3cc3b3914f0357eae02323fbd92cfce3750e98db84792608e831f65a5e597",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "c5f383cb20de9a5e7f9e58c13f2312d6ce2e8ab979486b76ec26dd76e0c19bcd",
@@ -18,7 +18,7 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "51e671ef2db4914e3df9ad495ab87c7572555a284fea80f37cb5ad7135faebb2",
+    "manifestSHA256": "73d8627859b0560f0cc8f3e7e3e50bc7153f2d91b7c609f546fba5faca96e44e",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "c5f383cb20de9a5e7f9e58c13f2312d6ce2e8ab979486b76ec26dd76e0c19bcd",
       "Info.plist": "2eb182ee435d827e9eec83734faeaebb32a1589bf45615c646d402d818eb73a9",
@@ -31,7 +31,7 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Rebuilt bounded late-render host; complete 4780 resources, exact source and IOS arm64 min26 SDK27 verified. Framework evidence only; full App PPT and physical device acceptance pending.",
+    "note": "Rebuilt with the source-bound iOS slideshow SetSize repair; complete 4780 resources, host source, provenance and IOS arm64 min26 SDK27 verified. Framework evidence only; simulator App acceptance and physical-device behavior are separate.",
     "filterOverlay": {
       "patchSHA256": "4d426890632f0fc72996917f3af268af9c81bb211ff85937999d951c5e341989",
       "sourceFiles": {
@@ -100,17 +100,17 @@
           "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
         }
       },
-      "archiveSHA256": "e7eadc56d9e230ac9f8a4e1d8d18159cf61f804a386d6c28b1ae9ad6037d9234",
+      "archiveSHA256": "91ee1fcabc2c5034c5d22da8fd455594efdf6b485ab0a51142961823bce93170",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
-      "selectedArchiveSHA256": "e7eadc56d9e230ac9f8a4e1d8d18159cf61f804a386d6c28b1ae9ad6037d9234",
+      "selectedArchiveSHA256": "91ee1fcabc2c5034c5d22da8fd455594efdf6b485ab0a51142961823bce93170",
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "e7eadc56d9e230ac9f8a4e1d8d18159cf61f804a386d6c28b1ae9ad6037d9234",
-        "libooxlo.a": "58cfccc3315ead5ba86c04a0e35e51bf5e309aba28a1186c84d03babf50d8397"
+        "libscfiltlo.a": "91ee1fcabc2c5034c5d22da8fd455594efdf6b485ab0a51142961823bce93170",
+        "libooxlo.a": "c20c39ed00328ad215061d2735bfd65e7b100e511ea6375fc52fa42c48b3e7e7"
       },
       "additionalArchives": {
         "libooxlo.a": {
           "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
-          "archiveSHA256": "58cfccc3315ead5ba86c04a0e35e51bf5e309aba28a1186c84d03babf50d8397",
+          "archiveSHA256": "c20c39ed00328ad215061d2735bfd65e7b100e511ea6375fc52fa42c48b3e7e7",
           "objectSHA256ByMember": {
             "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77",
             "chartexport.o": "af7da7bb40ebc0af6204c5980be4b5963f96d642f1c37276674b463b4f237168"
@@ -131,7 +131,28 @@
     },
     "schemeOverlaySHA256": "0d41d552707a3fcbcf1a94bcd1bc89e86386d74838f4a912a9e7de92dc6ad14a",
     "forwardingOverlaySHA256": "f30782622b4dd84cd0abdd23818a84d95123c7186790fc785534499214a65395",
-    "kitCallbackOverlaySHA256": "88147bee22cb533142dda0eb11810ec2d46bb2198e603c945ffe43072efb78bf"
+    "kitCallbackOverlaySHA256": "88147bee22cb533142dda0eb11810ec2d46bb2198e603c945ffe43072efb78bf",
+    "engineRepair": {
+      "patchSHA256": "74d3139a3f4694ce6f019a3bca240267acae40efa7850f05026f72b2e1b5838d",
+      "upstreamCommit": "bd7373b5e4f0044122d8b8b561417866bd987717",
+      "sourceFile": "engine/vcl/source/gdi/virdev.cxx",
+      "originalSourceSHA256": "e85671ffb812795032bf7668d81a58ab0ec2c6436c8663d169aa46dd4a3dd05c",
+      "patchedSourceSHA256": "d1c37172dd4b4b0067d6fd75f8a69dbce0da706a8d5a377e2976374666ecb135",
+      "platform": "IOS",
+      "sdk": "iphoneos",
+      "target": "arm64-apple-ios26.0",
+      "archiveBundlePath": "source/engine/instdir/program/libvcllo.a",
+      "originalArchiveSHA256": "2febb02cb7f39874fa02cee8611ce73b40d5607c4849cc5c95824bb70335ae53",
+      "patchedArchiveSHA256": "df9bcde15702a1947835ebf646df295f64c1cdc70a43837e810559d0edc96c89",
+      "member": {
+        "name": "virdev.o",
+        "position": 255,
+        "count": 520,
+        "originalSHA256": "e2d7688a1f1d248e7ed36a03ea3bff93b4c3521314a4996ff583b73c71e3e27d",
+        "patchedSHA256": "f8bcb394037e75fad30c62a2635b9957da0519934dd7d11d76eed0781a8227a9"
+      },
+      "lockSHA256": "e3940bf995e2464e7d681c8e3a952e491fd4a83577617e3c62bcb680e830efb6"
+    }
   },
   "qualifiedNativeArtifact": {
     "runID": "34268468731",
@@ -286,7 +307,7 @@
         "preparedSHA256": "3754d754f819140a75bca4cd2f9865588096672ba5338e45df77ddc053d7e1a5"
       }
     },
-    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered — including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
+    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered \u2014 including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
   },
   "kitCallbackLifecycleOverlay": {
     "patch": "patches/ios-kit-callback-lifecycle.patch",
