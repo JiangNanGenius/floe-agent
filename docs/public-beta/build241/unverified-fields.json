@@ -1,7 +1,7 @@
 {
   "generatedFor": "Build241 external TestFlight submission preparation",
   "asOf": "2026-10-02",
-  "status": "policy_published_external_submit_blocked_403",
+  "status": "external_review_pending_apple",
   "nothingDispatchedOrSubmitted": false,
   "verifiedFacts": {
     "bundleIdentifier": "org.floeagent.ios",
@@ -34,7 +34,7 @@
       "demoAccountRequiredConfigured": false,
       "privacyPolicyUrlPresent": false,
       "appInfoPrivacyPolicyUrlPresent": false,
-      "notes": "Shared settings observed 2026-10-02; build and metadata state must be checked before submission."
+      "notes": "Historical shared metadata before GUI submission; current externalReview supersedes its missing-field/link state."
     },
     "preparedSource": {
       "commit": "e8a62b03bb96811b177c654c28579326372974dc",
@@ -111,42 +111,57 @@
       "latest": true
     },
     "fullLocalIpaVerified": true,
-    "featherPublishedSameSourceHashAndSize": true
+    "featherPublishedSameSourceHashAndSize": true,
+    "externalReview": {
+      "submittedVia": "App Store Connect GUI after user login",
+      "readOnlyVerificationRun": 37000944505,
+      "submissionCount": 1,
+      "submissionState": "pending_review",
+      "externalBuildState": "WAITING_FOR_BETA_REVIEW",
+      "group": "publictest1",
+      "attachedToBuild": true,
+      "betaLocales": [
+        "en-US",
+        "zh-Hans"
+      ],
+      "demoAccountRequired": false,
+      "privacyPolicyURL": "https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/PRIVACY.md",
+      "publicLink": "https://testflight.apple.com/join/nz6qeT2J",
+      "publicLinkEnabledUI": true,
+      "linkCreatedAfterReadOnlyVerification": true,
+      "publicInstallable": false,
+      "testerNotificationsSent": false
+    }
   },
   "candidate": {
     "build": "241",
     "marketingVersion": "1.7.0",
     "tag": "v1.7.0",
-    "status": "delivered_private_qa_external_review_not_submitted",
+    "status": "delivered_private_qa_external_review_pending",
     "tagState": "immutable tag exists at verified release source",
     "sourceCommit": "1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b"
   },
   "unverifiedFields": [
     {
-      "field": "apple.betaReviewState",
+      "field": "apple.betaReviewApproval",
       "value": null,
-      "reason": "Build241 private delivery is available; external review has not been submitted."
+      "reason": "One pending_review submission verified; approval and public installability remain pending."
     },
     {
       "field": "supportURL",
       "value": null,
-      "reason": "read from existing trusted App Store Connect settings; not present in the current draft metadata"
+      "reason": "Separate App Store field; not changed for beta review."
     },
     {
-      "field": "privacyPolicyURL",
-      "value": "https://github.com/JiangNanGenius/floe-agent/blob/main/PRIVACY.md",
-      "reason": "Bilingual policy published on public main (docs commits 856e5a98, e12af61c, 0c522013) and final raw content anonymously HTTPS-verified byte-identical (SHA256 63661fa9fa007cd9026677891e4128cfef43d192d480b2e021be34ede9369fff; rendered GitHub page transient 503). Not yet written to betaAppLocalizations: PATCH returned HTTP 403 FORBIDDEN_ERROR for the current API key on runs 36977707786/36978183559; a higher-role human must set it in App Store Connect. AppInfo privacy URL and the App Privacy declaration remain separate unset fields."
-    },
-    {
-      "field": "apple.betaAppLocalizations.writePermission",
-      "value": "HTTP_403_FORBIDDEN_ERROR",
-      "reason": "Same key can GET and write betaBuildLocalizations/internal groups but PATCH /v1/betaAppLocalizations is forbidden; exact role or endpoint restriction not established from 403 alone. Final inspect 36978473975 confirms zero partial writes."
+      "field": "appInfoPrivacyPolicyURL",
+      "value": null,
+      "reason": "AppInfo privacy URL and App Privacy declaration are separate from the completed bilingual beta privacy fields."
     }
   ],
   "notes": [
-    "Build241 release36960844524 passed; immutable v1.7.0, normal GitHub Release, complete local unsigned IPA and existing private Floe QA availability verified. Public review submission/public-link change/tester notification have not occurred; two helper submit attempts (36977707786, 36978183559) were rejected with HTTP 403 FORBIDDEN_ERROR on PATCH betaAppLocalizations before any write, and the clean GET readback 36978473975 verifies no duplicate submission or partial state.",
-    "Review notes are final bilingual product text, not a claim that the build has been uploaded or submitted. Both pass the existing 1..4000 character and placeholder checks.",
-    "Public submission will explicitly confirm no demo account is required, create the missing zh-Hans localization using the existing en-US feedback email without exposing its value, and use only the actual user-confirmed privacy policy URL.",
+    "Build241 was submitted once through the logged-in GUI; read-only run37000944505 confirms pending_review. A public link was then created via GUI; Apple approval is required for testers to join. Earlier API403 failures and their zero-partial-write readback remain preserved.",
+    "Prepared bilingual review files remain reference text; the GUI submitted and read back a concise English walkthrough (1365 characters), with no demo account required.",
+    "GUI completed both beta descriptions and the verified raw privacy-policy URL, retaining existing feedback/contact details without publishing their values.",
     "Existing helper retains immutable source, VALID/unexpired IOS build, unique external group, pagination, readback and duplicate-submission gates. Pending Apple GUI login does not block authorized API operations using existing credentials.",
     "Lean release provenance says simulator tests were skipped by the release route; the independent merged full-App simulator acceptance above was actually executed and passed. Physical acceptance is separate."
   ]
