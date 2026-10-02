@@ -252,6 +252,10 @@ struct RISCVCPUState {
     int load_res_size_log2;
     BOOL load_res_valid;
     BOOL in_smp_atomic;
+    /* FLOE-SMP fast-store handshake: nonzero while this hart is inside
+       an unlocked plain guest-RAM store. An arming hart drains it before
+       reading/writing guest RAM (see riscv_smp_arm_and_drain). */
+    int in_store;
 
     PhysMemoryMap *mem_map;
 
@@ -285,6 +289,14 @@ DLL_PUBLIC int target_write_slow(RISCVCPUState *s, target_ulong addr,
  */
 static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
                                    mem_uint_t val, int size_log2);
+
+/* FLOE-SMP: plain-store entry used by every guest-RAM store on an SMP
+ * machine. Fast path: while no reservation needs invalidation and no
+ * LR/SC/AMO is in progress, store without atomic_lock after marking
+ * in_store (the arm/drain handshake orders it against a concurrent
+ * reservation). Otherwise: the locked store. */
+static void riscv_smp_fast_store(RISCVCPUState *s, uint8_t *host_ptr,
+                                 mem_uint_t val, int size_log2);
 
 /* FLOE-SMP: guest-atomic helpers used by the interpreter template when
  * the machine runs more than one hart. Return 0 on success, -1 on a
@@ -364,11 +376,10 @@ static inline __exception int target_write_u ## size(RISCVCPUState *s, target_ul
     tlb_idx = (addr >> PG_SHIFT) & (TLB_SIZE - 1);\
     if (likely(s->tlb_write[tlb_idx].vaddr == (addr & ~(PG_MASK & ~((size / 8) - 1))))) { \
         uint_type *__floe_ptr = (uint_type *)(s->tlb_write[tlb_idx].mem_addend + (uintptr_t)addr); \
-        /* FLOE-SMP: every guest-RAM store is linearized through the \
-           machine atomic lock (no lock-free fast path, see \
-           riscv_smp_locked_store). */ \
+        /* FLOE-SMP: SMP stores go through the arm/drain fast-store path \
+           (arm/drain); a single-hart machine has s->smp == NULL. */ \
         if (unlikely(s->smp && !s->in_smp_atomic)) \
-            riscv_smp_locked_store(s, (uint8_t *)__floe_ptr, val, size_log2); \
+            riscv_smp_fast_store(s, (uint8_t *)__floe_ptr, val, size_log2); \
         else \
             FLOE_RAM_STORE(__floe_ptr, val); \
         return 0;\

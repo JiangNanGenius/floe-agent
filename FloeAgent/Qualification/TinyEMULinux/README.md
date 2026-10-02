@@ -153,34 +153,58 @@ correctness defects and cloud run 36240219437 was cancelled:
    writes while the fast path reads the same field atomically — C11 UB. Any
    unlocked design must use `__atomic_*` for every counter mutation.
 
-Release state and exact remaining blocker (updated 2026-09-27). The
+Both regressions are kept: the counterexample model stays red by design, and
+the engine's plain-store fast path does not use a reservation counter.
+
+Arm/drain redesign (2026-10-02, candidate). The current redesign removes
+the global-store serialization without a counter: `RISCVSMPCpuArray.armed`
+is 0 only while no reservation is live and no LR/SC/AMO/PTE critical
+section is in flight. A plain guest-RAM store marks the hart's `in_store`
+(SEQ_CST), re-checks `armed`, and only then writes and clears the mark; an
+LR/SC/AMO/PTE path sets `armed = 1` (SEQ_CST) under the atomic lock and
+spins until every other hart's `in_store` is 0 before touching RAM, so a
+store either completes (and is drained) before the arming hart's read or
+takes the locked path. It is the standard store-buffer/Dekker handshake,
+with both sides' first operation a store and second a load. Reservations
+stay lock-protected exactly as before; every arming path that leaves
+without publishing a reservation (failed SC, PTE-conflict restart, non-RAM
+LR) disarms before unlocking, and every shared `armed` access is atomic.
+Real C adversarial evidence (beyond the models): `smp_host_test`'s
+FAST-OK phase (a plain store racing an LR/SC must be observed by the LR
+and invalidate a racing SC), ORD (a store between LR and SC must fail the
+SC), AMO/LR-SC/VA-alias/PTE phases, and a ThreadSanitizer run with zero
+warnings; the containment harness was fixed to compile against the patched
+`fs.h` and now passes 73/73. Model regressions live in
+`tests/test_drain_fastpath_interleaving.py` (7 cases). The redesign must
+not land without its own green cloud S0–S5 rerun on the exact candidate,
+with the ≥1.10× equal-work S5 gate; no run result is claimed here until
+that run is green. See `Local/Private/build241/vm/` for the task-private
+candidate patch, raw logs and the run record.
+
+Release state and exact remaining blocker (updated 2026-10-02). The
 performance-only one-hart cap was removed by user policy: production admits
 two harts when the installed image's verified manifest proves SMP, and the UI
 states bilingually and truthfully that dual is S0–S4 correct but S5-slower.
 The shipped engine is the already-S0–S4-verified baseline (the global-lock
-implementation); the lock redesign below is NOT part of this exposure and
-must not land before its own green S0–S4 rerun. Bounded safe follow-up for a
-future attempt:
+implementation); the arm/drain redesign above is NOT part of this exposure and
+must not land before its own green S0–S5 rerun. The contract for that rerun:
 
-1. redesign synchronization so a store's *address-keyed* reservation check is
-   atomic with the data write — e.g. fine-grained per-cache-line reservation
-   locks (stores and LRs contend on the same line; no global ping-pong and no
-   stale-SC window), not a machine-wide counter;
-2. keep LR/SC, DMA invalidation and trap-clears correct by construction, with
-   the forced interleaving regression kept red;
-3. re-run the full cloud S0–S5 contract: 2-hart correctness, lease cleanup
+1. keep LR/SC, DMA invalidation and trap-clears correct by construction, with
+   the forced interleaving regression (counter model) kept red and the new
+   drain model + C phases green;
+2. re-run the full cloud S0–S5 contract: 2-hart correctness, lease cleanup
    and stop/restart, plus a repeatable **≥1.10×** equal-work speedup. The
    first two are the correctness gates for any engine change; the speedup is
    the qualification target for calling dual a performance win (it is not a
    prerequisite for the user-authorized on-device test exposure, which stays
    clearly labelled as slower).
 
-Focused static checks (no guest run, no build). The first is a **protocol
-model** (design counterexample, not a C-engine gate); the second checks the
-S5 gate helper:
+Focused static checks (no guest run, no build). These are **protocol
+models** (design counterexamples/regressions, not C-engine gates):
 
 ```sh
 python3 FloeAgent/Qualification/TinyEMULinux/tests/test_smp_fastpath_interleaving.py
+python3 FloeAgent/Qualification/TinyEMULinux/tests/test_drain_fastpath_interleaving.py
 python3 FloeAgent/Qualification/TinyEMULinux/tests/test_smp_workload_check.py
 ```
 

@@ -345,6 +345,15 @@ ORD_RES = FLAGS + 0x160       # u32: ordinary-store SC status (expect 1=fail)
 AMOS_RES = FLAGS + 0x164      # u32: AMO+store serialization value
 ALIAS_RES = FLAGS + 0x168     # u32: alias SC status (expect 1=fail)
 PRINT_LOCK = FLAGS + 0x16C    # u32: guest console spinlock
+# arm/drain fast-store ordering: hart 1 makes one ordinary store to FAST_W
+# while hart 0's LR/SC is being attempted (the unlocked fast path when no
+# reservation is live). The LR/SC pair itself is the synchronization (the
+# engine serializes both through the atomic lock), so the store either lands
+# before hart 0's LR -- the LR must then read it and the SC must succeed --
+# or inside the LR/SC window -- it must invalidate and hart 0's SC must fail
+# and be retried. The store may never be lost.
+FAST_W = FLAGS + 0x170        # u32: the fast store target
+FAST_RDY = FLAGS + 0x174      # u32: hart 0 ready for hart 1's plain store
 
 # audit-regression phase flags
 MMIO_RDY = FLAGS + 0x180      # 2 x u32: both harts ready to hammer MMIO
@@ -1517,6 +1526,36 @@ def build_smp_test():
     a.la("a0", "str_adv_ok")
     a.call("puts")
 
+    # ---- adversarial: plain fast store vs this hart's LR/SC ----
+    # Hart 1 makes one ordinary store to FAST_W (the engine's unlocked fast
+    # path whenever no reservation is live). This hart runs LR/SC against
+    # that word: the store must either be read by the LR (then the SC
+    # succeeds) or land inside the LR/SC window (then the store invalidates
+    # the reservation, the SC fails, and the retry reads it). The LR/SC
+    # pair is the only synchronization, so the test has no flag-ordering
+    # dependency of its own.
+    a.label("h0_fastv")
+    a.li("t0", FAST_RDY)
+    a.li("t1", 1)
+    a.sw("t1", "t0", 0)
+    a.li("s1", TIMEOUT)
+    a.label("h0_fastv_try")
+    a.li("t0", FAST_W)
+    a.lr_w("t1", "t0")
+    a.li("t2", 0x1111)
+    a.bne("t1", "t2", "h0_fastv_next")
+    a.li("t2", 0x2222)
+    a.sc_w("t3", "t2", "t0")
+    a.beq("t3", "zero", "h0_fastv_ok")
+    a.label("h0_fastv_next")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "h0_fastv_try")
+    a.call("fail")
+    a.j("h0_mmio")
+    a.label("h0_fastv_ok")
+    a.la("a0", "str_fast_ok")
+    a.call("puts")
+
     # ---- audit regressions: MMIO atomics/lock order, PTE A/D vs replacement
     a.call("h0_mmio")
     a.call("h0_pte_ad")
@@ -1674,6 +1713,34 @@ def build_smp_test():
     a.label("h1_alias_dis")
     a.call("alias_disable")
 
+    # ---- adversarial: fast store published against hart 0's LR/SC ----
+    a.label("h1_fastv")
+    a.li("s1", TIMEOUT)
+    a.label("h1_wait_fastr")
+    a.li("t0", FAST_RDY)
+    a.lw("t1", "t0", 0)
+    a.bne("t1", "zero", "h1_fastv_store")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "h1_wait_fastr")
+    a.call("fail")
+    a.j("h1_mmio")
+    a.label("h1_fastv_store")
+    a.li("t0", FAST_W)
+    a.li("t1", 0x1111)
+    a.sw("t1", "t0", 0)            # ordinary store, no reservation live
+    a.li("s1", TIMEOUT)
+    a.label("h1_fastv_wait")
+    a.li("t0", FAST_W)
+    a.lr_w("t1", "t0")
+    a.li("t2", 0x2222)
+    a.beq("t1", "t2", "h1_fastv_clear")
+    a.addi("s1", "s1", -1)
+    a.bne("s1", "zero", "h1_fastv_wait")
+    a.call("fail")
+    a.j("h1_mmio")
+    a.label("h1_fastv_clear")
+    a.sc_w("t3", "t1", "t0")       # consume the reservation (same value)
+
     # ---- audit regressions (hart 1 side)
     a.call("h1_mmio")
     a.call("h1_pte_ad")
@@ -1774,6 +1841,8 @@ def build_smp_test():
     a.asciz("UP-BAD\n")
     a.dlabel("str_adv_ok")
     a.asciz("ADV-OK\n")
+    a.dlabel("str_fast_ok")
+    a.asciz("FAST-OK\n")
     a.dlabel("str_trap")
     a.asciz("TRAP\n")
     return a.blob(), a

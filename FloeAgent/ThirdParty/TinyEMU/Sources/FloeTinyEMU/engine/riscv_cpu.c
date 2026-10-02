@@ -292,7 +292,7 @@ static __maybe_unused inline void phys_write_u ## size(RISCVCPUState *s, target_
     ptr = (uint_type *)(pr->phys_mem + \
                         (uintptr_t)(addr - pr->addr));\
     if (unlikely(s->smp && !s->in_smp_atomic)) { \
-        riscv_smp_locked_store(s, (uint8_t *)ptr, val, size == 32 ? 2 : 3); \
+        riscv_smp_fast_store(s, (uint8_t *)ptr, val, size == 32 ? 2 : 3); \
     } else {\
         __atomic_store_n(ptr, val, __ATOMIC_RELAXED);\
     }\
@@ -632,10 +632,10 @@ int target_write_slow(RISCVCPUState *s, target_ulong addr,
             ptr = pr->phys_mem + (uintptr_t)(paddr - pr->addr);
             s->tlb_write[tlb_idx].vaddr = addr & ~PG_MASK;
             s->tlb_write[tlb_idx].mem_addend = (uintptr_t)ptr - addr;
-            /* FLOE-SMP: every guest-RAM store is linearized through the
-               atomic lock (no lock-free fast path). */
+            /* FLOE-SMP: guest-RAM stores go through the arm/drain fast
+               store; a single-hart machine has s->smp == NULL. */
             if (unlikely(s->smp && !s->in_smp_atomic)) {
-                riscv_smp_locked_store(s, ptr, val, size_log2);
+                riscv_smp_fast_store(s, ptr, val, size_log2);
                 return 0;
             }
             switch(size_log2) {
@@ -761,33 +761,41 @@ static void tlb_init(RISCVCPUState *s)
 /* FLOE-SMP: cross-hart guest atomics. The interpreter calls these only
  * when the machine runs more than one hart.
  *
- * Synchronization protocol (one lock, proven by construction):
- *  - atomic_lock is a spinlock taken around EVERY operation that can
- *    conflict with the LR/SC/AMO protocol: every plain guest-RAM store
- *    (TLB fast path, slow path, page-table writes), every LR/SC/AMO
- *    sequence, and every DMA write. There is deliberately NO lock-free
- *    store fast path: a check-then-store race would let a store slip
- *    between an LR and its SC while the LR has already returned the old
- *    value (not linearizable).
- *  - Reservations are keyed by HOST address: the same physical guest
- *    memory always maps to the same host pointer, so virtual aliases of
- *    one page cannot evade invalidation. _Every_ access to the
- *    reservation fields (valid/addr/size) happens under the lock: the
- *    owner sets them in its locked LR and clears them in its locked SC,
- *    a non-RAM LR clears them in a locked section (after its device
- *    access returned), and the invalidators (locked store / page-table
- *    write / DMA) run under the same lock. No lock-free atomic op is
- *    mixed with those plain accesses, so there is no C11 data race and
- *    no torn read of addr/size by an invalidator.
- *  - AMOs on guest RAM are read-modify-writes inside the lock; the
- *    individual host accesses are relaxed atomics (single-copy atomic on
- *    the supported hosts), which also keeps the C11 model race-free.
- *  - MMIO atomics do NOT take the atomic lock (they are not RAM and the
- *    reservation protocol does not apply); their device accesses are
- *    serialized per-access by the device lock. This keeps a single lock
- *    order: device -> atomic (DMA invalidation), never atomic -> device.
- *  - DMA (virtio) takes the atomic lock under the device lock to
- *    invalidate overlapping reservations after writing guest RAM. */
+ * Synchronization protocol (arm/drain fast store):
+ *  - Every guest-RAM store on an SMP machine goes through the fast store.
+ *    A plain store runs unlocked only while smp->armed == 0 (no live
+ *    LR/SC reservation and no in-flight LR/SC/AMO/PTE critical section);
+ *    once any reservation is live, stores take the atomic lock and
+ *    invalidate overlapping reservations exactly as before.
+ *  - Fast store: if armed != 0 -> locked store. Otherwise the store marks
+ *    s->in_store = 1 (SEQ_CST), re-checks armed (SEQ_CST); if the check
+ *    still reads 0, it performs the RAM store and releases in_store = 0
+ *    (SEQ_CST); a re-check that reads 1 clears the mark and falls back to
+ *    the locked store.
+ *  - LR/SC/AMO (and the page-walk PTE write) acquire the lock, set
+ *    armed = 1 (SEQ_CST) and spin until every other hart's in_store is 0
+ *    before touching guest RAM. A plain store that read armed == 0
+ *    therefore either completes (and is drained) before the arming hart
+ *    reads RAM, or observes armed == 1 and takes the lock. This is the
+ *    standard store-buffer/Dekker handshake: each side's first operation
+ *    is a store and its second a load, so with SEQ_CST both sides cannot
+ *    miss each other. It closes the stale-SC window that made the earlier
+ *    counter-only fast path wrong by ordering the store's data write
+ *    before the arming hart's read.
+ *  - When the last reservation is consumed or invalidated (checked under
+ *    the lock), armed returns to 0 so plain stores become lock-free
+ *    again. Every path that arms and then leaves without publishing a
+ *    reservation must call riscv_smp_maybe_disarm before releasing the
+ *    lock. Reservation fields stay lock-protected; invalidation is
+ *    unchanged (only the lock scope of plain stores changes).
+ *  - DMA (virtio) still takes the atomic lock under the device lock to
+ *    invalidate overlapping reservations after writing guest RAM, and it
+ *    participates in disarm. It does not need the store handshake: the
+ *    same copy-then-invalidate window exists for device DMA and the
+ *    guest must order DMA with its own barriers. */
+
+static void riscv_smp_maybe_disarm(RISCVCPUState *s);
+static void riscv_smp_arm_and_drain(RISCVCPUState *s);
 
 static inline void smp_spin_lock(RISCVSMPCpuArray *smp)
 {
@@ -823,19 +831,23 @@ static inline BOOL smp_res_overlap_host(const RISCVCPUState *o,
 }
 
 /* invalidate every OTHER hart's reservation overlapping [ptr, len).
- * Caller holds the atomic lock. */
+ * Caller holds the atomic lock. Disarms when this was the last live
+ * reservation. */
 static void smp_invalidate_others_locked(RISCVCPUState *s, uintptr_t host_addr,
                                          size_t len)
 {
     RISCVSMPCpuArray *smp = s->smp;
-    int i;
+    int i, cleared = 0;
     for (i = 0; i < smp->nb_harts; i++) {
         RISCVCPUState *o = smp->cpus[i];
         if (o != s && o->load_res_valid &&
             smp_res_overlap_host(o, host_addr, len)) {
             o->load_res_valid = FALSE;
+            cleared = 1;
         }
     }
+    if (cleared)
+        riscv_smp_maybe_disarm(s);
 }
 
 /* store to guest RAM + invalidate overlapping reservations, all inside
@@ -881,12 +893,16 @@ static int riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
     if (need_lock) {
         smp_spin_lock(s->smp);
         s->in_smp_atomic = TRUE;
+        /* FLOE-SMP: this write/read of a PTE word must be ordered
+           against unlocked plain stores to the same word. */
+        riscv_smp_arm_and_drain(s);
     }
     applied = 0;
     pr = get_phys_mem_range(s->mem_map, pte_addr);
     if (!pr || !pr->is_ram) {
         /* the entry disappeared (or is not RAM): never usable */
         if (need_lock) {
+            riscv_smp_maybe_disarm(s);
             s->in_smp_atomic = FALSE;
             smp_spin_unlock(s->smp);
         }
@@ -901,8 +917,12 @@ static int riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
     if ((cur & ~PTE_AD_MASK) != ((target_ulong)expect & ~PTE_AD_MASK)) {
         /* the mapping or permission bits were replaced concurrently
            (kernel remap / table edit): refuse the stale update and let
-           the walker restart with the value that is actually there. */
+           the walker restart with the value that is actually there.
+           This path armed the machine to see a consistent word, so it
+           must disarm like every other exit or plain stores would stay
+           on the locked path until some later reservation happens. */
         if (need_lock) {
+            riscv_smp_maybe_disarm(s);
             s->in_smp_atomic = FALSE;
             smp_spin_unlock(s->smp);
         }
@@ -924,6 +944,7 @@ static int riscv_smp_pte_write_bits(RISCVCPUState *s, target_ulong pte_addr,
     if (applied)
         __atomic_add_fetch(&s->smp->pte_ad_updates, 1, __ATOMIC_RELAXED);
     if (need_lock) {
+        riscv_smp_maybe_disarm(s);
         s->in_smp_atomic = FALSE;
         smp_spin_unlock(s->smp);
     }
@@ -959,6 +980,91 @@ static void riscv_smp_locked_store(RISCVCPUState *s, uint8_t *host_ptr,
     smp_spin_unlock(s->smp);
 }
 
+/* FLOE-SMP: 1 while any hart holds a live reservation. Caller holds the
+ * atomic lock (all reservation fields are lock-protected). */
+static int riscv_smp_any_reservation(RISCVSMPCpuArray *smp)
+{
+    int i;
+    for (i = 0; i < smp->nb_harts; i++) {
+        if (smp->cpus[i]->load_res_valid)
+            return 1;
+    }
+    return 0;
+}
+
+/* FLOE-SMP: return to lock-free plain stores once nothing can need
+ * invalidation. Caller holds the atomic lock; armed is still read/written
+ * with __atomic_* because the lock-free fast store reads it concurrently
+ * and every access to this shared field must be an atomic access. */
+static void riscv_smp_maybe_disarm_smp(RISCVSMPCpuArray *smp)
+{
+    if (__atomic_load_n(&smp->armed, __ATOMIC_SEQ_CST) &&
+        !riscv_smp_any_reservation(smp))
+        __atomic_store_n(&smp->armed, 0, __ATOMIC_SEQ_CST);
+}
+
+static void riscv_smp_maybe_disarm(RISCVCPUState *s)
+{
+    riscv_smp_maybe_disarm_smp(s->smp);
+}
+
+/* FLOE-SMP: called with the atomic lock held, before this hart reads or
+ * writes guest RAM for an LR/SC/AMO/PTE update. Publishes armed = 1 and
+ * drains every other hart's unlocked plain store (their in_store flag).
+ * SEQ_CST on both sides makes the handshake a Dekker pattern: each side's
+ * first operation is a store and the second a load, so at least one side
+ * sees the other and the store cannot slip between an LR read and its SC. */
+static void riscv_smp_arm_and_drain(RISCVCPUState *s)
+{
+    RISCVSMPCpuArray *smp = s->smp;
+    int i;
+    __atomic_store_n(&smp->armed, 1, __ATOMIC_SEQ_CST);
+    for (i = 0; i < smp->nb_harts; i++) {
+        RISCVCPUState *o = smp->cpus[i];
+        if (o == s)
+            continue;
+        while (__atomic_load_n(&o->in_store, __ATOMIC_SEQ_CST))
+            ;
+    }
+}
+
+/* FLOE-SMP: plain guest-RAM store with the arm/drain fast path. */
+static void riscv_smp_fast_store(RISCVCPUState *s, uint8_t *host_ptr,
+                                 mem_uint_t val, int size_log2)
+{
+    RISCVSMPCpuArray *smp = s->smp;
+    if (__atomic_load_n(&smp->armed, __ATOMIC_SEQ_CST))
+        goto locked;
+    __atomic_store_n(&s->in_store, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&smp->armed, __ATOMIC_SEQ_CST)) {
+        __atomic_store_n(&s->in_store, 0, __ATOMIC_SEQ_CST);
+        goto locked;
+    }
+    switch (size_log2) {
+    case 0:
+        FLOE_RAM_STORE((uint8_t *)host_ptr, (uint8_t)val);
+        break;
+    case 1:
+        FLOE_RAM_STORE((uint16_t *)host_ptr, (uint16_t)val);
+        break;
+    case 2:
+        FLOE_RAM_STORE((uint32_t *)host_ptr, (uint32_t)val);
+        break;
+#if MLEN >= 64
+    case 3:
+        FLOE_RAM_STORE((uint64_t *)host_ptr, (uint64_t)val);
+        break;
+#endif
+    default:
+        *(mem_uint_t *)host_ptr = val;
+        break;
+    }
+    __atomic_store_n(&s->in_store, 0, __ATOMIC_SEQ_CST);
+    return;
+locked:
+    riscv_smp_locked_store(s, host_ptr, val, size_log2);
+}
+
 /* DMA hook for virtio devices (runs under the device lock; takes the
  * atomic lock to invalidate reservations). Width-specific: attached to
  * the shared SMP block by riscv_cpu_smp_attach. */
@@ -967,7 +1073,7 @@ static void glue(riscv_smp_dma_note_store, MAX_XLEN)(void *smp1,
                                                      size_t len)
 {
     RISCVSMPCpuArray *smp = smp1;
-    int i;
+    int i, cleared = 0;
     if (!smp || smp->nb_harts <= 1)
         return;
     smp_spin_lock(smp);
@@ -976,8 +1082,11 @@ static void glue(riscv_smp_dma_note_store, MAX_XLEN)(void *smp1,
         if (o->load_res_valid &&
             smp_res_overlap_host(o, (uintptr_t)host_ptr, len)) {
             o->load_res_valid = FALSE;
+            cleared = 1;
         }
     }
+    if (cleared)
+        riscv_smp_maybe_disarm_smp(smp);
     smp_spin_unlock(smp);
 }
 
@@ -1179,11 +1288,15 @@ static int riscv_smp_lr(RISCVCPUState *s, target_ulong addr, uint64_t *pval,
         s->load_res_valid = FALSE;
         s->load_res_addr = 0;
         s->load_res_size_log2 = 0;
+        riscv_smp_maybe_disarm(s);
         smp_spin_unlock(s->smp);
         return ret;
     }
     smp_spin_lock(s->smp);
     s->in_smp_atomic = TRUE;
+    /* FLOE-SMP: publish armed and drain unlocked plain stores before
+       this LR reads the word. */
+    riscv_smp_arm_and_drain(s);
     if (size_log2 == 2) {
         uint32_t v = __atomic_load_n((uint32_t *)ptr, __ATOMIC_RELAXED);
         *pval = (uint64_t)(int64_t)(int32_t)v; /* LR.W sign-extends */
@@ -1216,6 +1329,9 @@ static int riscv_smp_sc(RISCVCPUState *s, target_ulong addr, uint64_t val,
     }
     smp_spin_lock(s->smp);
     s->in_smp_atomic = TRUE;
+    /* FLOE-SMP: an SC store/consume is a RAM writer and reader of the
+       reservation fields; drain plain stores before it looks at them. */
+    riscv_smp_arm_and_drain(s);
     if (ptr && !mmu_fault) {
         /* reservation fields are plain accesses: this hart's own fields
            plus every invalidator run under the same atomic lock */
@@ -1235,6 +1351,7 @@ static int riscv_smp_sc(RISCVCPUState *s, target_ulong addr, uint64_t val,
     /* every SC attempt consumes the reservation (spec) */
     s->load_res_valid = FALSE;
     s->in_smp_atomic = FALSE;
+    riscv_smp_maybe_disarm(s);
     smp_spin_unlock(s->smp);
     *pstatus = status;
     return mmu_fault ? -1 : 0;
@@ -1293,12 +1410,27 @@ static int riscv_smp_amo(RISCVCPUState *s, target_ulong addr, uint64_t *pval,
         return ret;
     }
 
-    /* guest RAM AMO: single host-atomic RMW. With a live reservation
-     * elsewhere, take the lock so the invalidation is linearizable;
-     * otherwise run lock-free (a concurrently established reservation is
-     * ordered after this AMO and owes no invalidation). */
+    /* guest RAM AMO: single host-atomic RMW. While no reservation is live
+     * (armed == 0) it runs unlocked but still through the in_store
+     * handshake, so a concurrent LR drains it before reading; otherwise
+     * take the lock and invalidate overlapping reservations. A
+     * concurrently established reservation is ordered after this AMO and
+     * owes no invalidation. */
+    if (!__atomic_load_n(&s->smp->armed, __ATOMIC_SEQ_CST)) {
+        __atomic_store_n(&s->in_store, 1, __ATOMIC_SEQ_CST);
+        if (!__atomic_load_n(&s->smp->armed, __ATOMIC_SEQ_CST)) {
+            ret = (size_log2 == 2)
+                ? smp_host_rmw_u32((uint32_t *)ptr, (uint32_t *)pval,
+                                   (uint32_t)val2, op27)
+                : smp_host_rmw_u64((uint64_t *)ptr, pval, val2, op27);
+            __atomic_store_n(&s->in_store, 0, __ATOMIC_SEQ_CST);
+            return ret; /* armed stayed 0: no reservation to invalidate */
+        }
+        __atomic_store_n(&s->in_store, 0, __ATOMIC_SEQ_CST);
+    }
     smp_spin_lock(s->smp);
     s->in_smp_atomic = TRUE;
+    riscv_smp_arm_and_drain(s);
     (void)smp_amo_apply; /* shared arithmetic helper is used above */
     ret = (size_log2 == 2)
         ? smp_host_rmw_u32((uint32_t *)ptr, (uint32_t *)pval,
@@ -1308,6 +1440,7 @@ static int riscv_smp_amo(RISCVCPUState *s, target_ulong addr, uint64_t *pval,
         smp_invalidate_others_locked(s, (uintptr_t)ptr,
                                      (size_t)1 << size_log2);
     s->in_smp_atomic = FALSE;
+    riscv_smp_maybe_disarm(s);
     smp_spin_unlock(s->smp);
     return ret;
 }
@@ -2077,6 +2210,9 @@ static void glue(riscv_cpu_smp_attach, MAX_XLEN)(RISCVCPUState *s,
     if (smp && smp->nb_harts <= 1)
         smp = NULL;
     s->smp = smp;
+    /* This hart is not inside a store yet; publish the initial value with
+       the same atomic access the handshake uses. */
+    __atomic_store_n(&s->in_store, 0, __ATOMIC_SEQ_CST);
     /* publish the DMA invalidation hook to the devices on this map */
     s->mem_map->smp = smp;
     s->mem_map->smp_dma_note_store =

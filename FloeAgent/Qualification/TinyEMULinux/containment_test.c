@@ -251,8 +251,8 @@ int main(void)
           "fs_symlink name '..' accepted");
     CHECK(fs->fs_mknod(fs, &qid, root, "..", S_IFREG | 0600, 0, 0, 0) < 0,
           "fs_mknod '..' accepted");
-    CHECK(fs->fs_unlinkat(fs, root, "..") < 0, "fs_unlinkat '..' accepted");
-    CHECK(fs->fs_unlinkat(fs, root, "../outside/secret.txt") < 0,
+    CHECK(fs->fs_unlinkat(fs, root, "..", 0) < 0, "fs_unlinkat '..' accepted");
+    CHECK(fs->fs_unlinkat(fs, root, "../outside/secret.txt", 0) < 0,
           "fs_unlinkat traversal accepted");
     CHECK(fs->fs_renameat(fs, root, "inside.txt", root, "..") < 0,
           "fs_renameat to '..' accepted");
@@ -269,7 +269,7 @@ int main(void)
                   "fs_link traversal name accepted");
             CHECK(fs->fs_link(fs, root, file, "hardlink.txt") == 0,
                   "legitimate hard link refused");
-            CHECK(fs->fs_unlinkat(fs, root, "hardlink.txt") == 0,
+            CHECK(fs->fs_unlinkat(fs, root, "hardlink.txt", 0) == 0,
                   "unlink of hard link failed");
             fs->fs_delete(fs, file);
         }
@@ -323,13 +323,36 @@ int main(void)
               "fs_renameat in dir1");
         path_join(p, sizeof(p), export_dir, "dir1/renamed.txt");
         CHECK(access(p, F_OK) == 0, "renamed host file missing");
-        CHECK(fs->fs_unlinkat(fs, dirf, renamed) == 0, "fs_unlinkat renamed");
+        CHECK(fs->fs_unlinkat(fs, dirf, renamed, 0) == 0, "fs_unlinkat renamed");
         CHECK(access(p, F_OK) != 0, "unlinked host file still present");
         /* rename cannot move the root itself or an entry outside */
         CHECK(fs->fs_renameat(fs, dirf, "sub", root, "..") < 0,
               "nested rename to '..' accepted");
         fs->fs_delete(fs, dirf);
         dirf = NULL;
+    }
+
+    /* ---------- patch 0009 unlinkat flags contract (real API) ---------- */
+    /* The harness must call the patched 4-argument API: a directory is
+       only removable with P9_AT_REMOVEDIR, unknown flag bits are EINVAL,
+       AT_REMOVEDIR on a regular file is ENOTDIR and the file stays. */
+    {
+        CHECK(fs->fs_mkdir(fs, &qid, root, "rmdir1", 0700, 0) == 0,
+              "fs_mkdir rmdir1");
+        CHECK(fs->fs_unlinkat(fs, root, "rmdir1", 0) == -P9_EISDIR,
+              "rmdir without AT_REMOVEDIR was not EISDIR");
+        CHECK(fs->fs_unlinkat(fs, root, "rmdir1", 0x80000000u) == -P9_EINVAL,
+              "unknown unlinkat flag bits were not EINVAL");
+        CHECK(fs->fs_unlinkat(fs, root, "dir1", P9_AT_REMOVEDIR) < 0,
+              "non-empty directory removal succeeded");
+        CHECK(fs->fs_unlinkat(fs, root, "inside.txt", P9_AT_REMOVEDIR) ==
+              -P9_ENOTDIR, "AT_REMOVEDIR on a regular file was not ENOTDIR");
+        path_join(p, sizeof(p), export_dir, "inside.txt");
+        CHECK(access(p, F_OK) == 0, "failed unlinkat removed the regular file");
+        CHECK(fs->fs_unlinkat(fs, root, "rmdir1", P9_AT_REMOVEDIR) == 0,
+              "rmdir with AT_REMOVEDIR failed");
+        path_join(p, sizeof(p), export_dir, "rmdir1");
+        CHECK(access(p, F_OK) != 0, "removed directory still present on the host");
     }
 
     /* ---------- special files are metadata-only, never opened ---------- */
@@ -368,7 +391,7 @@ int main(void)
         CHECK(fs->fs_create(fs, &qid, root, "fifo", P9_O_WRONLY | P9_O_CREAT,
                             0644, 0) == -P9_ENOTSUP,
               "create over the existing fifo was not refused");
-        CHECK(fs->fs_unlinkat(fs, root, "fifo") == 0, "unlink fifo");
+        CHECK(fs->fs_unlinkat(fs, root, "fifo", 0) == 0, "unlink fifo");
     }
 
     /* ---------- nothing escaped to the host ---------- */

@@ -161,8 +161,12 @@ $(BUILD)/two_vm_test: $(BUILD)/two_vm_test.o $(BUILD)/libfloevm.a
 
 # 9p export-root containment: compiled against the patched fs_disk.c
 # directly (no VM/guest needed), plus cutils.c for mallocz/put_le*.
+# $(BUILD) holds the patched headers and MUST be searched before the
+# pristine tree: fs.h changed the fs_unlinkat signature and several
+# errno values in patch 0009, and a pristine header here silently made
+# the test call the patched backend through a stale declaration.
 $(BUILD)/containment_test.o: $(HOST_DIR)/containment_test.c $(BUILD)/.prepared
-	$(CC) $(CFLAGS) -I$(TINYEMU_SRC) -I$(BUILD) -c -o $@ $<
+	$(CC) -I$(BUILD) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/containment_test: $(BUILD)/containment_test.o $(BUILD)/fs_disk.o $(BUILD)/cutils.o
 	$(CC) -o $@ $^ $(LIBS)
