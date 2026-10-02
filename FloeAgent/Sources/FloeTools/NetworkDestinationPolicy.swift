@@ -83,16 +83,14 @@ public enum NetworkDestinationPolicy: Sendable {
     /// Live resolver: getaddrinfo (AI_ADDRCONFIG, AF_UNSPEC, TCP/443 hints),
     /// rendered as numeric IP literals. Failure throws; callers map the error.
     public static func systemResolve(_ host: String) throws -> [String] {
-        var hints = addrinfo(
-            ai_flags: AI_ADDRCONFIG,
-            ai_family: AF_UNSPEC,
-            ai_socktype: Self.streamSocketType,
-            ai_protocol: IPPROTO_TCP,
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
+        // Darwin and Glibc import `addrinfo` with different initializer
+        // argument orders. Start from the zeroed C struct and assign only the
+        // fields used by this resolver so both layouts compile identically.
+        var hints = addrinfo()
+        hints.ai_flags = AI_ADDRCONFIG
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = Self.streamSocketType
+        hints.ai_protocol = IPPROTO_TCP
         var result: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, "443", &hints, &result) == 0, let first = result else {
             throw NetworkDestinationError.resolutionFailed(host)
