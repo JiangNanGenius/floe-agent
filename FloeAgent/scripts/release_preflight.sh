@@ -42,6 +42,9 @@ fi
 # compiled and linked must never be presented as a device-qualified editor.
 # For an Office-qualified release add `--require-release` to
 # verify_office_app_embedding.py, which refuses every unproven capability.
+# Also bind the artifact to any required engine repair before building.
+python3 -B scripts/pin_office_host_artifact.py --check
+
 python3 -B - <<'PY'
 import sys
 sys.path.insert(0, 'scripts')

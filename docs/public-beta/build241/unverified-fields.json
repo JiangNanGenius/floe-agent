@@ -61,6 +61,6 @@
     "Review notes are a single prepared text file (review_notes_path / --review-notes). inspect and submit reject draft markers and unreplaced placeholders, and validate 1..4000 characters against Apple's documented limit. Explicit submit PATCHes only the notes attribute of the already existing betaAppReviewDetails/{id}, requires a byte-identical readback, and never creates a review detail or changes contact/demo fields; the previous note text is never echoed, only presence/match booleans.",
     "Apple requires a description for every existing betaAppLocalization before beta review. inspect fails closed when an empty description is not covered by the prepared input; a covered empty description is reported as fixable and is PATCHed only by an explicit submit. inspect never creates a missing localization.",
     "Build241 / normal v1.7.0 is a planned final-source candidate, not an existing App Store Connect build or tag; no tag, build or artifact may be described as existing until actually observed.",
-    "Pending Apple GUI login does not block this read-only/API-side preparation; it does block the real submission, which stays with the main thread."
+    "Pending Apple GUI login does not block authorized API inspection or submission using existing credentials; only GUI-only steps require the user's login. The actual submission stays with the main thread."
   ]
 }
