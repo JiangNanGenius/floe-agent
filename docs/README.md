@@ -4,7 +4,9 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前版本：1.7.0（241）**。[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)不是预发布，不可变标签 `v1.7.0` 固定源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。TestFlight 私有 Floe QA 已核验 `VALID`、未过期及 `IN_BETA_TESTING`；Feather 的下载地址、大小和摘要与同源 IPA 一致。本地完整 IPA 已核验留存，原 Build240 与回滚产物保留。双语[隐私政策](../PRIVACY.md)已发布到公开 main（<https://github.com/JiangNanGenius/floe-agent/blob/main/PRIVACY.md>）；公开 TestFlight 已通过登录后的 App Store Connect 提交 Build241，独立只读核验确认唯一待审核记录；[公开加入链接](https://testflight.apple.com/join/nz6qeT2J)已建立，Apple 审核通过后才能加入，详见[本轮审核材料](public-beta/build241/README.md)。
+**当前内部 TestFlight：1.7.1（242）**。不可变标签 `v1.7.1` 固定源码 `061bc6b9`；Apple 已核验 `VALID`、未过期、唯一私有内部 Floe QA 组及 `IN_BETA_TESTING`，可供该组安装。此次没有 Build242 GitHub Release、Feather 或正式 App Store 发布；真机行为仍待用户验收。详见[Build242 交付记录](TESTFLIGHT_1.7.1_BETA.md)和[双语发布说明](RELEASE_NOTES_1.7.1_BUILD_242.md)。
+
+**当前正式 GitHub Release：1.7.0（241）**。[正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)的不可变标签 `v1.7.0` 固定源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。Build241 的 TestFlight、Feather 和公开测试送审记录见[历史交付记录](TESTFLIGHT_1.7.0_BETA.md)及[审核材料](public-beta/build241/README.md)；它们不代表 Build242 的公开发布状态。
 
 **Build241 验证边界**：实际完整 App 模拟器通过 PPT 放映换页、退出、静置120秒、保存和两次重开，22阶段、9帧及四页落盘通过核验。Linux 虚拟机同任务测试由1.94秒降至1.32秒，约1.47倍；设备速度因任务而异。下载的 MLX 本地模型标注 Beta／实验性，暂不推荐作为日常首选，Apple 系统模型不受该标注影响。物理设备表现仍由用户安装验收，真实模型搜索回答尚未通过。详见[本轮发布说明](RELEASE_NOTES_1.7.0_BUILD_241.md)与[交付记录](TESTFLIGHT_1.7.0_BETA.md)。
 
@@ -36,6 +38,8 @@ Build240 的[原反馈修复及编辑器验证记录](FLOE_240_FEEDBACK_REPAIR.m
 
 | 文档 | 阅读目的 |
 |---|---|
+| [Build 242 内部 TestFlight 交付](TESTFLIGHT_1.7.1_BETA.md) | 固定源码、云端工件、Apple VALID、Floe QA 可安装及真机待验收边界 |
+| [Build 242 双语发布说明](RELEASE_NOTES_1.7.1_BUILD_242.md) | 本轮 Linux 停止、工具调用与语音波形修复 |
 | [Build 241 版本说明](RELEASE_NOTES_1.7.0_BUILD_241.md) | 当前正式 GitHub Release、私有 Floe QA、Feather 与待公开测试送审 |
 | [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md) | 历史内部 Floe QA：云端构建、未签名 IPA、签名上传、Apple VALID、GitHub 预发布与设备回归边界 |
 | [Build 227 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_227.json) | 已交付内部构建的中英文 TestFlight 测试重点 |
