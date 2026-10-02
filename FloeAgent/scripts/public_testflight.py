@@ -27,7 +27,25 @@ Safety properties:
     review detail and never touches contact or demo-account fields. The notes
     readback must be byte-identical before the group attach and review POST.
   * ``demoAccountRequired`` must be confirmed; when true both demo credential
-    fields must be set. Only presence booleans are reported, never values.
+    fields must be set. Only presence booleans are reported, never values. An
+    explicit ``--demo-account-required false|true`` asks submit to PATCH that
+    one boolean on the existing ``betaAppReviewDetails`` and read it back; it
+    never writes contact fields or demo credentials, and inspect only reports
+    expected/actual/pendingWrite. ``true`` still requires the existing real
+    credentials.
+  * Missing beta app localizations are never created by default. With explicit
+    ``--create-missing-localizations`` the prepared description is POSTed with a
+    ``feedbackEmail`` copied from an explicitly named existing locale
+    (``--feedback-email-locale``); the donor value is never printed and the
+    address is never guessed. The POST is read back by id/locale/description/
+    feedback field.
+  * ``--privacy-policy-url`` is a caller-confirmed https URL. inspect only
+    reports the current value and the pending write; submit PATCHes it onto the
+    beta app localizations and reads it back. The helper never substitutes a
+    marketing/support URL or invents one. Read-only inspect may additionally
+    report a trusted public URL already present in app info localizations
+    (``privacyPolicyUrl``) or app store version localizations (``supportUrl``),
+    but it never writes App Store version metadata.
   * Duplicate localization locales are fatal instead of being silently
     overwritten, and pagination refuses cycles.
   * Existing pending/approved submissions are reported, never re-POSTed.
@@ -192,6 +210,49 @@ def rows(path, call=api):
 
 def query(**values):
     return urllib.parse.urlencode({key: value for key, value in values.items() if value is not None})
+
+
+MAX_URL = 2048
+
+
+def validate_https_url(value, label):
+    """Format-validate a public https URL; never fetches it.
+
+    Only the shape is checked (scheme, host, no credentials/whitespace), so a
+    syntactically valid but unreachable URL is still a caller-confirmed input.
+    Read-only discovery uses the same shape check to decide whether an existing
+    API value may be reported as a trusted public URL or must stay empty.
+    """
+    if not isinstance(value, str):
+        raise ValueError(label + ' must be a string')
+    url = value.strip()
+    if not url or url != value:
+        raise ValueError(label + ' must be a non-empty URL with no outer whitespace')
+    if len(url) > MAX_URL:
+        raise ValueError(f'{label} must be at most {MAX_URL} characters')
+    if any(character.isspace() or ord(character) < 0x20 for character in url):
+        raise ValueError(label + ' must not contain whitespace or control characters')
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != 'https':
+        raise ValueError(label + ' must use the https scheme')
+    if not parsed.netloc or parsed.username is not None or parsed.password is not None:
+        raise ValueError(label + ' must have a host and must not embed credentials')
+    try:
+        host = parsed.hostname or ''
+        parsed.port
+    except ValueError:
+        raise ValueError(label + ' has an invalid host or port') from None
+    if '.' not in host or host.startswith('.') or host.endswith('.'):
+        raise ValueError(label + ' must name a real host')
+    return url
+
+
+def sanitized_public_url(value):
+    """Return a valid public https URL or ``None``; never fabricate one."""
+    try:
+        return validate_https_url(value, 'API URL')
+    except (TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -490,6 +551,76 @@ def fetch_beta_app_localizations(app_id, call=api):
     return localizations
 
 
+def fetch_app_info_localizations(app_id, call=api):
+    """GET app info localizations (privacy policy URL source); read-only."""
+    _, included = paged('/v1/apps/' + app_id + '/appInfos?' + query(**{
+        'limit': '50',
+        'fields[appInfos]': 'appStoreState',
+        'fields[appInfoLocalizations]': 'locale,privacyPolicyUrl',
+        'include': 'appInfoLocalizations',
+    }), call)
+    return [item for item in included if item.get('type') == 'appInfoLocalizations']
+
+
+def fetch_app_store_version_localizations(app_id, call=api):
+    """GET app store version localizations (support URL source); read-only.
+
+    Filtered to the IOS platform so unrelated platform versions cannot add
+    unrelated support URLs. The helper only ever prints the read-back values.
+    """
+    _, included = paged('/v1/apps/' + app_id + '/appStoreVersions?' + query(**{
+        'limit': '200',
+        'filter[platform]': IOS_PLATFORM,
+        'fields[appStoreVersions]': 'platform,versionString,appStoreState',
+        'fields[appStoreVersionLocalizations]': 'locale,supportUrl',
+        'include': 'appStoreVersionLocalizations',
+    }), call)
+    return [item for item in included if item.get('type') == 'appStoreVersionLocalizations']
+
+
+def discover_public_urls(app_id, call=api):
+    """Read-only discovery of trusted public URLs already in Apple metadata.
+
+    Never blocks submission and never invents a value: an API failure is
+    reported as ``available: false`` with a sanitized problem label, a
+    non-https or malformed value is dropped, and an app-info locale with
+    conflicting values is reported as ``None`` instead of picking one.
+    App Store version metadata is only read, never written.
+    """
+    result = {
+        'appInfoLocalizations': {'available': True, 'privacyPolicyUrlByLocale': {}},
+        'appStoreVersionLocalizations': {'available': True, 'supportUrlByLocale': {}},
+    }
+    try:
+        by_locale = {}
+        for item in fetch_app_info_localizations(app_id, call):
+            locale = (item.get('attributes') or {}).get('locale')
+            if not locale:
+                continue
+            url = sanitized_public_url((item.get('attributes') or {}).get('privacyPolicyUrl'))
+            if locale in by_locale and by_locale[locale] != url:
+                by_locale[locale] = None
+            else:
+                by_locale[locale] = url
+        result['appInfoLocalizations']['privacyPolicyUrlByLocale'] = by_locale
+    except (ApiError, ValueError, RuntimeError) as error:
+        result['appInfoLocalizations']['available'] = False
+        result['appInfoLocalizations']['problem'] = str(error)
+    try:
+        collected = {}
+        for item in fetch_app_store_version_localizations(app_id, call):
+            locale = (item.get('attributes') or {}).get('locale')
+            url = sanitized_public_url((item.get('attributes') or {}).get('supportUrl'))
+            if locale and url:
+                collected.setdefault(locale, set()).add(url)
+        result['appStoreVersionLocalizations']['supportUrlByLocale'] = {
+            locale: sorted(urls) for locale, urls in sorted(collected.items())}
+    except (ApiError, ValueError, RuntimeError) as error:
+        result['appStoreVersionLocalizations']['available'] = False
+        result['appStoreVersionLocalizations']['problem'] = str(error)
+    return result
+
+
 def fetch_build_localizations(build_id, call=api):
     localizations, _ = paged('/v1/betaBuildLocalizations?' + query(**{
         'filter[build]': build_id, 'limit': '200', 'fields[betaBuildLocalizations]': 'locale,whatsNew',
@@ -634,7 +765,9 @@ def build_summary(candidate, detail):
 
 def collect_context(*, bundle_id, version, build, tag, source_sha, group_name,
                     repo_root, call=api, artifact_sha256=None, artifact_source_sha=None,
-                    descriptions=None, review_notes=None):
+                    descriptions=None, review_notes=None, demo_account_required=None,
+                    create_missing_localizations=False, feedback_email_locale=None,
+                    privacy_policy_url=None):
     """Read-only collection. Returns (context, issues); never mutates.
 
     ``descriptions`` is the already validated prepared input (en-US/zh-Hans).
@@ -646,6 +779,11 @@ def collect_context(*, bundle_id, version, build, tag, source_sha, group_name,
     text. When present, a current note that differs is reported as fixable by
     the explicit submit (PATCH of the existing detail only) instead of being
     echoed or treated as an unfixable blocker.
+
+    ``demo_account_required``, ``create_missing_localizations``,
+    ``feedback_email_locale`` and ``privacy_policy_url`` describe explicit
+    metadata completion the caller selected. They only mark currently missing
+    values as fixable by the explicit submit; this function never writes.
     """
     context = {'issues': []}
     issues = context['issues']
@@ -667,6 +805,10 @@ def collect_context(*, bundle_id, version, build, tag, source_sha, group_name,
     except ValueError as error:
         issues.append(str(error))
         return context, issues
+
+    # Supplementary read-only URL discovery. Never blocking and never written;
+    # a failure is only reported as unavailable.
+    context['discoveredPublicUrls'] = discover_public_urls(context['app']['id'], call)
 
     try:
         candidate, detail = fetch_candidate(context['app']['id'], bundle_id, version, build, call)
@@ -722,14 +864,32 @@ def collect_context(*, bundle_id, version, build, tag, source_sha, group_name,
                 context['reviewNotesFixable'] = True
         elif not detail_summary['notesPresent']:
             issues.append('betaAppReviewDetail notes are empty; provide the prepared review-notes file for submit')
-        if detail_summary['demoAccountRequired'] is None:
-            issues.append('betaAppReviewDetail demoAccountRequired is unconfirmed (field is empty); '
-                          'cannot confirm whether demo credentials are required')
-        elif detail_summary['demoAccountRequired'] and not detail_summary['demoAccountCredentialsComplete']:
-            missing_demo = [name for name in ('demoAccountName', 'demoAccountPassword')
-                            if name in detail_summary['missingFields']]
-            issues.append('betaAppReviewDetail demoAccountRequired is true but missing field(s): '
-                          + ','.join(missing_demo))
+        actual_demo = detail_summary['demoAccountRequired']
+        if demo_account_required is None:
+            if actual_demo is None:
+                issues.append('betaAppReviewDetail demoAccountRequired is unconfirmed (field is empty); '
+                              'cannot confirm whether demo credentials are required')
+            elif actual_demo and not detail_summary['demoAccountCredentialsComplete']:
+                missing_demo = [name for name in ('demoAccountName', 'demoAccountPassword')
+                                if name in detail_summary['missingFields']]
+                issues.append('betaAppReviewDetail demoAccountRequired is true but missing field(s): '
+                              + ','.join(missing_demo))
+        else:
+            # The explicit option only ever PATCHes this single boolean. It does
+            # not pretend the current value already matches: actual/pendingWrite
+            # are reported, and a desired value of true still requires the
+            # existing real credentials (which the helper never writes).
+            context['demoAccountRequiredFixable'] = actual_demo is not demo_account_required
+            credentials_present = (bool(detail_summary['demoAccountNamePresent'])
+                                   and bool(detail_summary['demoAccountPasswordPresent']))
+            if demo_account_required and not credentials_present:
+                missing_demo = [name for name, present in
+                                (('demoAccountName', detail_summary['demoAccountNamePresent']),
+                                 ('demoAccountPassword', detail_summary['demoAccountPasswordPresent']))
+                                if not present]
+                issues.append('betaAppReviewDetail demoAccountRequired was explicitly requested true but '
+                              'the existing detail is missing field(s): ' + ','.join(missing_demo)
+                              + '; the helper never writes demo credentials')
     try:
         context['betaAppLocalizations'] = beta_app_localization_summary(
             fetch_beta_app_localizations(context['app']['id'], call))
@@ -737,17 +897,42 @@ def collect_context(*, bundle_id, version, build, tag, source_sha, group_name,
         issues.append(str(error))
         context['betaAppLocalizations'] = {}
     present_locales = set(context['betaAppLocalizations'])
+    context['creatableMissingLocales'] = []
     for locale in sorted(set(LOCALES) - present_locales):
-        issues.append('betaAppLocalizations is missing locale: ' + locale)
+        if create_missing_localizations and descriptions is not None and locale in descriptions:
+            context['creatableMissingLocales'].append(locale)
+        else:
+            issues.append('betaAppLocalizations is missing locale: ' + locale)
     if descriptions is not None:
         for locale in sorted(descriptions):
-            if locale not in present_locales:
+            if locale not in present_locales and locale not in context['creatableMissingLocales']:
                 issues.append('missing betaAppLocalization for ' + locale)
+    # Creating a missing localization needs an existing donor locale with a
+    # configured feedbackEmail; the value itself is never printed or guessed.
+    context['createMissingFeedbackEmailPresent'] = None
+    if context['creatableMissingLocales']:
+        if not feedback_email_locale:
+            issues.append('creating a missing betaAppLocalization requires an explicit existing '
+                          'feedback-email locale; refusing to guess a feedback address')
+        else:
+            donor = context['betaAppLocalizations'].get(feedback_email_locale)
+            if donor is None:
+                context['createMissingFeedbackEmailPresent'] = False
+                issues.append('feedback email locale ' + feedback_email_locale
+                              + ' does not exist among betaAppLocalizations; refusing to guess')
+            elif 'feedbackEmail' in donor.get('missingFields', []):
+                context['createMissingFeedbackEmailPresent'] = False
+                issues.append('feedback email locale ' + feedback_email_locale
+                              + ' has no configured feedbackEmail; refusing to guess')
+            else:
+                context['createMissingFeedbackEmailPresent'] = True
     # Apple requires a description for every betaAppLocalization before a beta
     # review submission. An empty description on a locale covered by this
     # prepared input is exactly what the explicit submit may repair; every
     # other empty description (including locales this input does not cover)
-    # still blocks, and missing localizations are never created here.
+    # still blocks. A missing locale blocks unless the caller explicitly asked
+    # for creation and the prepared description plus donor feedback email are
+    # available (validated above).
     context['descriptionFixableLocales'] = []
     for locale, entry in sorted(context['betaAppLocalizations'].items()):
         if not entry.get('descriptionSet'):
@@ -757,6 +942,14 @@ def collect_context(*, bundle_id, version, build, tag, source_sha, group_name,
                 issues.append('betaAppLocalizations description is empty for: ' + locale)
         if locale in LOCALES and 'feedbackEmail' in entry.get('missingFields', []):
             issues.append('betaAppLocalizations feedbackEmail is empty for: ' + locale)
+    # A caller-confirmed https privacy policy URL is the only accepted source:
+    # the helper never substitutes a marketing/support URL or invents one, and
+    # inspect only reports the current per-locale values (including an empty
+    # one) and the pending write. Without an explicit URL nothing is written;
+    # the missing value stays visible in betaAppLocalizations.
+    context['privacyPolicyTargetLocales'] = sorted(
+        descriptions if descriptions is not None
+        else [locale for locale in LOCALES if locale in present_locales])
     try:
         context['buildLocalizations'] = fetch_build_localizations(candidate['id'], call)
         build_locales = localization_map(context['buildLocalizations'], 'betaBuildLocalizations')
@@ -774,7 +967,9 @@ def collect_context(*, bundle_id, version, build, tag, source_sha, group_name,
     return context, issues
 
 
-def inspect_summary(context, issues, whats_new=None, descriptions=None, review_notes=None):
+def inspect_summary(context, issues, whats_new=None, descriptions=None, review_notes=None,
+                    demo_account_required=None, create_missing_localizations=False,
+                    feedback_email_locale=None, privacy_policy_url=None):
     group = context.get('externalGroup')
     group_attributes = (group or {}).get('attributes', {})
     try:
@@ -806,7 +1001,31 @@ def inspect_summary(context, issues, whats_new=None, descriptions=None, review_n
             'locales': sorted(descriptions),
             'missingLocalizations': sorted(locale for locale in descriptions if locale not in current),
             'fixableEmptyDescriptionLocales': sorted(context.get('descriptionFixableLocales', [])),
+            'createMissingRequested': bool(create_missing_localizations),
+            'creatableMissingLocales': sorted(context.get('creatableMissingLocales', [])),
+            'feedbackEmailLocale': feedback_email_locale,
+            'feedbackEmailPresentInDonor': context.get('createMissingFeedbackEmailPresent'),
         }
+    review_detail_actual = review_detail.get('demoAccountRequired')
+    demo_account_report = {
+        'provided': demo_account_required is not None,
+        'expected': demo_account_required,
+        'actual': review_detail_actual,
+        'pendingWrite': demo_account_required is not None and review_detail_actual is not demo_account_required,
+    }
+    current_privacy = {}
+    for locale in context.get('privacyPolicyTargetLocales', []):
+        entry = (context.get('betaAppLocalizations') or {}).get(locale) or {}
+        current_privacy[locale] = entry.get('privacyPolicyUrl')
+    privacy_report = {
+        'provided': privacy_policy_url is not None,
+        'expected': privacy_policy_url,
+        'targetLocales': sorted(context.get('privacyPolicyTargetLocales', [])),
+        'current': current_privacy,
+        'pendingWrite': privacy_policy_url is not None and any(
+            current_privacy.get(locale) != privacy_policy_url for locale in current_privacy),
+        'discoveredPublicUrls': context.get('discoveredPublicUrls'),
+    }
     submission_states = [classify_submission(item) for item in context.get('submissions', [])]
     public_link, public_link_source = (None, None)
     if group is not None:
@@ -838,7 +1057,9 @@ def inspect_summary(context, issues, whats_new=None, descriptions=None, review_n
             'attachedToBuild': context.get('externalGroupAttached'),
         } if group is not None else None,
         'reviewDetail': context.get('reviewDetail'),
+        'demoAccountRequirement': demo_account_report,
         'betaAppLocalizations': context.get('betaAppLocalizations'),
+        'privacyPolicy': privacy_report,
         'buildLocalizations': sorted(locale for locale, text in existing_notes.items() if text),
         'whatToTestMissingLocales': context.get('missingWhatToTestLocales', []),
         'notes': notes_report,
@@ -853,35 +1074,71 @@ def inspect_summary(context, issues, whats_new=None, descriptions=None, review_n
     return summary
 
 
+def normalize_metadata_options(*, demo_account_required=None, create_missing_localizations=False,
+                               feedback_email_locale=None, privacy_policy_url=None):
+    """Validate the explicit metadata-completion options before any API read.
+
+    Every option defaults to "do not touch": ``demo_account_required`` is
+    tri-state (None means unchanged), creation is opt-in, the feedback donor is
+    required only when creating, and the privacy policy URL must be a caller
+    supplied https URL. A wrong combination fails before any request is made.
+    """
+    if demo_account_required is not None and not isinstance(demo_account_required, bool):
+        raise ValueError('demo-account-required must be exactly true, false or unchanged')
+    donor = (feedback_email_locale or '').strip() or None
+    if donor and not create_missing_localizations:
+        raise ValueError('feedback-email-locale is only valid together with create-missing-localizations')
+    url = (privacy_policy_url or '').strip() or None
+    if url is not None:
+        url = validate_https_url(url, 'privacy policy URL')
+    return {
+        'demo_account_required': demo_account_required,
+        'create_missing_localizations': bool(create_missing_localizations),
+        'feedback_email_locale': donor,
+        'privacy_policy_url': url,
+    }
+
+
 def inspect_with_context(*, bundle_id=DEFAULT_BUNDLE, version, build, tag, source_sha,
                          group_name=DEFAULT_GROUP, repo_root='.', call=api, notes_path=None,
                          review_notes_path=None, description_path=None,
-                         artifact_sha256=None, artifact_source_sha=None):
+                         artifact_sha256=None, artifact_source_sha=None,
+                         demo_account_required=None, create_missing_localizations=False,
+                         feedback_email_locale=None, privacy_policy_url=None):
     # Prepared input is validated before any read so a malformed or draft file
     # can never influence which repairs are considered possible.
     whats_new = load_localizations(notes_path) if notes_path else None
     review_notes = load_review_notes(review_notes_path) if review_notes_path else None
     descriptions = load_localizations(description_path) if description_path else None
+    options = normalize_metadata_options(
+        demo_account_required=demo_account_required,
+        create_missing_localizations=create_missing_localizations,
+        feedback_email_locale=feedback_email_locale,
+        privacy_policy_url=privacy_policy_url)
     context, issues = collect_context(
         bundle_id=bundle_id, version=version, build=build, tag=tag, source_sha=source_sha,
         group_name=group_name, repo_root=repo_root, call=call,
         artifact_sha256=artifact_sha256, artifact_source_sha=artifact_source_sha,
-        descriptions=descriptions, review_notes=review_notes)
+        descriptions=descriptions, review_notes=review_notes, **options)
     summary = inspect_summary(context, issues, whats_new=whats_new, descriptions=descriptions,
-                              review_notes=review_notes)
+                              review_notes=review_notes, **options)
     summary['context'] = context
     return summary
 
 
 def inspect(*, bundle_id=DEFAULT_BUNDLE, version, build, tag, source_sha, group_name=DEFAULT_GROUP,
             repo_root='.', call=api, notes_path=None, review_notes_path=None, description_path=None,
-            artifact_sha256=None, artifact_source_sha=None):
+            artifact_sha256=None, artifact_source_sha=None, demo_account_required=None,
+            create_missing_localizations=False, feedback_email_locale=None, privacy_policy_url=None):
     """Read-only sanitized summary; no context or raw values are returned."""
     return public_summary(inspect_with_context(
         bundle_id=bundle_id, version=version, build=build, tag=tag, source_sha=source_sha,
         group_name=group_name, repo_root=repo_root, call=call,
         notes_path=notes_path, review_notes_path=review_notes_path, description_path=description_path,
-        artifact_sha256=artifact_sha256, artifact_source_sha=artifact_source_sha))
+        artifact_sha256=artifact_sha256, artifact_source_sha=artifact_source_sha,
+        demo_account_required=demo_account_required,
+        create_missing_localizations=create_missing_localizations,
+        feedback_email_locale=feedback_email_locale, privacy_policy_url=privacy_policy_url))
 
 
 # --------------------------------------------------------------------------
@@ -913,24 +1170,94 @@ def write_notes(context, notes, call=api):
         raise RuntimeError('What-to-Test readback did not match the prepared input')
 
 
-def write_descriptions(context, descriptions, call=api):
-    raw = fetch_beta_app_localizations(context['app']['id'], call)
+def write_descriptions(context, descriptions, privacy_policy_url=None, create_missing=False,
+                       feedback_email_locale=None, call=api):
+    """Write prepared descriptions, optional privacy URL and opt-in creations.
+
+    Existing localizations are only PATCHed for the prepared description and/or
+    a caller-confirmed privacy policy URL; every other field (including an
+    existing feedbackEmail) is left untouched. A missing localization is only
+    created when ``create_missing`` is explicit and both the prepared
+    description and a donor ``feedbackEmail`` from the explicitly named
+    existing locale are available. The donor address is copied in memory,
+    never printed and never guessed, and the full POST/PATCH result is read
+    back by id, locale, description, feedback field and URL.
+    """
+    app_id = (context.get('app') or {}).get('id') or ''
+    if not ID_RE.match(app_id):
+        raise ValueError('verified app id is required before beta app localization writes')
+    prepared = dict(descriptions or {})
+    targets = set(prepared)
+    if privacy_policy_url is not None:
+        targets.update(LOCALES)
+    targets = sorted(targets)
+    raw = fetch_beta_app_localizations(app_id, call)
     existing = localization_map(raw, 'betaAppLocalizations')
-    missing = sorted(locale for locale in descriptions if locale not in existing)
-    if missing:
+    missing = [locale for locale in targets if locale not in existing]
+    if missing and not create_missing:
         raise ValueError('betaAppLocalization missing for locale(s): ' + ','.join(missing)
-                         + '; every required localization must already exist before any description write')
-    for locale, text in sorted(descriptions.items()):
-        current = existing[locale]
-        if current.get('attributes', {}).get('description') != text:
+                         + '; every required localization must already exist before any write')
+    donor_email = None
+    if missing:
+        donor_locale = (feedback_email_locale or '').strip()
+        if not donor_locale:
+            raise ValueError('creating a missing betaAppLocalization requires an explicit existing '
+                             'feedback-email locale; refusing to guess a feedback address')
+        donor = existing.get(donor_locale)
+        if donor is None:
+            raise ValueError('feedback email locale ' + donor_locale
+                             + ' does not exist among betaAppLocalizations; refusing to guess')
+        donor_email = (donor.get('attributes') or {}).get('feedbackEmail')
+        if not donor_email:
+            raise ValueError('feedback email locale ' + donor_locale
+                             + ' has no configured feedbackEmail; refusing to guess')
+        for locale in missing:
+            if not prepared.get(locale):
+                raise ValueError('missing betaAppLocalization for ' + locale
+                                 + ' has no prepared description; refusing to create it')
+    created, patched = [], []
+    for locale in targets:
+        current = existing.get(locale)
+        if current is None:
+            attributes = {'locale': locale, 'description': prepared[locale],
+                          'feedbackEmail': donor_email}
+            if privacy_policy_url is not None:
+                attributes['privacyPolicyUrl'] = privacy_policy_url
+            call('POST', '/v1/betaAppLocalizations', {'data': {
+                'type': 'betaAppLocalizations',
+                'attributes': attributes,
+                'relationships': {'app': {'data': {'type': 'apps', 'id': app_id}}}}})
+            created.append(locale)
+            continue
+        attributes = {}
+        if locale in prepared and current.get('attributes', {}).get('description') != prepared[locale]:
+            attributes['description'] = prepared[locale]
+        if privacy_policy_url is not None \
+                and (current.get('attributes', {}).get('privacyPolicyUrl') or None) != privacy_policy_url:
+            attributes['privacyPolicyUrl'] = privacy_policy_url
+        if attributes:
             call('PATCH', '/v1/betaAppLocalizations/' + current['id'], {'data': {
-                'type': 'betaAppLocalizations', 'id': current['id'],
-                'attributes': {'description': text}}})
-    readback_raw = fetch_beta_app_localizations(context['app']['id'], call)
-    readback = {locale: item.get('attributes', {}).get('description')
-                for locale, item in localization_map(readback_raw, 'betaAppLocalizations').items()}
-    if any(readback.get(locale) != text for locale, text in descriptions.items()):
-        raise RuntimeError('Beta description readback did not match the prepared input')
+                'type': 'betaAppLocalizations', 'id': current['id'], 'attributes': attributes}})
+            patched.append(locale)
+    readback_raw = fetch_beta_app_localizations(app_id, call)
+    readback = localization_map(readback_raw, 'betaAppLocalizations')
+    for locale in targets:
+        item = readback.get(locale)
+        if item is None:
+            raise RuntimeError('betaAppLocalization readback is missing locale ' + locale)
+        if not ID_RE.match(str(item.get('id') or '')):
+            raise RuntimeError('betaAppLocalization readback id is missing or invalid for ' + locale)
+        attributes = item.get('attributes') or {}
+        if attributes.get('locale') != locale:
+            raise RuntimeError('betaAppLocalization readback locale mismatch for ' + locale)
+        if locale in prepared and attributes.get('description') != prepared[locale]:
+            raise RuntimeError('betaAppLocalization description readback did not match for ' + locale)
+        if locale in created and (attributes.get('feedbackEmail') or None) != donor_email:
+            raise RuntimeError('betaAppLocalization feedbackEmail readback did not match the donor value for '
+                               + locale)
+        if privacy_policy_url is not None and (attributes.get('privacyPolicyUrl') or None) != privacy_policy_url:
+            raise RuntimeError('betaAppLocalization privacyPolicyUrl readback did not match for ' + locale)
+    return {'created': created, 'patched': patched}
 
 
 def write_review_notes(context, review_notes, call=api):
@@ -957,6 +1284,40 @@ def write_review_notes(context, review_notes, call=api):
     readback_notes = ((readback_raw or {}).get('attributes') or {}).get('notes')
     if readback_notes != review_notes:
         raise RuntimeError('betaAppReviewDetail notes readback did not match the prepared text byte-for-byte')
+    return True
+
+
+def write_demo_account_required(context, desired, call=api):
+    """PATCH only the existing ``betaAppReviewDetails/{id}.demoAccountRequired``.
+
+    Never touches contact fields and never writes demo credentials. ``true`` is
+    only allowed when the existing detail already has both real credential
+    fields; ``false`` may be written even when stale credentials exist (they are
+    left untouched). The readback must be the exact requested boolean.
+    """
+    if desired is None:
+        return False
+    if not isinstance(desired, bool):
+        raise ValueError('demoAccountRequired must be exactly true or false')
+    detail_id = context.get('reviewDetailId') or ''
+    if not ID_RE.match(detail_id):
+        raise ValueError('existing betaAppReviewDetail id is missing or invalid; refusing to guess or create one')
+    detail_summary = context.get('reviewDetail') or {}
+    if not detail_summary.get('present'):
+        raise ValueError('betaAppReviewDetail is missing; the helper never creates one')
+    if desired and not (detail_summary.get('demoAccountNamePresent')
+                        and detail_summary.get('demoAccountPasswordPresent')):
+        raise ValueError('demoAccountRequired can only be set true when the existing detail already has both '
+                         'demo credential fields; the helper never writes demo credentials')
+    if detail_summary.get('demoAccountRequired') is desired:
+        return False
+    call('PATCH', '/v1/betaAppReviewDetails/' + detail_id, {'data': {
+        'type': 'betaAppReviewDetails', 'id': detail_id,
+        'attributes': {'demoAccountRequired': desired}}})
+    readback_raw = fetch_review_detail(context['app']['id'], call)
+    readback = ((readback_raw or {}).get('attributes') or {}).get('demoAccountRequired')
+    if readback is not desired:
+        raise RuntimeError('betaAppReviewDetails demoAccountRequired readback did not confirm the requested value')
     return True
 
 
@@ -1038,7 +1399,8 @@ def enable_public_link(context, call=api):
 def submit(*, bundle_id=DEFAULT_BUNDLE, version, build, tag, source_sha, group_name=DEFAULT_GROUP,
            repo_root='.', call=api, notes_path=None, review_notes_path=None, description_path=None,
            confirm_submit=False, enable_public_link_requested=False, allow_resubmit_rejected=False,
-           artifact_sha256=None, artifact_source_sha=None):
+           artifact_sha256=None, artifact_source_sha=None, demo_account_required=None,
+           create_missing_localizations=False, feedback_email_locale=None, privacy_policy_url=None):
     if not confirm_submit:
         raise ValueError('submit requires explicit confirmation (--confirm-submit)')
     if not notes_path:
@@ -1048,11 +1410,16 @@ def submit(*, bundle_id=DEFAULT_BUNDLE, version, build, tag, source_sha, group_n
     notes = load_localizations(notes_path)
     review_notes = load_review_notes(review_notes_path)
     descriptions = load_localizations(description_path) if description_path else None
+    options = normalize_metadata_options(
+        demo_account_required=demo_account_required,
+        create_missing_localizations=create_missing_localizations,
+        feedback_email_locale=feedback_email_locale,
+        privacy_policy_url=privacy_policy_url)
     pre = inspect_with_context(
         bundle_id=bundle_id, version=version, build=build, tag=tag, source_sha=source_sha,
         group_name=group_name, repo_root=repo_root, call=call,
         notes_path=notes_path, review_notes_path=review_notes_path, description_path=description_path,
-        artifact_sha256=artifact_sha256, artifact_source_sha=artifact_source_sha)
+        artifact_sha256=artifact_sha256, artifact_source_sha=artifact_source_sha, **options)
     context = pre.pop('context')
     if not pre['ok']:
         raise ValueError('candidate is not ready for submission: ' + '; '.join(pre['issues']))
@@ -1075,11 +1442,18 @@ def submit(*, bundle_id=DEFAULT_BUNDLE, version, build, tag, source_sha, group_n
     writes = []
     write_notes(context, notes, call)
     writes.append('betaBuildLocalizations')
-    if descriptions:
-        write_descriptions(context, descriptions, call)
+    created_locales = []
+    if descriptions or options['privacy_policy_url']:
+        localization_result = write_descriptions(
+            context, descriptions, privacy_policy_url=options['privacy_policy_url'],
+            create_missing=options['create_missing_localizations'],
+            feedback_email_locale=options['feedback_email_locale'], call=call)
+        created_locales = localization_result['created']
         writes.append('betaAppLocalizations')
     if write_review_notes(context, review_notes, call):
         writes.append('betaAppReviewDetails.notes')
+    if write_demo_account_required(context, options['demo_account_required'], call):
+        writes.append('betaAppReviewDetails.demoAccountRequired')
     if not context.get('externalGroupAttached'):
         attach_to_external_group(context, call)
         writes.append('betaGroups.relationships.builds')
@@ -1094,11 +1468,30 @@ def submit(*, bundle_id=DEFAULT_BUNDLE, version, build, tag, source_sha, group_n
                        group_name=group_name, repo_root=repo_root, call=call,
                        notes_path=notes_path, review_notes_path=review_notes_path,
                        description_path=description_path,
-                       artifact_sha256=artifact_sha256, artifact_source_sha=artifact_source_sha)
+                       artifact_sha256=artifact_sha256, artifact_source_sha=artifact_source_sha, **options)
     if not readback['ok']:
         raise RuntimeError('post-write readback is not clean: ' + '; '.join(readback['issues']))
     if readback['reviewNotes']['currentNotesMatchPrepared'] is not True:
         raise RuntimeError('review-notes readback did not confirm the prepared final text')
+    # Post-state gates for every new metadata write: the readback must confirm
+    # the exact requested value, never merely the absence of a write error.
+    if options['demo_account_required'] is not None:
+        demo_readback = readback['demoAccountRequirement']
+        if demo_readback['actual'] is not options['demo_account_required'] \
+                or demo_readback['pendingWrite']:
+            raise RuntimeError('demoAccountRequired post-write readback did not confirm the requested value')
+    if options['privacy_policy_url'] is not None:
+        privacy_readback = readback['privacyPolicy']
+        if privacy_readback['pendingWrite'] or any(
+                value != options['privacy_policy_url']
+                for value in privacy_readback['current'].values()):
+            raise RuntimeError('privacyPolicyUrl post-write readback did not confirm the caller-provided URL')
+    for locale in created_locales:
+        entry = (readback.get('betaAppLocalizations') or {}).get(locale) or {}
+        if 'feedbackEmail' in entry.get('missingFields', []):
+            raise RuntimeError('created betaAppLocalization feedbackEmail readback is empty for ' + locale)
+        if not entry.get('descriptionSet'):
+            raise RuntimeError('created betaAppLocalization description readback is empty for ' + locale)
     active_states = [state for state in readback['submission']['states']
                      if state in ('pending_review', 'approved')]
     if active_states != outcome['submissionStates']:
@@ -1132,7 +1525,24 @@ def build_parser():
     parser.add_argument('--confirm-submit', action='store_true')
     parser.add_argument('--enable-public-link', action='store_true')
     parser.add_argument('--allow-resubmit-rejected', action='store_true')
+    parser.add_argument('--demo-account-required', choices=('unchanged', 'true', 'false'),
+                        default='unchanged',
+                        help='Explicitly PATCH only betaAppReviewDetails.demoAccountRequired '
+                             '(unchanged default never writes it); true requires existing real credentials')
+    parser.add_argument('--create-missing-localizations', action='store_true',
+                        help='Opt in to POST a missing betaAppLocalization from the prepared description; '
+                             'default off')
+    parser.add_argument('--feedback-email-locale', default='',
+                        help='Existing locale whose configured feedbackEmail is reused when creating a '
+                             'missing localization; required only for creation, value never printed')
+    parser.add_argument('--privacy-policy-url', default='',
+                        help='Caller-confirmed https privacy policy URL; inspect only reports pending, '
+                             'submit PATCHes it onto beta app localizations')
     return parser
+
+
+def _demo_account_option(value):
+    return {'unchanged': None, 'true': True, 'false': False}[value]
 
 
 def main(argv=None):
@@ -1143,6 +1553,9 @@ def main(argv=None):
     if args.operation == 'submit' and not args.confirm_submit:
         print('submit requires --confirm-submit', file=sys.stderr)
         return 2
+    if args.feedback_email_locale and not args.create_missing_localizations:
+        print('feedback-email-locale requires --create-missing-localizations', file=sys.stderr)
+        return 2
     try:
         if args.operation == 'inspect':
             result = inspect(
@@ -1150,7 +1563,11 @@ def main(argv=None):
                 source_sha=args.source_sha, group_name=args.group_name, repo_root=args.repo_root,
                 notes_path=args.notes, review_notes_path=args.review_notes,
                 description_path=args.description,
-                artifact_sha256=args.artifact_sha256, artifact_source_sha=args.artifact_source_sha)
+                artifact_sha256=args.artifact_sha256, artifact_source_sha=args.artifact_source_sha,
+                demo_account_required=_demo_account_option(args.demo_account_required),
+                create_missing_localizations=args.create_missing_localizations,
+                feedback_email_locale=args.feedback_email_locale,
+                privacy_policy_url=args.privacy_policy_url)
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result['ok'] else 2
         result = submit(
@@ -1161,7 +1578,11 @@ def main(argv=None):
             confirm_submit=args.confirm_submit,
             enable_public_link_requested=args.enable_public_link,
             allow_resubmit_rejected=args.allow_resubmit_rejected,
-            artifact_sha256=args.artifact_sha256, artifact_source_sha=args.artifact_source_sha)
+            artifact_sha256=args.artifact_sha256, artifact_source_sha=args.artifact_source_sha,
+            demo_account_required=_demo_account_option(args.demo_account_required),
+            create_missing_localizations=args.create_missing_localizations,
+            feedback_email_locale=args.feedback_email_locale,
+            privacy_policy_url=args.privacy_policy_url)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (ValueError, RuntimeError) as error:

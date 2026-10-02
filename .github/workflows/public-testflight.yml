@@ -17,6 +17,20 @@ name: Public TestFlight External Review
 # unreplaced placeholders); it PATCHes only the existing
 # betaAppReviewDetails/{id}.notes and verifies a byte-identical readback before
 # the group attach and review POST.
+#
+# Metadata completion is explicit and default-off:
+#   demo_account_required=unchanged|false|true  PATCHes only the existing
+#     betaAppReviewDetails.demoAccountRequired boolean on submit (true still
+#     requires the existing real demo credentials); inspect only reports
+#     expected/actual/pendingWrite.
+#   create_missing_localizations=false          opt-in creation of a missing
+#     betaAppLocalization from the prepared description, reusing the
+#     feedbackEmail configured on the explicitly named feedback_email_locale
+#     (value never printed or guessed).
+#   privacy_policy_url=""                       caller-confirmed https URL;
+#     inspect only reports the pending write, submit PATCHes it onto the beta
+#     app localizations and reads it back. Never auto-substituted.
+# inspect is always GET-only; every new input only changes what submit writes.
 
 on:
   workflow_dispatch:
@@ -83,6 +97,30 @@ on:
         required: false
         default: false
         type: boolean
+      demo_account_required:
+        description: "Explicit metadata completion: PATCH only betaAppReviewDetails.demoAccountRequired on submit (unchanged | false | true). Default unchanged never writes it."
+        required: false
+        default: unchanged
+        type: choice
+        options:
+          - unchanged
+          - "false"
+          - "true"
+      create_missing_localizations:
+        description: "Explicit opt-in: create a missing betaAppLocalization from the prepared description, reusing an existing configured feedbackEmail (default off)"
+        required: false
+        default: false
+        type: boolean
+      feedback_email_locale:
+        description: "Existing locale whose configured feedbackEmail is reused for a created localization; requires create_missing_localizations=true and never prints the value"
+        required: false
+        default: ""
+        type: string
+      privacy_policy_url:
+        description: "Caller-confirmed https privacy policy URL; inspect only reports pending, submit PATCHes it onto beta app localizations"
+        required: false
+        default: ""
+        type: string
       confirm:
         description: "Type submit-external-review to allow operation=submit"
         required: false
@@ -116,6 +154,10 @@ jobs:
           DESCRIPTION_PATH: ${{ inputs.description_path }}
           REVIEW_NOTES_PATH: ${{ inputs.review_notes_path }}
           ENABLE_PUBLIC_LINK: ${{ inputs.enable_public_link }}
+          DEMO_ACCOUNT_REQUIRED: ${{ inputs.demo_account_required }}
+          CREATE_MISSING_LOCALIZATIONS: ${{ inputs.create_missing_localizations }}
+          FEEDBACK_EMAIL_LOCALE: ${{ inputs.feedback_email_locale }}
+          PRIVACY_POLICY_URL: ${{ inputs.privacy_policy_url }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
           set -euo pipefail
@@ -131,6 +173,7 @@ jobs:
           test -f "$NOTES_PATH" || { echo "notes_path not found" >&2; exit 2; }
           if test -n "$DESCRIPTION_PATH"; then test -f "$DESCRIPTION_PATH" || { echo "description_path not found" >&2; exit 2; }; fi
           if test -n "$REVIEW_NOTES_PATH"; then test -f "$REVIEW_NOTES_PATH" || { echo "review_notes_path not found" >&2; exit 2; }; fi
+          [[ "$DEMO_ACCOUNT_REQUIRED" =~ ^(unchanged|true|false)$ ]] || { echo "demo_account_required must be unchanged, true or false" >&2; exit 2; }
           if test "$OPERATION" = submit; then
             test "$CONFIRM" = "submit-external-review" || { echo "confirm must be submit-external-review for submit" >&2; exit 2; }
             test -n "$REVIEW_NOTES_PATH" || { echo "review_notes_path is required for submit" >&2; exit 2; }
@@ -139,7 +182,14 @@ jobs:
             echo "public link changes are only valid with operation=submit" >&2
             exit 2
           fi
-          echo "validated operation=$OPERATION version=$VERSION build=$BUILD tag=$TAG"
+          if test -n "$FEEDBACK_EMAIL_LOCALE" && test "$CREATE_MISSING_LOCALIZATIONS" != "true"; then
+            echo "feedback-email-locale requires --create-missing-localizations" >&2
+            exit 2
+          fi
+          if test -n "$PRIVACY_POLICY_URL"; then
+            [[ "$PRIVACY_POLICY_URL" =~ ^https://[^[:space:]]+$ ]] || { echo "privacy_policy_url must be an https URL" >&2; exit 2; }
+          fi
+          echo "validated operation=$OPERATION version=$VERSION build=$BUILD tag=$TAG demo=$DEMO_ACCOUNT_REQUIRED create_missing=$CREATE_MISSING_LOCALIZATIONS"
 
       - name: Install App Store Connect API key
         env:
@@ -180,6 +230,10 @@ jobs:
           ARTIFACT_SOURCE_SHA: ${{ inputs.artifact_source_sha }}
           ENABLE_PUBLIC_LINK: ${{ inputs.enable_public_link }}
           ALLOW_RESUBMIT_REJECTED: ${{ inputs.allow_resubmit_rejected }}
+          DEMO_ACCOUNT_REQUIRED: ${{ inputs.demo_account_required }}
+          CREATE_MISSING_LOCALIZATIONS: ${{ inputs.create_missing_localizations }}
+          FEEDBACK_EMAIL_LOCALE: ${{ inputs.feedback_email_locale }}
+          PRIVACY_POLICY_URL: ${{ inputs.privacy_policy_url }}
         run: |
           set -euo pipefail
           args=(
@@ -200,5 +254,11 @@ jobs:
           if test "$OPERATION" = submit; then args+=(--confirm-submit); fi
           if test "$ENABLE_PUBLIC_LINK" = "true"; then args+=(--enable-public-link); fi
           if test "$ALLOW_RESUBMIT_REJECTED" = "true"; then args+=(--allow-resubmit-rejected); fi
+          if test -n "$DEMO_ACCOUNT_REQUIRED" && test "$DEMO_ACCOUNT_REQUIRED" != "unchanged"; then
+            args+=(--demo-account-required "$DEMO_ACCOUNT_REQUIRED")
+          fi
+          if test "$CREATE_MISSING_LOCALIZATIONS" = "true"; then args+=(--create-missing-localizations); fi
+          if test -n "$FEEDBACK_EMAIL_LOCALE"; then args+=(--feedback-email-locale "$FEEDBACK_EMAIL_LOCALE"); fi
+          if test -n "$PRIVACY_POLICY_URL"; then args+=(--privacy-policy-url "$PRIVACY_POLICY_URL"); fi
           python3 FloeAgent/scripts/public_testflight.py "${args[@]}" \
             | tee "$RUNNER_TEMP/public-testflight-report.json"

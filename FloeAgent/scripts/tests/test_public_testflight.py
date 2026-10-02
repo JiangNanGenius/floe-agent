@@ -107,12 +107,25 @@ def beta_app_localization(locale, description='old description', **overrides):
     return {'type': 'betaAppLocalizations', 'id': 'bal-' + locale, 'attributes': attributes}
 
 
+def app_info_localization(locale, privacy_policy_url=None):
+    return {'type': 'appInfoLocalizations', 'id': 'ail-' + locale,
+            'attributes': {'locale': locale, 'privacyPolicyUrl': privacy_policy_url}}
+
+
+def version_localization(locale, support_url=None):
+    return {'type': 'appStoreVersionLocalizations', 'id': 'avl-' + locale,
+            'attributes': {'locale': locale, 'supportUrl': support_url}}
+
+
 class FakeASC:
     """Deterministic App Store Connect double; records every request."""
 
     def __init__(self, *, audience='APP_STORE_ELIGIBLE', processing='VALID', expired=False,
                  groups=None, submissions=None, detail=None, beta_app_locs=None,
                  build_locs=None, apply_writes=True, apply_review_notes_write=True,
+                 apply_demo_required_write=True, apply_privacy_write=True,
+                 apply_create_write=True, app_info_locs=None, version_locs=None,
+                 fail_discovery_status=None,
                  post_state='WAITING_FOR_REVIEW',
                  fail_review_detail_status=None, platform='IOS', include_non_ios_duplicate=False,
                  patch_sets_public_link=True):
@@ -129,6 +142,12 @@ class FakeASC:
         self.build_locs = list(build_locs or [])
         self.apply_writes = apply_writes
         self.apply_review_notes_write = apply_review_notes_write
+        self.apply_demo_required_write = apply_demo_required_write
+        self.apply_privacy_write = apply_privacy_write
+        self.apply_create_write = apply_create_write
+        self.app_info_locs = list(app_info_locs or [])
+        self.version_locs = list(version_locs or [])
+        self.fail_discovery_status = fail_discovery_status
         self.post_state = post_state
         self.fail_review_detail_status = fail_review_detail_status
         self.platform = platform
@@ -187,19 +206,35 @@ class FakeASC:
                     if item['id'] == path.rsplit('/', 1)[1]:
                         item['attributes']['whatsNew'] = body['data']['attributes']['whatsNew']
             return {}
+        if method == 'POST' and path == '/v1/betaAppLocalizations':
+            locale = body['data']['attributes']['locale']
+            if any(item['attributes']['locale'] == locale for item in self.beta_app_locs):
+                raise AssertionError('duplicate betaAppLocalizations POST for ' + locale)
+            if self.apply_writes and self.apply_create_write:
+                self.beta_app_locs.append({'type': 'betaAppLocalizations', 'id': 'bal-' + locale,
+                                           'attributes': dict(body['data']['attributes'])})
+            return {'data': {'id': 'bal-' + locale}}
         if method == 'PATCH' and path.startswith('/v1/betaAppLocalizations/'):
             if self.apply_writes:
                 for item in self.beta_app_locs:
                     if item['id'] == path.rsplit('/', 1)[1]:
-                        item['attributes']['description'] = body['data']['attributes']['description']
+                        attributes = body['data']['attributes']
+                        if 'description' in attributes:
+                            item['attributes']['description'] = attributes['description']
+                        if 'privacyPolicyUrl' in attributes and self.apply_privacy_write:
+                            item['attributes']['privacyPolicyUrl'] = attributes['privacyPolicyUrl']
             return {}
         if method == 'POST' and path == '/v1/betaGroups/grp-ext/relationships/builds':
             if self.apply_writes:
                 self.attached.add('build-1')
             return {}
         if method == 'PATCH' and path.startswith('/v1/betaAppReviewDetails/'):
-            attributes = body['data']['attributes']
-            if self.apply_writes and self.apply_review_notes_write:
+            attributes = dict(body['data']['attributes'])
+            if self.apply_writes:
+                if 'notes' in attributes and not self.apply_review_notes_write:
+                    attributes.pop('notes')
+                if 'demoAccountRequired' in attributes and not self.apply_demo_required_write:
+                    attributes.pop('demoAccountRequired')
                 self.detail['attributes'].update(attributes)
             return {}
         if method == 'PATCH' and path == '/v1/betaGroups/grp-ext':
@@ -253,6 +288,17 @@ class FakeASC:
             if self.fail_review_detail_status:
                 raise pt.ApiError('GET', path, self.fail_review_detail_status, 'NOT_FOUND')
             return {'data': self.detail}
+        if base == '/v1/apps/app-1/appInfos':
+            if self.fail_discovery_status:
+                raise pt.ApiError('GET', path, self.fail_discovery_status, 'FORBIDDEN')
+            return {'data': [{'type': 'appInfos', 'id': 'info-1', 'attributes': {}}],
+                    'included': list(self.app_info_locs)}
+        if base == '/v1/apps/app-1/appStoreVersions':
+            if self.fail_discovery_status:
+                raise pt.ApiError('GET', path, self.fail_discovery_status, 'FORBIDDEN')
+            return {'data': [{'type': 'appStoreVersions', 'id': 'ver-1',
+                              'attributes': {'platform': 'IOS', 'versionString': '1.7.0'}}],
+                    'included': list(self.version_locs)}
         if base == '/v1/betaAppReviewSubmissions':
             return {'data': list(self.submissions)}
         raise AssertionError(f'unexpected GET {path}')
@@ -1019,6 +1065,394 @@ class PublicTestFlightTests(unittest.TestCase):
         helper = MODULE_PATH.read_text()
         self.assertIn("parser.add_argument('--operation', choices=('inspect', 'submit'), default='inspect'", helper)
         for flag in ('--confirm-submit', '--enable-public-link', '--allow-resubmit-rejected', '--review-notes'):
+            self.assertIn(flag, helper)
+
+    # -- explicit demoAccountRequired control ------------------------------
+    def test_inspect_demo_required_false_reports_pending_write_without_writing(self):
+        fake = FakeASC(detail=review_detail(demoAccountRequired=None))
+        result = self.inspect(fake, review_notes_path=self.review_notes,
+                              demo_account_required=False)
+        self.assertTrue(result['ok'], result['issues'])
+        report = result['demoAccountRequirement']
+        self.assertTrue(report['provided'])
+        self.assertIs(report['expected'], False)
+        self.assertIsNone(report['actual'])
+        self.assertTrue(report['pendingWrite'])
+        self.assert_no_writes(fake)
+
+    def test_submit_demo_required_false_patches_only_the_boolean(self):
+        fake = FakeASC(detail=review_detail(demoAccountRequired=None, demoAccountName=None,
+                                            demoAccountPassword=None))
+        result = self.submit(fake, demo_account_required=False)
+        self.assertTrue(result['submitted'], result)
+        demo_patches = [body for method, path, body in fake.writes
+                        if method == 'PATCH' and path.startswith('/v1/betaAppReviewDetails/')
+                        and 'demoAccountRequired' in body['data']['attributes']]
+        self.assertEqual(len(demo_patches), 1)
+        self.assertEqual(set(demo_patches[0]['data']['attributes']), {'demoAccountRequired'})
+        self.assertIs(demo_patches[0]['data']['attributes']['demoAccountRequired'], False)
+        self.assertIs(fake.detail['attributes']['demoAccountRequired'], False)
+        self.assertEqual(fake.detail['attributes']['contactEmail'], 'private-review@example.com')
+        self.assertIn('betaAppReviewDetails.demoAccountRequired', result['writes'])
+        self.assertFalse(result['readback']['demoAccountRequirement']['pendingWrite'])
+        rendered = json.dumps(result, sort_keys=True)
+        self.assertNotIn('private-review@example.com', rendered)
+
+    def test_submit_demo_required_false_is_noop_when_already_false(self):
+        fake = FakeASC()
+        result = self.submit(fake, demo_account_required=False)
+        self.assertTrue(result['submitted'])
+        self.assertNotIn('betaAppReviewDetails.demoAccountRequired', result['writes'])
+        demo_attributes = [body['data']['attributes'] for method, path, body in fake.writes
+                           if method == 'PATCH' and path.startswith('/v1/betaAppReviewDetails/')]
+        self.assertTrue(all('demoAccountRequired' not in attributes for attributes in demo_attributes))
+
+    def test_demo_required_true_requires_existing_real_credentials(self):
+        fake = FakeASC(detail=review_detail(demoAccountRequired=None))
+        result = self.inspect(fake, review_notes_path=self.review_notes, demo_account_required=True)
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('explicitly requested true' in issue for issue in result['issues']))
+        with self.assertRaises(ValueError):
+            self.submit(fake, demo_account_required=True)
+        self.assert_no_writes(fake)
+
+    def test_submit_demo_required_true_uses_existing_credentials_without_printing_them(self):
+        fake = FakeASC(detail=review_detail(demoAccountRequired=None, demoAccountName='review-user',
+                                            demoAccountPassword='demo-secret'))
+        result = self.submit(fake, demo_account_required=True)
+        self.assertTrue(result['submitted'], result)
+        demo_patches = [body for method, path, body in fake.writes
+                        if method == 'PATCH' and path.startswith('/v1/betaAppReviewDetails/')
+                        and 'demoAccountRequired' in body['data']['attributes']]
+        self.assertEqual(len(demo_patches), 1)
+        self.assertEqual(set(demo_patches[0]['data']['attributes']), {'demoAccountRequired'})
+        self.assertIs(demo_patches[0]['data']['attributes']['demoAccountRequired'], True)
+        self.assertEqual(fake.detail['attributes']['demoAccountName'], 'review-user')
+        self.assertEqual(fake.detail['attributes']['demoAccountPassword'], 'demo-secret')
+        rendered = json.dumps(result, sort_keys=True)
+        self.assertNotIn('review-user', rendered)
+        self.assertNotIn('demo-secret', rendered)
+
+    def test_demo_required_readback_mismatch_blocks_before_group_and_submission(self):
+        fake = FakeASC(detail=review_detail(demoAccountRequired=None),
+                       apply_demo_required_write=False)
+        with self.assertRaisesRegex(RuntimeError, 'demoAccountRequired'):
+            self.submit(fake, demo_account_required=False)
+        paths = [path for _, path, _ in fake.writes]
+        self.assertIn('/v1/betaAppReviewDetails/bad-1', paths)
+        self.assertNotIn('/v1/betaGroups/grp-ext/relationships/builds', paths)
+        self.assertNotIn('/v1/betaAppReviewSubmissions', paths)
+
+    def test_write_demo_required_refuses_missing_or_absent_detail(self):
+        fake = FakeASC()
+        with self.assertRaisesRegex(ValueError, 'missing or invalid'):
+            pt.write_demo_account_required(
+                {'reviewDetailId': '', 'reviewDetail': {'present': True}}, False, call=fake.call)
+        with self.assertRaisesRegex(ValueError, 'never creates'):
+            pt.write_demo_account_required(
+                {'reviewDetailId': 'bad-1', 'reviewDetail': {'present': False}}, False, call=fake.call)
+        self.assertEqual(fake.writes, [])
+
+    # -- opt-in creation of a missing localization -------------------------
+    def test_inspect_create_missing_reports_creatable_and_donor(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US')])
+        result = self.inspect(fake, create_missing_localizations=True,
+                              feedback_email_locale='en-US')
+        self.assertTrue(result['ok'], result['issues'])
+        self.assertEqual(result['descriptions']['creatableMissingLocales'], ['zh-Hans'])
+        self.assertTrue(result['descriptions']['feedbackEmailPresentInDonor'])
+        self.assert_no_writes(fake)
+        rendered = json.dumps(result, sort_keys=True)
+        self.assertNotIn('beta-feedback@example.com', rendered)
+
+    def test_create_missing_requires_explicit_feedback_email_locale(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US')])
+        result = self.inspect(fake, create_missing_localizations=True)
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('feedback-email locale' in issue for issue in result['issues']))
+        with self.assertRaises(ValueError):
+            self.submit(fake, create_missing_localizations=True)
+        self.assert_no_writes(fake)
+
+    def test_create_missing_donor_without_configured_email_fails_closed(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US', feedbackEmail=None)])
+        result = self.inspect(fake, create_missing_localizations=True,
+                              feedback_email_locale='en-US')
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('has no configured feedbackEmail' in issue for issue in result['issues']))
+        with self.assertRaises(ValueError):
+            self.submit(fake, create_missing_localizations=True, feedback_email_locale='en-US')
+        self.assert_no_writes(fake)
+
+    def test_create_missing_donor_locale_must_exist(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US')])
+        result = self.inspect(fake, create_missing_localizations=True,
+                              feedback_email_locale='fr-FR')
+        self.assertFalse(result['ok'])
+        with self.assertRaises(ValueError):
+            self.submit(fake, create_missing_localizations=True, feedback_email_locale='fr-FR')
+        self.assert_no_writes(fake)
+
+    def test_create_missing_without_description_input_blocks_before_writes(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US')])
+        with self.assertRaises(ValueError):
+            self.submit(fake, create_missing_localizations=True, feedback_email_locale='en-US',
+                        description_path=None)
+        self.assert_no_writes(fake)
+
+    def test_create_missing_without_prepared_description_fails_closed(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US')])
+        with self.assertRaisesRegex(ValueError, 'prepared description'):
+            pt.write_descriptions({'app': {'id': 'app-1'}}, None,
+                                  privacy_policy_url='https://example.com/privacy',
+                                  create_missing=True, feedback_email_locale='en-US',
+                                  call=fake.call)
+        self.assertEqual(fake.writes, [])
+
+    def test_submit_create_missing_copies_donor_feedback_email_and_reads_back(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US',
+                                                            feedbackEmail='donor-owner@example.com')])
+        result = self.submit(fake, create_missing_localizations=True,
+                             feedback_email_locale='en-US')
+        self.assertTrue(result['submitted'], result)
+        created = [item for item in fake.beta_app_locs if item['attributes']['locale'] == 'zh-Hans']
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]['attributes']['feedbackEmail'], 'donor-owner@example.com')
+        self.assertEqual(created[0]['attributes']['description'], '准备好的中文测试版说明。')
+        en_us = next(item for item in fake.beta_app_locs if item['attributes']['locale'] == 'en-US')
+        self.assertEqual(en_us['attributes']['feedbackEmail'], 'donor-owner@example.com')
+        self.assertEqual(en_us['attributes']['marketingUrl'], 'https://example.com/')
+        post = [body for method, path, body in fake.writes if method == 'POST'
+                and path == '/v1/betaAppLocalizations']
+        self.assertEqual(len(post), 1)
+        self.assertEqual(set(post[0]['data']['attributes']),
+                         {'locale', 'description', 'feedbackEmail'})
+        self.assertEqual(post[0]['data']['relationships']['app']['data']['id'], 'app-1')
+        rendered = json.dumps(result, sort_keys=True)
+        self.assertNotIn('donor-owner@example.com', rendered)
+        self.assertIn('betaAppLocalizations', result['writes'])
+
+    def test_create_missing_uses_explicit_donor_locale(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('fr-FR', feedbackEmail='canal@example.com'),
+                                      beta_app_localization('en-US')])
+        result = self.submit(fake, create_missing_localizations=True,
+                             feedback_email_locale='fr-FR')
+        self.assertTrue(result['submitted'], result)
+        created = [item for item in fake.beta_app_locs if item['attributes']['locale'] == 'zh-Hans']
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]['attributes']['feedbackEmail'], 'canal@example.com')
+        rendered = json.dumps(result, sort_keys=True)
+        self.assertNotIn('canal@example.com', rendered)
+
+    def test_create_missing_readback_mismatch_blocks_before_group_and_submission(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US')], apply_create_write=False)
+        with self.assertRaisesRegex(RuntimeError, 'readback'):
+            self.submit(fake, create_missing_localizations=True, feedback_email_locale='en-US')
+        paths = [path for _, path, _ in fake.writes]
+        self.assertIn('/v1/betaAppLocalizations', paths)
+        self.assertNotIn('/v1/betaGroups/grp-ext/relationships/builds', paths)
+        self.assertNotIn('/v1/betaAppReviewSubmissions', paths)
+
+    def test_duplicate_locale_blocks_creation_even_with_opt_in(self):
+        duplicates = [beta_app_localization('en-US', description='first'),
+                      beta_app_localization('en-US', description='second')]
+        fake = FakeASC(beta_app_locs=duplicates)
+        result = self.inspect(fake, create_missing_localizations=True,
+                              feedback_email_locale='en-US')
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('duplicate locale' in issue for issue in result['issues']))
+        with self.assertRaises(ValueError):
+            self.submit(fake, create_missing_localizations=True, feedback_email_locale='en-US')
+        self.assert_no_writes(fake)
+
+    # -- caller-confirmed privacy policy URL -------------------------------
+    def test_privacy_policy_url_format_validation(self):
+        for url in ('https://example.com/privacy', 'https://www.floe-agent.com/privacy/zh',
+                    'https://sub.example.co.uk/a?b=1#c'):
+            self.assertEqual(pt.validate_https_url(url, 'privacy policy URL'), url)
+        for url in ('http://example.com/privacy', 'example.com/privacy', 'https://',
+                    'https://user:pass@example.com/privacy', 'https://localhost/privacy',
+                    'https://example .com/privacy', 'javascript:alert(1)', '',
+                    None, '   https://example.com/privacy '):
+            with self.subTest(url=str(url)):
+                with self.assertRaises(ValueError):
+                    pt.validate_https_url(url, 'privacy policy URL')
+
+    def test_inspect_reports_missing_or_pending_privacy_policy_url(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US', privacyPolicyUrl=None),
+                                      beta_app_localization('zh-Hans', privacyPolicyUrl=None)])
+        missing = self.inspect(fake)
+        # No URL is supplied: inspect stays GET-only and reports the empty
+        # current values truthfully instead of inventing or auto-writing one.
+        self.assertTrue(missing['ok'], missing['issues'])
+        self.assertFalse(missing['privacyPolicy']['provided'])
+        self.assertIsNone(missing['privacyPolicy']['expected'])
+        self.assertFalse(missing['privacyPolicy']['pendingWrite'])
+        self.assertEqual(missing['privacyPolicy']['current'], {'en-US': None, 'zh-Hans': None})
+        self.assertIn('privacyPolicyUrl',
+                      missing['betaAppLocalizations']['en-US']['missingFields'])
+        pending = self.inspect(fake, privacy_policy_url='https://www.floe-agent.com/privacy')
+        self.assertTrue(pending['ok'], pending['issues'])
+        self.assertEqual(pending['privacyPolicy']['expected'], 'https://www.floe-agent.com/privacy')
+        self.assertTrue(pending['privacyPolicy']['pendingWrite'])
+        self.assert_no_writes(fake)
+
+    def test_submit_writes_privacy_policy_url_only_when_provided(self):
+        url = 'https://www.floe-agent.com/privacy'
+        plain = FakeASC(beta_app_locs=[beta_app_localization('en-US', privacyPolicyUrl=None),
+                                       beta_app_localization('zh-Hans')])
+        plain_result = self.submit(plain)
+        self.assertTrue(plain_result['submitted'])
+        plain_patches = [body['data']['attributes'] for method, path, body in plain.writes
+                         if method == 'PATCH' and path.startswith('/v1/betaAppLocalizations/')]
+        self.assertTrue(plain_patches)
+        self.assertTrue(all('privacyPolicyUrl' not in attributes for attributes in plain_patches))
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US', privacyPolicyUrl=None),
+                                      beta_app_localization('zh-Hans', privacyPolicyUrl=None)])
+        result = self.submit(fake, privacy_policy_url=url)
+        self.assertTrue(result['submitted'], result)
+        patch_attributes = [body['data']['attributes'] for method, path, body in fake.writes
+                            if method == 'PATCH' and path.startswith('/v1/betaAppLocalizations/')]
+        self.assertEqual(len(patch_attributes), 2)
+        for attributes in patch_attributes:
+            self.assertEqual(set(attributes), {'description', 'privacyPolicyUrl'})
+            self.assertEqual(attributes['privacyPolicyUrl'], url)
+        by_locale = {item['attributes']['locale']: item['attributes'] for item in fake.beta_app_locs}
+        self.assertEqual(by_locale['en-US']['privacyPolicyUrl'], url)
+        self.assertEqual(by_locale['zh-Hans']['privacyPolicyUrl'], url)
+        self.assertFalse(result['readback']['privacyPolicy']['pendingWrite'])
+
+    def test_submit_metadata_completion_flow_is_explicit_and_read_back(self):
+        url = 'https://www.floe-agent.com/privacy'
+        fake = FakeASC(detail=review_detail(demoAccountRequired=None),
+                       beta_app_locs=[beta_app_localization('en-US', privacyPolicyUrl=None)])
+        result = self.submit(fake, demo_account_required=False,
+                             create_missing_localizations=True,
+                             feedback_email_locale='en-US',
+                             privacy_policy_url=url)
+        self.assertTrue(result['submitted'], result)
+        self.assertIn('betaAppReviewDetails.demoAccountRequired', result['writes'])
+        self.assertIn('betaAppLocalizations', result['writes'])
+        created = next(item for item in fake.beta_app_locs
+                       if item['attributes']['locale'] == 'zh-Hans')
+        self.assertEqual(created['attributes']['description'], '准备好的中文测试版说明。')
+        self.assertEqual(created['attributes']['feedbackEmail'], 'beta-feedback@example.com')
+        self.assertEqual(created['attributes']['privacyPolicyUrl'], url)
+        en_us = next(item for item in fake.beta_app_locs if item['attributes']['locale'] == 'en-US')
+        self.assertEqual(en_us['attributes']['privacyPolicyUrl'], url)
+        self.assertIs(fake.detail['attributes']['demoAccountRequired'], False)
+        self.assertFalse(result['readback']['demoAccountRequirement']['pendingWrite'])
+        self.assertFalse(result['readback']['privacyPolicy']['pendingWrite'])
+        created_entry = result['readback']['betaAppLocalizations']['zh-Hans']
+        self.assertTrue(created_entry['descriptionSet'])
+        self.assertNotIn('feedbackEmail', created_entry['missingFields'])
+        self.assertNotIn('privacyPolicyUrl', created_entry['missingFields'])
+        rendered = json.dumps(result, sort_keys=True)
+        self.assertNotIn('beta-feedback@example.com', rendered)
+        self.assertNotIn('private-review@example.com', rendered)
+
+    def test_privacy_policy_url_readback_mismatch_blocks_before_group_and_submission(self):
+        fake = FakeASC(beta_app_locs=[beta_app_localization('en-US', privacyPolicyUrl=None),
+                                      beta_app_localization('zh-Hans', privacyPolicyUrl=None)],
+                       apply_privacy_write=False)
+        with self.assertRaisesRegex(RuntimeError, 'privacyPolicyUrl'):
+            self.submit(fake, privacy_policy_url='https://www.floe-agent.com/privacy')
+        paths = [path for _, path, _ in fake.writes]
+        self.assertNotIn('/v1/betaGroups/grp-ext/relationships/builds', paths)
+        self.assertNotIn('/v1/betaAppReviewSubmissions', paths)
+
+    # -- read-only public URL discovery ------------------------------------
+    def test_inspect_reports_discovered_urls_and_never_substitutes_them(self):
+        privacy = 'https://www.floe-agent.com/privacy'
+        support = 'https://www.floe-agent.com/support'
+        fake = FakeASC(app_info_locs=[app_info_localization('en-US', privacy),
+                                      app_info_localization('zh-Hans', 'http://insecure.example.com/p')],
+                       version_locs=[version_localization('en-US', support),
+                                     version_localization('zh-Hans', None)])
+        result = self.inspect(fake)
+        discovered = result['privacyPolicy']['discoveredPublicUrls']
+        self.assertTrue(discovered['appInfoLocalizations']['available'])
+        self.assertEqual(discovered['appInfoLocalizations']['privacyPolicyUrlByLocale'],
+                         {'en-US': privacy, 'zh-Hans': None})
+        self.assertEqual(discovered['appStoreVersionLocalizations']['supportUrlByLocale'],
+                         {'en-US': [support]})
+        self.assert_no_writes(fake)
+        submitted = self.submit(fake)
+        self.assertTrue(submitted['submitted'])
+        written_urls = [body['data']['attributes'].get('privacyPolicyUrl')
+                        for method, path, body in fake.writes
+                        if method == 'PATCH' and path.startswith('/v1/betaAppLocalizations/')]
+        self.assertTrue(written_urls)
+        self.assertTrue(all(url is None for url in written_urls))
+
+    def test_discovery_conflicting_values_are_reported_as_unknown(self):
+        fake = FakeASC(app_info_locs=[
+            app_info_localization('en-US', 'https://example.com/one'),
+            app_info_localization('en-US', 'https://example.com/two')])
+        result = self.inspect(fake)
+        self.assertTrue(result['ok'], result['issues'])
+        self.assertIsNone(
+            result['privacyPolicy']['discoveredPublicUrls']['appInfoLocalizations']
+            ['privacyPolicyUrlByLocale']['en-US'])
+        self.assert_no_writes(fake)
+
+    def test_discovery_api_error_is_reported_and_not_blocking(self):
+        fake = FakeASC(fail_discovery_status=403)
+        result = self.inspect(fake)
+        self.assertTrue(result['ok'], result['issues'])
+        discovered = result['privacyPolicy']['discoveredPublicUrls']
+        self.assertFalse(discovered['appInfoLocalizations']['available'])
+        self.assertFalse(discovered['appStoreVersionLocalizations']['available'])
+        self.assertIn('HTTP 403', discovered['appInfoLocalizations']['problem'])
+        self.assert_no_writes(fake)
+
+    # -- option combination and workflow wiring ----------------------------
+    def test_inspect_with_all_metadata_options_is_still_get_only(self):
+        url = 'https://www.floe-agent.com/privacy'
+        fake = FakeASC(detail=review_detail(demoAccountRequired=None),
+                       beta_app_locs=[beta_app_localization('en-US', privacyPolicyUrl=None)])
+        result = self.inspect(fake, review_notes_path=self.review_notes,
+                              demo_account_required=False,
+                              create_missing_localizations=True,
+                              feedback_email_locale='en-US',
+                              privacy_policy_url=url)
+        self.assertTrue(result['ok'], result['issues'])
+        self.assertTrue(result['demoAccountRequirement']['pendingWrite'])
+        self.assertEqual(result['descriptions']['creatableMissingLocales'], ['zh-Hans'])
+        self.assertTrue(result['privacyPolicy']['pendingWrite'])
+        self.assert_no_writes(fake)
+        self.assertTrue(fake.calls)
+
+    def test_cli_rejects_feedback_email_locale_without_create_missing(self):
+        base = [
+            '--version', '1.7.0', '--build', '241', '--tag', 'v1.7.0', '--source-sha', self.sha,
+            '--repo-root', str(self.repo),
+        ]
+        self.assertEqual(
+            pt.main(['--operation', 'inspect', '--feedback-email-locale', 'en-US'] + base), 2)
+        with self.assertRaises(SystemExit):
+            pt.main(['--operation', 'inspect', '--demo-account-required', 'yes'] + base)
+        self.assertEqual(
+            pt.main(['--operation', 'inspect', '--demo-account-required', 'unchanged',
+                     '--feedback-email-locale', 'en-US'] + base), 2)
+
+    def test_workflow_new_metadata_inputs_are_default_off_and_wired(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        triggers = workflow.get('on', workflow.get(True))
+        inputs = triggers['workflow_dispatch']['inputs']
+        self.assertEqual(inputs['demo_account_required']['default'], 'unchanged')
+        self.assertEqual(inputs['demo_account_required']['options'], ['unchanged', 'false', 'true'])
+        self.assertEqual(inputs['create_missing_localizations']['default'], False)
+        self.assertEqual(inputs['feedback_email_locale']['default'], '')
+        self.assertEqual(inputs['privacy_policy_url']['default'], '')
+        text = WORKFLOW.read_text()
+        for flag in ('--demo-account-required', '--create-missing-localizations',
+                     '--feedback-email-locale', '--privacy-policy-url'):
+            self.assertIn(flag, text)
+        self.assertIn('feedback-email-locale requires --create-missing-localizations', text)
+        helper = MODULE_PATH.read_text()
+        for flag in ('--demo-account-required', '--create-missing-localizations',
+                     '--feedback-email-locale', '--privacy-policy-url'):
             self.assertIn(flag, helper)
 
 
