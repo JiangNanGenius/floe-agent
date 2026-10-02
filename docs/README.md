@@ -4,7 +4,7 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前版本：1.7.0（241）**。[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)不是预发布，不可变标签 `v1.7.0` 固定源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。TestFlight 私有 Floe QA 已核验 `VALID`、未过期及 `IN_BETA_TESTING`；Feather 的下载地址、大小和摘要与同源 IPA 一致。本地完整 IPA 已核验留存，原 Build240 与回滚产物保留。公开 TestFlight 尚未送审，仍缺实际隐私政策网址，详见[本轮审核材料](public-beta/build241/README.md)。
+**当前版本：1.7.0（241）**。[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)不是预发布，不可变标签 `v1.7.0` 固定源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。TestFlight 私有 Floe QA 已核验 `VALID`、未过期及 `IN_BETA_TESTING`；Feather 的下载地址、大小和摘要与同源 IPA 一致。本地完整 IPA 已核验留存，原 Build240 与回滚产物保留。双语[隐私政策](../PRIVACY.md)已发布到公开 main（<https://github.com/JiangNanGenius/floe-agent/blob/main/PRIVACY.md>）；公开 TestFlight 尚未送审——现有 API 密钥对 `betaAppLocalizations` 写入返回 HTTP 403 `FORBIDDEN_ERROR`，需高权限账号在 App Store Connect 完成人工步骤，详见[本轮审核材料](public-beta/build241/README.md)。
 
 **Build241 验证边界**：实际完整 App 模拟器通过 PPT 放映换页、退出、静置120秒、保存和两次重开，22阶段、9帧及四页落盘通过核验。Linux 虚拟机同任务测试由1.94秒降至1.32秒，约1.47倍；设备速度因任务而异。下载的 MLX 本地模型标注 Beta／实验性，暂不推荐作为日常首选，Apple 系统模型不受该标注影响。物理设备表现仍由用户安装验收，真实模型搜索回答尚未通过。详见[本轮发布说明](RELEASE_NOTES_1.7.0_BUILD_241.md)与[交付记录](TESTFLIGHT_1.7.0_BETA.md)。
 

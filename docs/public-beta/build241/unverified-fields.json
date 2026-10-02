@@ -1,7 +1,7 @@
 {
   "generatedFor": "Build241 external TestFlight submission preparation",
   "asOf": "2026-10-02",
-  "status": "delivered_private_qa_public_policy_url_pending",
+  "status": "policy_published_external_submit_blocked_403_role_permission",
   "nothingDispatchedOrSubmitted": false,
   "verifiedFacts": {
     "bundleIdentifier": "org.floeagent.ios",
@@ -134,12 +134,17 @@
     },
     {
       "field": "privacyPolicyURL",
-      "value": null,
-      "reason": "Both beta-app and AppInfo policy URLs were absent on actual GET; an actual published privacy-policy URL is awaiting user input. The marketing homepage cannot substitute."
+      "value": "https://github.com/JiangNanGenius/floe-agent/blob/main/PRIVACY.md",
+      "reason": "Bilingual policy published on public main (docs commits 856e5a98, e12af61c, 0c522013) and anonymously HTTPS-verified byte-identical. Not yet written to betaAppLocalizations: PATCH returned HTTP 403 FORBIDDEN_ERROR for the current API key on runs 36977707786/36978183559; a higher-role human must set it in App Store Connect. AppInfo privacy URL and the App Privacy declaration remain separate unset fields."
+    },
+    {
+      "field": "apple.betaAppLocalizations.writePermission",
+      "value": "HTTP_403_FORBIDDEN_ERROR",
+      "reason": "Same key can GET and write betaBuildLocalizations/internal groups but PATCH /v1/betaAppLocalizations is forbidden; role boundary. Final inspect 36978473975 confirms zero partial writes."
     }
   ],
   "notes": [
-    "Build241 release36960844524 passed; immutable v1.7.0, normal GitHub Release, complete local unsigned IPA and existing private Floe QA availability verified. Public review submission/public-link change/tester notification have not occurred.",
+    "Build241 release36960844524 passed; immutable v1.7.0, normal GitHub Release, complete local unsigned IPA and existing private Floe QA availability verified. Public review submission/public-link change/tester notification have not occurred; two helper submit attempts (36977707786, 36978183559) were rejected with HTTP 403 FORBIDDEN_ERROR on PATCH betaAppLocalizations before any write, and the clean GET readback 36978473975 verifies no duplicate submission or partial state.",
     "Review notes are final bilingual product text, not a claim that the build has been uploaded or submitted. Both pass the existing 1..4000 character and placeholder checks.",
     "Public submission will explicitly confirm no demo account is required, create the missing zh-Hans localization using the existing en-US feedback email without exposing its value, and use only the actual user-confirmed privacy policy URL.",
     "Existing helper retains immutable source, VALID/unexpired IOS build, unique external group, pagination, readback and duplicate-submission gates. Pending Apple GUI login does not block authorized API operations using existing credentials.",

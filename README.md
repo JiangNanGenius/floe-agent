@@ -227,6 +227,7 @@ Floe Agent does **not** provide a hosted model proxy, Floe account, remote relay
 | Architecture | [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md) | Bilingual diagrams and terminology in the same document |
 | Development | [Contributing](CONTRIBUTING.md) | [贡献指南](CONTRIBUTING.zh-CN.md) |
 | Security | [Security policy](SECURITY.md) | [安全策略](SECURITY.zh-CN.md) |
+| Privacy | [Privacy policy (English/中文)](PRIVACY.md) | [隐私政策（中英文）](PRIVACY.md) |
 | Support | [Support](SUPPORT.md) | [支持](SUPPORT.zh-CN.md) |
 | Design | [Design direction](docs/WORKFLOW_UPGRADE.md) (historical 1.5.3 scope table) | Key terms include Chinese equivalents |
 | Index | [Documentation index](docs/README.md) | [文档索引](docs/README.md) |
