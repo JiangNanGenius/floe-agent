@@ -366,188 +366,15 @@ struct LocalModelsSettingsView: View {
 
     var body: some View {
         List {
-            if shouldShowAppleFoundationModel {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Apple Foundation Model").font(.headline)
-                                Text("localmodels.apple_subtitle")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Toggle("model.enabled", isOn: Binding(
-                                get: {
-                                    center.isEnabled(
-                                        remoteModelID: AppleFoundationModelIdentity.remoteModelID
-                                    )
-                                },
-                                set: {
-                                    center.setEnabled(
-                                        remoteModelID: AppleFoundationModelIdentity.remoteModelID,
-                                        isEnabled: $0
-                                    )
-                                }
-                            ))
-                            .labelsHidden()
-                            .accessibilityIdentifier("localModel.enabled.appleFoundation")
-                            if center.appleFoundationAvailability.isAvailable {
-                                Label("localmodels.available", systemImage: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                            }
-                        }
-                        Toggle("model.hide_from_primary_picker", isOn: Binding(
-                            get: {
-                                center.isHiddenFromPrimaryPicker(
-                                    remoteModelID: AppleFoundationModelIdentity.remoteModelID
-                                )
-                            },
-                            set: {
-                                center.setHiddenFromPrimaryPicker(
-                                    remoteModelID: AppleFoundationModelIdentity.remoteModelID,
-                                    isHidden: $0
-                                )
-                            }
-                        ))
-                        .accessibilityIdentifier("localModel.hideFromPrimaryPicker.appleFoundation")
-                        if case .available(let context, let vision, let tools, let reasoning) =
-                            center.appleFoundationAvailability {
-                            HStack(spacing: 12) {
-                                Label(Self.contextLabel(context), systemImage: "circle.dotted")
-                                if vision { Label("localmodels.vision", systemImage: "eye") }
-                                if tools { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
-                                if reasoning { Label("localmodels.reasoning", systemImage: "brain") }
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        } else {
-                            Text(AppleFoundationModelRuntime.unavailableMessage(
-                                for: center.appleFoundationAvailability
-                            ))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                } header: {
-                    Text("localmodels.system_section")
-                } footer: {
-                    Text("localmodels.apple_footer")
-                }
-            }
+            appleFoundationModelSection
             Section {
-                ForEach(CuratedLocalModelCatalog.entries) { entry in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.displayName).font(.headline)
-                                Text("\(entry.parameterBillions, specifier: "%.1f")B · \(entry.license)")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if center.removingIDs.contains(entry.id) {
-                                ProgressView().controlSize(.small)
-                                Text("localmodels.removing").font(.caption).foregroundStyle(.secondary)
-                            } else if center.activeDownloads.contains(entry.id) {
-                                Button("localmodels.pause") { center.pause(entry) }
-                                    .buttonStyle(.borderless)
-                            } else if center.pausedDownloads.contains(entry.id) {
-                                Button("localmodels.resume") { center.download(entry) }
-                                    .buttonStyle(.borderless)
-                                Button("localmodels.cancel", role: .destructive) { center.cancel(entry) }
-                                    .buttonStyle(.borderless)
-                            } else if center.installedIDs.contains(entry.id) {
-                                switch center.runtimeState {
-                                case .loading(let id) where id == entry.id:
-                                    ProgressView().controlSize(.small)
-                                    Text("localmodels.loading").font(.caption).foregroundStyle(.secondary)
-                                case .ready(let id) where id == entry.id:
-                                    Button("action.uninstall") { center.unload(entry) }
-                                        .buttonStyle(.borderless)
-                                        .accessibilityIdentifier("localModel.unload.\(entry.id)")
-                                default:
-                                    Button("localmodels.load") { center.load(entry) }
-                                        .buttonStyle(.borderless)
-                                        .disabled(center.incompatibleReasons[entry.id] != nil)
-                                        .accessibilityIdentifier("localModel.load.\(entry.id)")
-                                }
-                                if center.benchmarkingIDs.contains(entry.id) {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Button("localmodels.benchmark") { center.benchmark(entry) }
-                                        .buttonStyle(.borderless)
-                                        .disabled(center.incompatibleReasons[entry.id] != nil)
-                                        .accessibilityIdentifier("localModel.benchmark.\(entry.id)")
-                                }
-                                Button("localmodels.remove", role: .destructive) {
-                                    FloeLogger(category: .providers).info(
-                                        "localModelRemovalConfirmationPresented model=\(entry.id)"
-                                    )
-                                    pendingRemoval = entry
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityIdentifier("localModel.remove.\(entry.id)")
-                            } else {
-                                Button("localmodels.download") { center.download(entry) }
-                                    .buttonStyle(.borderless)
-                            }
-                        }
-                        if let progress = center.downloadProgress[entry.id],
-                           center.activeDownloads.contains(entry.id) || center.pausedDownloads.contains(entry.id) {
-                            ProgressView(value: progress.fractionCompleted) {
-                                Text(progress.component)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            } currentValueLabel: {
-                                Text(Self.progressLabel(progress))
-                            }
-                        }
-                        HStack(spacing: 12) {
-                            if entry.supportsVision { Label("localmodels.vision", systemImage: "eye") }
-                            if entry.supportsReasoning { Label("localmodels.reasoning", systemImage: "brain") }
-                            if entry.supportsToolCalling { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
-                        }.font(.caption).foregroundStyle(.secondary)
-                        if center.installedIDs.contains(entry.id) {
-                            Toggle("model.enabled", isOn: Binding(
-                                get: { center.isEnabled(remoteModelID: entry.id) },
-                                set: { center.setEnabled(remoteModelID: entry.id, isEnabled: $0) }
-                            ))
-                            .tint(FloeTheme.primary)
-                            .accessibilityIdentifier("localModel.enabled.\(entry.id)")
-                            Toggle("model.hide_from_primary_picker", isOn: Binding(
-                                get: { center.isHiddenFromPrimaryPicker(remoteModelID: entry.id) },
-                                set: {
-                                    center.setHiddenFromPrimaryPicker(
-                                        remoteModelID: entry.id,
-                                        isHidden: $0
-                                    )
-                                }
-                            ))
-                            .tint(FloeTheme.primary)
-                            .accessibilityIdentifier("localModel.hideFromPrimaryPicker.\(entry.id)")
-                        }
-                        if case .failed(let id, let message) = center.runtimeState, id == entry.id {
-                            Text(message).font(.caption).foregroundStyle(.red)
-                        }
-                        if let reason = center.incompatibleReasons[entry.id] {
-                            Label(reason, systemImage: "memorychip")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let result = center.benchmarkResults[entry.id] {
-                            Text(Self.benchmarkLabel(result))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }.padding(.vertical, 4)
-                } header: {
-                    Label("localmodels.beta_badge", systemImage: "testtube.2")
-                } footer: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("localmodels.not_recommended")
-                        Text("localmodels.footer")
-                    }
+                ForEach(CuratedLocalModelCatalog.entries, content: curatedEntryRow)
+            } header: {
+                Label("localmodels.beta_badge", systemImage: "testtube.2")
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("localmodels.not_recommended")
+                    Text("localmodels.footer")
                 }
             }
             let retiredInstalled = CuratedLocalModelCatalog.retiredEntries.filter {
@@ -609,6 +436,208 @@ struct LocalModelsSettingsView: View {
         } message: {
             Text("localmodels.remove_message")
         }
+    }
+
+    // Separate sections keep the model list within the Swift expression-checking limit.
+    @ViewBuilder
+    private func curatedStatusRow(_ entry: LocalModelCatalogEntry) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.displayName).font(.headline)
+                Text("\(entry.parameterBillions, specifier: "%.1f")B · \(entry.license)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if center.removingIDs.contains(entry.id) {
+                ProgressView().controlSize(.small)
+                Text("localmodels.removing").font(.caption).foregroundStyle(.secondary)
+            } else if center.activeDownloads.contains(entry.id) {
+                Button("localmodels.pause") { center.pause(entry) }
+                    .buttonStyle(.borderless)
+            } else if center.pausedDownloads.contains(entry.id) {
+                Button("localmodels.resume") { center.download(entry) }
+                    .buttonStyle(.borderless)
+                Button("localmodels.cancel", role: .destructive) { center.cancel(entry) }
+                    .buttonStyle(.borderless)
+            } else if center.installedIDs.contains(entry.id) {
+                switch center.runtimeState {
+                case .loading(let id) where id == entry.id:
+                    ProgressView().controlSize(.small)
+                    Text("localmodels.loading").font(.caption).foregroundStyle(.secondary)
+                case .ready(let id) where id == entry.id:
+                    Button("action.uninstall") { center.unload(entry) }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("localModel.unload.\(entry.id)")
+                default:
+                    Button("localmodels.load") { center.load(entry) }
+                        .buttonStyle(.borderless)
+                        .disabled(center.incompatibleReasons[entry.id] != nil)
+                        .accessibilityIdentifier("localModel.load.\(entry.id)")
+                }
+                if center.benchmarkingIDs.contains(entry.id) {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("localmodels.benchmark") { center.benchmark(entry) }
+                        .buttonStyle(.borderless)
+                        .disabled(center.incompatibleReasons[entry.id] != nil)
+                        .accessibilityIdentifier("localModel.benchmark.\(entry.id)")
+                }
+                Button("localmodels.remove", role: .destructive) {
+                    FloeLogger(category: .providers).info(
+                        "localModelRemovalConfirmationPresented model=\(entry.id)"
+                    )
+                    pendingRemoval = entry
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("localModel.remove.\(entry.id)")
+            } else {
+                Button("localmodels.download") { center.download(entry) }
+                    .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func curatedProgressRow(_ entry: LocalModelCatalogEntry) -> some View {
+        if let progress = center.downloadProgress[entry.id],
+           center.activeDownloads.contains(entry.id) || center.pausedDownloads.contains(entry.id) {
+            ProgressView(value: progress.fractionCompleted) {
+                Text(progress.component)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } currentValueLabel: {
+                Text(Self.progressLabel(progress))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func curatedInstalledToggles(_ entry: LocalModelCatalogEntry) -> some View {
+        if center.installedIDs.contains(entry.id) {
+            Toggle("model.enabled", isOn: Binding(
+                get: { center.isEnabled(remoteModelID: entry.id) },
+                set: { center.setEnabled(remoteModelID: entry.id, isEnabled: $0) }
+            ))
+            .tint(FloeTheme.primary)
+            .accessibilityIdentifier("localModel.enabled.\(entry.id)")
+            Toggle("model.hide_from_primary_picker", isOn: Binding(
+                get: { center.isHiddenFromPrimaryPicker(remoteModelID: entry.id) },
+                set: {
+                    center.setHiddenFromPrimaryPicker(
+                        remoteModelID: entry.id,
+                        isHidden: $0
+                    )
+                }
+            ))
+            .tint(FloeTheme.primary)
+            .accessibilityIdentifier("localModel.hideFromPrimaryPicker.\(entry.id)")
+        }
+    }
+
+    @ViewBuilder
+    private var appleFoundationModelSection: some View {
+        if shouldShowAppleFoundationModel {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    appleFoundationModelStatusRow
+                    Toggle("model.hide_from_primary_picker", isOn: Binding(
+                        get: {
+                            center.isHiddenFromPrimaryPicker(
+                                remoteModelID: AppleFoundationModelIdentity.remoteModelID
+                            )
+                        },
+                        set: {
+                            center.setHiddenFromPrimaryPicker(
+                                remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+                                isHidden: $0
+                            )
+                        }
+                    ))
+                    .accessibilityIdentifier("localModel.hideFromPrimaryPicker.appleFoundation")
+                    if case .available(let context, let vision, let tools, let reasoning) =
+                        center.appleFoundationAvailability {
+                        HStack(spacing: 12) {
+                            Label(Self.contextLabel(context), systemImage: "circle.dotted")
+                            if vision { Label("localmodels.vision", systemImage: "eye") }
+                            if tools { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
+                            if reasoning { Label("localmodels.reasoning", systemImage: "brain") }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text(AppleFoundationModelRuntime.unavailableMessage(
+                            for: center.appleFoundationAvailability
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("localmodels.system_section")
+            } footer: {
+                Text("localmodels.apple_footer")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var appleFoundationModelStatusRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Apple Foundation Model").font(.headline)
+                Text("localmodels.apple_subtitle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("model.enabled", isOn: Binding(
+                get: {
+                    center.isEnabled(
+                        remoteModelID: AppleFoundationModelIdentity.remoteModelID
+                    )
+                },
+                set: {
+                    center.setEnabled(
+                        remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+                        isEnabled: $0
+                    )
+                }
+            ))
+            .labelsHidden()
+            .accessibilityIdentifier("localModel.enabled.appleFoundation")
+            if center.appleFoundationAvailability.isAvailable {
+                Label("localmodels.available", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func curatedEntryRow(_ entry: LocalModelCatalogEntry) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            curatedStatusRow(entry)
+            curatedProgressRow(entry)
+            HStack(spacing: 12) {
+                if entry.supportsVision { Label("localmodels.vision", systemImage: "eye") }
+                if entry.supportsReasoning { Label("localmodels.reasoning", systemImage: "brain") }
+                if entry.supportsToolCalling { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
+            }.font(.caption).foregroundStyle(.secondary)
+            curatedInstalledToggles(entry)
+            if case .failed(let id, let message) = center.runtimeState, id == entry.id {
+                Text(message).font(.caption).foregroundStyle(.red)
+            }
+            if let reason = center.incompatibleReasons[entry.id] {
+                Label(reason, systemImage: "memorychip")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let result = center.benchmarkResults[entry.id] {
+                Text(Self.benchmarkLabel(result))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }.padding(.vertical, 4)
     }
 
     private static func progressLabel(_ progress: LocalModelDownloadProgress) -> String {

@@ -734,4 +734,131 @@ final class OfficeRealEngineUITests: XCTestCase {
         }
         #endif
     }
+
+    // MARK: - Build 241 Beta label capture (UI only; no model download, no inference)
+
+    /// Captures the genuine Beta/experimental labeling of the model surfaces
+    /// for primary visual review: the Settings root local-models row (the only
+    /// row carrying the Beta badge), the on-device models page (Beta section +
+    /// not-recommended guidance), and the Chat model picker chip on a
+    /// fresh install (Apple system model selected, never Beta).  The MLX-only
+    /// chip badge and MLX menu-group Beta header require a downloaded device
+    /// model; this test performs no download and no inference, so those two
+    /// markers are reported as the exact uncovered surface instead of being
+    /// faked.  Attachments: screenshots + AX dumps for primary review.
+    func testModelBetaLabelsCapture() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("Beta label capture is simulator-only")
+        #else
+        continueAfterFailure = false
+        let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
+            || UIDevice.current.userInterfaceIdiom == .pad
+        let app = XCUIApplication()
+        app.terminate()
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
+                               "--ui-test-skip-onboarding"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        app.launch()
+        defer { app.terminate() }
+
+        // 1) Chat model picker on a fresh install (Home is the launch state):
+        //    the selected model chip should not carry Beta for the
+        //    Apple system model.  The MLX-only markers require a downloaded
+        //    device model; uncovered by design (no download, no inference).
+        let betaBadge = "Beta · 实验性"
+        // Home is the launch state, but a remembered last tab can override it;
+        // make sure the workbench Home surface (with the composer) is active.
+        let composer = app.textViews["composer.input"]
+        let homeReady = composer.waitForExistence(timeout: 60)
+        if !homeReady {
+            let newTask = app.staticTexts["sidebar.workbench.new_task"]
+            if newTask.waitForExistence(timeout: 10) { newTask.tap() }
+        }
+        if !composer.waitForExistence(timeout: 30) {
+            attachAX("home-missing-debug", String(app.debugDescription.prefix(12000)))
+        }
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        let chatBadges = app.staticTexts.matching(NSPredicate(format: "label == %@", betaBadge))
+        attachAX("chat-ax", """
+            chatBetaBadgeCount=\(chatBadges.count)
+            composerInputExists=\(composer.exists)
+            note=MLX chip badge and MLX menu-group Beta header require a downloaded device model; no download performed in this capture.
+            """)
+        let chatShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        chatShot.name = "beta-01-chat-composer"
+        chatShot.lifetime = .keepAlways
+        add(chatShot)
+
+        // 2) Settings root: exactly one Beta badge, on the local-models row.
+        let settingsButton = app.buttons["sidebar.settings"]
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 20))
+        settingsButton.tap()
+        let localModelsRow = app.descendants(matching: .any).matching(identifier: "settings.section.localModels").firstMatch
+        XCTAssertTrue(localModelsRow.waitForExistence(timeout: 20))
+        let rootBadges = app.staticTexts.matching(NSPredicate(format: "label == %@", betaBadge))
+        XCTAssertEqual(rootBadges.count, 1,
+                       "exactly one Beta badge must exist on the Settings root")
+        let badgeFrame = rootBadges.firstMatch.frame
+        // The settings row's identifier sits on the 21.5pt row icon; the row
+        // cell itself carries the combined label text.  Prove the badge sits
+        // in the local-models row band and (when the cell resolves) inside it.
+        let iconFrame = localModelsRow.frame
+        let rowCell = app.cells.matching(NSPredicate(format: "label CONTAINS %@", "本地模型")).firstMatch
+        let cellExists = rowCell.exists
+        let rowFrame = cellExists ? rowCell.frame : iconFrame
+        let badgeInsideRow = rowFrame.insetBy(dx: -4, dy: -4).contains(
+            CGPoint(x: badgeFrame.midX, y: badgeFrame.midY))
+        let badgeInRowBand = abs(badgeFrame.midY - (iconFrame.midY)) <= max(iconFrame.height, 1)
+        attachAX("settings-root-ax", """
+            localModelsRow.label=\(localModelsRow.label)
+            localModelsRow.id=\(localModelsRow.identifier)
+            localModelsRowCellExists=\(cellExists)
+            localModelsRowCellLabel=\(cellExists ? rowCell.label : "<none>")
+            rootBetaBadgeCount=\(rootBadges.count)
+            badgeFrame=\(badgeFrame)
+            localModelsIconFrame=\(iconFrame)
+            localModelsRowCellFrame=\(rowFrame)
+            badgeInsideLocalModelsRow=\(badgeInsideRow)
+            badgeInLocalModelsRowBand=\(badgeInRowBand)
+            appleCapabilitiesRowHasBadge=\(app.descendants(matching: .any).matching(identifier: "settings.section.appleCapabilities").firstMatch.staticTexts[betaBadge].exists)
+            providersRowHasBadge=\(app.descendants(matching: .any).matching(identifier: "settings.section.providers").firstMatch.staticTexts[betaBadge].exists)
+            """)
+        XCTAssertTrue(badgeInsideRow || badgeInRowBand,
+                      "the Settings-root Beta badge must sit in the local-models row")
+        let rootShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        rootShot.name = "beta-02-settings-root"
+        rootShot.lifetime = .keepAlways
+        add(rootShot)
+
+        // 3) On-device models page: Beta section header + not-recommended guidance.
+        localModelsRow.tap()
+        XCTAssertTrue(app.navigationBars["本地模型"].waitForExistence(timeout: 15))
+        let pageBadges = app.staticTexts.matching(NSPredicate(format: "label == %@", betaBadge))
+        XCTAssertGreaterThanOrEqual(pageBadges.count, 1,
+                                    "the on-device models page must show the Beta marker")
+        let notRecommended = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "暂不推荐作为日常首选"))
+        XCTAssertEqual(notRecommended.count, 1,
+                       "the not-recommended-as-daily-default guidance must be visible")
+        attachAX("local-models-page-ax", """
+            pageBetaBadgeCount=\(pageBadges.count)
+            notRecommendedGuidanceCount=\(notRecommended.count)
+            appleSystemModelPresent=\(app.staticTexts["Apple Foundation Model"].exists)
+            appleSystemModelSectionBadgeCount=\(app.staticTexts["Apple Foundation Model"].staticTexts.matching(NSPredicate(format: "label == %@", betaBadge)).count)
+            """)
+        let pageShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        pageShot.name = "beta-03-local-models-page"
+        pageShot.lifetime = .keepAlways
+        add(pageShot)
+
+        #endif
+    }
+
+    private func attachAX(_ name: String, _ body: String) {
+        let attachment = XCTAttachment(string: body)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
 }
