@@ -104,6 +104,7 @@ Questions and privacy requests:
 GitHub issues are public and visible to everyone. Never post API keys, credentials, personal data, or confidential content in an issue; describe the matter generally there and use the in-app form for details.
 
 Published policy: <https://github.com/JiangNanGenius/floe-agent/blob/main/PRIVACY.md>
+Plain-text version (same content): <https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/PRIVACY.md>
 
 ---
 
@@ -203,3 +204,4 @@ Floe Agent 的 Beta 版本通过 Apple TestFlight 分发，正式版本通过 Gi
 GitHub issue 是公开、所有人可见的。请勿在 issue 中发布 API Key、凭据、个人数据或机密内容；请只做概括描述，细节通过应用内反馈发送。
 
 已发布政策：<https://github.com/JiangNanGenius/floe-agent/blob/main/PRIVACY.md>
+纯文本版本（内容相同）：<https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/PRIVACY.md>
