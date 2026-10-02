@@ -1,7 +1,7 @@
 {
   "generatedFor": "Build241 external TestFlight submission preparation",
   "asOf": "2026-10-02",
-  "status": "source_prepared_qualification_pending",
+  "status": "qualified_source_prepared_upload_and_public_review_pending",
   "nothingDispatchedOrSubmitted": false,
   "verifiedFacts": {
     "bundleIdentifier": "org.floeagent.ios",
@@ -51,11 +51,13 @@
       "releaseTagCreated": false
     },
     "slideshowAcceptance": {
-      "scope": "Local genuine FloeApp simulator, repaired engine; final merged Build241 qualification pending",
+      "scope": "Merged Build241 genuine FloeApp simulator at e8a62b03; new cloud IOS host36957310043 full artifact pinned0ce943ce",
       "phases": 22,
       "guidFrames": 9,
       "renderTraceAndFourSlidePersistenceGates": "PASS",
-      "physicalDeviceVerified": false
+      "physicalDeviceVerified": false,
+      "finalMergedAppSimulatorPassed": true,
+      "initialSetupFailure": "Previous test document remembered edit mode; original21.739s FAIL text log preserved, original failed xcresult not retained. Fresh app install passed first preview and full scenario."
     },
     "vmEfficiency": {
       "githubActionsRun": 36953899923,
@@ -72,13 +74,23 @@
       "downloadedMLX": "Beta / Experimental; not recommended as daily default",
       "appleSystemModelBeta": false,
       "installedMLXInferenceQualified": false
+    },
+    "deviceHostQualification": {
+      "githubActionsRun": 36957310043,
+      "sourceCommit": "e8a62b03bb96811b177c654c28579326372974dc",
+      "artifactID": 11207131424,
+      "archiveSHA256": "3115226652b62140a34e8043452393cfff2cd7c90ece418fd3e9e2fd5f2163c1",
+      "verifiedFiles": 4785,
+      "verifiedResources": 4780,
+      "platform": "arm64 IOS; min26; SDK27",
+      "physicalDeviceVerified": false
     }
   },
   "candidate": {
     "build": "241",
     "marketingVersion": "1.7.0",
     "tag": "v1.7.0",
-    "status": "source_version_prepared_new_cloud_host_and_final_App_pending",
+    "status": "source_version_and_dependency_qualified_release_not_dispatched",
     "tagState": "absent in local and remote tags as of 2026-10-02",
     "sourceCommit": null
   },
@@ -122,11 +134,6 @@
       "field": "artifact.sha256",
       "value": null,
       "reason": "no Build241 signed/unsigned IPA or retained artifact exists yet"
-    },
-    {
-      "field": "qualification.slideshow",
-      "value": null,
-      "reason": "Earlier repaired genuine App passes; final merged Build241 App and new cloud device host qualification pending."
     }
   ],
   "notes": [
