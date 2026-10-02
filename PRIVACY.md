@@ -20,7 +20,7 @@ Floe Agent has **no Floe account system** and no sign-up. The app does not ask y
 
 Your conversations and task history, Notes (手记) notebooks and documents, PDFs and annotations, imported files and attachments, Canvas content, settings, downloaded models, and the app's working files are stored locally inside the app's protected sandbox on the device (local SQLite databases and app-managed files). This content is not sold and is not used for third-party advertising.
 
-Deleting a conversation, Note, or other item inside the app removes the corresponding app-stored data. Settings → Privacy also provides "clear local history" and "clear model configuration" actions. Uninstalling the app removes its local sandbox data; items the system stores elsewhere (such as Keychain items or files in iCloud Drive) follow Apple's rules.
+Deletion has two stages. Archiving a conversation or moving a Note to the trash keeps the item in the app (Archive or Trash) so it can be restored; the data is retained there until you permanently delete it. Permanent deletion (emptying the Archive/Trash, the permanent-delete actions, or the "clear local history" / "clear model configuration" actions in Settings → Privacy) removes the corresponding app-stored data, including the item's task workspace and task-scoped credentials. Copies that were synchronised to iCloud, sent to a provider or another service you use, or exported by you persist according to those services' rules. Uninstalling the app removes its local sandbox data; items the system stores elsewhere (such as Keychain items or files in iCloud Drive) follow Apple's rules.
 
 Removing a folder entry from a Floe workspace does not delete the original folder on your device, network storage, or iCloud Drive.
 
@@ -29,10 +29,10 @@ Removing a folder entry from a Floe workspace does not delete the original folde
 If you are signed in to iCloud, the app can use Apple's iCloud services that you control in Settings:
 
 - **Private CloudKit database:** non-secret configuration (provider/model profiles, preferences, remote-host profiles without secret values) and, when the canvas sync switch is enabled (on by default), canvas assets are synchronised through your private iCloud database. This data is tied to your Apple ID and is governed by Apple's privacy policy.
-- **iCloud Keychain:** saved provider API keys and saved SSH/VNC secrets may synchronise through iCloud Keychain unless you turn that synchronisation off in the app's sync settings. Task- and project-scoped temporary credentials never leave the device, and the remote-link client identity is device-only.
+- **iCloud Keychain:** saved provider API keys and saved SSH/VNC secrets may synchronise through iCloud Keychain unless you turn that synchronisation off in the app's sync settings. Task- and project-scoped temporary credentials, and the remote-link client identity, are excluded from iCloud Keychain synchronisation (they may still be transmitted to a remote host you connect to, as part of authenticating that connection — see section 5).
 - Small preference values may be stored through Apple's iCloud key-value store.
 
-Conversations, Notes and documents are not synchronised through CloudKit. Turning canvas sync off does not delete canvas copies already stored in iCloud; deleting a canvas in the app removes its synced copy as well, after the deletion is confirmed remotely.
+Conversations and Notes are not synchronised through CloudKit. Other document-like content you create can be: canvas assets do, when the canvas sync switch is enabled. Turning canvas sync off does not delete canvas copies already stored in iCloud; deleting a canvas in the app removes its synced copy as well, after the deletion is confirmed remotely.
 
 ### 4. Cloud AI is bring-your-own-key (BYOK)
 
@@ -53,7 +53,7 @@ What the provider does with that data is governed by that provider's terms and p
 Floe Agent can connect to other services only when you enable, configure, or direct them:
 
 - **Web search:** searches go to the search provider you enable (such as Brave, Tavily, Exa, Google Programmable Search, Bocha, or Tencent WSA), using the key you supply.
-- **Embedded browser and downloads:** the in-app browser opens addresses you or the task enter. Its cookies, cache and website storage use the system WebKit data store, managed by iOS like Safari website data (including in iOS Settings); Floe does not export that store. Separately, when an agent task uses the browser or an HTTP tool, the page text, DOM or screenshots the task reads, together with downloaded files, become task content: they can be stored in the task's local workspace, included in model requests to the AI provider you configured, or kept as task artifacts. Agent tasks may also make HTTPS requests and downloads you ask for, so only direct the agent at pages and files you are comfortable being handled this way.
+- **Embedded browser and downloads:** the in-app browser opens addresses you or the task enter. Its cookies, cache and website storage use WebKit's persistent per-app data store inside the app container; Floe has no separate editor or export for that store, and individual websites keep their own sign-in/account controls. Separately, when an agent task uses the browser or an HTTP tool, the page text, DOM or screenshots the task reads, together with downloaded files, become task content: they can be stored in the task's local workspace, included in model requests to the AI provider you configured, or kept as task artifacts. Agent tasks may also make HTTPS requests and downloads you ask for, so only direct the agent at pages and files you are comfortable being handled this way.
 - **Remote servers and the Linux environment:** SSH/VNC/SMB/WebDAV connections and paired remote helpers use only hosts and credentials you provide, over SSH, mutual TLS, or the protocols you configure. The on-device Linux environment downloads its guest image from the project's GitHub releases when you start it, and packages installed inside it are downloaded from the package registries (such as PyPI and npm) that the task uses.
 - **Local network:** with your permission, the app can discover devices and services on your local network (for example terminals, printers, or Home Assistant).
 - **GitHub integration:** if you sign in to GitHub, the app talks directly to GitHub using an OAuth token stored in the Keychain, for source-control and Actions features you invoke.
@@ -64,7 +64,7 @@ The agent performs actions on your behalf within the permissions you grant; impo
 
 ### 6. On-device processing
 
-- Downloaded **MLX local models** run on the device. They are an optional, experimental Beta feature. Apart from the model download described above, prompts and content processed by a downloaded model do not travel to a cloud AI provider.
+- Downloaded **MLX local models** run on the device. They are an optional, experimental Beta feature. For the local inference step itself, prompts and content processed by a downloaded model are not sent to a cloud AI provider. A task running under a local model can still make network calls through the tools it runs — for example web search, browser/HTTP requests, remote hosts, or cloud image/video generation — exactly as described in sections 4 and 5, and the model download (section 5) contacts Hugging Face.
 - **Apple's on-device Foundation model**, when available on your device and system, is a separate path provided by Apple. The app passes it only the bounded task content needed for an answer; processing is governed by Apple and iOS.
 - Speech transcription can use a downloaded on-device model; depending on your iOS settings, dictation may also involve Apple's speech services.
 
@@ -72,7 +72,7 @@ On-device processing depends on device, system version, language, and the model 
 
 ### 7. Feedback and diagnostics
 
-The app contains an optional feedback form. Nothing is uploaded from it until you press Submit; there is no automatic crash, analytics, or background upload. When you do submit, the report is collected by the developer at the feedback endpoint (`https://www.floe-agent.com/api/v1/public/reports`) and can include:
+The app contains an optional feedback form. The form itself uploads nothing until you press Submit, and the app has no automatic crash-reporting, analytics, or background feedback upload. (Other features can upload data when you use them — for example optional iCloud synchronisation in section 3 or cloud AI in section 4.) When you submit the form, the report is collected by the developer at the feedback endpoint (`https://www.floe-agent.com/api/v1/public/reports`) and can include:
 
 - the problem description you write;
 - diagnostics, attached by default and controllable with the toggle shown in the form. Diagnostics may contain system/runtime information, recent log entries, and technical summaries of recent tasks; the app applies secret redaction before sending, but redaction is not guaranteed to catch every sensitive value, so please review the report;
@@ -86,7 +86,7 @@ Floe Agent is distributed in beta through Apple TestFlight and through public re
 
 ### 9. Security
 
-Secrets are stored in the iOS Keychain; secret values are excluded from the app's databases, logs, feedback, and diagnostics. Network transport uses HTTPS for public endpoints, and local-network access requires the system permission. No method of transmission or storage is perfectly secure, however.
+Secrets (provider keys, saved server credentials) are stored in the iOS Keychain; the app's databases keep references and metadata rather than the secret values, and feedback reports and diagnostics pass through secret redaction before upload. Redaction is applied in good faith but cannot guarantee that every sensitive value is removed, which is why the feedback form lets you disable diagnostics and review what you send. Network transport uses HTTPS for public endpoints, and local-network access requires the system permission. No method of transmission or storage is perfectly secure, however.
 
 ### 10. Children
 
@@ -119,7 +119,7 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 
 你的对话与任务历史、手记（Notes）的笔记本与文档、PDF 与批注、导入的文件与附件、画布内容、设置、已下载模型以及应用工作文件，均存储在设备上受系统保护的应用沙盒内（本地 SQLite 数据库与应用管理的文件）。这些内容不会被出售，也不会用于第三方广告。
 
-在应用内删除对话、手记或其他项目时，会删除应用保存的相应数据。"设置 → 隐私"还提供"清除本地历史"和"清除模型配置"操作。卸载应用会删除其本地沙盒数据；由系统另行保存的项目（如钥匙串项或 iCloud 云盘中的文件）按 Apple 的规则处理。
+删除分为两个阶段：归档对话或把手记移入废纸篓时，项目仍保留在应用内（归档或废纸篓），可以恢复；数据会一直保留，直到你永久删除。永久删除（清空归档/废纸篓、使用永久删除操作，或"设置 → 隐私"中的"清除本地历史""清除模型配置"）会删除应用保存的相应数据，包括该项目的任务工作区和任务级凭据。已同步到 iCloud、已发送给你使用的服务商或其他服务、或由你导出的副本，按相应服务的规则继续保留。卸载应用会删除其本地沙盒数据；由系统另行保存的项目（如钥匙串项或 iCloud 云盘中的文件）按 Apple 的规则处理。
 
 从 Floe 工作区移除文件夹入口，不会删除你设备、网络存储或 iCloud 云盘中的原始文件夹。
 
@@ -128,10 +128,10 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 登录 iCloud 后，应用可使用你可在设置中控制的 Apple iCloud 服务：
 
 - **CloudKit 私有数据库：**非涉密配置（服务商/模型配置、偏好设置、不含密钥值的远程主机配置），以及在画布同步开关开启时（默认开启）的画布素材，通过你的 iCloud 私有数据库同步。这些数据与你的 Apple ID 关联，受 Apple 隐私政策约束。
-- **iCloud 钥匙串：**已保存的服务商 API Key、SSH/VNC 密钥可通过 iCloud 钥匙串同步；你可以在应用的同步设置中关闭。任务级、项目级临时凭据不会离开设备，远程连接的客户端身份仅保存在本机。
+- **iCloud 钥匙串：**已保存的服务商 API Key、SSH/VNC 密钥可通过 iCloud 钥匙串同步；你可以在应用的同步设置中关闭。任务级、项目级临时凭据以及远程连接的客户端身份不参与 iCloud 钥匙串同步（但在你连接远程主机时，它们仍可能作为该连接认证的一部分被传输——见第 5 节）。
 - 少量偏好值可能通过 Apple 的 iCloud 键值存储保存。
 
-对话、手记和文档不通过 CloudKit 同步。关闭画布同步不会删除已存入 iCloud 的画布副本；在应用中删除画布时，会在远程删除确认后一并删除其同步副本。
+对话和手记不通过 CloudKit 同步。你创建的其他类文档内容可能同步：例如在画布同步开关开启时画布素材会同步。关闭画布同步不会删除已存入 iCloud 的画布副本；在应用中删除画布时，会在远程删除确认后一并删除其同步副本。
 
 ### 4. 云端 AI 采用自带密钥（BYOK）
 
@@ -152,7 +152,7 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 只有在你启用、配置或主动指示时，Floe Agent 才会连接以下服务：
 
 - **联网搜索：**搜索请求发送到你启用的搜索服务商（如 Brave、Tavily、Exa、Google 可编程搜索、博查或腾讯 WSA），并使用你提供的密钥。
-- **内置浏览器与下载：**应用内浏览器打开你或任务输入的网址。其 Cookie、缓存与网站存储使用系统 WebKit 数据存储，由 iOS 像 Safari 网站数据一样管理（也可在 iOS 设置中清理），Floe 不会导出该存储。另有一点需要区分：当代理任务使用浏览器或 HTTP 工具时，任务读取的网页文本、DOM 或截图以及下载的文件会成为任务内容——它们可能保存在任务的本地工作区、作为模型请求的一部分发送给你配置的 AI 服务商，或作为任务产物保留。代理任务也可按你的要求发起 HTTPS 请求与下载；因此，只应让代理访问与下载你同意按上述方式处理的页面和文件。
+- **内置浏览器与下载：**应用内浏览器打开你或任务输入的网址。其 Cookie、缓存与网站存储使用 WebKit 在应用容器内的持久化数据存储，Floe 没有单独查看或导出该存储的界面；各网站的登录/账号管理仍由对应网站自身控制。另有一点需要区分：当代理任务消费网页时（浏览器或 HTTP 工具），任务读取的网页文本、DOM 或截图以及下载的文件会成为任务内容——它们可能保存在任务的本地工作区、作为模型请求的一部分发送给你配置的 AI 服务商，或作为任务产物保留。代理任务也可按你的要求发起 HTTPS 请求与下载；因此，只应让代理访问与下载你同意按上述方式处理的页面和文件。
 - **远程服务器与 Linux 环境：**SSH/VNC/SMB/WebDAV 连接及配对的远程助手，仅连接你提供的主机与凭据，通过 SSH、双向 TLS 或你配置的协议通信。设备本地 Linux 环境在你启动时从项目的 GitHub Releases 下载镜像；其中安装的软件包来自任务使用的软件源（如 PyPI、npm）。
 - **本地网络：**经你许可后，应用可发现本地网络中的设备与服务（如终端、打印机、Home Assistant）。
 - **GitHub 集成：**登录 GitHub 后，应用使用保存在钥匙串中的 OAuth 令牌直接与 GitHub 通信，用于你主动使用的源码管理与 Actions 功能。
@@ -163,7 +163,7 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 
 ### 6. 设备本地处理
 
-- 下载的 **MLX 本地模型**在设备上运行，属于可选的实验性 Beta 功能。除上述模型下载外，经已下载模型处理的提示词与内容不会发送到云端 AI 服务商。
+- 下载的 **MLX 本地模型**在设备上运行，属于可选的实验性 Beta 功能。就本地推理本身而言，经已下载模型处理的提示词与内容不会发送到云端 AI 服务商；但使用本地模型的任务，其调用的工具仍可能发起网络请求——例如联网搜索、浏览器/HTTP 请求、远程主机或云端图像/视频生成，正如第 4、5 节所述；模型下载本身（第 5 节）也会连接 Hugging Face。
 - **Apple 设备端 Foundation 模型**（在你的设备与系统支持时）是 Apple 提供的独立路径。应用仅向其传递回答所需的、有边界的任务内容，处理过程受 Apple 与 iOS 约束。
 - 语音转写可使用已下载的本地模型；根据你的 iOS 设置，听写也可能涉及 Apple 的语音服务。
 
@@ -171,7 +171,7 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 
 ### 7. 反馈与诊断信息
 
-应用提供可选的反馈表单。在你点击提交之前不会上传任何内容；不存在自动崩溃、分析数据或后台上传。你提交后，报告会由开发者通过反馈接口（`https://www.floe-agent.com/api/v1/public/reports`）收集，可能包含：
+应用提供可选的反馈表单。表单本身在你点击提交之前不会上传任何内容；应用不存在自动崩溃上报、分析数据或后台反馈上传（其他功能在你使用时仍可能上传数据，例如第 3 节的可选 iCloud 同步、第 4 节的云端 AI）。你提交表单后，报告会由开发者通过反馈接口（`https://www.floe-agent.com/api/v1/public/reports`）收集，可能包含：
 
 - 你填写的问题描述；
 - 诊断信息：默认随反馈附加，可通过表单中显示的开关关闭。诊断信息可能包含系统/运行时信息、近期日志条目和近期任务的技术摘要；发送前应用会进行密钥脱敏，但脱敏无法保证识别所有敏感内容，请在发送前自行检查；
@@ -185,7 +185,7 @@ Floe Agent 的 Beta 版本通过 Apple TestFlight 分发，正式版本通过 Gi
 
 ### 9. 安全
 
-密钥保存在 iOS 钥匙串中；密钥值不会进入应用数据库、日志、反馈和诊断信息。对公开端点的网络传输使用 HTTPS，本地网络访问需系统授权。但任何传输与存储方式都无法保证绝对安全。
+密钥（服务商密钥、已保存的服务器凭据）保存在 iOS 钥匙串中；应用数据库只保存引用与元数据而非密钥值，反馈报告和诊断信息在上传前会经过密钥脱敏。脱敏是本着善意实施的，但无法保证剔除所有敏感内容，因此反馈表单允许你关闭诊断信息并检查所发送的内容。对公开端点的网络传输使用 HTTPS，本地网络访问需系统授权。但任何传输与存储方式都无法保证绝对安全。
 
 ### 10. 未成年人
 
