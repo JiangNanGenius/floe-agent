@@ -4,15 +4,17 @@
 
 ## Floe 1.7 当前升级入口 / Current upgrade
 
-**当前可安装内部构建：1.7.0（240）**。不可变标签 [`v1.7.0-beta.99`](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.99) 固定源码 `9bd9a23706698d71cc7f80f59084770f0227b382`；TestFlight 私有 Floe QA 已核验 `VALID`、未过期及 `IN_BETA_TESTING`，GitHub 预发布和 Feather 已交付。云端与本地完整 IPA 均已留存，本地全摘要、源码记录、bundle、版本和 SDK 已核验；239/238 原产物继续保留。交付不等于物理设备验收，中文 Office 字体用户已确认正常。
+**当前版本：1.7.0（241）**。[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)不是预发布，不可变标签 `v1.7.0` 固定源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。TestFlight 私有 Floe QA 已核验 `VALID`、未过期及 `IN_BETA_TESTING`；Feather 的下载地址、大小和摘要与同源 IPA 一致。本地完整 IPA 已核验留存，原 Build240 与回滚产物保留。公开 TestFlight 尚未送审，仍缺实际隐私政策网址，详见[本轮审核材料](public-beta/build241/README.md)。
 
-**Build240 验证边界**：[反馈修复与完整 Floe 云模拟器验证](FLOE_240_FEEDBACK_REPAIR.md)已完成实际 PPT 导入、编辑插页、静置120.35秒、保存关闭和两次重开，回执、真实文档帧及四页落盘通过。Linux 状态、搜索边界和上下文显示变化已完整 App 编译，设备行为仍待用户反馈；模拟器通过不能替代用户真机或全部文档验收，本地真实模型搜索回答尚未通过。详见[内测交付记录](TESTFLIGHT_1.7.0_BETA.md)。
+**Build241 验证边界**：实际完整 App 模拟器通过 PPT 放映换页、退出、静置120秒、保存和两次重开，22阶段、9帧及四页落盘通过核验。Linux 虚拟机同任务测试由1.94秒降至1.32秒，约1.47倍；设备速度因任务而异。下载的 MLX 本地模型标注 Beta／实验性，暂不推荐作为日常首选，Apple 系统模型不受该标注影响。物理设备表现仍由用户安装验收，真实模型搜索回答尚未通过。详见[本轮发布说明](RELEASE_NOTES_1.7.0_BUILD_241.md)与[交付记录](TESTFLIGHT_1.7.0_BETA.md)。
+
+Build240 的[原反馈修复及编辑器验证记录](FLOE_240_FEEDBACK_REPAIR.md)作为历史保留；它不替代本轮放映验收。
 
 **历史 Build231 修复记录**：[Office 打开与字体](FLOE_231_OFFICE_REPAIR.md)、[本地模型回复与首条消息导航](FLOE_231_MLX_REPAIR.md)、[Linux 生命周期工具](FLOE_231_LINUX_LIFECYCLE.md)。其中结果属于当时源码与验证范围，当前状态以上面的候选记录为准。
 
 **历史内部交付：1.7.0（218）**。2026-09-21T15:08:27Z 已核实 Apple VALID、未过期、唯一私有内部 Floe QA 组（无公开链接）及 IN_BETA_TESTING；原始证据保留在 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 与 [Build 218 版本说明](RELEASE_NOTES_1.7.0_BUILD_218.md)。
 
-下一版公开 TestFlight Beta 的[审核材料准备包](PUBLIC_BETA_PREPARATION.md)包含中英文介绍、测试重点、审核步骤和隐私／演示访问清单；尚未提交或开放外部测试。
+本轮公开 TestFlight 的[Build241 审核材料](public-beta/build241/README.md)包含中英文介绍、测试重点与审核步骤；尚未送审或开放外部测试。
 
 **Build 221 已交付**：它修复 Build 220 云端验收 SDK 设备编译的全部 14 条诊断，并补一处 Swift 6 非 Sendable 通知负载跨 actor 错误。发布 run [35678610685](https://github.com/JiangNanGenius/floe-agent/actions/runs/35678610685) 完成验收 SDK 构建、工件留存、签名与上传；Apple、Floe QA、GitHub 预发布和 Feather 状态见 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md)。模拟器 UI 验收按加速发布要求跳过，Linux、PPTX、通知与后台行为仍由用户在真机验收。
 
@@ -34,7 +36,8 @@
 
 | 文档 | 阅读目的 |
 |---|---|
-| [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md) | 当前交付内部 Floe QA：云端构建、未签名 IPA、签名上传、Apple VALID、GitHub 预发布与设备回归边界 |
+| [Build 241 版本说明](RELEASE_NOTES_1.7.0_BUILD_241.md) | 当前正式 GitHub Release、私有 Floe QA、Feather 与待公开测试送审 |
+| [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md) | 历史内部 Floe QA：云端构建、未签名 IPA、签名上传、Apple VALID、GitHub 预发布与设备回归边界 |
 | [Build 227 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_227.json) | 已交付内部构建的中英文 TestFlight 测试重点 |
 | [Build 226 候选说明](RELEASE_NOTES_1.7.0_BUILD_226.md) | 失败候选（云端编译缺少 `FloeTools` 导入，无 IPA、无上传）；镜像组件、原生 IDE 与专项修复的范围记录，修复即 Build 227 |
 | [Build 225 版本说明](RELEASE_NOTES_1.7.0_BUILD_225.md) | 上一内部交付：验收 SDK 编译、IPA、签名上传、Apple VALID 与 GitHub 预发布；真机缺陷以设备反馈为准 |
@@ -106,7 +109,7 @@
 ## 发布档案（只追加、不回改）
 
 - `RELEASE_NOTES_<版本>.md` — 每个测试版的发布说明（release workflow 依固定路径读取，**勿移动**）
-- [RELEASE_NOTES_1.7.0_BUILD_227.md](RELEASE_NOTES_1.7.0_BUILD_227.md) — 当前交付（1.7.0/227，`v1.7.0-beta.84`，`9c756864`；云端构建、未签名 IPA、签名上传、Apple VALID、Floe QA 可安装、GitHub 预发布与真机回归边界分别记录）
+- [RELEASE_NOTES_1.7.0_BUILD_227.md](RELEASE_NOTES_1.7.0_BUILD_227.md) — 历史交付（1.7.0/227，`v1.7.0-beta.84`，`9c756864`；云端构建、未签名 IPA、签名上传、Apple VALID、Floe QA 可安装、GitHub 预发布与真机回归边界分别记录）
 - [RELEASE_NOTES_1.7.0_BUILD_226.md](RELEASE_NOTES_1.7.0_BUILD_226.md) — 未编译成功的候选（1.7.0/226，`v1.7.0-beta.83`，`b2b2fd75`；文件树压缩入口缺少 `FloeTools` 导入，无 IPA、无上传；记录保留，修复即 Build 227）
 - [RELEASE_NOTES_1.7.0_BUILD_225.md](RELEASE_NOTES_1.7.0_BUILD_225.md) — 上一内部交付；云端构建、上传、Apple 处理、GitHub 预发布和真机待验收边界分开记录
 - [RELEASE_NOTES_1.7.0_BUILD_224.md](RELEASE_NOTES_1.7.0_BUILD_224.md) — 未编译成功的候选（1.7.0/224，`v1.7.0-beta.81`，`c36b7b24`；run 35767875337 因 LinuxGuestImageDownloader.swift:101 类型化抛错失败，无工件无上传；记录保留，修复即 Build 225）

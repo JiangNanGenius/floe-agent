@@ -1,6 +1,16 @@
 # Floe 1.7 TestFlight delivery
 
-## Current internal delivery: 1.7.0 (240) — available in Floe QA
+## Current delivery: 1.7.0 (241) — normal GitHub Release and private Floe QA
+
+2026-10-02：[发布任务36960844524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36960844524)完成设备 App 编译、签名前云端 IPA 留存、签名上传与[GitHub 正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)，`draft=false`、`prerelease=false`，也是当前 latest。不可变 `v1.7.0` 对应源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。[Apple 准备与核验36965230524](https://github.com/JiangNanGenius/floe-agent/actions/runs/36965230524)读回中英文测试说明，并确认 Build241（`8b268daf-57b6-4645-b3ad-be2aa6d22c1c`）`VALID`、未过期、`APP_STORE_ELIGIBLE`，仅现有私有 Floe QA 组且 `IN_BETA_TESTING`。Feather 实际条目的下载地址、源码、大小和摘要一致；公开 TestFlight 仍缺实际隐私政策网址，尚未送审，不能称为公开可安装。
+
+The normal GitHub Release is published, not a draft or prerelease, and is the latest release. Apple confirmed the valid, unexpired Build241 is available to the existing private Floe QA group. English and Simplified Chinese test notes were read back. Public TestFlight review has not been submitted: the actual privacy-policy URL is still missing.
+
+Unsigned IPA: 739,946,669 bytes; SHA-256 `d97d8f3c6b82390b0484afbe1df103094947e92903ed14af71269a2411e4c5ca`. Xcode 26.6 (17F113), SDK `iphoneos26.5`, bundle `org.floeagent.ios`, version1.7.0/build241. Full local IPA and independent provenance/checksum evidence are retained and verified against the cloud artifact and published asset. The main App and its embedded Screen Share extension both carry Build241; all four configured targets have matching source versions. Distribution recovery reused the same source artifact without rebuilding or moving the tag. Public assets contain no signed IPA. 本地完整未签名 IPA 已核验留存；源码、整包摘要、实际 App／嵌入扩展版本和 SDK 一致，同源恢复未重编译或移动标签。
+
+Merged Build241 passed a genuine complete local App simulator case: slideshow page changes, exit to editing, 120-second idle, saving and two reopens; 22 phases,9 GUID frames, native trace and actual four-slide persistence gates passed. This is separate from the lean release pipeline, which did not repeat simulator tests. The initial remembered-document setup failure remains a failure; its text log is retained, while its original failed xcresult was not retained. Linux cloud qualification [36953899923](https://github.com/JiangNanGenius/floe-agent/actions/runs/36953899923) passed S0–S5; equal-work median1.94s→1.32s is not a physical-device speed guarantee. Downloaded MLX models are Beta / Experimental and not recommended as daily default; Apple’s system model remains separate. Physical-device PPT/VM behavior and real-model tool answers remain user acceptance items. [Release notes](RELEASE_NOTES_1.7.0_BUILD_241.md) · [Public review materials](public-beta/build241/README.md).
+
+## Previous internal delivery: 1.7.0 (240) — available in Floe QA
 
 2026-10-01 12:07 UTC：[发布任务36854144598](https://github.com/JiangNanGenius/floe-agent/actions/runs/36854144598)完成设备 App 编译、云端未签名 IPA 留存、Office 宿主包核验、私有符号留存和签名上传。[Apple 核验36859708033](https://github.com/JiangNanGenius/floe-agent/actions/runs/36859708033)确认 `VALID`、未过期、仅现有私有 Floe QA 组和 `IN_BETA_TESTING`，内测可安装。[更新说明36859539572](https://github.com/JiangNanGenius/floe-agent/actions/runs/36859539572)已核对中英文读回。[GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.99) 和 [Feather36858333656](https://github.com/JiangNanGenius/floe-agent/actions/runs/36858333656)均成功，实际源条目的源码、大小、摘要和发布 IPA URL 一致。
 

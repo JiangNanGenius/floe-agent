@@ -1,6 +1,6 @@
 # Build 241 external/public TestFlight materials
 
-Status: **prepared; not uploaded or submitted.** All four App/extension targets and eight configurations are version 1.7.0, Build 241. The intended immutable tag is `v1.7.0`; it has not been created. GitHub distribution will use a normal Release. TestFlight public review and public installability are separate stages.
+Status: **Build241 delivered; external review not submitted.** The normal [GitHub Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0) is published at immutable `v1.7.0` / source `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`. The accepted-SDK device App and retained full unsigned IPA passed verification. Apple Build241 is VALID, unexpired and IN_BETA_TESTING in the existing private Floe QA group. Feather points to the same source/size/hash. Public review remains blocked on the actual privacy-policy URL; private availability does not mean public installability.
 
 ## Prepared product text
 
@@ -30,6 +30,6 @@ Historical Build 191 materials and the Build 240 delivery record remain historic
 
 The default `inspect` is GET-only. Explicit `submit` needs `confirm=submit-external-review` and a final review-notes path. Metadata completion will confirm `demo_account_required=false`, create the missing localization with the actual existing en-US feedback email, and use only the confirmed privacy-policy URL. No contact details, credentials or policy address will be invented. Duplicate pending/approved submissions are reported without a second POST; rejected recovery remains explicit.
 
-After the source is frozen and the retained IPA is verified, dispatch with the actual tag SHA, Build 241 and IPA digest. The metadata report alone does not verify IPA bytes. Apple writes, group attachment, review submission and any public-link change must be checked through their actual readbacks.
+The source and verified IPA are frozen. Once the actual privacy-policy URL is provided, submit with the immutable tag SHA, Build241 and verified IPA digest. The metadata report alone does not verify IPA bytes. Apple writes, group attachment, review submission and any public-link change must be checked through their actual readbacks.
 
 A successful review submission can remain pending. Report the public test as installable only when Apple approves the intended VALID, unexpired build and it is available to the intended external group. Pending GUI login does not block authorized API operations using existing credentials.
