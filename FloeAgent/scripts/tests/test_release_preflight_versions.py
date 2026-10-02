@@ -54,21 +54,34 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="floe-release-version-test-") as temp:
             root = Path(temp)
             app = root / "FloeAgent"
+            # Every script release_preflight.sh executes, directly or through
+            # imports: pin_office_host_artifact imports office_engine_repair,
+            # which imports sim_paths (office_real_simulator) and
+            # verify_office_engine/package_office_engine. A missing dependency
+            # must fail this fixture loudly, never silently skip the gate.
             for name in ("project.yml", "scripts/release_preflight.sh",
                          "scripts/validate_localization_catalog.py",
                          "scripts/audit_native_runtime_free.py",
                          "scripts/bootstrap_office_host.py",
                          "scripts/office_release_gates.py",
+                         "scripts/pin_office_host_artifact.py",
+                         "scripts/office_engine_repair.py",
+                         "scripts/verify_office_engine.py",
+                         "scripts/package_office_engine.py",
+                         "scripts/office_real_simulator/sim_paths.py",
                          "FloeAgent.xcodeproj/project.pbxproj", "FloeScreenShare/Info.plist",
                          "FloeApp/Resources/Localizable.xcstrings"):
                 target = app / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / name, target)
             # Copy the small pinned source inputs used by the real Office gate;
-            # version fixtures must not weaken the release script itself.
+            # version fixtures must not weaken the release script itself. The
+            # engine patch lock stays beside the engine lock so
+            # pin_office_host_artifact.py --check verifies the engineRepair
+            # claim against its tracked contract, exactly as a release does.
             office = Path("ThirdParty/Collabora")
             lock = json.loads((ROOT / office / "engine.lock.json").read_text())
-            files = [office / "engine.lock.json"]
+            files = [office / "engine.lock.json", office / "engine.patch.lock.json"]
             files += [office / "FloeOfficeNative" / name
                       for name in lock["qualifiedHostArtifact"]["hostSourceSHA256"]]
             if "filterOverlay" in lock["qualifiedHostArtifact"]:
@@ -98,17 +111,23 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
             project.write_text(transform(project.read_text()))
             catalog = app / "FloeApp/Resources/Localizable.xcstrings"
             catalog.write_text(catalog_transform(catalog.read_text()))
-            write_release_copy(root / "docs", (app / "project.yml").read_text(),
+            fixture_project = (app / "project.yml").read_text()
+            # The fixture tag must follow the fixture's own project.yml version.
+            # A frozen literal goes stale on every version bump and stops the
+            # negative cases before the assertion they intend to exercise.
+            fixture_version, _ = version_and_build(fixture_project)
+            fixture_tag = f"v{fixture_version}-beta.999"
+            write_release_copy(root / "docs", fixture_project,
                                notes_transform=notes_transform, whatsnew=whatsnew,
                                whatsnew_raw=whatsnew_raw, remove_notes=remove_notes,
                                remove_whatsnew=remove_whatsnew)
             env = dict(os.environ, GIT_AUTHOR_NAME="Floe Test", GIT_COMMITTER_NAME="Floe Test",
                        GIT_AUTHOR_EMAIL="test@example.invalid", GIT_COMMITTER_EMAIL="test@example.invalid")
             for args in (("init", "-q"), ("add", "."), ("commit", "-qm", "fixture"),
-                         ("tag", "v1.7.0-beta.999")):
+                         ("tag", fixture_tag)):
                 subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True)
             return subprocess.run(["bash", str(app / "scripts/release_preflight.sh"),
-                                   "v1.7.0-beta.999"], cwd=root, env=env,
+                                   fixture_tag], cwd=root, env=env,
                                   capture_output=True, text=True)
 
     def test_missing_office_lock_is_rejected(self):

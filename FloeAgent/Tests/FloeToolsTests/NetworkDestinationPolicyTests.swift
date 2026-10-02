@@ -138,6 +138,19 @@ final class NetworkDestinationPolicyTests: XCTestCase {
         }
     }
 
+    // MARK: - Live resolver (systemResolve)
+
+    func testSystemResolveRendersNumericLoopbackAsNonPublic() throws {
+        // Exercises the live getaddrinfo/getnameinfo path without DNS: numeric
+        // input resolves locally on both Darwin and Glibc, and every rendered
+        // literal must still classify as non-public (fail closed).
+        let addresses = try NetworkDestinationPolicy.systemResolve("127.0.0.1")
+        XCTAssertFalse(addresses.isEmpty)
+        for address in addresses {
+            XCTAssertEqual(NetworkDestinationPolicy.classify(address), .nonPublic, address)
+        }
+    }
+
     // MARK: - Redirect revalidation (redirects are strictly revalidated)
 
     func testPrivateRedirectDestinationsBlocked() {

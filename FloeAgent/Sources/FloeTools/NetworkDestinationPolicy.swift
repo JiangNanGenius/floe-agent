@@ -13,7 +13,11 @@
 // fixed HTTPS provider endpoint bound to a specific provider kind, never as
 // a general relaxation or by host name alone.
 
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 import FloeCore
 
@@ -66,13 +70,23 @@ public enum NetworkDestinationPolicy: Sendable {
         }
     }
 
+    /// `SOCK_STREAM` is an `Int32` constant on Darwin; Glibc imports the named
+    /// C enum, so the `addrinfo` field needs its raw value there.
+    private static var streamSocketType: Int32 {
+        #if canImport(Darwin)
+        return SOCK_STREAM
+        #elseif canImport(Glibc)
+        return Int32(SOCK_STREAM.rawValue)
+        #endif
+    }
+
     /// Live resolver: getaddrinfo (AI_ADDRCONFIG, AF_UNSPEC, TCP/443 hints),
     /// rendered as numeric IP literals. Failure throws; callers map the error.
     public static func systemResolve(_ host: String) throws -> [String] {
         var hints = addrinfo(
             ai_flags: AI_ADDRCONFIG,
             ai_family: AF_UNSPEC,
-            ai_socktype: SOCK_STREAM,
+            ai_socktype: Self.streamSocketType,
             ai_protocol: IPPROTO_TCP,
             ai_addrlen: 0,
             ai_canonname: nil,
@@ -87,11 +101,13 @@ public enum NetworkDestinationPolicy: Sendable {
         var literals: [String] = []
         var cursor: UnsafeMutablePointer<addrinfo>? = first
         while let current = cursor {
-            if let address = current.pointee.ai_addr {
-                if let literal = numericHost(address) {
-                    literals.append(literal)
-                }
+            guard let address = current.pointee.ai_addr,
+                  let literal = numericHost(address, family: current.pointee.ai_family) else {
+                // Validation promises to check every resolved address. An
+                // unrenderable result must not disappear from that set.
+                throw NetworkDestinationError.resolutionFailed(host)
             }
+            literals.append(literal)
             cursor = current.pointee.ai_next
         }
         return literals
@@ -157,12 +173,29 @@ public enum NetworkDestinationPolicy: Sendable {
         return withUnsafeBytes(of: &address) { Array($0) }
     }
 
-    private static func numericHost(_ address: UnsafePointer<sockaddr>) -> String? {
+    /// Render one resolved sockaddr as a numeric literal. The socket-address
+    /// length comes from the family getaddrinfo reported: Darwin's sockaddr
+    /// carries `sa_len`, Glibc's does not, so reading that field is not
+    /// portable. An unknown family fails closed by returning nil.
+    private static func numericHost(
+        _ address: UnsafePointer<sockaddr>,
+        family: Int32
+    ) -> String? {
+        guard Int32(address.pointee.sa_family) == family else { return nil }
+        let addressLength: socklen_t
+        switch family {
+        case AF_INET:
+            addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        case AF_INET6:
+            addressLength = socklen_t(MemoryLayout<sockaddr_in6>.size)
+        default:
+            return nil
+        }
         let capacity = Int(NI_MAXHOST)
         var buffer = [CChar](repeating: 0, count: capacity)
         let status = getnameinfo(
             address,
-            socklen_t(address.pointee.sa_len),
+            addressLength,
             &buffer,
             socklen_t(capacity),
             nil,

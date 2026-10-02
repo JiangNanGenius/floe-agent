@@ -98,6 +98,7 @@ struct MCPRemoteToolSourceTests {
             "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
             "canvas.generate", "canvas.generationStatus",
             "notes.read", "notes.search", "notes.edit", "notes.attachFile",
+            "video.models",
         ])
         #expect(!names.contains("canvas.inspect"))
         #expect(!names.contains("canvas.applyPatch"))
