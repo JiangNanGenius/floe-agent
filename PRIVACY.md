@@ -2,9 +2,9 @@
 
 **Effective date / 生效日期：2026-10-02**
 
-This page describes Floe Agent (the iOS/iPadOS app, bundle identifier `org.floeagent.ios`) and the data flows in version 1.7.0. The English text comes first, followed by the Chinese version. The two language versions are intended to say the same thing; if they differ, please treat the specific wording with caution and contact us.
+This page describes Floe Agent for iOS/iPadOS, version 1.7.0, and its data flows. The English text comes first, followed by the Chinese version. The two language versions are intended to say the same thing; if they differ, please treat the specific wording with caution and contact us.
 
-本页说明 Floe Agent（iOS/iPadOS 应用，Bundle ID `org.floeagent.ios`）1.7.0 版本的数据处理方式。先英文、后中文，两种语言表述保持一致；如存在差异，请通过下方方式联系我们确认。
+本页说明 iOS/iPadOS 应用 Floe Agent 1.7.0 版本的数据处理方式。先英文、后中文，两种语言表述保持一致；如存在差异，请通过下方方式联系我们确认。
 
 ---
 
@@ -18,7 +18,7 @@ Floe Agent has **no Floe account system** and no sign-up. The app does not ask y
 
 ### 2. Your content is stored on your device
 
-Your conversations and task history, Notes (手记) notebooks and documents, PDFs and annotations, imported files and attachments, Canvas content, settings, downloaded models, and the app's working files are stored locally inside the app's protected sandbox on the device (local SQLite databases and app-managed files). This content is not sold and is not used for third-party advertising.
+Your conversations and task history, Notes (手记) notebooks and documents, PDFs and annotations, imported files and attachments, Canvas content, settings, downloaded models, and the app's working files are stored locally in app-managed protected storage inside the app's sandbox on the device. This content is not sold and is not used for third-party advertising.
 
 Deletion has two stages. Archiving a conversation or moving a Note to the trash keeps the item in the app (Archive or Trash) so it can be restored; the data is retained there until you permanently delete it. Permanent deletion (emptying the Archive/Trash, the permanent-delete actions, or the "clear local history" / "clear model configuration" actions in Settings → Privacy) removes the corresponding app-stored data, including the item's task workspace and task-scoped credentials. Copies that were synchronised to iCloud, sent to a provider or another service you use, or exported by you persist according to those services' rules. Uninstalling the app removes its local sandbox data; items the system stores elsewhere (such as Keychain items or files in iCloud Drive) follow Apple's rules.
 
@@ -29,7 +29,7 @@ Removing a folder entry from a Floe workspace does not delete the original folde
 If you are signed in to iCloud, the app can use Apple's iCloud services that you control in Settings:
 
 - **Private CloudKit database:** non-secret configuration (provider/model profiles, preferences, remote-host profiles without secret values) and, when the canvas sync switch is enabled (on by default), canvas assets are synchronised through your private iCloud database. This data is tied to your Apple ID and is governed by Apple's privacy policy.
-- **iCloud Keychain:** saved provider API keys and saved SSH/VNC secrets may synchronise through iCloud Keychain unless you turn that synchronisation off in the app's sync settings. Task- and project-scoped temporary credentials, and the remote-link client identity, are excluded from iCloud Keychain synchronisation (they may still be transmitted to a remote host you connect to, as part of authenticating that connection — see section 5).
+- **iCloud Keychain:** saved provider API keys and saved SSH/VNC secrets may synchronise through iCloud Keychain unless you turn that synchronisation off in the app's sync settings. Task- and project-scoped temporary credentials are excluded from iCloud Keychain synchronisation; when a task connects to a server you configured, those credentials are used to authenticate that connection (see section 5). The mutual-TLS client identity for paired advanced remote links stays on this device only and its private key material is never uploaded; the connection proves the identity cryptographically instead.
 - Small preference values may be stored through Apple's iCloud key-value store.
 
 Conversations and Notes are not synchronised through CloudKit. Other document-like content you create can be: canvas assets do, when the canvas sync switch is enabled. Turning canvas sync off does not delete canvas copies already stored in iCloud; deleting a canvas in the app removes its synced copy as well, after the deletion is confirmed remotely.
@@ -117,7 +117,7 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 
 ### 2. 你的内容存储在设备本地
 
-你的对话与任务历史、手记（Notes）的笔记本与文档、PDF 与批注、导入的文件与附件、画布内容、设置、已下载模型以及应用工作文件，均存储在设备上受系统保护的应用沙盒内（本地 SQLite 数据库与应用管理的文件）。这些内容不会被出售，也不会用于第三方广告。
+你的对话与任务历史、手记（Notes）的笔记本与文档、PDF 与批注、导入的文件与附件、画布内容、设置、已下载模型以及应用工作文件，均存储在设备上应用沙盒内、由应用管理的受保护本地存储中。这些内容不会被出售，也不会用于第三方广告。
 
 删除分为两个阶段：归档对话或把手记移入废纸篓时，项目仍保留在应用内（归档或废纸篓），可以恢复；数据会一直保留，直到你永久删除。永久删除（清空归档/废纸篓、使用永久删除操作，或"设置 → 隐私"中的"清除本地历史""清除模型配置"）会删除应用保存的相应数据，包括该项目的任务工作区和任务级凭据。已同步到 iCloud、已发送给你使用的服务商或其他服务、或由你导出的副本，按相应服务的规则继续保留。卸载应用会删除其本地沙盒数据；由系统另行保存的项目（如钥匙串项或 iCloud 云盘中的文件）按 Apple 的规则处理。
 
@@ -128,7 +128,7 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 登录 iCloud 后，应用可使用你可在设置中控制的 Apple iCloud 服务：
 
 - **CloudKit 私有数据库：**非涉密配置（服务商/模型配置、偏好设置、不含密钥值的远程主机配置），以及在画布同步开关开启时（默认开启）的画布素材，通过你的 iCloud 私有数据库同步。这些数据与你的 Apple ID 关联，受 Apple 隐私政策约束。
-- **iCloud 钥匙串：**已保存的服务商 API Key、SSH/VNC 密钥可通过 iCloud 钥匙串同步；你可以在应用的同步设置中关闭。任务级、项目级临时凭据以及远程连接的客户端身份不参与 iCloud 钥匙串同步（但在你连接远程主机时，它们仍可能作为该连接认证的一部分被传输——见第 5 节）。
+- **iCloud 钥匙串：**已保存的服务商 API Key、SSH/VNC 密钥可通过 iCloud 钥匙串同步；你可以在应用的同步设置中关闭。任务级、项目级临时凭据不参与 iCloud 钥匙串同步；当任务连接你配置的服务器时，这些凭据会用于该连接的身份认证（见第 5 节）。高级远程连接配对所用的双向 TLS 客户端身份仅保存在本机，其私钥材料绝不上传；连接以密码学方式证明身份，而非发送私钥。
 - 少量偏好值可能通过 Apple 的 iCloud 键值存储保存。
 
 对话和手记不通过 CloudKit 同步。你创建的其他类文档内容可能同步：例如在画布同步开关开启时画布素材会同步。关闭画布同步不会删除已存入 iCloud 的画布副本；在应用中删除画布时，会在远程删除确认后一并删除其同步副本。
