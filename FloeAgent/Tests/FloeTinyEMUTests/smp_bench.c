@@ -189,7 +189,7 @@ int main(int argc, char **argv)
                         cases[c].insns);
                 for (int t = 0; t < trials; t++)
                     fprintf(f, "%s%" PRId64, t ? ", " : "", cases[c].wall[t]);
-                fprintf(f, "]%s\n", c + 1 < ncases ? "," : "");
+                fprintf(f, "]}%s\n", c + 1 < ncases ? "," : "");
             }
             fprintf(f,
                     "  ],\n  \"speedup_alu\": %g,\n"
