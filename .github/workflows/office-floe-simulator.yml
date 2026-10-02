@@ -98,6 +98,26 @@ jobs:
           xcrun --sdk iphonesimulator --show-sdk-path
           xcrun --sdk iphonesimulator --show-sdk-version
 
+      - name: Check out the pinned engine repair source
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          sys.path.insert(0, 'FloeAgent/scripts')
+          import office_engine_repair
+          lock = json.loads(office_engine_repair.DEFAULT_LOCK.read_text())
+          section = lock['platforms']['IOSSIMULATOR']
+          paths = list(section['compile']['sourceIncludes']) + [lock['repair']['sourceFile']]
+          source = pathlib.Path(os.environ['RUNNER_TEMP']) / 'office-repair-source'
+          source.mkdir()
+          def git(*args):
+              subprocess.run(['git', '-C', str(source), *args], check=True)
+          git('init', '-q')
+          git('remote', 'add', 'origin', lock['engine']['repository'])
+          git('sparse-checkout', 'set', '--no-cone', *paths)
+          git('fetch', '--depth=1', '--filter=blob:none', 'origin', lock['engine']['commit'])
+          git('checkout', '--detach', 'FETCH_HEAD')
+          PY
+
       - name: Restore and verify the staged engine (per variant)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,6 +132,19 @@ jobs:
               --restored "$RUNNER_TEMP/restored-$variant" \
               --output "$RUNNER_TEMP/restore-$variant.json"
           done
+
+      - name: Apply the pinned single-member engine repair (blank slideshow fix, per variant)
+        run: |
+          set -euo pipefail
+          for variant in $(python3 -c 'import json,os;print(" ".join(json.loads(os.environ["MATRIX"])))'); do
+            echo "=== engine repair for variant $variant ==="
+            python3 FloeAgent/scripts/office_engine_repair.py apply \
+              --platform IOSSIMULATOR \
+              --bundle "$RUNNER_TEMP/restored-$variant" \
+              --engine-source "$RUNNER_TEMP/office-repair-source"
+          done
+        env:
+          MATRIX: ${{ steps.variants.outputs.matrix }}
 
       - name: Build the genuine FloeOfficeNative framework for iphonesimulator (per variant)
         run: |
@@ -141,6 +174,7 @@ jobs:
             ${{ runner.temp }}/simhost-*/build/native-host-build.log
             ${{ runner.temp }}/simhost-*/build/swift-import.log
             ${{ runner.temp }}/restore-*.json
+            ${{ runner.temp }}/restored-*/engine-repair.json
             ${{ runner.temp }}/disk-preflight.log
           if-no-files-found: error
           retention-days: 14

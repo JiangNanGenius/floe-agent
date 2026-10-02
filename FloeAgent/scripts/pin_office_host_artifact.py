@@ -68,6 +68,54 @@ LIFECYCLE_OVERLAYS = (
 )
 
 
+def engine_repair_claim(lock_path: Path) -> dict:
+    """The tracked engine repair contract for the device (IOS) platform.
+
+    Absent (no tracked lock / no IOS section) means backward compatibility:
+    artifacts built before the repair existed stay pin-able until the pin is
+    replaced, mirroring the lifecycle overlay claim rules.
+    """
+    import office_engine_repair
+    repair_lock, section = office_engine_repair.tracked_contract(
+        lock_path=Path(lock_path).parent / "engine.patch.lock.json",
+        platform="IOS")
+    if section is None:
+        return None
+    lock = json.loads(Path(lock_path).read_text())
+    # Bind the claim to THIS engine lock's commit as well: the repair is a
+    # source patch on the pinned engine, so an engine bump must re-verify it.
+    if repair_lock["engine"]["commit"] != lock["commit"]:
+        raise ValueError("engine patch lock tracks a different engine commit")
+    return office_engine_repair.expected_manifest_block(repair_lock, section)
+
+
+def engine_repair_claim_failures(block, claim: dict, label: str) -> list:
+    """Strict canonical comparison of one engineRepair claim block.
+
+    The blockmust carry exactly the tracked identity fields: a missing field,
+    a changed value or an unexpected extra field (for example an absolute
+    receipt path) can never be accepted.
+    """
+    failures = []
+    if not isinstance(block, dict):
+        return [f"the {label} carries no engine repair provenance"]
+    missing = sorted(key for key in claim if key not in block)
+    extra = sorted(key for key in block if key not in claim)
+    if missing:
+        failures.append(f"the engine repair provenance omits {', '.join(missing)}")
+    if extra:
+        failures.append(f"the engine repair provenance carries unexpected fields: {', '.join(extra)}")
+    for key, value in claim.items():
+        if json.dumps(block.get(key), sort_keys=True) != json.dumps(value, sort_keys=True):
+            failures.append(f"the engine repair {key} differs from the tracked contract")
+    return failures
+
+
+def engine_repair_provenance_failures(manifest: dict, claim: dict) -> list:
+    return engine_repair_claim_failures(
+        manifest.get("engineRepair"), claim, "artifact")
+
+
 def lifecycle_provenance(overlay: dict, commit: str) -> dict:
     """The exact manifest block a host must carry for a tracked overlay."""
     return {
@@ -147,6 +195,26 @@ def check(lock_path: Path) -> int:
         if claim != overlay["sha256"]:
             mismatched.append(label)
     pending = pin.get("pendingHostRebuild") is True
+    # The tracked single-member engine repair (blank iOS slideshow fix) is
+    # part of the host sources now: a pin that does not claim the exact
+    # patch/object/archive identity names a pre-repair host, so the check
+    # must report SOURCE AHEAD until CI rebuilds with the repaired engine.
+    # A claim that is present but disagrees with the tracked contract (missing
+    # field, wrong SHA/platform/member/lock or an unexpected extra field) is a
+    # corrupt pin, not a rebuild request, and is rejected outright.
+    repair_claim = engine_repair_claim(lock_path)
+    rejected = []
+    if repair_claim is not None:
+        pin_block = pin.get("engineRepair")
+        if pin_block is None:
+            mismatched.append("engine repair (blank slideshow fix)")
+        else:
+            rejected = engine_repair_claim_failures(
+                pin_block, repair_claim, "pin")
+    if rejected:
+        for failure in rejected:
+            print(f"pin: REJECTED engine repair claim — {failure}")
+        return 2
     status = capability_status(pin)
     for flag in status["unproven"]:
         print(f"pin: Office capability not proven for release: {flag}")
@@ -252,6 +320,11 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
             continue
         failures.extend(lifecycle_provenance_failures(manifest, overlay, lock["commit"], block, label))
         claimed_overlay_shas[claim_key] = overlay["sha256"]
+    # The engine single-member repair: the manifest must carry the exact
+    # patch/object/archive identity the tracked contract expects.
+    repair_claim = engine_repair_claim(lock_path)
+    if repair_claim is not None:
+        failures.extend(engine_repair_provenance_failures(manifest, repair_claim))
     for key in QUALIFICATION_KEYS:
         if manifest.get(key) is not True:
             failures.append(f"qualification flag {key} did not pass")
@@ -304,6 +377,11 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     # carry the same provenance.
     for claim_key, sha in claimed_overlay_shas.items():
         updated[claim_key] = sha
+    if repair_claim is not None:
+        # Store the canonical tracked identity, not the raw manifest block:
+        # strict provenance above already rejected missing/changed/extra
+        # fields, and the pin must stay byte-portable for bootstrap.
+        updated["engineRepair"] = repair_claim
     if rebuilt_overlay:
         updated["filterOverlay"] = rebuilt_overlay
     updated["runID"] = manifest.get("runID", pin.get("runID"))

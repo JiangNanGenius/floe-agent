@@ -1102,6 +1102,14 @@ def make_fake_host_bundle(root, *, variant='kit', kit_applied=True):
             'sourceCommit': LOCK['commit'],
             'files': {n: s['preparedSHA256'] for n, s in
                       LOCK['kitCallbackLifecycleOverlay']['files'].items()}}
+    import office_engine_repair
+    repair_lock, repair_section = office_engine_repair.tracked_contract(
+        platform='IOSSIMULATOR')
+    if repair_section is not None:
+        # Once the tracked engine repair contract exists, every verified
+        # simulator host receipt must carry its exact identity.
+        receipt['engineRepair'] = office_engine_repair.expected_manifest_block(
+            repair_lock, repair_section)
     (bundle / 'native-host-simulator.json').write_text(json.dumps(receipt, indent=2))
     return bundle
 
@@ -1400,6 +1408,27 @@ class BuiltModuleReceiptTests(unittest.TestCase):
             restored.mkdir()
             (restored / 'restore-report.json').write_text(json.dumps({
                 'sourceCommit': LOCK['commit'], 'provenanceArtifactSHA256': 'a' * 64}))
+            import office_engine_repair
+            repair_lock, repair_section = office_engine_repair.tracked_contract(
+                platform='IOSSIMULATOR')
+            if repair_section is not None:
+                block = office_engine_repair.expected_manifest_block(
+                    repair_lock, repair_section)
+                (restored / 'engine-repair.json').write_text(json.dumps({
+                    'platform': block['platform'],
+                    'lock': {'sha256': block['lockSHA256']},
+                    'repair': {'patchSHA256': block['patchSHA256'],
+                               'upstreamCommit': block['upstreamCommit'],
+                               'sourceFile': block['sourceFile'],
+                               'originalSourceSHA256': block['originalSourceSHA256'],
+                               'patchedSourceSHA256': block['patchedSourceSHA256']},
+                    'compile': {'sdk': block['sdk'], 'target': block['target']},
+                    'archive': {'bundlePath': block['archiveBundlePath'],
+                                'originalSHA256': block['originalArchiveSHA256'],
+                                'patchedSHA256': block['patchedArchiveSHA256'],
+                                'memberCount': block['member']['count'],
+                                'member': block['member']},
+                }, indent=2))
             bundle, receipt = build_simulator_framework.package_host(report, restored, output,
                 variant='kit', kit_applied=True, base_run_id='fixture-run',
                 identity={'sdkVersion': '27.0', 'sdkBuildVersion': 'fixture', 'xcodeVersion': 'fixture'})

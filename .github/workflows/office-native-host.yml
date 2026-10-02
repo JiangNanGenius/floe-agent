@@ -59,6 +59,47 @@ jobs:
           python3 FloeAgent/scripts/test_office_native_drain.py \
             --upstream "$RUNNER_TEMP/office-native-bundle/source/browser/js/global.js" \
             > "$RUNNER_TEMP/office-native-bundle/native-drain-contract.json"
+      - name: Check out the pinned engine repair source
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          sys.path.insert(0, 'FloeAgent/scripts')
+          import office_engine_repair
+          lock = json.loads(office_engine_repair.DEFAULT_LOCK.read_text())
+          section = lock['platforms']['IOS']
+          paths = list(section['compile']['sourceIncludes']) + [lock['repair']['sourceFile']]
+          source = pathlib.Path(os.environ['RUNNER_TEMP']) / 'office-repair-source'
+          source.mkdir()
+          def git(*args):
+              subprocess.run(['git', '-C', str(source), *args], check=True)
+          git('init', '-q')
+          git('remote', 'add', 'origin', lock['engine']['repository'])
+          git('sparse-checkout', 'set', '--no-cone', *paths)
+          git('fetch', '--depth=1', '--filter=blob:none', 'origin', lock['engine']['commit'])
+          git('checkout', '--detach', 'FETCH_HEAD')
+          PY
+      - name: Restore the repaired simulator engine for auxiliary include roots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          aux_run="$(python3 -c 'import json;print(json.load(open("FloeAgent/ThirdParty/Collabora/engine.patch.lock.json"))["platforms"]["IOS"]["auxiliaryInput"]["runID"])')"
+          python3 FloeAgent/scripts/office_floe_simulator/restore_staged_engine.py \
+            --run-id "$aux_run" \
+            --staged "$RUNNER_TEMP/aux-staged" \
+            --restored "$RUNNER_TEMP/aux-restored" \
+            --output "$RUNNER_TEMP/aux-restore.json"
+          python3 FloeAgent/scripts/office_engine_repair.py apply \
+            --platform IOSSIMULATOR \
+            --bundle "$RUNNER_TEMP/aux-restored" \
+            --engine-source "$RUNNER_TEMP/office-repair-source"
+      - name: Apply the pinned single-member engine repair (blank slideshow fix, IOS)
+        run: |
+          python3 FloeAgent/scripts/office_engine_repair.py apply \
+            --platform IOS \
+            --bundle "$RUNNER_TEMP/office-native-bundle" \
+            --engine-source "$RUNNER_TEMP/office-repair-source" \
+            --aux-bundle "$RUNNER_TEMP/aux-restored"
       - name: Verify pinned native scheme lifecycle regression
         run: |
           python3 FloeAgent/scripts/test_office_scheme_lifecycle.py \
@@ -144,6 +185,9 @@ jobs:
           name: office-native-host-evidence
           path: |
             ${{ runner.temp }}/office-native-bundle/bundle-repair.json
+            ${{ runner.temp }}/office-native-bundle/engine-repair.json
+            ${{ runner.temp }}/aux-restore.json
+            ${{ runner.temp }}/aux-restored/engine-repair.json
             ${{ runner.temp }}/office-native-bundle/native-drain-contract.json
             ${{ runner.temp }}/office-native-bundle/scheme-lifecycle-regression.json
             ${{ runner.temp }}/office-native-bundle/kit-callback-lifecycle-regression.json

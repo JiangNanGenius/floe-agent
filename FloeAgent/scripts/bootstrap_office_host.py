@@ -58,6 +58,22 @@ def checked_lock(lock_path):
         overlay = lock.get('kitCallbackLifecycleOverlay')
         if overlay is None or kit_claim != overlay['sha256']:
             raise ValueError('Native host kit callback overlay claim does not match its lock')
+    # Same contract for the tracked single-member engine repair (blank iOS
+    # slideshow fix): when the pin claims it, the claim must match the tracked
+    # lock exactly.  Unlike the simulator qualification (which proves the
+    # repair and requires it), the device pin stays usable while it predates
+    # the repair: `pin_office_host_artifact.py --check` reports SOURCE AHEAD
+    # and the re-pin happens only after the cloud rebuild, so a consistent
+    # but pre-repair device host can still satisfy local simulator builds.
+    import office_engine_repair
+    repair_lock, repair_section = office_engine_repair.tracked_contract(
+        lock_path=Path(lock_path).parent / 'engine.patch.lock.json',
+        platform='IOS')
+    repair_claim = pin.get('engineRepair')
+    if repair_section is not None and repair_claim is not None:
+        expected = office_engine_repair.expected_manifest_block(repair_lock, repair_section)
+        if json.dumps(repair_claim, sort_keys=True) != json.dumps(expected, sort_keys=True):
+            raise ValueError('Native host engine repair claim does not match its lock')
     for name, checksum in pin['hostSourceSHA256'].items():
         relative(name)
         if digest(lock_path.parent / 'FloeOfficeNative' / name) != checksum:
@@ -172,6 +188,15 @@ def verify_simulator_host(folder, lock_path=LOCK):
         check(receipt.get(field) is True, f'simulator host {field} is not true')
     check((receipt.get('filterOverlay') or {}).get('applied') is False,
           'simulator host must not apply the device-only filter overlay')
+    import office_engine_repair
+    repair_lock, repair_section = office_engine_repair.tracked_contract(
+        lock_path=Path(lock_path).parent / 'engine.patch.lock.json',
+        platform='IOSSIMULATOR')
+    if repair_section is not None:
+        expected = office_engine_repair.expected_manifest_block(repair_lock, repair_section)
+        check(json.dumps(receipt.get('engineRepair'), sort_keys=True)
+              == json.dumps(expected, sort_keys=True),
+              'simulator host engine repair provenance mismatch')
 
     files = {SIMULATOR_RECEIPT: None,
              SIMULATOR_FRAMEWORK + '/FloeOfficeNative': receipt.get('executableSHA256')}
@@ -243,6 +268,10 @@ def inventory(folder, lock, pin):
                 or provenance.get('sourceCommit') != lock['commit']
                 or provenance.get('files') != expected_files):
             raise ValueError('Native Office host lacks the pinned kit callback overlay provenance')
+    if 'engineRepair' in pin:
+        block = report.get('engineRepair', {})
+        if json.dumps(block, sort_keys=True) != json.dumps(pin['engineRepair'], sort_keys=True):
+            raise ValueError('Native Office host lacks the pinned engine repair provenance')
     if 'filterOverlay' in pin:
         selected = report.get('filterOverlay', {})
         if (not selected.get('compilePassed') or not selected.get('archiveReplacementPassed')

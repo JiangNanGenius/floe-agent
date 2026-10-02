@@ -254,6 +254,24 @@ def build_host(root, output, *, build=True, filter_overlay=None, sdk='iphoneos',
             'sourceCommit': lock['commit'],
             'files': {name: spec['preparedSHA256']
                       for name, spec in kit_overlay['files'].items()}}
+    # Engine single-member archive repair (blank iOS slideshow fix): once the
+    # tracked engine.patch.lock.json carries a contract for this SDK's
+    # platform, the bundle being linked MUST carry the matching repair
+    # receipt; the manifest records the exact patch/object/archive identity.
+    import office_engine_repair
+    platform = office_engine_repair.PLATFORM_BY_SDK[sdk]
+    repair_lock, repair_section = office_engine_repair.tracked_contract(
+        lock_path=lock_path.parent / 'engine.patch.lock.json',
+        platform=platform)
+    if repair_section is not None:
+        report['engineRepair'] = office_engine_repair.manifest_block(
+            root, lock_path=lock_path.parent / 'engine.patch.lock.json',
+            platform=platform)
+        # Diagnostic only: the receipt location is not part of the portable
+        # repair identity and must never enter the claim block that pin/boot
+        # compare against the tracked contract.
+        report['engineRepairReceiptPath'] = str(
+            Path(root) / office_engine_repair.RECEIPT_NAME)
     report.update(run_identity())
     receipt = output / 'native-host.json'
 

@@ -56,9 +56,30 @@ def download_artifact(run_id, destination, repo='JiangNanGenius/floe-agent'):
     return destination
 
 
-def restore_staged_engine(run_id, staged_dir, restored_dir):
-    """Fetch + validate + restore; returns the restore report."""
-    staged = download_artifact(run_id, staged_dir)
+def unpack_local_artifact(staged_zip, destination):
+    """Unpack a retained, already verified staged-engine ZIP without network.
+
+    Local reproduction reuses the retained READY artifact instead of
+    re-downloading it; the provenance gate below still binds the inner
+    tarball hash, source commit, platform and toolchain, so a damaged or
+    substituted local ZIP fails exactly like a bad download.
+    """
+    import zipfile
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=False)
+    with zipfile.ZipFile(staged_zip) as archive:
+        for name in archive.namelist():
+            target = Path(name)
+            if target.is_absolute() or '..' in target.parts:
+                raise ValueError(f'unsafe staged archive path: {name}')
+        archive.extractall(destination)
+    return destination
+
+
+def restore_staged_engine(run_id, staged_dir, restored_dir, staged_zip=None):
+    """Fetch (or reuse a retained ZIP) + validate + restore; returns the restore report."""
+    staged = (unpack_local_artifact(Path(staged_zip), staged_dir) if staged_zip
+              else download_artifact(run_id, staged_dir))
     layout = staged_layout.resolve(staged)
     expect_xcode, expect_sdk = current_toolchain()
     report = restore_simulator_bundle.restore(
@@ -69,6 +90,14 @@ def restore_staged_engine(run_id, staged_dir, restored_dir):
     report['baseEngineRunID'] = str(run_id)
     report['engineArtifactName'] = ENGINE_ARTIFACT_NAME
     report['consumedBy'] = 'office_floe_simulator.restore_staged_engine'
+    # ``restore_simulator_bundle.restore`` writes the report before the run
+    # identity is known.  Rewrite the in-bundle report with the run binding so
+    # downstream producers (office_engine_repair.apply) verify the actual
+    # artifact identity from evidence that travels with the bundle instead of
+    # trusting the tracked run/artifact metadata alone.
+    evidence_path = Path(restored_dir) / 'restore-report.json'
+    if evidence_path.parent.is_dir():
+        evidence_path.write_text(json.dumps(report, indent=2) + '\n')
     return report
 
 
@@ -78,6 +107,9 @@ def main():
                         help='Completed office-real-simulator build-stage run ID')
     parser.add_argument('--staged', type=Path, required=True,
                         help='Fresh directory for the artifact download')
+    parser.add_argument('--staged-zip', type=Path, default=None,
+                        help='Retained local staged-engine.zip (skips the download; '
+                             'the provenance gates still bind it to the pin)')
     parser.add_argument('--restored', type=Path, required=True,
                         help='Fresh directory the bundle is restored into')
     parser.add_argument('--output', type=Path, default=None,
@@ -85,7 +117,8 @@ def main():
     args = parser.parse_args()
     if not args.run_id.strip():
         raise SystemExit('a base engine run ID is required; the engine is never rebuilt here')
-    report = restore_staged_engine(args.run_id, args.staged, args.restored)
+    report = restore_staged_engine(args.run_id, args.staged, args.restored,
+                                   staged_zip=args.staged_zip)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + '\n')

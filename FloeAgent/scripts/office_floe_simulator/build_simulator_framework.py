@@ -180,6 +180,16 @@ def package_host(build_report, restored_dir, output_dir, *, variant,
                      and path.name != NAME}
 
     restore_report = json.loads((Path(restored_dir) / 'restore-report.json').read_text())
+    # The repaired engine identity (blank-slideshow single-member fix): the
+    # restored bundle must carry the repair receipt that matches the tracked
+    # engine.patch.lock.json contract once one exists for IOSSIMULATOR.
+    import office_engine_repair
+    engine_repair = None
+    repair_lock, repair_section = office_engine_repair.tracked_contract(
+        platform='IOSSIMULATOR')
+    if repair_section is not None:
+        engine_repair = office_engine_repair.manifest_block(
+            restored_dir, platform='IOSSIMULATOR')
     receipt = {
         'kind': 'Floe native Office simulator host qualification',
         'hostKind': 'fullFloeAppSimulator',
@@ -201,6 +211,7 @@ def package_host(build_report, restored_dir, output_dir, *, variant,
             'engineNeverRebuild': True,
         },
         'overlaySHA256': build_report['overlaySHA256'],
+        'engineRepair': engine_repair,
         'schemeTaskLifecycle': build_report.get('schemeTaskLifecycle'),
         'forwardingLifecycle': build_report.get('forwardingLifecycle'),
         'kitCallbackLifecycle': build_report.get('kitCallbackLifecycle'),
