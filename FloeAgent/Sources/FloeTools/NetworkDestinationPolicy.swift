@@ -90,7 +90,7 @@ public enum NetworkDestinationPolicy: Sendable {
         hints.ai_flags = AI_ADDRCONFIG
         hints.ai_family = AF_UNSPEC
         hints.ai_socktype = Self.streamSocketType
-        hints.ai_protocol = IPPROTO_TCP
+        hints.ai_protocol = Int32(IPPROTO_TCP)
         var result: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, "443", &hints, &result) == 0, let first = result else {
             throw NetworkDestinationError.resolutionFailed(host)
