@@ -429,7 +429,9 @@ struct ThreadComposerView: View {
                 } catch is CancellationError {
                     return
                 } catch {
-                    attachmentError = "工作区挂载失败：\(error.localizedDescription)"
+                    attachmentError = String.localizedStringWithFormat(
+                        String(localized: "workspace.open.failed"), error.localizedDescription
+                    )
                 }
             } else {
                 environment.workspaceCenter.closeCurrentWorkspace()

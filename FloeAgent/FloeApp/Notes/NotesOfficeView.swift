@@ -92,7 +92,7 @@ struct NotesOfficeView: View {
                 .accessibilityIdentifier("notes.office.externalUpdate")
             }
             if !OfficeFileSession.available {
-                ContentUnavailableView("Office 编辑器不可用", systemImage: "doc", description: Text("此构建不包含原生 Office 引擎。原文件已保留。"))
+                ContentUnavailableView("notes.office.unavailable.title", systemImage: "doc", description: Text("notes.office.unavailable.description"))
             } else {
                 OfficeDocumentEditorView(relativePath: document.officeFileName ?? document.title,
                                          session: office,

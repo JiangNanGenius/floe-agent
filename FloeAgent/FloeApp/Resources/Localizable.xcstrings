@@ -294,13 +294,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Availability is reported live by the system; Floe does not retry repeatedly while the system model is downloading."
+            "value": "Availability of the Apple system model depends on your device, system settings and model readiness."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可用状态由系统实时报告；系统模型下载期间不会反复重试。"
+            "value": "Apple 系统模型的可用性取决于设备、系统设置与模型准备状态。"
           }
         }
       }
@@ -3446,13 +3446,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "There is no page to render"
+            "value": "There is no page to show"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "没有可渲染的页面"
+            "value": "没有可显示的页面"
           }
         }
       }
@@ -3494,13 +3494,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The mind map has no renderable topics"
+            "value": "The mind map has no topics to show"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "思维导图没有可渲染的主题"
+            "value": "思维导图没有可显示的主题"
           }
         }
       }
@@ -22162,6 +22162,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在恢复中断的模板构建…"
+          }
+        }
+      }
+    },
+    "notes.office.unavailable.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Office editing is unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Office 编辑暂不可用"
+          }
+        }
+      }
+    },
+    "notes.office.unavailable.description": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your original file has been preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原文件已保留。"
+          }
+        }
+      }
+    },
+    "workspace.open.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to open the workspace: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区打开失败：%@"
           }
         }
       }
