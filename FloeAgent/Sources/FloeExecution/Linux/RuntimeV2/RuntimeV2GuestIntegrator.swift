@@ -1077,6 +1077,31 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         environmentID: String, directory: URL, diskURL: URL,
         meta: RuntimeV2WorkingDirectory.Meta, imageID: String
     ) async throws -> RuntimeV2DeltaStore.DeltaInfo {
+        // Once the guest is CONFIRMED stopped, the capture into the delta is
+        // durable, integrator-owned work. The caller may be an incidentally
+        // cancelled UI task (a Settings card torn down mid-stop), an expired
+        // background task or a stopped agent run; its cancellation must not
+        // abort the byte copy and misreport a perfectly healthy stopped disk
+        // as unsaveable (the Build 241 `Swift.CancellationError` receipt).
+        // The capture runs in an unstructured task that does not inherit the
+        // caller's cancellation, so its own cancellation checks observe a task
+        // the integrator owns. Genuine IO/provenance/digest failures (and the
+        // bounded retry) are unchanged: they still flow into
+        // `preserveAfterFailedCapture` and report `.retainedForRepair`.
+        let capture = Task { () throws -> RuntimeV2DeltaStore.DeltaInfo in
+            try await self.performCaptureAttempts(
+                environmentID: environmentID, diskURL: diskURL, meta: meta, imageID: imageID
+            )
+        }
+        return try await capture.value
+    }
+
+    /// The bounded capture retry loop itself. Runs on the integrator-owned
+    /// capture task created by `captureWithTransientRetry`.
+    private func performCaptureAttempts(
+        environmentID: String, diskURL: URL,
+        meta: RuntimeV2WorkingDirectory.Meta, imageID: String
+    ) async throws -> RuntimeV2DeltaStore.DeltaInfo {
         var lastError: Error?
         for attempt in 1...Self.captureAttempts {
             do {

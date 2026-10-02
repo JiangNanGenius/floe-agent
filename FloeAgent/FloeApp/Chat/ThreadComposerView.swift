@@ -914,6 +914,7 @@ struct ThreadComposerView: View {
         HStack(spacing: 12) {
             VoiceWaveformView(
                 isActive: voiceInput.isListening,
+                level: CGFloat(voiceInput.audioLevel),
                 reduceMotion: reduceMotion
             )
             .frame(width: 92, height: 34)
@@ -1740,36 +1741,48 @@ struct ThreadComposerView: View {
     }
 }
 
-/// Lightweight live waveform. The transcriber does not expose raw audio
-/// metering, so this intentionally communicates an active capture session
-/// without fabricating an amplitude measurement. Reduced Motion renders a
-/// stable equalizer instead of continuously animating.
+/// Live capture waveform. Bars are driven entirely by the real, smoothed
+/// microphone level reported by the capture seam: they sit at a static
+/// baseline until speech crosses the noise gate, follow the measured
+/// amplitude while the user speaks, and settle back to the baseline during
+/// silence. There is deliberately no timer or synthetic oscillation.
+/// Reduced Motion keeps the same data-driven heights without animation.
 struct VoiceWaveformView: View {
     let isActive: Bool
+    /// Real capture level in 0...1 (0 while silent or before speech).
+    var level: CGFloat = 0
     let reduceMotion: Bool
 
-    var body: some View {
-        if isActive && !reduceMotion {
-            TimelineView(.animation(minimumInterval: 1.0 / 18.0)) { context in
-                bars(phase: context.date.timeIntervalSinceReferenceDate)
-            }
-        } else {
-            bars(phase: 0)
-        }
-    }
+    private static let barCount = 15
+    private static let baselineHeight: CGFloat = 5
+    private static let maximumHeight: CGFloat = 30
 
-    private func bars(phase: TimeInterval) -> some View {
+    var body: some View {
         HStack(spacing: 3) {
-            ForEach(0..<15, id: \.self) { index in
-                let oscillation = abs(sin(phase * 4.2 + Double(index) * 0.72))
-                let envelope = 0.42 + 0.58 * sin(Double(index + 1) / 16.0 * .pi)
+            ForEach(0..<Self.barCount, id: \.self) { index in
                 Capsule(style: .continuous)
                     .fill(isActive ? FloeTheme.primary : Color.secondary.opacity(0.5))
-                    .frame(width: 3, height: isActive ? 6 + 25 * oscillation * envelope : 5)
+                    .frame(
+                        width: 3,
+                        height: isActive
+                            ? Self.baselineHeight
+                                + (Self.maximumHeight - Self.baselineHeight) * clampedLevel * Self.weight(for: index)
+                            : Self.baselineHeight
+                    )
             }
         }
         .frame(maxHeight: .infinity)
-        .animation(reduceMotion ? nil : .linear(duration: 0.06), value: phase)
+        .animation(reduceMotion ? nil : .linear(duration: 0.09), value: clampedLevel)
+    }
+
+    private var clampedLevel: CGFloat { min(max(level, 0), 1) }
+
+    /// Fixed per-bar profile so one measured level renders a natural
+    /// equalizer shape; at level 0 every bar stays at the baseline.
+    private static func weight(for index: Int) -> CGFloat {
+        let center = CGFloat(barCount - 1) / 2
+        let distance = abs(CGFloat(index) - center) / max(center, 1)
+        return 0.55 + 0.45 * (1 - distance)
     }
 }
 #endif

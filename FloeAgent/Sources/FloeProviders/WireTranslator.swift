@@ -12,7 +12,9 @@ public enum WireTranslator {
 
     /// Creates a `ToolCall` from wire-level parts, enforcing its bounded
     /// tool-specific argument cap. Malformed or rejected arguments surface as
-    /// `.error(.malformed)` instead of a tool request.
+    /// `.error(.malformedToolArguments)` instead of a tool request, which the
+    /// runtime may answer with one bounded correction; the invalid payload is
+    /// never recorded or executed.
     private static func makeToolCall(id: String, name: String, argumentsJSON: String) -> AgentEvent {
         // Anthropic sends zero input_json deltas for `{}` arguments;
         // normalize empty payloads to an empty object.
@@ -28,7 +30,7 @@ public enum WireTranslator {
             return .toolRequest(call)
         } catch {
             return .error(AgentEvent.NormalizedError(
-                kind: .malformed,
+                kind: .malformedToolArguments,
                 providerMessage: "Tool call rejected: \(error.localizedDescription)"
             ))
         }
@@ -141,7 +143,12 @@ public enum WireTranslator {
                 events.append(.reasoningSummary(AgentEvent.ReasoningSummary(text: reasoning)))
             }
             for toolDelta in choice.delta.toolCalls ?? [] {
-                aggregator.consume(toolDelta)
+                if aggregator.consume(toolDelta) == .ambiguousIndex {
+                    events.append(.error(AgentEvent.NormalizedError(
+                        kind: .malformedToolArguments,
+                        providerMessage: "The provider sent a tool-call fragment without a call index while multiple calls were in flight; the fragment was dropped. Re-emit the tool call with complete valid JSON arguments."
+                    )))
+                }
             }
             if let finishReason = choice.finishReason {
                 if finishReason == "tool_calls" {

@@ -1724,6 +1724,10 @@ public actor FloeAgentRuntime {
                 let finalState = await self.state
                 if case .streamingModel = finalState,
                    !(await self.modelTurnContinuationRequested) {
+                    if await self.malformedToolRepairRequested {
+                        await self.continueAfterMalformedToolArguments()
+                        return
+                    }
                     let batch = await self.drainPendingToolBatch()
                     if !batch.isEmpty {
                         await self.executeToolBatch(batch)
@@ -1887,6 +1891,10 @@ public actor FloeAgentRuntime {
         // Suppressing the terminal event here is essential: persistence must
         // not close the run before the steer is inserted.
         if case .completed(let completion) = event {
+            if malformedToolRepairRequested {
+                continueAfterMalformedToolArguments()
+                return
+            }
             if !pendingToolBatch.isEmpty {
                 let batch = pendingToolBatch
                 pendingToolBatch = []
@@ -1897,16 +1905,6 @@ public actor FloeAgentRuntime {
                 )
                 await executeToolBatch(batch)
                 // The batch's resumeStream already requested the next turn.
-                return
-            }
-            if malformedToolRepairRequested {
-                malformedToolRepairRequested = false
-                clearCompletedProviderDispatch()
-                messages.append(ConversationMessage(
-                    role: "system",
-                    content: "Harness control: the previous structured tool request was rejected before recording or execution because its arguments were malformed. Emit one corrected native tool call with valid JSON, or explain the actionable failure without calling a tool. Do not repeat the invalid payload."
-                ))
-                modelTurnContinuationRequested = true
                 return
             }
             await publishProviderAttempt(
@@ -1978,6 +1976,9 @@ public actor FloeAgentRuntime {
             ))
 
         case .toolRequest(let call):
+            // A malformed call invalidates the entire provider response. Do
+            // not stage later calls from that same response for execution.
+            if malformedToolRepairRequested { return }
             // A tool is executable only when the selected model is explicitly
             // configured for native structured calls. Text resembling a call
             // is handled by `.textDelta` and can never reach this branch.
@@ -2002,7 +2003,7 @@ public actor FloeAgentRuntime {
                 let normalized = try await toolCallNormalizer?(canonicalCall) ?? canonicalCall
                 pendingToolBatch.append(normalized.withIDContext(runID: runID))
             } catch {
-                pendingToolBatch.removeAll { $0.id == call.id }
+                pendingToolBatch.removeAll(keepingCapacity: true)
                 if malformedToolRepairRequested {
                     // One provider response may contain several invalid calls;
                     // reject the whole batch as one correction opportunity.
@@ -2065,6 +2066,8 @@ public actor FloeAgentRuntime {
                 break // cancel() owns the transition.
             case .rateLimited, .server, .network:
                 await handleProviderFailure(error)
+            case .malformedToolArguments:
+                await handleMalformedToolArguments(error)
             case .auth, .malformed:
                 await failRun(message: error.providerMessage, recoverable: false)
             }
@@ -3532,6 +3535,45 @@ public actor FloeAgentRuntime {
         pendingToolBatch.removeAll(keepingCapacity: true)
         modelTurnContinuationRequested = true
         providerRetryRequested = true
+    }
+
+    /// A provider-emitted structured tool call whose accumulated wire
+    /// arguments were not valid JSON never becomes a `ToolCall` (it is
+    /// rejected before construction). Invalid arguments are never recorded or
+    /// executed; instead the model gets exactly one bounded correction with
+    /// the parse reason, and a second malformed call fails the run honestly.
+    private func handleMalformedToolArguments(_ error: AgentEvent.NormalizedError) async {
+        guard malformedToolRepairCount == 0 else {
+            await publishProviderAttempt(
+                status: .failed,
+                reason: error.providerMessage,
+                error: error
+            )
+            await failRun(message: error.providerMessage, recoverable: false)
+            return
+        }
+        // One provider response may contain several invalid calls; reject the
+        // whole batch as a single correction opportunity.
+        guard !malformedToolRepairRequested else { return }
+        pendingToolBatch.removeAll(keepingCapacity: true)
+        malformedToolRepairCount = 1
+        malformedToolRepairRequested = true
+        await publishLiveness(
+            phase: .resolvingTool,
+            message: "Rejected malformed tool arguments before dispatch; requesting one correction",
+            isRecoverable: true
+        )
+    }
+
+    private func continueAfterMalformedToolArguments() {
+        pendingToolBatch.removeAll(keepingCapacity: true)
+        malformedToolRepairRequested = false
+        clearCompletedProviderDispatch()
+        messages.append(ConversationMessage(
+            role: "system",
+            content: "Harness control: the previous structured tool request was rejected before recording or execution because its arguments were malformed. Emit one corrected native tool call with valid JSON, or explain the actionable failure without calling a tool. Do not repeat the invalid payload."
+        ))
+        modelTurnContinuationRequested = true
     }
 
     private func safeDiagnostic(_ value: String) -> String {

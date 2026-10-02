@@ -29,6 +29,12 @@ final class VoiceInputController: ObservableObject {
     /// The latest transcript of the current session (partial or final).
     /// The composer merges it into the draft after its own prefix.
     @Published private(set) var transcript = ""
+    /// Smoothed, real capture amplitude in 0...1. Stays 0 until speech
+    /// crosses the noise gate and returns to 0 during silence — the waveform
+    /// is driven by measured audio, never a timer.
+    @Published private(set) var audioLevel: Float = 0
+    /// Raw noise-gate decision for the most recent captured buffer.
+    @Published private(set) var isSpeechDetected = false
 
     private let authorization: any SpeechAuthorizationProviding
     private let makeTranscriber: @MainActor () async throws -> any SpeechTranscribing
@@ -38,6 +44,7 @@ final class VoiceInputController: ObservableObject {
     private var capturer: (any VoiceAudioCapturing)?
     private var transcriber: (any SpeechTranscribing)?
     private var transcriptTask: Task<Void, Never>?
+    private var levelTask: Task<Void, Never>?
     private var preparationTask: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
     /// Monotonic token: a superseded start must never activate a session.
@@ -149,6 +156,7 @@ final class VoiceInputController: ObservableObject {
 
         state = .listening
         diagnostics?.voiceListeningStarted()
+        observeLevels(of: capturer, token: token)
         observeTranscripts(of: transcriber, token: token)
     }
 
@@ -164,6 +172,10 @@ final class VoiceInputController: ObservableObject {
         stoppingIntentionally = true
         preparationTask?.cancel()
         preparationTask = nil
+        levelTask?.cancel()
+        levelTask = nil
+        audioLevel = 0
+        isSpeechDetected = false
         state = .stopping
         let token = startToken
         let activeCapturer = capturer
@@ -244,6 +256,22 @@ final class VoiceInputController: ObservableObject {
 
     // MARK: - Transcript pipeline
 
+    /// Forwards real capture-level observations from the audio seam onto the
+    /// published UI state. The loop ends when the capturer's stream finishes
+    /// (session teardown) or the token is superseded; `stop()`/`teardown()`
+    /// reset the published values to the static baseline.
+    private func observeLevels(of capturer: any VoiceAudioCapturing, token: UInt64) {
+        levelTask?.cancel()
+        levelTask = Task { [weak self] in
+            for await level in capturer.levels {
+                guard let self, !Task.isCancelled else { return }
+                guard self.isCurrent(token) else { return }
+                self.audioLevel = level.level
+                self.isSpeechDetected = level.isSpeech
+            }
+        }
+    }
+
     private func observeTranscripts(of transcriber: any SpeechTranscribing, token: UInt64) {
         transcriptTask?.cancel()
         transcriptTask = Task { [weak self] in
@@ -287,6 +315,10 @@ final class VoiceInputController: ObservableObject {
         stopTask = nil
         transcriptTask?.cancel()
         transcriptTask = nil
+        levelTask?.cancel()
+        levelTask = nil
+        audioLevel = 0
+        isSpeechDetected = false
         capturer?.stop()
         capturer = nil
         let activeTranscriber = transcriber

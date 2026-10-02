@@ -60,6 +60,15 @@ struct VoiceInputControllerTests {
         private(set) var startCount = 0
         private(set) var stopCount = 0
 
+        private let levelContinuation: AsyncStream<VoiceAudioLevel>.Continuation
+        let levels: AsyncStream<VoiceAudioLevel>
+
+        init() {
+            var continuation: AsyncStream<VoiceAudioLevel>.Continuation!
+            levels = AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation = $0 }
+            levelContinuation = continuation
+        }
+
         func start(into transcriber: any SpeechTranscribing) async throws {
             startCount += 1
             switch behavior {
@@ -73,6 +82,9 @@ struct VoiceInputControllerTests {
         }
 
         func stop() { stopCount += 1 }
+
+        func emitLevel(_ level: VoiceAudioLevel) { levelContinuation.yield(level) }
+        func finishLevels() { levelContinuation.finish() }
     }
 
     private final class FakeDiagnostics: VoiceInputDiagnostics, @unchecked Sendable {
@@ -333,6 +345,107 @@ struct VoiceInputControllerTests {
         try? await Task.sleep(nanoseconds: 20_000_000)
         #expect(harness.controller.state == .idle)
         #expect(harness.controller.transcript == "final")
+    }
+
+    @Test("Real capture levels drive the published amplitude; silence is static")
+    @MainActor
+    func captureLevelDrivesPublishedAmplitude() async {
+        let harness = Harness()
+        await harness.controller.start()
+        #expect(harness.controller.state == .listening)
+        // Waiting/listening before speech: exactly the static baseline.
+        #expect(harness.controller.audioLevel == 0)
+        #expect(harness.controller.isSpeechDetected == false)
+
+        harness.capturer.emitLevel(VoiceAudioLevel(level: 0.42, isSpeech: true))
+        await waitForLevel(harness.controller, expected: 0.42)
+        #expect(harness.controller.audioLevel == 0.42)
+        #expect(harness.controller.isSpeechDetected == true)
+
+        // Back to silence: the waveform returns to the static baseline.
+        harness.capturer.emitLevel(.silent)
+        await waitForLevel(harness.controller, expected: 0)
+        #expect(harness.controller.audioLevel == 0)
+        #expect(harness.controller.isSpeechDetected == false)
+
+        harness.controller.stop()
+        #expect(harness.controller.audioLevel == 0)
+        #expect(harness.controller.isSpeechDetected == false)
+        await waitForIdle(harness.controller)
+    }
+
+    @Test("Stopping clears levels even while a speech value is pending")
+    @MainActor
+    func stopResetsCaptureLevel() async {
+        let harness = Harness()
+        await harness.controller.start()
+        harness.capturer.emitLevel(VoiceAudioLevel(level: 0.7, isSpeech: true))
+        await waitForLevel(harness.controller, expected: 0.7)
+        #expect(harness.controller.audioLevel == 0.7)
+        harness.controller.stop()
+        #expect(harness.controller.audioLevel == 0)
+        #expect(harness.controller.isSpeechDetected == false)
+        await waitForIdle(harness.controller)
+    }
+
+    @MainActor
+    private func waitForLevel(_ controller: VoiceInputController, expected: Float) async {
+        for _ in 0..<200 where controller.audioLevel != expected {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+/// Pure DSP/state tests for the capture-level analyzer. Synthetic RMS frames
+/// only: this proves the silence/speech state logic, not physical-device audio.
+@Suite("FloeApp.VoiceActivityMeter")
+struct VoiceActivityMeterTests {
+
+    @Test("Silence and sub-gate noise stay at exact zero (static bars)")
+    func silenceStaysStatic() {
+        var meter = VoiceActivityMeter()
+        for _ in 0..<50 {
+            let output = meter.process(rms: 0.004, duration: 0.093)
+            #expect(output.level == 0)
+            #expect(output.isSpeech == false)
+        }
+    }
+
+    @Test("Speech raises the level, then silence decays back to exact zero")
+    func speechRaisesAndSilenceReturnsToStatic() {
+        var meter = VoiceActivityMeter()
+        let onset = meter.process(rms: 0.08, duration: 0.093)
+        #expect(onset.isSpeech == true)
+        #expect(onset.level > 0.2)
+
+        // Sustained speech keeps the level high without oscillation.
+        var sustained = onset
+        for _ in 0..<10 {
+            sustained = meter.process(rms: 0.12, duration: 0.093)
+        }
+        #expect(sustained.level > onset.level)
+        #expect(sustained.isSpeech == true)
+
+        // A few seconds of silence settle the baseline to exactly zero so the
+        // waveform is static again (no timer keeps it moving).
+        var silent = sustained
+        for _ in 0..<40 {
+            silent = meter.process(rms: 0.01, duration: 0.093)
+        }
+        #expect(silent.isSpeech == false)
+        #expect(silent.level == 0)
+    }
+
+    @Test("The envelope releases to the static baseline after speech ends")
+    func levelReleasesAfterSpeech() {
+        var meter = VoiceActivityMeter()
+        _ = meter.process(rms: 0.2, duration: 0.093)
+        var output = VoiceAudioLevel.silent
+        for _ in 0..<40 {
+            output = meter.process(rms: 0.001, duration: 0.093)
+        }
+        #expect(output.level == 0)
+        #expect(output.isSpeech == false)
     }
 }
 #endif

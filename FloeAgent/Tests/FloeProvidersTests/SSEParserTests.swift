@@ -343,6 +343,70 @@ struct WireTranslatorTests {
         #expect(aggregator.aggregatedCalls().map(\.id) == [""])
     }
 
+    @Test("An index-less arguments fragment attaches to the single in-flight call")
+    func chatIndexlessFragmentAttachesToSingleCall() {
+        var aggregator = ToolCallAggregator()
+        aggregator.consume(.init(
+            index: 0, id: "call_1",
+            function: .init(name: "test.echo", arguments: #"{"te"#)
+        ))
+        let outcome = aggregator.consume(.init(function: .init(arguments: #"xt":"hi"}"#)))
+        #expect(outcome == .accepted)
+        let calls = aggregator.aggregatedCalls()
+        #expect(calls.count == 1)
+        #expect(calls[0].argumentsJSON == #"{"text":"hi"}"#)
+    }
+
+    @Test("An index-less fragment is rejected when multiple calls are in flight")
+    func chatIndexlessFragmentWithMultipleCallsIsRejected() {
+        var aggregator = ToolCallAggregator()
+        aggregator.consume(.init(index: 0, id: "a", function: .init(name: "test.echo", arguments: "{}")))
+        aggregator.consume(.init(index: 1, id: "b", function: .init(name: "test.echo", arguments: "{}")))
+        let outcome = aggregator.consume(.init(function: .init(arguments: #"{"x":1}"#)))
+        #expect(outcome == .ambiguousIndex, "an unattributable fragment is dropped, never merged")
+        #expect(aggregator.aggregatedCalls().count == 2)
+    }
+
+    @Test("An index-less arguments fragment still decodes from the wire")
+    func chatIndexlessFragmentDecodes() throws {
+        let json = #"{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","function":{"name":"test.echo","arguments":"{\"text\":\"hi\"}"}}]}}]}"#
+        let chunk = try JSONDecoder().decode(ChatChunk.self, from: Data(json.utf8))
+        guard let delta = chunk.choices.first?.delta.toolCalls?.first else {
+            Issue.record("index-less tool call fragment did not decode")
+            return
+        }
+        #expect(delta.index == nil)
+    }
+
+    @Test("Invalid tool arguments are rejected as a bounded malformed-tool signal")
+    func chatMalformedToolArgumentsKind() {
+        var aggregator = ToolCallAggregator()
+        let chunk = ChatChunk(choices: [.init(
+            index: 0,
+            delta: .init(toolCalls: [
+                ToolCallDelta(
+                    index: 0, id: "call_bad",
+                    function: .init(
+                        name: "checklist.updatePlan",
+                        arguments: #"{"steps": [}"#
+                    )
+                )
+            ]),
+            finishReason: "tool_calls"
+        )])
+        let events = WireTranslator.translate(chunk, aggregator: &aggregator)
+        let errors = events.compactMap { event -> AgentEvent.NormalizedError? in
+            if case .error(let error) = event { return error }
+            return nil
+        }
+        #expect(errors.count == 1)
+        #expect(errors.first?.kind == .malformedToolArguments)
+        #expect(!events.contains { event in
+            if case .toolRequest = event { return true }
+            return false
+        }, "invalid JSON must never become a ToolCall")
+    }
+
     @Test("Anthropic tool_use aggregates input_json_delta across block")
     func anthropicToolUseAggregation() {
         var aggregator = WireTranslator.AnthropicAggregator()

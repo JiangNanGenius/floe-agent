@@ -695,7 +695,22 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                                 }
                             }
                         } catch {
-                            logger.warning("Chat chunk decode failed: \(error.localizedDescription)")
+                            logger.error("Chat chunk decode failed: \(error.localizedDescription)")
+                            if aggregator.hasCalls {
+                                // A dropped chunk while tool arguments were
+                                // streaming would otherwise concatenate
+                                // incomplete JSON and surface later as an
+                                // unexplainable invalid call. Fail closed:
+                                // discard the partial aggregation and let the
+                                // runtime offer one bounded correction. The
+                                // malformed payload is never emitted.
+                                aggregator.reset()
+                                continuation.yield(.error(AgentEvent.NormalizedError(
+                                    kind: .malformedToolArguments,
+                                    providerMessage: "The provider stream dropped a tool-call fragment before its arguments completed; the tool call was not executed. Re-emit it with complete valid JSON arguments."
+                                )))
+                                break
+                            }
                         }
                     }
                     if let deferredCompletion {

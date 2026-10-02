@@ -18,6 +18,44 @@ struct TaskChecklistTests {
         #expect(try JSONDecoder().decode(TaskChecklistUpdate.self, from: Data(explicit.utf8)).startNew)
     }
 
+    /// Build 242 device receipt (`bench_2c`): a completed step carrying five
+    /// evidence references was correctly rejected, then the retried model calls
+    /// failed at the JSON layer. These bounds stay strict and are guarded with
+    /// redacted synthetic references only.
+    @Test func evidenceBoundsStayStrict() throws {
+        try TaskChecklistUpdate(title: "SMP benchmark", steps: [
+            .init(
+                id: "bench_2c", title: "Two-core benchmark", status: .completed,
+                evidence: ["vcpus=2 1p=100/s", "vcpus=2 2p=200/s", "vcpus=2 4p=300/s", "par=1.88x"]
+            )
+        ]).validate()
+
+        #expect(throws: (any Error).self) {
+            try TaskChecklistUpdate(title: "SMP benchmark", steps: [
+                .init(
+                    id: "bench_2c", title: "Two-core benchmark", status: .completed,
+                    evidence: ["a", "b", "c", "d", "e"]
+                )
+            ]).validate()
+        }
+        #expect(throws: (any Error).self) {
+            try TaskChecklistUpdate(title: "SMP benchmark", steps: [
+                .init(
+                    id: "bench_2c", title: "Two-core benchmark", status: .completed,
+                    evidence: [String(repeating: "x", count: 513)]
+                )
+            ]).validate()
+        }
+        #expect(throws: (any Error).self) {
+            try TaskChecklistUpdate(title: "SMP benchmark", steps: [
+                .init(
+                    id: "bench_2c", title: "Two-core benchmark", status: .completed,
+                    evidence: [""]
+                )
+            ]).validate()
+        }
+    }
+
     private func fixture() async throws -> (DatabaseManager, UUID, UUID) {
         let db = try DatabaseManager.inMemory()
         try await db.migrate()

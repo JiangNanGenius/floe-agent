@@ -338,12 +338,16 @@ public struct ChatChunk: Sendable, Codable, Hashable {
 /// sharing an `index` belong to the same call and their `arguments`
 /// strings concatenate in arrival order.
 public struct ToolCallDelta: Sendable, Codable, Hashable {
-    public var index: Int
+    /// OpenAI-compatible streams key fragments by call index. Some compatible
+    /// providers omit it on arguments-only fragments; the aggregator resolves
+    /// a missing index only when exactly one call is in flight, and rejects
+    /// the fragment as ambiguous otherwise.
+    public var index: Int?
     public var id: String?
     public var type: String?
     public var function: Function?
 
-    public init(index: Int, id: String? = nil, type: String? = nil, function: Function? = nil) {
+    public init(index: Int? = nil, id: String? = nil, type: String? = nil, function: Function? = nil) {
         self.index = index
         self.id = id
         self.type = type
@@ -390,8 +394,28 @@ public struct ToolCallAggregator: Sendable {
     /// Returns true when any fragments have been received.
     public var hasCalls: Bool { !partials.isEmpty }
 
-    public mutating func consume(_ delta: ToolCallDelta) {
-        var partial = partials[delta.index] ?? Partial()
+    /// Outcome of consuming one wire fragment.
+    public enum ConsumeOutcome: Sendable, Equatable {
+        case accepted
+        /// The fragment carried no index while multiple calls were in flight;
+        /// it cannot be attributed safely and is dropped rather than merged
+        /// into the wrong call.
+        case ambiguousIndex
+    }
+
+    @discardableResult
+    public mutating func consume(_ delta: ToolCallDelta) -> ConsumeOutcome {
+        let resolvedIndex: Int
+        if let index = delta.index {
+            resolvedIndex = index
+        } else if partials.isEmpty {
+            resolvedIndex = 0
+        } else if partials.count == 1, let only = partials.keys.first {
+            resolvedIndex = only
+        } else {
+            return .ambiguousIndex
+        }
+        var partial = partials[resolvedIndex] ?? Partial()
         // Compatible providers may repeat empty identity fields while streaming
         // arguments. Those placeholders must not erase the first real identity.
         // A call that never supplied an ID still reaches runtime validation empty.
@@ -402,7 +426,8 @@ public struct ToolCallAggregator: Sendable {
             partial.name = name
         }
         if let arguments = delta.function?.arguments { partial.arguments += arguments }
-        partials[delta.index] = partial
+        partials[resolvedIndex] = partial
+        return .accepted
     }
 
     /// Finalizes all accumulated calls, ordered by index.

@@ -121,7 +121,7 @@ struct AgentEventTests {
 
     @Test("NormalizedError.Kind Codable round-trip", arguments: [
         AgentEvent.NormalizedError.Kind.rateLimited, .auth, .contextOverflow,
-        .network, .malformed, .server, .cancelled
+        .network, .malformed, .malformedToolArguments, .server, .cancelled
     ])
     func errorKindRoundTrip(kind: AgentEvent.NormalizedError.Kind) throws {
         let data = try JSONEncoder().encode(kind)

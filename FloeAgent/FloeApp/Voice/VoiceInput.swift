@@ -126,6 +126,107 @@ extension SpeechTranscribing {
     var failure: VoiceInputFailure? { nil }
 }
 
+/// One real capture-level observation from the microphone seam.
+///
+/// `level` is the smoothed display amplitude in 0...1; `isSpeech` is the
+/// raw noise-gate decision for that sample. A seam with no metering (tests,
+/// non-audio fallbacks) reports the silent value.
+struct VoiceAudioLevel: Sendable, Equatable {
+    var level: Float
+    var isSpeech: Bool
+
+    static let silent = VoiceAudioLevel(level: 0, isSpeech: false)
+}
+
+/// Pure audio-activity analysis: measured RMS → gated, smoothed display
+/// amplitude. The waveform must never animate on a timer: silence decays to
+/// exactly zero so the bars stay static until real speech crosses the gate,
+/// and while the user speaks the level follows the measured amplitude with a
+/// fast attack and a slower release.
+struct VoiceActivityMeter: Sendable, Equatable {
+    /// RMS below this is noise/silence, not speech.
+    static let gate: Float = 0.012
+    /// RMS mapped to full scale; conversational speech sits well below 1.
+    static let reference: Float = 0.22
+    static let attackSeconds: Float = 0.06
+    static let releaseSeconds: Float = 0.28
+    /// Levels below this snap to exactly zero so idle bars are static.
+    static let silenceFloor: Float = 0.02
+
+    private(set) var level: Float = 0
+
+    /// Feeds one measured RMS sample and returns the smoothed display value.
+    /// `duration` is the wall-clock span of the sample (frames / sample rate),
+    /// keeping the envelope independent of the capture buffer size.
+    mutating func process(rms: Float, duration: Float) -> VoiceAudioLevel {
+        let clamped = max(0, min(1, rms))
+        let isSpeech = clamped >= Self.gate
+        let target: Float
+        if isSpeech {
+            let normalized = (clamped - Self.gate) / (Self.reference - Self.gate)
+            target = min(1, max(0, normalized).squareRoot())
+        } else {
+            target = 0
+        }
+        let dt = max(0, min(duration, 0.5))
+        let timeConstant = max(target >= level ? Self.attackSeconds : Self.releaseSeconds, 0.001)
+        let coefficient = 1 - exp(-dt / timeConstant)
+        level += (target - level) * coefficient
+        if level < Self.silenceFloor, target == 0 { level = 0 }
+        return VoiceAudioLevel(level: level, isSpeech: isSpeech)
+    }
+
+    mutating func reset() { level = 0 }
+}
+
+/// Bounded, allocation-free RMS measurement over an AVAudioPCMBuffer.
+/// Never throws or traps: unusable buffers report silence. Interleaved
+/// layouts expose one AudioBuffer holding `frames × channels` samples;
+/// deinterleaved layouts expose one buffer per channel.
+enum VoiceBufferMeter {
+    static func rms(of buffer: AVAudioPCMBuffer) -> Float {
+        guard buffer.frameLength > 0 else { return 0 }
+        let frames = Int(buffer.frameLength)
+        let channelCount = max(1, Int(buffer.format.channelCount))
+        let isInterleaved = buffer.format.isInterleaved
+        let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        let liveBuffers = min(isInterleaved ? 1 : channelCount, audioBuffers.count)
+        guard liveBuffers > 0 else { return 0 }
+        let samplesPerBuffer = isInterleaved ? frames * channelCount : frames
+
+        if let channels = buffer.floatChannelData {
+            var sum: Float = 0
+            var total = 0
+            for channel in 0..<liveBuffers {
+                let samples = channels[channel]
+                let count = min(samplesPerBuffer, Int(audioBuffers[channel].mDataByteSize) / MemoryLayout<Float>.stride)
+                for index in 0..<count {
+                    let sample = samples[index]
+                    guard sample.isFinite else { return 0 }
+                    sum += sample * sample
+                }
+                total += count
+            }
+            return total > 0 ? (sum / Float(total)).squareRoot() : 0
+        }
+        if let channels = buffer.int16ChannelData {
+            var sum: Float = 0
+            var total = 0
+            for channel in 0..<liveBuffers {
+                let samples = channels[channel]
+                let count = min(samplesPerBuffer, Int(audioBuffers[channel].mDataByteSize) / MemoryLayout<Int16>.stride)
+                for index in 0..<count {
+                    let sample = Float(samples[index]) / 32_768
+                    sum += sample * sample
+                }
+                total += count
+            }
+            return total > 0 ? (sum / Float(total)).squareRoot() : 0
+        }
+        return 0
+    }
+}
+
 /// Audio capture seam (the only place AVAudioEngine may live).
 protocol VoiceAudioCapturing: AnyObject, Sendable {
     /// Validates the input format, installs at most one tap, starts the
@@ -136,6 +237,17 @@ protocol VoiceAudioCapturing: AnyObject, Sendable {
     /// Idempotent teardown: stops the engine, removes any tap, releases
     /// the audio session.
     func stop()
+    /// Real capture-level observations for the duration of this capturer's
+    /// session. The production tap yields one value per captured buffer.
+    var levels: AsyncStream<VoiceAudioLevel> { get }
+}
+
+extension VoiceAudioCapturing {
+    /// Seams without metering report an immediately-finished stream; the
+    /// waveform then stays at its static baseline (never a timer).
+    var levels: AsyncStream<VoiceAudioLevel> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// Pure validation kept outside Speech framework initializers because

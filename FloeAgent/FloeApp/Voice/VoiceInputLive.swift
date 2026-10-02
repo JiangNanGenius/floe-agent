@@ -362,6 +362,19 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
     private var tapInstalled = false
     private var sessionActivated = false
     private let lock = NSLock()
+    private let meterLock = NSLock()
+    private var activityMeter = VoiceActivityMeter()
+
+    /// Real capture levels for this session. Buffered newest-only: the UI
+    /// only ever needs the latest measured amplitude.
+    let levels: AsyncStream<VoiceAudioLevel>
+    private let levelContinuation: AsyncStream<VoiceAudioLevel>.Continuation
+
+    init() {
+        var continuation: AsyncStream<VoiceAudioLevel>.Continuation!
+        levels = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
+        levelContinuation = continuation
+    }
 
     func start(into transcriber: any SpeechTranscribing) async throws {
         let alreadyInstalled = lock.withLock { tapInstalled }
@@ -397,10 +410,11 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
             throw VoiceSessionError.failure(.noAudioInput)
         }
 
-        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { buffer, time in
+        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, time in
             // Some route transitions deliver an empty terminal buffer. Speech
             // treats that as a programmer error and traps, so drop it here.
             guard buffer.frameLength > 0 else { return }
+            self?.publishLevel(of: buffer)
             transcriber.feed(buffer, at: time)
         }
         lock.withLock { tapInstalled = true }
@@ -413,6 +427,18 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
             throw VoiceSessionError.failure(.noAudioInput)
         }
         #endif
+    }
+
+    /// Measures the real RMS of one captured buffer, advances the noise-gated
+    /// envelope and forwards the display level. Runs on the audio thread;
+    /// the meter is lock-protected and the stream keeps only the newest value.
+    private func publishLevel(of buffer: AVAudioPCMBuffer) {
+        let rms = VoiceBufferMeter.rms(of: buffer)
+        let duration = Float(buffer.frameLength) / Float(max(buffer.format.sampleRate, 1))
+        let output = meterLock.withLock {
+            activityMeter.process(rms: rms, duration: duration)
+        }
+        levelContinuation.yield(output)
     }
 
     /// Idempotent teardown: stops the engine, removes the tap exactly
@@ -439,6 +465,7 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
 
     deinit {
         stop()
+        levelContinuation.finish()
     }
 }
 

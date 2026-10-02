@@ -8865,7 +8865,11 @@ private struct SharedCanvasAgentConversation: View {
 
     private var canvasVoiceCaptureRow: some View {
         HStack(spacing: 10) {
-            VoiceWaveformView(isActive: voiceInput.isListening, reduceMotion: reduceMotion)
+            VoiceWaveformView(
+                isActive: voiceInput.isListening,
+                level: CGFloat(voiceInput.audioLevel),
+                reduceMotion: reduceMotion
+            )
                 .frame(width: 72, height: 32)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {

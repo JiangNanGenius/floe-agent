@@ -362,4 +362,125 @@ final class RuntimeV2CaptureRetryTests: XCTestCase {
         XCTAssertEqual(count(), 1, "a non-transient fault fails closed on the first attempt")
         XCTAssertEqual(try quarantinedEntries(prefix: "runtime-vm-rt-denied").count, 1)
     }
+
+    // MARK: - cancellation ownership (Build 241 stopped-disk receipt)
+
+    /// Drives `completeStopResult` from a task that is already cancelled —
+    /// exactly what an incidentally torn-down Settings card, an expired
+    /// background task or a stopped agent run looks like. The confirmed-stop
+    /// capture is durable integrator-owned work, so the stop must still report
+    /// the truth about the disk.
+    private func completeStopFromCancelledOwner(
+        _ integrator: RuntimeV2GuestIntegrator, environmentID: String,
+        runtimeID: String, imageID: String
+    ) async -> RuntimeV2StopOutcome {
+        let stop = Task { () -> RuntimeV2StopOutcome in
+            // Deterministically enter the stop while the task's cancellation
+            // flag is already set.
+            while !Task.isCancelled { try? await Task.sleep(nanoseconds: 1_000_000) }
+            return await integrator.completeStopResult(
+                environmentID: environmentID, runtimeID: runtimeID,
+                imageID: imageID, clean: true
+            )
+        }
+        stop.cancel()
+        return await stop.value
+    }
+
+    /// Build 241 regression: a cancelled stop owner must not turn a healthy
+    /// confirmed stop into `Swift.CancellationError` → quarantine →
+    /// repairRequired. The marker block must still land in the captured delta.
+    func testCancelledStopOwnerStillCapturesConfirmedStop() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        guard let ref = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"] else {
+            throw RuntimeV2Error.imageNotFound(baseImageID)
+        }
+        try await registerEnvironment("env-cancel", rootfsDigest: ref.sha512.lowercased())
+        try await bootEnvironment(
+            environmentID: "env-cancel", runtimeID: "rt-cancel",
+            markerOffset: 2 << 20, marker: Data(repeating: 0x5A, count: 4096)
+        )
+
+        let integrator = RuntimeV2GuestIntegrator(
+            store: store, build: "test",
+            seams: RuntimeV2GuestIntegrator.Seams(captureRetryDelay: { _ in })
+        )
+        let outcome = await completeStopFromCancelledOwner(
+            integrator, environmentID: "env-cancel", runtimeID: "rt-cancel",
+            imageID: baseImageID
+        )
+        guard case .captured(let generation) = outcome else {
+            XCTFail("a cancelled owner must not abort the confirmed-stop capture, got \(outcome)")
+            return
+        }
+        XCTAssertGreaterThan(generation, 0)
+        XCTAssertEqual(try quarantinedEntries(prefix: "runtime-vm-rt-cancel").count, 0,
+                       "a healthy stopped disk is never quarantined because its owner was cancelled")
+        let state = try await store.registry.environment(id: "env-cancel")?.state
+        XCTAssertEqual(state, "stopped")
+        let lease = try await store.leases.holder(environmentID: "env-cancel")
+        XCTAssertNil(lease, "the lease is released only after the durable capture committed")
+
+        // The captured delta replays the private marker block.
+        let replay = RuntimeV2GuestIntegrator(store: store, build: "test")
+        _ = try await replay.acquireSlot(
+            environmentID: "env-cancel", runtimeID: "rt-cancel-replay", requestedMB: 512
+        )
+        let work = try await replay.prepareWorkingDisk(
+            environmentID: "env-cancel", runtimeID: "rt-cancel-replay", imageID: baseImageID,
+            legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20
+        )
+        let handle = try FileHandle(forReadingFrom: work.diskURL)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(2 << 20))
+        XCTAssertEqual(try handle.read(upToCount: 4096), Data(repeating: 0x5A, count: 4096))
+    }
+
+    /// The cancellation fix must not weaken fail-closed behavior: a genuine
+    /// permanent capture fault under a cancelled owner still preserves the
+    /// complete disk, quarantines it and marks the environment repairRequired.
+    func testCancelledStopOwnerStillPreservesOnPermanentFault() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        guard let ref = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"] else {
+            throw RuntimeV2Error.imageNotFound(baseImageID)
+        }
+        try await registerEnvironment("env-cancel-fault", rootfsDigest: ref.sha512.lowercased())
+        try await bootEnvironment(
+            environmentID: "env-cancel-fault", runtimeID: "rt-cancel-fault",
+            markerOffset: 1 << 20, marker: Data(repeating: 0x3C, count: 4096)
+        )
+
+        let (probe, count, _) = writeProbe(faultCount: Int.max, errno: EACCES)
+        let deltas = await store.deltas
+        await deltas.installWorkingDiskReadProbe(probe)
+        let integrator = RuntimeV2GuestIntegrator(
+            store: store, build: "test",
+            seams: RuntimeV2GuestIntegrator.Seams(captureRetryDelay: { _ in })
+        )
+        let outcome = await completeStopFromCancelledOwner(
+            integrator, environmentID: "env-cancel-fault", runtimeID: "rt-cancel-fault",
+            imageID: baseImageID
+        )
+        guard case .retainedForRepair(let reason) = outcome else {
+            XCTFail("a permanent capture fault must still retain the disk, got \(outcome)")
+            return
+        }
+        XCTAssertTrue(reason.contains("preserved"))
+        XCTAssertEqual(count(), 1, "a non-transient fault fails closed on the first attempt")
+        let quarantined = try quarantinedEntries(prefix: "runtime-vm-rt-cancel-fault")
+        XCTAssertEqual(quarantined.count, 1)
+        let preservedDisk = layout.quarantineDirectory
+            .appendingPathComponent(quarantined[0], isDirectory: true)
+            .appendingPathComponent("disk.img")
+        let handle = try FileHandle(forReadingFrom: preservedDisk)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(1 << 20))
+        XCTAssertEqual(try handle.read(upToCount: 4096), Data(repeating: 0x3C, count: 4096))
+        let state = try await store.registry.environment(id: "env-cancel-fault")?.state
+        XCTAssertEqual(state, "repairRequired")
+        let lease = try await store.leases.holder(environmentID: "env-cancel-fault")
+        XCTAssertNil(lease)
+    }
 }

@@ -87,6 +87,11 @@ public enum AgentEvent: Sendable, Codable, Hashable {
             case contextOverflow
             case network
             case malformed
+            /// A provider structured tool call whose accumulated arguments
+            /// were not valid JSON. Distinct from `.malformed` transport/request
+            /// errors: the call was rejected before construction/execution and
+            /// the runtime may offer exactly one bounded correction.
+            case malformedToolArguments
             case server
             case cancelled
         }

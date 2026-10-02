@@ -1,0 +1,4 @@
+{
+  "en-US": "Floe Agent 1.7.1 · Build 242\n\n• Fixes a Linux workspace stop path that could fail to save an already stopped disk when the calling task was cancelled.\n• Rejects an entire model tool-call batch if arguments are malformed, with one bounded correction attempt; checklist evidence limits remain enforced.\n• Voice-input bars now follow measured microphone level and stay still during silence in Chat and Canvas.\n\nPlease test stopping a Linux workspace, tool use after a checklist update, and microphone silence/speech transitions on your iPad. Include device, OS, build number and reproduction steps in feedback, without private content or credentials.",
+  "zh-Hans": "Floe Agent 1.7.1 · Build 242\n\n• 修复停止 Linux 工作区时，调用方任务取消可能导致已停止磁盘保存失败的问题。\n• 工具参数无效时拒绝整批调用，允许一次有界纠正；清单证据限制保持不变。\n• 聊天和画布的语音波形改由麦克风实测电平驱动，静音时保持静止。\n\n请在 iPad 上测试停止 Linux 工作区、更新清单后的工具调用，以及麦克风静音和说话时的波形。反馈请附设备、系统、构建号和复现步骤，并遮去私人内容与凭据。"
+}

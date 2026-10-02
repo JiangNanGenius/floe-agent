@@ -788,6 +788,120 @@ struct AgentRuntimeTests {
         })
     }
 
+    @Test("A provider-rejected malformed tool call earns one correction, then executes the corrected call")
+    func providerMalformedToolArgumentsRepairOnce() async throws {
+        let adapter = MockAdapter()
+        let corrected = try TestFixtures.toolCall(id: "corrected-after-provider-reject")
+        adapter.script = [
+            [
+                .error(.init(
+                    kind: .malformedToolArguments,
+                    providerMessage: "Tool call rejected: Tool arguments must be valid JSON"
+                )),
+                .completed(.init(stopReason: .toolUse))
+            ],
+            [
+                .toolRequest(corrected),
+                .completed(.init(stopReason: .toolUse))
+            ],
+            [
+                .textDelta(.init(text: "recovered")),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let sink = MockSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+
+        try await runtime.start(goal: "perform one structured action")
+
+        #expect(adapter.requests.count == 3)
+        #expect(adapter.requests[1].messages.contains {
+            $0.role == "system" && $0.content.contains("malformed")
+        })
+        #expect(executor.executedCalls.map(\.id) == ["corrected-after-provider-reject"])
+        let results = sink.events.compactMap { event -> ToolResult? in
+            guard case .toolResult(let result) = event else { return nil }
+            return result
+        }
+        #expect(results.map(\.callID) == ["corrected-after-provider-reject"])
+    }
+
+    @Test("A malformed call rejects every valid call in the same provider response")
+    func malformedToolArgumentsDiscardMixedBatch() async throws {
+        let adapter = MockAdapter()
+        let before = try TestFixtures.toolCall(id: "before-malformed")
+        let after = try TestFixtures.toolCall(id: "after-malformed")
+        let corrected = try TestFixtures.toolCall(id: "corrected-mixed-batch")
+        adapter.script = [
+            [
+                .toolRequest(before),
+                .error(.init(kind: .malformedToolArguments, providerMessage: "Invalid JSON")),
+                .toolRequest(after),
+                .completed(.init(stopReason: .toolUse))
+            ],
+            [.toolRequest(corrected), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "perform one structured action")
+
+        #expect(await runtime.state.name == "completed")
+        #expect(adapter.requests.count == 3)
+        #expect(executor.executedCalls.map(\.id) == ["corrected-mixed-batch"])
+    }
+
+    @Test("A malformed fragment with no completion still requests one correction")
+    func malformedToolArgumentsAtStreamEndRepairs() async throws {
+        let adapter = MockAdapter()
+        let corrected = try TestFixtures.toolCall(id: "corrected-after-stream-end")
+        adapter.script = [
+            [.error(.init(kind: .malformedToolArguments, providerMessage: "Dropped fragment"))],
+            [.toolRequest(corrected), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "perform one structured action")
+
+        #expect(await runtime.state.name == "completed")
+        #expect(adapter.requests.count == 3)
+        #expect(executor.executedCalls.map(\.id) == ["corrected-after-stream-end"])
+    }
+
+    @Test("A second provider malformed tool rejection fails closed without executing anything")
+    func providerMalformedToolArgumentsSecondRejectionFailsClosed() async throws {
+        let adapter = MockAdapter()
+        let malformed = AgentEvent.error(AgentEvent.NormalizedError(
+            kind: .malformedToolArguments,
+            providerMessage: "Tool call rejected: Tool arguments must be valid JSON"
+        ))
+        adapter.script = [
+            [malformed, .completed(.init(stopReason: .toolUse))],
+            [malformed, .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "should not run")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+
+        try await runtime.start(goal: "retry the malformed call")
+
+        #expect(adapter.requests.count == 2, "exactly one bounded correction is offered")
+        #expect(executor.executedCalls.isEmpty, "invalid arguments are never executed")
+        guard case .failed(let failure) = await runtime.state else {
+            Issue.record("Expected a terminal failure after one correction, got \(await runtime.state.name)")
+            return
+        }
+        #expect(!failure.isRecoverable)
+        #expect(failure.message.contains("valid JSON"))
+    }
+
     @Test("A text-only model is never offered tool schemas")
     func textOnlyModelOmitsTools() async throws {
         let adapter = MockAdapter()

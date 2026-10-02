@@ -1657,7 +1657,7 @@ public actor ConversationRunService {
 
     private static func isRecoverable(_ kind: AgentEvent.NormalizedError.Kind) -> Bool {
         switch kind {
-        case .rateLimited, .server, .network, .contextOverflow:
+        case .rateLimited, .server, .network, .contextOverflow, .malformedToolArguments:
             return true
         case .auth, .malformed, .cancelled:
             return false
