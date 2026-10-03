@@ -216,6 +216,9 @@ struct NativeMediaRoutingTests {
         #expect(routing!.lowerBound < mode!.lowerBound)
         #expect(cloud.contains("do not request the global tool directory"))
         #expect(cloud.contains("never present a scripted or emulated approximation"))
+        #expect(cloud.contains("environment.linuxStatus before exec.shell"))
+        #expect(cloud.contains("environment.startLinux(vcpus=2)"))
+        #expect(cloud.contains("environment.hardRestartLinux(vcpus=2)"))
 
         let local = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", compactForLocal: true)
         #expect(local.contains("Route by capability"))

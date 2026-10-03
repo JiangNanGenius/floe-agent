@@ -912,11 +912,17 @@ struct ThreadComposerView: View {
     /// observer above.
     private var voiceCaptureRow: some View {
         HStack(spacing: 12) {
-            VoiceWaveformView(
-                isActive: voiceInput.isListening,
-                level: CGFloat(voiceInput.audioLevel),
-                reduceMotion: reduceMotion
-            )
+            Group {
+                if voiceInput.isListening {
+                    VoiceWaveformView(
+                        isActive: true,
+                        level: CGFloat(voiceInput.audioLevel),
+                        reduceMotion: reduceMotion
+                    )
+                } else {
+                    ProgressView()
+                }
+            }
             .frame(width: 92, height: 34)
             .accessibilityHidden(true)
 
@@ -924,7 +930,9 @@ struct ThreadComposerView: View {
                 Text(voiceCaptureTitle)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text(voiceInput.transcript.isEmpty ? "正在聆听…" : voiceInput.transcript)
+                Text(voiceInput.transcript.isEmpty
+                     ? (voiceInput.isListening ? "正在聆听…" : "请稍候…")
+                     : voiceInput.transcript)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

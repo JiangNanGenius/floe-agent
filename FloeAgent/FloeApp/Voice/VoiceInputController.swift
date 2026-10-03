@@ -46,7 +46,9 @@ final class VoiceInputController: ObservableObject {
     private var transcriptTask: Task<Void, Never>?
     private var levelTask: Task<Void, Never>?
     private var preparationTask: Task<Void, Never>?
+    private var preparationWatchdog: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
+    private let preparationTimeout: Duration
     /// Monotonic token: a superseded start must never activate a session.
     private var startToken: UInt64 = 0
     /// True after the user explicitly stops; suppresses failure overwrite
@@ -59,12 +61,14 @@ final class VoiceInputController: ObservableObject {
         authorization: any SpeechAuthorizationProviding,
         makeTranscriber: @escaping @MainActor () async throws -> any SpeechTranscribing,
         makeCapturer: @escaping @MainActor () -> any VoiceAudioCapturing,
-        diagnostics: (any VoiceInputDiagnostics)? = nil
+        diagnostics: (any VoiceInputDiagnostics)? = nil,
+        preparationTimeout: Duration = .seconds(20)
     ) {
         self.authorization = authorization
         self.makeTranscriber = makeTranscriber
         self.makeCapturer = makeCapturer
         self.diagnostics = diagnostics
+        self.preparationTimeout = preparationTimeout
     }
 
     // MARK: - Public lifecycle (idempotent)
@@ -122,6 +126,20 @@ final class VoiceInputController: ObservableObject {
 
         state = .preparing
         diagnostics?.voiceSessionPreparing()
+        preparationWatchdog?.cancel()
+        preparationWatchdog = Task { [weak self, preparationTimeout] in
+            try? await Task.sleep(for: preparationTimeout)
+            guard !Task.isCancelled, let self, self.isCurrent(token), self.state == .preparing else { return }
+            // A model load or capture setup can stall. End this attempt so the
+            // composer leaves its gray preparation state and can be retried.
+            self.startToken &+= 1
+            self.preparationTask?.cancel()
+            self.preparationTask = nil
+            self.preparationWatchdog = nil
+            self.teardown()
+            self.diagnostics?.voiceFailed(reason: .recognizerFailed)
+            self.state = .failed(reason: .recognizerFailed)
+        }
 
         let transcriber: any SpeechTranscribing
         do {
@@ -133,6 +151,10 @@ final class VoiceInputController: ObservableObject {
             fail(with: .recognizerFailed, token: token)
             return
         }
+        guard isCurrent(token) else {
+            await transcriber.finishAudio()
+            return
+        }
 
         let capturer = makeCapturer()
         self.transcriber = transcriber
@@ -140,20 +162,34 @@ final class VoiceInputController: ObservableObject {
         do {
             try await capturer.start(into: transcriber)
         } catch let error as VoiceSessionError {
+            guard isCurrent(token) else {
+                capturer.stop()
+                await transcriber.finishAudio()
+                return
+            }
             teardown()
             fail(with: error.failure, token: token)
             return
         } catch {
+            guard isCurrent(token) else {
+                capturer.stop()
+                await transcriber.finishAudio()
+                return
+            }
             teardown()
             fail(with: .recognizerFailed, token: token)
             return
         }
         guard isCurrent(token) else {
-            // A stop landed while we were preparing; honor it.
-            teardown()
+            // This attempt ended while start was suspended. A newer session
+            // may now own the controller; release only this attempt's objects.
+            capturer.stop()
+            await transcriber.finishAudio()
             return
         }
 
+        preparationWatchdog?.cancel()
+        preparationWatchdog = nil
         state = .listening
         diagnostics?.voiceListeningStarted()
         observeLevels(of: capturer, token: token)
@@ -172,6 +208,8 @@ final class VoiceInputController: ObservableObject {
         stoppingIntentionally = true
         preparationTask?.cancel()
         preparationTask = nil
+        preparationWatchdog?.cancel()
+        preparationWatchdog = nil
         levelTask?.cancel()
         levelTask = nil
         audioLevel = 0
@@ -301,6 +339,8 @@ final class VoiceInputController: ObservableObject {
 
     private func fail(with failure: VoiceInputFailure, token: UInt64) {
         guard isCurrent(token) else { return }
+        preparationWatchdog?.cancel()
+        preparationWatchdog = nil
         teardown()
         diagnostics?.voiceFailed(reason: failure)
         state = failure == .localeUnsupported || failure == .modelNotReady

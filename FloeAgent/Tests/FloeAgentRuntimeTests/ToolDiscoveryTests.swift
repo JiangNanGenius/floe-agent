@@ -7,6 +7,21 @@ import FloeModels
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test func guestMulticoreRequestDiscoversLifecycleBeforeShell() {
+        let offered = ["exec.shell", "environment.hardRestartLinux", "environment.startLinux",
+                       "environment.linuxStatus", "environment.stopLinux"].map(descriptor)
+        let found = ToolDiscovery.matches(
+            query: "测一下Linux环境，现在应该支持多线程。虚拟机内应看到多核或者能启动多核",
+            descriptors: offered
+        ).map(\.name)
+        #expect(found == ["environment.linuxStatus", "environment.startLinux",
+                          "environment.hardRestartLinux", "exec.shell"])
+        #expect(ToolDiscovery.matches(query: "在 Linux 里运行命令", descriptors: offered)
+            .map(\.name).first == "exec.shell")
+        #expect(ToolDiscovery.matches(query: "Linux 虚拟机双核", descriptors: [descriptor("exec.shell")])
+            .map(\.name) == ["exec.shell"])
+    }
+
     @Test func executorPreservesNonzeroExitAsFailure() async throws {
         let registry = ToolRunnerRegistry()
         registry.register(AnyAgentTool(descriptor: descriptor("exec.shell")) { _, _ in

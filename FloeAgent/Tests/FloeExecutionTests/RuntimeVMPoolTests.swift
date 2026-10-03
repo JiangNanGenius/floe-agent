@@ -326,6 +326,24 @@ final class RuntimeVMPoolTests: XCTestCase {
         XCTAssertEqual(status.usedVCPUs, 4)
     }
 
+    /// A four-vCPU pool can admit two separate verified dual-hart guests.
+    /// This checks the per-VM release gate and the shared quota together.
+    func testProductionAllowsTwoDualCoreVMs() async throws {
+        let pool = makePool(quota: 4, memory: 2048, vms: 4)
+        for index in 0..<2 {
+            let lease = try await pool.acquire(
+                environmentID: "dual-env-\(index)", runtimeID: "dual-rt-\(index)",
+                request: GuestResourceRequest(vcpus: .two, memory: .m512),
+                imageSMPCapable: true
+            )
+            XCTAssertEqual(lease.shape.vcpus, .two)
+            XCTAssertFalse(lease.wasDowngraded)
+        }
+        let status = await pool.status
+        XCTAssertEqual(status.running, 2)
+        XCTAssertEqual(status.usedVCPUs, 4)
+    }
+
     /// Reshape planning on a production pool validates the dual request
     /// before any disruption: refused without image SMP proof, accepted with
     /// it.

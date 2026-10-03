@@ -107,6 +107,19 @@ enum ToolDiscovery {
                 })
         }
         if !exact.isEmpty { return exact }
+        // Guest topology is controlled by the host-side environment tools,
+        // not by commands inside the guest. A query such as "Linux 虚拟机多核"
+        // also matches the generic shell synonym, so put the three relevant
+        // lifecycle schemas in front before the first shell call auto-boots
+        // the default single-core shape. Only offer tools in this run's ceiling.
+        let guestTerms = ["linux", "guest", "tinyemu", "virtual machine", "虚拟机"]
+        let shapeTerms = ["多核", "双核", "多线程", "核心", "cpu", "vcpu", "smp", "multi-core", "multicore", "cores"]
+        if guestTerms.contains(where: query.contains) && shapeTerms.contains(where: query.contains) {
+            let lifecycleNames = ["environment.linuxStatus", "environment.startLinux", "environment.hardRestartLinux"]
+            let lifecycle = lifecycleNames.compactMap { name in descriptors.first { $0.name == name } }
+            let shell = descriptors.filter { $0.name == "exec.shell" }
+            return lifecycle + shell
+        }
         for descriptor in descriptors {
             if tokens.contains(where: { descriptor.name.lowercased().contains($0) }) {
                 groups.insert(group(descriptor.name))

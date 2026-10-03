@@ -145,9 +145,9 @@ struct VoiceAudioLevel: Sendable, Equatable {
 /// fast attack and a slower release.
 struct VoiceActivityMeter: Sendable, Equatable {
     /// RMS below this is noise/silence, not speech.
-    static let gate: Float = 0.012
+    static let gate: Float = 0.005
     /// RMS mapped to full scale; conversational speech sits well below 1.
-    static let reference: Float = 0.22
+    static let reference: Float = 0.08
     static let attackSeconds: Float = 0.06
     static let releaseSeconds: Float = 0.28
     /// Levels below this snap to exactly zero so idle bars are static.

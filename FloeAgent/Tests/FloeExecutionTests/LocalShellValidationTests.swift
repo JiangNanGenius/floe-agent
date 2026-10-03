@@ -20,6 +20,9 @@ struct LocalShellValidationTests {
         #expect(!registry.allDescriptors.contains { $0.name == "apt" })
         #expect(!ToolCatalog.allDescriptors.contains { $0.name == "apt" })
         #expect(registry.allDescriptors.contains { $0.name == "exec.shell" })
+        let shellDescription = try #require(registry.allDescriptors.first { $0.name == "exec.shell" }?.toolDescription)
+        #expect(shellDescription.contains("environment.linuxStatus"))
+        #expect(shellDescription.contains("environment.startLinux(vcpus=2)"))
         // The per-family entries are advertised instead; without a signed WASM
         // store the WASM entry stays absent rather than claiming availability.
         #expect(registry.allDescriptors.contains { $0.name == "python.packages" })

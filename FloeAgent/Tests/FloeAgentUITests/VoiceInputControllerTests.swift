@@ -87,6 +87,24 @@ struct VoiceInputControllerTests {
         func finishLevels() { levelContinuation.finish() }
     }
 
+    private final class DeferredCapturer: VoiceAudioCapturing, @unchecked Sendable {
+        let levels = AsyncStream<VoiceAudioLevel> { _ in }
+        private var pendingStart: CheckedContinuation<Void, Error>?
+        private(set) var stopCount = 0
+        var isStartPending: Bool { pendingStart != nil }
+
+        func start(into transcriber: any SpeechTranscribing) async throws {
+            try await withCheckedThrowingContinuation { pendingStart = $0 }
+        }
+
+        func stop() { stopCount += 1 }
+
+        func failPendingStart() {
+            pendingStart?.resume(throwing: VoiceSessionError.failure(.noAudioInput))
+            pendingStart = nil
+        }
+    }
+
     private final class FakeDiagnostics: VoiceInputDiagnostics, @unchecked Sendable {
         private(set) var events: [String] = []
         func voicePermissionRequested() { events.append("permissionRequested") }
@@ -97,6 +115,20 @@ struct VoiceInputControllerTests {
         func voiceRouteChanged() { events.append("routeChanged") }
         func voiceListeningStopped() { events.append("listeningStopped") }
         func voiceFailed(reason: VoiceInputFailure) { events.append("speechFailed.\(reason.rawValue)") }
+    }
+
+    @MainActor
+    private final class DeferredTranscriberFactory {
+        private var continuation: CheckedContinuation<any SpeechTranscribing, Never>?
+        private let transcriber: any SpeechTranscribing
+
+        init(transcriber: any SpeechTranscribing) { self.transcriber = transcriber }
+
+        func make() async -> any SpeechTranscribing {
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func resolve() { continuation?.resume(returning: transcriber); continuation = nil }
     }
 
     @MainActor
@@ -335,6 +367,82 @@ struct VoiceInputControllerTests {
         #expect(harness.controller.state != .listening)
     }
 
+    @Test("A stalled transcriber leaves preparation and a late result cannot start capture")
+    @MainActor
+    func stalledPreparationRecovers() async {
+        let authorization = FakeAuthorization()
+        let transcriber = FakeTranscriber()
+        let capturer = FakeCapturer()
+        let diagnostics = FakeDiagnostics()
+        let factory = DeferredTranscriberFactory(transcriber: transcriber)
+        let controller = VoiceInputController(
+            authorization: authorization,
+            makeTranscriber: { await factory.make() },
+            makeCapturer: { capturer },
+            diagnostics: diagnostics,
+            preparationTimeout: .milliseconds(150)
+        )
+
+        controller.requestStart()
+        for _ in 0..<100 where controller.state != .preparing {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(controller.state == .preparing)
+        for _ in 0..<100 where controller.state == .preparing {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(controller.state == .failed(reason: .recognizerFailed))
+        #expect(diagnostics.events.contains("speechFailed.recognizerFailed"))
+        factory.resolve()
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(capturer.startCount == 0)
+        #expect(controller.state == .failed(reason: .recognizerFailed))
+    }
+
+    @Test("A late capture failure cannot tear down the next voice session")
+    @MainActor
+    func lateCaptureFailureLeavesNewSessionListening() async {
+        let oldCapturer = DeferredCapturer()
+        let newCapturer = FakeCapturer()
+        let oldTranscriber = FakeTranscriber()
+        let newTranscriber = FakeTranscriber()
+        var factoryCalls = 0
+        let controller = VoiceInputController(
+            authorization: FakeAuthorization(),
+            makeTranscriber: {
+                factoryCalls += 1
+                return factoryCalls == 1 ? oldTranscriber : newTranscriber
+            },
+            makeCapturer: {
+                factoryCalls == 1
+                    ? oldCapturer as any VoiceAudioCapturing
+                    : newCapturer as any VoiceAudioCapturing
+            },
+            preparationTimeout: .milliseconds(150)
+        )
+
+        controller.requestStart()
+        for _ in 0..<100 where !oldCapturer.isStartPending {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(oldCapturer.isStartPending)
+        for _ in 0..<100 where controller.state != .failed(reason: .recognizerFailed) {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(controller.state == .failed(reason: .recognizerFailed))
+        controller.requestStart()
+        for _ in 0..<100 where controller.state != .listening {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(controller.state == .listening)
+        oldCapturer.failPendingStart()
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(controller.state == .listening)
+        #expect(newCapturer.stopCount == 0)
+        controller.stop()
+        await waitForIdle(controller)
+    }
+
     @Test("A recognizer-ended stream stops the session cleanly")
     @MainActor
     func recognizerEndedStream() async {
@@ -430,10 +538,29 @@ struct VoiceActivityMeterTests {
         // waveform is static again (no timer keeps it moving).
         var silent = sustained
         for _ in 0..<40 {
-            silent = meter.process(rms: 0.01, duration: 0.093)
+            silent = meter.process(rms: 0.004, duration: 0.093)
         }
         #expect(silent.isSpeech == false)
         #expect(silent.level == 0)
+    }
+
+    @Test("Quiet captured speech is visible above the static baseline")
+    func quietSpeechRaisesLevel() {
+        var meter = VoiceActivityMeter()
+        let output = meter.process(rms: 0.012, duration: 0.093)
+        #expect(output.isSpeech)
+        #expect(output.level > 0.15)
+    }
+
+    @Test("PCM buffer metering reports the samples delivered by the audio tap")
+    func pcmBufferReportsRMS() throws {
+        let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                                sampleRate: 48_000, channels: 1, interleaved: false))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_096))
+        buffer.frameLength = 4_096
+        let samples = try #require(buffer.floatChannelData?[0])
+        for index in 0..<4_096 { samples[index] = index.isMultiple(of: 2) ? 0.02 : -0.02 }
+        #expect(abs(VoiceBufferMeter.rms(of: buffer) - 0.02) < 0.0001)
     }
 
     @Test("The envelope releases to the static baseline after speech ends")
