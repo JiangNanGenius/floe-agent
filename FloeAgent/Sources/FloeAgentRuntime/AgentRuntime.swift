@@ -1749,7 +1749,21 @@ public actor FloeAgentRuntime {
                 await self.handleProviderFailure(normalized)
             }
         }
-        await streamTask?.value
+        if let activeStreamTask = streamTask {
+            await withTaskCancellationHandler {
+                await activeStreamTask.value
+            } onCancel: {
+                // The stream consumer is unstructured so cancelling the
+                // caller alone does not cancel its provider request.
+                activeStreamTask.cancel()
+            }
+        }
+        if Task.isCancelled, case .streamingModel = state {
+            await failRun(
+                message: "The caller cancelled the provider request before the run was stopped; it can be recovered and retried.",
+                recoverable: true
+            )
+        }
         providerWatchdogTask?.cancel()
         providerWatchdogTask = nil
     }
@@ -4350,8 +4364,16 @@ enum ToolReplayPlanner {
     /// same envelope reasoning digest.
     static func boundedReasoning(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
+        let omissionMarker = "[earlier reasoning omitted]\n"
+        // A UTF-8 tail can use one or two bytes less than the budget. Without
+        // this guard, re-bounding the excerpt may pull the marker's newline
+        // into the tail and duplicate it on every checkpoint/retry.
+        if value.hasPrefix(omissionMarker),
+           value.utf8.count - omissionMarker.utf8.count <= defaultMaxReasoningBytes {
+            return value
+        }
         guard value.utf8.count > defaultMaxReasoningBytes else { return value }
-        return "[earlier reasoning omitted]\n"
+        return omissionMarker
             + utf8Suffix(value, maxBytes: defaultMaxReasoningBytes)
     }
 

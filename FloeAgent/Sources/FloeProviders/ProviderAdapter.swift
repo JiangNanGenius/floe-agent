@@ -424,6 +424,14 @@ func httpErrorEvent(from sseEvent: SSEEvent) -> AgentEvent? {
 
 // MARK: - OpenAI Responses adapter
 
+enum ProviderWireEncoder {
+    static func encode<Value: Encodable>(_ value: Value) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
+    }
+}
+
 /// Adapter for the OpenAI Responses API (`/responses`, SSE streaming).
 public struct OpenAIResponsesAdapter: ProviderAdapter {
     public let protocolKind: ModelProtocol = .openAIResponses
@@ -440,7 +448,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
-                    let body = try JSONEncoder().encode(buildBody(from: request))
+                    let body = try ProviderWireEncoder.encode(buildBody(from: request))
                     urlRequest.httpBody = body
                     let host = request.provider.baseURL.host ?? "unknown"
                     logger.info(
@@ -651,7 +659,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
-                    let body = try JSONEncoder().encode(buildBody(from: request))
+                    let body = try ProviderWireEncoder.encode(buildBody(from: request))
                     urlRequest.httpBody = body
                     let host = request.provider.baseURL.host ?? "unknown"
                     logger.info(
@@ -907,7 +915,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
-                    urlRequest.httpBody = try JSONEncoder().encode(buildBody(from: request))
+                    urlRequest.httpBody = try ProviderWireEncoder.encode(buildBody(from: request))
                     let pump = SSEBytePump(urlRequest: urlRequest)
                     let decoder = JSONDecoder()
                     var aggregator = WireTranslator.AnthropicAggregator()

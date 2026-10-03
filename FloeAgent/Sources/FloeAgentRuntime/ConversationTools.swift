@@ -142,7 +142,11 @@ public struct ConversationSearchTool: AgentTool {
     }
 
     static func output(_ value: String, exitStatus: Int32 = 0) -> ToolExecutionOutput {
-        return ToolExecutionOutput(digesting: value, exitStatus: exitStatus)
+        return ToolExecutionOutput(
+            digesting: value,
+            exitStatus: exitStatus,
+            maximumSummaryCharacters: ConversationEnvelope.maximumEnvelopeCharacters
+        )
     }
 }
 

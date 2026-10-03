@@ -2561,6 +2561,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
         let searchRequested = !isAppleModel
             && request.toolResults.isEmpty
             && LocalModelToolPolicy.requestsWebSearch(precheckText)
+            && !(precheckText.contains(LocalModelToolPolicy.webSearchToolName)
+                && containsAny(precheckText, namedToolNegationMarkers))
         let searchMissingFromOffer = searchRequested
             && !availableTools.map(\.name)
                 .contains(LocalModelToolPolicy.webSearchToolName)

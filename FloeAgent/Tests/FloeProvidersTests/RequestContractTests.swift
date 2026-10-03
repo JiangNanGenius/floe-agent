@@ -135,7 +135,7 @@ struct RequestContractTests {
 
         var encodings = Set<String>()
         for _ in 0..<64 {
-            encodings.insert(String(decoding: try JSONEncoder().encode(body), as: UTF8.self))
+            encodings.insert(String(decoding: try ProviderWireEncoder.encode(body), as: UTF8.self))
         }
         #expect(encodings.count == 1)
         let encoded = try #require(encodings.first)
@@ -149,7 +149,7 @@ struct RequestContractTests {
         )
         var anthropicEncodings = Set<String>()
         for _ in 0..<64 {
-            anthropicEncodings.insert(String(decoding: try JSONEncoder().encode(anthropic), as: UTF8.self))
+            anthropicEncodings.insert(String(decoding: try ProviderWireEncoder.encode(anthropic), as: UTF8.self))
         }
         #expect(anthropicEncodings.count == 1)
     }

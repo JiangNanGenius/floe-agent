@@ -81,7 +81,10 @@ struct ToolLoopHardeningTests {
         #expect(!first.toolSchemas.contains { $0.name == "document.pdf.inspect" })
         #expect(second.toolSchemas.contains { $0.name == "document.pdf.inspect" })
         #expect(!second.toolSchemas.contains { $0.name == "invented.tool" })
-        #expect(second.toolResults.first?.output.count ?? 0 > 4096)
+        let visibleRead = try #require(second.toolResults.first?.output)
+        #expect(visibleRead.contains("[middle of tool output compacted]"))
+        #expect(visibleRead.contains("[tool output compacted; originalBytes="))
+        #expect(visibleRead.contains("requiredToolNames"))
     }
 
     @Test("provider tool descriptions include explicit prerequisite resolvers")
