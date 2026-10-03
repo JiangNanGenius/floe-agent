@@ -82,7 +82,9 @@ public struct OfficeDocumentModeMemory: Codable, Sendable, Equatable {
 
     /// Encoded payload for persistence; nil when encoding fails.
     public var snapshotData: Data? {
-        try? JSONEncoder().encode(Snapshot(seen: seen.sorted()))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(Snapshot(seen: seen.sorted()))
     }
 
     /// True once the document has completed one open (preview or editor).

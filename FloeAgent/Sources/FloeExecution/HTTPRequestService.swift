@@ -256,6 +256,20 @@ public enum PublicNetworkTargetPolicy {
     /// every other non-public range is still rejected and resolution stays
     /// fail-closed.
     public static func validate(_ url: URL, allowTransientTunnelAddresses: Bool) throws {
+        try validate(
+            url,
+            allowTransientTunnelAddresses: allowTransientTunnelAddresses,
+            resolve: NetworkDestinationPolicy.systemResolve
+        )
+    }
+
+    /// Package-internal resolver seam for deterministic integration tests.
+    /// Production callers always use the system resolver above.
+    static func validate(
+        _ url: URL,
+        allowTransientTunnelAddresses: Bool,
+        resolve: @Sendable (String) throws -> [String]
+    ) throws {
         guard url.scheme?.lowercased() == "https",
               url.user == nil,
               url.password == nil,
@@ -271,7 +285,7 @@ public enum PublicNetworkTargetPolicy {
             try NetworkDestinationPolicy.validate(
                 host: host,
                 allowTransientTunnel: allowTransientTunnelAddresses,
-                resolve: NetworkDestinationPolicy.systemResolve
+                resolve: resolve
             )
         } catch NetworkDestinationError.privateTarget {
             throw HTTPRequestError.privateNetworkTarget(host)

@@ -5,19 +5,47 @@ import FloeCore
 public actor WebSearchService {
     private let session: URLSession
     private let configurations: WebSearchConfigurationResolver
+    private let validateDestination: @Sendable (URL, Bool) throws -> Void
 
     public init(
         configuration: URLSessionConfiguration = .ephemeral,
         configurations: @escaping WebSearchConfigurationResolver = { [] }
     ) {
+        let validator: @Sendable (URL, Bool) throws -> Void = { url, allowTransient in
+            try PublicNetworkTargetPolicy.validate(
+                url,
+                allowTransientTunnelAddresses: allowTransient
+            )
+        }
         // Redirects from provider endpoints are revalidated against the strict
         // public policy and cross-origin credentials are stripped.
         self.session = URLSession(
             configuration: configuration,
-            delegate: SearchProviderRedirectDelegate(),
+            delegate: SearchProviderRedirectDelegate(validateDestination: { url in
+                try validator(url, false)
+            }),
             delegateQueue: nil
         )
         self.configurations = configurations
+        self.validateDestination = validator
+    }
+
+    /// Internal seam for integration tests to supply repeatable DNS answers.
+    /// The public initializer above always uses system DNS and the same policy.
+    init(
+        configuration: URLSessionConfiguration,
+        configurations: @escaping WebSearchConfigurationResolver,
+        validateDestination: @escaping @Sendable (URL, Bool) throws -> Void
+    ) {
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: SearchProviderRedirectDelegate(validateDestination: { url in
+                try validateDestination(url, false)
+            }),
+            delegateQueue: nil
+        )
+        self.configurations = configurations
+        self.validateDestination = validateDestination
     }
 
     /// Local readiness only: no network probe, no credential value in diagnostics.
@@ -190,10 +218,7 @@ public actor WebSearchService {
             // port and path must equal the canonical contract.
             let allowsTransient = Self.allowsTransientTunnel(for: configuration)
                 && Self.requestURLIsCanonical(request.url, kind: configuration.kind)
-            try PublicNetworkTargetPolicy.validate(
-                request.url!,
-                allowTransientTunnelAddresses: allowsTransient
-            )
+            try validateDestination(request.url!, allowsTransient)
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -476,6 +501,13 @@ public actor WebSearchService {
 /// Provider credentials (Authorization bearer, X-Subscription-Token,
 /// X-api-key, X-TC-* signing headers) therefore never leave the origin.
 private final class SearchProviderRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let validateDestination: @Sendable (URL) throws -> Void
+
+    init(validateDestination: @escaping @Sendable (URL) throws -> Void) {
+        self.validateDestination = validateDestination
+        super.init()
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -484,7 +516,7 @@ private final class SearchProviderRedirectDelegate: NSObject, URLSessionTaskDele
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
         guard let url = request.url,
-              (try? PublicNetworkTargetPolicy.validate(url)) != nil,
+              (try? validateDestination(url)) != nil,
               Self.origin(task.currentRequest?.url) == Self.origin(url) else {
             completionHandler(nil)
             return

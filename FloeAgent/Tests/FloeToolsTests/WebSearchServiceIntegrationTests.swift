@@ -6,9 +6,10 @@ import XCTest
 ///
 /// These tests drive the real `WebSearchService` actor end to end — provider
 /// resolution, request construction/signing, the SSRF `PublicNetworkTargetPolicy`
-/// validation (real getaddrinfo of the canonical provider hosts), response
-/// parsing and failover. Only the TCP transport is intercepted by a
-/// `URLProtocol` stub; nothing about request construction or policy is faked.
+/// validation, response parsing and failover. Canonical provider hosts get
+/// deterministic public DNS answers so CI outages cannot change the HTTP
+/// contract under test; the policy still classifies every resolved address.
+/// TCP transport is intercepted by a `URLProtocol` stub.
 /// Intercepted transport is NOT device validation: see EVIDENCE for limits.
 final class WebSearchServiceIntegrationTests: XCTestCase {
 
@@ -24,7 +25,22 @@ final class WebSearchServiceIntegrationTests: XCTestCase {
         configuration.protocolClasses = [MockURLProtocol.self]
         return WebSearchService(
             configuration: configuration,
-            configurations: { providers }
+            configurations: { providers },
+            validateDestination: { url, allowTransient in
+                try PublicNetworkTargetPolicy.validate(
+                    url,
+                    allowTransientTunnelAddresses: allowTransient,
+                    resolve: { host in
+                        switch host {
+                        case "api.bochaai.com", "api.tavily.com",
+                             "wsa.tencentcloudapi.com", "redirected.example.org":
+                            return ["93.184.216.34"]
+                        default:
+                            throw URLError(.cannotFindHost)
+                        }
+                    }
+                )
+            }
         )
     }
 
@@ -41,6 +57,19 @@ final class WebSearchServiceIntegrationTests: XCTestCase {
             enabled: true,
             priority: priority
         )
+    }
+
+    func testDeterministicResolverStillRejectsPrivateAddresses() {
+        let url = URL(string: "https://api.bochaai.com/v1/web-search")!
+        XCTAssertThrowsError(try PublicNetworkTargetPolicy.validate(
+            url,
+            allowTransientTunnelAddresses: false,
+            resolve: { _ in ["127.0.0.1"] }
+        )) { error in
+            guard case HTTPRequestError.privateNetworkTarget("api.bochaai.com") = error else {
+                return XCTFail("expected private-target rejection, got \(error)")
+            }
+        }
     }
 
     // MARK: - Public provider: real request construction through the actor
