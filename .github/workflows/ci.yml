@@ -542,10 +542,10 @@ jobs:
                 -maximum-test-execution-time-allowance 420 \
                 -retry-tests-on-failure -test-iterations 2 \
                 CODE_SIGNING_ALLOWED=NO test-without-building 2>&1 | tee "FloeAgent-IDE-$name-attempt-$leg_attempt.log" || leg_code=$?
-              # One retry only when the runner stalled before any test started.
-              if [ "$leg_code" -eq 124 ] && [ "$leg_attempt" -eq 1 ] && \
-                 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if (s.get("reason")=="stalled" and not s.get("testsStarted")) else 1)' \
-                   "$diag_dir/summary.json"; then
+              # Retry one startup stall or XCTest bootstrap crash before any test starts.
+              if [ "$leg_attempt" -eq 1 ] && \
+                 python3 scripts/should_retry_test_bootstrap.py \
+                   "$diag_dir/summary.json" "FloeAgent-IDE-$name-attempt-$leg_attempt.log"; then
                 # Keep any partial first-attempt bundle; xcodebuild refuses an
                 # existing -resultBundlePath, so the retry needs a clear path.
                 if test -d "FloeAgent-IDE-$name.xcresult"; then

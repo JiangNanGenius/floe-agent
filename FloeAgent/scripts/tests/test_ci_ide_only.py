@@ -6,17 +6,20 @@ dual-device WorkspaceIDEUITests legs with their strict verifier and artifact
 retention. The default push/PR/manual gates must stay exactly as strong as
 before: every skipped phase is gated on the explicit ide_only input, the IDE
 phase still runs against a freshly built xctestrun (never a reused simulator
-.app), failure detection (verifier, stall-only retry) is preserved, and an
+.app), failure detection (verifier, startup-only retry) is preserved, and an
 ambiguous input combination fails fast instead of being silently ignored.
 """
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parents[3] / '.github' / 'workflows' / 'ci.yml'
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from should_retry_test_bootstrap import should_retry
 
 
 class CiIdeOnlyTests(unittest.TestCase):
@@ -166,9 +169,10 @@ python3() {
         self.assertIn('-only-testing:FloeAgentUITests/WorkspaceIDEUITests', self.ide_step)
         self.assertIn("for device in 'iPad mini (A17 Pro)' 'iPhone 17 Pro'", self.ide_step)
         self.assertIn('-retry-tests-on-failure -test-iterations 2', self.ide_step)
-        # The only permitted retry is a stall before any test started; an
-        # executed failure can never be retried into a pass.
-        self.assertIn('reason")=="stalled" and not s.get("testsStarted")', self.ide_step)
+        # Only startup failures may be retried; an executed failure cannot
+        # be retried into a pass.
+        self.assertIn('scripts/should_retry_test_bootstrap.py', self.ide_step)
+        self.assertIn('"$diag_dir/summary.json" "FloeAgent-IDE-$name-attempt-$leg_attempt.log"', self.ide_step)
         self.assertIn('scripts/verify_ide_ui_xcresult.py', self.ide_step)
         self.assertIn('--result-bundle "FloeAgent-IDE-$name.xcresult"', self.ide_step)
         self.assertIn('xcresulttool export attachments', self.ide_step)
@@ -180,6 +184,14 @@ python3() {
                         'FloeAgent/FloeAgent-IDE-*.xcresult',
                         'FloeAgent/FloeAgent-IDE-Screenshots'):
             self.assertIn(pattern, upload)
+
+    def test_bootstrap_retry_is_limited_to_failures_before_tests_start(self):
+        crash = ('Early unexpected exit, operation never finished bootstrapping '
+                 '(Underlying Error: The test runner crashed while preparing to run tests)')
+        self.assertTrue(should_retry({'exitCode': 65, 'reason': 'exited', 'testsStarted': False}, crash))
+        self.assertTrue(should_retry({'exitCode': 124, 'reason': 'stalled', 'testsStarted': False}, ''))
+        self.assertFalse(should_retry({'exitCode': 65, 'reason': 'exited', 'testsStarted': True}, crash))
+        self.assertFalse(should_retry({'exitCode': 65, 'reason': 'exited', 'testsStarted': False}, 'App test failed'))
 
 
 if __name__ == '__main__':
