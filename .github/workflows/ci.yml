@@ -496,7 +496,7 @@ jobs:
         # successful build are still reported and never retried into passes.
         if: ${{ !cancelled() && steps.app_regression_build.outcome == 'success' }}
         # Two device legs, each booting its simulator and running the full
-        # four-test WorkspaceIDEUITests class (native save/cold-reopen, native
+        # five-test WorkspaceIDEUITests class (native save/cold-reopen, native
         # Explorer/Git, DXF preview, DWG edit). Slow runners have spent almost
         # seven minutes before the first test and over fifteen minutes per
         # leg, so the phase budget covers a worst-case boot plus leg per

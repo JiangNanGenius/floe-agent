@@ -8,14 +8,14 @@ from verify_app_regression_xcresult import nodes, xcresult_json
 
 def verify(summary, tree):
     cases = [n for n in nodes(tree) if n.get("nodeType") == "Test Case"]
-    # The native kernel added its own save/reopen test and the Web fallback
-    # kept an explicit test of its own; both must pass, so the expected set is
-    # the whole WorkspaceIDEUITests class and the count checks stay exact.
+    # Require every current WorkspaceIDEUITests case, including the compact
+    # Git sidebar added after the original four-case acceptance set.
     expected = {
         "WorkspaceIDEUITests/testNativeEditorSaveAndColdReopen",
         "WorkspaceIDEUITests/testNativeExplorerAndActivityRail",
         "WorkspaceIDEUITests/testEngineeringDrawingInlineAndFullScreen",
         "WorkspaceIDEUITests/testDWGEditSaveAndColdReopen",
+        "WorkspaceIDEUITests/testGitSidebarCompactSyncRow",
     }
     found = {str(case.get("nodeIdentifier", "")).removesuffix("()") for case in cases}
     if (summary.get("result") != "Passed" or summary.get("totalTestCount") != len(expected)
@@ -23,8 +23,8 @@ def verify(summary, tree):
             or summary.get("skippedTests") != 0 or summary.get("expectedFailures") != 0
             or len(cases) != len(expected) or found != expected
             or any(case.get("result") != "Passed" for case in cases)):
-        raise ValueError("Native IDE save/reopen, native rail/Explorer and engineering preview did not all pass")
-    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-rail-explorer-and-engineering-preview"}
+        raise ValueError("Native IDE save/reopen, rail/Explorer, engineering preview and Git sidebar did not all pass")
+    return {"tests": sorted(expected), "result": "Passed", "coverage": "app-workbench-native-save-cold-reopen-rail-explorer-engineering-preview-and-git-sidebar"}
 
 
 
