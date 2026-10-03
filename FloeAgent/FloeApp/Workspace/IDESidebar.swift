@@ -47,6 +47,7 @@ enum IDESidebarMode: String, Identifiable, CaseIterable {
 struct IDESidebar: View {
     let mode: IDESidebarMode
     @ObservedObject var center: WorkspaceCenter
+    @ObservedObject var sourceControl: SourceControlCenter
     /// The workspace this IDE session was opened for; nil when it was opened
     /// without one.
     let workspaceID: UUID?
@@ -65,6 +66,7 @@ struct IDESidebar: View {
     init(
         mode: IDESidebarMode,
         center: WorkspaceCenter,
+        sourceControl: SourceControlCenter,
         workspaceID: UUID?,
         workspaceName: String,
         pinnedRootURL: URL?,
@@ -73,6 +75,7 @@ struct IDESidebar: View {
     ) {
         self.mode = mode
         self.center = center
+        self.sourceControl = sourceControl
         self.workspaceID = workspaceID
         self.workspaceName = workspaceName
         self.pinnedRootURL = pinnedRootURL
@@ -146,7 +149,7 @@ struct IDESidebar: View {
                 // workspace identity, its own error alert, and a read-only
                 // lock (with no refresh and no writes) after a switch.
                 SourceControlView(
-                    center: center.environment.sourceControlCenter,
+                    center: sourceControl,
                     pinnedRootURL: pinnedRootURL
                 )
                 .id(workspaceID?.uuidString ?? "no-workspace")
@@ -166,7 +169,7 @@ struct IDESidebar: View {
         case .sourceControl:
             // A locked (switched-away) pane never drives a global refresh.
             if pinnedWorkspaceIsCurrent {
-                Task { await center.environment.sourceControlCenter.refreshRepository() }
+                Task { await sourceControl.refreshRepository() }
             }
         }
     }
@@ -190,6 +193,7 @@ struct IDESidebarDrawer<Content: View>: View {
                 .background(FloeTheme.readingSurface)
                 .transition(.move(edge: .leading))
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.ide.sidebar.drawer")
     }
 }

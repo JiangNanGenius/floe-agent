@@ -110,6 +110,9 @@ struct NotesDocumentCoverOutcome: Sendable {
     /// Present for Office covers. Bounded and redacted; see
     /// `NotesDocumentCoverDiagnostics`.
     var diagnostics: NotesDocumentCoverDiagnostics? = nil
+    /// A fixed, content-free renderer stage for UI test evidence. Product UI
+    /// continues to show the localized `diagnosis` instead.
+    var engineeringFailure: String? = nil
 }
 
 /// Bounded in-memory cache for Notes grid thumbnails.
@@ -166,6 +169,7 @@ struct NotesDocumentThumbnail: View {
     @State private var image: UIImage?
     @State private var source: NotesDocumentCoverSource = .none
     @State private var unsupportedDetail: String?
+    @State private var engineeringFailure: String?
     @State private var diagnostics: NotesDocumentCoverDiagnostics?
     /// The key of the newest load. A cancelled predecessor compares against this
     /// before touching `image`, so it can never clear or overwrite a newer card.
@@ -232,7 +236,8 @@ struct NotesDocumentThumbnail: View {
     private var accessibilityCoverValue: String {
         guard ProcessInfo.processInfo.arguments.contains("-ui-testing") else { return source.rawValue }
         let badge = source == .officeContentSummary ? "; badge=summary" : ""
-        guard let diagnostics else { return source.rawValue + badge }
+        let engineering = engineeringFailure.map { "; engineering=\($0)" } ?? ""
+        guard let diagnostics else { return source.rawValue + badge + engineering }
         return "\(source.rawValue)\(badge); \(diagnostics.summary)"
     }
 
@@ -294,6 +299,7 @@ struct NotesDocumentThumbnail: View {
             image = cached.image
             source = cached.source
             unsupportedDetail = nil
+            engineeringFailure = nil
             diagnostics = nil
             onSource?(cached.source, document.revision, accessibilityCoverValue)
             return
@@ -301,6 +307,7 @@ struct NotesDocumentThumbnail: View {
         image = nil
         source = .none
         unsupportedDetail = nil
+        engineeringFailure = nil
         diagnostics = nil
         guard !Task.isCancelled else { return }
         let outcome = await NotesDocumentCoverService.render(document: document, store: store,
@@ -327,6 +334,7 @@ struct NotesDocumentThumbnail: View {
         source = outcome.source
         diagnostics = nil
         unsupportedDetail = nil
+        engineeringFailure = nil
         onSource?(outcome.source, document.revision, accessibilityCoverValue)
     }
 
@@ -339,6 +347,7 @@ struct NotesDocumentThumbnail: View {
         source = outcome.source
         diagnostics = outcome.diagnostics
         unsupportedDetail = outcome.source == .unsupported ? outcome.diagnosis : nil
+        engineeringFailure = outcome.engineeringFailure
         onSource?(outcome.source, document.revision, accessibilityCoverValue)
     }
 }
@@ -1502,7 +1511,8 @@ enum NotesDocumentCoverService {
             return .init(image: nil, source: .none, diagnosis: "cancelled")
         } catch {}
         return .init(image: nil, source: .unsupported,
-                     diagnosis: String(localized: "notes.cover.engineering.renderFailed", defaultValue: "Could not render a preview; open the drawing"))
+                     diagnosis: String(localized: "notes.cover.engineering.renderFailed", defaultValue: "Could not render a preview; open the drawing"),
+                     engineeringFailure: rendered.diagnosis)
     }
 
     // MARK: - Native OOXML content summary

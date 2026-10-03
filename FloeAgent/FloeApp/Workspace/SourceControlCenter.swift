@@ -6,8 +6,8 @@ import FloeGit
 
 /// Pure workspace-identity decision used by both the pinned source-control
 /// pane (rendering/lock) and the mutation guard inside `perform(pinnedRoot:)`.
-/// A nil pin means "follow the global current workspace" (the legacy
-/// inspector behavior); a non-nil pin matches only the exact standardized
+/// A nil pin means "follow the bound workspace" (the inspector behavior);
+/// a non-nil pin matches only the exact standardized
 /// workspace root — discovering a repository above the workspace does not
 /// change which workspace owns the pane.
 enum SourceControlRootIdentity {
@@ -33,21 +33,29 @@ final class SourceControlCenter: ObservableObject {
     @Published var errorMessage: String?
 
     private unowned let environment: AppEnvironment
+    /// The workspace that owns this source-control surface. Settings file
+    /// browsing uses an isolated WorkspaceCenter, while chat uses the global
+    /// center; resolving Git against a different center falsely locks a valid
+    /// pinned IDE and could otherwise target the wrong repository.
+    private unowned let workspaceCenter: WorkspaceCenter
     private let git = LocalGitService()
     private let github = GitHubService()
     private let credentials = GitHubCredentialStore()
     private var deviceLoginTask: Task<Void, Never>?
-    private var repositoryChangeObserver: NSObjectProtocol?
+    /// NotificationCenter's opaque token is non-Sendable. Its wrapper owns
+    /// removal on deallocation without reading actor state from `deinit`.
+    private final class RepositoryObserverToken: @unchecked Sendable {
+        let value: NSObjectProtocol
+        init(_ value: NSObjectProtocol) { self.value = value }
+        deinit { NotificationCenter.default.removeObserver(value) }
+    }
+    private var repositoryChangeObserver: RepositoryObserverToken?
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, workspaceCenter: WorkspaceCenter? = nil) {
         self.environment = environment
+        self.workspaceCenter = workspaceCenter ?? environment.workspaceCenter
         observeRepositoryChanges()
     }
-
-    // The observer is intentionally not removed: this center is an app-lifetime
-    // object, its closure captures self weakly, and NotificationCenter keeps no
-    // strong reference to the center. A deinit that touched the actor-isolated
-    // token would be a Swift 6 isolation hazard for no benefit.
 
     /// Every host-side Git mutation (agent `git.*` tools, guest-triggered
     /// changes recorded by the host service, this center's own buttons) posts
@@ -55,7 +63,7 @@ final class SourceControlCenter: ObservableObject {
     /// shows a newly initialized repository, new staged files and new commits
     /// immediately instead of waiting for a manual refresh or a remount.
     private func observeRepositoryChanges() {
-        repositoryChangeObserver = NotificationCenter.default.addObserver(
+        repositoryChangeObserver = RepositoryObserverToken(NotificationCenter.default.addObserver(
             forName: .floeGitRepositoryDidChange,
             object: nil,
             queue: .main
@@ -66,7 +74,7 @@ final class SourceControlCenter: ObservableObject {
                 guard self.changedRootAffectsActiveWorkspace(root) else { return }
                 await self.refreshRepository()
             }
-        }
+        })
     }
 
     /// True when a mutation under `changed` can change what the active
@@ -76,7 +84,7 @@ final class SourceControlCenter: ObservableObject {
     private func changedRootAffectsActiveWorkspace(_ changed: URL) -> Bool {
         let changedPath = changed.standardizedFileURL.path
         if let repositoryRoot, repositoryRoot.standardizedFileURL.path == changedPath { return true }
-        guard let active = environment.workspaceCenter.currentRootURL?.standardizedFileURL.path else {
+        guard let active = workspaceCenter.currentRootURL?.standardizedFileURL.path else {
             return false
         }
         if changedPath == active { return true }
@@ -96,21 +104,21 @@ final class SourceControlCenter: ObservableObject {
     var isGitHubConnected: Bool { account != nil }
     var isDeviceLoginPending: Bool { deviceAuthorization != nil }
 
-    /// The workspace root the global center currently resolves its
+    /// The workspace root this center currently resolves its
     /// repository operations to. A host that pins a pane to a specific
     /// workspace compares this to its pinned root before allowing writes.
-    var currentWorkspaceRoot: URL? { environment.workspaceCenter.currentRootURL }
+    var currentWorkspaceRoot: URL? { workspaceCenter.currentRootURL }
 
     /// The observed workspace center a pinned pane needs to redraw on an
     /// A→B workspace switch.
-    var boundWorkspaceCenter: WorkspaceCenter { environment.workspaceCenter }
+    var boundWorkspaceCenter: WorkspaceCenter { workspaceCenter }
     /// True when the discovered repository root is an ancestor of the
     /// workspace root (a workspace nested inside a repository, or a linked
     /// worktree). The view surfaces the real root in that case.
     var isNestedRepository: Bool {
         guard let repositoryRoot else { return false }
         return repositoryRoot.standardizedFileURL
-            != environment.workspaceCenter.currentRootURL?.standardizedFileURL
+            != workspaceCenter.currentRootURL?.standardizedFileURL
     }
 
     /// Skill updates use the existing connector credential without exposing it
@@ -211,7 +219,7 @@ final class SourceControlCenter: ObservableObject {
         SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: root)
     }
 
-    func loadConnection() async {
+    func loadConnection(reportErrors: Bool = true) async {
         do {
             guard let token = try credentials.token() else {
                 account = nil
@@ -225,7 +233,10 @@ final class SourceControlCenter: ObservableObject {
         } catch {
             account = nil
             repositories = []
-            errorMessage = SecretRedactor.redact(error.localizedDescription)
+            // Source control must remain usable as a local Git client when a
+            // simulator or device cannot read its optional GitHub credential.
+            // The dedicated account settings screen still reports the error.
+            if reportErrors { errorMessage = SecretRedactor.redact(error.localizedDescription) }
         }
     }
 
@@ -319,7 +330,7 @@ final class SourceControlCenter: ObservableObject {
     func refreshRepository() async {
         refreshGeneration &+= 1
         let generation = refreshGeneration
-        guard let root = environment.workspaceCenter.currentRootURL else {
+        guard let root = workspaceCenter.currentRootURL else {
             snapshot = GitRepositorySnapshot(isRepository: false)
             repositoryRoot = nil
             return
@@ -339,7 +350,7 @@ final class SourceControlCenter: ObservableObject {
     /// True while `generation` is still the newest refresh and the workspace
     /// still resolves to the same root the snapshot was taken for.
     private func isCurrentRefresh(_ generation: UInt64, root: URL) -> Bool {
-        generation == refreshGeneration && environment.workspaceCenter.currentRootURL == root
+        generation == refreshGeneration && workspaceCenter.currentRootURL == root
     }
 
     /// Refreshes the published snapshot only while the workspace the mutation
@@ -368,7 +379,7 @@ final class SourceControlCenter: ObservableObject {
     /// identity is consulted. The author identity is configured per commit —
     /// the connected GitHub identity when present, otherwise a local default.
     func initializeRepository() async throws {
-        guard let wsRoot = environment.workspaceCenter.currentRootURL else {
+        guard let wsRoot = workspaceCenter.currentRootURL else {
             throw FloeError.notFound("workspace")
         }
         let initialized = try await git.initialize(at: wsRoot)
@@ -563,7 +574,7 @@ final class SourceControlCenter: ObservableObject {
     /// The workspace root itself (not the discovered repository root above
     /// it): the identity a pinned pane compares against after an await.
     private func requiredWorkspaceRoot() throws -> URL {
-        guard let root = environment.workspaceCenter.currentRootURL else {
+        guard let root = workspaceCenter.currentRootURL else {
             throw FloeError.notFound("workspace")
         }
         return root
@@ -574,7 +585,7 @@ final class SourceControlCenter: ObservableObject {
     /// repository; before the first refresh (or when not a repository) this is
     /// the workspace root itself.
     private func workspaceRoot() throws -> URL {
-        guard let root = environment.workspaceCenter.currentRootURL else {
+        guard let root = workspaceCenter.currentRootURL else {
             throw FloeError.notFound("workspace")
         }
         return repositoryRoot ?? root

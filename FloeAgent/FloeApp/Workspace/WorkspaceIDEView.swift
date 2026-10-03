@@ -23,6 +23,7 @@ struct WorkspaceIDEView: View {
     let onSaved: () -> Void
     @StateObject private var state: IDEWorkbenchState
     @StateObject private var tabs: IDEWorkspaceTabStore
+    @StateObject private var sourceControlCenter: SourceControlCenter
     /// Native text/code kernel state (buffers + per-file editor UI).
     @State private var nativePane: IDENativeTextPaneModel
     private let workspaceID: UUID?
@@ -75,6 +76,10 @@ struct WorkspaceIDEView: View {
         let workbench = IDEWorkbenchState(files: center.fileService)
         _state = StateObject(wrappedValue: workbench)
         _tabs = StateObject(wrappedValue: IDEWorkspaceTabStore(initialRelativePath: initialRelativePath))
+        let sourceControl = center === center.environment.workspaceCenter
+            ? center.environment.sourceControlCenter
+            : SourceControlCenter(environment: center.environment, workspaceCenter: center)
+        _sourceControlCenter = StateObject(wrappedValue: sourceControl)
         _nativePane = State(wrappedValue: IDENativeTextPaneModel(workspace: workbench.nativeText))
     }
 
@@ -114,6 +119,7 @@ struct WorkspaceIDEView: View {
                             IDESidebar(
                                 mode: sidebar,
                                 center: center,
+                                sourceControl: sourceControlCenter,
                                 workspaceID: workspaceID,
                                 workspaceName: workspaceName,
                                 pinnedRootURL: root,
@@ -133,7 +139,7 @@ struct WorkspaceIDEView: View {
                                 bottomPanel(terminalOwner, availableHeight: geometry.size.height)
                             }
                             IDEStatusBar(
-                                sourceControl: center.environment.sourceControlCenter,
+                                sourceControl: sourceControlCenter,
                                 identityMatches: pinnedWorkspaceIsCurrent,
                                 dirtyBuffers: state.nativeText.dirtyPaths.count
                             )
@@ -145,6 +151,7 @@ struct WorkspaceIDEView: View {
                                 IDESidebar(
                                     mode: sidebar,
                                     center: center,
+                                    sourceControl: sourceControlCenter,
                                     workspaceID: workspaceID,
                                     workspaceName: workspaceName,
                                     pinnedRootURL: root,

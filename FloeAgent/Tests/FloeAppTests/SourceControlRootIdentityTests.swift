@@ -2,16 +2,16 @@
 //
 // The IDE is opened for one workspace and can stay mounted while the app
 // switches to another. Its source-control pane must never stage, commit,
-// initialize or switch a repository that the global center now resolves for
-// a different workspace, and the lock must render the moment the current
-// workspace changes (the decision is observed through WorkspaceCenter, not
-// only through the source-control center).
+// initialize or switch a repository that the pane's bound WorkspaceCenter now
+// resolves for a different workspace, and the lock must render the moment the
+// current workspace changes. Settings file browsing has its own center, so
+// the IDE and source-control surface must share that exact instance.
 //
 // `SourceControlCenter` itself needs the app-lifetime `AppEnvironment` graph
 // (private init, live keychain/services), so these tests pin the pure
 // identity decision the rendering lock and the mutation guard both use:
 // same root => bound, A→B => blocked, nil pin (legacy inspector) => follows
-// the global current workspace.
+// the source-control center's bound workspace.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -45,8 +45,8 @@ struct SourceControlRootIdentityTests {
         #expect(SourceControlRootIdentity.matches(current: nil, pinned: rootA) == false)
     }
 
-    @Test("A nil pin keeps the legacy global behavior")
-    func nilPinFollowsGlobalWorkspace() {
+    @Test("A nil pin follows the center's bound workspace")
+    func nilPinFollowsBoundWorkspace() {
         #expect(SourceControlRootIdentity.matches(current: rootA, pinned: nil))
         #expect(SourceControlRootIdentity.matches(current: rootB, pinned: nil))
         #expect(SourceControlRootIdentity.matches(current: nil, pinned: nil))

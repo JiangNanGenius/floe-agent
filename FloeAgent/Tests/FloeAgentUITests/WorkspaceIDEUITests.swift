@@ -123,7 +123,8 @@ final class WorkspaceIDEUITests: XCTestCase {
         // Only a repository exposes the sync row; the not-a-repository state
         // is initialized through the product button, never a test hook.
         let initialize = app.buttons["sourceControl.initialize"]
-        if initialize.waitForExistence(timeout: 8), initialize.isHittable {
+        if initialize.waitForExistence(timeout: 8) {
+            capture("ide-git-before-initialize")
             initialize.tap()
         }
         XCTAssertTrue(
@@ -137,7 +138,6 @@ final class WorkspaceIDEUITests: XCTestCase {
         ] {
             let control = app.buttons[identifier]
             XCTAssertTrue(control.exists, "\(identifier) must exist")
-            XCTAssertTrue(control.isHittable, "\(identifier) must stay tappable")
             XCTAssertTrue(control.label.contains(label), "\(identifier) must carry its action name")
             XCTAssertGreaterThanOrEqual(control.frame.height, 44, "\(identifier) must keep a 44pt touch target")
             XCTAssertGreaterThanOrEqual(control.frame.width, 44, "\(identifier) must keep a 44pt touch target")
@@ -159,6 +159,15 @@ final class WorkspaceIDEUITests: XCTestCase {
             "the multiline commit field must remain reachable"
         )
         capture("ide-git-sidebar-compact-sync-row")
+        // The fixture has no remote, so each sync action must surface a local
+        // error. A real tap verifies hit testing inside the compact List row;
+        // `isHittable` alone reports false for visible sibling buttons on SDK27.
+        for identifier in ["sourceControl.sync.fetch", "sourceControl.sync.pull", "sourceControl.sync.push"] {
+            app.buttons[identifier].tap()
+            let error = app.alerts["源码管理错误"]
+            XCTAssertTrue(error.waitForExistence(timeout: 10), "\(identifier) must respond to a tap")
+            error.buttons["好"].tap()
+        }
     }
 
     func testEngineeringDrawingInlineAndFullScreen() throws {

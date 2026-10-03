@@ -436,11 +436,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         while Date() < deadline {
             if card.exists {
                 let candidate = parseCover(card.identifier)
+                let value = card.value as? String ?? "unavailable"
+                parsed = candidate
+                thumbnailValue = value
                 if cover.allowed.contains(candidate.source) {
-                    let value = card.value as? String ?? "unavailable"
                     if value == candidate.source || value.hasPrefix(candidate.source + ";") {
-                        parsed = candidate
-                        thumbnailValue = value
                         break
                     }
                 }

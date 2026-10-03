@@ -105,8 +105,8 @@ struct SourceControlView: View {
     @State private var discardRequest: GitFileChange?
     @State private var discardRecovery: String?
 
-    /// True when this pane may operate on the repository the global center
-    /// currently resolves to. nil pin keeps the pre-existing global behavior
+    /// True when this pane may operate on the repository the bound center
+    /// currently resolves to. nil pin follows the bound workspace
     /// (FileInspectorView), and a center that has not discovered a root yet
     /// stays interactive while the first snapshot loads.
     private var identityMatches: Bool {
@@ -147,6 +147,7 @@ struct SourceControlView: View {
                 } actions: {
                     Button(IDELanguageRunText.t("初始化仓库", "Initialize Repository")) { run { try await center.initializeRepository() } }
                         .buttonStyle(.borderedProminent)
+                        .frame(minWidth: 44, minHeight: 44)
                         .disabled(center.isBusy)
                         .accessibilityIdentifier("sourceControl.initialize")
                 }
@@ -157,9 +158,12 @@ struct SourceControlView: View {
             if center.isBusy { ProgressView().controlSize(.large) }
         }
         .task {
-            // A mismatched pane must not refresh the global center: that
+            // A mismatched pane must not refresh its bound center: that
             // snapshot belongs to whatever workspace the app switched to.
-            if pinnedRootURL == nil || identityMatches { await center.refreshRepository() }
+            if pinnedRootURL == nil || identityMatches {
+                await center.refreshRepository()
+                await center.loadConnection(reportErrors: false)
+            }
         }
         .refreshable {
             if pinnedRootURL == nil || identityMatches { await center.refreshRepository() }
