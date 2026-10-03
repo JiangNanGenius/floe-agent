@@ -105,6 +105,8 @@ class PortablePreflightFixtureTests(unittest.TestCase):
         # rather than letting newly added preflight dependencies fail first.
         (app / 'scripts/audit_native_runtime_free.py').write_text(
             'print("native-runtime-free fixture passed")\n', encoding='utf-8')
+        (app / 'scripts/pin_office_host_artifact.py').write_text(
+            'print("Office pin fixture passed")\n', encoding='utf-8')
         (app / 'scripts/bootstrap_office_host.py').write_text(
             'LOCK = None\n'
             'def checked_lock(_):\n'
@@ -125,19 +127,21 @@ class PortablePreflightFixtureTests(unittest.TestCase):
         version = re.search(r'^\s*MARKETING_VERSION:\s*"?([^"\s]+)', project_yml, re.MULTILINE).group(1)
         build = re.search(r'^\s*CURRENT_PROJECT_VERSION:\s*"?([^"\s]+)', project_yml, re.MULTILINE).group(1)
         series = '.'.join(version.split('.')[:2])
-        docs = root / 'docs'
-        docs.mkdir()
-        (docs / f'RELEASE_NOTES_{version}_BUILD_{build}.md').write_text(
+        fixture_tag = f'v{version}-beta.999'
+        docs = root / 'docs' / 'releases'
+        (docs / 'notes').mkdir(parents=True)
+        (docs / 'testflight').mkdir(parents=True)
+        (docs / 'notes' / f'RELEASE_NOTES_{version}_BUILD_{build}.md').write_text(
             f'# Floe Agent {version} (build {build})\n\n## 简体中文\n\n内测说明。\n\n'
             '## English\n\nInternal beta notes.\n', encoding='utf-8')
-        (docs / f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json').write_text(
+        (docs / 'testflight' / f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json').write_text(
             json.dumps({'en-US': 'Internal beta fixture notes.', 'zh-Hans': '内测夹具说明。'},
                        ensure_ascii=False), encoding='utf-8')
         git_env = dict(os.environ, GIT_AUTHOR_NAME='Floe Review', GIT_COMMITTER_NAME='Floe Review',
                        GIT_AUTHOR_EMAIL='review@example.invalid',
                        GIT_COMMITTER_EMAIL='review@example.invalid')
         for args in (('init', '-q'), ('add', '.'), ('commit', '-qm', 'fixture'),
-                     ('tag', 'v1.7.0-beta.999')):
+                     ('tag', fixture_tag)):
             subprocess.run(['git', *args], cwd=root, env=git_env, check=True,
                            capture_output=True)
         # A shim PATH with git/python3/awk/dirname but deliberately no plutil.
@@ -155,7 +159,7 @@ class PortablePreflightFixtureTests(unittest.TestCase):
         self.assertEqual(probe.stdout.strip(), '',
                          'fixture PATH must not expose plutil')
         return subprocess.run(['bash', str(app / 'scripts/release_preflight.sh'),
-                               'v1.7.0-beta.999'], cwd=root, env=env,
+                               fixture_tag], cwd=root, env=env,
                               capture_output=True, text=True)
 
     def test_script_does_not_depend_on_apples_plutil(self):

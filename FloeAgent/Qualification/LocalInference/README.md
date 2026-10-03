@@ -115,7 +115,7 @@ profile) even on failure. A historical-baseline run additionally retains
 the source SHA plus that isolated patch; a current run uses the committed
 manifest.
 
-See [the feedback evidence](../../../docs/FLOE_BUILD178_FEEDBACK_REPAIR.md)
+See [the feedback evidence](../../../docs/releases/repairs/FLOE_BUILD178_FEEDBACK_REPAIR.md)
 for the original compile-enabled failure and environment-disabled control.
 Neither replaces testing the production API policy or the reported iPad crash.
 

@@ -1,11 +1,11 @@
 # Floe 1.7 next release — implementation status and verification boundaries
 
-**Current status (2026-09-24):** Build 227 (`v1.7.0-beta.84`, source `9c756864`) is the delivered internal TestFlight — cloud build and upload run 35957256008, Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` verified `VALID` and `IN_BETA_TESTING` in the sole private Floe QA group at 2026-09-24T05:42:18Z. iPad testing of Build 227 reported open regressions: downloaded MLX local models crash in ordinary chat and in the benchmark, a PPT/PPTX preview renders but the edit entry then stalls, Word/Excel/PPT documents opened from the IDE file tree stay on the opening indicator, and narrow Git sidebar actions are not consistently touch-sized. These are unfixed, not passing. `main` also carries unreleased post-227 source repairs (IDE Office tabs through the shared document session, the bounded PPT extent-bootstrap fallback with the Office host rebuilt and pinned by cloud run 36000058922, touch-sized narrow Git actions, and guest run-shape/core-choice plumbing behind the frozen single-core release gate) with no App build, upload or device retest evidence. The [delivery record](TESTFLIGHT_1.7.0_BETA.md) owns the current per-state evidence; the snapshot below is retained history, not the current release status.
+**Current status (2026-09-24):** Build 227 (`v1.7.0-beta.84`, source `9c756864`) is the delivered internal TestFlight — cloud build and upload run 35957256008, Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` verified `VALID` and `IN_BETA_TESTING` in the sole private Floe QA group at 2026-09-24T05:42:18Z. iPad testing of Build 227 reported open regressions: downloaded MLX local models crash in ordinary chat and in the benchmark, a PPT/PPTX preview renders but the edit entry then stalls, Word/Excel/PPT documents opened from the IDE file tree stay on the opening indicator, and narrow Git sidebar actions are not consistently touch-sized. These are unfixed, not passing. `main` also carries unreleased post-227 source repairs (IDE Office tabs through the shared document session, the bounded PPT extent-bootstrap fallback with the Office host rebuilt and pinned by cloud run 36000058922, touch-sized narrow Git actions, and guest run-shape/core-choice plumbing behind the frozen single-core release gate) with no App build, upload or device retest evidence. The [delivery record](releases/testflight/TESTFLIGHT_1.7.0_BETA.md) owns the current per-state evidence; the snapshot below is retained history, not the current release status.
 
 This is the 2026-09-23 work-package snapshot, based on `main` `ef70a208`.
 Build 225 (`v1.7.0-beta.82`) was the last delivered internal build at that
 point. The then-current Build 226 candidate and its newer component evidence
-are tracked in [Build 226 candidate notes](RELEASE_NOTES_1.7.0_BUILD_226.md).
+are tracked in [Build 226 candidate notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_226.md).
 This snapshot distinguishes what was **implemented and verified** from what
 was **designed but not yet verified**; its in-flight table is historical and
 must not be read as the current task queue or release status.
@@ -13,7 +13,7 @@ must not be read as the current task queue or release status.
 Nothing in this snapshot claims a Build 226 IPA, upload, TestFlight
 availability, or device acceptance. Build 226 never compiled; its repaired
 source shipped as Build 227, whose own delivery evidence is in
-[the delivery record](TESTFLIGHT_1.7.0_BETA.md).
+[the delivery record](releases/testflight/TESTFLIGHT_1.7.0_BETA.md).
 
 ## 1. Native-first capability routing (work package J) — implemented and verified
 
@@ -167,7 +167,7 @@ Refresh, at minimum, when the packages above are integrated and verified:
    workflow run, artifact and delivery records once a build exists.
 6. `docs/FLOE_SHELL_TOOL_ROUTES.md` / `docs/FLOE_LINUX_GUEST_BACKEND.md` — guest
    resource policy and routing once A/B/B2 land.
-7. `docs/RELEASE_NOTES_<version>.md` and TestFlight descriptions — only after a
+7. `docs/releases/notes/RELEASE_NOTES_<version>.md` and TestFlight descriptions — only after a
    real build, upload and Apple processing exist.
 
 ## 6. Observed blockers and review items (2026-09-23)

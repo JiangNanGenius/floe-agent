@@ -11,7 +11,7 @@ has been built and uploaded. Device acceptance remains with the user.
 > 并上报 `net=up|partial|down`（云端证据 run 35652797196，`netStatus=up`、`failures=0`）；9p 对 `xattrwalk` 返回兼容结果，
 > `ls -l` 不再报 524。**App 已不再内置 CPython/nodejs-mobile 等原生运行时载荷**：下表与 §4.1 中描述“内置解释器”
 > 的旧文字属于该日期前的实现记录，现行非 Linux 环境只有 POSIX shell 兼容子集，语言与包统一在 Linux 客体安装；
-> 见 [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) 与 [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+> 见 [Build 219 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_219.md) 与 [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 > Every Linux-required entry point now shares one automatic preparation flow; Settings → Execution Environments exposes
 > download/update/start/stop plus the guest network state; the guest configures and reports its own network
 > (`net=up|partial|down`, cloud evidence run 35652797196), and 9p answers `xattrwalk` so `ls -l` no longer reports 524.

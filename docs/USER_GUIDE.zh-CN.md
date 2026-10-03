@@ -1,6 +1,6 @@
 # Floe Agent 使用指南
 
-当前内部交付为 **1.7.0（229）**。不可变标签 `v1.7.0-beta.86` 固定源码 `b06b0b0e`；[发布 run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) 在签名前保留未签名 IPA（739,485,403 字节，SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`），上传签名构建并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)。[核验 run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`；中英文测试说明均已读回。匹配的未签名 GitHub 开发者 IPA 与 Feather 源条目已发布；Gitee 镜像另行核对。[Build 229 说明](RELEASE_NOTES_1.7.0_BUILD_229.md) · [交付记录](TESTFLIGHT_1.7.0_BETA.md)。
+当前内部交付为 **1.7.0（229）**。不可变标签 `v1.7.0-beta.86` 固定源码 `b06b0b0e`；[发布 run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) 在签名前保留未签名 IPA（739,485,403 字节，SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`），上传签名构建并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)。[核验 run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`；中英文测试说明均已读回。匹配的未签名 GitHub 开发者 IPA 与 Feather 源条目已发布；Gitee 镜像另行核对。[Build 229 说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md) · [交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)。
 
 **Build 229 的变化。** Office 打开、退出及保存回执只结算一次；迟到的真实 PPT 页面绘制可恢复等待中的会话，原文件写回失败时保留编辑副本。本地模型下一轮不再复用不健康的 MLX 容器。IDE 运行面板仍提供自动、单核、双核请求；正式版双核安全门仍关闭。组件检查不等于 iPad 验收。
 
@@ -90,7 +90,7 @@ Build 164 已通过 SDK 27 下 iPad、iPhone 的完整 App 操作链测试；上
 
 ## 搜索与工作区导入（build 172）
 
-以下行为已随 1.7 内部测试版交付；完整 App 与真机结果的原始记录见[修复验收记录](FLOE_156_FEEDBACK_REPAIR.md)。
+以下行为已随 1.7 内部测试版交付；完整 App 与真机结果的原始记录见[修复验收记录](releases/repairs/FLOE_156_FEEDBACK_REPAIR.md)。
 
 - 手记：外层搜索名称与文档内容，不受“最近”或当前笔记本限制。结果显示命中片段，页面正文命中后定位到相应页面。Office 正文、扫描件与笔迹建立可重建索引；未完成或失败时会显示结果可能不完整，文档菜单可“重新索引正文”。
 - 工作区导入：手记右上角“＋”→“从 Floe 工作区导入”，浏览会话或项目文件夹后选择文档。导入完成后资料由手记独立保存；UTF-8 文本和 Markdown 分页成为可编辑文字。
@@ -473,7 +473,7 @@ PDF 独立于 Office：从文件列表打开后直接阅读，在宽屏右侧预
 
 Build 172 后续修复版打开文档助手后即可直接聊天。面板顶部保留文档名称，不再把文档编号和工具使用说明显示成开场消息。你可以提问、要求修改文档，或把回答保存为手记内容；原有文档访问范围和编辑权限仍然生效。
 
-宽屏 iPad 使用文档旁边留有间距的助手面板，较窄窗口使用可收起的面板。模型、模式和权限仍可操作。关闭助手可恢复书写空间，不会删除对话。这些调整正在验证，尚未随新的 TestFlight 发布，进度见[修复记录](FLOE_172_REPAIR_EXECUTION.md)。
+宽屏 iPad 使用文档旁边留有间距的助手面板，较窄窗口使用可收起的面板。模型、模式和权限仍可操作。关闭助手可恢复书写空间，不会删除对话。这些调整正在验证，尚未随新的 TestFlight 发布，进度见[修复记录](releases/repairs/FLOE_172_REPAIR_EXECUTION.md)。
 
 ### 常驻网页预览服务
 
@@ -555,7 +555,7 @@ IDE 与图纸控件跟随应用语言；该版本的固定源码验证作为历�
 - IDE 可保存并运行当前文件、停止执行，并使用已配置主机运行远端语言。Shell 新增签名 Lua 安装（当时记录的 `apt install floe/lua` 形式已不再安装路径，现从已验证 WASI 目录安装）。
 - 本地 MLX 模型调整推理内存释放方式。报告的 iPad 聊天崩溃仍需真机复核。
 
-云端完整 App 的手记测试在 iPad、iPhone 各通过三项，各跳过一项原生 Office 测试。可查看[留存的手记截图](qualification/build178-feedback/full-app-955e346a/README.md)。该运行的 IDE 保存测试失败；之后的定向运行 35223435570 已在两个模拟器设备各通过三项 IDE 用例。发布运行 35228451173 随后在发布 SDK 的手记检查超时，未进入上传。Office 原生交互、真实 SSH 执行及本候选的 TestFlight 交付仍待完成，详见[修复记录](FLOE_BUILD178_FEEDBACK_REPAIR.md)与[候选版说明](RELEASE_1.7.0_BETA_36.md)。
+云端完整 App 的手记测试在 iPad、iPhone 各通过三项，各跳过一项原生 Office 测试。可查看[留存的手记截图](qualification/build178-feedback/full-app-955e346a/README.md)。该运行的 IDE 保存测试失败；之后的定向运行 35223435570 已在两个模拟器设备各通过三项 IDE 用例。发布运行 35228451173 随后在发布 SDK 的手记检查超时，未进入上传。Office 原生交互、真实 SSH 执行及本候选的 TestFlight 交付仍待完成，详见[修复记录](releases/repairs/FLOE_BUILD178_FEEDBACK_REPAIR.md)与[候选版说明](releases/beta/RELEASE_1.7.0_BETA_36.md)。
 
 
 ### IDE 云端构建（Build 180）
@@ -587,7 +587,7 @@ Build 186 / beta.43 验收失败，未上传：聚焦 App 回归 204/204（含 2
 Build 187 中，现代 Office 卡片会在摘要就绪时先显示带标注的真实内容，系统缩略图
 就绪后自动升级；系统超时则保留该摘要而不是空白卡片。摘要有明确上限（最多 240 个字段、
 Excel 只取第一张工作表），不等于原始排版。Build 187 已在 `d77aa11f` 打标签 `v1.7.0-beta.44`，
-云端 run `35312393708` 已出现组件与界面验收失败，尚未上传；详见 [beta.44 记录](RELEASE_1.7.0_BETA_44.md)。
+云端 run `35312393708` 已出现组件与界面验收失败，尚未上传；详见 [beta.44 记录](releases/beta/RELEASE_1.7.0_BETA_44.md)。
 
 
 ### 历史 Build188 云端候选版

@@ -6,7 +6,7 @@
 
 - `FLOE_1_7_NEXT_RELEASE_STATUS.md`：标题下新增 “Current status (2026-09-24)” 段，声明 Build 227 为当前交付并列出 Build 227 真机回归（MLX 普通对话/测速崩溃、PPT 预览后编辑入口停住、IDE 文件树 Office 文档停在打开指示、窄 Git 侧栏触控不均）与 Build 227 之后的未发布修复；保留 2026-09-23 快照正文、表格及历史结论不动，仅在 MLX、PPT 行与“已知阻塞”补记 2026-09-24 更新，中文摘要同步。
 - `FLOE_1_7_IMPLEMENTATION_STATUS.md`：当前交付段更新为 Build 227（run 35957256008、未签名 IPA、Apple `VALID`/`IN_BETA_TESTING`、中英文测试说明读回）；原 “Next integration on `main` (2026-09-23)” 表改为 “Integrated source vs remaining gates (updated 2026-09-24)”，记录 Build 227 已交付范围与四项未发布、未复测的 post-227 修复（IDE Office 共享会话 `14c6e8b3`、PPT extent 后备 `464e711e`/`1608e99e` 与宿主固定 run 36000058922、Git 触控尺寸 `812beda1`、运行形状选择 `9ec359fb`/`7e21d694`）；MLX、PPT、下载行同步真机回归与 Gitee 事实；Build 225/224/221 等历史段保持原样。
-- `ARCHITECTURE_OVERVIEW.md`：交付构建由 225 改为 227 并链接 [Build 227 版本说明](RELEASE_NOTES_1.7.0_BUILD_227.md)；注明 `main` 上为未发布修复、Build 227 真机回归未被源码修复；Linux 边界段把“当前固定镜像无 SMP 声明”的旧表述改为源码已核实的双层门（镜像清单证明 + 冻结单核发布门 `GuestReleaseShapePolicy.production`），并补记 Run 形状选择拒绝显式双核、不静默降档。
+- `ARCHITECTURE_OVERVIEW.md`：交付构建由 225 改为 227 并链接 [Build 227 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_227.md)；注明 `main` 上为未发布修复、Build 227 真机回归未被源码修复；Linux 边界段把“当前固定镜像无 SMP 声明”的旧表述改为源码已核实的双层门（镜像清单证明 + 冻结单核发布门 `GuestReleaseShapePolicy.production`），并补记 Run 形状选择拒绝显式双核、不静默降档。
 - `FLOE_1_7_BUILD_AND_ACCEPTANCE.md`：顶部英文交付段与“当前描述文件与链路验收”段更新为 Build 227；数据库迁移版本由 v40 更正为 v44；Build 226/224 失败记录保留为历史。
 - `FloeAgent/README.md`：顶部 “Current internal TestFlight” 更新为 1.7.0 (227)，列出 Build 226 未编译与 Build 227 未修复真机回归；工程与发布检查正文未变。
 - `FLOE_1_7_DOCUMENTATION_AUDIT.md`：本条目登记本轮范围。
@@ -57,9 +57,9 @@ Xcode 26.6 / iPhoneOS 26.5）在 App 目标失败：3 个文件共 14 条诊断
 - 版本：四个出货目标统一 `MARKETING_VERSION 1.7.0` /
   `CURRENT_PROJECT_VERSION 221`，xcodegen 重新生成，pbxproj 仅 8 处
   `CURRENT_PROJECT_VERSION` 变化。
-- 文档：新增 [Build 221 版本说明](RELEASE_NOTES_1.7.0_BUILD_221.md) 与
-  [Build 221 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json)；更新
-  `docs/README.md`、[TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)（220
+- 文档：新增 [Build 221 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_221.md) 与
+  [Build 221 测试说明](releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_221.json)；更新
+  `docs/README.md`、[TestFlight 交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)（220
   标记为编译失败、221 为当前候选）、实施状态与构建验收文档；Build 219 及
   更早记录保持原样。仓库根双语 README 不在本轮声明的编辑范围内，其候选段落
   仍指向 Build 220，留给下一步在授权范围内更新。
@@ -89,8 +89,8 @@ Xcode 26.6 / iPhoneOS 26.5）在 App 目标失败：3 个文件共 14 条诊断
 本轮在隔离分支 `codex/build220-release-metadata` 上把合并后的 `main` 源码 `9e83fcfa` 准备为 Floe 1.7.0（220），不改产品代码、工作流、标签或 `feather.json`：
 
 - 版本：`FloeAgent/project.yml` 四个出货目标（App、Screen Share、Share、Widgets）统一为 `MARKETING_VERSION 1.7.0` / `CURRENT_PROJECT_VERSION 220`，并用 xcodegen 重新生成 `FloeAgent.xcodeproj`。生成结果与提交内容一致（`gen_project.sh` 的干净树检查）；pbxproj 仅 8 处 `CURRENT_PROJECT_VERSION` 变化，`MARKETING_VERSION` 不变，无 219 残留。
-- 新增 [Build 220 版本说明](RELEASE_NOTES_1.7.0_BUILD_220.md)（中英双语：Linux 持久磁盘／`/floe/env` 缓存／9P `ls -l` 语义／安装状态，显式后台模式与实测指标，任务完成通知，PPTX 可见渲染与编辑入口修复，文档与侧载链接刷新；并区分源码实现与云端编译、真机验收）与 [Build 220 测试说明](TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json)。
-- 指针更新：双语 README 的当前候选段落改为 Build 220（保留 219 已核实可安装的交付陈述）；`docs/README.md` 增加 220 候选入口、测试说明行与发布档案条目；[TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md) 顶部新增 “Preparing: 1.7.0 (220) — metadata only, not built or uploaded”；实施状态与构建验收文档补记候选状态。
+- 新增 [Build 220 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_220.md)（中英双语：Linux 持久磁盘／`/floe/env` 缓存／9P `ls -l` 语义／安装状态，显式后台模式与实测指标，任务完成通知，PPTX 可见渲染与编辑入口修复，文档与侧载链接刷新；并区分源码实现与云端编译、真机验收）与 [Build 220 测试说明](releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_220.json)。
+- 指针更新：双语 README 的当前候选段落改为 Build 220（保留 219 已核实可安装的交付陈述）；`docs/README.md` 增加 220 候选入口、测试说明行与发布档案条目；[TestFlight 交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md) 顶部新增 “Preparing: 1.7.0 (220) — metadata only, not built or uploaded”；实施状态与构建验收文档补记候选状态。
 - 明确不做的：不创建或移动标签、不推送、不触发工作流、不上传，也不宣称 Build 220 已构建、已被 Apple 处理、可安装、通过真机验收或已发布；219 及更早的发布档案保持原样。
 - 顺带修复：`FloeAgent/scripts/tests/test_release_review_workflows.py` 的便携 plist／版本夹具此前只在 `release_preflight.sh` 依赖 `bootstrap_office_host` 时打了桩，未给新增的 `office_release_gates` 读取打桩，导致该夹具在 HEAD 上 3 项失败（已用 stash 对照确认与本次版本改动无关）。本轮按夹具自身的“隔离便携检查、Office 门禁另有专项测试”约定补上通过型 no-op 桩，不弱化任何断言。
 - 本轮检查：`test_release_preflight_versions.py`（8 项通过，含真实 Office pin 门禁与版本夹具）、`test_release_review_workflows.py`（28 项通过）、`test_readme_source_links.py`／`test_feather_source.py`／`test_prepare_testflight.py`／`test_release_notes_component_gate.py`（36 项通过）、TestFlight JSON 校验、真实 `project.yml` 与 pbxproj 的版本一致性 awk 检查、发布说明中英标题检查、改动文档相对链接检查与 `git diff --check`。
@@ -101,8 +101,8 @@ Xcode 26.6 / iPhoneOS 26.5）在 App 目标失败：3 个文件共 14 条诊断
 
 - 按钮复核：双语 README 顶部的 **Add to Feather / Add to AltStore**（中文「添加到 Feather / 添加到 AltStore」）按钮继续指向官网下载页 `https://www.floe-agent.com/#download`。GitHub 的 Markdown 过滤会同时移除 HTML 与 Markdown 写法中的 `feather://`、`altstore://` 链接（已用 GitHub Markdown API 实测：两种写法都只剩纯文本），所以 GitHub 上唯一可点击的快速添加入口就是官网，官网 chooser 再从页面发出真正的深链。
 - 与官网逐字节对照：线上 `assets/index-CFo2eGcE.js` 中官网按钮使用 `feather://source/${SOURCE_URL}` 与 `altstore://source?url=${encodeURIComponent(SOURCE_URL)}`，`SOURCE_URL` 为 `https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`。双语 README 的 Feather 安装源章节与 [FEATHER_SOURCE.md](FEATHER_SOURCE.md) 已记录两条完整深链（Feather 形式直接拼接，AltStore 形式为百分号编码），并注明 GitHub 会移除自定义 scheme。线上 `feather.json` 与仓库内文件逐字节一致（build 219）。
-- 导航：中文 README 的「Feather 安装源」章节从文件末尾移回「开始使用」，与英文版顺序一致；文档索引补充 [FEATHER_SOURCE.md](FEATHER_SOURCE.md) 与 [FLOE_156_FEEDBACK_REPAIR.md](FLOE_156_FEEDBACK_REPAIR.md) 两个入口。
-- 219 之后的 Office 事实：演示文稿宿主已由 office-native-host 运行 35668651442（`c4ff0dde`）重新编译链接，并在 `f0ca71a7` 重新固定；`engine.lock.json` 的 `capabilityQualification` 四项设备回执仍全部为 false，真机往返与写回未取得证据。双语使用指南、[FLOE_1_7_COMPATIBILITY.md](FLOE_1_7_COMPATIBILITY.md) 与 [FLOE_156_FEEDBACK_REPAIR.md](FLOE_156_FEEDBACK_REPAIR.md) 已按此改写；模拟器编译守卫修复（`67a37db3`）只记录定向检查通过，完整 App 云端门禁在复核时仍在运行。
+- 导航：中文 README 的「Feather 安装源」章节从文件末尾移回「开始使用」，与英文版顺序一致；文档索引补充 [FEATHER_SOURCE.md](FEATHER_SOURCE.md) 与 [FLOE_156_FEEDBACK_REPAIR.md](releases/repairs/FLOE_156_FEEDBACK_REPAIR.md) 两个入口。
+- 219 之后的 Office 事实：演示文稿宿主已由 office-native-host 运行 35668651442（`c4ff0dde`）重新编译链接，并在 `f0ca71a7` 重新固定；`engine.lock.json` 的 `capabilityQualification` 四项设备回执仍全部为 false，真机往返与写回未取得证据。双语使用指南、[FLOE_1_7_COMPATIBILITY.md](FLOE_1_7_COMPATIBILITY.md) 与 [FLOE_156_FEEDBACK_REPAIR.md](releases/repairs/FLOE_156_FEEDBACK_REPAIR.md) 已按此改写；模拟器编译守卫修复（`67a37db3`）只记录定向检查通过，完整 App 云端门禁在复核时仍在运行。
 - 运行时措辞：使用指南中「Node 宿主」改为客体 Node；`pyreadstat`/PyStata 与「纯 Python iOS 沙箱」的旧描述改为 Linux 客体 riscv64 构建或可信 SSH 主机。双语 README、使用指南与索引继续明确 App 不含原生 Python/Node/Ruby 载荷，语言与包由 Linux 客体或签名 WASI 目录提供。
 - 明确留待后续证据：不宣称 Build 220 已构建、已上传、已被 Apple 处理、可安装、通过真机验收或已发布（见 [docs/README.md](README.md) 同一说明）。
 - 本轮检查：`test_readme_source_links.py`（4 项通过）、`test_feather_source.py`（4 项通过）、`test_native_runtime_free_audit.py`（5 项通过）；深链字面量与官网构造逐字节对照、AltStore 深链解码回稳定源地址、改动文档相对链接与 `git diff --check` 均通过。
@@ -169,7 +169,7 @@ Xcode 26.6 / iPhoneOS 26.5）在 App 目标失败：3 个文件共 14 条诊断
 | [docs/FLOE_1_7_NODE_RUNTIME.md](FLOE_1_7_NODE_RUNTIME.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
 | [docs/FLOE_BROWSER_PROTOCOL.md](FLOE_BROWSER_PROTOCOL.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
 | [docs/HARNESS_TIER3_DESIGN.md](HARNESS_TIER3_DESIGN.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
-| [docs/IMPLEMENTATION_1.5.0.md](IMPLEMENTATION_1.5.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/IMPLEMENTATION_1.5.0.md](releases/repairs/IMPLEMENTATION_1.5.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
 | [docs/INTERNAL_PROMPT_AUDIT.md](INTERNAL_PROMPT_AUDIT.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
 | [docs/LOCAL_SHELL_IMPLEMENTATION_2026-09-12.md](LOCAL_SHELL_IMPLEMENTATION_2026-09-12.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
 | [docs/MAIL_CONNECTOR.md](MAIL_CONNECTOR.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
@@ -179,75 +179,75 @@ Xcode 26.6 / iPhoneOS 26.5）在 App 目标失败：3 个文件共 14 条诊断
 | [docs/PDF_SKILL_HUB_IMPLEMENTATION.md](PDF_SKILL_HUB_IMPLEMENTATION.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
 | [docs/PLAN_LOCAL_SHELL.md](PLAN_LOCAL_SHELL.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
 | [docs/README.md](README.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
-| [docs/RELEASE_CODE_AUDIT_20260909.md](RELEASE_CODE_AUDIT_20260909.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.87.md](RELEASE_NOTES_1.4.87.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.88.md](RELEASE_NOTES_1.4.88.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.89.md](RELEASE_NOTES_1.4.89.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.90.md](RELEASE_NOTES_1.4.90.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.91.md](RELEASE_NOTES_1.4.91.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.92.md](RELEASE_NOTES_1.4.92.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.93.md](RELEASE_NOTES_1.4.93.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.94.md](RELEASE_NOTES_1.4.94.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.95.md](RELEASE_NOTES_1.4.95.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.96.md](RELEASE_NOTES_1.4.96.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.97.md](RELEASE_NOTES_1.4.97.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.98.md](RELEASE_NOTES_1.4.98.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.4.99.md](RELEASE_NOTES_1.4.99.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.5.0.md](RELEASE_NOTES_1.5.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.5.1.md](RELEASE_NOTES_1.5.1.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.5.2.md](RELEASE_NOTES_1.5.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.5.3.md](RELEASE_NOTES_1.5.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.0.md](RELEASE_NOTES_1.6.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.1.md](RELEASE_NOTES_1.6.1.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.2.md](RELEASE_NOTES_1.6.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.3.md](RELEASE_NOTES_1.6.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.4.md](RELEASE_NOTES_1.6.4.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.5.md](RELEASE_NOTES_1.6.5.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.6.md](RELEASE_NOTES_1.6.6.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_NOTES_1.6.7.md](RELEASE_NOTES_1.6.7.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.5.2.md](RELEASE_VERIFICATION_1.5.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.5.3.md](RELEASE_VERIFICATION_1.5.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.6.0.md](RELEASE_VERIFICATION_1.6.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.6.1.md](RELEASE_VERIFICATION_1.6.1.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.6.2.md](RELEASE_VERIFICATION_1.6.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.6.3.md](RELEASE_VERIFICATION_1.6.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.6.4.md](RELEASE_VERIFICATION_1.6.4.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/RELEASE_VERIFICATION_1.6.6.md](RELEASE_VERIFICATION_1.6.6.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_CODE_AUDIT_20260909.md](releases/verification/RELEASE_CODE_AUDIT_20260909.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.87.md](releases/notes/RELEASE_NOTES_1.4.87.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.88.md](releases/notes/RELEASE_NOTES_1.4.88.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.89.md](releases/notes/RELEASE_NOTES_1.4.89.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.90.md](releases/notes/RELEASE_NOTES_1.4.90.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.91.md](releases/notes/RELEASE_NOTES_1.4.91.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.92.md](releases/notes/RELEASE_NOTES_1.4.92.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.93.md](releases/notes/RELEASE_NOTES_1.4.93.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.94.md](releases/notes/RELEASE_NOTES_1.4.94.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.95.md](releases/notes/RELEASE_NOTES_1.4.95.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.96.md](releases/notes/RELEASE_NOTES_1.4.96.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.97.md](releases/notes/RELEASE_NOTES_1.4.97.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.98.md](releases/notes/RELEASE_NOTES_1.4.98.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.4.99.md](releases/notes/RELEASE_NOTES_1.4.99.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.5.0.md](releases/notes/RELEASE_NOTES_1.5.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.5.1.md](releases/notes/RELEASE_NOTES_1.5.1.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.5.2.md](releases/notes/RELEASE_NOTES_1.5.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.5.3.md](releases/notes/RELEASE_NOTES_1.5.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.0.md](releases/notes/RELEASE_NOTES_1.6.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.1.md](releases/notes/RELEASE_NOTES_1.6.1.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.2.md](releases/notes/RELEASE_NOTES_1.6.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.3.md](releases/notes/RELEASE_NOTES_1.6.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.4.md](releases/notes/RELEASE_NOTES_1.6.4.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.5.md](releases/notes/RELEASE_NOTES_1.6.5.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.6.md](releases/notes/RELEASE_NOTES_1.6.6.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_NOTES_1.6.7.md](releases/notes/RELEASE_NOTES_1.6.7.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.5.2.md](releases/verification/RELEASE_VERIFICATION_1.5.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.5.3.md](releases/verification/RELEASE_VERIFICATION_1.5.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.6.0.md](releases/verification/RELEASE_VERIFICATION_1.6.0.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.6.1.md](releases/verification/RELEASE_VERIFICATION_1.6.1.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.6.2.md](releases/verification/RELEASE_VERIFICATION_1.6.2.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.6.3.md](releases/verification/RELEASE_VERIFICATION_1.6.3.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.6.4.md](releases/verification/RELEASE_VERIFICATION_1.6.4.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/RELEASE_VERIFICATION_1.6.6.md](releases/verification/RELEASE_VERIFICATION_1.6.6.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
 | [docs/SKILL_ROUTING_UPGRADE_WORK.md](SKILL_ROUTING_UPGRADE_WORK.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
-| [docs/STABILITY_1.4.88.md](STABILITY_1.4.88.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.24.md](TESTFLIGHT_1.4.24.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.25.md](TESTFLIGHT_1.4.25.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.26.md](TESTFLIGHT_1.4.26.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.27.md](TESTFLIGHT_1.4.27.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.28.md](TESTFLIGHT_1.4.28.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.29.md](TESTFLIGHT_1.4.29.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.30.md](TESTFLIGHT_1.4.30.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.31.md](TESTFLIGHT_1.4.31.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.32.md](TESTFLIGHT_1.4.32.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.33.md](TESTFLIGHT_1.4.33.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.41.md](TESTFLIGHT_1.4.41.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.42.md](TESTFLIGHT_1.4.42.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.45.md](TESTFLIGHT_1.4.45.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.46.md](TESTFLIGHT_1.4.46.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.47.md](TESTFLIGHT_1.4.47.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.49.md](TESTFLIGHT_1.4.49.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.50.md](TESTFLIGHT_1.4.50.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.73.md](TESTFLIGHT_1.4.73.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.74.md](TESTFLIGHT_1.4.74.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.75.md](TESTFLIGHT_1.4.75.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.76.md](TESTFLIGHT_1.4.76.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.77.md](TESTFLIGHT_1.4.77.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.78.md](TESTFLIGHT_1.4.78.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.79.md](TESTFLIGHT_1.4.79.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.80.md](TESTFLIGHT_1.4.80.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.81.md](TESTFLIGHT_1.4.81.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.82.md](TESTFLIGHT_1.4.82.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.83.md](TESTFLIGHT_1.4.83.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.84.md](TESTFLIGHT_1.4.84.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.85.md](TESTFLIGHT_1.4.85.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.86.md](TESTFLIGHT_1.4.86.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.87.md](TESTFLIGHT_1.4.87.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
-| [docs/TESTFLIGHT_1.4.88.md](TESTFLIGHT_1.4.88.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/STABILITY_1.4.88.md](releases/repairs/STABILITY_1.4.88.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.24.md](releases/testflight/TESTFLIGHT_1.4.24.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.25.md](releases/testflight/TESTFLIGHT_1.4.25.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.26.md](releases/testflight/TESTFLIGHT_1.4.26.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.27.md](releases/testflight/TESTFLIGHT_1.4.27.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.28.md](releases/testflight/TESTFLIGHT_1.4.28.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.29.md](releases/testflight/TESTFLIGHT_1.4.29.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.30.md](releases/testflight/TESTFLIGHT_1.4.30.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.31.md](releases/testflight/TESTFLIGHT_1.4.31.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.32.md](releases/testflight/TESTFLIGHT_1.4.32.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.33.md](releases/testflight/TESTFLIGHT_1.4.33.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.41.md](releases/testflight/TESTFLIGHT_1.4.41.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.42.md](releases/testflight/TESTFLIGHT_1.4.42.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.45.md](releases/testflight/TESTFLIGHT_1.4.45.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.46.md](releases/testflight/TESTFLIGHT_1.4.46.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.47.md](releases/testflight/TESTFLIGHT_1.4.47.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.49.md](releases/testflight/TESTFLIGHT_1.4.49.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.50.md](releases/testflight/TESTFLIGHT_1.4.50.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.73.md](releases/testflight/TESTFLIGHT_1.4.73.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.74.md](releases/testflight/TESTFLIGHT_1.4.74.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.75.md](releases/testflight/TESTFLIGHT_1.4.75.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.76.md](releases/testflight/TESTFLIGHT_1.4.76.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.77.md](releases/testflight/TESTFLIGHT_1.4.77.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.78.md](releases/testflight/TESTFLIGHT_1.4.78.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.79.md](releases/testflight/TESTFLIGHT_1.4.79.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.80.md](releases/testflight/TESTFLIGHT_1.4.80.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.81.md](releases/testflight/TESTFLIGHT_1.4.81.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.82.md](releases/testflight/TESTFLIGHT_1.4.82.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.83.md](releases/testflight/TESTFLIGHT_1.4.83.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.84.md](releases/testflight/TESTFLIGHT_1.4.84.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.85.md](releases/testflight/TESTFLIGHT_1.4.85.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.86.md](releases/testflight/TESTFLIGHT_1.4.86.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.87.md](releases/testflight/TESTFLIGHT_1.4.87.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
+| [docs/TESTFLIGHT_1.4.88.md](releases/testflight/TESTFLIGHT_1.4.88.md) | 历史发布/验证记录 | 保留日期与原始结论，不充当 1.7 验收 |
 | [docs/TOOL_CLOSURE_IMPLEMENTATION.md](TOOL_CLOSURE_IMPLEMENTATION.md) | 专题说明/既有计划 | 保留专题范围；1.7 进展以实施状态为准，后续随对应代码更新 |
 | [docs/USER_GUIDE.md](USER_GUIDE.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |
 | [docs/USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 当前 1.7 说明 | 本轮更新或引用当前实施状态 |

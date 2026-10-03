@@ -1,6 +1,6 @@
 # Floe 1.7 构建与验收 / Build and acceptance
 
-Build 229 is the current internal delivery. Immutable tag `v1.7.0-beta.86` binds source `b06b0b0e42008e8ea5c6b402ab146c99e2bcf328`. [Release run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) built with Xcode 26.6, retained the unsigned IPA (739,485,403 bytes; SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`), uploaded the signed build and published the GitHub prerelease. Apple build `3aecdb89-1cca-4192-9b32-1493d72ad3fe` is `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group; [prepare run 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863) read back both beta-note locales and [verify run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) confirmed group availability. Build 229 changes Office session recovery and failed MLX-container reuse, but these flows have not passed physical-iPad acceptance. Dual-core Linux remains gated at one vCPU after a correctness defect was found in an experimental acceleration path. The earlier Build 224/226 failures remain historical records. See [Build 229 notes](RELEASE_NOTES_1.7.0_BUILD_229.md) and [delivery record](TESTFLIGHT_1.7.0_BETA.md).
+Build 229 is the current internal delivery. Immutable tag `v1.7.0-beta.86` binds source `b06b0b0e42008e8ea5c6b402ab146c99e2bcf328`. [Release run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) built with Xcode 26.6, retained the unsigned IPA (739,485,403 bytes; SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`), uploaded the signed build and published the GitHub prerelease. Apple build `3aecdb89-1cca-4192-9b32-1493d72ad3fe` is `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group; [prepare run 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863) read back both beta-note locales and [verify run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) confirmed group availability. Build 229 changes Office session recovery and failed MLX-container reuse, but these flows have not passed physical-iPad acceptance. Dual-core Linux remains gated at one vCPU after a correctness defect was found in an experimental acceleration path. The earlier Build 224/226 failures remain historical records. See [Build 229 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md) and [delivery record](releases/testflight/TESTFLIGHT_1.7.0_BETA.md).
 
 本说明适用于 1.7 整合分支；完整验收状态以[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。最低系统为 iOS/iPadOS 26，数据库迁移至 v44。重型 App 构建与归档放在云端，本地仅做定向验证。正式发布不属于本轮自动动作。
 
@@ -53,7 +53,7 @@ Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输
 
 ## 当前描述文件与新链路验收
 
-当前内部交付为 [Build 229 版本说明](RELEASE_NOTES_1.7.0_BUILD_229.md)：不可变标签 `v1.7.0-beta.86` 绑定源码 `b06b0b0e`；Xcode 26.6 云端构建、未签名 IPA 留存、签名上传和 GitHub 预发布已完成。Apple build `3aecdb89-1cca-4192-9b32-1493d72ad3fe` 已核实 `VALID`、未过期，唯一私有内部 Floe QA 组处于 `IN_BETA_TESTING`，中英文测试说明已读回。Office 会话恢复和 MLX 受损容器隔离是源码修复候选，PPT 可编辑首帧、保存重开及本地模型多轮仍待 iPad 真机复测。Linux 双核因实验路径原子正确性和性能门槛未过，正式版仍限单核；Build 224/226 失败记录继续保留。详见 [TestFlight 交付记录](TESTFLIGHT_1.7.0_BETA.md)，PiP、通知与输入等设备体验同样未作真机通过声明。
+当前内部交付为 [Build 229 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md)：不可变标签 `v1.7.0-beta.86` 绑定源码 `b06b0b0e`；Xcode 26.6 云端构建、未签名 IPA 留存、签名上传和 GitHub 预发布已完成。Apple build `3aecdb89-1cca-4192-9b32-1493d72ad3fe` 已核实 `VALID`、未过期，唯一私有内部 Floe QA 组处于 `IN_BETA_TESTING`，中英文测试说明已读回。Office 会话恢复和 MLX 受损容器隔离是源码修复候选，PPT 可编辑首帧、保存重开及本地模型多轮仍待 iPad 真机复测。Linux 双核因实验路径原子正确性和性能门槛未过，正式版仍限单核；Build 224/226 失败记录继续保留。详见 [TestFlight 交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)，PiP、通知与输入等设备体验同样未作真机通过声明。
 
 ### 192–196 结果（2026-09-19）
 
@@ -66,7 +66,7 @@ Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输
 ### 186 最终结果与 187 准备（2026-09-18）
 
 - 186 固定源码 `d421fea260523d063270e2d21d623bd011acd9ea` / `v1.7.0-beta.43` 的 run `35306551280` 已失败。发布 SDK App 回归 204/204；双端 Notes UI 均 3 通过、1 失败、1 原生 Office 预期跳过；组件 iPad 83/84、iPhone 84/84；SDK 27 模块发现一个本地化键错误。签名与上传未执行，[原始结果](qualification/build186-release/result.json)与恢复包身份均已留存。
-- 187 已固定 `v1.7.0-beta.44` / `d77aa11f`，云端 run35312393708 进行中，尚无完成验收或上传结果。新版封面采用摘要首帧加系统预览升级；严格 Quick Look 诊断单列记录，缺失、漏跑、崩溃与非预期失败仍阻断。新的本地化预检先于重型构建执行。详见 [187 记录](RELEASE_1.7.0_BETA_44.md)。
+- 187 已固定 `v1.7.0-beta.44` / `d77aa11f`，云端 run35312393708 进行中，尚无完成验收或上传结果。新版封面采用摘要首帧加系统预览升级；严格 Quick Look 诊断单列记录，缺失、漏跑、崩溃与非预期失败仍阻断。新的本地化预检先于重型构建执行。详见 [187 记录](releases/beta/RELEASE_1.7.0_BETA_44.md)。
 - 组件 run `35304310882`（源码 `8d303197`）iPad 84/84、iPhone 83/84：唯一失败是直接读取暂存文件的 Word 请求 45.0958 s 超时；同一文件经真实封面服务（`NotesDocumentCoverService`）在同一次运行中以 3.278 s 首次尝试通过（iPad 直连请求经重试通过）。两端 OCR 用例通过，导出的 XCTest 会话日志证实有效计时器由 120 s 重置为 180 s（[保留的验收记录](qualification/build185-release/notes-followup.json)）。系统宿主停滞原因仍未证实，未加入重试或超时掩盖；完整 App 冷启动封面可靠性仍是必要门槛。
 - 标签源码中的六个 Office 样例测试（`b06b3082`）已改为真实 importer/CAS/封面服务路径，仍严格要求真实 Quick Look 内容图（非回退摘要或图标）；它们尚未在任何地方执行，本次发布 run 的 Notes 组件作业是首次实跑结果。
 - 历史记录不改写：组件 `35301809882` iPad 84/84、iPhone 83/84（120 秒扫描 OCR 超时）；185 / `v1.7.0-beta.42` 双 SDK App 回归 204/204，但界面验收失败、未上传。
@@ -74,7 +74,7 @@ Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输
 ### 上一候选（185）状态（2026-09-18 记录）
 
 - 候选为 1.7.0 (185) / `v1.7.0-beta.42`，固定源码 `42ecc4527fdbeb171dd0aed1d0776375770f1572`。发布流水线 run `35292395886` 已启动：`prepare-release` 通过，App 构建与双 SDK 回归仍在进行；**尚未签名、未上传、不可安装**。
-- 上一候选 1.7.0 (184) / `v1.7.0-beta.41` / `8e0cf69f`：两套 SDK 的 App 编译均通过，但两个 App 回归各 203/204，同一个 Lua 安装/运行用例命中旧 WASI 32 变量上限；`LocalServiceLifecycleTests` 两用例在两个 SDK 上均通过。设备恢复包已留存，未签名、未上传（[候选记录](RELEASE_1.7.0_BETA_41.md)、[回归证据](qualification/build184-release/sdk27-app-regression.json)、[恢复包](qualification/build184-release/device-recovery.json)）。
+- 上一候选 1.7.0 (184) / `v1.7.0-beta.41` / `8e0cf69f`：两套 SDK 的 App 编译均通过，但两个 App 回归各 203/204，同一个 Lua 安装/运行用例命中旧 WASI 32 变量上限；`LocalServiceLifecycleTests` 两用例在两个 SDK 上均通过。设备恢复包已留存，未签名、未上传（[候选记录](releases/beta/RELEASE_1.7.0_BETA_41.md)、[回归证据](qualification/build184-release/sdk27-app-regression.json)、[恢复包](qualification/build184-release/device-recovery.json)）。
 - Lua 修复 `f908cce1`：真实 macOS Swift Testing 7/7（含签名 Lua fixture），另加 11 项边界/真实 Lua 检查（[证据](qualification/build185-release/lua-environment.json)）；CI `0fff2c3b` 在模块测试前准备签名 fixture。完整 App 内该用例的重跑仍属 185 验收。
 - NativeNotes 组件运行 `35290599088`（源码 `f4435d22`，开发 SDK 27，兼容作业未选择）在 iPad/iPhone 各 72/72；10 张真实内容封面保存于 `docs/qualification/build185-release/native-covers/`。其中 iPhone 早期思维导图文字截图整体黑帧，已排除；后续联动图有可见内容。组件通过只证明冷启动症状已修复，不证明原始失败原因，也不等于完整 App 或真机验收。
 - 证据分类固定为：真实测试／组件 UI／完整 App／真机／上传，五者分别记录；自动化与模拟器结果不替代用户真机检查。

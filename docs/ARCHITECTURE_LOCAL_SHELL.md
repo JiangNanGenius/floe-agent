@@ -1,7 +1,7 @@
 # Floe Local Shell Substrate — Architecture
 
 Status: 1.7 current. TinyEMU/Linux is the primary local runtime (see
-[Linux backend](FLOE_LINUX_GUEST_BACKEND.md) and [Build 219 notes](RELEASE_NOTES_1.7.0_BUILD_219.md));
+[Linux backend](FLOE_LINUX_GUEST_BACKEND.md) and [Build 219 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_219.md));
 the native `ios_system` substrate described below remains as the explicit
 compatibility backend for environments set to **Native**. Physical-device
 acceptance remains with the user.

@@ -1511,7 +1511,13 @@ jobs:
           path: release-assets
       - name: Publish the transport-accepted paired release
         run: |
-          NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+          # Frozen older tags carry the original docs/ layout. Current source
+          # keeps release records under docs/releases/notes.
+          if test -d docs/releases/notes; then
+            NOTES_PATH="docs/releases/notes/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+          else
+            NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+          fi
           test -s "$NOTES_PATH"
           # Build 177's immutable candidate notes use h2 section headings;
           # later notes use h3. Accept either, but always require both languages.
@@ -1852,7 +1858,11 @@ jobs:
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-unsigned-ipa.yml"
             echo "Release $RELEASE_TAG already holds the attested unsigned IPA; assets and mode preserved."
           else
-            NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+            if test -d docs/releases/notes; then
+              NOTES_PATH="docs/releases/notes/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+            else
+              NOTES_PATH="docs/RELEASE_NOTES_${VERSION}_BUILD_${BUILD}.md"
+            fi
             test -s "$NOTES_PATH"
             grep -qE '^##+ 简体中文' "$NOTES_PATH"
             grep -qE '^##+ English' "$NOTES_PATH"

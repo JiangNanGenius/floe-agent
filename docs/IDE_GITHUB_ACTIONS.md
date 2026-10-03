@@ -6,8 +6,8 @@ Current status: build 188 / `v1.7.0-beta.45` is qualifying at fixed source
 `c5656276a3fed0cc0546d2ab360603e443b7f87e` in
 [run 35317532109](https://github.com/JiangNanGenius/floe-agent/actions/runs/35317532109).
 It has not uploaded. Build 186 failed qualification and was not uploaded; see
-[beta.43 final record](RELEASE_1.7.0_BETA_43.md) and
-[beta.45 live record](RELEASE_1.7.0_BETA_45.md).
+[beta.43 final record](releases/beta/RELEASE_1.7.0_BETA_43.md) and
+[beta.45 live record](releases/beta/RELEASE_1.7.0_BETA_45.md).
 
 Release run
 [`35306551280`](https://github.com/JiangNanGenius/floe-agent/actions/runs/35306551280)
@@ -93,7 +93,7 @@ cancel-before-association, retry/backoff, terminal-state preservation during an
 artifact refresh, redirect authorization handling, digest mismatch, and an
 actual GitHub run continued across App relaunch. The local state-machine and
 transport fixtures provide focused evidence; they do not replace full-App UI or
-real GitHub account verification. See [candidate release record](RELEASE_1.7.0_BETA_44.md)
+real GitHub account verification. See [candidate release record](releases/beta/RELEASE_1.7.0_BETA_44.md)
 for current delivery status.
 
 Observed before the build-180 tag: the production center/engine/store/policy and
@@ -180,7 +180,7 @@ Build 186 executed the accepted-SDK focused regression at 204/204 with all 23
 because of the other qualification gates (localization namespacing in the SDK 27
 module tests, one strict Excel cover case on the iPad component leg, and the
 Office back-control UI identifier on both full-App UI legs;
-[final record](RELEASE_1.7.0_BETA_43.md)). The IDE feature source is unchanged in
+[final record](releases/beta/RELEASE_1.7.0_BETA_43.md)). The IDE feature source is unchanged in
 build 187; its fixes concern Notes covers, navigation, localization and qualification.
 The tagged build is now running the cloud gates, with signing and upload still pending.
 Actual App relaunch by tapping through the run list remains an open UI-level check

@@ -30,21 +30,22 @@ def write_release_copy(docs, project_yml, notes_transform=None, whatsnew=None,
     """
     version, build = version_and_build(project_yml)
     series = '.'.join(version.split('.')[:2])
-    docs.mkdir(parents=True, exist_ok=True)
+    (docs / 'releases' / 'notes').mkdir(parents=True, exist_ok=True)
+    (docs / 'releases' / 'testflight').mkdir(parents=True, exist_ok=True)
     notes_name = f'RELEASE_NOTES_{version}_BUILD_{build}.md'
     notes = (f'# Floe Agent {version} (build {build})\n\n'
              '## 简体中文\n\n内测说明。\n\n## English\n\nInternal beta notes.\n')
     if notes_transform:
         notes = notes_transform(notes)
     if not remove_notes:
-        (docs / notes_name).write_text(notes, encoding='utf-8')
+        (docs / 'releases' / 'notes' / notes_name).write_text(notes, encoding='utf-8')
     whatsnew_name = f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json'
     if not remove_whatsnew:
         if whatsnew_raw is not None:
-            (docs / whatsnew_name).write_text(whatsnew_raw, encoding='utf-8')
+            (docs / 'releases' / 'testflight' / whatsnew_name).write_text(whatsnew_raw, encoding='utf-8')
         else:
             payload = whatsnew or {'en-US': 'Internal beta fixture notes.', 'zh-Hans': '内测夹具说明。'}
-            (docs / whatsnew_name).write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+            (docs / 'releases' / 'testflight' / whatsnew_name).write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     return notes_name, whatsnew_name
 
 class ReleaseVersionPreflightTests(unittest.TestCase):

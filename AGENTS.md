@@ -68,4 +68,4 @@ Apply these instructions throughout this repository. Follow the user's latest sc
 - Architecture: [overview](docs/ARCHITECTURE_OVERVIEW.md), [local shell](docs/ARCHITECTURE_LOCAL_SHELL.md), [browser protocol](docs/FLOE_BROWSER_PROTOCOL.md).
 - Notes and UI: [Pencil design](docs/DESIGN_NOTES_PENCIL.md), [mind maps](docs/FLOE_1_7_MIND_MAPS.md), [English guide](docs/USER_GUIDE.md), [中文指南](docs/USER_GUIDE.zh-CN.md).
 - Integration and data: [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [migration/recovery](docs/FLOE_1_7_MIGRATION.md), [compatibility](docs/FLOE_1_7_COMPATIBILITY.md).
-- Delivery: [TestFlight record](docs/TESTFLIGHT_1.7.0_BETA.md), [feedback repair/evidence](docs/FLOE_156_FEEDBACK_REPAIR.md), [documentation index](docs/README.md). These contain dated results; verify current state rather than treating old build numbers as current.
+- Delivery: [TestFlight record](docs/releases/testflight/TESTFLIGHT_1.7.0_BETA.md), [feedback repair/evidence](docs/releases/repairs/FLOE_156_FEEDBACK_REPAIR.md), [documentation index](docs/README.md). These contain dated results; verify current state rather than treating old build numbers as current.

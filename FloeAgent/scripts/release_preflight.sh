@@ -101,8 +101,8 @@ from pathlib import Path
 version, build = sys.argv[1], sys.argv[2]
 docs = Path('../docs')
 series = '.'.join(version.split('.')[:2])
-notes_path = docs / f'RELEASE_NOTES_{version}_BUILD_{build}.md'
-whats_new_path = docs / f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json'
+notes_path = docs / 'releases' / 'notes' / f'RELEASE_NOTES_{version}_BUILD_{build}.md'
+whats_new_path = docs / 'releases' / 'testflight' / f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json'
 
 problems = []
 try:

@@ -113,7 +113,7 @@ if __name__ == '__main__':
         return re.search(r'^\s*' + name + r':\s*"?([^"\s]+)', project, re.M).group(1)
     version, number = setting('MARKETING_VERSION'), setting('CURRENT_PROJECT_VERSION')
     series = '.'.join(version.split('.')[:2])
-    notes_path = args.notes or Path(f'docs/TESTFLIGHT_{series}_WHATS_NEW_BUILD_{number}.json')
+    notes_path = args.notes or Path(f'docs/releases/testflight/TESTFLIGHT_{series}_WHATS_NEW_BUILD_{number}.json')
     # Never silently attach a previous build's testing instructions.
     notes = json.loads(notes_path.read_text())
     result = prepare(os.environ['BUILD_ID'], setting('PRODUCT_BUNDLE_IDENTIFIER'),

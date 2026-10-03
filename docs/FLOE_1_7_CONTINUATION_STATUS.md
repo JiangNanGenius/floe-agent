@@ -2,7 +2,7 @@
 
 > **历史页面 / Historical page.** 本页记录 build 156 前后的手记、Office、Whisper 与验收事实；
 > 当前交付线为 1.7.0（build 219），行为与验收状态以 [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)、
-> [Build 219 版本说明](RELEASE_NOTES_1.7.0_BUILD_219.md) 与 [使用指南](USER_GUIDE.md) 为准。
+> [Build 219 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_219.md) 与 [使用指南](USER_GUIDE.md) 为准。
 
 本文件记录开发事实，不把源代码、安装、编译或组件测试等同于完整功能验收。
 平台顺序：iPadOS 27 优先，其次 iOS 27；26 双端保持核心功能兼容。

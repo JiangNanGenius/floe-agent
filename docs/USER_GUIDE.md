@@ -1,6 +1,6 @@
 # Floe Agent User Guide
 
-Current internal delivery: **1.7.0 (229)**. Immutable tag `v1.7.0-beta.86` binds source `b06b0b0e`; [release run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) retained the unsigned IPA (739,485,403 bytes; SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`), uploaded the signed build and published the [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86). [Verify run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) confirmed Apple `VALID`, unexpired and `IN_BETA_TESTING` in the sole private internal Floe QA group; both beta-note languages were read back. The matching unsigned GitHub developer IPA and Feather feed entry are published. Gitee mirroring is tracked separately. [Build 229 notes](RELEASE_NOTES_1.7.0_BUILD_229.md) · [Delivery record](TESTFLIGHT_1.7.0_BETA.md).
+Current internal delivery: **1.7.0 (229)**. Immutable tag `v1.7.0-beta.86` binds source `b06b0b0e`; [release run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) retained the unsigned IPA (739,485,403 bytes; SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`), uploaded the signed build and published the [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86). [Verify run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) confirmed Apple `VALID`, unexpired and `IN_BETA_TESTING` in the sole private internal Floe QA group; both beta-note languages were read back. The matching unsigned GitHub developer IPA and Feather feed entry are published. Gitee mirroring is tracked separately. [Build 229 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md) · [Delivery record](releases/testflight/TESTFLIGHT_1.7.0_BETA.md).
 
 **What changed in Build 229.** Office close/save acknowledgements now settle once, a late real PPT paint can recover a waiting session, and a failed original-file write-back keeps its working copy. An unhealthy MLX container is evicted before the next local-model turn. The IDE Run sheet retains automatic, one-core and two-core requests; two-core execution remains disabled by the shipping safety gate. Component checks are not iPad acceptance.
 
@@ -43,7 +43,7 @@ Build 172 adds eight native brushes with independent color, width and opacity, p
 
 These unedited SDK 27 full-App simulator captures accompany passing iPad and iPhone Notes UI cases. [Capture provenance](evidence/floe-1.7/release-172/screenshots/manifest.json). Physical Pencil gestures remain for device testing.
 
-These instructions include features delivered in internal build191; screenshots and prior test results refer only to their labelled sources. Follow the [repair qualification record](FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
+These instructions include features delivered in internal build191; screenshots and prior test results refer only to their labelled sources. Follow the [repair qualification record](releases/repairs/FLOE_156_FEEDBACK_REPAIR.md) for full-App and device status.
 
 <img src="validation/floe-156-feedback/screenshots/full-app-build164-sdk27/ipad/notes-workspace-import.png" width="640" alt="Selecting a PDF from a chat workspace in Notes">
 
@@ -417,7 +417,7 @@ frames, and provides access to earlier conversation records.
 
 The repair following Build 172 opens the document assistant directly to your conversation. The document name stays in the panel header; document IDs and tool setup instructions no longer appear as an opening chat message. Ask a question, request an edit, or save an answer as note content using the same assistant. Existing document access and edit permissions still apply.
 
-On a wide iPad layout the assistant sits beside the document in an inset pane; smaller windows use a dismissible sheet. Model, mode and permission controls remain available. Close the assistant to reclaim writing space without deleting its conversation. These changes are delivered in build 178; see the [repair ledger](FLOE_172_REPAIR_EXECUTION.md).
+On a wide iPad layout the assistant sits beside the document in an inset pane; smaller windows use a dismissible sheet. Model, mode and permission controls remain available. Close the assistant to reclaim writing space without deleting its conversation. These changes are delivered in build 178; see the [repair ledger](releases/repairs/FLOE_172_REPAIR_EXECUTION.md).
 
 ## 1.7 Notes and local speech
 
@@ -554,7 +554,7 @@ This section preserves the candidate boundary as it stood then; later internal d
 - The IDE can save and run the current file, stop execution and use a configured host for remote languages. Shell adds signed Lua installation from the verified WASI catalog (the `apt install floe/lua` form recorded then is no longer the install path).
 - Local MLX models change how inference memory is released. The reported iPad chat crash still requires physical-device verification.
 
-Cloud full-App Notes tests passed on iPad and iPhone: three tests per device, with one native Office test skipped on each. See the [retained Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md). That run failed IDE saving tests; the later targeted run 35223435570 passed all three IDE cases on both simulator devices. Release run 35228451173 then timed out in accepted-SDK Notes qualification before upload. Native Office interactions, real SSH execution and this candidate's TestFlight delivery remain pending. See the [repair record](FLOE_BUILD178_FEEDBACK_REPAIR.md) and [candidate notes](RELEASE_1.7.0_BETA_36.md).
+Cloud full-App Notes tests passed on iPad and iPhone: three tests per device, with one native Office test skipped on each. See the [retained Notes screenshots](qualification/build178-feedback/full-app-955e346a/README.md). That run failed IDE saving tests; the later targeted run 35223435570 passed all three IDE cases on both simulator devices. Release run 35228451173 then timed out in accepted-SDK Notes qualification before upload. Native Office interactions, real SSH execution and this candidate's TestFlight delivery remain pending. See the [repair record](releases/repairs/FLOE_BUILD178_FEEDBACK_REPAIR.md) and [candidate notes](releases/beta/RELEASE_1.7.0_BETA_36.md).
 
 
 ### IDE cloud builds (build 180)
@@ -597,7 +597,7 @@ Office cards show a labelled content summary as soon as it is ready and upgrade
 to the system thumbnail when it arrives; a timeout keeps the labelled summary
 instead of a blank card. Summaries cover at most 240 fields and the first Excel
 sheet, and are not an original-layout render. Build 187 is tagged `v1.7.0-beta.44` at `d77aa11f` and encountered component/UI failures in
-cloud run `35312393708`; it has not uploaded. See [beta.44 record](RELEASE_1.7.0_BETA_44.md).
+cloud run `35312393708`; it has not uploaded. See [beta.44 record](releases/beta/RELEASE_1.7.0_BETA_44.md).
 
 
 ### Historical Build188 cloud candidate

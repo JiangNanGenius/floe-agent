@@ -6,7 +6,7 @@ the current source status. Sections 1–7 are retained history from the build
 conflict.** The build 187 preparation source has local type checks and Python
 fixture results only: the tagged187 cloud run is active, with no completed runtime or device result,
 and nothing below may be read as 187 acceptance. Build 186's final failed result
-is recorded in [the beta.43 record](RELEASE_1.7.0_BETA_43.md) and its retained
+is recorded in [the beta.43 record](releases/beta/RELEASE_1.7.0_BETA_43.md) and its retained
 qualification JSON is [here](qualification/build186-release/result.json).
 
 ## 0. Build 187 acceptance policy (current)

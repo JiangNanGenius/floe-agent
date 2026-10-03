@@ -178,7 +178,7 @@ the actual bytes) and refuses to publish when anything cannot be proven.
   upstream/relink/toolchain + Debian shards 1–2 + source evidence + the PyPI
   wheel sources), and is pinned in
   `RuntimeV2OfficialTemplatePinnedArtifacts`. See
-  `docs/BUILD_226_DEV_TEMPLATE_SOURCE.md` for the PyPI/PDFium provenance and
+  `docs/releases/builds/BUILD_226_DEV_TEMPLATE_SOURCE.md` for the PyPI/PDFium provenance and
   the release record.
 
 Both workflows publish a published prerelease (never a draft, never `latest`,

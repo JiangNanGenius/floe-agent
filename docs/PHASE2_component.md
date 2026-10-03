@@ -9,7 +9,7 @@ the focused protocol check because its boot command never passed `--net`: the
 guest had no `eth0`, the runner answered `net=down`, and the CAPS parser
 rejected the new `net=` field. The fix (boot flag + parser + guest-side
 network proof + slirp resolver order) is recorded in
-[FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md](FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md).
+[FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md](releases/repairs/FLOE_1_7_LINUX_GUEST_NETWORK_REPAIR.md).
 No release, no published component and no cloud artifact exists for this
 pipeline yet; the section "Verified locally" lists exactly what was executed
 and what was only inspected. The primary agent owns the dispatch decision and

@@ -7,8 +7,8 @@ The build 187 progressive two-tier cover described below is committed as
 and Python fixture results only, no completed build187 runtime or device result.
 The [fixed-source cloud run](https://github.com/JiangNanGenius/floe-agent/actions/runs/35312393708) is now active.
 Build 186's final failed qualification is recorded in
-[the beta.43 record](RELEASE_1.7.0_BETA_43.md); build 187 is only
-[preparation](RELEASE_1.7.0_BETA_44.md). This page documents candidate code and
+[the beta.43 record](releases/beta/RELEASE_1.7.0_BETA_43.md); build 187 is only
+[preparation](releases/beta/RELEASE_1.7.0_BETA_44.md). This page documents candidate code and
 does not establish TestFlight availability.
 
 ## 用户可见结果
