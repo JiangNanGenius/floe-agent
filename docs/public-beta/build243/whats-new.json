@@ -1,0 +1,4 @@
+{
+  "en-US": "Floe Agent 1.7.2 · Build 243\n\n• Aligns the IDE Git pane and compact sync actions with the active file workspace.\n• Keeps long cross-task history pages parseable and resumable.\n• Ends caller-cancelled model streams in a recoverable state.\n• Prevents negated web-search instructions from forcing a local-model tool call and stabilizes provider request JSON ordering.\n\nPlease test Git actions, long task-history reading, and negated tool instructions on your iPad. Include device, OS, build number and reproduction steps in feedback; remove private content and credentials.",
+  "zh-Hans": "Floe Agent 1.7.2 · Build 243\n\n• IDE Git 面板与当前文件工作区一致，紧凑侧栏的同步操作更可靠。\n• 跨任务长历史分页保持 JSON 可解析，游标可继续读取。\n• 调用方取消后，模型流可结束并保留可恢复状态。\n• 否定式联网搜索指令不再强制本地模型调用工具，并稳定提供商请求 JSON 的字段顺序。\n\n请在 iPad 上测试 Git 操作、长任务历史读取和否定式工具指令。反馈请附设备、系统、构建号及复现步骤，并遮去私人内容与凭据。"
+}

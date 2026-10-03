@@ -34,19 +34,9 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.0（231）。** 标签 `v1.7.0-beta.88` 固定源码 `556efe929cc7e09eb7b962e225e158ecb484f99e`。[发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/36293217189)已完成 App 构建、IPA 保留及签名上传；[核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/36295318954)确认 Apple `VALID`、未过期，并在现有私有 Floe QA 组 `IN_BETA_TESTING`。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.88) · [Build 231 说明](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_231.md)。PPT/Excel 打开、Word 中文与保存、本地模型仍待 iPad 验收。软重启与双核仍不可用；Gitee 是独立未完成镜像。
+**当前内部 TestFlight：1.7.2（243）。** 不可变标签 `v1.7.2` 固定源码 `c5a1ffbc`。[独立 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37124262937)已通过 App、包及双设备模拟器检查；[Apple 核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/37133857251)确认 `VALID`、未过期，并在唯一私有 Floe QA 组 `IN_BETA_TESTING`。[Build 243 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.2_BETA.md)与[发布说明](docs/releases/notes/RELEASE_NOTES_1.7.2_BUILD_243.md)分别记录构建、未签名 IPA 留存、上传和待完成的真机验收。本版没有 GitHub Release、Feather 或正式 App Store 发布。
 
-**上一版内部 TestFlight：1.7.0（230）**。不可变标签 `v1.7.0-beta.87` 固定源码 `06c15e35`；[发布 run 36256360563](https://github.com/JiangNanGenius/floe-agent/actions/runs/36256360563) 使用 Xcode 26.6 完成云端构建，在签名前保留未签名 IPA（739,518,631 字节，SHA-256 `1dc9a10bdaaf1fd5ea9022cc5ceee9249d196cccf2202258e28e195383bc16b9`），完成签名上传并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87)。[准备 run 36259276773](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259276773)已读回中英文测试说明；[核验 run 36259380555](https://github.com/JiangNanGenius/floe-agent/actions/runs/36259380555)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`。[Build 230 说明](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_230.md) · [交付记录](docs/releases/testflight/TESTFLIGHT_1.7.0_BETA.md)。
-
-**Build 230 针对已捕获的 iPad MLX 崩溃与 PPT 加载回归。** 本地提示词预算及 MLX 预填充错误检查针对普通对话崩溃路径；云端实权重验证完成两次独立文件工具调用、回执和模型续答。Office 宿主就绪判断与 IDE 标签加载已修复，固定宿主已嵌入 IPA。Linux 正式版仍是单核。云端与打包证据不等于真机功能验收。
-
-**Build 231 变化：** 最新 iPad 反馈仍报告 PPT/Excel 打不开、Word 中文字体异常和本地模型无回复。本候选包含 Office 初始化与字体修复、流式本地回复和 Linux 生命周期工具；解析器修复后通过云端 macOS 真实权重两轮工具回执验证，这不是 iPad 验收。详见 [Build 231 发布说明](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_231.md)。
-
-**真机验收尚未完成。** 此前 iPad 测试报告了普通 MLX 对话与测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 230 包含针对性源码修复，但 PPT 可编辑首帧、保存重开及 Office 退出，本地模型加载、测速和连续工具对话，PiP、通知及键盘触控体验仍待真机确认。
-
-**Build 224 从未编译成功。** 其不可变标签 `v1.7.0-beta.81`（`c36b7b24`）与失败的验收 SDK run [35767875337](https://github.com/JiangNanGenius/floe-agent/actions/runs/35767875337)（exit 65，无工件、无上传）作为失败记录保留；参见 [Build 224 说明](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_224.md)与 Build 225 说明中的失败记录表。
-
-**各分发渠道分开核验。** GitHub 已发布 Build 230 预发布和未签名 IPA，Apple 验证及 Floe QA 分组核验均已通过。[Gitee 发布同步 run 36258647317](https://github.com/JiangNanGenius/floe-agent/actions/runs/36258647317)创建了对应的 [Gitee 预发布](https://gitee.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.87)，并上传 6 个小型附件与清单。约 705.3 MiB 的 IPA 因仓库附件 1 GiB 配额仅剩 28.9 MiB 而未能上传，请从 GitHub 获取。
+更早的内部构建与当前正式 GitHub Release 1.7.0（241）见[发布档案](docs/releases/README.md)。
 
 Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
 
@@ -97,7 +87,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.0（build 228）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装（Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`；2026-09-24 14:50 UTC 从不可变标签 `v1.7.0-beta.85`、源码 `ed8f233a` 核验，[run 36015717443](https://github.com/JiangNanGenius/floe-agent/actions/runs/36015717443)）。[TestFlight 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.0_BETA.md)分别记录源码、构建、上传、处理和测试组状态，并保留此前交付历史。
+Floe Agent **1.7.2（build 243）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装：不可变标签 `v1.7.2` 对应 Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`（[核验记录](https://github.com/JiangNanGenius/floe-agent/actions/runs/37133857251)）。详见 [Build 243 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.2_BETA.md)；真机行为仍待验收。
 
 ### 未签名 IPA
 

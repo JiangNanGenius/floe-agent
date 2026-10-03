@@ -1,6 +1,6 @@
 # Floe Agent Engineering Guide
 
-**Current internal TestFlight: 1.7.1 (242)**, immutable tag `v1.7.1` at `061bc6b9`. The [accepted-SDK release run](https://github.com/JiangNanGenius/floe-agent/actions/runs/37036339341) retained an unsigned device IPA artifact before signing and uploading. [Apple verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37043375589) confirmed `VALID`, unexpired, and `IN_BETA_TESTING` in the sole private internal Floe QA group. Physical-iPad acceptance remains open. [Build 242 delivery evidence](../docs/releases/testflight/TESTFLIGHT_1.7.1_BETA.md).
+**Current internal TestFlight: 1.7.2 (243)**, immutable tag `v1.7.2` at `c5a1ffbc`. The [accepted-SDK release run](https://github.com/JiangNanGenius/floe-agent/actions/runs/37130220342) retained an unsigned device IPA before signing and uploading. [Apple verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37133857251) confirmed `VALID`, unexpired, and `IN_BETA_TESTING` in the sole private internal Floe QA group. Physical-iPad acceptance remains open. [Build 243 delivery evidence](../docs/releases/testflight/TESTFLIGHT_1.7.2_BETA.md).
 
 [Website](https://www.floe-agent.com/) · [Product README](../README.md) · [中文 README](../README.zh-CN.md) · [Architecture](../docs/ARCHITECTURE_OVERVIEW.md) · [User guide](../docs/USER_GUIDE.md) · [中文使用指南](../docs/USER_GUIDE.zh-CN.md)
 

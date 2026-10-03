@@ -10,6 +10,10 @@
 
 后续截图记录对应提交、设备/模拟器、素材来源及实际完成的验收范围。正式版说明只使用与分发构建一致、经过核对的截图，不把旧开发画面当作新版验收结果。
 
+## Build 243 完整 App 模拟器截图
+
+[CI run 37124262937](https://github.com/JiangNanGenius/floe-agent/actions/runs/37124262937) 使用 `v1.7.2` 的源码 `c5a1ffbc`，在 `ci-artifacts`（ID `11276063883`）中保留 106 张完整 App 截图：手记 iPad/iPhone 各 30 张，IDE iPad/iPhone 各 23 张。四组 UI 用例均通过；iPhone IDE 首次在用例启动前遇到 XCTest 测试进程崩溃，保留失败证据后一次受限重试通过五项用例。截图原始清单均未标记为失败关联；这些是模拟器证据，真机体验仍待验收。仓库本地的忽略目录 `Local/Private/release243/evidence/screenshots/ci-37124262937/` 保存原图、索引与逐文件 SHA-256 清单。
+
 ## 可视化编辑库接入
 
 [native-visual-video-editor.png](native-visual-video-editor.png) 为固定 VideoEditorKit 源码在专用 iOS 27 模拟器中加载 6 秒合成素材后的界面。属于开发截图，未进行完整触控和真机验收。
