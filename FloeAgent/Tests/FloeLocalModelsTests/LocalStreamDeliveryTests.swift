@@ -439,9 +439,15 @@ struct LocalStreamDeliveryTests {
                 return error
             }
         }
-        try? await Task.sleep(for: .milliseconds(120))
+        // Under the full cross-platform run, setup can take longer than a
+        // fixed delay. Cancel only after the engine has entered generation so
+        // this checks propagation to an active engine, not pre-start teardown.
+        let started = await waitUntil(timeout: .seconds(15)) {
+            engine.generationCount > 0
+        }
         consumer.cancel()
         let error = await consumer.value
+        #expect(started)
         // Cancellation may surface as a thrown CancellationError or as a
         // prompt stream end; either way it is never a composed failure and
         // the engine sees the cancellation before any teardown.
