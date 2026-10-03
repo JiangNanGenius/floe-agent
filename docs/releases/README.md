@@ -17,4 +17,4 @@
 
 新版本的发布说明写入 `notes/`，TestFlight 中英文说明写入 `testflight/`。当前发布预检按这两个路径校验；较早的冻结标签仍按标签内原有的 `docs/` 路径运行。不要移动已有标签或用新文档替代旧构建的证据。
 
-今后的 TestFlight 更新在内部组确认可安装后，常规继续外部测试组 `publictest1` 送审：为该构建准备双语 What to Test、Beta 描述和最终审核备注，先运行只读 `public-testflight.yml` 检查，再提交现有外部组并独立读回 Apple 审核状态。若 API 无写入权限，沿 App Store Connect 网页完成同一提交，保留 API 失败及网页操作证据。审核提交、审核通过与外部可安装分别记录；不据此发布正式 App Store 版本。每个版本的资料和状态放在 `docs/public-beta/buildNNN/` 及对应交付记录。
+今后的 TestFlight 更新在内部组确认可安装后，常规继续外部测试组 `publictest1` 送审：为该构建准备双语 What to Test、Beta 描述和最终审核备注，明确传入该构建的资料路径，先运行只读 `public-testflight.yml` 检查，再提交现有外部组并独立读回 Apple 审核状态。工作流不再默认引用 Build 241 资料。若 API 无写入权限，沿 App Store Connect 网页完成同一提交，保留 API 失败及网页操作证据。审核提交、审核通过与外部可安装分别记录；不据此发布正式 App Store 版本。每个版本的资料和状态放在 `docs/public-beta/buildNNN/` 及对应交付记录。

@@ -1000,7 +1000,7 @@ class PublicTestFlightTests(unittest.TestCase):
             self.submit(fake)
         self.assert_no_writes(fake)
 
-    # -- current-round materials -------------------------------------------
+    # -- retained release materials ----------------------------------------
     def test_build241_materials_are_valid_helper_inputs(self):
         materials = REPO / 'docs' / 'public-beta' / 'build241'
         for name in ('whats-new.json', 'beta-description.json', 'unverified-fields.json'):
@@ -1010,18 +1010,24 @@ class PublicTestFlightTests(unittest.TestCase):
         self.assertEqual(set(notes), {'en-US', 'zh-Hans'})
         self.assertEqual(set(descriptions), {'en-US', 'zh-Hans'})
         unverified = json.loads((materials / 'unverified-fields.json').read_text())
-        self.assertTrue(unverified['nothingDispatchedOrSubmitted'])
-        self.assertEqual(unverified['candidate']['sourceCommit'], None)
-        self.assertEqual(len(unverified['unverifiedFields']), 16)
+        self.assertFalse(unverified['nothingDispatchedOrSubmitted'])
+        self.assertRegex(unverified['candidate']['sourceCommit'], r'^[0-9a-f]{40}$')
+        self.assertEqual(unverified['verifiedFacts']['externalReview']['submissionState'],
+                         'pending_review')
         for name in ('review-notes.en-US.md', 'review-notes.zh-Hans.md', 'README.md'):
             self.assertTrue((materials / name).is_file(), name)
 
+    def test_build243_external_review_materials_are_final(self):
+        materials = REPO / 'docs' / 'public-beta' / 'build243'
+        self.assertEqual(set(pt.load_localizations(materials / 'whats-new.json')),
+                         {'en-US', 'zh-Hans'})
+        self.assertEqual(set(pt.load_localizations(materials / 'beta-description.json')),
+                         {'en-US', 'zh-Hans'})
+        self.assertIn('Build 243', pt.load_review_notes(materials / 'review-notes.en-US.md'))
+
     def test_build241_review_notes_are_marked_draft_or_valid_final_text(self):
-        # While the main thread has not frozen the build these files stay
-        # clearly marked drafts and the helper must reject them for submit.
-        # Once replaced with final product text they must pass validation. This
-        # keeps the test true across the final freeze without silently
-        # submitting the draft.
+        # Retained notes must either be clearly marked as drafts or pass the
+        # same final-text validation as new submissions.
         materials = REPO / 'docs' / 'public-beta' / 'build241'
         combined = ''
         for name in ('review-notes.en-US.md', 'review-notes.zh-Hans.md'):
@@ -1049,6 +1055,8 @@ class PublicTestFlightTests(unittest.TestCase):
         self.assertEqual(inputs['operation']['options'], ['inspect', 'submit'])
         self.assertEqual(inputs['enable_public_link']['default'], False)
         self.assertEqual(inputs['allow_resubmit_rejected']['default'], False)
+        self.assertNotIn('default', inputs['notes_path'])
+        self.assertEqual(inputs['description_path']['default'], '')
         # review_notes_path defaults to a safe empty value: submit must supply
         # a final non-draft file explicitly, and a default inspect stays valid.
         self.assertEqual(inputs['review_notes_path']['default'], '')

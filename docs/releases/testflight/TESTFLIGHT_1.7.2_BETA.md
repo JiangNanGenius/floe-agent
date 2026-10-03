@@ -12,4 +12,6 @@ The user requested that external TestFlight follow the internal update. Prepared
 
 ## External TestFlight review
 
-Submission pending live inspection. Do not treat the existing public link as Build 243 availability until Apple approves this build.
+Read-only [preflight](https://github.com/JiangNanGenius/floe-agent/actions/runs/37134615804) on 2026-10-03 found `VALID`, unexpired, `APP_STORE_ELIGIBLE`, complete bilingual What to Test, the existing enabled public link, and zero external review submissions for Build 243. The API [submit attempt](https://github.com/JiangNanGenius/floe-agent/actions/runs/37134669547) failed at the first review-note write with Apple HTTP 403 `FORBIDDEN_ERROR`; it did not attach the group or submit the build.
+
+Using App Store Connect, the final Build 243 review notes were saved, and the build was added to the existing `publictest1` external group and submitted for Beta App Review. The group page displayed Build 243 as **正在等待审核**. Independent GET-only [verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37134960962) at 2026-10-03 15:55 UTC confirmed one `pending_review` submission, `WAITING_FOR_BETA_REVIEW`, attachment to `publictest1`, and `VALID` / unexpired / `APP_STORE_ELIGIBLE`. The existing public link remains <https://testflight.apple.com/join/nz6qeT2J>; Build 243 is not yet externally installable until Apple approves it. Build 241 remains available in the same group. Automatic tester notification was selected in the App Store Connect submission form; Apple handles delivery after approval.

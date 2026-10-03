@@ -6,6 +6,8 @@
 
 **当前内部 TestFlight：1.7.2（243）**。不可变标签 `v1.7.2` 固定源码 `c5a1ffbc`；Apple 已核验 `VALID`、未过期、唯一私有内部 Floe QA 组及 `IN_BETA_TESTING`，可供该组安装。此次没有 Build 243 GitHub Release、Feather 或正式 App Store 发布；真机行为仍待用户验收。详见[Build 243 交付记录](releases/testflight/TESTFLIGHT_1.7.2_BETA.md)和[双语发布说明](releases/notes/RELEASE_NOTES_1.7.2_BUILD_243.md)。
 
+**外部测试：Build 243 已提交 Beta App Review，等待 Apple 审核。** 现有 `publictest1` 组与公开链接已关联该构建；[独立只读核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/37134960962)确认 `WAITING_FOR_BETA_REVIEW` 与一条 `pending_review` 记录。审核通过前不声明外部可安装；[送审资料](public-beta/build243/README.md)。
+
 **当前正式 GitHub Release：1.7.0（241）**。[正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)的不可变标签 `v1.7.0` 固定源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。Build241 的 TestFlight、Feather 和公开测试送审记录见[历史交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)及[审核材料](public-beta/build241/README.md)；它们不代表 Build242 的公开发布状态。
 
 Build 241 的模拟器与模型验证边界保留在[发布说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_241.md)和[交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)。

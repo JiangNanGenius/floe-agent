@@ -60,14 +60,13 @@ on:
         required: true
         type: string
       notes_path:
-        description: "Bilingual What to Test JSON (en-US, zh-Hans)"
+        description: "Build-specific bilingual What to Test JSON (en-US, zh-Hans); e.g. docs/public-beta/build243/whats-new.json"
         required: true
-        default: docs/public-beta/build241/whats-new.json
         type: string
       description_path:
-        description: "Bilingual Beta App Description JSON; leave empty to skip"
+        description: "Build-specific bilingual Beta App Description JSON; leave empty to keep existing app-level text"
         required: false
-        default: docs/public-beta/build241/beta-description.json
+        default: ""
         type: string
       review_notes_path:
         description: "Prepared Beta App Review notes text file (final 1..4000-char product text, no draft markers). Required for submit; leave empty for inspect without comparison"
