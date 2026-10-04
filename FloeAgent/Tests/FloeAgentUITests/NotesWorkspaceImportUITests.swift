@@ -558,7 +558,23 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         let importWorkspace = app.buttons["notes.import.workspace"]
         XCTAssertTrue(importWorkspace.waitForExistence(timeout: 15),
                       "the visible creation control must open its import menu")
-        importWorkspace.tap()
+        if ipad {
+            importWorkspace.tap()
+        } else {
+            // iOS 27 can expose this visible SwiftUI menu row with a valid
+            // frame while XCTest reports no suggested AX activation point.
+            // Tap the verified on-screen center; the destination assertions
+            // below still require the import flow to open for real.
+            let row = importWorkspace.frame
+            let screen = app.frame
+            let center = CGPoint(x: row.midX, y: row.midY)
+            XCTAssertTrue(row.origin.x.isFinite && row.origin.y.isFinite &&
+                          row.width > 0 && row.height > 0 && screen.contains(center),
+                          "the workspace import menu row must be visible on screen")
+            app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: center.x - screen.minX, dy: center.y - screen.minY))
+                .tap()
+        }
         // The phone's offscreen sidebar retains a conversation with this same
         // title. Select the import row's own identity, not a global text match.
         // NavigationLink rows are buttons: an any-type descendant predicate scan

@@ -1,0 +1,7 @@
+# Floe Agent 1.7.13 (Build 254) — qualification failed
+
+Immutable tag `v1.7.13` fixes source `97b130b8245b04c5f88ca7e3f3813cb8bc7a6a31`. The [normal release run](https://github.com/JiangNanGenius/floe-agent/actions/runs/37208925233) passed Swift, module, full-App, NativeNotes, and accepted-SDK iPad/iPhone Notes UI qualification. SDK 27 iPad Notes UI passed. The accepted-SDK device build was retained before UI testing as `accepted-sdk-device-recovery-1.7.13-build254` (artifact `11306382596`); the qualified distribution input was retained as `accepted-sdk-input-1.7.13-build254` (artifact `11307477138`).
+
+The SDK 27 iPhone Notes UI leg failed in `testWorkspaceImportAndDocumentAssistant` at `NotesWorkspaceImportUITests.swift:561`. The preceding document-tabs, real cover, and Pencil tests passed. The native creation menu and its "从 Floe 工作区导入" row were visibly open; XCTest reported a valid row frame, then failed three attempts to compute an accessibility activation point and finally reported an infinite frame. The flow had not yet reached the import screen. The original log, hierarchy and recording are retained in `sdk27-notes-ui-1.7.13-build254` (artifact `11307209604`).
+
+The next candidate taps the verified on-screen row center on iPhone and still requires the import destination and editor to appear. It does not accept a generic menu or a failed tap as a pass. Build 254 was not signed or uploaded to Apple, and was not submitted for external review.
