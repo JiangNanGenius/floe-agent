@@ -10,6 +10,10 @@
 
 后续截图记录对应提交、设备/模拟器、素材来源及实际完成的验收范围。正式版说明只使用与分发构建一致、经过核对的截图，不把旧开发画面当作新版验收结果。
 
+## Build 255 iPhone 手记导入截图
+
+[iPhone 导入后打开的 PDF](notes/build255-iphone-imported-pdf.png)来自 `v1.7.14` 源码 `850701db34411ab87ac9788eeaaf7ea3baeea2b4` 的本地 iOS 27 iPhone 完整 App UI 测试。图中是合成的验收 PDF；导入选择页出现后，测试打开了编辑器并截取此画面。`NotesWorkspaceImportUITests/testWorkspaceImportAndDocumentAssistant` 通过（1 项、0 失败），原始日志、xcresult 和五张附件保存在忽略的 `Local/Private/build255-local-evidence/`。这张图只证明该模拟器中的导入和编辑器可见，不代表真机或整个发布流程验收。
+
 ## Build 254 iPhone 手记封面截图
 
 [iPhone 重启后手记封面](notes/build254-iphone-cover-relaunch.png)来自 `v1.7.13` 源码 `97b130b8245b04c5f88ca7e3f3813cb8bc7a6a31` 的 SDK 27 iPhone 模拟器完整 App 测试。素材均为合成文件，图中 Word 摘要和 DXF/DWG 实际几何图形在终止并重启 App 后仍可见。`testNotesLibraryCardsShowRealContentCovers` 通过；同一套件后续的工作区导入用例在 XCTest 点击已显示的菜单行时失败，见 [Build 254 候选记录](../../releases/testflight/TESTFLIGHT_1.7.13_CANDIDATE.md)。原始截图、录屏与日志保存在云端工件 `sdk27-notes-ui-1.7.13-build254`（ID `11307209604`）。此图只证明该模拟器当时的可见封面，不代表整个发布门禁或真机验收通过。
