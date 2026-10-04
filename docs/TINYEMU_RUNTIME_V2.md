@@ -111,7 +111,7 @@ are bounded by the device quota (four VMs on supported iPads, fewer on smaller
 devices); an environment over the quota waits in a cancellable queue. Inside
 one guest the command channel admits up to eight concurrent ordinary commands,
 and interactive terminal sessions are tracked per environment on the same VM.
-This is guest process concurrency. The Build 246 default guest image also supports TinyEMU SMP with up to three guest harts; see the current status note below.
+This is guest process concurrency. The Build 247 candidate default guest image also supports TinyEMU SMP with up to three guest harts; see the current status note below.
 
 When no command, terminal or registered background service remains, the
 environment enters `IDLE`. After the idle budget, Floe requests guest shutdown,
@@ -121,7 +121,7 @@ service registry and are launched again after the environment boots.
 
 ## Memory and local-model arbitration
 
-Build 246 update: the pool remains capped at four total guest vCPUs, and a single guest may request at most three. The image manifest must explicitly verify the requested hart count. The new three-hart image passed a real boot with three online CPUs; older two-hart images keep their two-core limit. Memory and active-device quotas still apply. The older single-hart qualification description below records its historical release gate.
+Build 247 candidate update: the pool remains capped at four total guest vCPUs, and a single guest may request at most three. The image manifest must explicitly verify the requested hart count. The new three-hart image passed a real boot with three online CPUs; older two-hart images keep their two-core limit. Memory and active-device quotas still apply. The older single-hart qualification description below records its historical release gate.
 
 The device pool quota is a fixed per-hardware table (iPad 8 GiB: 4 vCPU /
 2048 MiB / 4 VMs; 12 GiB: 4 / 3072 MiB / 4; 16 GiB and above: 4 / 4096 MiB / 4;

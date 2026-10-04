@@ -503,9 +503,9 @@ struct IDELanguageRunPolicyTests {
         // evidence, same `.shapeAware` dispatch) the controller uses at
         // dispatch time. Every selectable row therefore resolves to the plan
         // the run actually consumes: automatic (one hart for these signals)
-        // and single-core run at one hart, and an explicit dual selection is
-        // runnable because the verified image proves SMP — with its strict
-        // two-hart request carried into the handoff intent.
+        // and single-core run at one hart, while explicit dual/triple
+        // selections carry strict requests into the handoff intent when the
+        // verified image supports three harts.
         let signals = WorkloadResourceSignals(
             workloadKey: "ide-run:train.py", declaredCommands: ["python3"]
         )
@@ -514,6 +514,7 @@ struct IDELanguageRunPolicyTests {
                 selection: selection,
                 signals: signals,
                 imageProvesSMP: true,
+                imageMaximumVCPUs: 3,
                 dispatch: .shapeAware
             )
             #expect(plan.selection == selection)
@@ -534,6 +535,13 @@ struct IDELanguageRunPolicyTests {
                 #expect(ShellGuestRunShapeIntent.from(
                     plan: plan, environmentID: "env", runID: "run"
                 )?.request.vcpus == .two)
+            case .tripleCore:
+                #expect(plan.isRunnable)
+                #expect(plan.effectiveRequest?.vcpus == .three)
+                #expect(plan.downgrade == .strict)
+                #expect(ShellGuestRunShapeIntent.from(
+                    plan: plan, environmentID: "env", runID: "run"
+                )?.request.vcpus == .three)
             }
         }
     }

@@ -10,8 +10,8 @@ import ImageIO
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let topic = app.webViews.staticTexts["Trade gains"]
-        XCTAssertTrue(topic.waitForExistence(timeout: 30), "The real WebKit topic must be visible before screenshot capture")
+        let topic = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Trade gains")).firstMatch
+        XCTAssertTrue(topic.waitForExistence(timeout: 30), "The native map topic must be visible before screenshot capture")
         let portrait = XCTAttachment(screenshot: capture(app, landscape: false))
         portrait.name = "Notes PDF and independent map — portrait component scene"
         portrait.lifetime = .keepAlways; add(portrait)

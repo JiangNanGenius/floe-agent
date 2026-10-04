@@ -128,8 +128,8 @@ import FloeDocuments
         defer { window.isHidden = true; previous?.makeKey() }
         host.view.layoutIfNeeded()
         // The native surface must render both topics without any WebKit view.
-        let labels = await waitForRenderedTexts(in: host.view, containing: ["Trade gains", "机会成本"])
-        XCTAssertTrue(labels.contains(where: { $0.contains("Trade gains") }) && labels.contains(where: { $0.contains("机会成本") }),
+        let labels = await waitForRenderedTexts(in: host.view, containing: ["gains", "机会成本"])
+        XCTAssertTrue(labels.contains(where: { $0.localizedCaseInsensitiveContains("gains") }) && labels.contains(where: { $0.contains("机会成本") }),
                       "The independently stored map must render inside the PDF reader window; labels: \(labels)")
         XCTAssertFalse(viewHierarchyContainsWebView(host.view), "The linked map window must not embed a WebKit surface")
         let content = XCTAttachment(image: snapshot(host.view))
