@@ -68,7 +68,9 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             var inputFD: Int32 = -1, outputFD: Int32 = -1
             var initial: NSString?
             let escaped = request.command.replacingOccurrences(of: "'", with: "'\\''")
-            let body = request.command.isEmpty ? "dash -i" : "dash -c '\(escaped)'"
+            // The session uses pipes, not a TTY. Read commands from stdin
+            // without dash's interactive terminal and job-control path.
+            let body = request.command.isEmpty ? "dash -s" : "dash -c '\(escaped)'"
             let status = FloeShellOpenSession(body, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.columns, request.rows, request.gateTimeout, { cancellation?.isCancelled == true }, &inputFD, &outputFD, &initial)
             guard status == .OK, inputFD >= 0, outputFD >= 0 else {
                 FloeShellCommandRegistry.shared.unbind(sessionID: request.sessionID)
@@ -224,7 +226,10 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
             wake.signal()
         }
         func start() {
-            DispatchQueue.global(qos: .utility).async { [self] in
+            // Input and output must keep moving while the App is busy with
+            // previews and other user-initiated work. A dedicated queue avoids
+            // starving this long-lived pump on the shared utility pool.
+            DispatchQueue(label: "floe.shell.session.\(id)", qos: .userInitiated).async { [self] in
                 while alive {
                     // Writes happen under the lock so EOF/close can never
                     // close the descriptor concurrently with a write, and so

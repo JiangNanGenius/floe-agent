@@ -627,10 +627,9 @@ void *FloeSessionThreadMain(void *rawContext) {
     @autoreleasepool {
         FILE *input = fdopen(context->inputReadFD, "r");
         FILE *output = fdopen(context->outputWriteFD, "w");
-        // Interactive prompts and command echo must reach the caller as they
-        // are written. stdio picks full buffering for a pipe, so `dash -i`'s
-        // prompt would sit in the FILE* until flush/exit and the terminal
-        // would appear to produce no output at all.
+        // Session output must reach the caller as it is written. stdio picks
+        // full buffering for a pipe, so a command would otherwise appear to
+        // produce no output until flush or exit.
         if (output) { setvbuf(output, NULL, _IONBF, 0); }
         ios_switchSession(context->sessionKey);
         ios_setContext(context->sessionKey);
@@ -732,7 +731,7 @@ FloeShellBridgeStatus FloeShellOpenSession(
     if (rootPath.length > 0) { ios_setMiniRoot(rootPath); }
 
     FloeSessionThreadContext *context = new FloeSessionThreadContext();
-    context->command = strdup((command.length > 0 ? command : @"dash -i").UTF8String);
+    context->command = strdup((command.length > 0 ? command : @"dash -s").UTF8String);
     context->inputReadFD = inputPipe[0];
     context->outputWriteFD = outputPipe[1];
     context->rootPath = workingDirectory.length > 0 ? strdup(workingDirectory.UTF8String) : NULL;
@@ -775,8 +774,8 @@ FloeShellBridgeStatus FloeShellOpenSession(
     [thread start];
 
     // Bounded readiness wait: drain the banner until the program has gone
-    // quiet after its first output, exited, or the budget expires. `dash -i`
-    // on a pipe may print no prompt at all; that must still return a live
+    // quiet after its first output, exited, or the budget expires. `dash -s`
+    // on a pipe prints no prompt; that must still return a live
     // session instead of waiting forever for output that will never come.
     const NSTimeInterval readinessStarted = NSProcessInfo.processInfo.systemUptime;
     const NSTimeInterval readinessBudget = 3.0;

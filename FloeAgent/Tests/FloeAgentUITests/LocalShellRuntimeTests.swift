@@ -113,13 +113,16 @@ struct LocalShellRuntimeTests {
             let typed = try await backend.exchangeSession(.init(sessionID: sessionID,
                 input: "printf 'interactive-ok\\n'\n", waitMs: 500, maxBytes: 4096), cancellation: nil)
             var received = typed.output
+            var lastExchange = typed
             for _ in 0..<40 where !received.contains("interactive-ok") {
                 let next = try await backend.exchangeSession(.init(sessionID: sessionID, input: nil,
                     waitMs: 500, maxBytes: 4096), cancellation: nil)
                 received += next.output
+                lastExchange = next
                 if !next.alive { break }
             }
-            #expect(received.contains("interactive-ok"), "interactive session returned: \(received)")
+            #expect(received.contains("interactive-ok"),
+                    "interactive session returned: \(received), wrote=\(lastExchange.bytesWritten), read=\(lastExchange.bytesRead), alive=\(lastExchange.alive)")
         } catch {
             await backend.closeSession(sessionID: sessionID)
             throw error
