@@ -175,13 +175,16 @@ struct LinuxGuestMetricsSamplerTests {
             for await _ in await sampler.metrics() { count += 1 }
             return count
         }
-        // Wait for the first published sample: the loop only runs while a
-        // consumer is registered.
-        let startDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+        // Registration starts a separate sampling task. Observe its first
+        // guest command before asserting that the loop has actually run.
+        let startDeadline = ContinuousClock.now.advanced(by: .seconds(10))
         while await sampler.consumerCount == 0, ContinuousClock.now < startDeadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         #expect(await sampler.consumerCount == 1)
+        while await runner.invocations().isEmpty, ContinuousClock.now < startDeadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
         #expect(await runner.invocations().count >= 1)
 
         // Dropping the last consumer must terminate the stream and stop the
