@@ -241,8 +241,8 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         XCTAssertFalse(receipt.reused)
         XCTAssertNil(receipt.requestedVCPUs)
         XCTAssertEqual(receipt.launchGeneration, 1)
-        XCTAssertTrue(receipt.capability.contains("dual-core qualified for testing"))
-        XCTAssertTrue(receipt.capability.contains("S5"))
+        XCTAssertTrue(receipt.capability.contains("three guest cores"))
+        XCTAssertTrue(receipt.capability.contains("two-core equal-work benchmark"))
     }
 
     /// Explicit single-core start is carried to the runtime descriptor.
@@ -626,10 +626,10 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         do {
             _ = try await manager.start(
                 environmentID: environmentID,
-                config: .init(vcpus: 3),
+                config: .init(vcpus: 4),
                 ownerTaskID: nil
             )
-            XCTFail("vcpus=3 must be rejected")
+            XCTFail("vcpus=4 must be rejected")
         } catch let error as LinuxGuestLifecycleError {
             guard case .invalidConfiguration = error else {
                 return XCTFail("expected invalidConfiguration, got \(error)")
