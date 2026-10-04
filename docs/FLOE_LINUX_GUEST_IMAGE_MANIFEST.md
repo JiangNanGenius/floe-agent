@@ -1,6 +1,8 @@
 # Floe Linux guest image — source and license manifest (candidate)
 
-Status: **the current guest image is NOT yet distributable as a bundled
+Current distribution (2026-10-04): the [three-hart SMP component release](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-smp3-20261004.1) offers the exact image and corresponding-source packages. This manifest's candidate and gap statements below describe the earlier prepublication state; check the release assets and their source/evidence manifests for the distributed version.
+
+Historical candidate-stage status: **the earlier guest image was not yet distributable as a bundled
 artifact.** This document records exactly which sources and licenses are
 identified, which corresponding-source material is already on hand, and
 which gaps remain. It complements `LICENSE-INVENTORY.md` (host engine only)

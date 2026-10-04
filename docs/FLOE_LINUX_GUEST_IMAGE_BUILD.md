@@ -1,6 +1,8 @@
 # Floe Linux guest image — build and verification guide
 
-Status: the component pipeline in
+Current distribution (2026-10-04): the [three-hart SMP component release](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-smp3-20261004.1) contains the boot-verified image and corresponding-source offer. Build run [37171053949](https://github.com/JiangNanGenius/floe-agent/actions/runs/37171053949) observed three online guest harts; distribution run [37172639054](https://github.com/JiangNanGenius/floe-agent/actions/runs/37172639054) published the exact archive pinned by the App catalog. The candidate-only procedure below describes how to create and qualify a new image before publication.
+
+Historical candidate-stage status: the component pipeline in
 [`.github/workflows/component-image-ci.yml`](../.github/workflows/component-image-ci.yml)
 builds and boot-verifies a **candidate** image and its corresponding-source
 bundle as GitHub component artifacts. Nothing here is published, no app
