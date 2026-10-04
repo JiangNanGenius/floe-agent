@@ -532,11 +532,12 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         notes.tap()
         let create = creationControl(app)
         XCTAssertTrue(create.waitForExistence(timeout: 15))
-        let ready = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)
-        wait(for: [ready], timeout: 10)
         capture("notes-library")
         create.tap()
-        app.buttons["notes.import.workspace"].tap()
+        let importWorkspace = app.buttons["notes.import.workspace"]
+        XCTAssertTrue(importWorkspace.waitForExistence(timeout: 15),
+                      "the visible creation control must open its import menu")
+        importWorkspace.tap()
         // The phone's offscreen sidebar retains a conversation with this same
         // title. Select the import row's own identity, not a global text match.
         // NavigationLink rows are buttons: an any-type descendant predicate scan
