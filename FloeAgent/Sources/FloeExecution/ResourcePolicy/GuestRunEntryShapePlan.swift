@@ -252,6 +252,7 @@ public enum GuestRunEntryShapePlanner {
         )
         let tripleRefusal = tripleRefusal(
             releasePolicy: releasePolicy,
+            imageProvesSMP: imageProvesSMP,
             imageMaximumVCPUs: imageMaximumVCPUs ?? (imageProvesSMP ? 2 : 1),
             dispatch: dispatch
         )
@@ -369,13 +370,14 @@ public enum GuestRunEntryShapePlanner {
 
     private static func tripleRefusal(
         releasePolicy: GuestReleaseShapePolicy,
+        imageProvesSMP: Bool,
         imageMaximumVCPUs: Int,
         dispatch: GuestRunEntryShapeDispatch
     ) -> GuestRunEntryShapeRefusal? {
         if !releasePolicy.supports(.three) {
             return .releaseVCPUUnsupported(requested: 3, maximum: releasePolicy.maximumSupportedVCPUs)
         }
-        if imageMaximumVCPUs < 3 {
+        if !imageProvesSMP || imageMaximumVCPUs < 3 {
             return .imageDoesNotProveSMP(requested: 3)
         }
         if dispatch != .shapeAware {

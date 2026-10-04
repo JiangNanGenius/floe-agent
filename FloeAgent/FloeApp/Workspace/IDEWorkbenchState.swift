@@ -558,16 +558,13 @@ final class IDELanguageRunController: ObservableObject {
               IDELanguageRunPolicy.runsInLinuxGuest(interpreter) else { return nil }
         let signals = IDELanguageRunPolicy.guestShapeSignals(relativePath: path, interpreter: interpreter)
         let recommendation = await GuestResourceAdvisory.shared.recommend(signals)
-        let imageProvesSMP = await FloePlatformServices.shared.linuxImageSMPProven(
-            id: LinuxGuestBackendAssembly.defaultImageID
-        )
         let imageMaximumVCPUs = await FloePlatformServices.shared.linuxImageMaximumVCPUs(
             id: LinuxGuestBackendAssembly.defaultImageID
         )
         return GuestRunEntryShapePlanner.plan(
             selection: guestShapeSelection,
             recommendation: recommendation,
-            imageProvesSMP: imageProvesSMP,
+            imageProvesSMP: imageMaximumVCPUs >= 2,
             imageMaximumVCPUs: imageMaximumVCPUs,
             dispatch: .shapeAware
         )

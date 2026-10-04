@@ -3,9 +3,9 @@
 # rebuilding the image.
 #
 # This variant is pinned to the verified SMP image candidate built by
-# component-image-ci run 36330566148 (source 0ed79ce8): a CONFIG_SMP=y,
-# NR_CPUS=2 kernel plus a RAW bbl both rebuilt from the pinned riscv-pk /
-# riscv-linux revisions (artifact linux-guest-smp-fresh-build-36330566148 is
+# component-image-ci run 37171053949 (source 0ed79ce8): a CONFIG_SMP=y,
+# NR_CPUS=3 kernel plus a RAW bbl both rebuilt from the pinned riscv-pk /
+# riscv-linux revisions (artifact linux-guest-smp-fresh-build-37171053949 is
 # the producer evidence). The historic 355xxx pins of this workflow's first
 # revision targeted the non-SMP pinned-demo image; they are superseded here.
 #
@@ -32,10 +32,10 @@
 #     commit, and the fresh-rebuild evidence proving the shipped boot bytes.
 #
 # Pinned release constants (verified, not guessed):
-#   image catalog   run 36330566148  artifact 10935419318  (candidate zip + manifest + SHA512SUMS)
-#   image evidence  run 36330566148  artifact 10935339859  (boot-verify bundle)
-#   fresh SMP build run 36330566148  artifact 10935543828  (kernel+bbl rebuild evidence)
-#   sources         run 36339356340  artifacts 10938442445 / 10937903448 / 10938391795
+#   image catalog   run 37171053949  artifact 11291578170  (candidate zip + manifest + SHA512SUMS)
+#   image evidence  run 37171053949  artifact 11291662956  (boot-verify bundle)
+#   fresh SMP build run 37171053949  artifact 11291712711  (kernel+bbl rebuild evidence)
+#   sources         run 37172047252  artifacts 11291652620 / 11291877213 / 11291762441
 #                             (component-image-ci source-repair: byte-verified reuse of run
 #                             36333736932's collected bundle + regenerated boot association)
 name: linux-guest-distribute
@@ -44,7 +44,7 @@ on:
   workflow_dispatch:
     inputs:
       target_commit:
-        description: 'Full 40-hex commit the component tag floe-linux-guest-smp-20260928.1 is created on'
+        description: 'Full 40-hex commit the component tag floe-linux-guest-smp3-20261004.1 is created on'
         required: true
         type: string
   push:
@@ -54,7 +54,7 @@ on:
     branches:
       - codex/feedback-linux-distribution
       - linux-guest-distribute-ci
-      - codex/build232-device-diagnostics
+      - codex/build244-stability
     paths:
       - .github/workflows/linux-guest-distribute.yml
 
@@ -71,40 +71,40 @@ env:
   SERVER: https://github.com
   # Component tag: no leading `v` (keeps the App release pipeline untouched),
   # never `latest`, created on the dispatch target commit only.
-  COMPONENT_TAG: floe-linux-guest-smp-20260928.1
-  RELEASE_TITLE: Floe Linux guest image floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1 (SMP component release)
-  RELEASE_MARKER: '<!-- floe-linux-guest-distribution:smp-v1 -->'
-  IMAGE_ID: floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1
-  IMAGE_RUN_ID: '36330566148'
-  IMAGE_RUN_SHA: 0ed79ce8d4fe3fe7fef545275e0a0f22ae9d53e4
-  IMAGE_ARTIFACT: linux-guest-image-candidate-smp-36330566148
-  IMAGE_ARTIFACT_ID: '10935419318'
-  IMAGE_ARTIFACT_BYTES: '569043402'
-  IMAGE_ZIP: floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip
-  IMAGE_ZIP_SHA512: 3f80768e7e3fca10d03c217f5ab28ae3c0b3c321579c6c56ba8c0156bc6e7fec889345fc50bb71c74cca45f1664620765dc0ced37a6d021887cd018e7e211030
-  IMAGE_ZIP_BYTES: '587318466'
-  IMAGE_EVIDENCE_RUN_ID: '36330566148'
-  IMAGE_EVIDENCE_RUN_SHA: 0ed79ce8d4fe3fe7fef545275e0a0f22ae9d53e4
-  IMAGE_EVIDENCE_ARTIFACT: linux-guest-image-evidence-smp-36330566148
-  IMAGE_EVIDENCE_ARTIFACT_ID: '10935339859'
-  IMAGE_EVIDENCE_ARTIFACT_BYTES: '1480480'
-  FRESH_RUN_ID: '36330566148'
-  FRESH_RUN_SHA: 0ed79ce8d4fe3fe7fef545275e0a0f22ae9d53e4
-  FRESH_ARTIFACT: linux-guest-smp-fresh-build-36330566148
-  FRESH_ARTIFACT_ID: '10935543828'
-  FRESH_ARTIFACT_BYTES: '44599'
-  SOURCE_RUN_ID: '36339356340'
-  SOURCE_RUN_SHA: e63de57343a791fd3789ceadcd618de25a899558
-  SOURCE_UPSTREAM_ARTIFACT: linux-guest-sources-upstream-36339356340
-  SOURCE_UPSTREAM_ARTIFACT_ID: '10938442445'
-  SOURCE_UPSTREAM_ARTIFACT_BYTES: '416396333'
+  COMPONENT_TAG: floe-linux-guest-smp3-20261004.1
+  RELEASE_TITLE: Floe Linux guest image floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1 (SMP component release)
+  RELEASE_MARKER: '<!-- floe-linux-guest-distribution:smp3-v1 -->'
+  IMAGE_ID: floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1
+  IMAGE_RUN_ID: '37171053949'
+  IMAGE_RUN_SHA: fef6139f43b9b20b4693617e533580a4ac0bb66f
+  IMAGE_ARTIFACT: linux-guest-image-candidate-smp-37171053949
+  IMAGE_ARTIFACT_ID: '11291578170'
+  IMAGE_ARTIFACT_BYTES: '547948851'
+  IMAGE_ZIP: floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1.zip
+  IMAGE_ZIP_SHA512: 0c1727360076bffe1a17f91d8277d7f1e8b2a7d55049097dea693a0bccf102a5ba4a179211d963a77bd71810a2e931e28bd245170f14db1ff3cf53971a6fc999
+  IMAGE_ZIP_BYTES: '566171285'
+  IMAGE_EVIDENCE_RUN_ID: '37171053949'
+  IMAGE_EVIDENCE_RUN_SHA: fef6139f43b9b20b4693617e533580a4ac0bb66f
+  IMAGE_EVIDENCE_ARTIFACT: linux-guest-image-evidence-smp-37171053949
+  IMAGE_EVIDENCE_ARTIFACT_ID: '11291662956'
+  IMAGE_EVIDENCE_ARTIFACT_BYTES: '1481074'
+  FRESH_RUN_ID: '37171053949'
+  FRESH_RUN_SHA: fef6139f43b9b20b4693617e533580a4ac0bb66f
+  FRESH_ARTIFACT: linux-guest-smp-fresh-build-37171053949
+  FRESH_ARTIFACT_ID: '11291712711'
+  FRESH_ARTIFACT_BYTES: '44952'
+  SOURCE_RUN_ID: '37172047252'
+  SOURCE_RUN_SHA: 4ff87f600fe0ea7512d73db9e979b717fb68d8eb
+  SOURCE_UPSTREAM_ARTIFACT: linux-guest-sources-upstream-37172047252
+  SOURCE_UPSTREAM_ARTIFACT_ID: '11291652620'
+  SOURCE_UPSTREAM_ARTIFACT_BYTES: '437515671'
   # Space-separated list of the exact Debian shards the source run produced.
-  SOURCE_DEBIAN_ARTIFACTS: linux-guest-sources-debian-1-36339356340
-  SOURCE_DEBIAN_ARTIFACT_IDS: '10937903448'
-  SOURCE_DEBIAN_ARTIFACT_BYTES: '1040038122'
-  SOURCE_EVIDENCE_ARTIFACT: linux-guest-source-evidence-36339356340
-  SOURCE_EVIDENCE_ARTIFACT_ID: '10938391795'
-  SOURCE_EVIDENCE_ARTIFACT_BYTES: '11058438'
+  SOURCE_DEBIAN_ARTIFACTS: linux-guest-sources-debian-1-37172047252
+  SOURCE_DEBIAN_ARTIFACT_IDS: '11291877213'
+  SOURCE_DEBIAN_ARTIFACT_BYTES: '1040110650'
+  SOURCE_EVIDENCE_ARTIFACT: linux-guest-source-evidence-37172047252
+  SOURCE_EVIDENCE_ARTIFACT_ID: '11291762441'
+  SOURCE_EVIDENCE_ARTIFACT_BYTES: '11067153'
 
 jobs:
   preflight:
@@ -161,8 +161,8 @@ jobs:
           # --- this workflow's own safety contract --------------------------------
           contract = open(WORKFLOW, encoding="utf-8").read()
           for needle in ("workflow_dispatch:", "target_commit:", "--draft", "--prerelease", "--latest=false",
-                         "if: github.event_name == 'workflow_dispatch'", "codex/build232-device-diagnostics",
-                         "floe-linux-guest-smp-20260928.1"):
+                         "if: github.event_name == 'workflow_dispatch'", "codex/build244-stability",
+                         "floe-linux-guest-smp3-20261004.1"):
               require(needle in contract, "workflow contract contains %r" % needle)
           clobber_lines = [line for line in contract.splitlines()
                            if "--clobber" in line and not line.lstrip().startswith("#") and "never" not in line]
@@ -264,7 +264,7 @@ jobs:
                           "target commit contains FloeAgent/LinuxGuest")
                   require(gh("repos/%s/contents/FloeAgent/LinuxGuest/image/write-image-manifest.py?ref=%s" % (REPO, TARGET), allow_missing=True) is not None,
                           "target commit contains the image manifest tooling")
-                  require(gh("repos/%s/contents/FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp.fragment?ref=%s" % (REPO, TARGET), allow_missing=True) is not None,
+                  require(gh("repos/%s/contents/FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp3.fragment?ref=%s" % (REPO, TARGET), allow_missing=True) is not None,
                           "target commit contains the SMP config fragment")
                   # The distribution tree and the build runs are cherry-picks of each
                   # other, so history does not nest; prove the runner sources that built
@@ -273,7 +273,7 @@ jobs:
                   hashes = {}
                   for sha in sorted({TARGET} | {pin["sha"] for pin in PINS}):
                       for relative in ("FloeAgent/LinuxGuest/runner/floe_exec.c", "FloeAgent/LinuxGuest/runner/floe_clock.h",
-                                       "FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp.fragment"):
+                                       "FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp3.fragment"):
                           payload = gh("repos/%s/contents/%s?ref=%s" % (REPO, relative, sha), allow_missing=True)
                           if payload is None:
                               if sha == TARGET:
@@ -283,7 +283,7 @@ jobs:
                               continue
                           hashes[(relative, sha)] = hashlib.sha256(base64.b64decode(payload["content"])).hexdigest()
                   for relative in ("FloeAgent/LinuxGuest/runner/floe_exec.c", "FloeAgent/LinuxGuest/runner/floe_clock.h",
-                                   "FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp.fragment"):
+                                   "FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp3.fragment"):
                       values = {value for (name, _sha), value in hashes.items() if name == relative}
                       require(len(values) <= 1,
                               "%s is identical at the target commit and every pinned run commit (%d variants)" % (relative, len(values)))
@@ -358,7 +358,7 @@ jobs:
           pins["source_debian_artifacts"] = os.environ["SOURCE_DEBIAN_ARTIFACTS"].split()
           pins["source_debian_artifact_ids"] = os.environ["SOURCE_DEBIAN_ARTIFACT_IDS"].split()
           pins["source_debian_artifact_bytes"] = os.environ["SOURCE_DEBIAN_ARTIFACT_BYTES"].split()
-          pins["smp_fragment_repo_path"] = "FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp.fragment"
+          pins["smp_fragment_repo_path"] = "FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_smp3.fragment"
           with open(os.path.join(os.environ["DIST"], "pins.json"), "w", encoding="utf-8") as handle:
               json.dump(pins, handle, indent=2)
               handle.write("\n")
@@ -394,7 +394,7 @@ jobs:
           HEX128 = re.compile(r"^[0-9a-f]{128}$")
           HEX64 = re.compile(r"^[0-9a-f]{64}$")
           IMAGE_MEMBERS = ("manifest.json", "bbl64.bin", "kernel-riscv64.bin", "disk.img")
-          RELEASE_MARKER = "<!-- floe-linux-guest-distribution:smp-v1 -->"
+          RELEASE_MARKER = "<!-- floe-linux-guest-distribution:smp3-v1 -->"
           FW_MULTI_HART_TOKEN = ("FW-MULTI-HART: mentry.o relocates disabled_hart_mask "
                                  "(MAX_HARTS>1 IPI path present)")
 
@@ -596,6 +596,7 @@ jobs:
               manifest = load(os.path.join(out, "manifest.json"))
               check.require(manifest.get("id") == pins["expected_image_id"], "manifest id is %s" % pins["expected_image_id"])
               check.require(manifest.get("smp_capable") is True, "manifest declares smp_capable=true (SMP image)")
+              check.require(manifest.get("max_vcpus") == 3, "manifest declares the boot-verified three-hart ceiling")
               recorded = {artifact.get("role"): artifact for artifact in (manifest.get("artifacts") or [])}
               digests = {}
               for role, member in (("bios", "bbl64.bin"), ("kernel", "kernel-riscv64.bin"), ("disk", "disk.img")):
@@ -653,8 +654,8 @@ jobs:
                                         "fresh build %s sha256 equals the shipped boot bytes" % member)
                   check.require(re.search(r"^CONFIG_SMP=y$", fresh_text, re.MULTILINE) is not None,
                                 "fresh build evidence records CONFIG_SMP=y")
-                  check.require(re.search(r"^CONFIG_NR_CPUS=2$", fresh_text, re.MULTILINE) is not None,
-                                "fresh build evidence records CONFIG_NR_CPUS=2")
+                  check.require(re.search(r"^CONFIG_NR_CPUS=3$", fresh_text, re.MULTILINE) is not None,
+                                "fresh build evidence records CONFIG_NR_CPUS=3")
                   check.require("kernel config sha256=" in fresh_text, "fresh build records the kernel config digest")
                   assoc = load(fresh_assoc)
                   check.require(assoc.get("boot_files_origin") == "fresh-smp-rebuild",
@@ -665,7 +666,7 @@ jobs:
                                     "fresh boot-association image_%s_sha512 matches the shipped bytes" % role)
               # The multi-hart firmware evidence travels as upstream/SMP-BUILD.txt
               # in the fresh-build artifact or as boot-pair-SMP-BUILD.txt in the
-              # image evidence bundle (run 36330566148 uses the latter).
+              # image evidence bundle (run 37171053949 uses the latter).
               smp_candidates = (os.path.join(fresh, "SMP-BUILD.txt"),
                                 os.path.join(fresh, "upstream", "SMP-BUILD.txt"),
                                 os.path.join(evidence, "boot-pair-SMP-BUILD.txt"))
@@ -927,7 +928,7 @@ jobs:
               # byte-identical at the target commit, the image run and the source
               # run, and it ships in the source-index asset.
               fragment_rel = pins["smp_fragment_repo_path"]
-              fragment_local = os.path.join(args.fragment_dir, "config_linux_riscv64_smp.fragment")
+              fragment_local = os.path.join(args.fragment_dir, "config_linux_riscv64_smp3.fragment")
               check.require(os.path.isfile(fragment_local), "the SMP config fragment is present in the workflow checkout")
               fragment_sha = sha(fragment_local, "sha256")
               for ref, label in ((pins["target_commit"], "target commit"),
@@ -936,7 +937,7 @@ jobs:
                   remote_sha = gh_blob_sha256("repos/%s/contents/%s?ref=%s" % (pins["repo"], fragment_rel, ref))
                   check.require(remote_sha == fragment_sha,
                                 "SMP fragment is byte-identical at the %s (%s)" % (label, ref[:12]))
-              fragment_copy = os.path.join(root, "config_linux_riscv64_smp.fragment")
+              fragment_copy = os.path.join(root, "config_linux_riscv64_smp3.fragment")
               shutil.copy2(fragment_local, fragment_copy)
               facts["upstream"] = {"manifest_sha256": sha(os.path.join(upstream, "SOURCE-MANIFEST.md"), "sha256"),
                                    "tarballs": tarballs, "smp_fragment_sha256": fragment_sha}
@@ -1028,7 +1029,7 @@ jobs:
                        "- archive sha512: `%s`" % final["sha512"],
                        "- archive sha256: `%s`" % final["sha256"],
                        "- cmdline: `%s`" % manifest.get("cmdline", ""),
-                       "- **SMP image**: the shipped kernel/bbl are the CONFIG_SMP=y / CONFIG_NR_CPUS=2 rebuild of the",
+                       "- **SMP image**: the shipped kernel/bbl are the CONFIG_SMP=y / CONFIG_NR_CPUS=3 rebuild of the",
                        "  pinned riscv-pk / riscv-linux revisions (see the `linux-guest-smp-fresh-build-*` asset);",
                        "  bbl/kernel/disk bytes are unchanged from the qualified build; only `manifest.json`",
                        "  provenance was rewritten (release-tag source URLs + `distributionAllowed: true`).", "",
@@ -1053,8 +1054,8 @@ jobs:
                        "- image build + evidence + fresh SMP rebuild runs: %s (`%s`)" % (pins["image_run_id"], pins["image_run_sha"]),
                        "- source bundle run: %s (`%s`)" % (pins["source_run_id"], pins["source_run_sha"]), "",
                        "## SMP boot files", "",
-                       "The shipped `bbl64.bin` / `kernel-riscv64.bin` are the fresh dual-hart rebuild of the",
-                       "pinned revisions (`config_linux_riscv64` + `config_linux_riscv64_smp.fragment`, patches",
+                       "The shipped `bbl64.bin` / `kernel-riscv64.bin` are the fresh three-hart rebuild of the",
+                       "pinned revisions (`config_linux_riscv64` + `config_linux_riscv64_smp3.fragment`, patches",
                        "`riscv-pk.diff` / `riscv-linux.diff` including `0010-smp-dual-hart.patch`). The",
                        "`linux-guest-smp-fresh-build-*` asset carries the producer evidence (rebuild logs,",
                        "config digest, `SMP-BUILD.txt` multi-hart firmware token, boot-pair sha256).", "",
@@ -1062,7 +1063,7 @@ jobs:
                        "| Component | License | Source in this release |", "| --- | --- | --- |",
                        "| Floe runner | MPL-2.0 | `runner-relink` asset |",
                        "| glibc (statically linked into the runner) | LGPL-2.1 | `toolchain-source` asset, glibc `%s` + `runner-relink` RELINK.md |" % source_facts.get("toolchain", {}).get("glibc_version"),
-                       "| Linux kernel 4.15 (riscv-linux, CONFIG_SMP) | GPL-2.0 | `upstream` asset + `config_linux_riscv64_smp.fragment` |",
+                       "| Linux kernel 4.15 (riscv-linux, CONFIG_SMP) | GPL-2.0 | `upstream` asset + `config_linux_riscv64_smp3.fragment` |",
                        "| riscv-pk / bbl | BSD-3-Clause | `upstream` asset |",
                        "| Debian userland packages | per package (mostly GPL/LGPL/BSD/MIT) | `debian-sources` assets + `guest-copyrights.tar.gz` / `guest-common-licenses.tar.gz` in the image-evidence asset |", "",
                        "## Debian source completeness", "",
@@ -1257,7 +1258,7 @@ jobs:
           shopt -u nullglob
           mkdir -p "$DIST/source-index/debian-sources"
           cp "$ROOT"/*.md "$ROOT"/*.sha512 "$ROOT"/*.tsv "$ROOT"/*.json "$DIST/source-index/" 2>/dev/null || true
-          cp "$ROOT/config_linux_riscv64_smp.fragment" "$DIST/source-index/"
+          cp "$ROOT/config_linux_riscv64_smp3.fragment" "$DIST/source-index/"
           cp -r "$ROOT/debian-index" "$DIST/source-index/"
           cp "$ROOT/debian-sources/SOURCES.sha256" "$ROOT/debian-sources/SOURCES.tsv" "$DIST/source-index/debian-sources/"
           tar_bundle "$DIST/source-index" "linux-guest-source-index-$SOURCE_RUN_ID"
