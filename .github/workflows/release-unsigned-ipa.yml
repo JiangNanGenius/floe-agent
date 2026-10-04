@@ -695,9 +695,14 @@ jobs:
           scripts/sbom.sh
 
       - name: Package the matching Floe remote agent
+        env:
+          # These checks import a SwiftPM resource by path. Python bytecode in
+          # that source directory would be copied into the device App bundle.
+          PYTHONDONTWRITEBYTECODE: '1'
         run: |
           python3 scripts/test_remote_task_cancel.py
           python3 scripts/test_remote_shell.py
+          test -z "$(find Sources/FloeExecution/Resources/RemoteAgent -name '*.pyc' -print -quit)"
           scripts/package_remote_agent.sh release-assets 1.4.3
 
       - name: Build unsigned device application
