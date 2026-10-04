@@ -682,17 +682,28 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
 public enum LinuxGuestImageDistributionCatalog {
     /// One fixed component release. Keep the App default and download entry aligned.
     ///
-    /// The default is the verified SMP image (CONFIG_SMP=y / NR_CPUS=2 kernel
-    /// plus fresh raw bbl, qualified by component-image-ci run 36330566148 and
-    /// distributed as published component release `floe-linux-guest-smp-20260928.1`
-    /// with complete corresponding source). The previous single-hart image
-    /// stays listed: environments already cloned from it keep their pinned
+    /// The default is the verified three-hart SMP image (CONFIG_SMP=y /
+    /// NR_CPUS=3 kernel plus fresh raw bbl, qualified by component-image-ci
+    /// run 37171053949). Older SMP and single-hart images stay listed:
+    /// environments already cloned from them keep their pinned
     /// base until their normal install/preparation flow downloads a new image
     /// — a catalog change never rebases or overwrites an existing disk.
-    public static let defaultImageID = "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1"
+    public static let defaultImageID = "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1"
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp3-20261004.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1.zip")!,
+            mirrors: [],
+            archiveSHA512: "5db1567ecd357c33763c42ad27dd8ce74b5d1ab073939d4f8338a8b06a3b6467a73a02472828f439aa3829ede7eaa96c21bf690eda21665f665d4d896124c6a8",
+            provenance: LinuxGuestImageProvenance(
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-smp3-20261004.1",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/fef6139f43b9b20b4693617e533580a4ac0bb66f/FloeAgent/ThirdParty/TinyEMU/guest-image",
+                license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0 (CONFIG_SMP=y, NR_CPUS=3); bbl BSD-3-Clause; static glibc LGPL-2.1",
+                distributionAllowed: true
+            )
+        ),
+        LinuxGuestTrustedImage(
+            id: "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1",
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!,
             mirrors: [
                 // Established anonymous GitHub-archive accelerator. The

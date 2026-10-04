@@ -1370,10 +1370,17 @@ jobs:
 
 
           def required_release():
-              found = find_release()
-              if found is None:
-                  raise SystemExit("release %s is not visible after the upload step" % TAG)
-              return found
+              # GitHub can return a newly created draft from `gh release
+              # create` before its release-list API exposes it. A bounded
+              # read retry keeps the same marked draft and never creates a
+              # second release or overwrites an asset.
+              for attempt in range(10):
+                  found = find_release()
+                  if found is not None:
+                      return found
+                  if attempt < 9:
+                      time.sleep(2)
+              raise SystemExit("release %s is not visible after bounded draft readback" % TAG)
 
 
           files = sorted(os.path.join(ASSETS, name) for name in os.listdir(ASSETS))

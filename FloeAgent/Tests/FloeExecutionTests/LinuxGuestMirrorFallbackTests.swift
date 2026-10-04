@@ -50,23 +50,28 @@ final class LinuxGuestImageMirrorContractTests: XCTestCase {
         }
     }
 
-    func testDefaultSMPImagePinsTwoVerifiedDirectMirrors() {
+    func testNewDefaultImageUsesPrimaryUntilMirrorsAreVerified() {
         let current = LinuxGuestImageDistributionCatalog.entry(
             id: LinuxGuestImageDistributionCatalog.defaultImageID
         )
         guard let current else { return XCTFail("the catalog pins no default image") }
         XCTAssertEqual(current.archiveURL.host, "github.com", "GitHub Releases is the trust-bearing primary")
-        XCTAssertEqual(current.mirrors.count, 2, "two independently verified direct mirrors are pinned")
-        XCTAssertEqual(current.mirrors.map { $0.archiveURL.host }, ["gh-proxy.com", "ghproxy.net"],
+        XCTAssertTrue(current.mirrors.isEmpty, "the new archive has no independently verified mirror yet")
+
+        let previous = LinuxGuestImageDistributionCatalog.entry(
+            id: "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1"
+        )
+        guard let previous else { return XCTFail("the catalog must retain the prior SMP image") }
+        XCTAssertEqual(previous.mirrors.map { $0.archiveURL.host }, ["gh-proxy.com", "ghproxy.net"],
                        "mirrors keep the declared, verified order")
 
-        for mirror in current.mirrors {
+        for mirror in previous.mirrors {
             XCTAssertEqual(mirror.archiveURL.scheme, "https")
             XCTAssertNil(mirror.shardManifestURL, "both verified mirrors are direct whole-archive mirrors")
-            XCTAssertNotEqual(mirror.archiveURL, current.archiveURL, "a mirror never replaces the primary URL")
+            XCTAssertNotEqual(mirror.archiveURL, previous.archiveURL, "a mirror never replaces the primary URL")
             // Each direct mirror addresses the exact same pinned archive bytes.
             XCTAssertTrue(
-                mirror.archiveURL.absoluteString.hasSuffix(current.archiveURL.absoluteString),
+                mirror.archiveURL.absoluteString.hasSuffix(previous.archiveURL.absoluteString),
                 "the accelerator URL must name the exact primary archive path"
             )
         }
