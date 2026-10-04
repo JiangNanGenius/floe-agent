@@ -1,8 +1,8 @@
 # Floe Agent 使用指南
 
-当前已确认的内部交付为 **1.7.2（243）**；[Build 243 交付记录](releases/testflight/TESTFLIGHT_1.7.2_BETA.md)区分了 Apple 可用状态与真机验收。Build 246 未通过发布资格检查、未上传，[失败记录](releases/testflight/TESTFLIGHT_1.7.5_CANDIDATE.md)已保留。Build 247 的手记 UI 资格检查未通过、未上传。Build 248 的 Swift 回归测试未通过、未上传。Build 249 是下一候选版；Apple 处理完成后才可确认安装状态。
+当前已确认的内部交付为 **1.7.14（255）**；[Build 255 交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md)区分了 Apple 可用状态与真机验收。Build 255 [正在等待外部 Beta App Review](public-beta/build255/README.md)；公开链接继续提供已获批准的构建。
 
-**Build 249 候选行为。** Linux 虚拟机资源池共 4 核，单台最多 3 核；在内存与镜像能力允许时，可按 3+1、2+1+1、2+2、1+1+1+1 分配。IDE 运行面板提供 1、2、3 核选择。三核必须使用新验证的 SMP 镜像，旧双核镜像仍最多使用两核。要求调整核心数时，助手应先检查状态，再调用启动或重启工具。语音录制会显示准备进度，启动卡住后可重试，波形随麦克风音量变化。详见 [Build 249 说明](releases/notes/RELEASE_NOTES_1.7.8_BUILD_249.md)；实际 iPad 行为仍需验收。
+**Build 255 行为。** Linux 虚拟机资源池共 4 核，单台最多 3 核；在内存与镜像能力允许时，可按 3+1、2+1+1、2+2、1+1+1+1 分配。IDE 运行面板提供 1、2、3 核选择。三核必须使用已验证的 SMP 镜像，旧双核镜像仍最多使用两核。要求调整核心数时，助手会先检查状态，再调用启动或重启工具。语音录制会显示准备进度，启动卡住后可重试，波形随麦克风音量变化。详见 [Build 255 说明](releases/notes/RELEASE_NOTES_1.7.14_BUILD_255.md)；实际 iPad 行为仍需验收。
 
 **仍需真机复测。** 此前 iPad 测试报告普通 MLX 对话和测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 229 包含针对性修复，但本地模型加载、测速及连续对话与工具续轮、PPT 可编辑首帧和保存重开、Office 退出状态、IDE 内 DOCX/XLSX/PPTX 标签，以及 PiP、通知和键盘触控行为，均仍需在设备上核实。
 

@@ -34,9 +34,9 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 ## Floe 1.7 internal beta
 
-**Current internal TestFlight: 1.7.2 (243).** Immutable tag `v1.7.2` fixes source `c5a1ffbc`. [Independent CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37124262937) passed the App, package and dual-device Simulator checks. [Apple verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37133857251) confirmed `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group. [Build 243 delivery record](docs/releases/testflight/TESTFLIGHT_1.7.2_BETA.md) and [release notes](docs/releases/notes/RELEASE_NOTES_1.7.2_BUILD_243.md) separate the build, retained unsigned IPA, upload and device-pending acceptance. Build 243 has no GitHub Release, Feather entry or production App Store release.
+**Current internal TestFlight: 1.7.14 (255).** Immutable tag `v1.7.14` fixes source `850701db`. [Release CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37221265462) passed the App, package and iPad/iPhone Simulator checks. [Apple verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889) confirmed `VALID`, unexpired and `IN_BETA_TESTING` in the private Floe QA group. The [Build 255 delivery record](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md) and [release notes](docs/releases/notes/RELEASE_NOTES_1.7.14_BUILD_255.md) separate build, upload and physical-device acceptance. The [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.14) and Feather source carry the unsigned developer IPA.
 
-**External TestFlight:** Build 243 is [submitted for Beta App Review](https://github.com/JiangNanGenius/floe-agent/actions/runs/37134960962) in the existing `publictest1` group and is waiting for Apple approval. The public link serves approved builds; Build 243 is not yet externally installable.
+**External TestFlight:** Build 255 is [submitted for Beta App Review](https://github.com/JiangNanGenius/floe-agent/actions/runs/37228308146) in the existing `publictest1` group and is waiting for Apple approval. The public link serves approved builds; Build 255 is not yet externally installable.
 
 Earlier internal builds and the current formal GitHub Release, 1.7.0 (241), are documented in the [release archive](docs/releases/README.md).
 
@@ -91,7 +91,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Floe Agent **1.7.2 (build 243)** is verified available to the **Floe QA internal TestFlight group**: Apple reports `VALID`, unexpired, audience `APP_STORE_ELIGIBLE` and `IN_BETA_TESTING` for immutable tag `v1.7.2` ([verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37133857251)). See the [Build 243 delivery record](docs/releases/testflight/TESTFLIGHT_1.7.2_BETA.md); physical iPad behavior remains to be accepted.
+Floe Agent **1.7.14 (build 255)** is verified available to the **Floe QA internal TestFlight group**: Apple reports `VALID`, unexpired, audience `APP_STORE_ELIGIBLE` and `IN_BETA_TESTING` for immutable tag `v1.7.14` ([verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889)). See the [Build 255 delivery record](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md); physical iPad behavior remains to be accepted.
 
 ### Unsigned IPA
 

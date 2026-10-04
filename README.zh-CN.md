@@ -34,9 +34,9 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 ## Floe 1.7 内部测试版
 
-**当前内部 TestFlight：1.7.2（243）。** 不可变标签 `v1.7.2` 固定源码 `c5a1ffbc`。[独立 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37124262937)已通过 App、包及双设备模拟器检查；[Apple 核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/37133857251)确认 `VALID`、未过期，并在唯一私有 Floe QA 组 `IN_BETA_TESTING`。[Build 243 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.2_BETA.md)与[发布说明](docs/releases/notes/RELEASE_NOTES_1.7.2_BUILD_243.md)分别记录构建、未签名 IPA 留存、上传和待完成的真机验收。本版没有 GitHub Release、Feather 或正式 App Store 发布。
+**当前内部 TestFlight：1.7.14（255）。** 不可变标签 `v1.7.14` 固定源码 `850701db`。[发布 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37221265462)已通过 App、包及 iPad/iPhone 模拟器检查；[Apple 核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889)确认 `VALID`、未过期，并在私有 Floe QA 组 `IN_BETA_TESTING`。[Build 255 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md)与[发布说明](docs/releases/notes/RELEASE_NOTES_1.7.14_BUILD_255.md)分别记录构建、上传和待完成的真机验收。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.14)及 Feather 软件源提供未签名开发者 IPA。
 
-**外部 TestFlight：** Build 243 已在现有 `publictest1` 组中[提交 Beta App Review](https://github.com/JiangNanGenius/floe-agent/actions/runs/37134960962)，等待 Apple 审核。公开链接仅提供已获批准的构建，Build 243 目前尚不能供外部安装。
+**外部 TestFlight：** Build 255 已在现有 `publictest1` 组中[提交 Beta App Review](https://github.com/JiangNanGenius/floe-agent/actions/runs/37228308146)，等待 Apple 审核。公开链接仅提供已获批准的构建，Build 255 目前尚不能供外部安装。
 
 更早的内部构建与当前正式 GitHub Release 1.7.0（241）见[发布档案](docs/releases/README.md)。
 
@@ -89,7 +89,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.2（build 243）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装：不可变标签 `v1.7.2` 对应 Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`（[核验记录](https://github.com/JiangNanGenius/floe-agent/actions/runs/37133857251)）。详见 [Build 243 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.2_BETA.md)；真机行为仍待验收。
+Floe Agent **1.7.14（build 255）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装：不可变标签 `v1.7.14` 对应 Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`（[核验记录](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889)）。详见 [Build 255 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md)；真机行为仍待验收。
 
 ### 未签名 IPA
 

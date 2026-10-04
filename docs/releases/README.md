@@ -11,7 +11,7 @@
 | [builds/](builds/) | 专项构建记录 | 2 |
 | [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 24 |
 
-当前内部构建：[Build 243 交付记录](testflight/TESTFLIGHT_1.7.2_BETA.md)、[Build 243 发布说明](notes/RELEASE_NOTES_1.7.2_BUILD_243.md)、[双语测试说明](testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_243.json)。当前正式 GitHub Release 的档案：[Build 241 发布说明](notes/RELEASE_NOTES_1.7.0_BUILD_241.md)、[历史 TestFlight 记录](testflight/TESTFLIGHT_1.7.0_BETA.md)。
+当前内部构建：[Build 255 交付记录](testflight/TESTFLIGHT_1.7.14_BETA.md)、[Build 255 发布说明](notes/RELEASE_NOTES_1.7.14_BUILD_255.md)、[双语测试说明](testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_255.json)。当前正式 GitHub Release 的档案：[Build 241 发布说明](notes/RELEASE_NOTES_1.7.0_BUILD_241.md)、[历史 TestFlight 记录](testflight/TESTFLIGHT_1.7.0_BETA.md)。
 
 [历史版本导览](HISTORY.md)保留此前文档索引中的逐版状态与原始结论。`docs/evidence/`、`docs/qualification/` 和 `docs/validation/` 继续保存对应证据，不与说明文件混放。
 
