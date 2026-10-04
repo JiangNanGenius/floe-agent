@@ -697,7 +697,7 @@ class WorkflowWiringTests(unittest.TestCase):
             self.assertGreaterEqual(
                 job.count("-onlyUsePackageVersionsFromResolvedFile"), 2)
             self.assertIn("CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing", job)
-        self.assertNotIn("continue-on-error", self.source)
+            self.assertNotIn("continue-on-error", job)
 
     def test_raw_logs_are_uploaded_on_failure(self):
         for job, name in (
