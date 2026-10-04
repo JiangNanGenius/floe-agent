@@ -67,8 +67,8 @@ public enum GuestReleaseShapeError: Error, LocalizedError, Sendable, Equatable {
 ///
 /// Engine capacity (`FLOE_VM_MAX_VCPU`), the image manifest's `smp` flag and
 /// the device quota can never widen this: it states only what THIS release is
-/// qualified to ship. `production` now qualifies two harts for images whose
-/// verified manifest proves SMP (S0–S4 correctness passed in cloud); a
+/// qualified to ship. `production` qualifies up to three harts only for an
+/// image whose verified manifest proves that exact ceiling; a
 /// missing image proof is still refused by the pool/registry/integrator's
 /// separate image gate, never silently booted as dual. `internalSyntheticTesting`
 /// stays available for synthetic engine/admission tests and is unreachable
@@ -87,12 +87,12 @@ public struct GuestReleaseShapePolicy: Sendable, Equatable {
         self.syntheticProvenance = provenance
     }
 
-    /// The release policy: up to two harts, granted only for a verified image
-    /// whose manifest proves SMP (the pool's separate image gate). An untyped
+    /// The release policy: up to three harts, granted only for a verified image
+    /// whose manifest proves the requested count (the pool's image gate). An untyped
     /// request still answers the one-hart worker default (`resolve(nil)`), so
     /// ordinary shells are unchanged; dual remains correct-but-slower than
     /// one hart on the S5 equal-work benchmark, which the UI states.
-    public static let production = GuestReleaseShapePolicy(maximumSupportedVCPUs: 2, synthetic: false, provenance: nil)
+    public static let production = GuestReleaseShapePolicy(maximumSupportedVCPUs: 3, synthetic: false, provenance: nil)
 
     /// Explicit internal test configuration: unlocks the engine ladder for
     /// SYNTHETIC SMP engine/admission experiments. There is intentionally no

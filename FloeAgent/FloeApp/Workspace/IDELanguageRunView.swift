@@ -162,6 +162,7 @@ enum IDELanguageRunText {
         case .automatic: return t("自动（按声明信号）", "Automatic (by declared signals)")
         case .singleCore: return t("1 个客户机内核", "1 guest core")
         case .dualCore: return t("2 个客户机内核", "2 guest cores")
+        case .tripleCore: return t("3 个客户机内核", "3 guest cores")
         }
     }
 
@@ -173,8 +174,8 @@ enum IDELanguageRunText {
             return t("本版本最多交付 \(maximum) 个客户机内核，\(requested) 核不在此版本的内核阶梯内。选择前即被拒绝，不会以 1 核静默运行。",
                      "This release delivers at most \(maximum) guest core(s); \(requested) cores are outside this release's qualified ladder. The run is refused before launch and never silently runs on one hart.")
         case .imageDoesNotProveSMP(let requested):
-            return t("当前镜像清单没有提供 SMP 证据，资源池会拒绝 \(requested) 核的授权；已在启动前拒绝，不会以 1 核静默运行。",
-                     "The current image manifest does not prove SMP, so the resource pool refuses a \(requested)-core grant; the run is refused before launch and never silently runs on one hart.")
+            return t("当前镜像清单没有证明支持 \(requested) 核，资源池会拒绝该请求；不会静默降核运行。",
+                     "The current image manifest does not prove \(requested) cores, so the pool refuses the request without silently reducing the core count.")
         case .dispatchNotShapeAware(let requested):
             return t("运行调度路径尚未接入客户机形状请求，当前无法把 \(requested) 核交给启动流程；已在启动前拒绝，不会以 1 核静默运行。",
                      "The run dispatch path cannot deliver a guest shape request yet, so \(requested) cores cannot reach the start path; the run is refused before launch and never silently runs on one hart.")
@@ -525,6 +526,19 @@ struct IDELanguageRunView: View {
                         Text(IDELanguageRunText.t(
                             "显式选择 2 个客户机内核；请求按严格模式提交，只有已安装的镜像清单证明 SMP 时才会授予。双核已通过 S0–S4 正确性验证，但等量工作基准在 2 核上更慢（约 \(IDELanguageRunText.speedupText)），不会声称加速。",
                             "An explicit dual guest-cores request; it is submitted strictly and granted only when the installed image manifest proves SMP. Dual-core passed the S0–S4 correctness contract, but the equal-work benchmark is slower on two cores (about \(IDELanguageRunText.speedupText)); no speedup is claimed."
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                case .tripleCore:
+                    if let refusal = plan.refusal {
+                        Label(IDELanguageRunText.shapeRefusal(refusal), systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(IDELanguageRunText.t(
+                            "显式请求 3 个客户机内核。仅经验证的三核镜像可启动；资源池总计最多 4 核。",
+                            "Explicitly requests 3 guest cores. A verified three-core image is required; the pool allows 4 cores in total."
                         ))
                         .font(.caption)
                         .foregroundStyle(.secondary)

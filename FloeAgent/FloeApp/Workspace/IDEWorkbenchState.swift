@@ -545,10 +545,9 @@ final class IDELanguageRunController: ObservableObject {
     ///    accepted request into the guest start (the accepted intent reaches
     ///    the Linux environment provider's descriptor and the registry's typed
     ///    admission).
-    /// `GuestReleaseShapePolicy.production` qualifies two harts, but the
-    /// second hart is granted ONLY when the verified image manifest proves
-    /// SMP (the reworked CONFIG_SMP kernel/firmware pair); without that proof
-    /// an explicit dual selection is refused and never becomes one hart. Dual
+    /// `GuestReleaseShapePolicy.production` qualifies up to three harts, but
+    /// each secondary hart requires proof from the verified image manifest;
+    /// an explicit unsupported selection is refused without silently lowering it. Dual
     /// is correct-but-slower on the current equal-work benchmark, which the
     /// sheet states.
     func currentGuestShapePlan() async -> GuestRunEntryShapePlan? {
@@ -562,10 +561,14 @@ final class IDELanguageRunController: ObservableObject {
         let imageProvesSMP = await FloePlatformServices.shared.linuxImageSMPProven(
             id: LinuxGuestBackendAssembly.defaultImageID
         )
+        let imageMaximumVCPUs = await FloePlatformServices.shared.linuxImageMaximumVCPUs(
+            id: LinuxGuestBackendAssembly.defaultImageID
+        )
         return GuestRunEntryShapePlanner.plan(
             selection: guestShapeSelection,
             recommendation: recommendation,
             imageProvesSMP: imageProvesSMP,
+            imageMaximumVCPUs: imageMaximumVCPUs,
             dispatch: .shapeAware
         )
     }
@@ -844,9 +847,30 @@ final class IDELanguageRunController: ObservableObject {
         // before the session open that triggers the guest start. A refused
         // selection produced no effective request, so nothing is registered
         // and the start can never boot at another shape.
+        var effectiveShapePlan = shapePlan
+        if let environment = toolEnvironment, let plan = shapePlan {
+            let imageID = await FloePlatformServices.shared.linuxPinnedImageSource.baseImageID(
+                for: environment.id
+            ) ?? LinuxGuestBackendAssembly.defaultImageID
+            let imageMaximum = await FloePlatformServices.shared.linuxImageMaximumVCPUs(id: imageID)
+            let actualPlan = GuestRunEntryShapePlanner.plan(
+                selection: plan.selection,
+                recommendation: plan.recommendation,
+                imageProvesSMP: imageMaximum >= 2,
+                imageMaximumVCPUs: imageMaximum,
+                dispatch: .shapeAware
+            )
+            guard isCurrent(attempt), !isStopRequested(attempt) else { return }
+            guard actualPlan.isRunnable else {
+                guestShapePlan = actualPlan
+                status = .blocked(.guestShapeUnavailable)
+                return
+            }
+            effectiveShapePlan = actualPlan
+        }
         var shapeIntent: ShellGuestRunShapeIntent?
         if let environment = toolEnvironment,
-           let plan = shapePlan,
+           let plan = effectiveShapePlan,
            let intent = ShellGuestRunShapeIntent.from(
                plan: plan, environmentID: environment.id, runID: runID.uuidString
            ) {

@@ -123,6 +123,45 @@ final class RuntimeVMPoolTests: XCTestCase {
         await assertCancellation(task)
     }
 
+    func testFourCorePoolAdmitsEveryRequestedPartition() async throws {
+        let partitions: [[GuestVCPUCount]] = [
+            [.three, .one], [.two, .one, .one],
+            [.two, .two], [.one, .one, .one, .one]
+        ]
+        for (partitionIndex, partition) in partitions.enumerated() {
+            let pool = makePool(quota: 4, memory: 2048, vms: 4)
+            for (index, cores) in partition.enumerated() {
+                let lease = try await pool.acquire(
+                    environmentID: "partition-\(partitionIndex)-\(index)",
+                    runtimeID: "rt-partition-\(partitionIndex)-\(index)",
+                    request: GuestResourceRequest(vcpus: cores, memory: .m512),
+                    imageSMPCapable: cores != .one,
+                    imageMaximumVCPUs: cores == .three ? 3 : (cores == .two ? 2 : 1)
+                )
+                XCTAssertEqual(lease.shape.vcpus, cores)
+            }
+            let status = await pool.status
+            XCTAssertEqual(status.usedVCPUs, 4)
+            XCTAssertEqual(status.running, partition.count)
+        }
+    }
+
+    func testThreeCoreRequestRequiresThreeCoreImage() async throws {
+        let pool = makePool(quota: 4, memory: 2048, vms: 4)
+        do {
+            _ = try await pool.acquire(
+                environmentID: "legacy-dual", runtimeID: "rt-legacy-dual",
+                request: GuestResourceRequest(vcpus: .three, memory: .m512),
+                imageSMPCapable: true, imageMaximumVCPUs: 2
+            )
+            XCTFail("a dual image cannot start three cores")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("at most 2"))
+        }
+        let status = await pool.status
+        XCTAssertEqual(status.running, 0)
+    }
+
     func testOneDualAndTwoSinglesAdmit() async throws {
         let pool = makeSyntheticDualPool(quota: 4, memory: 2048, vms: 4)
         _ = try await pool.acquire(
@@ -830,11 +869,12 @@ final class RuntimeVMPoolTests: XCTestCase {
     /// and synthetic policies, with no clamping in any direction.
     func testReleaseShapePolicyResolution() throws {
         let production = GuestReleaseShapePolicy.production
-        XCTAssertEqual(production.maximumSupportedVCPUs, 2)
+        XCTAssertEqual(production.maximumSupportedVCPUs, 3)
         XCTAssertEqual(try production.resolve(requestedVCPUs: nil), .one)
         XCTAssertEqual(try production.resolve(requestedVCPUs: 1), .one)
         XCTAssertEqual(try production.resolve(requestedVCPUs: 2), .two)
-        for bad in [0, -1, 3, 6, 64] {
+        XCTAssertEqual(try production.resolve(requestedVCPUs: 3), .three)
+        for bad in [0, -1, 6, 64] {
             XCTAssertThrowsError(try production.resolve(requestedVCPUs: bad)) {
                 guard case .invalidVCPUCount = $0 as? GuestReleaseShapeError else {
                     return XCTFail("\(bad) must be invalid, not clamped: \($0)")
@@ -938,14 +978,14 @@ final class RuntimeVMPoolTests: XCTestCase {
                 activeProcessorCount: cores, hardwareIdentifier: id
             )
         }
-        // 12 GB iPad, matching evidence: six CPUs (core-clamped) but the
+        // 12 GB iPad, matching evidence: four CPUs (core-clamped) and the
         // RAM ceiling stays 3072 MiB.
         XCTAssertEqual(
             GuestResourceQuota.performanceQuota(
                 for: profile(.pad, 12, 10, "iPadFixtureA,1"),
                 evidence: evidence("iPadFixtureA,1")
             ),
-            GuestResourceQuota(totalVCPUs: 6, totalMemoryMiB: 3072, maxVMs: 4, source: .performanceTier)
+            GuestResourceQuota(totalVCPUs: 4, totalMemoryMiB: 3072, maxVMs: 4, source: .performanceTier)
         )
         XCTAssertEqual(
             GuestResourceQuota.performanceQuota(

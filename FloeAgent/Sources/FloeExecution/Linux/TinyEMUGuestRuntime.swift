@@ -93,7 +93,7 @@ public final class TinyEMUGuestMachine: LinuxGuestConsoleTransport, @unchecked S
     /// by the pool/registry image gate (the verified image must prove SMP).
     private var vcpuCount: GuestVCPUCount
     /// AUTHORITATIVE release gate for THIS machine. Production assemblies use
-    /// `.production` (up to two harts; untyped requests still resolve to
+    /// `.production` (up to three harts; untyped requests still resolve to
     /// one); synthetic SMP engine/admission experiments construct the machine
     /// with an explicit `.internalSyntheticTesting(provenance:)` policy —
     /// never an env var or a manifest claim.

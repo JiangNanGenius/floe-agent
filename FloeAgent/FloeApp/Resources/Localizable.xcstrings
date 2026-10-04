@@ -966,13 +966,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This version can use up to %lld cores. Two cores are used only when the downloaded Linux image is known to support them; otherwise choosing 2 cores shows an error instead of silently using 1. In our tests two cores were slightly slower for the same work, so no speed-up is promised."
+            "value": "This version allows up to %lld cores per guest and 4 cores across the pool. Two or three cores require an installed Linux image verified for that count; an unsupported request is refused without silently reducing it. In our tests two cores were slightly slower for the same work, so no speed-up is promised."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本版本最多可使用 %lld 个核心。仅当已下载的 Linux 镜像确认支持时才会使用 2 核；否则选择 2 核会提示错误，不会静默改用 1 核。实测同等工作 2 核略慢，不承诺提速。"
+            "value": "本版本单台客户机最多使用 %lld 核，资源池总计 4 核。使用 2 核或 3 核需已安装镜像证明支持对应核数；不支持的请求会明确拒绝，不会静默降核。实测同等工作 2 核略慢，不承诺提速。"
           }
         }
       }

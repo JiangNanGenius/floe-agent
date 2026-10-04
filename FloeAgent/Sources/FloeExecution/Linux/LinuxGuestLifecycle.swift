@@ -269,7 +269,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
 
     /// Capability summary carried by every receipt of this release.
     public static let capabilitySummary =
-        "dual-core qualified for testing (cloud S0–S4 correctness passed; the equal-work S5 benchmark is slower on two cores); granted only for a verified image whose manifest proves SMP; memory, lease and stop guards unchanged"
+        "up to three guest cores when the verified image proves that count (three-hart boot verified by component-image-ci run 37171053949); four cores total across the pool; the two-core equal-work benchmark was slower than one core; memory, lease and stop guards unchanged"
 
     /// The engine's worker default for a start that requests no RAM
     /// (`LinuxGuestLimits.defaultRAMMB`, 256 MiB). Kept in parity so a

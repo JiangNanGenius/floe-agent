@@ -519,6 +519,11 @@ final class FloePlatformServices: @unchecked Sendable {
         return await status.smpCapability(id)
     }
 
+    func linuxImageMaximumVCPUs(id: String?) async -> Int {
+        guard let id, let status = lock.withLock({ linuxImageRuntimeV2 }) else { return 1 }
+        return await status.maximumVCPUs(id)
+    }
+
     // MARK: Guest run shape handoff (IDE run entry → guest start)
 
     /// Registers the accepted shape for the next guest start of one

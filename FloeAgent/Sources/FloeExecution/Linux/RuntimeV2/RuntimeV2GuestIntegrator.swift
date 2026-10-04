@@ -114,6 +114,8 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// SMP capability proven by the canonical image manifest (never by an
     /// engine query and never assumed). Default false.
     func imageSMPCapable(imageID: String) async -> Bool
+    /// Maximum core count proved by this exact verified image.
+    func imageMaximumVCPUs(imageID: String) async -> Int
     /// Releases the pool slot after the session is fully torn down.
     func releaseSlot(environmentID: String, runtimeID: String) async
     /// Takes the single-writer lease and materializes the working disk
@@ -191,6 +193,9 @@ public extension LinuxGuestRuntimeV2Integrating {
     /// integrator overrides this with the verified image manifest's own
     /// declaration — never an engine query.
     func imageSMPCapable(imageID: String) async -> Bool { false }
+    func imageMaximumVCPUs(imageID: String) async -> Int {
+        await imageSMPCapable(imageID: imageID) ? 2 : 1
+    }
 
     /// Compatible default for conformers that predate the result-carrying
     /// stop: runs the legacy `completeStop` and reports `unknown` honestly.
@@ -609,10 +614,11 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission {
         try await ensurePrepared(isCancelled: { Task.isCancelled })
-        let proven = await imageSMPCapable(imageID: imageID)
+        let imageMaximum = await imageMaximumVCPUs(imageID: imageID)
         let granted = try await store.pool.acquire(
             environmentID: environmentID, runtimeID: runtimeID,
-            request: request, imageSMPCapable: proven, downgrade: downgrade
+            request: request, imageSMPCapable: imageMaximum >= 2,
+            imageMaximumVCPUs: imageMaximum, downgrade: downgrade
         )
         let reason = granted.vcpusDowngradeReason ?? granted.memoryDowngradeReason
         return LinuxGuestShapeAdmission(
@@ -638,14 +644,15 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         try await ensurePrepared()
         let policy = await store.pool.releasePolicy
         let resolvedVCPUs = try policy.resolve(requestedVCPUs: vcpus)
-        let proven = await imageSMPCapable(imageID: imageID)
+        let imageMaximum = await imageMaximumVCPUs(imageID: imageID)
         let request = GuestResourceRequest(
             vcpus: resolvedVCPUs,
             memory: GuestMemoryMiB.smallestHolding(max(0, ramMB)) ?? .m2048,
             origin: .environmentPolicy
         )
         try await store.pool.validateShapeChange(
-            environmentID: environmentID, request: request, imageSMPCapable: proven
+            environmentID: environmentID, request: request,
+            imageSMPCapable: imageMaximum >= 2, imageMaximumVCPUs: imageMaximum
         )
     }
 
@@ -676,6 +683,10 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     /// declarations answer false; the engine query is never consulted.
     public func imageSMPCapable(imageID: String) async -> Bool {
         (try? await store.images.smpCapability(imageID: imageID))?.capable ?? false
+    }
+
+    public func imageMaximumVCPUs(imageID: String) async -> Int {
+        (try? await store.images.smpCapability(imageID: imageID))?.maximumVCPUs ?? 1
     }
 
     /// The environment's immutable template pin, when one is recorded.

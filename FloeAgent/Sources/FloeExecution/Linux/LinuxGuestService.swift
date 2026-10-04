@@ -59,7 +59,7 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     case shapeExceedsPoolCapacity(detail: String)
     /// The requested vCPU count is expressible by the engine but is NOT
     /// qualified for THIS release (B4 gate; the qualified ladder is stated by
-    /// `GuestReleaseShapePolicy.production`, currently one or two harts).
+    /// `GuestReleaseShapePolicy.production`, currently one to three harts).
     /// Independent of the image manifest (`smp=true` is not authority),
     /// engine SMP capability, device quota or environment variables.
     /// Explicit requests fail with this actionable error instead of booting a

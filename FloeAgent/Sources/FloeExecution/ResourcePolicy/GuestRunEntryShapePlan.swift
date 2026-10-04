@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // The IDE run sheet asks the user which guest shape a Python/Node script run
-// should use (automatic / 1 vCPU / 2 vCPU). This type is the pure decision
+// should use (automatic / 1, 2 or 3 vCPU). This type is the pure decision
 // layer behind that control. It reuses the existing `GuestResourceAdvisory`
 // plan and the `GuestReleaseShapePolicy`, and it produces exactly the typed
 // `GuestResourceRequest` + `GuestShapeDowngradePolicy` pair the guest pool
@@ -22,7 +22,7 @@
 //    single-hart floor, which is the only downgrade the pool may record for an
 //    automatic plan. The reason is exposed on the plan, so the UI reports the
 //    downgrade instead of hiding it.
-//  * An EXPLICIT dual-core selection is `.strict`: when any gate refuses it,
+//  * An EXPLICIT multi-core selection is `.strict`: when any gate refuses it,
 //    `effectiveRequest` stays nil and the selection is refused. It never
 //    becomes a one-hart request, and the dispatcher must not start anything.
 //  * `GuestRunEntryShapeDispatch.singleHartOnly` remains the honest state for
@@ -56,6 +56,7 @@ public enum GuestRunEntryShapeSelection: String, Sendable, Equatable, CaseIterab
     case singleCore
     /// An explicit dual-hart guest.
     case dualCore
+    case tripleCore
 
     /// The explicit vCPU count this selection asks for. `automatic` carries no
     /// count of its own; the advisory decides it.
@@ -64,6 +65,7 @@ public enum GuestRunEntryShapeSelection: String, Sendable, Equatable, CaseIterab
         case .automatic: return nil
         case .singleCore: return .one
         case .dualCore: return .two
+        case .tripleCore: return .three
         }
     }
 }
@@ -106,7 +108,7 @@ public enum GuestRunEntryShapeRefusal: Sendable, Equatable {
         case .releaseVCPUUnsupported(let requested, let maximum):
             return "this release supports at most \(maximum) guest core(s); \(requested) would be refused by the release gate"
         case .imageDoesNotProveSMP(let requested):
-            return "the image manifest does not prove SMP; \(requested) harts would be refused by the image gate"
+            return "the image manifest does not prove \(requested) harts; the image gate would refuse this count"
         case .dispatchNotShapeAware(let requested):
             return "the run dispatch path cannot deliver a typed \(requested)-hart request yet"
         }
@@ -218,6 +220,7 @@ public enum GuestRunEntryShapePlanner {
         signals: WorkloadResourceSignals,
         releasePolicy: GuestReleaseShapePolicy = .production,
         imageProvesSMP: Bool = false,
+        imageMaximumVCPUs: Int? = nil,
         dispatch: GuestRunEntryShapeDispatch = .singleHartOnly,
         memoryFloor: GuestMemoryMiB = .m256
     ) -> GuestRunEntryShapePlan {
@@ -226,6 +229,7 @@ public enum GuestRunEntryShapePlanner {
             recommendation: GuestResourceAdvisory.plan(from: signals),
             releasePolicy: releasePolicy,
             imageProvesSMP: imageProvesSMP,
+            imageMaximumVCPUs: imageMaximumVCPUs,
             dispatch: dispatch,
             memoryFloor: memoryFloor
         )
@@ -239,20 +243,27 @@ public enum GuestRunEntryShapePlanner {
         recommendation: GuestResourceRecommendation,
         releasePolicy: GuestReleaseShapePolicy = .production,
         imageProvesSMP: Bool = false,
+        imageMaximumVCPUs: Int? = nil,
         dispatch: GuestRunEntryShapeDispatch = .singleHartOnly,
         memoryFloor: GuestMemoryMiB = .m256
     ) -> GuestRunEntryShapePlan {
         let dualRefusal = dualRefusal(
             releasePolicy: releasePolicy, imageProvesSMP: imageProvesSMP, dispatch: dispatch
         )
-        let maximum = dualRefusal == nil ? GuestVCPUCount.two : .one
+        let tripleRefusal = tripleRefusal(
+            releasePolicy: releasePolicy,
+            imageMaximumVCPUs: imageMaximumVCPUs ?? (imageProvesSMP ? 2 : 1),
+            dispatch: dispatch
+        )
+        let maximum: GuestVCPUCount = tripleRefusal == nil ? .three : (dualRefusal == nil ? .two : .one)
         let memory = recommendation.shape.memory
 
         let options = GuestRunEntryShapeSelection.allCases.map { candidate in
             GuestRunEntryShapeOption(
                 selection: candidate,
                 requestedVCPUs: candidate.explicitVCPUs ?? recommendation.shape.vcpus,
-                refusal: candidate == .dualCore ? dualRefusal : nil
+                refusal: candidate == .dualCore ? dualRefusal
+                    : (candidate == .tripleCore ? tripleRefusal : nil)
             )
         }
 
@@ -263,7 +274,7 @@ public enum GuestRunEntryShapePlanner {
             // RECOMMENDATION-origin request under an authorized floor, which
             // is exactly the branch RuntimeVMPool.admit records as an honest
             // downgrade for auto plans.
-            let deliverable: GuestVCPUCount = maximum == .two ? recommendation.shape.vcpus : .one
+            let deliverable: GuestVCPUCount = maximum >= .two ? recommendation.shape.vcpus : .one
             let request = GuestResourceRequest(
                 vcpus: deliverable, memory: memory, origin: .recommendation
             )
@@ -321,6 +332,19 @@ public enum GuestRunEntryShapePlanner {
                 refusal: nil,
                 maximumDeliverableVCPUs: maximum
             )
+        case .tripleCore:
+            return GuestRunEntryShapePlan(
+                selection: selection,
+                options: options,
+                recommendation: recommendation,
+                effectiveRequest: tripleRefusal == nil ? GuestResourceRequest(
+                    vcpus: .three, memory: memory, origin: .userSpecified
+                ) : nil,
+                downgrade: .strict,
+                automaticDowngradedFromRecommendation: false,
+                refusal: tripleRefusal,
+                maximumDeliverableVCPUs: maximum
+            )
         }
     }
 
@@ -339,6 +363,23 @@ public enum GuestRunEntryShapePlanner {
         }
         if dispatch != .shapeAware {
             return .dispatchNotShapeAware(requested: 2)
+        }
+        return nil
+    }
+
+    private static func tripleRefusal(
+        releasePolicy: GuestReleaseShapePolicy,
+        imageMaximumVCPUs: Int,
+        dispatch: GuestRunEntryShapeDispatch
+    ) -> GuestRunEntryShapeRefusal? {
+        if !releasePolicy.supports(.three) {
+            return .releaseVCPUUnsupported(requested: 3, maximum: releasePolicy.maximumSupportedVCPUs)
+        }
+        if imageMaximumVCPUs < 3 {
+            return .imageDoesNotProveSMP(requested: 3)
+        }
+        if dispatch != .shapeAware {
+            return .dispatchNotShapeAware(requested: 3)
         }
         return nil
     }

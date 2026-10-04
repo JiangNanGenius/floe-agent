@@ -57,13 +57,22 @@ public actor RuntimeV2ImageStore {
             /// True only when the image's own kernel/firmware were qualified
             /// for SMP (declared by the image build/qualification run).
             public var smp: Bool?
+            /// An explicit three-hart claim is required for the third hart.
+            /// Older SMP manifests remain capped at two.
+            public var maxVCPUs: Int?
             /// Where the claim came from (legacy manifest key, qualification
             /// run id). Recorded so an ungrounded claim is visible.
             public var declaredBy: String?
 
-            public init(smp: Bool? = nil, declaredBy: String? = nil) {
+            public init(smp: Bool? = nil, maxVCPUs: Int? = nil, declaredBy: String? = nil) {
                 self.smp = smp
+                self.maxVCPUs = maxVCPUs
                 self.declaredBy = declaredBy
+            }
+
+            public var verifiedMaximumVCPUs: Int {
+                guard smp == true else { return 1 }
+                return maxVCPUs == 3 ? 3 : 2
             }
         }
 
@@ -171,12 +180,12 @@ public actor RuntimeV2ImageStore {
     /// describe exactly the verified artifact digests and the same image id.
     /// An explicit `smp=false` or a withdrawn declaration in the stored block
     /// is authoritative and is never overridden by this fallback.
-    public func smpCapability(imageID: String) async throws -> (capable: Bool, reason: String) {
+    public func smpCapability(imageID: String) async throws -> (capable: Bool, maximumVCPUs: Int, reason: String) {
         guard try await registry.bootableImage(id: imageID, root: layout.root) != nil else {
-            return (false, "image '\(imageID)' is not verified; no capability can be assumed")
+            return (false, 1, "image '\(imageID)' is not verified; no capability can be assumed")
         }
         guard let manifest = try manifest(imageID: imageID) else {
-            return (false, "no v2 manifest for '\(imageID)'; SMP capability defaults to false")
+            return (false, 1, "no v2 manifest for '\(imageID)'; SMP capability defaults to false")
         }
         let lifted: Manifest.Capabilities?
         if let stored = manifest.capabilities {
@@ -194,19 +203,31 @@ public actor RuntimeV2ImageStore {
         }
         guard let capabilities = lifted else {
             return (
-                false,
+                false, 1,
                 "image '\(imageID)' does not declare SMP in its manifest; capability defaults to false "
                     + "(the engine gate is not image evidence)"
             )
         }
         guard capabilities.smp == true else {
             return (
-                false,
+                false, 1,
                 "image '\(imageID)' declares smp=\(capabilities.smp.map(String.init) ?? "absent")"
                     + (capabilities.declaredBy.map { " (\($0))" } ?? "")
             )
         }
-        return (true, "declared by \(capabilities.declaredBy ?? "the image manifest")")
+        if capabilities.maxVCPUs == 3 {
+            // A stored lifted capability alone must not widen an older image:
+            // the authenticated embedded manifest must carry the same
+            // explicit three-hart declaration and matching artifact digests.
+            guard let embedded = try? Self.decoder.decode(
+                LinuxGuestImage.self, from: manifest.legacyManifestData
+            ), Self.manifestDigestsMatch(manifest: manifest, image: embedded),
+                Self.declaredCapabilities(legacyManifestData: manifest.legacyManifestData)?.maxVCPUs == 3 else {
+                return (true, 2, "three-hart claim does not match the verified embedded manifest; capped at two")
+            }
+        }
+        return (true, capabilities.verifiedMaximumVCPUs,
+                "declared by \(capabilities.declaredBy ?? "the image manifest")")
     }
 
     // MARK: expansion (rebuildable view)
@@ -949,14 +970,18 @@ public actor RuntimeV2ImageStore {
         guard let object = try? JSONSerialization.jsonObject(with: legacyManifestData) as? [String: Any] else {
             return nil
         }
+        let maxVCPUs = (object["max_vcpus"] as? Int) == 3 ? 3 : nil
         if let smp = object["smp_capable"] as? Bool {
-            return Manifest.Capabilities(smp: smp, declaredBy: "legacy manifest smp_capable")
+            return Manifest.Capabilities(smp: smp, maxVCPUs: smp ? maxVCPUs : nil,
+                                         declaredBy: "legacy manifest smp_capable")
         }
         if let smp = object["smpCapable"] as? Bool {
-            return Manifest.Capabilities(smp: smp, declaredBy: "legacy manifest smpCapable")
+            return Manifest.Capabilities(smp: smp, maxVCPUs: smp ? maxVCPUs : nil,
+                                         declaredBy: "legacy manifest smpCapable")
         }
         if let capabilities = object["capabilities"] as? [String: Any], let smp = capabilities["smp"] as? Bool {
-            return Manifest.Capabilities(smp: smp, declaredBy: "legacy manifest capabilities.smp")
+            return Manifest.Capabilities(smp: smp, maxVCPUs: smp ? maxVCPUs : nil,
+                                         declaredBy: "legacy manifest capabilities.smp")
         }
         return nil
     }

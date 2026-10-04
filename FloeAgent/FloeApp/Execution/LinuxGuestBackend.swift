@@ -188,6 +188,7 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// engine's capability query and never a loose manifest claim). Answers
     /// false for a missing/unverified image or an absent/false declaration.
     let smpCapability: @Sendable (String) async -> Bool
+    let maximumVCPUs: @Sendable (String) async -> Int
     /// Real-file health: registry + manifest + actual expanded bytes + blob
     /// availability; nil when the v2 store does not hold the image. The
     /// optional second argument is the owner's cooperative cancel check;
@@ -371,6 +372,9 @@ enum LinuxGuestBackendAssembly {
             // evidence; the engine query is never consulted.
             smpCapability: { imageID in
                 await integrator.imageSMPCapable(imageID: imageID)
+            },
+            maximumVCPUs: { imageID in
+                await integrator.imageMaximumVCPUs(imageID: imageID)
             },
             health: { imageID, isCancelled in
                 await integrator.imageHealth(imageID: imageID, isCancelled: isCancelled)

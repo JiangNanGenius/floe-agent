@@ -2,7 +2,7 @@
 // script-run entry shape gate.
 //
 // The IDE run sheet offers Python/Node script runs an automatic / 1-core /
-// 2-core choice. These tests pin the honest contract of that entry point and
+// 2- or 3-core choice. These tests pin the honest contract of that entry point and
 // of the shared advisory it reuses:
 //
 //   * the automatic plan requests exactly the advisory's shape when the
@@ -148,6 +148,28 @@ final class GuestResourceAdvisoryTests: XCTestCase {
         XCTAssertTrue(plan.option(for: .dualCore)?.isAvailable == true)
     }
 
+    func testExplicitTripleRequiresThreeCoreImageAndShapeAwareDispatch() {
+        let policy = GuestReleaseShapePolicy.internalSyntheticTesting(
+            maximumSupportedVCPUs: 3, provenance: "triple planner gate"
+        )
+        let oldImage = GuestRunEntryShapePlanner.plan(
+            selection: .tripleCore, signals: parallelSignals,
+            releasePolicy: policy, imageProvesSMP: true,
+            imageMaximumVCPUs: 2, dispatch: .shapeAware
+        )
+        XCTAssertEqual(oldImage.refusal, .imageDoesNotProveSMP(requested: 3))
+        XCTAssertNil(oldImage.effectiveRequest)
+
+        let proven = GuestRunEntryShapePlanner.plan(
+            selection: .tripleCore, signals: parallelSignals,
+            releasePolicy: policy, imageProvesSMP: true,
+            imageMaximumVCPUs: 3, dispatch: .shapeAware
+        )
+        XCTAssertEqual(proven.effectiveRequest?.vcpus, .three)
+        XCTAssertEqual(proven.maximumDeliverableVCPUs, .three)
+        XCTAssertTrue(proven.isRunnable)
+    }
+
     func testExplicitDualIsRefusedWhenTheImageDoesNotProveSMPAndNeverBecomesOneHart() {
         let plan = GuestRunEntryShapePlanner.plan(
             selection: .dualCore,
@@ -229,7 +251,7 @@ final class GuestResourceAdvisoryTests: XCTestCase {
         )
         XCTAssertEqual(
             plan.options.map(\.selection),
-            [.automatic, .singleCore, .dualCore]
+            [.automatic, .singleCore, .dualCore, .tripleCore]
         )
         XCTAssertEqual(plan.option(for: .automatic)?.isAvailable, true)
         XCTAssertEqual(plan.option(for: .singleCore)?.isAvailable, true)
@@ -276,12 +298,13 @@ final class GuestResourceAdvisoryTests: XCTestCase {
 
     // MARK: release policy
 
-    func testProductionPolicyQualifiesTwoHartsAndStillDefaultsToOne() throws {
-        XCTAssertEqual(GuestReleaseShapePolicy.production.maximumSupportedVCPUs, 2)
+    func testProductionPolicyQualifiesThreeHartsAndStillDefaultsToOne() throws {
+        XCTAssertEqual(GuestReleaseShapePolicy.production.maximumSupportedVCPUs, 3)
         // The worker default is unchanged: no explicit request ⇒ one hart.
         XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: nil), .one)
         XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 1), .one)
         XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 2), .two)
+        XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 3), .three)
         XCTAssertThrowsError(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 6)) {
             guard case .invalidVCPUCount = $0 as? GuestReleaseShapeError else {
                 return XCTFail("six must be invalid, not clamped: \($0)")

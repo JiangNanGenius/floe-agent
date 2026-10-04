@@ -2,7 +2,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// One `GuestResourceQuota` bounds the WHOLE guest pool on a device:
+// One `GuestResourceQuota` bounds the WHOLE guest pool on a device.
+// All quota sources, including overrides and the performance tier, are capped
+// at four total vCPUs; each guest is separately capped at three.
 //   total vCPUs the pool may hand out / total guest RAM / maximum running VMs.
 // Admission checks all three dimensions against the same quota, so nothing is
 // deducted twice. The default policy (user-approved):
@@ -49,7 +51,7 @@ public struct GuestResourceQuota: Sendable, Equatable, Codable {
         maxVMs: Int,
         source: Source = .defaultPolicy
     ) {
-        self.totalVCPUs = max(1, totalVCPUs)
+        self.totalVCPUs = min(4, max(1, totalVCPUs))
         self.totalMemoryMiB = max(256, totalMemoryMiB)
         self.maxVMs = max(1, maxVMs)
         self.source = source
@@ -129,7 +131,7 @@ public struct GuestResourceQuota: Sendable, Equatable, Codable {
         }
     }
 
-    /// Six-quota performance policy: iPad 12 GB class and up, only with
+    /// Performance policy: iPad 12 GB class and up, only with
     /// concrete evidence that (a) names a real verification run and (b) was
     /// produced on the SAME hardware the profile observes — evidence for a
     /// different device fails closed.
@@ -158,7 +160,7 @@ public struct GuestResourceQuota: Sendable, Equatable, Codable {
 
         let memoryCeiling = GuestResourceQuota.defaultQuota(for: profile).totalMemoryMiB
         return GuestResourceQuota(
-            totalVCPUs: min(6, max(1, profile.activeProcessorCount)),
+            totalVCPUs: min(4, max(1, profile.activeProcessorCount)),
             totalMemoryMiB: min(4096, memoryCeiling),
             maxVMs: 4,
             source: .performanceTier

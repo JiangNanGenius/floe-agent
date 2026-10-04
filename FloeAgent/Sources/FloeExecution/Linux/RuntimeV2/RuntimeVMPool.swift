@@ -58,7 +58,7 @@ public actor RuntimeVMPool {
         public var quota: GuestResourceQuota
         /// AUTHORITATIVE release qualification gate (B4). Independent of the
         /// image manifest, engine query and this quota. Production qualifies
-        /// up to two harts; the pool's separate `imageSMPCapable` gate still
+        /// up to three harts; the pool's separate `imageSMPCapable` gate still
         /// requires the verified image manifest's SMP proof, so no guest is
         /// ever granted the dual shape from an unproven image. Synthetic SMP
         /// experiments opt in only via
@@ -204,6 +204,7 @@ public actor RuntimeVMPool {
         var environmentID: String
         var request: GuestResourceRequest
         var imageSMPCapable: Bool
+        var imageMaximumVCPUs: Int?
         var downgrade: GuestShapeDowngradePolicy
         var enqueuedAt: Date
         var continuation: CheckedContinuation<GuestResourceLease, Error>
@@ -300,6 +301,7 @@ public actor RuntimeVMPool {
         runtimeID: String,
         request: GuestResourceRequest,
         imageSMPCapable: Bool,
+        imageMaximumVCPUs: Int? = nil,
         downgrade: GuestShapeDowngradePolicy = .strict
     ) async throws -> GuestResourceLease {
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
@@ -311,6 +313,7 @@ public actor RuntimeVMPool {
         if let granted = try admit(
             environmentID: environmentID,
             request: request, imageSMPCapable: imageSMPCapable,
+            imageMaximumVCPUs: imageMaximumVCPUs,
             downgrade: downgrade, usage: usage
         ) {
             return grant(environmentID: environmentID, runtimeID: runtimeID, decision: granted)
@@ -333,6 +336,7 @@ public actor RuntimeVMPool {
                     Waiter(
                         id: runtimeID, environmentID: environmentID,
                         request: request, imageSMPCapable: imageSMPCapable,
+                        imageMaximumVCPUs: imageMaximumVCPUs,
                         downgrade: downgrade, enqueuedAt: queuedAt,
                         continuation: continuation
                     )
@@ -397,12 +401,13 @@ public actor RuntimeVMPool {
         environmentID: String,
         request: GuestResourceRequest,
         imageSMPCapable: Bool,
+        imageMaximumVCPUs: Int?,
         downgrade: GuestShapeDowngradePolicy,
         usage: Usage
     ) throws -> GuestResourceAdmissionDecision? {
         // RELEASE gate FIRST (B4): what this release is qualified to ship is
         // independent of the image manifest, the engine's SMP query and this
-        // device's quota. Production qualifies one or two harts; an explicit
+        // device's quota. Production qualifies up to three harts; an explicit
         // count above the ceiling gets an actionable error under strict
         // admission and may fall back to one hart ONLY when the caller
         // explicitly authorized that floor (auto policy); the lease records
@@ -426,7 +431,8 @@ public actor RuntimeVMPool {
                     )
                 }
                 effectiveRequest = GuestResourceRequest(
-                    vcpus: .one, memory: request.memory, origin: request.origin
+                    vcpus: GuestVCPUCount(rawValue: configuration.releasePolicy.maximumSupportedVCPUs) ?? .one,
+                    memory: request.memory, origin: request.origin
                 )
                 releaseGateDowngrade = true
             }
@@ -438,16 +444,29 @@ public actor RuntimeVMPool {
         // either gets an actionable error (strict) or, when the caller
         // explicitly authorized it, a single-hart downgrade with a reason.
         var imageGateDowngrade = false
-        if effectiveRequest.vcpus == .two, !imageSMPCapable {
+        let imageMaximum = imageSMPCapable
+            ? min(3, max(1, imageMaximumVCPUs ?? 2)) : 1
+        if effectiveRequest.vcpus.count > imageMaximum {
             switch downgrade {
             case .strict:
-                throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
-            case .authorized(let vcpuFloor, _):
-                guard vcpuFloor == .one else {
+                if imageMaximum == 1 {
                     throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
                 }
+                throw LinuxGuestError.invalidConfiguration(
+                    "the verified image for \(environmentID) supports at most \(imageMaximum) vCPUs"
+                )
+            case .authorized(let vcpuFloor, _):
+                guard vcpuFloor.count <= imageMaximum else {
+                    if imageMaximum == 1 {
+                        throw LinuxGuestError.smpUnsupportedByImage(environmentID: environmentID)
+                    }
+                    throw LinuxGuestError.invalidConfiguration(
+                        "the verified image for \(environmentID) supports at most \(imageMaximum) vCPUs"
+                    )
+                }
                 effectiveRequest = GuestResourceRequest(
-                    vcpus: .one, memory: request.memory, origin: request.origin
+                    vcpus: GuestVCPUCount(rawValue: imageMaximum) ?? .one,
+                    memory: request.memory, origin: request.origin
                 )
                 imageGateDowngrade = true
             }
@@ -516,9 +535,11 @@ public actor RuntimeVMPool {
         }
 
         let releaseGateReason = releaseGateDowngrade
-            ? "this release qualifies only \(configuration.releasePolicy.maximumSupportedVCPUs) guest core; the caller authorized a single-hart boot" : nil
+            ? "this release qualifies at most \(configuration.releasePolicy.maximumSupportedVCPUs) guest cores; the caller authorized \(effectiveRequest.vcpus.count)" : nil
         let imageGateReason = imageGateDowngrade
-            ? "the image has no SMP capability evidence; the caller authorized a single-hart boot" : nil
+            ? (imageMaximum == 1
+                ? "the image has no SMP capability evidence; the caller authorized a single-hart boot"
+                : "the verified image supports at most \(imageMaximum) guest cores; the caller authorized \(effectiveRequest.vcpus.count)") : nil
         let combinedVCPUReason = [vcpuReason, releaseGateReason, imageGateReason]
             .compactMap { $0 }.joined(separator: "; ")
         let combinedMemoryReason = [memoryReason, headroomReason]
@@ -654,6 +675,7 @@ public actor RuntimeVMPool {
                     environmentID: waiter.environmentID,
                     request: waiter.request,
                     imageSMPCapable: waiter.imageSMPCapable,
+                    imageMaximumVCPUs: waiter.imageMaximumVCPUs,
                     downgrade: waiter.downgrade,
                     usage: usage
                 )
@@ -761,14 +783,15 @@ public actor RuntimeVMPool {
     public func validateShapeChange(
         environmentID: String,
         request: GuestResourceRequest,
-        imageSMPCapable: Bool
+        imageSMPCapable: Bool,
+        imageMaximumVCPUs: Int? = nil
     ) throws {
         guard let current = runtimeByEnvironment[environmentID].flatMap({ leases[$0] }) else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
         // Release gate BEFORE quota/image gates (B4): a reshape to a count
         // outside the released ladder is refused even when the device quota
-        // and an image manifest claim it. (Production qualifies two harts;
+        // and an image manifest claim it. (Production qualifies up to three harts;
         // the image proof below is what still gates the second one.)
         if !configuration.releasePolicy.supports(request.vcpus) {
             throw LinuxGuestError.releaseShapeUnsupported(
@@ -776,9 +799,13 @@ public actor RuntimeVMPool {
                 maximum: configuration.releasePolicy.maximumSupportedVCPUs
             )
         }
-        if request.vcpus == .two, !imageSMPCapable {
+        let imageMaximum = imageSMPCapable
+            ? min(3, max(1, imageMaximumVCPUs ?? 2)) : 1
+        if request.vcpus.count > imageMaximum {
             throw LinuxGuestError.invalidConfiguration(
-                "the image for \(environmentID) has no SMP capability evidence; a dual-hart restart is refused"
+                imageMaximum == 1
+                    ? "the image for \(environmentID) has no SMP capability evidence; a \(request.vcpus.count)-hart restart is refused"
+                    : "the verified image for \(environmentID) supports at most \(imageMaximum) vCPUs; a \(request.vcpus.count)-hart restart is refused"
             )
         }
         let others = leases.values.filter { $0.runtimeID != current.runtimeID }

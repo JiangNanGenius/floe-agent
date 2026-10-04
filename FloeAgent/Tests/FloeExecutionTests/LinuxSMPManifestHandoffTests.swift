@@ -382,6 +382,7 @@ final class LinuxSMPManifestHandoffTests: XCTestCase {
         )
         let capable = try await store.images.smpCapability(imageID: manifest.imageID)
         XCTAssertTrue(capable.capable)
+        XCTAssertEqual(capable.maximumVCPUs, 2)
         XCTAssertTrue(capable.reason.contains("smp_capable"))
 
         // An explicit stored withdrawal stays authoritative: the fallback
@@ -394,6 +395,27 @@ final class LinuxSMPManifestHandoffTests: XCTestCase {
         let refused = try await store.images.smpCapability(imageID: manifest.imageID)
         XCTAssertFalse(refused.capable)
         XCTAssertTrue(refused.reason.contains("smp=false"))
+    }
+
+    func testThreeCoreClaimRequiresCoherentEmbeddedManifest() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedImage(
+            imageID: "triple-image", smpCapable: true, maxVCPUs: 3
+        )
+        let proven = try await store.images.smpCapability(imageID: manifest.imageID)
+        XCTAssertEqual(proven.maximumVCPUs, 3)
+
+        var tampered = manifest
+        tampered.capabilities = .init(smp: true, maxVCPUs: 3, declaredBy: "tampered")
+        let legacy = try JSONSerialization.jsonObject(with: manifest.legacyManifestData) as? [String: Any]
+        var downgraded = try XCTUnwrap(legacy)
+        downgraded.removeValue(forKey: "max_vcpus")
+        tampered.legacyManifestData = try JSONSerialization.data(withJSONObject: downgraded)
+        try RuntimeV2ImageStore.encoder.encode(tampered).write(
+            to: layout.imageManifestURL(imageID: manifest.imageID), options: .atomic
+        )
+        let refused = try await store.images.smpCapability(imageID: manifest.imageID)
+        XCTAssertEqual(refused.maximumVCPUs, 2)
     }
 
     func testMigrationEarlyReturnRefreshesStaleCapabilities() async throws {
@@ -818,7 +840,7 @@ final class LinuxSMPManifestHandoffTests: XCTestCase {
     }
 
     private func makeVerifiedImage(
-        imageID: String, smpCapable: Bool?
+        imageID: String, smpCapable: Bool?, maxVCPUs: Int? = nil
     ) async throws -> RuntimeV2ImageStore.Manifest {
         let legacyRoot = root.appendingPathComponent("legacy-\(imageID)", isDirectory: true)
         let directory = legacyRoot.appendingPathComponent(imageID, isDirectory: true)
@@ -853,6 +875,7 @@ final class LinuxSMPManifestHandoffTests: XCTestCase {
         if let smpCapable {
             var object = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any] ?? [:]
             object["smp_capable"] = smpCapable
+            if let maxVCPUs { object["max_vcpus"] = maxVCPUs }
             manifestData = try JSONSerialization.data(
                 withJSONObject: object, options: [.sortedKeys]
             )
