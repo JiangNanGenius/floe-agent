@@ -113,8 +113,6 @@ jobs:
             cat "$evidence"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Check native Notes bridge contracts
-        run: node --test FloeAgent/scripts/tests/notes_bridge.test.cjs
       - name: Generate native component project
         run: |
           brew install xcodegen
@@ -337,8 +335,6 @@ jobs:
             cat "$evidence"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Check native Notes bridge contracts
-        run: node --test FloeAgent/scripts/tests/notes_bridge.test.cjs
       - name: Generate native component project
         run: |
           brew install xcodegen

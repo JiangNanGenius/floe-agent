@@ -1,8 +1,8 @@
 # Floe Agent 使用指南
 
-当前内部交付为 **1.7.0（229）**。不可变标签 `v1.7.0-beta.86` 固定源码 `b06b0b0e`；[发布 run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) 在签名前保留未签名 IPA（739,485,403 字节，SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`），上传签名构建并发布 [GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0-beta.86)。[核验 run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374)确认 Apple `VALID`、未过期，且在唯一私有内部 Floe QA 组 `IN_BETA_TESTING`；中英文测试说明均已读回。匹配的未签名 GitHub 开发者 IPA 与 Feather 源条目已发布；Gitee 镜像另行核对。[Build 229 说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md) · [交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)。
+当前已确认的内部交付为 **1.7.2（243）**；[Build 243 交付记录](releases/testflight/TESTFLIGHT_1.7.2_BETA.md)区分了 Apple 可用状态与真机验收。Build 244 已固定为 `v1.7.3`（`4c82b0af`），[发布流程](https://github.com/JiangNanGenius/floe-agent/actions/runs/37173446241)正在运行；Apple 处理完成后才可确认安装状态。
 
-**Build 229 的变化。** Office 打开、退出及保存回执只结算一次；迟到的真实 PPT 页面绘制可恢复等待中的会话，原文件写回失败时保留编辑副本。本地模型下一轮不再复用不健康的 MLX 容器。IDE 运行面板仍提供自动、单核、双核请求；正式版双核安全门仍关闭。组件检查不等于 iPad 验收。
+**Build 244 行为。** Linux 虚拟机资源池共 4 核，单台最多 3 核；在内存与镜像能力允许时，可按 3+1、2+1+1、2+2、1+1+1+1 分配。IDE 运行面板提供 1、2、3 核选择。三核必须使用新验证的 SMP 镜像，旧双核镜像仍最多使用两核。要求调整核心数时，助手应先检查状态，再调用启动或重启工具。语音录制会显示准备进度，启动卡住后可重试，波形随麦克风音量变化。详见 [Build 244 说明](releases/notes/RELEASE_NOTES_1.7.3_BUILD_244.md)；实际 iPad 行为仍需验收。
 
 **仍需真机复测。** 此前 iPad 测试报告普通 MLX 对话和测速崩溃、PPT 进入编辑后卡住、IDE 内 Office 持续加载。Build 229 包含针对性修复，但本地模型加载、测速及连续对话与工具续轮、PPT 可编辑首帧和保存重开、Office 退出状态、IDE 内 DOCX/XLSX/PPTX 标签，以及 PiP、通知和键盘触控行为，均仍需在设备上核实。
 
