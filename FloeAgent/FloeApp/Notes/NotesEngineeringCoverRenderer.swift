@@ -504,9 +504,11 @@ final class NotesEngineeringCoverRenderer: NSObject {
                 state.timeoutTask = Task { @MainActor in
                     try? await Task.sleep(for: timeout)
                     guard !Task.isCancelled else { return }
-                    _ = try? await web.evaluateJavaScript(
-                        "window.floeEngineeringAbort && window.floeEngineeringAbort();")
+                    // The web process may never answer even this abort call.
+                    // Settle the render first; request an abort without awaiting it.
                     state.finish(.failure(CoverError.timedOut))
+                    web.evaluateJavaScript("window.floeEngineeringAbort && window.floeEngineeringAbort();",
+                                           completionHandler: nil)
                 }
             }
         } onCancel: {

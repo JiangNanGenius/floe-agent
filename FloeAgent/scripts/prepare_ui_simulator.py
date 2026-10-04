@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import uuid
 
+BOOT_TIMEOUT_SECONDS = 300
+
 
 def prepare(identifier, output_dir, runner=subprocess.run):
     identifier = str(uuid.UUID(identifier)).upper()
@@ -20,12 +22,12 @@ def prepare(identifier, output_dir, runner=subprocess.run):
     with (output_dir / "boot.log").open("w") as log:
         try:
             completed = runner(["xcrun", "simctl", "bootstatus", identifier, "-b"],
-                               stdout=log, stderr=subprocess.STDOUT, timeout=180,
+                               stdout=log, stderr=subprocess.STDOUT, timeout=BOOT_TIMEOUT_SECONDS,
                                check=False)
             result["exitCode"] = completed.returncode
             result["ready"] = completed.returncode == 0
         except subprocess.TimeoutExpired:
-            result.update(exitCode=124, error="simulator boot exceeded 180 seconds")
+            result.update(exitCode=124, error=f"simulator boot exceeded {BOOT_TIMEOUT_SECONDS} seconds")
         except OSError as error:
             result.update(exitCode=1, error=str(error))
     (output_dir / "summary.json").write_text(json.dumps(result, indent=2) + "\n")

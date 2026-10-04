@@ -10,6 +10,10 @@
 
 后续截图记录对应提交、设备/模拟器、素材来源及实际完成的验收范围。正式版说明只使用与分发构建一致、经过核对的截图，不把旧开发画面当作新版验收结果。
 
+## Build 248 手记完整 App 模拟器截图
+
+[iPad 重启后手记封面](notes/build248-ipad-cover-relaunch.png)来自 `v1.7.7` 候选源码在 iOS 27 iPad Air 13-inch (M4) 模拟器的完整 App UI 测试。图中 Office、导图、手写页及 DXF/DWG 均为合成验收素材；对应 `testNotesLibraryCardsShowRealContentCovers` 在重命名、打开/返回、终止并重启 App 后通过（1 项、0 失败）。原始 xcresult、28 个附件及人工截屏保存在忽略的 `Local/Private/build248-local-cover*`。此图仅证明该模拟器当时的可见状态，云端独立资格检查与真机体验另行核验。
+
 ## Build 243 完整 App 模拟器截图
 
 [CI run 37124262937](https://github.com/JiangNanGenius/floe-agent/actions/runs/37124262937) 使用 `v1.7.2` 的源码 `c5a1ffbc`，在 `ci-artifacts`（ID `11276063883`）中保留 106 张完整 App 截图：手记 iPad/iPhone 各 30 张，IDE iPad/iPhone 各 23 张。四组 UI 用例均通过；iPhone IDE 首次在用例启动前遇到 XCTest 测试进程崩溃，保留失败证据后一次受限重试通过五项用例。截图原始清单均未标记为失败关联；这些是模拟器证据，真机体验仍待验收。仓库本地的忽略目录 `Local/Private/release243/evidence/screenshots/ci-37124262937/` 保存原图、索引与逐文件 SHA-256 清单。

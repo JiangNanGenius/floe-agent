@@ -1483,8 +1483,15 @@ enum NotesDocumentCoverService {
         // packaged viewer.js through LocalPreviewServer) renders the real
         // drawing. All cards share one bounded offscreen host, so no heavy
         // engine is started per card.
-        let rendered = await NotesEngineeringCoverRenderer.shared.thumbnail(
+        var rendered = await NotesEngineeringCoverRenderer.shared.thumbnail(
             source: source, fileName: fileName, fileExtension: fileExtension, size: size)
+        if rendered.image == nil, rendered.diagnosis == "drawing viewer unavailable", !Task.isCancelled {
+            // A cold or overloaded local listener can fail to become ready.
+            // The renderer tears down that host; one fresh attempt is bounded
+            // by the listener and navigation deadlines before fallback.
+            rendered = await NotesEngineeringCoverRenderer.shared.thumbnail(
+                source: source, fileName: fileName, fileExtension: fileExtension, size: size)
+        }
         if let image = rendered.image {
             return .init(image: image, source: .engineeringPreview, diagnosis: rendered.diagnosis)
         }
@@ -1640,12 +1647,19 @@ enum NotesDocumentCoverService {
 enum NotesOfficeThumbnailFixture {
     static let marker = "封面验收"
     static let launchArgument = "--ui-test-notes-office-thumbnail-fixture"
+    static let resetWordArgument = "--ui-test-notes-office-thumbnail-reset-word"
 
     static func seedIfRequested(session: NotesSession) async {
         let arguments = ProcessInfo.processInfo.arguments
         guard arguments.contains("-ui-testing"), arguments.contains(launchArgument),
               let store = session.store else { return }
         let existing = (try? await store.documents(includeTrash: true)) ?? []
+        if arguments.contains(resetWordArgument),
+           let renamed = existing.first(where: { $0.title == "\(marker)-Word 修订" }) {
+            _ = try? await store.apply(.init(documentID: renamed.id, expectedRevision: renamed.revision,
+                                             title: "Reset cover fixture", edits: [.rename("\(marker)-Word")]))
+            try? await session.reload()
+        }
         guard !existing.contains(where: { $0.title.hasPrefix(marker) }) else { return }
 
         let root = FileManager.default.temporaryDirectory

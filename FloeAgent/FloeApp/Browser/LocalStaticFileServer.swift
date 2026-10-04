@@ -20,6 +20,9 @@ final class LocalPreviewServer: @unchecked Sendable {
     /// A peer that opens a connection and never finishes its headers must not
     /// be able to hold the socket (and its partial buffer) indefinitely.
     private static let headerTimeout: TimeInterval = 5
+    /// Network.framework can leave listener startup without a terminal state
+    /// under simulator load. Bound that wait so a preview can recover.
+    private static let listenerStartupTimeout: TimeInterval = 8
 
     private let listener: NWListener
     private let root: URL
@@ -96,6 +99,11 @@ final class LocalPreviewServer: @unchecked Sendable {
                 case .failed(let error): continuation.resume(throwing: error)
                 default: continuation.resume(throwing: CancellationError())
                 }
+            }
+            queue.asyncAfter(deadline: .now() + Self.listenerStartupTimeout) { [weak self] in
+                guard let self, gate.claimTimeout() else { return }
+                self.listener.cancel()
+                continuation.resume(throwing: FloeError.internalError("Preview listener startup timed out"))
             }
             listener.start(queue: queue)
         }
@@ -300,6 +308,14 @@ private final class PreviewContinuationGate: @unchecked Sendable {
             default:
                 return false
             }
+        }
+    }
+
+    func claimTimeout() -> Bool {
+        lock.withLock {
+            guard !resumed else { return false }
+            resumed = true
+            return true
         }
     }
 }

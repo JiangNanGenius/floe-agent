@@ -255,7 +255,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true
             || UIDevice.current.userInterfaceIdiom == .pad
-        var app = launchNotesWithOfficeCoverFixture(ipad: ipad)
+        var app = launchNotesWithOfficeCoverFixture(ipad: ipad, resetWord: true)
         defer { app.terminate() }
 
         let officeSources: Set<String> = ["quickLook", "officeContentSummary"]
@@ -351,13 +351,14 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         save.tap()
     }
 
-    private func launchNotesWithOfficeCoverFixture(ipad: Bool) -> XCUIApplication {
+    private func launchNotesWithOfficeCoverFixture(ipad: Bool, resetWord: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.terminate()
         XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
                                "--ui-test-skip-onboarding", "--ui-test-batch-fixture",
                                "--ui-test-notes-office-thumbnail-fixture"]
+        if resetWord { app.launchArguments.append("--ui-test-notes-office-thumbnail-reset-word") }
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
         if ipad {

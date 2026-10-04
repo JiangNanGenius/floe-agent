@@ -1,0 +1,4 @@
+{
+  "en-US": "Floe Agent 1.7.7 · Build 248\n\n• Finds Linux guest status and start/restart controls when you request a CPU shape.\n• Allows 4 guest cores in total, up to 3 per guest with a verified image.\n• Shows progress while voice input prepares and allows retry after a stalled startup.\n• Makes the voice waveform respond to quieter measured microphone input.\n• Keeps newly attached Notes mind map images visible.\n• Recovers Notes drawing cover previews when their viewer starts slowly.\n\nPlease test Linux guest core selection and voice input on your iPad. Include device, OS, build number and reproduction steps in feedback; remove private content and credentials.",
+  "zh-Hans": "Floe Agent 1.7.7 · Build 248\n\n• 请求 Linux 虚拟机核心配置时，优先找到状态及启动/重启工具。\n• 虚拟机总计可用 4 核，单台经验证镜像最多 3 核。\n• 语音输入准备时显示进度，启动卡住后可重试。\n• 降低音量说话时，波形会更明显地响应实测麦克风输入。\n• 手记导图新增图片后会正常显示。\n• 手记图纸封面预览启动缓慢时可恢复。\n\n请在 iPad 上测试 Linux 虚拟机核心配置和语音输入。反馈请附设备、系统、构建号及复现步骤，并遮去私人内容与凭据。"
+}
