@@ -44,6 +44,39 @@ class FeatherProvenanceTests(unittest.TestCase):
         self.assertIn(self.source, invoke.call_args.args[0])
         self.assertIn(v.REPOSITORY + '/.github/workflows/release-unsigned-ipa.yml', invoke.call_args.args[0])
 
+    def test_pinned_tag_dispatch_verifies_attestation_run_and_artifact(self):
+        controller = 'b' * 40
+        policy = dict(mode='tagged-workflow-dispatch', sourceCommit=self.source,
+                      packagingController=controller, packagingRun=456,
+                      signerWorkflow='.github/workflows/release-unsigned-ipa.yml',
+                      unsignedArtifactID=789, unsignedArtifactDigest='sha256:' + 'c' * 64,
+                      unsignedArtifactSize=100, ipaSHA256=v.digest_file(self.ipa),
+                      ipaBytes=self.ipa.stat().st_size, version='1.7.0', build='191')
+        run = dict(id=456, head_repository={'full_name': v.REPOSITORY},
+                   event='workflow_dispatch', head_branch='main', head_sha=controller,
+                   path=policy['signerWorkflow'], conclusion='success')
+        artifact = dict(id=789, expired=False, name='unsigned-ipa-1.7.0-build191',
+                        digest=policy['unsignedArtifactDigest'], size_in_bytes=100,
+                        workflow_run={'id': 456, 'head_sha': controller})
+        invoke = Mock()
+        api_get = Mock(side_effect=[run, artifact])
+        report = v.verify(self.ipa, self.tag, self.source, {self.tag: policy},
+                          invoke=invoke, api_get=api_get)
+        self.assertEqual(report['sourceCommit'], self.source)
+        self.assertEqual(report['packagingController'], controller)
+        self.assertIn(controller, invoke.call_args.args[0])
+        self.assertEqual(api_get.call_count, 2)
+        for altered in (dict(run, conclusion='failure'), dict(run, head_sha='d' * 40)):
+            with self.assertRaises(ValueError):
+                v.verify(self.ipa, self.tag, self.source, {self.tag: policy},
+                         invoke=Mock(), api_get=Mock(side_effect=[altered, artifact]))
+        with self.assertRaises(ValueError):
+            v.verify(self.ipa, self.tag, self.source, {self.tag: policy},
+                     invoke=Mock(), api_get=Mock(side_effect=[run, dict(artifact, digest='wrong')]))
+        with self.assertRaises(ValueError):
+            v.verify(self.ipa, self.tag, self.source, {self.tag: policy},
+                     self.path, invoke=Mock(), api_get=Mock())
+
     def test_recovery_requires_two_attestations_and_keeps_source_distinct(self):
         invoke = Mock(); report = self.verify(invoke)
         self.assertEqual(invoke.call_count, 2)

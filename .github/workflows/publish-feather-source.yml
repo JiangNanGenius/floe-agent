@@ -17,6 +17,7 @@ concurrency:
 permissions:
   contents: write
   attestations: read
+  actions: read
 
 jobs:
   publish-source:
@@ -80,7 +81,7 @@ jobs:
           PY
           recovery=()
           trust=FloeAgent/scripts/feather_recovery_trust.json
-          if jq -e --arg tag "$RELEASE_TAG" 'has($tag)' "$trust" >/dev/null; then
+          if jq -e --arg tag "$RELEASE_TAG" '.[$tag].signerWorkflow == ".github/workflows/developer-ipa-from-recovery.yml"' "$trust" >/dev/null; then
             gh release download "$RELEASE_TAG" --pattern BUILD191-RECOVERY-PROVENANCE.json --dir "$RUNNER_TEMP/FeatherInput"
             recovery=(--provenance "$RUNNER_TEMP/FeatherInput/BUILD191-RECOVERY-PROVENANCE.json")
           fi

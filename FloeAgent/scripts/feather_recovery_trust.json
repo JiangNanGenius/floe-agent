@@ -8,5 +8,19 @@
     "packagingController": "3102b37924861b2745742a0212d3c044824cb694",
     "packagingRun": 35353929898,
     "signerWorkflow": ".github/workflows/developer-ipa-from-recovery.yml"
+  },
+  "v1.7.14": {
+    "mode": "tagged-workflow-dispatch",
+    "sourceCommit": "850701db34411ab87ac9788eeaaf7ea3baeea2b4",
+    "packagingController": "38eee8f476e3974e33504af7088449ff51438421",
+    "packagingRun": 37221265462,
+    "signerWorkflow": ".github/workflows/release-unsigned-ipa.yml",
+    "unsignedArtifactID": 11310787496,
+    "unsignedArtifactDigest": "sha256:70944f8a96858278e14c6d2ac8b2f8699f99fbe9b69efa278af6a9baab87ac46",
+    "unsignedArtifactSize": 734993784,
+    "ipaSHA256": "748b40ff148073815894723a6aecb68c878e7cb33fc734ce9b4c4bb660b64255",
+    "ipaBytes": 738962981,
+    "version": "1.7.14",
+    "build": "255"
   }
 }
