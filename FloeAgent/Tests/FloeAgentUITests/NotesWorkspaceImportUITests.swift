@@ -302,9 +302,15 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // both run the same Notes leave guard.
         let back = openedDocumentBackControl(app)
         XCTAssertTrue(back.isHittable)
+        let editorReadyDeadline = Date().addingTimeInterval(60)
+        while !back.isEnabled && Date() < editorReadyDeadline { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertTrue(back.isEnabled, "the Office editor must finish opening before its back action is used")
         capture("notes-content-cover-opened")
         back.tap()
-        XCTAssertTrue(creationControl(app).waitForExistence(timeout: 30),
+        let closeDeadline = Date().addingTimeInterval(60)
+        while back.exists && Date() < closeDeadline { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertFalse(back.exists, "the Office editor must close after its back action")
+        XCTAssertTrue(creationControl(app).waitForExistence(timeout: 15),
                       "returning from the opened document must resume the Notes library")
         assertContentCover(app, cover: .init(kind: "office", title: renamedTitle, allowed: officeSources))
 

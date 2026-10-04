@@ -316,7 +316,11 @@ struct NotesDocumentThumbnail: View {
                                                              onFirstPaint: { update in
             applyFirstPaint(update, key: key)
         })
-        guard !Task.isCancelled else { return }
+        // Engineering renders are bounded work owned by the cover service. A
+        // LazyVGrid may cancel this view task while the card is being scrolled
+        // into place; keep a successful render for the same document key.
+        guard !Task.isCancelled ||
+                (document.kind == .engineering && outcome.source == .engineeringPreview) else { return }
         if let value = outcome.image {
             NotesDocumentThumbnailCache.shared.store(.init(image: value, source: outcome.source), for: key)
         }
@@ -1483,14 +1487,22 @@ enum NotesDocumentCoverService {
         // packaged viewer.js through LocalPreviewServer) renders the real
         // drawing. All cards share one bounded offscreen host, so no heavy
         // engine is started per card.
-        var rendered = await NotesEngineeringCoverRenderer.shared.thumbnail(
-            source: source, fileName: fileName, fileExtension: fileExtension, size: size)
-        if rendered.image == nil, rendered.diagnosis == "drawing viewer unavailable", !Task.isCancelled {
-            // A cold or overloaded local listener can fail to become ready.
-            // The renderer tears down that host; one fresh attempt is bounded
-            // by the listener and navigation deadlines before fallback.
-            rendered = await NotesEngineeringCoverRenderer.shared.thumbnail(
-                source: source, fileName: fileName, fileExtension: fileExtension, size: size)
+        func renderBundled() async -> NotesEngineeringCoverRenderer.Outcome {
+            // Keep one bounded renderer request alive when a lazy library card
+            // loses visibility. The renderer serializes requests and tears its
+            // WebKit host down on failure; this task is independent of the
+            // transient SwiftUI view task waiting for its result.
+            await Task { @MainActor in
+                await NotesEngineeringCoverRenderer.shared.thumbnail(
+                    source: source, fileName: fileName, fileExtension: fileExtension, size: size)
+            }.value
+        }
+        var rendered = await renderBundled()
+        if rendered.image == nil,
+           ["drawing viewer unavailable", "drawing render failed"].contains(rendered.diagnosis) {
+            // A cold listener or failed WebKit bridge has already been torn
+            // down. Make one fresh, bounded attempt before falling back.
+            rendered = await renderBundled()
         }
         if let image = rendered.image {
             return .init(image: image, source: .engineeringPreview, diagnosis: rendered.diagnosis)

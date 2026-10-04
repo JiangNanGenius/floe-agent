@@ -1,0 +1,7 @@
+# Floe Agent 1.7.11 (Build 252) — qualification failed
+
+Immutable tag `v1.7.11` fixes source `5563543168ef2dd29458971aaf24fd3de8b02e53`. The [normal release run](https://github.com/JiangNanGenius/floe-agent/actions/runs/37198218978) passed Swift and release-module regressions, SDK 27 App regressions, NativeNotes development qualification, and the accepted-SDK focused App regression. The accepted-SDK device App was preserved first as recovery artifact `accepted-sdk-device-recovery-1.7.11-build252` (artifact `11301907363`).
+
+Notes UI qualification blocked distribution. On SDK 27 iPad, the real DXF cover rendered on the first library pass, but remained at `none` after terminating and relaunching the App (`NotesWorkspaceImportUITests.swift:316`). The SDK 27 iPhone leg passed. On the accepted SDK, the iPad leg passed, while the iPhone DXF cover settled at `unsupported` after the bundled WebKit renderer reported `drawing render failed` (`NotesWorkspaceImportUITests.swift:273`). The original logs and UI artifacts are retained in the run (`sdk27-notes-ui-1.7.11-build252`, `accepted-sdk-notes-ui-1.7.11-build252`).
+
+The next candidate keeps successful real cover work independent of a scrolled-away library card's task and makes one bounded fresh-host retry after a failed WebKit bridge. Real drawing pixels remain mandatory in the test; `none`, `unsupported`, and generic icon fallback do not pass. Build 252 was not signed or uploaded to Apple, and was not submitted for external review.
