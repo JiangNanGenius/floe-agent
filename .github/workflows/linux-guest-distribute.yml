@@ -36,8 +36,8 @@
 #   image evidence  run 37171053949  artifact 11291662956  (boot-verify bundle)
 #   fresh SMP build run 37171053949  artifact 11291712711  (kernel+bbl rebuild evidence)
 #   sources         run 37172047252  artifacts 11291652620 / 11291877213 / 11291762441
-#                             (component-image-ci source-repair: byte-verified reuse of run
-#                             36333736932's collected bundle + regenerated boot association)
+#                             (component-image-ci sources: exact three-hart kernel rebuild
+#                             plus corresponding Debian and toolchain source)
 name: linux-guest-distribute
 
 on:
@@ -210,13 +210,13 @@ jobs:
                "bytes": int(os.environ["FRESH_ARTIFACT_BYTES"]), "job": "smp-image"},
               {"kind": "source upstream", "run": os.environ["SOURCE_RUN_ID"], "sha": os.environ["SOURCE_RUN_SHA"],
                "name": os.environ["SOURCE_UPSTREAM_ARTIFACT"], "id": int(os.environ["SOURCE_UPSTREAM_ARTIFACT_ID"]),
-               "bytes": int(os.environ["SOURCE_UPSTREAM_ARTIFACT_BYTES"]), "job": "source-repair"},
+               "bytes": int(os.environ["SOURCE_UPSTREAM_ARTIFACT_BYTES"]), "job": "sources"},
               {"kind": "source evidence", "run": os.environ["SOURCE_RUN_ID"], "sha": os.environ["SOURCE_RUN_SHA"],
                "name": os.environ["SOURCE_EVIDENCE_ARTIFACT"], "id": int(os.environ["SOURCE_EVIDENCE_ARTIFACT_ID"]),
-               "bytes": int(os.environ["SOURCE_EVIDENCE_ARTIFACT_BYTES"]), "job": "source-repair"},
+               "bytes": int(os.environ["SOURCE_EVIDENCE_ARTIFACT_BYTES"]), "job": "sources"},
           ] + [
               {"kind": "source debian shard", "run": os.environ["SOURCE_RUN_ID"], "sha": os.environ["SOURCE_RUN_SHA"],
-               "name": name, "id": int(debian_ids[index]), "bytes": int(debian_bytes[index]), "job": "source-repair"}
+               "name": name, "id": int(debian_ids[index]), "bytes": int(debian_bytes[index]), "job": "sources"}
               for index, name in enumerate(debian_names)
           ]
           require(os.environ["IMAGE_ZIP_BYTES"] != "0" and os.environ["SOURCE_RUN_ID"] != "0"
