@@ -169,6 +169,13 @@ public enum MindMapLayout {
 
         func resolvedSize(_ node: MindMapNode) -> MindMapSize {
             if let size = sizes[node.id], size.isValid { return size }
+            // The first layout pass must reserve room for an attached image.
+            // Otherwise the fixed default card height compresses SwiftUI's
+            // image to zero before its size preference can report a height.
+            if node.imageResourceID != nil {
+                return MindMapSize(width: metrics.defaultNodeWidth,
+                                   height: metrics.defaultNodeHeight + 150 + 20)
+            }
             return MindMapSize(width: metrics.defaultNodeWidth, height: metrics.defaultNodeHeight)
         }
 

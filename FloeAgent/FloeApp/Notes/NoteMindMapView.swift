@@ -154,6 +154,7 @@ struct NoteMindMapView: View {
                 fitIfNeeded(in: newValue)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("notes.mindmap")
         .overlay(alignment: .bottom) {
             if let hint {
@@ -174,7 +175,13 @@ struct NoteMindMapView: View {
                 if hint == current { withAnimation { hint = nil } }
             }
         }
-        .task(id: images) { decodeImages() }
+        .onChange(of: images, initial: true) { _, _ in
+            // A prior text-only measurement would keep this card at 44pt and
+            // squeeze the newly attached image to zero before remeasurement.
+            let imageNodes = Set(document.nodes.filter { $0.imageResourceID != nil }.map(\.id))
+            sizes = sizes.filter { !imageNodes.contains($0.key) }
+            decodeImages()
+        }
         .focusable()
         .focusEffectDisabled()
         .focused($keyboardFocused)
@@ -258,7 +265,7 @@ struct NoteMindMapView: View {
             node: node,
             isSelected: isSelected,
             isEditing: isEditing,
-            image: decodedImages[node.imageResourceID ?? UUID()],
+            image: image(for: node),
             titleDraft: $editDraft,
             beginEditing: { beginEditing(node) },
             commitEditing: { commitEditing(node) },
@@ -274,12 +281,24 @@ struct NoteMindMapView: View {
                 if sizes[node.id] != world { sizes[node.id] = world }
             }
         )
-        .frame(width: frame.width, height: frame.height)
+        .frame(width: frame.width,
+               height: max(frame.height, node.imageResourceID == nil ? 0 :
+                           MindMapLayoutMetrics.standard.defaultNodeHeight + 150 + 20))
         .contextMenu { nodeMenu(node) }
         .gesture(nodeDragGesture(node))
         .onTapGesture { handleNodeTap(node) }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(node.title.isEmpty ? String(localized: "notes.mindmap.untitled") : node.title)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func image(for node: MindMapNode) -> UIImage? {
+        guard let id = node.imageResourceID else { return nil }
+        if let cached = decodedImages[id] { return cached }
+        guard let data = images[id] else { return nil }
+        // An updated root view can arrive before the state-driven decode pass.
+        // Render its verified bytes immediately, then use the bounded cache.
+        return UIImage(data: data)
     }
 
     @ViewBuilder private func nodeMenu(_ node: MindMapNode) -> some View {

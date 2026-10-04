@@ -4,6 +4,7 @@ import AVFoundation
 import UIKit
 import PencilKit
 import SwiftUI
+import Vision
 import FloeNotes
 import FloeDocuments
 @testable import FloeNotesNativeQualification
@@ -127,7 +128,7 @@ import FloeDocuments
         defer { window.isHidden = true; previous?.makeKey() }
         host.view.layoutIfNeeded()
         // The native surface must render both topics without any WebKit view.
-        let labels = await waitForAccessibilityTexts(in: host.view, containing: ["Trade gains", "机会成本"])
+        let labels = await waitForRenderedTexts(in: host.view, containing: ["Trade gains", "机会成本"])
         XCTAssertTrue(labels.contains(where: { $0.contains("Trade gains") }) && labels.contains(where: { $0.contains("机会成本") }),
                       "The independently stored map must render inside the PDF reader window; labels: \(labels)")
         XCTAssertFalse(viewHierarchyContainsWebView(host.view), "The linked map window must not embed a WebKit surface")
@@ -201,12 +202,13 @@ import FloeDocuments
         defer { window.isHidden = true; previous?.makeKey() }
         host.view.layoutIfNeeded()
 
-        // Literal topic text must surface verbatim through the accessibility
-        // tree; a native surface has no HTML parser that could interpret the
-        // markup, and no WKWebView may exist anywhere in the hierarchy.
-        let labels = await waitForAccessibilityTexts(in: host.view, containing: [title])
-        XCTAssertTrue(labels.contains(where: { $0.contains(title) }),
-                      "Topic text must render literally; labels: \(labels)")
+        // Check rendered pixels with Vision: SwiftUI nodes can be virtual
+        // accessibility elements that a UIKit subview walk cannot enumerate.
+        // The source title must remain intact while visible markup is literal.
+        XCTAssertEqual(document.nodes[0].title, title)
+        let labels = await waitForRenderedTexts(in: host.view, containing: ["<img src=x>"])
+        XCTAssertTrue(labels.contains(where: { $0.localizedCaseInsensitiveContains("<img src=x>") }),
+                      "Topic markup must render literally; recognized text: \(labels)")
         XCTAssertFalse(viewHierarchyContainsWebView(host.view), "The native mind map must not embed a WebKit surface")
         let evidence = XCTAttachment(image: snapshot(host.view))
         evidence.name = "Notes mind map component — literal Chinese and English text"
@@ -222,8 +224,9 @@ import FloeDocuments
         host.rootView = NoteMindMapView(document: illustrated, onEdit: { _, _ in illustrated }, onHistory: { _ in }, onError: { XCTFail($0) },
                                         images: [imageID: try XCTUnwrap(picture.pngData())])
         host.view.layoutIfNeeded()
-        _ = await waitForAccessibilityTexts(in: host.view, containing: [title])
-        XCTAssertTrue(viewHierarchyContainsImage(host.view), "A decoded image resource must render in the topic card")
+        _ = await waitForRenderedTexts(in: host.view, containing: ["<img src=x>"])
+        let renderedImage = await waitForBlueFixture(in: host.view)
+        XCTAssertTrue(renderedImage, "The decoded blue fixture must be visible in the rendered topic card")
         let illustratedSnapshot = XCTAttachment(image: snapshot(host.view))
         illustratedSnapshot.name = "Notes mind map component — embedded image"
         illustratedSnapshot.lifetime = .keepAlways; add(illustratedSnapshot)
@@ -244,7 +247,7 @@ import FloeDocuments
         host.rootView = NoteMindMapView(document: expandedMap, onEdit: { _, _ in expandedMap }, onHistory: { _ in }, onError: { XCTFail($0) },
                                         images: [imageID: try XCTUnwrap(picture.pngData())])
         host.view.layoutIfNeeded()
-        _ = await waitForAccessibilityTexts(in: host.view, containing: ["分支 5"])
+        _ = await waitForRenderedTexts(in: host.view, containing: ["分支 5"])
         let frames = MindMapLayout.frames(document: expandedMap, sizes: [:])
         XCTAssertEqual(frames.count, expandedMap.nodes.count, "Every visible topic needs a frame")
         let rects = expandedMap.nodes.compactMap { frames[$0.id] }.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
@@ -258,29 +261,27 @@ import FloeDocuments
         XCTAssertEqual(rightFrames.count, frames.count)
     }
 
-    // MARK: - Native hierarchy probes
+    // MARK: - Rendered-content probes
 
     @MainActor
-    private func accessibilityTexts(in view: UIView) -> [String] {
-        var output: [String] = []
-        var stack: [UIView] = [view]
-        while let current = stack.popLast() {
-            if let label = current.accessibilityLabel, !label.isEmpty { output.append(label) }
-            if let value = current.accessibilityValue, !value.isEmpty { output.append(value) }
-            stack.append(contentsOf: current.subviews)
-        }
-        return output
+    private func renderedTexts(in view: UIView) -> [String] {
+        guard let image = snapshot(view).cgImage else { return [] }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil else { return [] }
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     }
 
     @MainActor
-    private func waitForAccessibilityTexts(in view: UIView, containing needles: [String], timeout: TimeInterval = 15) async -> [String] {
+    private func waitForRenderedTexts(in view: UIView, containing needles: [String], timeout: TimeInterval = 15) async -> [String] {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let labels = accessibilityTexts(in: view)
-            if needles.allSatisfy({ needle in labels.contains(where: { $0.contains(needle) }) }) { return labels }
-            try? await Task.sleep(for: .milliseconds(100))
+            let labels = renderedTexts(in: view)
+            if needles.allSatisfy({ needle in labels.contains(where: { $0.localizedCaseInsensitiveContains(needle) }) }) { return labels }
+            try? await Task.sleep(for: .milliseconds(250))
         }
-        return accessibilityTexts(in: view)
+        return renderedTexts(in: view)
     }
 
     @MainActor
@@ -290,9 +291,33 @@ import FloeDocuments
     }
 
     @MainActor
-    private func viewHierarchyContainsImage(_ view: UIView) -> Bool {
-        if let imageView = view as? UIImageView, imageView.image != nil { return true }
-        return view.subviews.contains(where: viewHierarchyContainsImage)
+    private func waitForBlueFixture(in view: UIView, timeout: TimeInterval = 15) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if containsBlueFixture(snapshot(view)) { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return containsBlueFixture(snapshot(view))
+    }
+
+    private func containsBlueFixture(_ image: UIImage) -> Bool {
+        guard let cgImage = image.cgImage else { return false }
+        let width = cgImage.width, height = cgImage.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(data: &pixels, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var matching = 0
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let red = Int(pixels[offset]), green = Int(pixels[offset + 1]), blue = Int(pixels[offset + 2])
+            if blue > 170 && blue > red + 60 && blue > green + 40 {
+                matching += 1
+                if matching >= 50 { return true }
+            }
+        }
+        return false
     }
 
     @MainActor
