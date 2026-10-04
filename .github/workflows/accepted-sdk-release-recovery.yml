@@ -643,6 +643,7 @@ jobs:
             echo "$final was never produced; the leg has no verifiable result." >&2
             status=1
           fi
+          xcrun simctl shutdown "$test_device" || true
           exit "$status"
 
       - name: Require Notes import on the iPhone simulator with the accepted SDK

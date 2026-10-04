@@ -27,7 +27,7 @@ class SimulatorPreparationTests(unittest.TestCase):
         self.assertTrue(self.invoke(runner)["ready"])
         self.assertEqual(runner.call_count, 1)
         self.assertEqual(runner.call_args.args[0], ["xcrun", "simctl", "bootstatus", DEVICE, "-b"])
-        self.assertEqual(runner.call_args.kwargs["timeout"], 300)
+        self.assertEqual(runner.call_args.kwargs["timeout"], 420)
 
     def test_failed_boot_is_not_retried_or_accepted(self):
         runner = Mock(return_value=subprocess.CompletedProcess([], 149))
@@ -37,7 +37,7 @@ class SimulatorPreparationTests(unittest.TestCase):
         self.assertEqual(runner.call_count, 1)
 
     def test_timeout_retains_failed_preparation(self):
-        result = self.invoke(Mock(side_effect=subprocess.TimeoutExpired("simctl", 300)))
+        result = self.invoke(Mock(side_effect=subprocess.TimeoutExpired("simctl", 420)))
         self.assertFalse(result["ready"])
         self.assertEqual(result["exitCode"], 124)
 

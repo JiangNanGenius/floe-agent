@@ -368,9 +368,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
         if ipad {
-            XCUIDevice.shared.orientation = .landscapeLeft
-            let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
-            wait(for: [landscape], timeout: 10)
+            requireLandscapeAfterLaunch(app)
         }
         if !ipad {
             let sidebar = app.buttons["phone.sidebar.open"]
@@ -512,6 +510,25 @@ final class NotesWorkspaceImportUITests: XCTestCase {
                            revision: Int(parts.dropFirst().first ?? "") ?? 0)
     }
 
+    /// A freshly booted CI iPad can report a portrait App frame after the
+    /// pre-launch landscape request. Force one real orientation transition and
+    /// still require the final App frame to be landscape before interacting.
+    private func requireLandscapeAfterLaunch(_ app: XCUIApplication,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = NSPredicate { _, _ in app.frame.width > app.frame.height }
+        if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: landscape, object: app)],
+                         timeout: 10) == .completed { return }
+
+        XCUIDevice.shared.orientation = .portrait
+        let portrait = NSPredicate { _, _ in app.frame.height > app.frame.width }
+        _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: portrait, object: app)], timeout: 5)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: landscape, object: app)],
+                                   timeout: 15)
+        XCTAssertEqual(result, .completed, "the iPad App must settle in landscape", file: file, line: line)
+    }
+
     private func openImportedDocument() throws -> (XCUIApplication, XCUIElement, XCUIElement) {
         continueAfterFailure = false
         let ipad = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]?.hasPrefix("iPad") == true || UIDevice.current.userInterfaceIdiom == .pad
@@ -524,9 +541,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
         if ipad {
-            XCUIDevice.shared.orientation = .landscapeLeft
-            let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
-            wait(for: [landscape], timeout: 10)
+            requireLandscapeAfterLaunch(app)
         }
         if !ipad {
             let sidebar = app.buttons["phone.sidebar.open"]

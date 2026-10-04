@@ -11,7 +11,10 @@ from pathlib import Path
 import subprocess
 import uuid
 
-BOOT_TIMEOUT_SECONDS = 300
+# Fresh CI runtimes may spend just over five minutes in first-boot data
+# migration (observed in CoreLocation). Keep a finite bound below the Notes
+# leg's 25-minute budget so a genuine stuck boot still fails closed.
+BOOT_TIMEOUT_SECONDS = 420
 
 
 def prepare(identifier, output_dir, runner=subprocess.run):

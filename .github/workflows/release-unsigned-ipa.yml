@@ -586,6 +586,9 @@ jobs:
             echo "$final was never produced; the leg has no verifiable result." >&2
             status=1
           fi
+          # The next leg boots another runtime on this runner. Release the
+          # completed iPad after retaining its result and attachments.
+          xcrun simctl shutdown "$test_device" || true
           exit "$status"
 
       - name: Require Notes import on the iPhone simulator with the SDK 27
@@ -1107,6 +1110,9 @@ jobs:
             echo "$final was never produced; the leg has no verifiable result." >&2
             status=1
           fi
+          # Keep first-boot iPhone migration from competing with a finished
+          # iPad runtime; preserve the iPad's actual test status.
+          xcrun simctl shutdown "$test_device" || true
           exit "$status"
 
       - name: Require Notes import on the iPhone simulator with the accepted SDK

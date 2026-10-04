@@ -10,6 +10,10 @@
 
 后续截图记录对应提交、设备/模拟器、素材来源及实际完成的验收范围。正式版说明只使用与分发构建一致、经过核对的截图，不把旧开发画面当作新版验收结果。
 
+## Build 253 手记完整 App 模拟器截图
+
+[iPad 重启后手记封面](notes/build253-ipad-cover-relaunch.png)来自 `v1.7.12` 源码 `68a69d868b4cf9134c84236f97476740d1890f16` 的本地 iOS 27 iPad Air 13-inch (M4) 完整 App UI 测试。Word、PDF、DXF、DWG、导图、手写页、PPT 和 Excel 均为合成验收素材；图中 DXF/DWG 显示实际几何图形。`testNotesLibraryCardsShowRealContentCovers` 在打开、返回、终止并重启 App 后通过（1 项、0 失败）。原始 xcresult、日志与附件保存在忽略的 `Local/Private/build253-local-evidence/`。这张图只证明该本地模拟器当时的画面；云端独立资格检查和真机体验另行核验。
+
 ## Build 248 手记完整 App 模拟器截图
 
 [iPad 重启后手记封面](notes/build248-ipad-cover-relaunch.png)来自 `v1.7.7` 候选源码在 iOS 27 iPad Air 13-inch (M4) 模拟器的完整 App UI 测试。图中 Office、导图、手写页及 DXF/DWG 均为合成验收素材；对应 `testNotesLibraryCardsShowRealContentCovers` 在重命名、打开/返回、终止并重启 App 后通过（1 项、0 失败）。原始 xcresult、28 个附件及人工截屏保存在忽略的 `Local/Private/build248-local-cover*`。此图仅证明该模拟器当时的可见状态，云端独立资格检查与真机体验另行核验。
