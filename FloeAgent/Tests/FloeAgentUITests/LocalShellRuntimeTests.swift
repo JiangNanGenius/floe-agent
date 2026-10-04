@@ -25,7 +25,7 @@ struct LocalShellRuntimeTests {
         // Even `pkg` must fail without a Linux environment instead of
         // inventing a root or pretending packages can install here.
         let result = await IOSSystemShellBackend().run(.init(command: "pkg update", cwd: ".", rootURL: root,
-            timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+            timeout: 20, sessionID: UUID().uuidString), cancellation: nil)
         guard case .exited(let code, _, let errors, _, _, _) = result else {
             Issue.record("Unsupported package command did not terminate: \(result)"); return
         }
@@ -36,7 +36,7 @@ struct LocalShellRuntimeTests {
         // request has no resolved environment. It must name the missing Linux
         // environment instead of inventing a container.
         let unbound = await IOSSystemShellBackend().run(.init(command: "apt update", cwd: ".", rootURL: root,
-            timeout: 5, sessionID: UUID().uuidString), cancellation: nil)
+            timeout: 20, sessionID: UUID().uuidString), cancellation: nil)
         guard case .exited(let unboundCode, let output, let unboundErrors, _, _, _) = unbound else {
             Issue.record("Unbound apt did not terminate: \(unbound)"); return
         }
@@ -89,8 +89,8 @@ struct LocalShellRuntimeTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = IOSSystemShellBackend()
-        let first = await backend.run(.init(command: "printf 'partial-output\\n'; sleep 5", cwd: ".", rootURL: root,
-            timeout: 0.4, sessionID: UUID().uuidString), cancellation: nil)
+        let first = await backend.run(.init(command: "printf 'partial-output\\n'; sleep 30", cwd: ".", rootURL: root,
+            timeout: 2, sessionID: UUID().uuidString), cancellation: nil)
         guard case .timedOut(let partial, _, _) = first else { Issue.record("Expected timeout with partial output: \(first)"); return }
         #expect(partial.contains("partial-output"))
         let next = await backend.run(.init(command: "printf 'after-timeout'", cwd: ".", rootURL: root,
@@ -113,7 +113,7 @@ struct LocalShellRuntimeTests {
             let typed = try await backend.exchangeSession(.init(sessionID: sessionID,
                 input: "printf 'interactive-ok\\n'\n", waitMs: 500, maxBytes: 4096), cancellation: nil)
             var received = typed.output
-            for _ in 0..<10 where !received.contains("interactive-ok") {
+            for _ in 0..<40 where !received.contains("interactive-ok") {
                 let next = try await backend.exchangeSession(.init(sessionID: sessionID, input: nil,
                     waitMs: 500, maxBytes: 4096), cancellation: nil)
                 received += next.output

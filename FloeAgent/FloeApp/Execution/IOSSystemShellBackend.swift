@@ -141,6 +141,15 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
     func closeSession(sessionID: String) async {
         let io = lock.withLock { sessions.removeValue(forKey: sessionID) }
         io?.close()
+        // Closing the pump only requests interruption. Keep the async close
+        // pending until the native worker has actually released the serial
+        // shell gate, so an immediate next command cannot be rejected as busy.
+        // A non-cooperative worker remains quarantined after this bound.
+        guard io != nil else { return }
+        let deadline = Date().addingTimeInterval(10)
+        while FloeShellHasActiveWorker(sessionID) && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
     }
     func signalSession(sessionID: String, signal: ShellSignal) async {
         FloeShellCommandRegistry.shared.cancelCurrent(sessionID: sessionID)
