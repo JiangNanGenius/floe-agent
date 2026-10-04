@@ -342,6 +342,7 @@ jobs:
           set -euo pipefail
           EXTRA=""
           if [ "${{ inputs.rebuild_kernel }}" = "true" ]; then EXTRA="$EXTRA --rebuild-kernel"; fi
+          if [ "${{ inputs.smp_sources }}" = "true" ]; then EXTRA="$EXTRA --smp-cores ${{ inputs.smp_cores }}"; fi
           if [ "${{ inputs.skip_debian }}" = "true" ]; then EXTRA="$EXTRA --skip-debian"; fi
           if [ "${{ inputs.skip_upstream }}" = "true" ]; then EXTRA="$EXTRA --skip-upstream"; fi
           # The source bundle must name the run that actually built the image,

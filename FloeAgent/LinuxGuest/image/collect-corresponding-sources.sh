@@ -26,7 +26,7 @@
 #   bash collect-corresponding-sources.sh --out DIR --packages guest-packages.tsv \
 #        --image-evidence DIR_WITH_RUNNER_EVIDENCE [--repo DIR] [--pins FILE]
 #        [--pypi-recipe RECIPE_JSON] [--skip-upstream] [--skip-debian]
-#        [--rebuild-kernel]
+#        [--rebuild-kernel] [--smp-cores 2|3]
 set -euo pipefail
 
 die() {
@@ -45,6 +45,7 @@ run_url=""
 skip_upstream=0
 skip_debian=0
 rebuild_kernel=0
+smp_cores=2
 shard_bytes=$((1200 * 1024 * 1024))
 
 while [ $# -gt 0 ]; do
@@ -60,10 +61,12 @@ while [ $# -gt 0 ]; do
         --skip-upstream) skip_upstream=1; shift ;;
         --skip-debian) skip_debian=1; shift ;;
         --rebuild-kernel) rebuild_kernel=1; shift ;;
+        --smp-cores) smp_cores="${2:-}"; shift 2 ;;
         -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
+[ "$smp_cores" = 2 ] || [ "$smp_cores" = 3 ] || die "--smp-cores must be 2 or 3"
 [ -n "$out" ] || die "--out is required"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="${repo:-$(cd "$script_dir/../../.." && pwd)}"
@@ -92,6 +95,7 @@ if [ "$skip_upstream" = 0 ]; then
     log "upstream sources (kernel + bbl)"
     upstream_args=(--out "$out/upstream" --repo "$repo" --pins "$pins")
     [ "$rebuild_kernel" = 1 ] && upstream_args+=(--rebuild)
+    [ "$smp_cores" = 3 ] && upstream_args+=(--smp --smp-cores 3)
     bash "$repo/FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh" "${upstream_args[@]}"
     {
         printf '## 1. Kernel and boot loader\n\n'
