@@ -1,0 +1,7 @@
+# Floe Agent 1.7.14 / Build 255 release record
+
+Immutable tag `v1.7.14` points to source `850701db34411ab87ac9788eeaaf7ea3baeea2b4`. The [first release run](https://github.com/JiangNanGenius/floe-agent/actions/runs/37214725242) passed NativeNotes, both accepted-SDK Notes UI legs, and both SDK 27 Notes UI legs. The accepted-SDK distribution input was retained as artifact `11309426046` (`sha256:4208765636693e0ac835f8fff2566c14929c7d85e39544ef5c575c04d9cb0edd`).
+
+The first run stopped before signing or upload: two Python regression scripts imported the remote agent from the SwiftPM resource directory, generating `__pycache__/floe_remote_agent.cpython-314.pyc`. The SDK 27 device build copied that bytecode into the App, and the native-runtime audit correctly rejected it. Packaging workflow commit `38eee8f476e3974e33504af7088449ff51438421` disables bytecode generation for those tests and checks the source resource directory before building. The [normal release retry](https://github.com/JiangNanGenius/floe-agent/actions/runs/37221265462) uses the same immutable tag and product source, with the corrected packaging workflow.
+
+Release gates still to verify: complete workflow, saved unsigned IPA and signed upload, Apple `VALID` processing, internal group availability, GitHub/Feather assets, and external `publictest1` submission and review. Physical iPad guest-core and voice behavior remain separate user acceptance.
