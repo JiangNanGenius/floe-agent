@@ -1,0 +1,8 @@
+# Three-hart qualification overlay for the pinned riscv-linux source.
+# Firmware MAX_HARTS is 8; the image still needs a real three-hart boot
+# before it may declare max_vcpus=3.
+CONFIG_SMP=y
+CONFIG_NR_CPUS=3
+CONFIG_RISCV_INTC=y
+CONFIG_RISCV_PLIC=y
+CONFIG_RISCV_TIMER=y

@@ -24,9 +24,9 @@
  * through the callback from within run_slice (do not call floe_vm_destroy
  * from that callback; stop the worker first).
  *
- * FLOE-SMP: with cfg->vcpu_count == 2 the adapter spawns one host thread
- * per hart at create time. run_slice then drives both harts through a
- * per-slice barrier (both harts interpret the same cycle budget on their
+ * FLOE-SMP: with cfg->vcpu_count > 1 the adapter spawns one host thread
+ * per hart at create time. run_slice then drives all harts through a
+ * per-slice barrier (each hart interprets the same cycle budget on its
  * own threads, then the slice ends); RAM and devices are shared, guest
  * atomics (LR/SC/AMO) are serialized machine-wide only around the atomic
  * sequence, device MMIO is serialized per callback (never around the
@@ -72,7 +72,7 @@ typedef struct FloeVM FloeVM;
 #define FLOE_VM_MAX_SHARES 4
 #define FLOE_VM_MAX_HOSTFWD 16
 /* FLOE-SMP: hart count ceiling of this adapter/engine pair. */
-#define FLOE_VM_MAX_VCPU 2
+#define FLOE_VM_MAX_VCPU 3
 
 typedef struct {
     const char *tag;       /* 9p mount tag visible to the guest */
@@ -91,11 +91,11 @@ typedef struct {
     int share_count;
     int net_enable;             /* 1 = slirp user-mode networking (10.0.2.0/24) */
     /* FLOE-SMP: 0 or 1 = single hart (default; bit-compatible behavior),
-     * 2 = dual hart true parallel (one host thread per hart). Values
+     * 2 or 3 = parallel harts (one host thread per hart). Values
      * above FLOE_VM_MAX_VCPU are rejected by floe_vm_create. Only enable
-     * 2 for guests whose kernel+firmware actually support SMP (an SMP-
-     * capable image manifest); a UP guest parks the second hart in its
-     * firmware and gains nothing. */
+     * more than 1 only for guests whose kernel+firmware actually support
+     * that count (a verified image capability); a UP guest parks secondary
+     * harts in its firmware and gains nothing. */
     int vcpu_count;
 } FloeVMConfig;
 
@@ -167,7 +167,7 @@ typedef struct {
 } FloeVMStats;
 
 /* FLOE-SMP: link-time capability query of this adapter/engine pair.
- * floe_vm_max_vcpu_count() returns FLOE_VM_MAX_VCPU (2);
+ * floe_vm_max_vcpu_count() returns FLOE_VM_MAX_VCPU (3);
  * floe_vm_smp_capable() returns 1 when the linked engine implements the
  * per-hart machine hooks (i.e. dual-hart VMs can be created). NOTE: an
  * engine capability is NOT guest compatibility -- see the vcpu_count

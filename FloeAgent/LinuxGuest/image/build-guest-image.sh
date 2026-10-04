@@ -81,6 +81,9 @@
 #                         so a pair that is not the CONFIG_SMP dual-hart build
 #                         can never carry the claim. The app admits a second
 #                         hart only for a verified image that declares it.
+#   --max-vcpus 3         build and boot-check the three-hart shape, then
+#                         declare max_vcpus=3. Requires --smp-capable and a
+#                         boot pair whose SMP-BUILD.txt proves NR_CPUS=3.
 #   --boot-max-s N        per-boot timeout seconds (default 2700)
 #   --ram MB              guest RAM (default 1024)
 #   --no-zip              skip the distributable zip (manifest still written)
@@ -148,6 +151,7 @@ skip_engine=0
 provision="host"
 boot_dir=""
 smp_capable=0
+max_vcpus=2
 boot_max_s=2700
 ram_mb=1024
 make_zip=1
@@ -168,6 +172,7 @@ while [ $# -gt 0 ]; do
         --provision) provision="${2:-}"; shift 2 ;;
         --boot-dir) boot_dir="${2:-}"; shift 2 ;;
         --smp-capable) smp_capable=1; shift ;;
+        --max-vcpus) max_vcpus="${2:-}"; shift 2 ;;
         --boot-max-s) boot_max_s="${2:-}"; shift 2 ;;
         --ram) ram_mb="${2:-}"; shift 2 ;;
         --no-zip) make_zip=0; shift ;;
@@ -196,6 +201,12 @@ esac
 if [ "$smp_capable" = 1 ]; then
     [ -n "$boot_dir" ] || die "--smp-capable requires --boot-dir with the CONFIG_SMP kernel/firmware pair"
     require_fw_multi_hart "$boot_dir/SMP-BUILD.txt" "--smp-capable"
+fi
+[ "$max_vcpus" = 2 ] || [ "$max_vcpus" = 3 ] || die "--max-vcpus must be 2 or 3"
+if [ "$max_vcpus" = 3 ]; then
+    [ "$smp_capable" = 1 ] || die "--max-vcpus 3 requires --smp-capable"
+    grep -q '^CONFIG_NR_CPUS=3$' "$boot_dir/SMP-BUILD.txt" \
+        || die "--max-vcpus 3 requires a boot pair built with CONFIG_NR_CPUS=3"
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -497,11 +508,14 @@ boot_guest() { # boot_guest <name> <guest-script> <token> <max-s>
     printf 'floe.epoch=%s\n' "$epoch" >"$evidence_dir/boot-$name-epoch.txt"
     step "boot $name: floe.epoch=$epoch until=FLOE-END $token max=${max_s}s"
     set +e
+    local boot_vcpus=1
+    [ "$max_vcpus" = 3 ] && boot_vcpus=3
     timeout $((max_s + 300)) "$work/build/floe_vm_host" \
         --bios "$image_dir/bbl64.bin" \
         --kernel "$image_dir/kernel-riscv64.bin" \
         --disk "$disk_img" --rw \
         --ram "$ram_mb" \
+        --vcpu "$boot_vcpus" \
         --cmdline "$cmdline init=/usr/local/bin/floe-exec floe.epoch=$epoch" \
         --net --share "floe=$share_dir" \
         --script "$script_file" \
@@ -624,6 +638,10 @@ assert_markers "$evidence_dir/boot-stage2-transcript.txt" bootB \
     FLOE_CMD_xz_OK FLOE_CMD_bzip2_OK FLOE_CMD_sqlite3_OK FLOE_CMD_ssh_OK \
     FLOE_CMD_scp_OK "FLOE_TEMPLATE_VERIFIED $template" FLOE_STAGE2_DONE \
     || die "stage 2 capability assertions failed (including template '$template')"
+if [ "$max_vcpus" = 3 ]; then
+    grep -aq '^FLOE_GUEST_ONLINE_CPUS=3$' "$evidence_dir/boot-stage2-transcript.txt" \
+        || die "three-hart boot did not report three online guest CPUs"
+fi
 e2fsck -fy "$disk_img" >"$evidence_dir/e2fsck-after-stage2.log" 2>&1 || true
 tune2fs -l "$disk_img" | grep -aE 'Filesystem features|Block size|Filesystem state' >"$evidence_dir/disk-ext4-features-final.txt"
 
@@ -668,6 +686,10 @@ smp_flag=()
 if [ "$smp_capable" = 1 ]; then
     smp_flag=(--smp-capable)
 fi
+max_vcpu_flag=()
+if [ "$max_vcpus" = 3 ]; then
+    max_vcpu_flag=(--max-vcpus 3)
+fi
 evidence_text="component-image-ci boot A+B: runner PID1 clock from floe.epoch, signed HTTPS apt update/install, Python HTTPS 200, 13 user commands executed."
 if [ "$provision" = "host" ]; then
     evidence_text="$evidence_text APT/PyPI provisioning ran on the cloud host in a qemu-user riscv64 chroot against the shipped ext4 (signed verification, real dpkg scripts/database; evidence provision-*.txt); boot A re-verified the provisioned state in-Guest (dpkg live + pinned imports), boot B is the full verification."
@@ -678,7 +700,10 @@ else
     evidence_text="$evidence_text Runtime capability on this exact kernel/bbl/userland was independently verified by tinyemu-linux-qualification run 35500083112 (APT/numpy/node/HTTPS)."
 fi
 if [ "$smp_capable" = 1 ]; then
-    evidence_text="$evidence_text This image declares smp_capable: its kernel/firmware are the CONFIG_SMP dual-hart build (SMP-BUILD.txt multi-hart IPI evidence); the app grants a second hart only to an image carrying this declaration."
+    evidence_text="$evidence_text This image declares smp_capable: its kernel/firmware are the CONFIG_SMP build (SMP-BUILD.txt multi-hart IPI evidence); the app grants secondary harts only within the verified image ceiling."
+fi
+if [ "$max_vcpus" = 3 ]; then
+    evidence_text="$evidence_text Stage 2 booted with three harts and reported FLOE_GUEST_ONLINE_CPUS=3; max_vcpus=3 is declared for this exact boot pair."
 fi
 python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" write \
     --image-dir "$image_dir" \
@@ -697,7 +722,8 @@ python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" write \
     --template-json "$evidence_dir/template-verify.json" \
     --template-install-json "$evidence_dir/template-install.json" \
     "${qualified_flag[@]+"${qualified_flag[@]}"}" \
-    "${smp_flag[@]+"${smp_flag[@]}"}"
+    "${smp_flag[@]+"${smp_flag[@]}"}" \
+    "${max_vcpu_flag[@]+"${max_vcpu_flag[@]}"}"
 python3 "$repo/FloeAgent/LinuxGuest/image/write-image-manifest.py" verify --image-dir "$image_dir"
 
 ( cd "$image_dir" && sha512sum manifest.json bbl64.bin kernel-riscv64.bin disk.img >SHA512SUMS )
@@ -719,6 +745,7 @@ fi
     printf 'cmdline=%s init=/usr/local/bin/floe-exec floe.epoch=<boot epoch>\n' "$cmdline"
     printf 'qualified=%s\n' "$claim_qualified"
     printf 'smp_capable=%s\n' "$smp_capable"
+    printf 'max_vcpus=%s\n' "$max_vcpus"
     printf 'bootA_rc=%s\n' "$(cat "$evidence_dir/boot-stage1-rc.txt")"
     printf 'bootB_rc=%s\n' "$(cat "$evidence_dir/boot-stage2-rc.txt")"
     printf 'runner_sha256=%s\n' "$(cut -d' ' -f1 "$evidence_dir/runner-sha256.txt")"

@@ -3,14 +3,14 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Resource admission speaks in these types instead of arbitrary megabyte
-// counts: a guest requests exactly one `GuestResourceRequest` (1 or 2 vCPUs,
+// counts: a guest requests exactly one `GuestResourceRequest` (1 to 3 vCPUs,
 // one step of the 256…2048 MiB ladder) and, once admitted, holds one
 // `GuestResourceLease`. Every dimension is expressible, countable and
 // testable, so the pool can admit on CPU/RAM/VM simultaneously without
 // double-deducting any budget.
 //
 // The pinned TinyEMU engine allocates guest RAM once at create time with no
-// balloon/resize API and exposes at most two harts (`FLOE_VM_MAX_VCPU`).
+// balloon/resize API and exposes at most three harts (`FLOE_VM_MAX_VCPU`).
 // Nothing here claims an online shape change is possible: changes go through
 // the safe stop → flush → restart path (see RuntimeVMPool).
 //
@@ -144,6 +144,7 @@ public struct GuestReleaseShapePolicy: Sendable, Equatable {
 public enum GuestVCPUCount: Int, Sendable, CaseIterable, Codable, Comparable {
     case one = 1
     case two = 2
+    case three = 3
 
     public static func < (lhs: GuestVCPUCount, rhs: GuestVCPUCount) -> Bool {
         lhs.rawValue < rhs.rawValue

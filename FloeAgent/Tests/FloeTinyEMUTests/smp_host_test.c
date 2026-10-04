@@ -243,8 +243,8 @@ static const char *PERF_SINGLE_BIN = "perf_single.bin";
 
 static void test_capability(void)
 {
-    CHECK(floe_vm_max_vcpu_count() == 2,
-          "floe_vm_max_vcpu_count()=%d != 2", floe_vm_max_vcpu_count());
+    CHECK(floe_vm_max_vcpu_count() == 3,
+          "floe_vm_max_vcpu_count()=%d != 3", floe_vm_max_vcpu_count());
     CHECK(floe_vm_smp_capable() == 1, "floe_vm_smp_capable() != 1");
 }
 

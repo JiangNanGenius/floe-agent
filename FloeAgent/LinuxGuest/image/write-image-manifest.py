@@ -291,6 +291,8 @@ def build_manifest(args):
     if args.smp_capable and not args.qualified:
         raise SystemExit("refusing to declare smp_capable without a qualified image "
                          "(the capability requires a real qualification run)")
+    if args.max_vcpus is not None and (not args.smp_capable or args.max_vcpus not in (2, 3)):
+        raise SystemExit("--max-vcpus requires --smp-capable and must be 2 or 3")
 
     manifest = {
         "id": args.id,
@@ -321,6 +323,8 @@ def build_manifest(args):
     # (the app defaults to false), never "false".
     if args.smp_capable:
         manifest["smp_capable"] = True
+        if args.max_vcpus is not None:
+            manifest["max_vcpus"] = args.max_vcpus
     template_block = build_template_block(args)
     if template_block:
         manifest["template"] = template_block
@@ -350,6 +354,12 @@ def verify_manifest(image_dir, manifest_path):
         fail("smp_capable is not a boolean")
     if smp_capable is True and not manifest.get("qualified"):
         fail("smp_capable=true on an unqualified image (the capability requires a real qualification run)")
+    max_vcpus = manifest.get("max_vcpus")
+    if max_vcpus is not None:
+        if type(max_vcpus) is not int or max_vcpus not in (2, 3):
+            fail("max_vcpus must be 2 or 3")
+        if smp_capable is not True or not manifest.get("qualified"):
+            fail("max_vcpus requires qualified=true and smp_capable=true")
     if manifest.get("qualified"):
         if not (manifest.get("qualificationRun") or "").strip():
             fail("qualified=true without qualificationRun")
@@ -436,6 +446,8 @@ def main(argv=None):
     write.add_argument("--smp-capable", action="store_true",
                        help="declare smp_capable: true — only for an image whose kernel/firmware "
                             "are the verified CONFIG_SMP dual-hart pair (requires --qualified)")
+    write.add_argument("--max-vcpus", type=int, default=None,
+                       help="explicit verified SMP guest ceiling (2 or 3); requires --smp-capable")
     write.add_argument("--distribution-allowed", action="store_true",
                        help="set only when corresponding source + license obligations are published")
     write.add_argument("--read-only-disk", action="store_true")

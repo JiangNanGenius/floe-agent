@@ -17,7 +17,7 @@
 # recorded as its own evidence.
 #
 # Usage:
-#   bash build-kernel-bbl.sh --out DIR [--repo DIR] [--pins FILE] [--rebuild] [--jobs N] [--smp]
+#   bash build-kernel-bbl.sh --out DIR [--repo DIR] [--pins FILE] [--rebuild] [--jobs N] [--smp] [--smp-cores 2|3]
 #
 # --smp merges config_linux_riscv64_smp.fragment before olddefconfig and
 # requires --rebuild: it produces the dual-hart qualification boot pair
@@ -46,6 +46,7 @@ repo=""
 pins=""
 rebuild=0
 smp=0
+smp_cores=2
 jobs="$(nproc 2>/dev/null || echo 4)"
 
 while [ $# -gt 0 ]; do
@@ -55,6 +56,7 @@ while [ $# -gt 0 ]; do
         --pins) pins="${2:-}"; shift 2 ;;
         --rebuild) rebuild=1; shift ;;
         --smp) smp=1; shift ;;
+        --smp-cores) smp_cores="${2:-}"; shift 2 ;;
         --jobs) jobs="${2:-}"; shift 2 ;;
         -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) die "unknown argument: $1" ;;
@@ -62,6 +64,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$out" ] || die "--out is required"
 [ "$smp" = 1 ] && [ "$rebuild" = 0 ] && die "--smp requires --rebuild (it produces a boot pair)"
+[ "$smp_cores" = 2 ] || [ "$smp_cores" = 3 ] || die "--smp-cores must be 2 or 3"
+[ "$smp" = 1 ] || [ "$smp_cores" = 2 ] || die "--smp-cores 3 requires --smp"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="${repo:-$(cd "$script_dir/../../.." && pwd)}"
 pins="${pins:-$script_dir/pinned-inputs.json}"
@@ -145,6 +149,14 @@ for component in bios_source kernel_source; do
     if [ "$config_name" != "None" ] && [ -n "$config_name" ] && [ -f "$script_dir/$config_name" ]; then
         cp "$script_dir/$config_name" "$src_dir/$config_name"
     fi
+    if [ "$project" = riscv-linux ] && [ "$smp" = 1 ]; then
+        if [ "$smp_cores" = 3 ]; then
+            smp_fragment=config_linux_riscv64_smp3.fragment
+        else
+            smp_fragment=config_linux_riscv64_smp.fragment
+        fi
+        cp "$script_dir/$smp_fragment" "$src_dir/$smp_fragment"
+    fi
     if [ -f "$src_dir/COPYING" ]; then
         cp "$src_dir/COPYING" "$out/$project-COPYING"
     elif [ -f "$src_dir/LICENSE" ]; then
@@ -163,6 +175,9 @@ for component in bios_source kernel_source; do
     if [ "$config_name" != "None" ] && [ -n "$config_name" ] && [ -f "$script_dir/$config_name" ]; then
         config_cell="$(basename "$config_name") (in-tree)"
     fi
+    if [ "$project" = riscv-linux ] && [ "$smp" = 1 ]; then
+        config_cell="$config_cell + $smp_fragment (in-tree, NR_CPUS=$smp_cores)"
+    fi
     printf '| %s | %s | `%s` | %s | `%s` | %s |\n' \
         "$project" "$url" "$rev" "$license" "$diff_name" "$config_cell" >>"$manifest"
 done
@@ -176,7 +191,11 @@ done
     printf '# -> build/bbl (ELF link output; the pinned bbl64.bin is its RAW\n'
     printf '#    objcopy -O binary image, produced below and in $out/boot/bbl64.bin)\n```\n\n'
     printf 'Kernel (riscv-linux):\n\n```sh\n'
-    printf 'cd riscv-linux-src\ncp config_linux_riscv64 .config\nmake ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig\n'
+    printf 'cd riscv-linux-src\ncp config_linux_riscv64 .config\n'
+    if [ "$smp" = 1 ]; then
+        printf 'cat %s >> .config\n' "$smp_fragment"
+    fi
+    printf 'make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig\n'
     printf 'make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$(nproc)"\n'
     printf '# -> arch/riscv/boot/Image (the pinned kernel-riscv64.bin)\n```\n\n'
     printf 'Pinned binary digests (for comparison after a rebuild):\n\n'
@@ -327,7 +346,11 @@ if [ "$rebuild" = 1 ]; then
         cd "$out/riscv-linux-src"
         cp config_linux_riscv64 .config
         if [ "$smp" = 1 ]; then
-            frag="$script_dir/config_linux_riscv64_smp.fragment"
+            if [ "$smp_cores" = 3 ]; then
+                frag="$script_dir/config_linux_riscv64_smp3.fragment"
+            else
+                frag="$script_dir/config_linux_riscv64_smp.fragment"
+            fi
             [ -f "$frag" ] || die "--smp fragment missing: $frag"
             # append, then let olddefconfig resolve dependencies/ordering
             cat "$frag" >> .config
@@ -357,7 +380,7 @@ if [ "$rebuild" = 1 ]; then
         # single-hart (the whole point of --smp)
         if [ "$smp" = 1 ]; then
             grep -q '^CONFIG_SMP=y$' .config || die "--smp build did not produce CONFIG_SMP=y"
-            grep -q '^CONFIG_NR_CPUS=2$' .config || die "--smp build did not produce CONFIG_NR_CPUS=2"
+            grep -q "^CONFIG_NR_CPUS=$smp_cores$" .config || die "--smp build did not produce CONFIG_NR_CPUS=$smp_cores"
         fi
         make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
             HOSTCC="${HOSTCC:-gcc} -fcommon" KCFLAGS="-fcommon -no-pie" \
@@ -432,10 +455,14 @@ PY
         # provenance a reviewer needs: config lines, firmware multi-hart
         # basis (rv64gc defines __riscv_atomic -> MAX_HARTS 8) and usage
         {
-            printf '\n## Dual-hart (SMP) boot pair\n\n'
-            printf 'kernel config: SMP=y NR_CPUS=2 (fragment config_linux_riscv64_smp.fragment)\n'
+            printf '\n## %s-hart (SMP) boot pair\n\n' "$smp_cores"
+            if [ "$smp_cores" = 3 ]; then
+                printf 'kernel config: SMP=y NR_CPUS=3 (fragment config_linux_riscv64_smp3.fragment)\n'
+            else
+                printf 'kernel config: SMP=y NR_CPUS=2 (fragment config_linux_riscv64_smp.fragment)\n'
+            fi
             printf 'firmware: riscv-pk --with-arch=rv64gc => __riscv_atomic => MAX_HARTS 8, mentry.S multi-hart IPI path\n'
-            printf 'guest serial cross-check: this pair was produced by a cloud build; stdout is not evidence of a two-hart boot\n'
+            printf 'guest serial cross-check: this pair was produced by a cloud build; stdout is not evidence of a %s-hart boot\n' "$smp_cores"
             printf 'multi-hart evidence: %s\n' "$fw_multi_hart"
             # Producer-side gate: only the exact positive token may ship; a
             # MISSING verdict (or any future drift in the evidence string)
@@ -448,7 +475,7 @@ PY
             printf '\ninstall into a --boot-dir as: bbl64.bin and kernel-riscv64.bin from %s/boot\n' "$out"
             sha256sum "$bbl_raw" "$kernel_raw" 2>/dev/null || true
         } >"$out/SMP-BUILD.txt"
-        log "wrote $out/SMP-BUILD.txt (dual-hart boot pair; use build-guest-image.sh --boot-dir $out/boot)"
+        log "wrote $out/SMP-BUILD.txt ($smp_cores-hart boot pair; use build-guest-image.sh --boot-dir $out/boot)"
     fi
 fi
 

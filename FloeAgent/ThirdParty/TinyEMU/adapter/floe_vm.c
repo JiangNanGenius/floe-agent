@@ -351,7 +351,7 @@ struct FloeVM {
     pthread_mutex_t api_lock;
     /* cache for the lock-free poweroff query (updated under api_lock) */
     int poweroff_seen;
-    /* FLOE-SMP: hart count (1 or 2). With 2, every hart is driven by its
+    /* FLOE-SMP: hart count (1 to 3). With multiple harts, each is driven by its
        own host thread (hart_thread[i]) through the hart_bar slice
        barrier: run_slice publishes one generation with a cycle budget,
        both harts interpret concurrently, the slice ends when every hart
@@ -381,7 +381,7 @@ struct FloeVM {
 #endif
 };
 
-/* FLOE-SMP: one host thread per hart (only spawned when vcpu_count == 2).
+/* FLOE-SMP: one host thread per hart (spawned when vcpu_count > 1).
  * The thread interprets its hart for the published budget, then checks
  * back in; it blocks on the barrier condvar between slices and exits on
  * stop (set by floe_vm_destroy before it joins the threads). */
@@ -526,7 +526,7 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
                 (unsigned long long)cfg->ram_mb);
         return NULL;
     }
-    /* FLOE-SMP: 0/1 = single hart (default), 2 = dual hart. */
+    /* FLOE-SMP: 0/1 = single hart (default), 2/3 = parallel harts. */
     if (cfg->vcpu_count < 0 || cfg->vcpu_count > FLOE_VM_MAX_VCPU) {
         fprintf(stderr, "floe_vm: vcpu_count=%d not supported (max %d)\n",
                 cfg->vcpu_count, FLOE_VM_MAX_VCPU);
@@ -622,7 +622,7 @@ FloeVM *floe_vm_create(const FloeVMConfig *cfg,
         goto fail;
     }
 
-    /* FLOE-SMP: spawn one host thread per hart for a dual-hart VM. The
+    /* FLOE-SMP: spawn one host thread per hart for a multi-hart VM. The
        threads park on the barrier condvar until the first run_slice
        publishes a generation; destroy stops and joins them before ending
        the machine. */

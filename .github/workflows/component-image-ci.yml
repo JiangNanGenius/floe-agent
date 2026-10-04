@@ -71,6 +71,13 @@ on:
         description: 'Build kernel+bbl from source and assemble the image with them (needs build-guest-image.sh --boot-dir from job A; explicit dependency failure until then)'
         type: boolean
         default: false
+      smp_cores:
+        description: 'SMP image kernel and boot verification core count'
+        type: choice
+        options:
+          - '2'
+          - '3'
+        default: '2'
       templates:
         description: 'Qualify the image inventory against the selected template recipe'
         type: boolean
@@ -635,17 +642,18 @@ jobs:
           sudo apt-get install -y -qq qemu-utils parted e2fsprogs gcc-riscv64-linux-gnu \
             qemu-user-static zip unzip curl python3 >/dev/null
 
-      - name: Build the dual-hart kernel + raw boot loader from the pinned source
+      - name: Build the SMP kernel + raw boot loader from the pinned source
         run: |
           set -euo pipefail
           mkdir -p "${{ runner.temp }}/floe-smp/upstream"
-          # --smp merges config_linux_riscv64_smp.fragment (CONFIG_SMP=y,
-          # NR_CPUS=2) and hard-asserts the result; the script also produces
+          # --smp-cores selects the pinned CONFIG_SMP overlay and hard-asserts
+          # its NR_CPUS result; the script also produces
           # the RAW bbl (objcopy -O binary of bbl/bbl, entry/lowest-LOAD
           # 0x80000000 verified) because TinyEMU's copy_bios() memcpy()s the
           # BIOS and cannot load an ELF.
           bash FloeAgent/ThirdParty/TinyEMU/guest-image/build-kernel-bbl.sh \
             --out "${{ runner.temp }}/floe-smp/upstream" --rebuild --smp \
+            --smp-cores "${{ inputs.smp_cores }}" \
             --jobs "$(nproc)" 2>&1 | tee "${{ runner.temp }}/floe-smp/kernel-bbl-rebuild.log"
 
       - name: Record the SMP config + raw boot-file hashes (this run's build)
@@ -668,7 +676,8 @@ jobs:
           done
           # the config the boot pair was built with is part of the artifact
           grep -q '^CONFIG_SMP=y$' "$U/riscv-linux-src/.config" || { echo "CONFIG_SMP=y missing"; exit 1; }
-          grep -q '^CONFIG_NR_CPUS=2$' "$U/riscv-linux-src/.config" || { echo "CONFIG_NR_CPUS=2 missing"; exit 1; }
+          grep -q "^CONFIG_NR_CPUS=${{ inputs.smp_cores }}$" "$U/riscv-linux-src/.config" \
+            || { echo "CONFIG_NR_CPUS=${{ inputs.smp_cores }} missing"; exit 1; }
           # Exact producer evidence contract (build-kernel-bbl.sh
           # FW_MULTI_HART_TOKEN): only the positive token is accepted and a
           # MISSING verdict always fails with that explicit verdict. Never
@@ -681,7 +690,7 @@ jobs:
           grep -Fq "$fw_token" "$U/SMP-BUILD.txt" \
             || { echo "firmware multi-hart evidence missing (exact positive token not found)"; exit 1; }
           {
-            printf 'dual-hart (SMP) rebuild of the pinned riscv-pk / riscv-linux revisions\n'
+            printf '%s-hart (SMP) rebuild of the pinned riscv-pk / riscv-linux revisions\n' "${{ inputs.smp_cores }}"
             printf 'firmware: raw objcopy -O binary bbl (ELF entry/lowest LOAD verified 0x80000000)\n'
             printf 'kernel config sha256=%s\n' "$(sha256sum "$U/riscv-linux-src/.config" | cut -d' ' -f1)"
             grep -E '^CONFIG_(SMP|NR_CPUS|RISCV_INTC|RISCV_PLIC|RISCV_TIMER)=' "$U/riscv-linux-src/.config"
@@ -751,12 +760,15 @@ jobs:
 
       - name: Assemble the image candidate with the freshly built boot files
         if: ${{ steps.probe.outputs.hook == 'present' }}
+        env:
+          EXPECTED_SMP_CORES: ${{ inputs.smp_cores }}
         run: |
           set -euo pipefail
           sudo bash FloeAgent/LinuxGuest/image/build-guest-image.sh \
             --work "${{ runner.temp }}/floe-smp/work" \
             --boot-dir "${{ runner.temp }}/floe-smp/boot" \
             --smp-capable \
+            --max-vcpus "${{ inputs.smp_cores }}" \
             --build-id "${{ github.run_id }}-${{ github.run_attempt }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --source-ref "${{ github.sha }}" \
@@ -801,6 +813,8 @@ jobs:
                   problems.append("assembled manifest does not declare smp_capable=true; the app "
                                   "would refuse a second hart even though the image carries the "
                                   "CONFIG_SMP pair")
+              if int(os.environ.get("EXPECTED_SMP_CORES", "2")) == 3 and record["manifest"].get("max_vcpus") != 3:
+                  problems.append("three-hart image lacks max_vcpus=3 after the real boot check")
           record["image_matches_fresh_boot_pair"] = not problems
           if problems:
               record["problems"] = problems

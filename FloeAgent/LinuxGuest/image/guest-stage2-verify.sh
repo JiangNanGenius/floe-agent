@@ -52,6 +52,7 @@ cmd_result() {
 
 note "stage2 start utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 note "kernel cmdline: $(cat /proc/cmdline 2>/dev/null)"
+note "FLOE_GUEST_ONLINE_CPUS=$(nproc)"
 
 # Match the first boot: signature verification must never stage files on the
 # /floe 9P evidence share when no floe-env data layer was exported.
