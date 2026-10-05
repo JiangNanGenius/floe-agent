@@ -1,72 +1,41 @@
 name: Diagnose platform test execution
 on:
   workflow_dispatch:
-    inputs:
-      # Opt-in only: the default manual dispatch and the push trigger keep
-      # running the original platform job below.
-      notes_diagnostic:
-        description: Reuse the immutable build 185 SDK 27 host for the original Notes cover diagnostic instead of platform tests
-        required: false
-        default: false
-        type: boolean
-  push:
-    branches: ['codex/floe-1-7-integration-20260912']
-    paths: ['.github/workflows/platform-test-diagnostics.yml']
 permissions:
   contents: read
+  actions: read
 jobs:
-  platform:
-    # Default mode: step body unchanged, still runs on push and on a manual
-    # dispatch that does not opt in to the Notes diagnostic.
-    if: ${{ !inputs.notes_diagnostic }}
-    runs-on: xcode-27
-    timeout-minutes: 25
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+  result-schema:
+    runs-on: macos-26
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      # Authenticate the signed catalog and stage the pinned lua.wasm fixture.
-      # The repository-tracked artifact is the only source: no download
-      # fallback, no network.  cryptography is pinned in a throwaway venv
-      # because clean runners ship no third-party packages.
-      - name: Install pinned catalog verification dependency
-        run: |
-          python3 -m venv "$RUNNER_TEMP/floe-lua-venv"
-          "$RUNNER_TEMP/floe-lua-venv/bin/pip" install cryptography==46.0.6
-      # Assign the path before writing GITHUB_ENV so a preparation failure
-      # aborts the step instead of exporting an empty FLOE_LUA_WASI.
-      - name: Prepare the pinned Lua WASI fixture
-        run: |
-          floe_lua_wasi="$("$RUNNER_TEMP/floe-lua-venv/bin/python" FloeAgent/scripts/prepare_lua_qualification.py)" || exit 1
-          echo "FLOE_LUA_WASI=$floe_lua_wasi" >> "$GITHUB_ENV"
-      - name: Run real platform tests with owned-process diagnostics
-        run: |
-          python3 FloeAgent/scripts/run_test_with_diagnostics.py \
-            --output-dir "$RUNNER_TEMP/platform-diagnostics" --timeout 1200 --stall-timeout 180 \
-            -- swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 4
-      - name: Keep logs and samples
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: platform-diagnostics-${{ github.sha }}
-          path: ${{ runner.temp }}/platform-diagnostics
-  # Opt-in mode: delegate to the reviewed recovery controller at this commit.
-  # The call is branch-local (no @ref), so a dispatch against a branch uses
-  # that branch's reviewed copy even though this root workflow is the
-  # registered entry point. The host is pinned to the immutable build 185
-  # SDK 27 host; the call never builds and never releases, and no line of the
-  # recovery workflow is duplicated here.
-  notes-diagnostic:
-    if: ${{ inputs.notes_diagnostic }}
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ide-host-recovery.yml
-    with:
-      source_sha: 42ecc4527fdbeb171dd0aed1d0776375770f1572
-      source_run: "35292395886"
-      source_attempt: "1"
-      xcode_version: "27.0"
-      xcode_build: "27A266a"
-      notes_diagnostic: true
-      host_workflow_path: .github/workflows/release-unsigned-ipa.yml
+          github-token: ${{ github.token }}
+          run-id: 37354223398
+          artifact-ids: 11366782405
+          path: evidence
+      - name: Read retained result with original toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p schema
+          for app in /Applications/Xcode_26.6.app /Applications/Xcode_26.5.app; do
+            if [ -d "$app/Contents/Developer" ]; then
+              export DEVELOPER_DIR="$app/Contents/Developer"
+              break
+            fi
+          done
+          xcodebuild -version | tee schema/toolchain.txt
+          for family in iPad iPhone; do
+            bundle=$(find evidence -type d -name "notes-diagnostic-$family.xcresult" -print -quit)
+            test -n "$bundle"
+            xcrun xcresulttool get test-results summary --path "$bundle" > "schema/$family-summary.json"
+            xcrun xcresulttool get test-results tests --path "$bundle" > "schema/$family-tests.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build260-original-result-schema
+          path: schema
+          if-no-files-found: error
