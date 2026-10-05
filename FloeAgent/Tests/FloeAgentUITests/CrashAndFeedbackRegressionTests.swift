@@ -1483,4 +1483,25 @@ extension CrashAndFeedbackRegressionTests {
         #expect(review.copy.pages[0].elements.first?.text == "Human draft")
     }
 }
+extension CrashAndFeedbackRegressionTests {
+    @Test("Engineering navigation recovery is local, finite and protects edit state")
+    func engineeringNavigationRecoveryBoundaries() {
+        let local = URL(string: "http://127.0.0.1:8080/session/index.html")!
+        let offline = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        var policy = EngineeringNavigationRecovery()
+        #expect(policy.consume(error: offline, page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
+        #expect(!policy.consume(error: offline, page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
+        for flag in 0..<4 {
+            var active = EngineeringNavigationRecovery()
+            #expect(!active.consume(error: offline, page: local, serverAvailable: true, delivered: flag == 0, completed: flag == 1, dirty: flag == 2, saving: flag == 3))
+        }
+        for url in [nil, URL(string: "https://example.com/index.html"), URL(string: "http://127.0.0.1.example.com/index.html")] {
+            var remote = EngineeringNavigationRecovery()
+            #expect(!remote.consume(error: offline, page: url, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
+        }
+        var stopped = EngineeringNavigationRecovery()
+        #expect(!stopped.consume(error: offline, page: local, serverAvailable: false, delivered: false, completed: false, dirty: false, saving: false))
+        #expect(!stopped.consume(error: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled), page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
+    }
+}
 #endif
