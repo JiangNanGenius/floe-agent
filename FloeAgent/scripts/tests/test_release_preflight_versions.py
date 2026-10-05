@@ -90,7 +90,8 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                 filters = json.loads((ROOT / files[-1]).read_text())
                 files.append(office / filters["patch"])
                 files += [office / spec["patch"]
-                          for spec in filters.get("headerDependencies", {}).values()]
+                          for spec in filters.get("headerDependencies", {}).values()
+                          if spec.get("patch")]
             for name in files:
                 target = app / name
                 target.parent.mkdir(parents=True, exist_ok=True)

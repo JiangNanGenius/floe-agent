@@ -10,10 +10,10 @@
 
 ## Live delivery gates
 
-- [Release workflow](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267032312): running; normal qualification route, no requested test waiver.
-- [Immutable-tag CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267499177): running.
+- [Release workflow](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267032312): failed in the local context length regression (1599 estimated tokens, limit 1500); normal qualification route, no requested test waiver.
+- [Immutable-tag CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267499177): failed because its release-preflight fixture assumed every Office header dependency has a patch.
 - [Pre-upload Apple inspection](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267184006): no Build 256 present yet; inspection exits nonzero when the expected build is absent.
-- Signed upload, Apple processing, internal Floe QA availability, external `publictest1` review and Feather distribution remain pending.
+- No signed upload or public release occurred. The accepted-SDK device build, App regression tests, iPad/iPhone Notes UI and NativeNotes component passed. Fixes will use a new immutable tag; `v1.7.15` remains unchanged.
 
 ## Changes and acceptance
 
