@@ -1,4 +1,4 @@
-# Build 256 stability work (in progress)
+# Build 256 stability work
 
 ## Changes
 
@@ -13,4 +13,6 @@
 
 Local Swift lifecycle/service/shape tests and image migration/recovery tests passed. The Office overlay compiled for iOS 27 / arm64; its archive check verifies that only the locked members changed, including `drviewse.o` in `libsdlo.a`. Original failures and final receipts are retained privately.
 
-Full App verification and the qualified Office host artifact pin are still pending. This record does not claim a released build, completed device drawing/save acceptance, or a confirmed crash root cause. The reported session ends with process interruption; no system crash stack was supplied. Removing implicit pip installation addresses the observed startup work, not proof of why the app exited.
+Full App arm64 iPad Simulator builds passed with Xcode 27.0 (27A266a). Source `45ba78e3` was installed and checked: the local terminal shows its Linux install card, and Remote SSH opens the host list. [Screenshot](../../evidence/floe-1.7/build256/local-terminal-install.png). The test conversation reports that the Simulator has no available Apple system model; no model completion or live guest command is claimed.
+
+Office host workflow [37261456081](https://github.com/JiangNanGenius/floe-agent/actions/runs/37261456081) passed from `7ab667eb`; artifact `11324529444` is pinned and verified. Its archive SHA-256 is `6598da3764dd7cf9b3dfc31f7392c62c82c3dddda8947c885b5c1dcaeccbf9b5`. Full device-target App compilation is pending. This record does not claim a released build, completed device drawing/save acceptance, or a confirmed crash root cause. The reported session ends with process interruption; no system crash stack was supplied. Removing implicit pip installation addresses the observed startup work, not proof of why the app exited.
