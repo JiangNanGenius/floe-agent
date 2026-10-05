@@ -112,8 +112,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(marker.frame.minY, app.frame.minY)
         marker.tap()
         let toolbarMarker = app.buttons["notes.tool.highlighter"]
-        let wheelDismissed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["notes.pencil.quickMenu.close"])
-        wait(for: [wheelDismissed], timeout: 10)
+        // Use XCTest's disappearance primitive: the legacy KVC predicate can
+        // retain an obsolete SwiftUI snapshot after the wheel has closed.
+        XCTAssertTrue(app.buttons["notes.pencil.quickMenu.close"].waitForNonExistence(timeout: 10))
         XCTAssertTrue(toolbarMarker.isSelected)
         XCTAssertFalse(app.buttons["notes.pencil.quickMenu.close"].exists)
         // Reopening highlights the current tool; the center cancels without changing it.
@@ -122,8 +123,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(marker.isSelected)
         capture("notes-pencil-quick-menu")
         app.buttons["notes.pencil.quickMenu.close"].tap()
-        let cancelled = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["notes.pencil.quickMenu.close"])
-        wait(for: [cancelled], timeout: 10)
+        XCTAssertTrue(app.buttons["notes.pencil.quickMenu.close"].waitForNonExistence(timeout: 10))
         XCTAssertTrue(toolbarMarker.isSelected)
         let inkOptions = app.buttons["notes.ink.options"]
         let writingTools = app.scrollViews["notes.writing.tools"]
@@ -186,8 +186,20 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // the async store work outlives ten seconds on loaded runners.
         XCTAssertTrue(back.waitForExistence(timeout: 30))
         let original = app.buttons[originalID]
-        // On narrow phones the selected tab is scrolled into view. Reveal its predecessor.
-        if !original.isHittable { app.scrollViews.containing(.button, identifier: originalID).firstMatch.swipeRight() }
+        // Repeated runs retain genuine Notes data. The original tab is not
+        // necessarily one swipe from the new selection on a narrow phone.
+        let tabStrip = app.scrollViews.containing(.button, identifier: originalID).firstMatch
+        for _ in 0..<6 {
+            if original.isHittable { break }
+            let targetFrame = original.frame
+            let stripFrame = tabStrip.frame
+            // A full swipe can skip a 90pt tab in the phone's 150pt strip
+            // and oscillate around it. Drag a short distance without a fling.
+            let start = tabStrip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let endX: CGFloat = targetFrame.midX < stripFrame.midX ? 0.8 : 0.2
+            let end = tabStrip.coordinate(withNormalizedOffset: CGVector(dx: endX, dy: 0.5))
+            start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
         XCTAssertTrue(original.isHittable)
         original.tap()
         XCTAssertTrue(toolbarMarker.waitForExistence(timeout: 10))
@@ -516,12 +528,20 @@ final class NotesWorkspaceImportUITests: XCTestCase {
     private func requireLandscapeAfterLaunch(_ app: XCUIApplication,
                                              file: StaticString = #filePath, line: UInt = #line) {
         XCUIDevice.shared.orientation = .landscapeLeft
-        let landscape = NSPredicate { _, _ in app.frame.width > app.frame.height }
+        // XCUIApplication's AX frame can retain portrait bounds after the
+        // visible scene rotates. Read the actual window in one snapshot.
+        let landscape = NSPredicate { _, _ in
+            let frame = app.windows.firstMatch.frame
+            return frame.width > frame.height && frame.height > 0
+        }
         if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: landscape, object: app)],
                          timeout: 10) == .completed { return }
 
         XCUIDevice.shared.orientation = .portrait
-        let portrait = NSPredicate { _, _ in app.frame.height > app.frame.width }
+        let portrait = NSPredicate { _, _ in
+            let frame = app.windows.firstMatch.frame
+            return frame.height > frame.width && frame.width > 0
+        }
         _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: portrait, object: app)], timeout: 5)
         XCUIDevice.shared.orientation = .landscapeLeft
         let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: landscape, object: app)],
@@ -565,13 +585,23 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             // frame while XCTest reports no suggested AX activation point.
             // Tap the verified on-screen center; the destination assertions
             // below still require the import flow to open for real.
+            let menuReady = NSPredicate { _, _ in
+                let row = importWorkspace.frame
+                let screen = app.windows.firstMatch.frame
+                return row.width > 0 && row.height > 0 &&
+                    row.origin.x.isFinite && row.origin.y.isFinite &&
+                    screen.contains(CGPoint(x: row.midX, y: row.midY))
+            }
+            let readiness = XCTNSPredicateExpectation(predicate: menuReady, object: importWorkspace)
+            XCTAssertEqual(XCTWaiter.wait(for: [readiness], timeout: 10), .completed,
+                           "the import menu must finish presenting before its coordinate tap")
             let row = importWorkspace.frame
-            let screen = app.frame
+            let screen = app.windows.firstMatch.frame
             let center = CGPoint(x: row.midX, y: row.midY)
             XCTAssertTrue(row.origin.x.isFinite && row.origin.y.isFinite &&
                           row.width > 0 && row.height > 0 && screen.contains(center),
                           "the workspace import menu row must be visible on screen")
-            app.coordinate(withNormalizedOffset: .zero)
+            app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: center.x - screen.minX, dy: center.y - screen.minY))
                 .tap()
         }
