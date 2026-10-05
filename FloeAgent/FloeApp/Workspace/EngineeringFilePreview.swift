@@ -99,7 +99,7 @@ private struct EngineeringWebView: UIViewRepresentable {
         web.evaluateJavaScript("document.body.classList.toggle('dark', \(colorScheme == .dark ? "true" : "false"));", completionHandler: nil)
     }
     static func dismantleUIView(_ web: WKWebView, coordinator: Coordinator) {
-        coordinator.startup?.cancel(); coordinator.watchdog?.cancel(); coordinator.server?.stop()
+        coordinator.startup?.cancel(); coordinator.navigationRecovery?.cancel(); coordinator.watchdog?.cancel(); coordinator.server?.stop()
         web.stopLoading(); web.navigationDelegate = nil
         web.configuration.userContentController.removeScriptMessageHandler(forName: "floeEngineering", contentWorld: .page)
     }
@@ -121,6 +121,8 @@ private struct EngineeringWebView: UIViewRepresentable {
         var watchdog: Task<Void, Never>?
         var completed = false
         var delivered = false
+        var navigationRecovery: Task<Void, Never>?
+        var recoveryPolicy = EngineeringNavigationRecovery()
         init(package: EngineeringPreviewPackage, error: Binding<String?>, onReview: ((EngineeringReviewCapture) -> Void)?, onSave: ((Data, String) async throws -> String)?, onDirty: ((Bool) -> Void)?) {
             self.package = package; self.error = error; self.onReview = onReview; self.onSave = onSave; self.onDirty = onDirty
             baselineSHA = FloeDigest.sha256Hex(Data(base64Encoded: package.files.first?.base64 ?? "") ?? Data())
@@ -179,8 +181,26 @@ private struct EngineeringWebView: UIViewRepresentable {
             decisionHandler(navigationAction.request.url == page ? .allow : .cancel)
         }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { error.wrappedValue = String(localized: "engineering.processStopped") }
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { self.error.wrappedValue = error.localizedDescription }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error.wrappedValue = error.localizedDescription }
+        private func navigationFailed(_ webView: WKWebView, error: Error) {
+            // Recover only the first local navigation, before document delivery.
+            // Never reload a live editor or reset its unsaved state.
+            if recoveryPolicy.consume(error: error as NSError, page: page,
+                                      serverAvailable: server != nil, delivered: delivered,
+                                      completed: completed, dirty: dirty, saving: saving), let page {
+                navigationRecovery = Task { @MainActor [weak self, weak webView] in
+                    do {
+                        try await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled, let self, let webView,
+                              !self.delivered, !self.completed else { return }
+                        webView.load(URLRequest(url: page))
+                    } catch { }
+                }
+                return
+            }
+            self.error.wrappedValue = error.localizedDescription
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navigationFailed(webView, error: error) }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { navigationFailed(webView, error: error) }
     }
 }
 #endif
