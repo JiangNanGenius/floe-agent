@@ -1,6 +1,6 @@
 # 当前版本与验证状态 / Current release and verification status
 
-更新时间 / Updated: 2026-10-05. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+更新时间 / Updated: 2026-10-06. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
 
 | 项目 / Item | 状态 / State | 证据 / Evidence |
 | --- | --- | --- |
@@ -18,7 +18,7 @@
 - 本地模型提示压缩并保留工具契约。Bounded local prompt retaining required contracts.
 - 工程图本地初次连接失败的一次恢复；已交付文档/编辑状态不重载。One initial local-preview recovery without reloading delivered editing state.
 
-Build 259 完整 CI 通过，但发布时独立 NativeNotes 工程漏加预览恢复源码导致编译失败；旧标签 `v1.7.18` 保持不变。Build 260 补齐依赖，App 运行逻辑不变，完整 CI 与组件验证进行中。Build 259 passed full CI but its standalone release qualification target omitted a source dependency. Build 260 corrects that manifest; full CI and component verification are pending. Neither candidate has uploaded to Apple.
+Build 259 完整 CI 通过，但发布时独立 NativeNotes 工程漏加预览恢复源码导致编译失败；旧标签 `v1.7.18` 保持不变。Build 260 补齐依赖，独立 NativeNotes 验证已通过，但完整 CI 的手记 UI 检查失败，正在定位；尚未合并候选或打发布标签。Build 259 的发布验证还出现一次 iPhone 工作区导入未跳转；相同 Build 260 程序在本机的定向用例通过，不替代云端失败调查。Build 259 passed full CI but its standalone release target omitted a source dependency; its accepted-SDK iPhone UI run also failed during workspace import. Build 260 passes standalone NativeNotes qualification, but full CI is blocked by a Notes UI failure under investigation. A focused local run of the same Build 260 binary passed; this does not resolve the cloud failure. Neither candidate has uploaded to Apple.
 
 ## 阅读顺序 / Reading order
 
