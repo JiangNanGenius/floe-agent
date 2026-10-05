@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 最近已记录内部交付 / Last recorded internal delivery | 1.7.14 (255), `v1.7.14`; 记录显示 VALID 和 Floe QA 可用；这里未重新核验 Apple 当前状态 / historical VALID and internal availability, not a fresh Apple query | [交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md) |
 | 公开测试 / External beta | Build 255 的最后记录为等待审核；不据此推断现在仍在等待或已批准 / last recorded pending review; current approval not inferred | [送审记录](public-beta/build255/README.md) |
-| 当前源码候选 / Current source candidate | 1.7.19 (260), `6b8951108c27ba3e5a3d5e8857cd2fbc34b3e8a3`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37354218580) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37354223398) |
+| 当前源码候选 / Current source candidate | 1.7.19 (260), `19fce7f49cfae30a8ef270b95502b207b2485d03`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37367159743) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37367163822) |
 | 256–258 候选 / Earlier candidates | 测试受阻，未据此发布 / blocked by verification; not delivered | [稳定性修复](releases/repairs/FLOE_256_STABILITY.md) |
 | 原生 Office / Native Office | 编译与部分工具链证据不替代 iPad 连续笔迹、原文件写回、保存重开 / device ink and writeback remain separate | [验收范围](OFFICE_FRONTEND_ACCEPTANCE.md) |
 
@@ -23,6 +23,8 @@ Build 259 完整 CI 通过，但发布资格验证发现独立 NativeNotes 源�
 Build 259 passed full CI, but release qualification found a missing standalone Notes source dependency and an iPhone import-transition failure; its tag remains immutable. Build 260 corrected the manifest and passed standalone Notes qualification. Its subsequent full CI failed Notes UI checks despite video showing the wheel dismissed and the screen in landscape. Test synchronization, window coordinates and narrow tab-strip scrolling have now been corrected, with earlier diagnostic retention. Focused iPad/iPhone tests passed locally using the retained cloud App and a rebuilt test module. Fresh full CI and standalone qualification are running; no tag, Apple upload or installability is claimed.
 
 兼容 SDK 后续又发现测试辅助函数的亮度表达式类型推断超时；已拆分为显式整数运算，计算与断言未变，本机 Swift 6 对象编译通过，云端重新验证中。The accepted-SDK compiler subsequently hit a type-inference limit in the thumbnail test helper. Explicit integer subexpressions preserve the calculation and assertions; local Swift 6 object compilation passed, with fresh cloud validation pending.
+
+完整 CI 37354218580 已在前一源码通过。独立兼容验证的功能测试通过，但 Xcode 26 结果格式导致诊断误分类：空警告字段被省略、源码位置嵌入失败文本。现已补齐兼容读取，保留警告/异常拦截；34 项分类测试通过，原始结果回放正确。仅验证脚本变更，新源码完整 CI 与独立验证待通过。Full CI passed on the preceding source. Standalone compatibility functional tests passed, but Xcode 26 diagnostic schema differences caused misclassification. The reader now handles omitted warning fields with legacy issue verification and embedded source coordinates; warning/error guards remain. All 34 classifier tests and original-result replay passed. Fresh checks of the script-only revision are pending.
 
 ## 阅读顺序 / Reading order
 
