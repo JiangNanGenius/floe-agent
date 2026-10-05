@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 最近已记录内部交付 / Last recorded internal delivery | 1.7.14 (255), `v1.7.14`; 记录显示 VALID 和 Floe QA 可用；这里未重新核验 Apple 当前状态 / historical VALID and internal availability, not a fresh Apple query | [交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md) |
 | 公开测试 / External beta | Build 255 的最后记录为等待审核；不据此推断现在仍在等待或已批准 / last recorded pending review; current approval not inferred | [送审记录](public-beta/build255/README.md) |
-| 当前源码候选 / Current source candidate | 1.7.18 (259), `bf46b3c669b5efc4e0ee37c2f60100d8ed73078f`; 完整 CI 通过，标签 `v1.7.18` 已固定；发布构建已启动，尚未上传 / full CI passed, immutable tag created, release build started; not uploaded | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37320717977) |
+| 当前源码候选 / Current source candidate | 1.7.19 (260), `f7fc7deb44536f19184fc02d2c47b63937775728`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37337748395) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37337742477) |
 | 256–258 候选 / Earlier candidates | 测试受阻，未据此发布 / blocked by verification; not delivered | [稳定性修复](releases/repairs/FLOE_256_STABILITY.md) |
 | 原生 Office / Native Office | 编译与部分工具链证据不替代 iPad 连续笔迹、原文件写回、保存重开 / device ink and writeback remain separate | [验收范围](OFFICE_FRONTEND_ACCEPTANCE.md) |
 
@@ -18,7 +18,7 @@
 - 本地模型提示压缩并保留工具契约。Bounded local prompt retaining required contracts.
 - 工程图本地初次连接失败的一次恢复；已交付文档/编辑状态不重载。One initial local-preview recovery without reloading delivered editing state.
 
-Build 259 的测试宏编译修复已通过完整 CI，含手记、IDE 和 Swift 包测试。源码已合并 main，发布标签仍固定通过验证的源码；[发布构建](https://github.com/JiangNanGenius/floe-agent/actions/runs/37335951020)正在运行，尚未获得上传或 Apple VALID 证据。Full CI passed after the test-macro fix. Main is merged; the immutable tag retains the tested source. Release building is underway; upload and Apple validation remain pending.
+Build 259 完整 CI 通过，但发布时独立 NativeNotes 工程漏加预览恢复源码导致编译失败；旧标签 `v1.7.18` 保持不变。Build 260 补齐依赖，App 运行逻辑不变，完整 CI 与组件验证进行中。Build 259 passed full CI but its standalone release qualification target omitted a source dependency. Build 260 corrects that manifest; full CI and component verification are pending. Neither candidate has uploaded to Apple.
 
 ## 阅读顺序 / Reading order
 

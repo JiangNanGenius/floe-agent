@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Release and verification status](CURRENT_STATUS.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
-Updated 2026-10-05. Floe 1.7 is iPad first and also supports iPhone; iOS/iPadOS 26 or later is required. Screens and capabilities depend on the installed build. Features marked **candidate** require that candidate to be delivered and installed. **1.7.18 (259) is under verification and has not been released.** Earlier test results do not qualify this candidate.
+Updated 2026-10-05. Floe 1.7 is iPad first and also supports iPhone; iOS/iPadOS 26 or later is required. Screens and capabilities depend on the installed build. Features marked **candidate** require that candidate to be delivered and installed. **1.7.19 (260) is under verification and has not been released.** Earlier test results do not qualify this candidate.
 
 ## 1. Installation and first use
 
