@@ -577,12 +577,16 @@ struct RoutingLocalShellBackend: LocalShellBackend {
         // run-owned transient status (and an open terminal protects the guest
         // from scoped release anyway). The run identity is still passed so a
         // registered IDE run shape is claimed for exactly that run.
-        try await activateWithPreparation(
-            environmentID: environmentID,
-            taskID: nil,
-            guestRunID: request.runID,
-            cancellation: cancellation
-        )
+        if request.prepareLinuxIfMissing {
+            try await activateWithPreparation(
+                environmentID: environmentID, taskID: nil,
+                guestRunID: request.runID, cancellation: cancellation
+            )
+        } else {
+            try await FloePlatformServices.shared.activateLinuxGuest(
+                id: environmentID, taskID: nil, runID: request.runID
+            )
+        }
         let result = try await guestBackend.openSession(request, cancellation: cancellation)
         guestSessions.insert(request.sessionID)
         return result

@@ -6,6 +6,19 @@ import FloeTools
 
 @Suite("Local shell boundaries")
 struct LocalShellValidationTests {
+    @Test func terminalOpenLeavesDownloadsToVisibleInstallCard() async throws {
+        let backend = RecordingShellBackend()
+        let sessions = ShellSessionCenter(backend: backend)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for terminal in [true, false] {
+            _ = try await sessions.open(command: "", cwd: ".", environment: [:], columns: 80, rows: 24,
+                                        runID: UUID(), rootURL: root, cancellation: nil, forTerminal: terminal)
+        }
+        #expect(await backend.preparationChoices == [false, true])
+    }
+
     @Test func retiredAptRemainsCallableButIsNotAdvertised() async throws {
         let backend = RecordingShellBackend(), registry = ToolRunnerRegistry()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -138,12 +151,14 @@ struct LocalShellValidationTests {
 
 private actor RecordingShellBackend: LocalShellBackend {
     var runs = 0
+    var preparationChoices: [Bool] = []
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         runs += 1
         return .cancelled
     }
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
-        .init(sessionID: request.sessionID, initialOutput: "", alive: true)
+        preparationChoices.append(request.prepareLinuxIfMissing)
+        return .init(sessionID: request.sessionID, initialOutput: "", alive: false)
     }
     func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
         .init(output: "", alive: false, exitCode: 0)

@@ -99,7 +99,8 @@ public actor ShellSessionCenter {
             gateTimeout: configuration.gateWaitTimeout,
             sessionID: sessionID,
             runID: runID,
-            toolEnvironment: lease.context.environment
+            toolEnvironment: lease.context.environment,
+            prepareLinuxIfMissing: !forTerminal
         )
         let result: ShellOpenResult
         do { result = try await backend.openSession(request, cancellation: cancellation) }

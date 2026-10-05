@@ -100,6 +100,8 @@ public struct ShellOpenRequest: Sendable {
     public var sessionID: String
     public var runID: UUID?
     public var toolEnvironment: ToolEnvironment?
+    /// UI terminals surface an installation card instead of downloading during open.
+    public var prepareLinuxIfMissing: Bool
 
     public init(
         command: String = "",
@@ -111,7 +113,8 @@ public struct ShellOpenRequest: Sendable {
         gateTimeout: TimeInterval = 5,
         sessionID: String,
         runID: UUID? = nil,
-        toolEnvironment: ToolEnvironment? = nil
+        toolEnvironment: ToolEnvironment? = nil,
+        prepareLinuxIfMissing: Bool = true
     ) {
         self.command = command
         self.cwd = cwd
@@ -123,6 +126,7 @@ public struct ShellOpenRequest: Sendable {
         self.sessionID = sessionID
         self.runID = runID
         self.toolEnvironment = toolEnvironment
+        self.prepareLinuxIfMissing = prepareLinuxIfMissing
     }
 }
 
