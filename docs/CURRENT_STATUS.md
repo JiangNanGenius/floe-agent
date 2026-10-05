@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 最近已记录内部交付 / Last recorded internal delivery | 1.7.14 (255), `v1.7.14`; 记录显示 VALID 和 Floe QA 可用；这里未重新核验 Apple 当前状态 / historical VALID and internal availability, not a fresh Apple query | [交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md) |
 | 公开测试 / External beta | Build 255 的最后记录为等待审核；不据此推断现在仍在等待或已批准 / last recorded pending review; current approval not inferred | [送审记录](public-beta/build255/README.md) |
-| 当前源码候选 / Current source candidate | 1.7.18 (259), `0897cf9e32824335cace6e352fe4e4de263fa13c`; 尚未打发布标签、未上传 / no release tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37316323954) |
+| 当前源码候选 / Current source candidate | 1.7.18 (259), `bf46b3c669b5efc4e0ee37c2f60100d8ed73078f`; 尚未打发布标签、未上传 / no release tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37320717977) |
 | 256–258 候选 / Earlier candidates | 测试受阻，未据此发布 / blocked by verification; not delivered | [稳定性修复](releases/repairs/FLOE_256_STABILITY.md) |
 | 原生 Office / Native Office | 编译与部分工具链证据不替代 iPad 连续笔迹、原文件写回、保存重开 / device ink and writeback remain separate | [验收范围](OFFICE_FRONTEND_ACCEPTANCE.md) |
 
@@ -17,6 +17,8 @@
 - Office 自由绘制入口默认图形修复。Office freehand entry fix.
 - 本地模型提示压缩并保留工具契约。Bounded local prompt retaining required contracts.
 - 工程图本地初次连接失败的一次恢复；已交付文档/编辑状态不重载。One initial local-preview recovery without reloading delivered editing state.
+
+Build 259 的首次完整 CI 在新增测试宏编译时失败；已改为先执行状态修改再断言，真实 Swift Testing 本地编译执行通过，新完整 CI 进行中。App 功能代码与版本号未变。The initial Build 259 CI failed compiling a new test macro; the corrected test passes local Swift Testing compilation and execution, with full CI pending. App behavior and version are unchanged.
 
 ## 阅读顺序 / Reading order
 
