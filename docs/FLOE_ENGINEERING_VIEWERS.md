@@ -1,6 +1,14 @@
 # Engineering viewers — implementation and qualification
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 2026-09-15 working candidate. These changes have **not** been uploaded to TestFlight. Build 172 remains the last confirmed internal delivery. This document separates a bundled renderer from a verified sample and from full-App/device acceptance.
+
+## 全屏连接恢复（Build 259 候选）
+
+CI 已观察到 DXF 内联可见但全屏初次加载提示离线的失败。候选只对初次本地 127.0.0.1 页面、既有服务、指定临时连接错误进行一次恢复；已交付、已完成、有修改或正在保存时不重载。原超时边界保留。
+
+纯策略 11 项本地编译执行通过；完整 App 编译及 iPad 全屏回归以当前 CI 为准，不能用策略检查替代界面验收。打开文件→全屏→检查真实图层→编辑副本→保存重开是用户验证路径。
 
 ## User flow
 

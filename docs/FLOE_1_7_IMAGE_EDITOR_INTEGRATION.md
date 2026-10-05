@@ -1,5 +1,7 @@
 # Floe 1.7 图像编辑器集成
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 ## 选型与来源
 
 采用 [ZLImageEditor 3.0.0](https://github.com/longitachi/ZLImageEditor/tree/3.0.0)，固定提交

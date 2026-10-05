@@ -1,5 +1,7 @@
 # Floe Linux 环境后端（TinyEMU RV64）/ Floe Linux Environment Backend
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 日期 / Dated: 2026-09-20（Build 215 复核 2026-09-21；Build 219 增补 2026-09-22）· 状态 / Status: host 消费侧已接线并通过轻量真链路检查（见 §5）；
 最终 guest 镜像已完成云端组件验证并公开分发（组件 `floe-linux-guest-20260920.1`）；TinyEMU/Linux 现为主要本地运行时，Build 219 已构建并上传。
 /Source wired and lightly verified (§5). The final guest image passed cloud component qualification and is publicly
@@ -17,6 +19,12 @@ has been built and uploaded. Device acceptance remains with the user.
 > (`net=up|partial|down`, cloud evidence run 35652797196), and 9p answers `xattrwalk` so `ls -l` no longer reports 524.
 > The App no longer bundles native CPython/nodejs-mobile payloads: older "bundled interpreter" text below is a record of
 > the pre-Phase-2 implementation; non-Linux environments keep only the POSIX shell compatibility subset.
+
+## 启动、恢复与性能选择（2026-10-05）
+
+首次启动前检查镜像和资源状态，按任务选择核心与内存；轻量命令优先 1 核，可并行编译/计算选择 2–3 核。总池 4 核、单台最多 3 核，允许 3+1、2+2、2+1+1、1+1+1+1；实际准入还受镜像能力和内存限制。候选版本保存成功启动的配置，恢复原任务时复用；调整运行中的配置需要按工具返回处理，不能把请求值视为分配成功。
+
+升级时优先复用校验有效的镜像。反复下载应保留镜像校验、路径迁移和启动日志，先分辨缺失、损坏、不兼容与下载中断；不要直接清空全部环境。详见使用手册第 9–10 章。
 
 ## 1. 接线范围 / What is wired
 

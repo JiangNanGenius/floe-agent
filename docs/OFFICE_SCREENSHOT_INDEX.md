@@ -1,5 +1,7 @@
 # Office 截图与文案素材索引
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 本轮保留真实运行原图，按操作阶段和验证结果索引。截图能说明界面及当时可见结果；保存成功、内容完整和位置准确还需配套运行/文件检查。当前全部为 Mac 上运行 iOS 应用的合成测试数据，不标作 iPhone/iPad 真机效果。
 
 ## 已有素材

@@ -32,15 +32,11 @@
 
 Floe Agent turns a model conversation into a durable task. Each message continues the same task, while every model execution becomes a separate run with its own progress, tool evidence, approvals, checkpoints, and recovery state. A task can use an app-managed private workspace or an explicitly selected project workspace.
 
-## Floe 1.7 internal beta
+## Floe 1.7: documentation and delivery status
 
-**Current internal TestFlight: 1.7.14 (255).** Immutable tag `v1.7.14` fixes source `850701db`. [Release CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37221265462) passed the App, package and iPad/iPhone Simulator checks. [Apple verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889) confirmed `VALID`, unexpired and `IN_BETA_TESTING` in the private Floe QA group. The [Build 255 delivery record](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md) and [release notes](docs/releases/notes/RELEASE_NOTES_1.7.14_BUILD_255.md) separate build, upload and physical-device acceptance. The [GitHub prerelease](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.14) and Feather source carry the unsigned developer IPA.
+[Detailed user manual](docs/USER_GUIDE.md) · [Website documentation](https://www.floe-agent.com/docs/en.html) · [Version status](docs/CURRENT_STATUS.md)
 
-**External TestFlight:** Build 255 is [submitted for Beta App Review](https://github.com/JiangNanGenius/floe-agent/actions/runs/37228308146) in the existing `publictest1` group and is waiting for Apple approval. The public link serves approved builds; Build 255 is not yet externally installable.
-
-Earlier internal builds and the current formal GitHub Release, 1.7.0 (241), are documented in the [release archive](docs/releases/README.md).
-
-Floe 1.7 upgrades the iPad-first Notes workspace with illustrated mind maps, native Office editing, image and creative tools, on-device speech, and task-owned environments running TinyEMU/Linux. TinyEMU provides the main local Linux path; guest package managers own Linux language/tool installation, while WASM remains a separate compatibility route. See the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md), [migration guide](docs/FLOE_1_7_MIGRATION.md), [build boundaries](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [version archive](docs/README.md).
+The last recorded internal delivery is **1.7.14 (255)**. **1.7.18 (259) is an unreleased candidate** undergoing full CI. Current TestFlight approval, expiration and group availability must be checked with Apple; historical submissions do not deliver this candidate. See the [release archive](docs/releases/README.md).
 
 ### Notes, Office and local speech
 

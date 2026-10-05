@@ -2,17 +2,13 @@
 
 仓库文档分四类：**当前有效**（描述现状）、**发布档案**（逐版本，不可改）、**历史研究**（结论可能已过时）、**实施跟踪**。改动代码行为时同步更新"当前有效"文档；发布档案只追加、不回改。
 
-## Floe 1.7 当前升级入口 / Current upgrade
+## 当前阅读入口 / Start here
 
-**当前内部 TestFlight：1.7.14（255）**。不可变标签 `v1.7.14` 固定源码 `850701db`；Apple 已核验 `VALID`、未过期、私有内部 Floe QA 组及 `IN_BETA_TESTING`，可供该组安装。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.14)及 Feather 软件源已发布未签名 IPA；真机行为仍待用户验收。详见[Build 255 交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md)和[双语发布说明](releases/notes/RELEASE_NOTES_1.7.14_BUILD_255.md)。
-
-**外部测试：Build 255 已提交 Beta App Review，等待 Apple 审核。** 现有 `publictest1` 组与公开链接已关联该构建；[独立只读核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/37228308146)确认 `WAITING_FOR_BETA_REVIEW` 与一条 `pending_review` 记录。审核通过前不声明外部可安装；[送审资料](public-beta/build255/README.md)。
-
-**当前正式 GitHub Release：1.7.0（241）**。[正式 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.0)的不可变标签 `v1.7.0` 固定源码 `1ddd8e81a6019e2e7e1d3053ef7c88eb5284f31b`。Build 255 的 GitHub 发布为预发布版本。Build 241 的 TestFlight、Feather 和公开测试送审记录见[历史交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)及[审核材料](public-beta/build241/README.md)。
-
-Build 241 的模拟器与模型验证边界保留在[发布说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_241.md)和[交付记录](releases/testflight/TESTFLIGHT_1.7.0_BETA.md)。
-
-历史版本记录已集中到 [发布档案](releases/README.md)，其中保留原始失败与交付结论。
+- [完整中文使用手册](USER_GUIDE.zh-CN.md) / [English user manual](USER_GUIDE.md)：20 章操作步骤、排障与数据保护。
+- [版本与验证状态](CURRENT_STATUS.md)：已记录交付、当前候选和待验收边界。
+- [官网中文版](https://www.floe-agent.com/docs/zh.html) / [Website English manual](https://www.floe-agent.com/docs/en.html)：与仓库手册同源。
+- [文档更新清单](DOCUMENTATION_REFRESH_20261005.md)：本次覆盖范围；[旧版手册](history/USER_GUIDE.zh-CN.pre-20261005.md)保留旧截图和记录。
+- [发布档案](releases/README.md)：逐版本原始证据，不作为当前可安装状态的实时查询。
 
 ## 当前有效（阅读与维护入口）
 

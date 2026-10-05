@@ -1,5 +1,7 @@
 # PDF and official Skill Hub / PDF 与官方技能中心
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Accepted implementation scope (2026-09-07). Baseline: v1.4.97 / 128.
 Python and Executor remain independent substrates. Native code ships only in
 the signed app. Only PDF, Office and Network are public official skills.

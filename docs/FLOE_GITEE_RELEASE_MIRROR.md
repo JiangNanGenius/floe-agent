@@ -1,5 +1,7 @@
 # Floe GitHub → Gitee 发行版镜像（refs 与资产）/ GitHub → Gitee release mirror (refs and assets)
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Gitee 仅保留源码与 Release 的单向同步，不作为软件下载加速源，也不参与 Linux 镜像自动回退。软件只使用经过免登录完整下载及固定摘要核验的独立备用源；当前发布标签不变，新策略随后续构建生效。
 
 Gitee remains a one-way source and Release synchronization channel only. It is not an App download accelerator or a Linux automatic fallback. The App uses only separately verified anonymous fallback sources with pinned archive digests. Existing release tags remain unchanged; this policy ships in subsequent builds.

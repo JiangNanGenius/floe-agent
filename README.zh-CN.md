@@ -32,15 +32,11 @@
 
 Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送都会在同一任务中创建新的 Run，并保留历史消息、工具证据、用户决策、计划、目标、记忆、权限和恢复检查点。任务可以使用 App 内部的私有工作区，也可以归属于用户明确选择的项目工作区。
 
-## Floe 1.7 内部测试版
+## Floe 1.7：文档与交付状态
 
-**当前内部 TestFlight：1.7.14（255）。** 不可变标签 `v1.7.14` 固定源码 `850701db`。[发布 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37221265462)已通过 App、包及 iPad/iPhone 模拟器检查；[Apple 核验](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889)确认 `VALID`、未过期，并在私有 Floe QA 组 `IN_BETA_TESTING`。[Build 255 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md)与[发布说明](docs/releases/notes/RELEASE_NOTES_1.7.14_BUILD_255.md)分别记录构建、上传和待完成的真机验收。[GitHub 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.14)及 Feather 软件源提供未签名开发者 IPA。
+[完整使用手册](docs/USER_GUIDE.zh-CN.md) · [官网文档](https://www.floe-agent.com/docs/zh.html) · [版本状态](docs/CURRENT_STATUS.md)
 
-**外部 TestFlight：** Build 255 已在现有 `publictest1` 组中[提交 Beta App Review](https://github.com/JiangNanGenius/floe-agent/actions/runs/37228308146)，等待 Apple 审核。公开链接仅提供已获批准的构建，Build 255 目前尚不能供外部安装。
-
-更早的内部构建与当前正式 GitHub Release 1.7.0（241）见[发布档案](docs/releases/README.md)。
-
-Floe 1.7 面向 iPad 优先升级手记工作区：图文思维导图、原生 Office 编辑、图像与创意工具、设备端语音，以及运行 TinyEMU/Linux 的任务归属环境。TinyEMU 提供主要本地 Linux 路径；Linux 语言和工具由客体包管理器安装，WASM 保留为独立兼容路线。参见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)、[迁移说明](docs/FLOE_1_7_MIGRATION.md)、[构建与验收边界](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)及[版本档案](docs/README.md)。
+最近已记录的内部交付为 **1.7.14（255）**；当前 **1.7.18（259）为未发布候选**，正在完整 CI 验证。TestFlight 当前审批、到期与组可用性以 Apple 实时状态为准；旧送审记录不表示本候选已交付。历史证据见[发布档案](docs/releases/README.md)。
 
 ### 手记、Office 与本地语音
 

@@ -1,5 +1,7 @@
 # 下一版公开 TestFlight Beta：材料准备
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 ## 本轮（Build241，2026-10-02）— 准备中，尚未送审
 
 当前候选：Build 241 / marketing 1.7.0 / 候选 tag `v1.7.0`。该候选只是规划中的最终源码，不是实际存在的 Apple 构建或 tag；2026-10-02 时 tag 在本地与远端都不存在，冻结 SHA 由主线程确认，不得编造，材料在冻结前不得写为已生效。Build241 尚未上传，Apple 只读 discover（GitHub Actions run 36903484959，SUCCESS）显示最高构建为 Build 240、`APP_STORE_ELIGIBLE`。Apple GUI 登录尚未完成，但不阻塞本只读/API 侧准备；真实提交仍由主线程决定。

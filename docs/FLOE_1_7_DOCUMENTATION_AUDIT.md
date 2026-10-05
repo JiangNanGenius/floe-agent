@@ -1,5 +1,7 @@
 # Floe 1.7 文档维护清单
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 ## 2026-09-24 Build 227 当前状态刷新：六份内部状态、架构与工程文档 / Build 227 current-status refresh for six internal status, architecture and engineering docs
 
 本轮把六份内部文档的“当前”句段对齐到已交付内部构建 Build 227（`v1.7.0-beta.84` / `9c756864`；[发布 run 35957256008](https://github.com/JiangNanGenius/floe-agent/actions/runs/35957256008)；未签名 IPA 739,368,613 字节，SHA-256 `a77b3b9a120a55dd6737bf1fb89efe7609c8917ca3facab7cd9cbb5c4c66b30c`；Apple build `640e39a2-001b-4672-9b17-b4a378d9eb6a` 经[核验 run 35961062720](https://github.com/JiangNanGenius/floe-agent/actions/runs/35961062720) 核实 `VALID`、未过期、唯一私有 Floe QA 组与 `IN_BETA_TESTING`，2026-09-24T05:42:18Z；中英文测试说明由 prepare run 35961014056 读回），不修改公共 README、用户指南、文档索引与发布说明（同日公开面已由提交 `d257e956` 刷新），也不宣布新构建交付：

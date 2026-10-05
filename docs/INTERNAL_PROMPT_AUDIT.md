@@ -1,5 +1,7 @@
 # 内部提示词审查（本轮持续更新）
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 本审查属于完整升级的 H01–H06，尚未完成。只以实际组装与模型运行结果判断效率，不把缩短字数等同于效果提升。
 
 ## 第六轮：长目标的后续步骤

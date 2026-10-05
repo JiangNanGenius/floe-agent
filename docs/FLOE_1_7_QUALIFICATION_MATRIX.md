@@ -1,5 +1,7 @@
 # Floe 1.7 软件包与模型资格矩阵
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 本表逐项登记源码与上游核对的当前状态，完整兼容/许可评估尚未完成。候选未制作不等于已证明不兼容；声明的许可证也不等于权重分发资格已确认。执行证据、真机耗时和内存缺失时明确记为未验收。
 
 ## 软件包：15 项

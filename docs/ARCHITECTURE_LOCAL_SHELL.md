@@ -1,5 +1,7 @@
 # Floe Local Shell Substrate — Architecture
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Status: 1.7 current. TinyEMU/Linux is the primary local runtime (see
 [Linux backend](FLOE_LINUX_GUEST_BACKEND.md) and [Build 219 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_219.md));
 the native `ios_system` substrate described below remains as the explicit
@@ -14,6 +16,12 @@ Audience: maintainers. This document is the authority for the local shell,
 terminal and package surfaces; it supersedes the earlier statements in
 `PRODUCT.md`, `DEVELOPMENT_PLAN.md` and `SECURITY.md` that the app offers no
 local command environment.
+
+## 工作区入口与生命周期（2026-10-05）
+
+候选版本在任务工具面板的终端中提供“本地工作区”和“远程 SSH”选择。本地入口必须携带当前任务和工作区；执行前用 pwd 核对。面板关闭不等于应用级会话结束，停止进程、关闭 shell 和释放 Linux 客体是不同动作。
+
+首次 Linux 启动需显式按任务选资源；恢复应读取成功保存的配置。资源或镜像不可用时提供明确安装/状态反馈。操作步骤见使用手册第 9 章；后台中断与反馈见第 18–20 章。
 
 ## 1.7 integration status and boundary
 

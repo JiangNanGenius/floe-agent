@@ -1,8 +1,16 @@
 # Floe 1.7 兼容性说明 / Compatibility
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 本页是当前资格边界，不是已发布能力清单。详细逐项制作与真机验收仍未完成；[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)记录进度。
 
 逐条登记见 [15 个包与 33 个模型资格矩阵](FLOE_1_7_QUALIFICATION_MATRIX.md)，其中未验收项不作为可用能力。
+
+## 使用范围与验证边界（2026-10-05）
+
+iPad 为主要工作区，iPhone 保留紧凑布局和全屏编辑；系统要求以发布包声明为准。Apple 系统模型依赖设备、系统开关和模型就绪状态；下载式模型的下载、加载、推理分别确认。
+
+Linux 多核取决于镜像和设备资源，Office 引擎编译通过不代表所有原生格式/批注都能保存重开。使用手册标记的候选功能必须配合对应构建；未发布源码不能当作 TestFlight 已可安装。
 
 ## 运行时与软件包
 

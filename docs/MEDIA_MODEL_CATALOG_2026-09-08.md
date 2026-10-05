@@ -1,5 +1,7 @@
 # 图像与视频模型核对 — 2026-09-08
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 本轮按官方 API 正文核对模型标识和参数，预设版本升级为 3。旧预设继续保留，用户自行配置的模型 ID 不会被覆盖。
 
 | 服务 | 本轮目录 | 已对齐的参数 |

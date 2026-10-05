@@ -1,5 +1,7 @@
 # Notes Pencil tool arc
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Mode: Operate. This is a narrow part of the iPad-first Notes editor, inheriting
 Floe's native typography, semantic selection color and light/dark materials.
 It is independent of Canvas editing state.

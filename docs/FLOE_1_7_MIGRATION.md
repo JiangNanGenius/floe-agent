@@ -1,6 +1,14 @@
 # Floe 1.7 迁移与恢复 / Migration and recovery
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 1.7 尚未完成迁移验收。本页区分已有机制与上线前必须完成的步骤，不应据此直接迁移唯一一份用户数据。详见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。
+
+## 更新前后的检查（2026-10-05）
+
+更新前导出重要文档、记录版本与构建号，确认工作区和手记保存完成。更新后先检查模型配置、原任务/项目、手记、Linux 镜像状态；用测试副本验证编辑和保存重开。
+
+候选版本优先复用有效 Linux 镜像并恢复成功保存的性能配置。再次出现下载提示时保留诊断，不通过删除 App/环境强制重装来掩盖迁移问题。必要时先导出数据再走恢复流程。
 
 ## Build 222：Linux Runtime v2
 

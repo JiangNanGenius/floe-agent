@@ -1,8 +1,16 @@
 # Floe 1.7 构建与验收 / Build and acceptance
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Build 229 is the current internal delivery. Immutable tag `v1.7.0-beta.86` binds source `b06b0b0e42008e8ea5c6b402ab146c99e2bcf328`. [Release run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) built with Xcode 26.6, retained the unsigned IPA (739,485,403 bytes; SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`), uploaded the signed build and published the GitHub prerelease. Apple build `3aecdb89-1cca-4192-9b32-1493d72ad3fe` is `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group; [prepare run 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863) read back both beta-note locales and [verify run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) confirmed group availability. Build 229 changes Office session recovery and failed MLX-container reuse, but these flows have not passed physical-iPad acceptance. Dual-core Linux remains gated at one vCPU after a correctness defect was found in an experimental acceleration path. The earlier Build 224/226 failures remain historical records. See [Build 229 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md) and [delivery record](releases/testflight/TESTFLIGHT_1.7.0_BETA.md).
 
 本说明适用于 1.7 整合分支；完整验收状态以[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。最低系统为 iOS/iPadOS 26，数据库迁移至 v44。重型 App 构建与归档放在云端，本地仅做定向验证。正式发布不属于本轮自动动作。
+
+## 本轮发布与复现（2026-10-05）
+
+当前候选和准确 CI 链接以 CURRENT_STATUS.md 为入口。先通过完整对应源码 CI，再使用不可变标签；构建成功后立即保存可恢复的设备产物，签名、上传、Apple VALID、目标组可用和外部审核分别记录。官网文档部署独立于 App 发布。
+
+用户反馈需包含版本/构建、设备/系统、最短步骤、期望/实际、脱敏样例和截图。Office 应额外检查连续笔迹与保存重开；工程图应区分内联与全屏；语音应区分输入波形、连接状态与实际转写。
 
 ## 本地准备
 

@@ -1,5 +1,7 @@
 # Tier-3 Harness 演进设计（快照回滚 / 模型 failover / iOS 形态 hooks）
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 > 2026-09-11 调研结论存档。对标 OpenCode / Claude Code / Kimi Code 后确认的三项结构性缺口，本轮只出设计，不进码。证据与出处见各节。
 
 ## G2. 工作区写操作快照与回滚

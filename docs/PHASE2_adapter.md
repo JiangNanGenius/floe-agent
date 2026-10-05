@@ -1,5 +1,7 @@
 # TinyEMU phase 2 — native adapter isolation (contract, audit, evidence)
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Status: implemented and committed on `codex/tinyemu-phase2-adapter` (baseline
 `46422286`). Scope: `FloeAgent/ThirdParty/TinyEMU` (adapter + patches +
 vendored/generated engine) and `FloeAgent/Qualification/TinyEMULinux`

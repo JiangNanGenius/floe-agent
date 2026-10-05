@@ -1,5 +1,7 @@
 # Floe 1.7：图文思维导图与文档小窗
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 本轮实施范围以 iPad 为先。此文件说明产品行为与实现边界；当前发布与验收状态见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)与 [Build 219 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_219.md)（[继续实施状态](FLOE_1_7_CONTINUATION_STATUS.md)为历史页面）。
 
 ## 入口与文档关系

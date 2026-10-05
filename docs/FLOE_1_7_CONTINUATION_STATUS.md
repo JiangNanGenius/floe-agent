@@ -1,5 +1,7 @@
 # Floe 1.7 本轮继续实施状态
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 > **历史页面 / Historical page.** 本页记录 build 156 前后的手记、Office、Whisper 与验收事实；
 > 当前交付线为 1.7.0（build 219），行为与验收状态以 [实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)、
 > [Build 219 版本说明](releases/notes/RELEASE_NOTES_1.7.0_BUILD_219.md) 与 [使用指南](USER_GUIDE.md) 为准。

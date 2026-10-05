@@ -1,5 +1,7 @@
 # Shell 工具路由与运行时版本展示 / Shell Tool Routes and Runtime Version Display
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 日期 / Dated: 2026-09-19 · 状态 / Status: 源码已实现并通过轻量校验；主 App 编译与真机复验留给冻结源码后的云端构建与测试者
 /Source implemented and lightly verified; the frozen-source cloud build and device re-check remain.
 

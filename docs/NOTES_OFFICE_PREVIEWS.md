@@ -1,5 +1,7 @@
 # Office previews in Notes / 手记 Office 预览
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Implementation history: `2a907841b50a19b07488f5e9fff40dc4f3b9cf1f` (request
 coalescing) and `d421fea260523d063270e2d21d623bd011acd9ea` (build 186 candidate).
 The build 187 progressive two-tier cover described below is committed as
@@ -10,6 +12,12 @@ Build 186's final failed qualification is recorded in
 [the beta.43 record](releases/beta/RELEASE_1.7.0_BETA_43.md); build 187 is only
 [preparation](releases/beta/RELEASE_1.7.0_BETA_44.md). This page documents candidate code and
 does not establish TestFlight availability.
+
+## 实际操作与故障定位（2026-10-05）
+
+导入后先等待正文，再进入编辑；开启画笔、实际落笔、等待保存、关闭并重开，分别核对。候选引擎修复自由绘制入口自动插入默认图形的问题；这不代表连续笔迹、原文件写回和实体 iPad 重开已全部验收。
+
+仅有封面或缩略图时不能判断正文编辑可用。加载失败保留原件和脱敏副本；记录格式、构建号、导入入口、批注按钮与保存结果。手记 PDF 笔迹、Office 原生绘图和聊天生成文档分别验证。完整流程见使用手册第 7–8 章。
 
 ## 用户可见结果
 

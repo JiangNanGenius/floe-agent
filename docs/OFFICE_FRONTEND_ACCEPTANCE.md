@@ -1,5 +1,7 @@
 # Office 前端逐项实施与验收
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 本文件是 [本轮升级总计划](WORKFLOW_UPGRADE_IMPLEMENTATION.md) 的 O01–O05、F04 明细，不缩减其他升级目标。2026-09-09 用户再次确认：**接入完整编辑器界面不等于完成编辑功能；不能只验证文字和单元格便宣称完整 Office。**
 
 当前结论：Office 前端仍在实施，未完成。下表中的“局部验证”只对应明确记录的样本操作。现有上游菜单、UNO 命令或导出 API 的存在，均不能代替用户实际操作成功。

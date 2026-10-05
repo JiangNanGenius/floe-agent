@@ -1,5 +1,7 @@
 # Runtime lifecycle acceptance — service restart, environment deletion, Lua install
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 > Historical record (builds 184-185). The `apt install floe/lua` entry point named below was later replaced by
 > installation from the verified signed WASI catalog (`wasm.packages`); the lifecycle/acceptance scope recorded
 > here is preserved as written. Current behavior is described in the [user guide](USER_GUIDE.md).

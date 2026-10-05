@@ -1,5 +1,7 @@
 # 本轮完整升级执行与验收台账
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 当前发布状态（2026-09-09 16:42 UTC）：**1.6.1（136）已向 Floe QA 内部 TestFlight 组开放**，CI、签名上传、Apple VALID 与组可见性全部核实，见[核验记录](releases/verification/RELEASE_VERIFICATION_1.6.1.md)。后续保存桥接及指南更新的 CI 34370523971 也已全部通过，但这些后续代码未包含在 1.6.1 中，界面保存重开仍待验证。完整 Office 和其余未勾选项继续开放。以下保留过程记录。
 
 最新候选调整为 **1.6.1（136）**：1.6.0 的云端发布被旧测试的非 ZIP 假 PPTX 样本拦截，未进入上传。改用真实生成文档后，生产保存/恢复/图表保护回归 15/15 通过；保留失败标签，重新发布，见[核验记录](releases/verification/RELEASE_VERIFICATION_1.6.1.md)。

@@ -1,5 +1,7 @@
 # 通用邮箱连接器 / Generic mail connector
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 入口：**技能 → 连接器 → 邮箱**。默认 IMAP + SMTP；收信也可选 POP3。
 不需要为 Floe 注册 Google 或 Microsoft 开发者应用。本实现不含专用 OAuth
 登录；只允许 OAuth 的邮箱不能用密码连接，不能因此关闭 TLS 或反复尝试密码。

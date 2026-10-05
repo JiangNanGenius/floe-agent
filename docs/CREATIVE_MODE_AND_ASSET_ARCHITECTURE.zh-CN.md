@@ -1,5 +1,7 @@
 # 创意模式、画布与资料库：产品与实施计划
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 [English](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md) · [使用指南](USER_GUIDE.zh-CN.md) · [架构总览](ARCHITECTURE_OVERVIEW.md)
 
 状态：产品 QA 已锁定；原生画布 MVP 与标准远程 MCP 工具链已进入首个公开 Beta 实现。本文其余阶段是后续扩展目标，不代表当前版本已经全部开放。

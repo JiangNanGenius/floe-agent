@@ -1,5 +1,7 @@
 # Floe Linux guest 控制台协议扩展（分块 / PTY / 后台服务 / 可选宿主桥）
 
+> 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
+
 Dated: 2026-09-24 · Status: 分块信封、PTY 会话、后台服务与可选 `floe-host`
 桥的 **host runner 侧与 host 端接线均已实现**；仓库 `host_protocol_check.sh`
 覆盖帧与路由行为，真机/镜像内的闭环仍由镜像资格任务完成（见 §5 与 §6）。
