@@ -695,12 +695,13 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         var command: [String]
         switch request.runtime {
         case .python:
-            let python = try await LinuxGuestPythonProvisioner.shared.ensure(
-                environmentID: environmentID,
-                runner: host,
-                cancellation: cancellation
+            // Running a script must not install pip or create a venv first.
+            // Use the same existing interpreter selection as the shell:
+            // activate the shared venv when present, otherwise distro Python.
+            // Package installation remains an explicit package operation.
+            command = LinuxGuestPythonEnvironment.activatedArgv(
+                command: "python3", arguments: [entryGuest] + request.arguments
             )
-            command = [python.pythonPath, entryGuest] + request.arguments
         case .node:
             command = ["node", entryGuest] + request.arguments
         }

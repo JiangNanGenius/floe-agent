@@ -17,6 +17,8 @@ from prepare_office_native_sources import DEFAULT_LOCK
 
 FILTER_LOCK = DEFAULT_LOCK.parent / 'filter-overlay.lock.json'
 SPARSE_PATHS = [
+    '/engine/sd/inc/', '/engine/sd/source/ui/inc/', '/engine/sd/source/ui/slidesorter/inc/',
+    '/engine/sd/source/ui/view/drviewse.cxx',
     '/engine/sc/inc/', '/engine/sc/source/filter/inc/',
     '/engine/sc/source/filter/xcl97/xcl97rec.cxx', '/engine/oox/inc/',
     '/engine/sc/source/filter/excel/xlroot.cxx', '/engine/sc/source/ui/inc/',
@@ -35,6 +37,8 @@ SPARSE_PATHS = [
     '/engine/officecfg/registry/cppheader.xsl',
     '/engine/officecfg/registry/component-schema.dtd',
     '/engine/officecfg/registry/schema/org/openoffice/Office/Common.xcs',
+    '/engine/officecfg/registry/schema/org/openoffice/Office/Draw.xcs',
+    '/engine/officecfg/registry/schema/org/openoffice/Office/Impress.xcs',
     '/engine/solenv/bin/generate-tokens.py', '/engine/oox/source/token/',
 ]
 
@@ -112,7 +116,7 @@ def select_linker_archive(bundle, overlay, destination):
         raise ValueError('Filter overlay is not the current verified build')
     expected = set(lock.get('members', {lock['member']: ''}))
     for spec in lock.get('headerDependencies', {}).values():
-        if digest(FILTER_LOCK.parent / spec['patch']) != spec['patchSHA256']:
+        if spec.get('patch') and digest(FILTER_LOCK.parent / spec['patch']) != spec['patchSHA256']:
             raise ValueError('Filter header dependency patch differs from lock')
     objects = report.get('objectSHA256ByMember', {lock['member']: report['objectSHA256']})
     if set(objects) != expected:
@@ -169,7 +173,7 @@ def extract_header_archive(archive, output, spec):
         raise ValueError('Invalid header archive root')
     with tarfile.open(archive, 'r:*') as stream:
         members = stream.getmembers()
-        if len(members) > 10000 or sum(item.size for item in members) > 32 * 1024 * 1024:
+        if len(members) > 10000 or sum(item.size for item in members) > min(spec.get('maxExtractBytes', 32 * 1024 * 1024), 256 * 1024 * 1024):
             raise ValueError('Header archive exceeds extraction limit')
         names = set()
         for item in members:
@@ -192,22 +196,28 @@ def extract_header_archive(archive, output, spec):
     return output / root.name
 
 
-def prepare_header_dependencies(lock, output):
+def prepare_header_dependencies(lock, output, cache=None):
     includes = []
     for name, spec in lock.get('headerDependencies', {}).items():
         if Path(name).name != name or name in ('', '.', '..'):
             raise ValueError('Invalid header dependency name')
         if not spec['url'].startswith('https://'):
             raise ValueError('Header dependency requires HTTPS')
-        patch = FILTER_LOCK.parent / spec['patch']
-        if digest(patch) != spec['patchSHA256']:
+        patch = FILTER_LOCK.parent / spec['patch'] if spec.get('patch') else None
+        if patch and digest(patch) != spec['patchSHA256']:
             raise ValueError('Header dependency patch differs from lock')
         archive = output / (name + '.tar.xz')
-        run(['curl', '--fail', '--location', '--proto', '=https', '--proto-redir', '=https',
-             '--retry', '2', '--max-time', '90', '--max-filesize', str(4 * 1024 * 1024),
-             '--output', archive, spec['url']])
+        cached = Path(cache) / spec['sha256'] if cache else None
+        if cached and cached.is_file() and digest(cached) == spec['sha256']:
+            shutil.copyfile(cached, archive)
+        else:
+            run(['curl', '--fail', '--location', '--proto', '=https', '--proto-redir', '=https',
+                 '--retry', '2', '--max-time', '300', '--max-filesize',
+                 str(min(spec.get('maxArchiveBytes', 4 * 1024 * 1024), 32 * 1024 * 1024)),
+                 '--output', archive, spec['url']])
         root = extract_header_archive(archive, output / ('headers-' + name), spec)
-        run(['patch', '--batch', '--forward', '-p1', '-i', patch.resolve()], cwd=root)
+        if patch:
+            run(['patch', '--batch', '--forward', '-p1', '-i', patch.resolve()], cwd=root)
         include = root / spec['include']
         if not include.is_dir() or not include.resolve().is_relative_to(root.resolve()):
             raise ValueError('Header dependency include directory is invalid')
@@ -220,10 +230,11 @@ def generate_headers(source, generated):
     (generated / 'officecfg/Office').mkdir(parents=True)
     (generated / 'oox/token').mkdir(parents=True)
     (generated / 'misc').mkdir()
-    run(['xsltproc', '--nonet', '--stringparam', 'ns1', 'Office',
-         '--stringparam', 'ns2', 'Common', '-o', generated / 'officecfg/Office/Common.hxx',
-         engine / 'officecfg/registry/cppheader.xsl',
-         engine / 'officecfg/registry/schema/org/openoffice/Office/Common.xcs'])
+    for component in ('Common', 'Draw', 'Impress'):
+        run(['xsltproc', '--nonet', '--stringparam', 'ns1', 'Office',
+             '--stringparam', 'ns2', component, '-o', generated / ('officecfg/Office/' + component + '.hxx'),
+             engine / 'officecfg/registry/cppheader.xsl',
+             engine / ('officecfg/registry/schema/org/openoffice/Office/' + component + '.xcs')])
     tokens = engine / 'oox/source/token'
     generators = [
         ('tokens', 'token', engine / 'solenv/bin/generate-tokens.py',
@@ -242,7 +253,7 @@ def generate_headers(source, generated):
             + (tokens / (plural + '.hxx.tail')).read_bytes())
 
 
-def build(bundle, source, output):
+def build(bundle, source, output, header_cache=None):
     bundle, source, output = (Path(p).resolve() for p in (bundle, source, output))
     lock = json.loads(FILTER_LOCK.read_text())
     engine_lock = json.loads(DEFAULT_LOCK.read_text())
@@ -282,7 +293,7 @@ def build(bundle, source, output):
         if digest(source / name) != hashes['patchedSHA256']:
             raise ValueError('Patched filter source differs from lock: ' + name)
     report['sourceFiles'] = lock['files']
-    header_includes = prepare_header_dependencies(lock, output)
+    header_includes = prepare_header_dependencies(lock, output, header_cache)
     report['headerDependencies'] = lock.get('headerDependencies', {})
     save()
     generated = output / 'generated'
@@ -319,7 +330,15 @@ def build(bundle, source, output):
         if Path(name).name != name or source_file not in lock['files']:
             raise ValueError('Unpinned filter replacement source')
         replacement = output / name
-        compile_command = command + [str(source / source_file), '-o', str(replacement)]
+        # Module headers share names (for example stlpool.hxx). Keep Impress
+        # includes scoped to its own objects so Calc never picks an SD header.
+        module_includes = []
+        if source_file.startswith('engine/sd/'):
+            module_includes = ['-I', str(source / 'engine/sd/inc'),
+                               '-I', str(source / 'engine/sd/source/ui/inc'),
+                               '-I', str(source / 'engine/sd/source/ui/slidesorter/inc'),
+                               '-DSD_DLLIMPLEMENTATION']
+        compile_command = command[:4] + module_includes + command[4:] + [str(source / source_file), '-o', str(replacement)]
         report['compileCommands'][name] = compile_command
         if name == lock['member']:
             report['compileCommand'] = compile_command
@@ -371,5 +390,6 @@ if __name__ == '__main__':
     parser.add_argument('bundle', type=Path)
     parser.add_argument('source', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--header-cache', type=Path, help='Optional local archives keyed by verified SHA-256')
     args = parser.parse_args()
-    print(json.dumps(build(args.bundle, args.source, args.output), indent=2))
+    print(json.dumps(build(args.bundle, args.source, args.output, args.header_cache), indent=2))

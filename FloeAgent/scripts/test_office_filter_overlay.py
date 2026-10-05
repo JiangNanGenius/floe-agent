@@ -9,7 +9,7 @@ import tarfile
 import unittest
 from unittest.mock import patch
 
-from build_office_filter_overlay import archive_members, verify_replacement, verify_replacements, select_linker_archive, extract_header_archive
+from build_office_filter_overlay import archive_members, verify_replacement, verify_replacements, select_linker_archive, extract_header_archive, prepare_header_dependencies
 
 
 def member(name, payload):
@@ -40,6 +40,20 @@ class HeaderDependencyTests(unittest.TestCase):
             archive, spec = self.fixture(base)
             result = extract_header_archive(archive, base / 'output', spec)
             self.assertEqual((result / 'include/example.hpp').read_bytes(), b'header')
+
+    def test_unpatched_dependency_uses_verified_cache_without_network(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            archive, spec = self.fixture(base)
+            spec.update(url='https://example.invalid/headers.tar.xz', include='include')
+            cache, output = base / 'cache', base / 'output'
+            cache.mkdir()
+            output.mkdir()
+            (cache / spec['sha256']).write_bytes(archive.read_bytes())
+            with patch('build_office_filter_overlay.run') as run:
+                includes = prepare_header_dependencies({'headerDependencies': {'headers': spec}}, output, cache)
+            run.assert_not_called()
+            self.assertEqual((includes[0] / 'example.hpp').read_bytes(), b'header')
 
     def test_corruption_rejected_before_any_output(self):
         with tempfile.TemporaryDirectory() as directory:

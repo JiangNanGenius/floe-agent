@@ -239,6 +239,7 @@ struct LocalServiceTool: AgentTool {
             environment: variables
         )
         var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
+        try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot))
         let handle: LinuxGuestLocalServiceHandle
         do {
             // Lazy activation plus first-use preparation: start an owned

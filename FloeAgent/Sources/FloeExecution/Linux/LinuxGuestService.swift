@@ -898,6 +898,7 @@ public struct LinuxGuestLifecycleTransaction: Sendable, Equatable {
 /// and shell consume the command protocol; the app uses this to start, stop
 /// and delete the guest that owns an environment.
 public protocol LinuxGuestControlling: Sendable {
+    func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig?
     /// Starts the environment's guest. Returns false when this service does
     /// not own the environment (native environments are untouched). Throws
     /// with an honest reason when the guest cannot start.
@@ -1020,6 +1021,7 @@ public protocol LinuxGuestControlling: Sendable {
 }
 
 public extension LinuxGuestControlling {
+    func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? { nil }
     /// Default explicit-shape start: nil shape forwards to the shape-less
     /// start; a non-nil shape is refused honestly by a backend that cannot
     /// carry it, never silently reduced. The production TinyEMU service

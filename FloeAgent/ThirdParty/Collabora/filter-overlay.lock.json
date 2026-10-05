@@ -1,7 +1,7 @@
 {
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "patch": "patches/xlsx-embedded-objects.patch",
-  "patchSHA256": "4d426890632f0fc72996917f3af268af9c81bb211ff85937999d951c5e341989",
+  "patchSHA256": "e1e4031de5cc86baa25b555bffa56587805157e7931909c7d473fe6428686e77",
   "files": {
     "engine/sc/source/filter/inc/xcl97rec.hxx": {
       "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
@@ -46,12 +46,16 @@
     "engine/oox/source/export/chartexport.cxx": {
       "originalSHA256": "80d8b329acd92d386f49ead2c38da51f40df2fb8d7fe29fc41a62bd1950afd02",
       "patchedSHA256": "204323726555e3a5ae268069620d1d9cf7c99d94b10a34807ef94f590ec57808"
+    },
+    "engine/sd/source/ui/view/drviewse.cxx": {
+      "originalSHA256": "0585ec290509acecd1deb90267c77023ede02f4357c7f29cbafcb20809d83c99",
+      "patchedSHA256": "a134d42296b2d9c04dd815484cb8b202c834f36e9caeb2ee05c03d5be8bf85a9"
     }
   },
   "archive": "source/engine/instdir/program/libscfiltlo.a",
   "originalArchiveSHA256": "a7e5961052e204adfb5694d584de17f8b7a7f0f6462a972303fd6baf78c11b77",
   "member": "xcl97rec.o",
-  "qualificationStatus": "xlsx-modern-ole-anchor-import-compile-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
+  "qualificationStatus": "xlsx-modern-ole-anchor-import-compile-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending+ios-interactive-freehand-pending-qualification",
   "members": {
     "xcl97rec.o": "engine/sc/source/filter/xcl97/xcl97rec.cxx",
     "xlroot.o": "engine/sc/source/filter/excel/xlroot.cxx",
@@ -67,6 +71,13 @@
       "members": {
         "vmlshape.o": "engine/oox/source/vml/vmlshape.cxx",
         "chartexport.o": "engine/oox/source/export/chartexport.cxx"
+      }
+    },
+    "libsdlo.a": {
+      "archive": "source/engine/instdir/program/libsdlo.a",
+      "originalArchiveSHA256": "7228330d1d6ca820c86e88fb09025f30e6c42c377b13dc578c8ec53bc92119d9",
+      "members": {
+        "drviewse.o": "engine/sd/source/ui/view/drviewse.cxx"
       }
     }
   },
@@ -88,6 +99,14 @@
       "patch": "patches/frozen-upstream.patch",
       "patchSHA256": "52c173cd07880abd7ba3163fe95635d640ddd46382f90604ef86f685426acb4b",
       "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
+    },
+    "icu": {
+      "url": "https://dev-www.libreoffice.org/src/icu4c-78.2-sources.tgz",
+      "sha256": "3e99687b5c435d4b209630e2d2ebb79906c984685e78635078b672e03c89df35",
+      "root": "icu",
+      "include": "source/common",
+      "maxArchiveBytes": 33554432,
+      "maxExtractBytes": 268435456
     }
   }
 }

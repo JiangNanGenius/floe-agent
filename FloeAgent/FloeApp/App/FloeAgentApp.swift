@@ -1017,6 +1017,8 @@ private struct InspectorColumnView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @State private var workspaceMountState: WorkspaceMountState = .idle
     @State private var workspaceMountAttempt = 0
+    @State private var terminalOwner: LocalTerminalOwner?
+    @State private var showsRemoteTerminal = false
 
     private enum WorkspaceMountState: Equatable {
         case idle
@@ -1033,7 +1035,20 @@ private struct InspectorColumnView: View {
             case .browser:
                 BrowserView(center: environment.browserCenter)
             case .terminal:
-                HostListView(center: environment.remoteSessionCenter)
+                VStack(spacing: 0) {
+                    Picker(IDELanguageRunText.t("终端", "Terminal"), selection: $showsRemoteTerminal) {
+                        Text(IDELanguageRunText.t("本地工作区", "Local workspace")).tag(false)
+                        Text(IDELanguageRunText.t("远程 SSH", "Remote SSH")).tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding()
+                    .accessibilityIdentifier("terminal.destination")
+                    if showsRemoteTerminal {
+                        HostListView(center: environment.remoteSessionCenter)
+                    } else {
+                        workspaceBackedContent
+                    }
+                }
             case .progress:
                 TaskProgressInspectorView(conversationID: route.conversationID)
             case .childAgents:
@@ -1045,13 +1060,19 @@ private struct InspectorColumnView: View {
         .task(id: "\(route.id).\(workspaceMountAttempt)") {
             let conversationID = route.conversationID
             switch route.content {
-            case .changes, .workspaceFiles:
+            case .changes, .workspaceFiles, .terminal:
                 workspaceMountState = .loading
+                terminalOwner = nil
                 do {
                     try await environment.workspaceCenter.openTaskWorkspace(
                         conversationID: conversationID
                     )
                     guard !Task.isCancelled else { return }
+                    if route.content == .terminal,
+                       let workspace = environment.workspaceCenter.currentWorkspace,
+                       let root = environment.workspaceCenter.currentRootURL {
+                        terminalOwner = environment.localTerminals.owner(workspaceID: workspace.id, root: root)
+                    }
                     workspaceMountState = .mounted
                 } catch is CancellationError {
                     return
@@ -1060,7 +1081,7 @@ private struct InspectorColumnView: View {
                 }
             case .browser:
                 environment.browserCenter.bind(to: conversationID)
-            case .terminal, .progress, .childAgents, .permissions:
+            case .progress, .childAgents, .permissions:
                 break
             }
         }
@@ -1070,7 +1091,18 @@ private struct InspectorColumnView: View {
     private var workspaceBackedContent: some View {
         switch workspaceMountState {
         case .mounted:
-            if route.content == .changes {
+            if route.content == .terminal {
+                if let terminalOwner {
+                    LocalTerminalView(owner: terminalOwner, embedded: true)
+                        .accessibilityIdentifier("terminal.local.workspace")
+                } else {
+                    ContentUnavailableView {
+                        Label(IDELanguageRunText.t("本地终端不可用", "Local terminal unavailable"), systemImage: "terminal")
+                    } actions: {
+                        Button(IDELanguageRunText.t("重试", "Retry")) { workspaceMountAttempt += 1 }
+                    }
+                }
+            } else if route.content == .changes {
                 TaskChangesInspectorView(conversationID: route.conversationID)
             } else {
                 FileInspectorView(center: environment.workspaceCenter)

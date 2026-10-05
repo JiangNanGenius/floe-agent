@@ -614,6 +614,16 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         downgrade: GuestShapeDowngradePolicy
     ) async throws -> LinuxGuestShapeAdmission {
         try await ensurePrepared(isCancelled: { Task.isCancelled })
+        // Import existing verified bytes before asking their capability. On
+        // first launch the legacy image may be present but not yet have a v2
+        // row; absence of that row is not proof of a single-core image.
+        do {
+            try await ensureImageMigrated(imageID)
+        } catch RuntimeV2Error.imageNotFound {
+            throw LinuxGuestError.imageNotQualified(
+                environmentID: environmentID, reason: "The Linux image \(imageID) is not installed."
+            )
+        }
         let imageMaximum = await imageMaximumVCPUs(imageID: imageID)
         let granted = try await store.pool.acquire(
             environmentID: environmentID, runtimeID: runtimeID,

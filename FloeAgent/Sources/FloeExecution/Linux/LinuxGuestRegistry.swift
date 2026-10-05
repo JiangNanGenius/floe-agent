@@ -942,6 +942,10 @@ public actor TinyEMULinuxGuestRegistry {
         guard var descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
         }
+        if let saved = LinuxGuestLifecycleConfig.load(from: descriptor.writableDirectory) {
+            if descriptor.vcpus == nil { descriptor.vcpus = saved.vcpus }
+            if descriptor.ramMB == nil { descriptor.ramMB = saved.memoryMB }
+        }
         if let explicitShape {
             // Carry the explicit lifecycle request onto the descriptor so it
             // reaches typed admission; the environment provider's own values
@@ -1137,6 +1141,14 @@ public actor TinyEMULinuxGuestRegistry {
                 sessionRegistered: &sessionRegistered,
                 quarantinedByFailure: &quarantinedByFailure
             )
+            if let directory = descriptor.writableDirectory {
+                let configured = LinuxGuestLifecycleConfig(
+                    vcpus: grantedVCPUs ?? descriptor.vcpus ?? 1,
+                    memoryMB: admission?.ramMB ?? limits.clampedRAMMB(descriptor.ramMB)
+                )
+                do { try configured.save(to: directory) }
+                catch { lastErrors[environmentID] = "Guest started, but its launch configuration could not be saved: \(error.localizedDescription)" }
+            }
         } catch {
             if let runtimeV2, let admission {
                 if quarantinedByFailure {
@@ -3115,6 +3127,11 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     // MARK: LinuxGuestControlling
+
+    public func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? {
+        let descriptor = await registry.guestDescriptor(environmentID: environmentID)
+        return LinuxGuestLifecycleConfig.load(from: descriptor?.writableDirectory)
+    }
 
     public func startGuest(environmentID: String, taskID: String?) async throws -> Bool {
         try await registry.start(environmentID: environmentID, taskID: taskID)

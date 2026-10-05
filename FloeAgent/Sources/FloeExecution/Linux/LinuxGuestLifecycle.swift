@@ -8,7 +8,8 @@
 //
 // Honesty invariants encoded here:
 //
-//  * A parameterless start asks for the worker default (one vCPU, 256 MiB).
+//  * A parameterless start restores the last successful shape, or uses
+//    one vCPU and 256 MiB for a new environment.
 //    Explicit vcpus/memory are resolved through the typed ladder UNDER THE
 //    RELEASE GATE; a count outside the qualified ladder throws
 //    `capabilityUnsupported` with the real reason — it is never clamped onto
@@ -41,16 +42,33 @@ import FloeCore
 import FloeTools
 
 /// Typed start/restart configuration. Absent fields mean "no explicit choice":
-/// the worker default (one vCPU, 256 MiB).
+/// reuse the running or last successful shape; new environments use one vCPU/256 MiB.
 public struct LinuxGuestLifecycleConfig: Sendable, Equatable, Codable {
-    /// Explicit vCPU count (1 or 2). nil = default one core.
+    /// Explicit vCPU count (1, 2 or 3). nil preserves the environment selection.
     public var vcpus: Int?
-    /// Explicit guest RAM in MiB (the 256…2048 ladder). nil = default 256 (the engine worker default).
+    /// Explicit guest RAM in MiB (the 256…2048 ladder). nil preserves the environment selection.
     public var memoryMB: Int?
 
     public init(vcpus: Int? = nil, memoryMB: Int? = nil) {
         self.vcpus = vcpus
         self.memoryMB = memoryMB
+    }
+
+    /// Stored with the environment, outside the App bundle and writable guest
+    /// disk. Only a successfully booted shape is recorded.
+    static func load(from directory: URL?) -> Self? {
+        guard let directory,
+              let data = try? Data(contentsOf: directory.appendingPathComponent("guest-launch-shape.json")),
+              let value = try? JSONDecoder().decode(Self.self, from: data),
+              let cores = value.vcpus, (1...3).contains(cores),
+              let memory = value.memoryMB, [256, 512, 768, 1024, 1536, 2048].contains(memory)
+        else { return nil }
+        return value
+    }
+
+    func save(to directory: URL) throws {
+        let data = try JSONEncoder().encode(self)
+        try data.write(to: directory.appendingPathComponent("guest-launch-shape.json"), options: .atomic)
     }
 }
 
@@ -269,7 +287,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
 
     /// Capability summary carried by every receipt of this release.
     public static let capabilitySummary =
-        "up to three guest cores when the verified image proves that count (three-hart boot verified by component-image-ci run 37171053949); four cores total across the pool; the two-core equal-work benchmark was slower than one core; memory, lease and stop guards unchanged"
+        "up to three guest cores when the verified image proves that count (three-hart boot verified by component-image-ci run 37171053949); four cores total across the pool; choose cores and RAM for the workload before the first shell call; omitted parameters restore the last successful configuration; performance depends on workload; memory, lease and stop guards unchanged"
 
     /// The engine's worker default for a start that requests no RAM
     /// (`LinuxGuestLimits.defaultRAMMB`, 256 MiB). Kept in parity so a
@@ -669,7 +687,12 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
             )
         }
 
-        let request = try resolvedRequest(config, environmentID: environmentID)
+        let saved = await controller.preferredGuestConfiguration(environmentID: environmentID)
+        let effective = Self.mergedConfig(config, current: saved.flatMap {
+            guard let cores = $0.vcpus, let memory = $0.memoryMB else { return nil }
+            return (cores, memory)
+        })
+        let request = try resolvedRequest(effective, environmentID: environmentID)
         let started: Bool
         do {
             started = try await startWithPreparation(
@@ -864,13 +887,18 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
         // Preserve the RUNNING guest's configured shape for every dimension the
         // caller left unspecified: a restart must not silently reset an
         // explicitly configured VM to the cold-start default. Only a restart
-        // with no running guest falls back to defaults.
+        // with no running guest restores the saved shape before using defaults.
         let before = await snapshot(environmentID)
         let runningShape: (vcpus: Int, ramMB: Int)? = {
             guard let before, before.running else { return nil }
             return (before.vcpus, before.ramMB)
         }()
-        let lifecycleConfig = Self.mergedConfig(config, current: runningShape)
+        let saved = await controller.preferredGuestConfiguration(environmentID: environmentID)
+        let fallback = saved.flatMap { value -> (vcpus: Int, ramMB: Int)? in
+            guard let cores = value.vcpus, let memory = value.memoryMB else { return nil }
+            return (cores, memory)
+        }
+        let lifecycleConfig = Self.mergedConfig(config, current: runningShape ?? fallback)
         // Resolve the requested shape BEFORE any disruption: an unqualified
         // request (dual harts in this release) refuses here without first
         // killing the running guest.

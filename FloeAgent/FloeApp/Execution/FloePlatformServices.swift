@@ -977,6 +977,9 @@ final class FloePlatformServices: @unchecked Sendable {
                     }
                 }
                 reportPhase(.checking)
+                // The pre-install check cached the missing/broken state. Do
+                // not reuse it as the verdict for newly installed bytes.
+                self.linuxImageStatusCache.bumpRevision()
                 guard let final = try await self.linuxImageStatusChecked(id: imageID, isCancelled: cancelCheck),
                       final.installed, final.verificationIssue == nil else {
                     let checked = try? await self.linuxImageStatusChecked(id: imageID, isCancelled: cancelCheck)

@@ -130,6 +130,10 @@ private final class ScriptedServiceHost: LinuxGuestLocalServiceHosting, @uncheck
     private var addedForwards: [LinuxGuestServiceForward] = []
     private var removedForwards: [LinuxGuestServiceForward] = []
     private var storeDirectory: URL?
+    private var commandsRun = 0
+    private var spawnedArguments: [String] = []
+    var provisioningCommands: Int { lock.withLock { commandsRun } }
+    var spawnArguments: [String] { lock.withLock { spawnedArguments } }
     let descriptor: LinuxGuestEnvironmentDescriptor
     let probeGate = ServiceProbeGate()
     let forwardGate = ServiceProbeGate()
@@ -161,7 +165,8 @@ private final class ScriptedServiceHost: LinuxGuestLocalServiceHosting, @uncheck
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult {
-        LinuxCommandResult(stdout: "", stderr: "", exitCode: 0)
+        lock.withLock { commandsRun += 1 }
+        return LinuxCommandResult(stdout: "", stderr: "", exitCode: 0)
     }
 
     func guestDescriptor(environmentID: String) async -> LinuxGuestEnvironmentDescriptor? { descriptor }
@@ -174,7 +179,8 @@ private final class ScriptedServiceHost: LinuxGuestLocalServiceHosting, @uncheck
         timeout: TimeInterval,
         cancellation: CancellationToken?
     ) async throws -> Int32 {
-        4242
+        lock.withLock { spawnedArguments = argv }
+        return 4242
     }
 
     func guestServiceAlive(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
@@ -410,6 +416,19 @@ private final class ScriptedProcRunner: LinuxCommandRunning, @unchecked Sendable
 // MARK: - tests
 
 final class LinuxGuestLocalServiceTests: XCTestCase {
+    func testPythonServiceUsesExistingInterpreterWithoutInstallingPip() async throws {
+        let root = try serviceFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: "python", root: root))
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        var request = serviceRequest(root: root, port: 8123)
+        request.runtime = .python
+        let handle = try await supervisor.startLocalService(environmentID: "python", request: request, cancellation: nil)
+        XCTAssertEqual(host.provisioningCommands, 0, "Starting an existing script must not create a venv or install pip")
+        XCTAssertTrue(host.spawnArguments.contains("python3"))
+        XCTAssertTrue(host.spawnArguments.contains { $0.contains("bin/activate") })
+        await supervisor.stopLocalService(handle)
+    }
 
     private func makeStartedService(
         environmentID: String

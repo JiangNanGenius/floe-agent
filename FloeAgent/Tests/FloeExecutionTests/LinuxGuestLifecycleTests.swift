@@ -25,6 +25,9 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     private var active: [String: Guest] = [:]
     private var ownedImages: [String: String] = [:]
     private var nextGeneration: UInt64 = 0
+    private var savedConfiguration: LinuxGuestLifecycleConfig?
+    func setSavedConfiguration(_ value: LinuxGuestLifecycleConfig) { savedConfiguration = value }
+    func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? { savedConfiguration }
     /// When true a start fails with imageNotQualified (used to test the
     /// prepare-and-retry path).
     var failNextStartUnqualified = false
@@ -242,10 +245,35 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         XCTAssertNil(receipt.requestedVCPUs)
         XCTAssertEqual(receipt.launchGeneration, 1)
         XCTAssertTrue(receipt.capability.contains("three guest cores"))
-        XCTAssertTrue(receipt.capability.contains("two-core equal-work benchmark"))
+        XCTAssertTrue(receipt.capability.contains("performance depends on workload"))
     }
 
     /// Explicit single-core start is carried to the runtime descriptor.
+    func testColdStartRestoresSavedShapeAndExplicitDimensionWins() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setSavedConfiguration(.init(vcpus: 3, memoryMB: 768))
+        let manager = makeManager(controller: controller)
+        let resumed = try await manager.start(environmentID: environmentID)
+        XCTAssertEqual(resumed.actualVCPUs, 3)
+        XCTAssertEqual(resumed.actualMemoryMB, 768)
+        _ = try await manager.stop(environmentID: environmentID)
+        let overridden = try await manager.start(environmentID: environmentID, config: .init(vcpus: 2))
+        XCTAssertEqual(overridden.actualVCPUs, 2)
+        XCTAssertEqual(overridden.actualMemoryMB, 768)
+    }
+
+    func testSavedShapeRoundTripAndCorruptRecord() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configured = LinuxGuestLifecycleConfig(vcpus: 3, memoryMB: 512)
+        try configured.save(to: root)
+        XCTAssertEqual(LinuxGuestLifecycleConfig.load(from: root), configured)
+        try LinuxGuestLifecycleConfig(vcpus: 4, memoryMB: 512).save(to: root)
+        XCTAssertNil(LinuxGuestLifecycleConfig.load(from: root))
+    }
+
     func testExplicitSingleCoreCarriedToRuntime() async throws {
         let controller = FakeLifecycleController()
         await controller.own(environmentID)

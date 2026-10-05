@@ -1387,3 +1387,22 @@ index dfca8cd..866eaef 100644
      // TODO: need to handle XML_multiLvlStrRef according to aCellRange
      pFS->startElement(FSNS(XML_c, XML_numRef));
  
+--- a/engine/sd/source/ui/view/drviewse.cxx
++++ b/engine/sd/source/ui/view/drviewse.cxx
+@@ -517,6 +517,16 @@
+             // Direct mode means no interactive drawing, just insert the shape with reasonable
+             // defaults -- to be consistent with the line insert case above.
+             bCreateDirectly = comphelper::COKit::isActive();
++#if defined(IOS)
++            // Floe annotations select an interactive tool. In Kit mode the
++            // ordinary command inserts a sample Bezier immediately, before
++            // any Pencil input. Keep freehand active across multiple strokes.
++            if (nSId == SID_DRAW_FREELINE || nSId == SID_DRAW_FREELINE_NOFILL)
++            {
++                bCreateDirectly = false;
++                bPermanent = true;
++            }
++#endif
+ 
+             SetCurrentFunction( FuConstructBezierPolygon::Create(*this, GetActiveWindow(), mpDrawView.get(), *GetDoc(), rReq, bPermanent) );
+             rReq.Done();

@@ -607,6 +607,29 @@ final class LinuxSMPManifestHandoffTests: XCTestCase {
 
     // MARK: admission gates on the boot image
 
+    func testFirstMulticoreAdmissionImportsExistingImageBeforeCapabilityCheck() async throws {
+        _ = try await store.prepareAndRecover(build: "old")
+        _ = try await makeVerifiedImage(imageID: smpImageID, smpCapable: true, maxVCPUs: 3)
+        let expanded = try await store.images.ensureExpanded(imageID: smpImageID)
+        let legacy = root.appendingPathComponent("cold-legacy")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: expanded, to: legacy.appendingPathComponent(smpImageID))
+        let freshLayout = RuntimeV2Layout(root: root.appendingPathComponent("fresh-runtime"))
+        let freshStore = RuntimeV2Store(layout: freshLayout)
+        let integrator = RuntimeV2GuestIntegrator(store: freshStore, legacyImagesRoot: legacy, build: "new")
+        let admitted = try await integrator.acquireShape(
+            environmentID: "cold", runtimeID: "cold-run", imageID: smpImageID,
+            request: .init(vcpus: .three, memory: .m256, origin: .userSpecified), downgrade: .strict
+        )
+        XCTAssertEqual(admitted.vcpus, 3)
+        let verified = try await freshStore.images.isImageVerified(imageID: smpImageID)
+        XCTAssertTrue(verified)
+        // A new App build reuses the same local bytes and their capability.
+        _ = try await freshStore.prepareAndRecover(build: "next-app-build")
+        let capability = try await freshStore.images.smpCapability(imageID: smpImageID)
+        XCTAssertEqual(capability.maximumVCPUs, 3)
+    }
+
     func testAdmissionEvaluatesBootImageNotPinOrRow() async throws {
         let poolConfiguration = RuntimeVMPool.Configuration(
             quota: GuestResourceQuota(totalVCPUs: 4, totalMemoryMiB: 4096, maxVMs: 4),

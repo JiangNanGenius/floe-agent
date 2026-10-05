@@ -222,6 +222,8 @@ struct NativeMediaRoutingTests {
 
         let local = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", compactForLocal: true)
         #expect(local.contains("Route by capability"))
+        #expect(local.contains("environment.startLinux(vcpus, memoryMB)"))
+        #expect(local.contains("after interruption reuse the last successful shape"))
         #expect(local.utf8.count < 8_000)
     }
 }
