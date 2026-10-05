@@ -586,6 +586,14 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         try await ensurePrepared()
         if (try? await store.images.isImageVerified(imageID: imageID)) == true { return }
         guard let legacyImagesRoot else { throw RuntimeV2Error.imageNotFound(imageID) }
+        try RuntimeV2Identifier.validate(imageID, kind: .image)
+        let legacyDirectory = legacyImagesRoot.appendingPathComponent(imageID, isDirectory: true)
+        // A fresh installation has no legacy image to migrate. Preserve the
+        // missing-image contract so the UI offers installation; existing but
+        // corrupt installs still go through migration and retain its error.
+        guard FileManager.default.fileExists(atPath: legacyDirectory.path) else {
+            throw RuntimeV2Error.imageNotFound(imageID)
+        }
         _ = try await store.images.migrateLegacyImage(
             imageID: imageID, legacyImagesRoot: legacyImagesRoot
         )

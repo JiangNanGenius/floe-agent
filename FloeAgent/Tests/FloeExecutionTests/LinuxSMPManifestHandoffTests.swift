@@ -607,6 +607,27 @@ final class LinuxSMPManifestHandoffTests: XCTestCase {
 
     // MARK: admission gates on the boot image
 
+    func testFreshInstallOffersPreparationButCorruptLegacyRetainsError() async throws {
+        let legacy = root.appendingPathComponent("empty-legacy")
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: legacy, build: "fresh")
+        do {
+            _ = try await integrator.acquireShape(
+                environmentID: "fresh", runtimeID: "fresh-run", imageID: smpImageID,
+                request: .init(vcpus: .three, memory: .m256, origin: .userSpecified), downgrade: .strict)
+            XCTFail("missing image must not acquire a guest")
+        } catch LinuxGuestError.imageNotQualified { }
+        let corrupt = legacy.appendingPathComponent(smpImageID)
+        try FileManager.default.createDirectory(at: corrupt, withIntermediateDirectories: true)
+        try Data("corrupt".utf8).write(to: corrupt.appendingPathComponent("manifest.json"))
+        do {
+            _ = try await integrator.acquireShape(
+                environmentID: "fresh", runtimeID: "fresh-run", imageID: smpImageID,
+                request: .init(vcpus: .three, memory: .m256, origin: .userSpecified), downgrade: .strict)
+            XCTFail("corrupt image must not be hidden as a missing download")
+        } catch RuntimeV2Error.migrationFailed { }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: corrupt.appendingPathComponent("manifest.json").path))
+    }
+
     func testFirstMulticoreAdmissionImportsExistingImageBeforeCapabilityCheck() async throws {
         _ = try await store.prepareAndRecover(build: "old")
         _ = try await makeVerifiedImage(imageID: smpImageID, smpCapable: true, maxVCPUs: 3)
