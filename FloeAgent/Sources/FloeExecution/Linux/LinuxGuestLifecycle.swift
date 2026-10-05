@@ -622,6 +622,12 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
                 detail: "guest is running, but the runtime did not report a granted-shape snapshot"
             )
         }
+        let saved = await controller.preferredGuestConfiguration(environmentID: environmentID)
+        var detail = "guest is stopped"
+        if let cores = saved?.vcpus, let memory = saved?.memoryMB {
+            detail += "; saved startup configuration: \(cores) vCPU, \(memory) MiB"
+        }
+        if let error = status.lastError { detail += "; last error: \(error)" }
         return LinuxGuestLifecycleReceipt(
             phase: .stopped,
             environmentID: environmentID,
@@ -630,7 +636,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
             reused: false,
             imageID: status.imageID,
             capability: Self.capabilitySummary,
-            detail: status.lastError.map { "guest is stopped; last error: \($0)" } ?? "guest is stopped"
+            detail: detail
         )
     }
 

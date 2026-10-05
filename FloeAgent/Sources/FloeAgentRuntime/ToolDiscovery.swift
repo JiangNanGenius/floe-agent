@@ -111,10 +111,12 @@ enum ToolDiscovery {
         // not by commands inside the guest. A query such as "Linux 虚拟机多核"
         // also matches the generic shell synonym, so put the three relevant
         // lifecycle schemas in front before the first shell call auto-boots
-        // the default single-core shape. Only offer tools in this run's ceiling.
+        // the saved shape (or new-environment default). Only offer tools in this run's ceiling.
         let guestTerms = ["linux", "guest", "tinyemu", "virtual machine", "虚拟机"]
         let shapeTerms = ["多核", "双核", "多线程", "核心", "cpu", "vcpu", "smp", "multi-core", "multicore", "cores"]
-        if guestTerms.contains(where: query.contains) && shapeTerms.contains(where: query.contains) {
+        let parallelTerms = ["multiprocessing", "worker_threads", "parallel compilation", "parallel build", "并行编译", "多进程", "并行计算"]
+        if (guestTerms.contains(where: query.contains) && shapeTerms.contains(where: query.contains))
+            || parallelTerms.contains(where: query.contains) {
             let lifecycleNames = ["environment.linuxStatus", "environment.startLinux", "environment.hardRestartLinux"]
             let lifecycle = lifecycleNames.compactMap { name in descriptors.first { $0.name == name } }
             let shell = descriptors.filter { $0.name == "exec.shell" }

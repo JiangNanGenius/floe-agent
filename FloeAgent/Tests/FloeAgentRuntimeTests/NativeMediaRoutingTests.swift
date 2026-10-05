@@ -170,6 +170,14 @@ struct NativeMediaRoutingTests {
         #expect(workspace == ["workspace.readFile"])
     }
 
+    @Test func parallelWorkDiscoversStartupParametersBeforeShell() {
+        let names = ["exec.shell", "environment.linuxStatus", "environment.startLinux", "environment.hardRestartLinux"]
+        for query in ["Python multiprocessing benchmark", "Node worker_threads", "并行编译这个项目"] {
+            let found = ToolDiscovery.matches(query: query, descriptors: names.map(descriptor)).map(\.name)
+            #expect(found == ["environment.linuxStatus", "environment.startLinux", "environment.hardRestartLinux", "exec.shell"])
+        }
+    }
+
     // MARK: - Availability-aware guidance
 
     @Test func guidanceNamesOnlyOfferedToolsAndDescribesRealBackends() {
