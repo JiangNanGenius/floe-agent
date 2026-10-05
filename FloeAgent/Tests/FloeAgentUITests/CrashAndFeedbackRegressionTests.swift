@@ -1489,19 +1489,25 @@ extension CrashAndFeedbackRegressionTests {
         let local = URL(string: "http://127.0.0.1:8080/session/index.html")!
         let offline = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
         var policy = EngineeringNavigationRecovery()
-        #expect(policy.consume(error: offline, page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
-        #expect(!policy.consume(error: offline, page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
+        let firstAttempt = policy.consume(error: offline, page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false)
+        #expect(firstAttempt)
+        let repeatedAttempt = policy.consume(error: offline, page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false)
+        #expect(!repeatedAttempt)
         for flag in 0..<4 {
             var active = EngineeringNavigationRecovery()
-            #expect(!active.consume(error: offline, page: local, serverAvailable: true, delivered: flag == 0, completed: flag == 1, dirty: flag == 2, saving: flag == 3))
+            let activeEditorAttempt = active.consume(error: offline, page: local, serverAvailable: true, delivered: flag == 0, completed: flag == 1, dirty: flag == 2, saving: flag == 3)
+            #expect(!activeEditorAttempt)
         }
         for url in [nil, URL(string: "https://example.com/index.html"), URL(string: "http://127.0.0.1.example.com/index.html")] {
             var remote = EngineeringNavigationRecovery()
-            #expect(!remote.consume(error: offline, page: url, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
+            let nonLocalAttempt = remote.consume(error: offline, page: url, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false)
+            #expect(!nonLocalAttempt)
         }
         var stopped = EngineeringNavigationRecovery()
-        #expect(!stopped.consume(error: offline, page: local, serverAvailable: false, delivered: false, completed: false, dirty: false, saving: false))
-        #expect(!stopped.consume(error: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled), page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false))
+        let stoppedServerAttempt = stopped.consume(error: offline, page: local, serverAvailable: false, delivered: false, completed: false, dirty: false, saving: false)
+        #expect(!stoppedServerAttempt)
+        let cancelledAttempt = stopped.consume(error: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled), page: local, serverAvailable: true, delivered: false, completed: false, dirty: false, saving: false)
+        #expect(!cancelledAttempt)
     }
 }
 #endif
