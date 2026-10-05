@@ -479,3 +479,28 @@ class SwiftMarkerContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegacySchemaTests(unittest.TestCase):
+    def test_missing_warning_field_needs_valid_clean_legacy_actions(self):
+        clean = {"_type": {"_name": "ResultIssueSummaries"}}
+        legacy = {"issues": clean, "actions": {"_values": [
+            {"actionResult": {"status": {"_value": "failed"}, "issues": clean}}]}}
+        self.assertEqual(vqd.normalize_legacy_warnings({}, legacy), {"runtimeWarnings": []})
+        for category in ("warningSummaries", "errorSummaries", "unknown"):
+            bad = json.loads(json.dumps(legacy))
+            bad["issues"][category] = {"_values": []}
+            with self.assertRaises(vqd.NotExecuted):
+                vqd.normalize_legacy_warnings({}, bad)
+        with self.assertRaises(vqd.NotExecuted):
+            vqd.normalize_legacy_warnings({}, {})
+        self.assertIsNone(vqd.normalize_legacy_warnings({"runtimeWarnings": None}, legacy)["runtimeWarnings"])
+
+    def test_xcode26_failure_coordinate_format(self):
+        def case(name):
+            return {"children": [{"nodeType": "Failure Message", "name": name}]}
+        record = vqd._failure_records(case("NotesOfficeThumbnailDiagnosticsTests.swift:99: " + CONTENT_FAILURE))[0]
+        self.assertTrue(vqd._allowed_failure(record, BUDGET))
+        for prefix in ("Other.swift:99: ", "NotesOfficeThumbnailDiagnosticsTests.swift:0: ", "arbitrary "):
+            with self.assertRaises(vqd.NotExecuted):
+                vqd._failure_records(case(prefix + CONTENT_FAILURE))

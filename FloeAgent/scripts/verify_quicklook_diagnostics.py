@@ -32,6 +32,9 @@ non-gating.
 from __future__ import annotations
 
 import argparse
+import json
+import re
+import subprocess
 import pathlib
 import sys
 
@@ -130,6 +133,11 @@ def _failure_records(case):
         if not isinstance(name, str) or not name:
             raise NotExecuted("failure message has no text")
         location = child.get("sourceLocation")
+        if location is None:
+            # Xcode 26 embeds source coordinates in the structured failure name.
+            match = re.fullmatch(r"(NotesOfficeThumbnailDiagnosticsTests\.swift):([1-9][0-9]*): (.+)", name)
+            if match:
+                location = {"filePath": match[1], "lineNumber": int(match[2])}
         if not isinstance(location, dict):
             raise NotExecuted("failure message has no source location")
         file_path = location.get("filePath")
@@ -284,6 +292,34 @@ def _write_evidence(status_path, failures_path, evidence):
         "".join("{}\n".format(line) for line in originals), encoding="utf-8")
 
 
+def normalize_legacy_warnings(summary, legacy):
+    """Xcode 26 omits runtimeWarnings; require clean structured legacy issues.
+
+    Never reinterpret an explicit null/warning value. Unknown issue categories,
+    missing actions, warning/error issues and malformed records remain gating.
+    The ordinary verifier still checks every test failure and execution count.
+    """
+    if "runtimeWarnings" in summary:
+        return summary
+    if not isinstance(legacy, dict):
+        raise NotExecuted("missing legacy warning evidence")
+    actions = legacy.get("actions", {}).get("_values")
+    if not isinstance(actions, list) or not actions:
+        raise NotExecuted("missing legacy actions")
+    containers = [legacy.get("issues")]
+    for action in actions:
+        result = action.get("actionResult", {})
+        if result.get("status", {}).get("_value") not in ("succeeded", "failed"):
+            raise NotExecuted("unknown legacy action status")
+        containers.append(result.get("issues"))
+    for issues in containers:
+        if not isinstance(issues, dict) or issues.get("_type", {}).get("_name") != "ResultIssueSummaries":
+            raise NotExecuted("missing legacy issue summaries")
+        if set(issues) - {"_type", "testFailureSummaries"}:
+            raise NotExecuted("legacy warning/error or unknown issue category")
+    return dict(summary, runtimeWarnings=[])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result-bundle", required=True)
@@ -321,8 +357,14 @@ def main(argv=None):
                 raise NotExecuted("result bundle is missing or empty")
             if not log.is_file() or log.stat().st_size == 0:
                 raise NotExecuted("xcodebuild log is missing or empty")
+            summary = xcresult_json(args.result_bundle, "summary")
+            if "runtimeWarnings" not in summary:
+                legacy = json.loads(subprocess.check_output([
+                    "xcrun", "xcresulttool", "get", "object", "--legacy",
+                    "--format", "json", "--path", args.result_bundle], text=True))
+                summary = normalize_legacy_warnings(summary, legacy)
             evidence.update(verify(
-                xcresult_json(args.result_bundle, "summary"),
+                summary,
                 xcresult_json(args.result_bundle, "tests"),
                 original_exit=original_exit,
                 family=args.family))
