@@ -147,7 +147,7 @@ Editable local DXF/DWG files expose Edit for selecting entities and adding lines
 
 AI Review shows a viewport capture and extracted information for review before sending. Its coverage is visible/parsed content, not complete engineering acceptance.
 
-**Build 259 candidate:** selected transient first-load connection failures get one bounded recovery. Loaded editors or unsaved edits are not automatically reloaded. Full App and iPad full-screen verification remain pending. See [engineering viewers](FLOE_ENGINEERING_VIEWERS.md).
+**Build 259 candidate:** selected transient first-load connection failures get one bounded recovery. Loaded editors or unsaved edits are not automatically reloaded. Build 259 passed full-App CI. Build 260 adds the missing source dependency to the standalone Notes qualification target; its verification is in progress. See [engineering viewers](FLOE_ENGINEERING_VIEWERS.md).
 
 ## 15. Canvas, images, audio and video
 
