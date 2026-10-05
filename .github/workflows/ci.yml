@@ -491,6 +491,23 @@ jobs:
           done
           exit "$status"
 
+      # Make a failed Notes transition diagnosable while the independent IDE
+      # checks continue. The final aggregate artifact still retains all evidence.
+      - name: Retain Notes diagnostics before IDE checks
+        if: ${{ always() && !inputs.ide_only && steps.app_regression_build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: notes-ui-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            FloeAgent/FloeAgent-Notes-*.xcresult
+            FloeAgent/FloeAgent-Notes-*.log
+            FloeAgent/FloeAgent-Notes-*-summary.json
+            FloeAgent/FloeAgent-Notes-Screenshots
+            FloeAgent/FloeAgent-Notes-Recordings
+            ${{ runner.temp }}/SwiftTestDiagnostics/notes-*
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Verify IDE native saves and retain workbench screenshots
         # Same skip rule as the Notes phase: only run against a host that the
         # build-for-testing step actually produced; real UI failures after a
