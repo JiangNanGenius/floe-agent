@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 最近已记录内部交付 / Last recorded internal delivery | 1.7.14 (255), `v1.7.14`; 记录显示 VALID 和 Floe QA 可用；这里未重新核验 Apple 当前状态 / historical VALID and internal availability, not a fresh Apple query | [交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md) |
 | 公开测试 / External beta | Build 255 的最后记录为等待审核；不据此推断现在仍在等待或已批准 / last recorded pending review; current approval not inferred | [送审记录](public-beta/build255/README.md) |
-| 当前源码候选 / Current source candidate | 1.7.19 (260), `f7fc7deb44536f19184fc02d2c47b63937775728`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37337748395) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37337742477) |
+| 当前源码候选 / Current source candidate | 1.7.19 (260), `f61813a14f53c620a87579ccc4261d10a75d2b9f`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37352116608) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37352122126) |
 | 256–258 候选 / Earlier candidates | 测试受阻，未据此发布 / blocked by verification; not delivered | [稳定性修复](releases/repairs/FLOE_256_STABILITY.md) |
 | 原生 Office / Native Office | 编译与部分工具链证据不替代 iPad 连续笔迹、原文件写回、保存重开 / device ink and writeback remain separate | [验收范围](OFFICE_FRONTEND_ACCEPTANCE.md) |
 
@@ -18,7 +18,9 @@
 - 本地模型提示压缩并保留工具契约。Bounded local prompt retaining required contracts.
 - 工程图本地初次连接失败的一次恢复；已交付文档/编辑状态不重载。One initial local-preview recovery without reloading delivered editing state.
 
-Build 259 完整 CI 通过，但发布时独立 NativeNotes 工程漏加预览恢复源码导致编译失败；旧标签 `v1.7.18` 保持不变。Build 260 补齐依赖，独立 NativeNotes 验证已通过，但完整 CI 的手记 UI 检查失败，正在定位；尚未合并候选或打发布标签。Build 259 的发布验证还出现一次 iPhone 工作区导入未跳转；相同 Build 260 程序在本机的定向用例通过，不替代云端失败调查。Build 259 passed full CI but its standalone release target omitted a source dependency; its accepted-SDK iPhone UI run also failed during workspace import. Build 260 passes standalone NativeNotes qualification, but full CI is blocked by a Notes UI failure under investigation. A focused local run of the same Build 260 binary passed; this does not resolve the cloud failure. Neither candidate has uploaded to Apple.
+Build 259 完整 CI 通过，但发布资格验证发现独立 NativeNotes 源码清单遗漏及一次 iPhone 导入跳转失败；`v1.7.18` 保持不变。Build 260 补齐清单后，原独立 NativeNotes 已通过。其后完整 CI 的手记 UI 检查失败，录像显示工具环已关闭、画面已横屏，而自动化状态判断未同步。现已修正消失等待、窗口坐标与窄屏标签滚动，并提前上传手记诊断产物。受影响的 iPad/iPhone 定向用例在本机通过（复用云端 App，仅重编测试模块）；新完整 CI 和独立验证进行中。尚未打标签、上传或宣布可安装。
+
+Build 259 passed full CI, but release qualification found a missing standalone Notes source dependency and an iPhone import-transition failure; its tag remains immutable. Build 260 corrected the manifest and passed standalone Notes qualification. Its subsequent full CI failed Notes UI checks despite video showing the wheel dismissed and the screen in landscape. Test synchronization, window coordinates and narrow tab-strip scrolling have now been corrected, with earlier diagnostic retention. Focused iPad/iPhone tests passed locally using the retained cloud App and a rebuilt test module. Fresh full CI and standalone qualification are running; no tag, Apple upload or installability is claimed.
 
 ## 阅读顺序 / Reading order
 
