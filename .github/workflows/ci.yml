@@ -405,9 +405,10 @@ jobs:
         # must not mask the real build failure with a secondary UI error.
         # Also skipped by the ide_only rerun, which targets the IDE legs only.
         if: ${{ !cancelled() && !inputs.ide_only && steps.app_regression_build.outcome == 'success' }}
-        # Two devices each have three independently bounded 300-second tests.
-        # The phase must also allow boot, runner teardown and evidence export.
-        timeout-minutes: 25
+        # Four active Notes tests per device each retain their 300-second limit.
+        # Allow 420s startup plus 4 x 300s and result export per device;
+        # the outer budget also covers the existing bounded pre-test retry.
+        timeout-minutes: 75
         run: |
           set -o pipefail
           status=0
@@ -436,11 +437,11 @@ jobs:
               # Per-attempt diagnostics, same rule as the IDE leg: the retry
               # must never overwrite first-attempt evidence. The startup quiet
               # phase is bounded at 420s while the post-test quiet deadline
-              # stays 210s; the total 660s cap is unchanged.
+              # stays 210s. The 1800s total covers startup, four tests and export.
               diag_dir="$RUNNER_TEMP/SwiftTestDiagnostics/notes-$name-attempt-$leg_attempt"
               python3 scripts/run_test_with_diagnostics.py \
                 --output-dir "$diag_dir" \
-                --timeout 660 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
+                --timeout 1800 --stall-timeout 210 --startup-stall-timeout 420 --simulator-id "$test_device" -- \
                 xcodebuild -skipPackagePluginValidation -skipMacroValidation -xctestrun "$xctestrun" \
                 -destination "platform=iOS Simulator,id=$test_device" \
                 -resultBundlePath "FloeAgent-Notes-$name.xcresult" \
