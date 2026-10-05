@@ -702,8 +702,12 @@ final class NotesOfficeThumbnailTests: XCTestCase {
         context.setFillColor(UIColor.white.cgColor)
         context.fill(bounds)
         context.draw(cgImage, in: bounds)
-        let luminance = stride(from: 0, to: pixels.count, by: 4).map { offset in
-            (Int(pixels[offset]) * 299 + Int(pixels[offset + 1]) * 587 + Int(pixels[offset + 2]) * 114) / 1000
+        let luminance: [Int] = stride(from: 0, to: pixels.count, by: 4).map { (offset: Int) -> Int in
+            // Keep the accepted-SDK compiler's constraint solving bounded.
+            let red: Int = Int(pixels[offset]) * 299
+            let green: Int = Int(pixels[offset + 1]) * 587
+            let blue: Int = Int(pixels[offset + 2]) * 114
+            return (red + green + blue) / 1000
         }
         guard let lightest = luminance.max() else { return false }
         return luminance.filter { lightest - $0 >= 24 }.count >= 8
