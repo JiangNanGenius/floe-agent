@@ -225,17 +225,18 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // Retained keyboard AX frames can use stale portrait coordinates on
         // landscape iPad after the keyboard has visibly dismissed. Validate
         // the actual result interaction instead of offscreen keyboard geometry.
-        XCTAssertTrue(app.staticTexts["预览验收"].firstMatch.waitForExistence(timeout: 10))
-        // The title already existed before typing. Require the actual body-match
-        // snippet so an unchanged library cannot pass as a working search.
-        let snippet = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Inline reading")).firstMatch
-        XCTAssertTrue(snippet.waitForExistence(timeout: 10))
-        capture("notes-document-body-search")
-        // Resolve the actionable card directly within the results grid. A
-        // global descendant-text firstMatch can stall when XCTest resolves
-        // the same element again for tap, even after its existence check.
+        // Query the actual result card instead of a global lazy firstMatch:
+        // retained failure screenshots showed both title and body match while
+        // XCTest stalled enumerating all StaticText descendants on iPad.
         let result = cardElement(app, kind: "notebook", title: "预览验收")
         XCTAssertTrue(result.waitForExistence(timeout: 10))
+        // The title existed before typing. Still require the body-match snippet
+        // inside this result, then open this same card below.
+        let snippet = result.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "Inline reading")
+        ).element(boundBy: 0)
+        XCTAssertTrue(snippet.waitForExistence(timeout: 10))
+        capture("notes-document-body-search")
         // Landscape iPad fits only a few rows above the keyboard; reveal the
         // match with a real scroll instead of assuming its initial position.
         if !result.isHittable { app.scrollViews["notes.library.scroll"].swipeUp() }
