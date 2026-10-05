@@ -11,7 +11,7 @@
 ## Live delivery gates
 
 - [Release workflow](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267032312): running; normal qualification route, no requested test waiver.
-- [Independent CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267029678): running.
+- [Immutable-tag CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267499177): running.
 - [Pre-upload Apple inspection](https://github.com/JiangNanGenius/floe-agent/actions/runs/37267184006): no Build 256 present yet; inspection exits nonzero when the expected build is absent.
 - Signed upload, Apple processing, internal Floe QA availability, external `publictest1` review and Feather distribution remain pending.
 
