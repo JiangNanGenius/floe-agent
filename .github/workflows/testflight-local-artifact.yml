@@ -207,7 +207,7 @@ jobs:
           echo "build=${{ steps.source.outputs.build }}"
           echo "commit=${{ steps.source.outputs.source_sha }}"
           echo "local_build_toolchain=Xcode 27.0 (27A266a)"
-          echo "qualification_policy=user_requested_skip_simulator_qualification"
+          echo "qualification_policy=user_requested_focused_local_validation_no_full_cloud_matrix"
           echo "app_rebuilt=false; source=verified_local_build"
           echo "symbols_state=retained_local_and_private_artifact"
           echo "testflight_upload=accepted_by_transport"
