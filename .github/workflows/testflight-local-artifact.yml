@@ -226,3 +226,43 @@ jobs:
           ${{ runner.temp }}/FloeSignedPayload/provenance.json
           ${{ runner.temp }}/FloeSignedPayload/symbols/
         if-no-files-found: warn
+    - name: Confirm Apple processing and existing internal Floe QA availability
+      env:
+        ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+      run: |
+        set -euo pipefail
+        python3 - <<'CHECK'
+        import json, os, pathlib, subprocess, sys, time, urllib.parse
+        sys.path.insert(0,'scripts')
+        from prepare_testflight import api, rows, prepare
+        notes=json.loads(pathlib.Path('../docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_261.json').read_text())
+        for attempt in range(60):
+            os.environ['ASC_TOKEN']=subprocess.check_output([sys.executable,'scripts/generate_asc_jwt.py'],text=True).strip()
+            apps=rows('/v1/apps?'+urllib.parse.urlencode({'filter[bundleId]':'org.floeagent.ios'}))
+            assert len(apps)==1
+            builds=rows('/v1/builds?'+urllib.parse.urlencode({'filter[app]':apps[0]['id'],'filter[version]':'261','limit':200}))
+            assert len(builds)<=1
+            if builds:
+                build=builds[0]; state=build['attributes']['processingState']
+                print('Apple processing:',state,flush=True)
+                if state in ('FAILED','INVALID'): raise RuntimeError('Apple rejected build')
+                if state=='VALID':
+                    report=prepare(build['id'],'org.floeagent.ios','1.7.20','261',notes)
+                    details=api('GET','/v1/builds/'+build['id']+'/buildBetaDetail')['data']['attributes']
+                    report['internalBuildState']=details.get('internalBuildState')
+                    report['expired']=build['attributes'].get('expired')
+                    assert report['internalBuildState']=='IN_BETA_TESTING' and report['expired'] is False
+                    pathlib.Path(os.environ['RUNNER_TEMP'],'APPLE-INTERNAL.json').write_text(json.dumps(report,indent=2))
+                    print(json.dumps(report)); break
+            time.sleep(20)
+        else: raise RuntimeError('Apple processing timeout; inspect before retrying any upload')
+        CHECK
+    - name: Save Apple internal availability evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: build261-apple-internal
+        path: ${{ runner.temp }}/APPLE-INTERNAL.json
+        if-no-files-found: warn
