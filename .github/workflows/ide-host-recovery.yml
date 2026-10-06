@@ -145,7 +145,7 @@ jobs:
           ipad='{"device": "iPad mini (A17 Pro)", "name": "ipad"}'
           iphone='{"device": "iPhone 17 Pro", "name": "iphone"}'
           if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
-            printf 'matrix={"include":[%s]}\n' "$ipad" >> "$GITHUB_OUTPUT"
+            printf 'matrix={"include":[%s]}\n' "$iphone" >> "$GITHUB_OUTPUT"
             echo "Notes diagnostic mode: only the iPad mini (A17 Pro) leg, name: ipad"
           else
             printf 'matrix={"include":[%s,%s]}\n' "$ipad" "$iphone" >> "$GITHUB_OUTPUT"
@@ -316,7 +316,7 @@ jobs:
           # The Notes diagnostic consumes the SDK 27 simulator host retained by
           # the pinned controller run; the default IDE path keeps the trusted
           # App-regression host contract.
-          name: ${{ inputs.notes_diagnostic && 'sdk27-simulator-host' || 'compiled-test-host' }}-${{ inputs.source_sha }}
+          name: compiled-test-host-${{ inputs.source_sha }}
           run-id: ${{ inputs.source_run }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/host-artifact
@@ -356,13 +356,7 @@ jobs:
             # verifier checks against the actual archive. The IDE digest
             # default is never applied to this host.
             products_digest="$DIAGNOSTIC_PRODUCTS_SHA256"
-            verify_args+=(
-              --workflow-path "$HOST_WORKFLOW_PATH"
-              --host-job build-verify-release
-              --retain-step "Retain the complete SDK 27 simulator test host"
-              --upload-step "Upload recoverable SDK 27 simulator test host"
-              --artifact-prefix sdk27-simulator-host
-            )
+
           fi
           verify_args+=(--products-sha256 "$products_digest")
           python3 recovery-controller/FloeAgent/scripts/verify_compiled_test_host.py "${verify_args[@]}"
@@ -402,9 +396,9 @@ jobs:
           xcrun simctl io "$test_device" recordVideo --codec=h264 --force "FloeAgent-IDE-Recordings/$SIM_NAME.mp4" > "FloeAgent-IDE-Recordings/$SIM_NAME.log" 2>&1 &
           recording_pid=$!
           trap stop_owned_streams EXIT
-          log_predicate='(subsystem == "ai.floe.notes" AND category == "office-thumbnail") OR (messageType == error AND (eventMessage CONTAINS[c] "quicklook" OR subsystem BEGINSWITH[c] "com.apple.quicklook")) OR (process == "quicklookd" AND eventMessage CONTAINS[c] "thumbnail")'
+          log_predicate='(subsystem == "ai.floe.notes") OR (subsystem CONTAINS[c] "WebKit") OR (process CONTAINS[c] "WebContent") OR (messageType == error AND (eventMessage CONTAINS[c] "quicklook" OR subsystem BEGINSWITH[c] "com.apple.quicklook")) OR (process == "quicklookd" AND eventMessage CONTAINS[c] "thumbnail")'
           if [ "$NOTES_DIAGNOSTIC" = "true" ]; then
-            test "$SIM_NAME" = "ipad"
+            test "$SIM_NAME" = "iphone"
             diagnostic_dir="$RUNNER_TEMP/SwiftTestDiagnostics/notes-diagnostic-$SIM_NAME"
             diagnostic_test_id="NotesWorkspaceImportUITests/testNotesLibraryCardsShowRealContentCovers()"
             mkdir -p "$diagnostic_dir"
