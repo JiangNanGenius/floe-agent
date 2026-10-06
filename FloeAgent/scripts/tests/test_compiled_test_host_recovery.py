@@ -856,15 +856,15 @@ class RegisteredControllerDispatchTests(unittest.TestCase):
                       self.notes_job)
         self.assertNotRegex(self.notes_job, r"uses: [^\n]+@")
 
-    def test_notes_job_pins_the_immutable_build_185_host(self):
+    def test_notes_job_pins_the_immutable_build_260_host(self):
         self.assertEqual(parse_with_block(self.notes_job), {
-            "source_sha": "42ecc4527fdbeb171dd0aed1d0776375770f1572",
-            "source_run": "35292395886",
+            "source_sha": "cb974b3c35e36d86a53fd9890903cc419ae0ec9d",
+            "source_run": "37388972399",
             "source_attempt": "1",
             "xcode_version": "27.0",
             "xcode_build": "27A266a",
             "notes_diagnostic": "true",
-            "host_workflow_path": ".github/workflows/release-unsigned-ipa.yml",
+            "host_workflow_path": ".github/workflows/ci.yml",
         })
 
     def test_actions_read_is_granted_to_the_call_only(self):
