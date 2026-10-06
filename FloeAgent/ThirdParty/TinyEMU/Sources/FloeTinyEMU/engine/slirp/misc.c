@@ -85,6 +85,27 @@ int os_socket(int domain, int type, int protocol)
     return socket(domain, type, protocol);
 }
 
+/* FLOE-EMBED: a disconnected preview must not terminate the embedding app.
+ * Cover accepted sockets as well as outbound sockets; do not change the
+ * process-wide signal disposition owned by the host application. */
+ssize_t os_send(int fd, const void *buf, size_t len, int flags)
+{
+#if defined(SO_NOSIGPIPE)
+    int enabled = 0;
+    socklen_t size = sizeof(enabled);
+    if (getsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, &size) < 0)
+        return -1;
+    if (!enabled && (enabled = 1,
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled))) < 0)
+        return -1;
+#elif defined(MSG_NOSIGNAL)
+    flags |= MSG_NOSIGNAL;
+#else
+#error "Embedded slirp needs per-socket or per-send SIGPIPE suppression"
+#endif
+    return send(fd, buf, len, flags);
+}
+
 uint32_t os_get_time_ms(void)
 {
     struct timespec ts;

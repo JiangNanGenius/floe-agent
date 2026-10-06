@@ -34,6 +34,7 @@ fetched and hash-verified by `fetch_source.sh` (see `PROVENANCE.json`).
 | `patches/0006-slirp-per-instance-state.patch` | per-VM slirp timers/DNS cache/select scratch (`pthread_once` for the one constant global): two networked VMs on two host threads |
 | `patches/0007-9p-export-root-containment.patch` | fd-based 9p export-root containment + special files are metadata-only (`EOPNOTSUPP`) |
 | `patches/0008-recoverable-guest-fault-paths.patch` | guest-reachable virtio aborts/unchecked allocations become device errors |
+| `patches/0011-slirp-no-sigpipe.patch` | per-socket/per-send SIGPIPE suppression for closed preview/network connections; preserves host signal policy |
 | `adapter/floe_vm.h` / `floe_vm.c` | embeddable C API: VM create / run slice / console bytes in+out / disk / 9p / slirp net / stop+destroy |
 | `adapter/Makefile` | builds `libfloevm.a` (+ `floe_vm_host`, `lifecycle_test`, `two_vm_test`, `containment_test` when `HOST_DIR` is set); `MACOS=1` adds local shim headers |
 | `adapter/macos/` | macOS-only build shims (byteswap/statfs/if_tun); Linux needs none |
@@ -109,3 +110,7 @@ virtio 控制台、virtio-blk 磁盘、virtio-9p 宿主共享目录与 slirp 用
   无法越界；共享目录下的 FIFO/设备节点只返回元数据、不可打开
   （`EOPNOTSUPP`），因此不会阻塞 run slice。
 - 资格宿主与实测结果见 `FloeAgent/Qualification/TinyEMULinux/`。
+
+### Disconnected preview regression
+
+`bash FloeAgent/Qualification/TinyEMULinux/run_slirp_sigpipe_test.sh <task-scratch>` compiles the actual vendored send paths and verifies normal delivery plus disconnected/invalid sockets with the default SIGPIPE disposition. This is a host networking regression, not full-App or physical-iPad acceptance.

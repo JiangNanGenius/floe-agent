@@ -68,6 +68,7 @@ void fd_nonblock(int);
 void fd_block(int);
 int rsh_exec(struct socket *, struct socket *, char *, char *, char *);
 int os_socket(int domain, int type, int protocol);
+ssize_t os_send(int fd, const void *buf, size_t len, int flags);
 uint32_t os_get_time_ms(void);
 
 #endif

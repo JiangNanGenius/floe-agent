@@ -464,7 +464,7 @@ void slirp_select_poll(Slirp *slirp,
 			    /* Connected */
 			    so->so_state &= ~SS_ISFCONNECTING;
 
-			    ret = send(so->s, (const void *) &ret, 0, 0);
+			    ret = os_send(so->s, (const void *) &ret, 0, 0);
 			    if (ret < 0) {
 			      /* XXXXX Must fix, zero bytes is a NOP */
 			      if (errno == EAGAIN || errno == EWOULDBLOCK ||
@@ -512,7 +512,7 @@ void slirp_select_poll(Slirp *slirp,
 
 			    /* tcp_input will take care of it */
 			  } else {
-			    ret = send(so->s, &ret, 0,0);
+			    ret = os_send(so->s, &ret, 0,0);
 			    if (ret < 0) {
 			      /* XXX */
 			      if (errno == EAGAIN || errno == EWOULDBLOCK ||
@@ -807,7 +807,7 @@ ssize_t slirp_send(struct socket *so, const void *buf, size_t len, int flags)
 		return len;
 	}
 #endif
-	return send(so->s, buf, len, flags);
+	return os_send(so->s, buf, len, flags);
 }
 
 static struct socket *
