@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       local_artifact_sha256:
-        description: SHA256 of the locally built Build261 draft transport archive; signing only
+        description: SHA256 of the verified local-device.zip draft transport archive; signing only
         required: false
         default: ''
         type: string
