@@ -202,7 +202,7 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
 
 // MARK: - Suite
 
-@Suite("FloeAgentRuntime.StateMachine")
+@Suite("FloeAgentRuntime.StateMachine", .serialized)
 struct AgentRuntimeTests {
     @Test("Approval authority survives long tool output and excludes forged user lines")
     func approvalAuthorityUsesMessageRoles() {
@@ -2271,6 +2271,12 @@ struct AgentRuntimeTests {
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    private struct StateWaitTimeout: Error, CustomStringConvertible {
+        let expected: String
+        let observed: String
+        var description: String { "Timed out waiting for state \(expected); observed \(observed)" }
+    }
+
     private func waitForState(
         _ name: String,
         in runtime: FloeAgentRuntime,
@@ -2285,8 +2291,8 @@ struct AgentRuntimeTests {
             let observed = await runtime.state.name
             if observed == name { return }
             if clock.now >= deadline {
-                Issue.record("Timed out waiting for state \(name); observed \(observed)")
-                return
+                await runtime.cancel()
+                throw StateWaitTimeout(expected: name, observed: observed)
             }
             try await Task.sleep(for: .milliseconds(10))
         }
