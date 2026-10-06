@@ -60,6 +60,26 @@ class TestFlightPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Incomplete'):
             prepare.build_groups('build', api)
 
+    def test_group_readback_waits_for_visibility_without_repeating_writes(self):
+        reads, pauses = [], []
+        group = {'type': 'betaGroups', 'id': 'qa', 'attributes': {}}
+        def api(method, path, body=None):
+            self.assertEqual(method, 'GET')
+            reads.append(path)
+            visible = [group] if len(reads) == 3 else []
+            return {'data': {'relationships': {'betaGroups': {'data': [{'id': g['id']} for g in visible]}}}, 'included': visible}
+        self.assertEqual(prepare.wait_for_group('build', 'qa', api, pauses.append), [group])
+        self.assertEqual(pauses, [3, 3])
+
+    def test_group_readback_times_out_without_claiming_access(self):
+        pauses = []
+        def api(method, path, body=None):
+            self.assertEqual(method, 'GET')
+            return {'data': {'relationships': {'betaGroups': {'data': []}}}, 'included': []}
+        with self.assertRaisesRegex(RuntimeError, 'not confirmed'):
+            prepare.wait_for_group('build', 'qa', api, pauses.append)
+        self.assertEqual(sum(pauses), 60)
+
     def test_pagination_never_sends_auth_to_another_host(self):
         with self.assertRaises(ValueError):
             prepare.rows('/v1/builds', lambda *args: {'data': [], 'links': {'next': 'https://unrelated.example/v1/builds'}})

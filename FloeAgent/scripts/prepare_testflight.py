@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,6 +53,18 @@ def build_groups(build_id, call=api):
     return groups
 
 
+
+def wait_for_group(build_id, group_id, call=api, pause=time.sleep):
+    # Apple can accept the association before GET reflects it. Retry reads only.
+    for attempt in range(21):
+        groups = build_groups(build_id, call)
+        if group_id in {group['id'] for group in groups}:
+            return groups
+        if attempt < 20:
+            pause(3)
+    raise RuntimeError('Floe QA build visibility not confirmed after bounded readback')
+
+
 def prepare(build_id, bundle, version, number, notes, call=api):
     if not re.fullmatch(r'[A-Za-z0-9_-]+', build_id):
         raise ValueError('Invalid build ID')
@@ -93,12 +106,15 @@ def prepare(build_id, bundle, version, number, notes, call=api):
         try:
             call('POST', f'/v1/betaGroups/{group_id}/relationships/builds',
                  {'data': [{'type': 'builds', 'id': build_id}]})
-        except RuntimeError:
-            # Automatic internal distribution can win between GET and POST.
-            # Accept only a fresh authoritative membership, never the error.
-            if group_id not in {g['id'] for g in build_groups(build_id, call)}:
-                raise
-    visible = build_groups(build_id, call)
+        except RuntimeError as write_error:
+            # Automatic distribution may win between GET and POST.
+            # A failed write is accepted only after confirmed membership.
+            try:
+                visible = wait_for_group(build_id, group_id, call)
+            except RuntimeError:
+                raise write_error
+        else:
+            visible = wait_for_group(build_id, group_id, call)
     actual = rows('/v1/betaBuildLocalizations?' + urllib.parse.urlencode({'filter[build]': build_id, 'limit': 200}), call)
     if group_id not in {g['id'] for g in visible}:
         raise RuntimeError('Floe QA build visibility not confirmed')

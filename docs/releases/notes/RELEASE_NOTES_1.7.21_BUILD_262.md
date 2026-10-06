@@ -10,8 +10,8 @@ Improves IDE run presentation and full-screen terminals, fixes local terminal ou
 
 ## 验证与发布 / Verification and delivery
 
-本地 Xcode 27 Release 构建、27 项相关服务/终端测试及 iPad 运行窗口与终端全屏 UI 验证已通过。使用同一份不可变源码产物签名上传；未将完整云端矩阵作为本次快速发布门槛。Apple 处理、内部可安装和外部审核分别记录，当前不宣称可安装或已获批准。
+本地 Xcode 27 Release 构建、27 项相关服务/终端测试及 iPad 运行窗口与终端全屏 UI 验证已通过。使用同一份不可变源码产物签名上传；未将完整云端矩阵作为本次快速发布门槛。Apple 已确认 VALID、未过期且现有 Floe QA 内部可安装；publictest1 尚未送审或批准。
 
-Local Xcode 27 Release building, 27 focused service/terminal tests and iPad run-sheet/full-screen terminal UI verification passed. Signing reuses the immutable-source artifact; the full cloud matrix was not a gate for this expedited release. Apple processing, internal availability and external review remain separate; availability and approval are not claimed yet.
+Local Xcode 27 Release building, 27 focused service/terminal tests and iPad run-sheet/full-screen terminal UI verification passed. Signing reuses the immutable-source artifact; the full cloud matrix was not a gate for this expedited release. Apple confirmed VALID, unexpired and available for internal Floe QA testing. publictest1 submission and approval remain pending.
 
 [本地验证记录 / Local evidence](../testflight/BUILD_262_LOCAL_VERIFICATION.md) · [发布状态 / Delivery status](../../CURRENT_STATUS.md)
