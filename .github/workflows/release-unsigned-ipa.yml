@@ -1,9 +1,8 @@
 name: TestFlight and Unsigned IPA Release
 
+# Distribution is explicitly dispatched after choosing local-artifact or
+# cloud-build mode. A tag push alone must not duplicate a completed local build.
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
