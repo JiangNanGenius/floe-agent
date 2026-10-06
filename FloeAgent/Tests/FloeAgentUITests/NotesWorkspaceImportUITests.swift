@@ -189,14 +189,19 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // Repeated runs retain genuine Notes data. The original tab is not
         // necessarily one swipe from the new selection on a narrow phone.
         let tabStrip = app.scrollViews.containing(.button, identifier: originalID).firstMatch
-        for _ in 0..<6 {
+        for _ in 0..<max(6, tabs.count * 3) {
             if original.isHittable { break }
             let targetFrame = original.frame
             let stripFrame = tabStrip.frame
             // A full swipe can skip a 90pt tab in the phone's 150pt strip
             // and oscillate around it. Drag a short distance without a fling.
-            let start = tabStrip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            let endX: CGFloat = targetFrame.midX < stripFrame.midX ? 0.8 : 0.2
+            // Retained tabs can span thousands of points. Cover distant tabs
+            // with larger drags, then use short drags near the viewport.
+            let towardLeft = targetFrame.midX < stripFrame.midX
+            let distant = abs(targetFrame.midX - stripFrame.midX) > stripFrame.width
+            let startX: CGFloat = distant ? (towardLeft ? 0.15 : 0.85) : 0.5
+            let start = tabStrip.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: 0.5))
+            let endX: CGFloat = distant ? (towardLeft ? 0.85 : 0.15) : (towardLeft ? 0.8 : 0.2)
             let end = tabStrip.coordinate(withNormalizedOffset: CGVector(dx: endX, dy: 0.5))
             start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
