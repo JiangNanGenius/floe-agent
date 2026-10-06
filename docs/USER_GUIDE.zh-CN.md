@@ -2,7 +2,7 @@
 
 [English](USER_GUIDE.md) · [文档目录](README.md) · [版本与验证状态](CURRENT_STATUS.md) · [官网文档](https://www.floe-agent.com/docs/zh.html)
 
-更新于 2026-10-06。适用于 iPad 优先、同时支持 iPhone 的 Floe 1.7。系统要求 iOS/iPadOS 26 或更高。不同安装版本的入口和功能可能不同；**1.7.19（260）已在内部 Floe QA 组可用，GitHub 预发布和 Feather 已更新；外部 TestFlight 尚待送审。** 以下变更需要安装对应构建，实体设备验收仍须单独完成；最新发布状态见上方链接。
+更新于 2026-10-06。适用于 iPad 优先、同时支持 iPhone 的 Floe 1.7。系统要求 iOS/iPadOS 26 或更高。不同安装版本的入口和功能可能不同；**1.7.19（260）已在内部 Floe QA 组可用，GitHub 预发布和 Feather 已更新；外部 TestFlight 已送审，正在等待 Apple 审核。** 以下变更需要安装对应构建，实体设备验收仍须单独完成；最新发布状态见上方链接。
 
 ## 1. 安装与首次使用
 
