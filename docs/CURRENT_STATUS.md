@@ -1,6 +1,19 @@
 # 当前版本与验证状态 / Current release and verification status
 
-更新时间 / Updated: 2026-10-06. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+更新时间 / Updated: 2026-10-07. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+
+## 1.7.21（262）本轮更新 / Current update
+
+- 不可变源码 / Immutable source: `v1.7.21` → `2bb37ca67a5d8ece5b3fd68e61069444eafdea58`，已合并 main / merged into main.
+- Xcode 27 本地 Release 设备构建、27 项相关服务/终端测试及 iPad 运行窗口/全屏终端 UI 验证通过。Local Xcode 27 Release device build, 27 focused service/terminal tests and iPad run-sheet/full-screen terminal UI verification passed.
+- 正在复用已留存产物签名上传；尚未确认 Apple 处理、Floe QA 可安装或 publictest1 送审。Signing/upload reuses the retained artifact; Apple processing, Floe QA availability and publictest1 submission are not yet confirmed.
+- 本轮按用户要求采用本地快速发布，未以完整云端矩阵作为门槛；真实 iPad 终端输入/换行及服务驻留仍待复测。This expedited local route does not claim a complete cloud matrix; physical iPad terminal input/wrapping and service persistence remain to be retested.
+
+[更新说明 / Changes](releases/notes/RELEASE_NOTES_1.7.21_BUILD_262.md) · [本地证据 / Local evidence](releases/testflight/BUILD_262_LOCAL_VERIFICATION.md) · [快速发布流程 / Local release route](releases/testflight/LOCAL_BUILD_RELEASE.md)
+
+## 上一轮已记录交付 / Previously recorded delivery
+
+以下为各版本当时的状态，不表示本轮已完成。These are dated earlier-build records, not completion of the current update.
 
 | 项目 / Item | 状态 / State | 证据 / Evidence |
 | --- | --- | --- |

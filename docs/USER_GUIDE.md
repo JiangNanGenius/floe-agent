@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Release and verification status](CURRENT_STATUS.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
-Updated 2026-10-06. Floe 1.7 is iPad first and also supports iPhone; iOS/iPadOS 26 or later is required. Screens and capabilities depend on the installed build. **1.7.19 (260) is available to the internal Floe QA group; GitHub prerelease and Feather are published. External TestFlight has been submitted and is waiting for Apple review.** Install the matching build to use the changes below. Physical-device acceptance remains separate; see the live release-status link above.
+Updated 2026-10-07. Floe 1.7 is iPad first and also supports iPhone on iOS/iPadOS 26 or later. Features depend on the installed build; this manual includes the terminal and web-service controls in 1.7.21 (262). **See [release and verification status](CURRENT_STATUS.md) for installation eligibility, Apple processing and external review; the actual TestFlight state is authoritative.** Physical-device acceptance remains separate.
 
 ## 1. Installation and first use
 
@@ -203,3 +203,5 @@ Earlier instructions, screenshots and dated acceptance details are preserved in 
 Open a workspace `.py`, `.js` or `.sh` file, choose Run, then Run as web service. Confirm the owning task and port. The script must read `PORT` and listen on that port. Preview appears only after an HTTP response; check service logs for startup failures. Closing the window keeps the service alive. Stop it explicitly or manage it in the environment's local services list. Services must be restarted after the App is terminated.
 
 Use the terminal status bar's expand button for full screen, then Hide to return without ending the session. Run terminals explicitly report when the process has not written output and show exit status.
+
+Use ordinary Run for scripts that are expected to finish. Choose Run as web service for HTTP servers so you can inspect readiness, preview and stop them separately. Logs alone do not prove the port is ready. If a port is occupied, inspect existing services before starting another; resolve task/workspace errors instead of retrying in a different directory. Full-screen and embedded terminals share one session; hiding the window does not explicitly terminate it. Ctrl-C interrupts the foreground command.
