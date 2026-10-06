@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Release and verification status](CURRENT_STATUS.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
-Updated 2026-10-05. Floe 1.7 is iPad first and also supports iPhone; iOS/iPadOS 26 or later is required. Screens and capabilities depend on the installed build. Features marked **candidate** require that candidate to be delivered and installed. **1.7.19 (260) is under verification and has not been released.** Earlier test results do not qualify this candidate.
+Updated 2026-10-06. Floe 1.7 is iPad first and also supports iPhone; iOS/iPadOS 26 or later is required. Screens and capabilities depend on the installed build. **1.7.19 (260) is available to the internal Floe QA group; GitHub prerelease and Feather are published. External TestFlight submission is pending.** Install the matching build to use the changes below. Physical-device acceptance remains separate; see the live release-status link above.
 
 ## 1. Installation and first use
 
@@ -91,11 +91,11 @@ Check save status before closing or switching. Use Trash for recovery and review
 5. Check whether the engine acknowledged the setting. “Not yet confirmed” does not mean it was applied.
 6. Save, wait for completion, close and reopen. Verify text, strokes and page count; check exported files separately.
 
-**Candidate:** the native engine addresses freehand mode inserting a default shape. Consecutive strokes, original-file writeback and physical-iPad save/reopen still need acceptance. Preserve originals, file types, reproduction steps and a synthetic sample after a loading or save failure. Notes PDF ink and native Office annotations use different editing paths.
+**Build 260:** the native engine addresses freehand mode inserting a default shape. Consecutive strokes, original-file writeback and physical-iPad save/reopen still need acceptance. Preserve originals, file types, reproduction steps and a synthetic sample after a loading or save failure. Notes PDF ink and native Office annotations use different editing paths.
 
 ## 9. Local terminal and Linux performance
 
-**Candidate entry:** task tools → Terminal → Local Workspace, with Remote SSH in the same panel. Older delivered builds may expose a terminal through the IDE bottom panel. Confirm workspace ownership before commands that modify files.
+**Build 260 entry:** task tools → Terminal → Local Workspace, with Remote SSH in the same panel. Older delivered builds may expose a terminal through the IDE bottom panel. Confirm workspace ownership before commands that modify files.
 
 Open the local terminal, install and verify the Linux image if prompted, and begin with read-only `pwd` and `ls`. Ask the assistant to inspect Linux status and choose cores/memory before its first shell call. Example: “Inspect Linux, select two cores for parallel compilation, start it and verify the actual core count.” Check granted resources in the receipt.
 
@@ -107,7 +107,7 @@ Open the local terminal, install and verify the Linux image if prompted, and beg
 
 One guest uses at most three cores. Three cores require a verified image; older images can remain limited to two. A four-core pool does not guarantee two guests on every device: memory and existing work still control admission.
 
-**Candidate recovery:** a successful launch saves its core/memory configuration for later resumption. Choose explicitly on first start. Changing an active guest may require a hard restart that interrupts commands/services. App upgrades prefer reusing valid local images; missing, damaged or incompatible images need appropriate repair. Do not delete environments as the first troubleshooting step. Stop unneeded services after work; closing a panel does not necessarily terminate its shell.
+**Build 260 recovery:** a successful launch saves its core/memory configuration for later resumption. Choose explicitly on first start. Changing an active guest may require a hard restart that interrupts commands/services. App upgrades prefer reusing valid local images; missing, damaged or incompatible images need appropriate repair. Do not delete environments as the first troubleshooting step. Stop unneeded services after work; closing a panel does not necessarily terminate its shell.
 
 ## 10. Python, Node, packages and code execution
 
@@ -115,7 +115,7 @@ Settings → Execution Environments → choose project/task → Python·PyPI or 
 
 Local Python/Node primarily run inside Linux. Packages must support that guest architecture; desktop/macOS/iOS binaries are not interchangeable. In the full IDE, Run shows the target and command. Resolve save errors/conflicts first. Remote single-file execution does not synchronize the entire project and requires the remote runtime, dependencies and assistant service where applicable.
 
-Use `pip list`, `python3 --version` and `node --version` to verify real state. Check network and package compatibility after installation failures. The candidate avoids automatic virtual-environment creation when starting a local Python service. See [local shell](ARCHITECTURE_LOCAL_SHELL.md) and [IDE/languages](FLOE_IDE_AND_LANGUAGES.md).
+Use `pip list`, `python3 --version` and `node --version` to verify real state. Check network and package compatibility after installation failures. Build 260 avoids automatic virtual-environment creation when starting a local Python service. See [local shell](ARCHITECTURE_LOCAL_SHELL.md) and [IDE/languages](FLOE_IDE_AND_LANGUAGES.md).
 
 ## 11. Git and GitHub Actions
 
@@ -147,7 +147,7 @@ Editable local DXF/DWG files expose Edit for selecting entities and adding lines
 
 AI Review shows a viewport capture and extracted information for review before sending. Its coverage is visible/parsed content, not complete engineering acceptance.
 
-**Build 259 candidate:** selected transient first-load connection failures get one bounded recovery. Loaded editors or unsaved edits are not automatically reloaded. Build 259 passed full-App CI. Build 260 adds the missing source dependency to the standalone Notes qualification target; its verification is in progress. See [engineering viewers](FLOE_ENGINEERING_VIEWERS.md).
+**Build 260:** selected transient first-load connection failures get one bounded recovery. Loaded editors or unsaved edits are not automatically reloaded. Build 260 passed full-App CI and release qualification, including the standalone Notes target with its required source dependency. See [engineering viewers](FLOE_ENGINEERING_VIEWERS.md).
 
 ## 15. Canvas, images, audio and video
 
@@ -184,7 +184,7 @@ Manage fonts, documents, environments and diagnostics in Settings. Imported font
 | Linux appears to reinstall | Build, environment, image state | Preserve environment; collect install logs |
 | Three-core request fails | Image support, pool, memory | Release unneeded work and follow actual errors |
 | Office inserts a shape on annotation entry | Installed build and sample copy | Candidate fix needs stroke/save/reopen testing |
-| Full-screen drawing reports offline | Local preview and exact error | Retry once; candidate recovery remains under acceptance |
+| Full-screen drawing reports offline | Local preview and exact error | Retry once; device recovery remains under acceptance |
 | Grey voice waveform | Permission, route, preparation | Stop/retry once, then collect diagnostics |
 | Text search misses a document | Index and format | Reindex and inspect OCR results |
 | Saved contents differ | Conflicts and recovery copies | Compare versions; preserve the only original |
