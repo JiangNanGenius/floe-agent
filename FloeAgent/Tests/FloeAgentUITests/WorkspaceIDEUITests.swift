@@ -118,7 +118,7 @@ final class WorkspaceIDEUITests: XCTestCase {
         serviceEntry.tap()
         XCTAssertTrue(app.buttons["workspace.ide.service.start"].waitForExistence(timeout: 10))
         capture("ide-web-service-options")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars["网页服务"].buttons.firstMatch.tap()
         app.buttons["workspace.ide.run.close"].tap()
     }
 
