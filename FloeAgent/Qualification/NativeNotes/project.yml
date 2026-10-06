@@ -52,6 +52,7 @@ targets:
       - ../../FloeApp/Canvas/CanvasGeometry.swift
       - ../../FloeApp/Notes/MindMapEdgesLayer.swift
       - ../../FloeApp/Workspace/EngineeringFilePreview.swift
+      - ../../FloeApp/Workspace/EngineeringNavigationRecovery.swift
       - ../../FloeApp/Workspace/OfficeExplicitSaveBridge.swift
       - ../../FloeApp/Workspace/OfficeInkPreferences.swift
       - ../../FloeApp/Browser/LocalStaticFileServer.swift

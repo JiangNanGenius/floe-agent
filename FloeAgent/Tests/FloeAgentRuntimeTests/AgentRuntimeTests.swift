@@ -202,7 +202,7 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
 
 // MARK: - Suite
 
-@Suite("FloeAgentRuntime.StateMachine")
+@Suite("FloeAgentRuntime.StateMachine", .serialized)
 struct AgentRuntimeTests {
     @Test("Approval authority survives long tool output and excludes forged user lines")
     func approvalAuthorityUsesMessageRoles() {
@@ -2271,17 +2271,31 @@ struct AgentRuntimeTests {
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    private struct StateWaitTimeout: Error, CustomStringConvertible {
+        let expected: String
+        let observed: String
+        var description: String { "Timed out waiting for state \(expected); observed \(observed)" }
+    }
+
     private func waitForState(
         _ name: String,
         in runtime: FloeAgentRuntime,
         timeout: TimeInterval = 5
     ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if await runtime.state.name == name { return }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeout))
+        // Always observe the actor after resuming. Under concurrent suite load,
+        // sleep can resume past the deadline even though the state has settled;
+        // checking the deadline first would report a failure without reading it.
+        while true {
+            let observed = await runtime.state.name
+            if observed == name { return }
+            if clock.now >= deadline {
+                await runtime.cancel()
+                throw StateWaitTimeout(expected: name, observed: observed)
+            }
             try await Task.sleep(for: .milliseconds(10))
         }
-        Issue.record("Timed out waiting for state \(name)")
     }
 }
 
