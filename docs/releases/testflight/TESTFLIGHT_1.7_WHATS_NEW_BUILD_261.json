@@ -1,0 +1,4 @@
+{
+  "en-US": "Floe Agent 1.7.20 · Build 261\nFixes a SIGPIPE host termination risk and adds persistent shell/service checkpoints. Please repeat service start/stop and self-check loops; if the app exits, reopen and upload diagnostics. Expedited internal build; full CI and device acceptance remain unverified.",
+  "zh-Hans": "Floe Agent 1.7.20 · Build 261\n修复 SIGPIPE 终止 App 的风险，增加跨重启 Shell/服务阶段记录。请重复启动停止服务及自检循环；如闪退，重新打开后上传诊断。本次为内部短流程构建，未完成完整 CI 和真机验收。"
+}
