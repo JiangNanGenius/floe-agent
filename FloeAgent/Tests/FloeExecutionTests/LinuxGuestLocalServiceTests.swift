@@ -416,6 +416,30 @@ private final class ScriptedProcRunner: LinuxCommandRunning, @unchecked Sendable
 // MARK: - tests
 
 final class LinuxGuestLocalServiceTests: XCTestCase {
+    func testInteractiveWorkingDirectoryMapsWorkspaceAndRejectsEscape() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("web demo"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(try LinuxGuestShellBackend.guestWorkingDirectory(cwd: ".", root: root), "/workspace")
+        XCTAssertEqual(try LinuxGuestShellBackend.guestWorkingDirectory(cwd: "web demo", root: root), "/workspace/web demo")
+        XCTAssertThrowsError(try LinuxGuestShellBackend.guestWorkingDirectory(cwd: "..", root: root))
+    }
+
+    func testShellServicePreservesArgumentsAndUsesManagedLifecycle() async throws {
+        let root = try serviceFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = ScriptedServiceHost(descriptor: serviceDescriptor(id: "shell", root: root))
+        let supervisor = LinuxGuestLocalServiceSupervisor(host: host)
+        var request = serviceRequest(root: root, port: 8124)
+        request.runtime = .shell
+        request.arguments = ["space value", "$(do-not-execute)"]
+        let handle = try await supervisor.startLocalService(environmentID: "shell", request: request, cancellation: nil)
+        XCTAssertEqual(Array(host.spawnArguments.suffix(2)), request.arguments)
+        XCTAssertTrue(host.spawnArguments.contains("floe-service"))
+        XCTAssertEqual(host.provisioningCommands, 0)
+        await supervisor.stopLocalService(handle)
+    }
+
     func testPythonServiceUsesExistingInterpreterWithoutInstallingPip() async throws {
         let root = try serviceFixtureRoot()
         defer { try? FileManager.default.removeItem(at: root) }

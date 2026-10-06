@@ -197,3 +197,9 @@ Include device, OS, App version/build, entry point, minimal steps, expected/actu
 [Support](../SUPPORT.md) · [Security](../SECURITY.md) · [Candidate and delivery status](CURRENT_STATUS.md)
 
 Earlier instructions, screenshots and dated acceptance details are preserved in the [2026-10-05 archive](history/USER_GUIDE.pre-20261005.md).
+
+## IDE web services and full-screen terminals (1.7.21)
+
+Open a workspace `.py`, `.js` or `.sh` file, choose Run, then Run as web service. Confirm the owning task and port. The script must read `PORT` and listen on that port. Preview appears only after an HTTP response; check service logs for startup failures. Closing the window keeps the service alive. Stop it explicitly or manage it in the environment's local services list. Services must be restarted after the App is terminated.
+
+Use the terminal status bar's expand button for full screen, then Hide to return without ending the session. Run terminals explicitly report when the process has not written output and show exit status.

@@ -302,6 +302,17 @@ struct IDELanguageRunView: View {
         NavigationStack {
             Form {
                 fileSection
+                if let root = controller.root {
+                    Section {
+                        NavigationLink {
+                            IDEWebServiceView(center: controller.center, state: state,
+                                              workspaceID: controller.workspaceID, root: root)
+                        } label: {
+                            Label(IDELanguageRunText.t("作为网页服务运行", "Run as web service"), systemImage: "server.rack")
+                        }
+                        .accessibilityIdentifier("workspace.ide.run.webService")
+                    }
+                }
                 targetSection
                 if showsGuestShapeSection { guestShapeSection }
                 if case .remote = controller.selection.target { remoteSettingsSection }
@@ -907,11 +918,15 @@ struct IDERunTerminalView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 6)
                 Divider()
+                if controller.runOutput.isEmpty {
+                    Text(IDELanguageRunText.t("进程尚未输出内容。", "The process has not written output yet."))
+                        .font(.caption).foregroundStyle(.secondary).padding(8)
+                }
                 SSHEmulatorView(
                     output: controller.runOutput,
                     isInteractive: false,
                     onSend: { _ in },
-                    onResize: { _, _ in }
+                    onResize: { columns, rows in Task { await controller.resizeRunTerminal(columns: columns, rows: rows) } }
                 )
             }
             .navigationTitle(IDELanguageRunText.t("运行终端", "Run terminal"))

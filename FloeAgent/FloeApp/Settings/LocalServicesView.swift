@@ -31,7 +31,7 @@ struct LocalServicesView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(invocation?.entry ?? "Local service").font(.headline).lineLimit(2)
                         HStack {
-                            Text(invocation?.runtime == "python" ? "Python" : "Node.js")
+                            Text(invocation?.runtime == "python" ? "Python" : (invocation?.runtime == "shell" ? "Shell" : "Node.js"))
                             Spacer()
                             Text(state(job, progress: progress))
                         }.font(.subheadline).foregroundStyle(.secondary)
@@ -98,7 +98,7 @@ struct LocalServicesView: View {
     }
 }
 
-private struct LocalServicePreview: View {
+struct LocalServicePreview: View {
     let job: BackgroundJob
     @StateObject private var browser = BrowserSessionCenter()
     @Environment(\.dismiss) private var dismiss

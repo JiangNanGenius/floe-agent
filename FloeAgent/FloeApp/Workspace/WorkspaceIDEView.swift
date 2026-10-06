@@ -40,9 +40,8 @@ struct WorkspaceIDEView: View {
     @State private var terminalOwner: LocalTerminalOwner?
     @State private var showsTerminal = false
     @State private var runController: IDELanguageRunController?
-    @State private var showsRunSheet = false
+    @State private var presentedRunController: IDELanguageRunController?
     @State private var showsRunTerminal = false
-    @State private var pendingRunTerminal = false
     @State private var officeCloseRequest: OfficeCloseRequest?
     @State private var routingNotice: String?
     /// Integrated left sidebar (file tree or source control), replacing the
@@ -204,16 +203,9 @@ struct WorkspaceIDEView: View {
             }
         }
         .interactiveDismissDisabled(state.saving || hasOfficeEdits || state.nativeText.hasDirty)
-        .sheet(isPresented: $showsRunSheet, onDismiss: {
-            if pendingRunTerminal {
-                pendingRunTerminal = false
-                showsRunTerminal = true
-            }
-        }) {
-            if let runController { IDELanguageRunView(controller: runController, state: state) }
-        }
-        .sheet(isPresented: $showsRunTerminal) {
-            if let runController { IDERunTerminalView(controller: runController) }
+        .sheet(item: $presentedRunController, onDismiss: { showsRunTerminal = false }) { controller in
+            if showsRunTerminal { IDERunTerminalView(controller: controller) }
+            else { IDELanguageRunView(controller: controller, state: state) }
         }
         .sheet(item: $officeShareSnapshot, onDismiss: {
             // Only the session that produced this snapshot holds it; the
@@ -617,7 +609,7 @@ struct WorkspaceIDEView: View {
 
     /// The run controller is created once per pinned workspace and reuses the
     /// same pinned values for every dispatch. A successful dispatch asks the
-    /// IDE to reveal the run-owned output surface after the sheet closes —
+    /// IDE to reveal the run-owned output surface inside the same presentation —
     /// the same surface renders the local session stream and the captured
     /// remote result.
     private func presentRun() {
@@ -626,11 +618,10 @@ struct WorkspaceIDEView: View {
             workspaceID: workspaceID, root: root, center: center, state: state
         )
         controller.onRequestRunTerminal = {
-            pendingRunTerminal = true
-            showsRunSheet = false
+            showsRunTerminal = true
         }
         runController = controller
-        showsRunSheet = true
+        presentedRunController = controller
     }
 
     private func toggleTerminal() {

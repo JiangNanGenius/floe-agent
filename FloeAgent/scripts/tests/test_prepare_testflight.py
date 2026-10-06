@@ -18,7 +18,13 @@ class TestFlightPreparationTests(unittest.TestCase):
             prepare.prepare('build', 'org.floe', '1.7.0', '149', {'en-US': 'Test'}, api)
         self.assertEqual(calls, ['GET'])
 
+    def test_auto_distribution_race_requires_confirmed_readback(self):
+        self._exercise_preparation(race=True)
+
     def test_preparation_readback_and_retry_are_idempotent(self):
+        self._exercise_preparation(race=False)
+
+    def _exercise_preparation(self, race):
         writes, locales, groups = [], [], []
         group = {'type': 'betaGroups', 'id': 'qa', 'attributes': {'name': 'Floe QA', 'isInternalGroup': True}}
         def api(method, path, body=None):
@@ -26,7 +32,9 @@ class TestFlightPreparationTests(unittest.TestCase):
                 writes.append((method, path))
                 if path == '/v1/betaBuildLocalizations':
                     item = body['data']; item['id'] = 'locale-' + item['attributes']['locale']; locales.append(item)
-                elif path == '/v1/betaGroups/qa/relationships/builds': groups.append(group)
+                elif path == '/v1/betaGroups/qa/relationships/builds':
+                    groups.append(group)
+                    if race: raise RuntimeError('HTTP 422')
                 else: self.fail('Unexpected write')
                 return {}
             if path == '/v1/builds/build?include=betaGroups':

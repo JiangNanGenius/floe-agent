@@ -30,11 +30,12 @@ final class LocalTerminalOwner: Identifiable {
     private(set) var alive = false
     private(set) var opening = false
     /// Set when the Linux image is missing or fails qualification; drives the
-    /// Set when the Linux image is missing or fails qualification; drives the
     /// authoritative Linux component card (never shown for an installed or
     /// running guest).
     private(set) var missingImageID: String?
     private var token = CancellationToken()
+    private var exchangeInFlight = false
+    private var pendingInput = Data()
     private var columns = 80
     private var rows = 24
 
@@ -81,9 +82,23 @@ final class LocalTerminalOwner: Identifiable {
 
     func pollWhileVisible() async {
         while !Task.isCancelled {
-            if alive { await exchange(nil) }
+            if alive, !exchangeInFlight {
+                let input = pendingInput
+                pendingInput.removeAll(keepingCapacity: true)
+                if input.isEmpty { await exchange(nil) }
+                else { await send(input) }
+            }
             do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
         }
+    }
+
+    func enqueue(_ data: Data) {
+        guard alive else { return }
+        guard pendingInput.count + data.count <= 64 * 1024 else {
+            status = IDELanguageRunText.t("输入过多，请分段粘贴。", "Too much input; paste in smaller parts.")
+            return
+        }
+        pendingInput.append(data)
     }
 
     func send(_ data: Data) async {
@@ -105,6 +120,7 @@ final class LocalTerminalOwner: Identifiable {
 
     func close() async {
         token.cancel()
+        pendingInput.removeAll()
         if let sessionID { await sessions.close(sessionID: sessionID, runID: id) }
         alive = false
         sessionID = nil
@@ -112,9 +128,12 @@ final class LocalTerminalOwner: Identifiable {
     }
 
     private func exchange(_ input: String?) async {
-        guard let sessionID, alive else { return }
+        guard let sessionID, alive, !exchangeInFlight else { return }
+        exchangeInFlight = true
+        defer { exchangeInFlight = false }
         do {
             let result = try await sessions.exchange(sessionID: sessionID, input: input, waitMs: 50, maxBytes: 64 * 1024, runID: id, cancellation: token, forTerminal: true)
+            guard self.sessionID == sessionID else { return }
             append(result.terminalOutput ?? Data(result.output.utf8))
             alive = result.alive
             if !alive {
@@ -128,6 +147,7 @@ final class LocalTerminalOwner: Identifiable {
                 status = String(localized: "terminal.status.running")
             }
         } catch let error as LinuxGuestError {
+            guard self.sessionID == sessionID else { return }
             alive = false
             if case .imageNotQualified = error {
                 missingImageID = LinuxGuestImageDistributionCatalog.defaultImageID
@@ -136,6 +156,7 @@ final class LocalTerminalOwner: Identifiable {
                 status = String(describing: error)
             }
         } catch {
+            guard self.sessionID == sessionID else { return }
             alive = false
             status = String(describing: error)
         }
@@ -157,17 +178,24 @@ struct LocalTerminalView: View {
     var embedded: Bool = false
     @Environment(\.dismiss) private var dismiss
     @State private var installModel: LinuxImageInstallModel?
+    @State private var expanded = false
 
     var body: some View {
         if embedded {
-            content
+            Group {
+                if expanded { Color.clear }
+                else { content }
+            }
+            .fullScreenCover(isPresented: $expanded) {
+                LocalTerminalView(owner: owner)
+            }
         } else {
             NavigationStack {
                 content
                     .navigationTitle(String(localized: "terminal.title"))
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
-                        ToolbarItem(placement: .cancellationAction) { Button(String(localized: "terminal.hide")) { dismiss() } }
+                        ToolbarItem(placement: .cancellationAction) { Button(String(localized: "terminal.hide")) { dismiss() }.accessibilityIdentifier("terminal.fullscreen.close") }
                         ToolbarItemGroup(placement: .primaryAction) {
                             Button {
                                 Task { await owner.resetAndStart() }
@@ -192,6 +220,11 @@ struct LocalTerminalView: View {
                 Text(owner.status).font(.caption).lineLimit(1)
                 Spacer(minLength: 8)
                 if embedded {
+                    Button { expanded = true } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .accessibilityLabel(IDELanguageRunText.t("全屏终端", "Full screen terminal"))
+                    .accessibilityIdentifier("terminal.fullscreen")
                     Button {
                         Task { await owner.resetAndStart() }
                     } label: { Image(systemName: "arrow.clockwise") }
@@ -214,7 +247,7 @@ struct LocalTerminalView: View {
             .padding(.vertical, 6)
             Divider()
             SSHEmulatorView(output: owner.output, isInteractive: owner.alive,
-                onSend: { data in Task { await owner.send(data) } },
+                onSend: { data in owner.enqueue(data) },
                 onResize: { columns, rows in Task { await owner.resize(columns: columns, rows: rows) } })
             if let missingID = owner.missingImageID,
                let model = installModel, model.imageID == missingID {

@@ -1,0 +1,13 @@
+# Floe Agent 1.7.21 · Build 262
+
+## 简体中文
+
+改进 IDE 运行窗口与终端全屏，修复本地终端输出顺序和工作目录。增加作为网页服务运行入口，支持 Python、Node 和 Shell，提供托管日志、预览与停止操作。请重点复测脚本启动、持续输出、方向键、换行，以及关闭窗口后的网页服务访问。
+
+## English
+
+Improves IDE run presentation and full-screen terminals, fixes local terminal output ordering and workspace directory selection. Adds managed Python, Node and Shell web services with logs, preview and stop controls. Please test script startup, continuous output, arrow keys, line breaks and service access after closing the window.
+
+## 验证与发布 / Verification and delivery
+
+Candidate under local Xcode 27 validation. Apple processing, internal availability and external review are tracked separately; no availability or approval is claimed yet.

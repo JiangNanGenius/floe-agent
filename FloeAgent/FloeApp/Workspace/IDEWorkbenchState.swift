@@ -176,7 +176,8 @@ enum IDELanguageRunStatus: Sendable, Equatable {
 }
 
 @MainActor
-final class IDELanguageRunController: ObservableObject {
+final class IDELanguageRunController: ObservableObject, Identifiable {
+    let id = UUID()
     @Published private(set) var hosts: [IDELanguageRunHost] = []
     @Published private(set) var capabilities = IDELanguageRunCapabilities()
     @Published var selection = IDELanguageRunSelection()
@@ -211,9 +212,9 @@ final class IDELanguageRunController: ObservableObject {
     /// output surface. Used for both local and remote runs.
     var onRequestRunTerminal: (() -> Void)?
 
-    private let workspaceID: UUID
-    private let root: URL?
-    private let center: WorkspaceCenter
+    let workspaceID: UUID
+    let root: URL?
+    let center: WorkspaceCenter
     private weak var state: IDEWorkbenchState?
     private var runToken = "preview"
     /// Stable run identity for every session this controller owns. The shell
@@ -1004,6 +1005,12 @@ final class IDELanguageRunController: ObservableObject {
                 do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             }
         }
+    }
+
+    func resizeRunTerminal(columns: Int, rows: Int) async {
+        guard let localRunSessionID else { return }
+        await center.environment.shellSessionCenter.resize(sessionID: localRunSessionID,
+            columns: columns, rows: rows, runID: runID)
     }
 
     private func appendRunOutput(_ data: Data) {

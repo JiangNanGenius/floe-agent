@@ -90,8 +90,14 @@ def prepare(build_id, bundle, version, number, notes, call=api):
     group_id = groups[0]['id']
     visible = build_groups(build_id, call)
     if group_id not in {g['id'] for g in visible}:
-        call('POST', f'/v1/betaGroups/{group_id}/relationships/builds',
-             {'data': [{'type': 'builds', 'id': build_id}]})
+        try:
+            call('POST', f'/v1/betaGroups/{group_id}/relationships/builds',
+                 {'data': [{'type': 'builds', 'id': build_id}]})
+        except RuntimeError:
+            # Automatic internal distribution can win between GET and POST.
+            # Accept only a fresh authoritative membership, never the error.
+            if group_id not in {g['id'] for g in build_groups(build_id, call)}:
+                raise
     visible = build_groups(build_id, call)
     actual = rows('/v1/betaBuildLocalizations?' + urllib.parse.urlencode({'filter[build]': build_id, 'limit': 200}), call)
     if group_id not in {g['id'] for g in visible}:

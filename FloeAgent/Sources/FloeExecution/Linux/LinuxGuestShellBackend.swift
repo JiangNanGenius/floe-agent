@@ -9,9 +9,8 @@
 // Interactive terminal sessions run in the guest over the console's PTY
 // session frames (protocol v2): openSession starts /bin/sh (or the requested
 // command) inside the guest, exchangeSession streams raw terminal bytes,
-// signal maps to guest SIGINT/TERM/KILL and close tears the PTY down. Resize
-// is best-effort: the console has no window-size channel yet, so the guest
-// keeps its initial geometry and resize is a documented no-op.
+// signal maps to guest SIGINT/TERM/KILL and close tears the PTY down.
+// Resize forwards the visible terminal geometry to the guest PTY.
 
 import Foundation
 import FloeCore
@@ -59,7 +58,7 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             let result = try await runner.run(
                 environmentID: environmentID,
                 argv: ["/bin/sh", "-c", command],
-                workingDirectory: request.cwd,
+                workingDirectory: try Self.guestWorkingDirectory(cwd: request.cwd, root: request.rootURL),
                 standardInput: request.stdin,
                 timeout: timeout,
                 maxOutputBytes: maxOutput,
@@ -103,9 +102,11 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         let preamble = LinuxGuestPythonEnvironment.activationPreamble()
             + LinuxGuestNodeEnvironment.activationPreamble()
         let argv = command.isEmpty
-            ? ["/bin/sh", "-c", preamble + "exec /bin/sh -i"]
+            ? ["/bin/sh", "-c", preamble + "export TERM=xterm-256color; stty sane 2>/dev/null; if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; else exec /bin/sh -i; fi"]
             : ["/bin/sh", "-c", preamble + command]
-        let workingDirectory = request.cwd.isEmpty ? nil : request.cwd
+        // A relative cwd is relative to the pinned workspace, never the
+        // runner process (usually /). Session framing does not map paths.
+        let workingDirectory = try Self.guestWorkingDirectory(cwd: request.cwd, root: request.rootURL)
         try await sessions.openSession(
             environmentID: environmentID,
             sessionID: request.sessionID,
@@ -124,6 +125,12 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             alive: alive,
             terminalOutput: output
         )
+    }
+
+    static func guestWorkingDirectory(cwd: String, root: URL) throws -> String {
+        let directory = try ShellInputValidation.directory(cwd: cwd.isEmpty ? "." : cwd, root: root)
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        return LinuxGuestMountPoint.workspace + String(directory.path.dropFirst(rootPath.count))
     }
 
     public func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {

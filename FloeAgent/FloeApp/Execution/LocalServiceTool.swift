@@ -29,7 +29,7 @@ struct LocalServiceProgress: Codable, Sendable {
 /// left attached to a foreground executor that later times out.
 func registerLocalServiceCommand(service: BackgroundJobService, store: BackgroundJobStore) {
     FloeShellCommandRegistry.shared.register("floe-service") { arguments, stdout, stderr in
-        let usage = "floe-service start node|python ENTRY PORT [-- ARGS...] | list | status JOB_ID | logs JOB_ID | stop JOB_ID | restart JOB_ID\nUse a workspace-relative entry script; bind 127.0.0.1 using PORT. Services survive replies and closed previews, not app termination.\n"
+        let usage = "floe-service start node|python|shell ENTRY PORT [-- ARGS...] | list | status JOB_ID | logs JOB_ID | stop JOB_ID | restart JOB_ID\nUse a workspace-relative entry script; bind 127.0.0.1 using PORT. Services survive replies and closed previews, not app termination.\n"
         let args = Array(arguments.dropFirst())
         if args.isEmpty || args == ["--help"] { FloeShellWrite(stdout, usage); return 0 }
         guard let context = FloeShellCommandRegistry.shared.context, let environment = context.environment else {
@@ -111,8 +111,8 @@ struct LocalServiceTool: AgentTool {
     private static func reserve(_ port: Int) -> Bool { portsLock.withLock { reservedPorts.insert(port).inserted } }
     private static func release(_ port: Int) { portsLock.withLock { _ = reservedPorts.remove(port) } }
     static let name = "exec.localService"
-    static let toolDescription = "Persistent local Node/Python HTTP service inside the task environment's Linux guest. Invoke through jobs.submit with this target; do not call directly. entry is an existing workspace-relative script, cwd defaults to workspace root, port is 1024..65535. The guest process binds loopback inside the VM and Floe forwards it to 127.0.0.1; PORT/FLOE_SERVICE_PORT are set to port. Closing a tool turn or browser tab does not stop the server. jobs.status exposes bounded live logs and a previewURL only after HTTP responds; jobs.cancel waits for actual guest process exit. Stopping the environment or the app stops the guest and its services; explicitly restart if still needed."
-    static let parametersJSON = #"{"type":"object","properties":{"runtime":{"type":"string","enum":["node","python"]},"entry":{"type":"string","maxLength":2048,"description":"Workspace-relative path to an existing entry script (checked when the job is submitted)"},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048,"description":"Workspace-relative working directory (default: workspace root; must exist)"},"port":{"type":"integer","minimum":1024,"maximum":65535,"description":"Loopback port the service binds (1024..65535); the server reads PORT/FLOE_SERVICE_PORT"}},"required":["runtime","entry","port"],"additionalProperties":false}"#
+    static let toolDescription = "Persistent local Node/Python/Shell HTTP service inside the task environment's Linux guest. Invoke through jobs.submit with this target; do not call directly. entry is an existing workspace-relative script, cwd defaults to workspace root, port is 1024..65535. The guest process binds loopback inside the VM and Floe forwards it to 127.0.0.1; PORT/FLOE_SERVICE_PORT are set to port. Closing a tool turn or browser tab does not stop the server. jobs.status exposes bounded live logs and a previewURL only after HTTP responds; jobs.cancel waits for actual guest process exit. Stopping the environment or the app stops the guest and its services; explicitly restart if still needed."
+    static let parametersJSON = #"{"type":"object","properties":{"runtime":{"type":"string","enum":["node","python","shell"]},"entry":{"type":"string","maxLength":2048,"description":"Workspace-relative path to an existing entry script (checked when the job is submitted)"},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048,"description":"Workspace-relative working directory (default: workspace root; must exist)"},"port":{"type":"integer","minimum":1024,"maximum":65535,"description":"Loopback port the service binds (1024..65535); the server reads PORT/FLOE_SERVICE_PORT"}},"required":["runtime","entry","port"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess]
     static let isSideEffecting = true
     let store: BackgroundJobStore
@@ -126,8 +126,8 @@ struct LocalServiceTool: AgentTool {
     }
 
     func validate(_ args: Arguments) throws {
-        guard ["node", "python"].contains(args.runtime) else {
-            throw FloeError.validationFailed("exec.localService runtime must be 'node' or 'python', got '\(args.runtime)'")
+        guard ["node", "python", "shell"].contains(args.runtime) else {
+            throw FloeError.validationFailed("exec.localService runtime must be 'node', 'python' or 'shell', got '\(args.runtime)'")
         }
         guard !args.entry.isEmpty, args.entry.utf8.count <= 2048, !args.entry.contains("\0") else {
             throw FloeError.validationFailed("exec.localService entry must be a non-empty workspace-relative path (max 2048 bytes)")
@@ -231,7 +231,7 @@ struct LocalServiceTool: AgentTool {
         let logFile = logDirectory.appendingPathComponent(jobID.uuidString + ".log")
         let request = LinuxGuestLocalServiceRequest(
             entry: entry.path,
-            runtime: args.runtime == "node" ? .node : .python,
+            runtime: LinuxGuestLocalServiceRuntime(rawValue: args.runtime)!,
             arguments: args.arguments ?? [],
             workingDirectory: cwd.path,
             port: args.port,

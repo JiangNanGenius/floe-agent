@@ -1,4 +1,4 @@
-name: Sign and upload exact local Build261 without rebuilding
+name: Sign and upload verified local device artifact
 'on':
   workflow_call:
     inputs:
@@ -12,7 +12,7 @@ permissions:
   contents: write
   actions: read
 concurrency:
-  group: floe-local-build261-upload
+  group: floe-local-artifact-${{ inputs.tag }}
   cancel-in-progress: false
 jobs:
   upload:
@@ -36,8 +36,8 @@ jobs:
       id: source
       run: |
         set -euo pipefail
-        test "$RELEASE_TAG" = v1.7.20
-        test "$(git rev-parse HEAD)" = 55061b66d294b7fc118d07b3441cd7f70bf503ef
+        [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
         scripts/release_preflight.sh "$RELEASE_TAG"
     - name: Download private draft transport and verify local provenance
       env:
@@ -47,21 +47,24 @@ jobs:
         [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]
         mkdir -p "$RUNNER_TEMP/local-input"
         gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -x true
-        gh release download "$RELEASE_TAG" -p local-build261.zip -D "$RUNNER_TEMP/local-input"
-        test "$(shasum -a 256 "$RUNNER_TEMP/local-input/local-build261.zip" | cut -d ' ' -f1)" = "$EXPECTED_SHA"
-        ditto -x -k "$RUNNER_TEMP/local-input/local-build261.zip" "$RUNNER_TEMP/FloeSignedPayload"
+        gh release download "$RELEASE_TAG" -p local-device.zip -D "$RUNNER_TEMP/local-input"
+        test "$(shasum -a 256 "$RUNNER_TEMP/local-input/local-device.zip" | cut -d ' ' -f1)" = "$EXPECTED_SHA"
+        ditto -x -k "$RUNNER_TEMP/local-input/local-device.zip" "$RUNNER_TEMP/FloeSignedPayload"
         python3 - <<'CHECK'
         import json, os, pathlib, plistlib, subprocess
         root=pathlib.Path(os.environ['RUNNER_TEMP'])/'FloeSignedPayload'
         p=json.loads((root/'provenance.json').read_text())
-        assert p['source_sha']=='55061b66d294b7fc118d07b3441cd7f70bf503ef'
-        assert p['version']=='1.7.20' and p['build']=='261'
+        assert p['source_sha']==os.environ['SOURCE_SHA']
+        assert 'v'+p['version']==os.environ['RELEASE_TAG']
+        assert p['build'].isdigit()
         apps=list((root/'Payload').glob('*.app')); assert len(apps)==1
         info=plistlib.loads((apps[0]/'Info.plist').read_bytes())
-        assert (info['CFBundleIdentifier'],info['CFBundleShortVersionString'],info['CFBundleVersion'])==('org.floeagent.ios','1.7.20','261')
+        assert (info['CFBundleIdentifier'],info['CFBundleShortVersionString'],info['CFBundleVersion'])==('org.floeagent.ios',p['version'],p['build'])
         assert info['DTXcodeBuild']==p['xcode_build']
         assert info['DTSDKName']==p['sdk']
-        assert p['xcode_build']=='27A266a'
+        assert info['DTSDKName'].startswith('iphoneos')
+        with open(os.environ['GITHUB_ENV'],'a') as env:
+            env.write('APP_VERSION='+p['version']+'\nAPP_BUILD='+p['build']+'\n')
         assert (root/'symbols').is_dir()
         subprocess.run(['dwarfdump','--uuid',str(apps[0]/info['CFBundleExecutable'])],check=True)
         CHECK
@@ -221,7 +224,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
-        name: local-build261-provenance-symbols
+        name: local-${{ inputs.tag }}-provenance-symbols
         path: |-
           ${{ runner.temp }}/FloeSignedPayload/provenance.json
           ${{ runner.temp }}/FloeSignedPayload/symbols/
@@ -237,19 +240,20 @@ jobs:
         import json, os, pathlib, subprocess, sys, time, urllib.parse
         sys.path.insert(0,'scripts')
         from prepare_testflight import api, rows, prepare
-        notes=json.loads(pathlib.Path('../docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_261.json').read_text())
+        version=os.environ['APP_VERSION']; number=os.environ['APP_BUILD']
+        notes=json.loads(pathlib.Path('../docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_'+number+'.json').read_text())
         for attempt in range(60):
             os.environ['ASC_TOKEN']=subprocess.check_output([sys.executable,'scripts/generate_asc_jwt.py'],text=True).strip()
             apps=rows('/v1/apps?'+urllib.parse.urlencode({'filter[bundleId]':'org.floeagent.ios'}))
             assert len(apps)==1
-            builds=rows('/v1/builds?'+urllib.parse.urlencode({'filter[app]':apps[0]['id'],'filter[version]':'261','limit':200}))
+            builds=rows('/v1/builds?'+urllib.parse.urlencode({'filter[app]':apps[0]['id'],'filter[version]':number,'limit':200}))
             assert len(builds)<=1
             if builds:
                 build=builds[0]; state=build['attributes']['processingState']
                 print('Apple processing:',state,flush=True)
                 if state in ('FAILED','INVALID'): raise RuntimeError('Apple rejected build')
                 if state=='VALID':
-                    report=prepare(build['id'],'org.floeagent.ios','1.7.20','261',notes)
+                    report=prepare(build['id'],'org.floeagent.ios',version,number,notes)
                     details=api('GET','/v1/builds/'+build['id']+'/buildBetaDetail')['data']['attributes']
                     report['internalBuildState']=details.get('internalBuildState')
                     report['expired']=build['attributes'].get('expired')
@@ -263,6 +267,6 @@ jobs:
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
-        name: build261-apple-internal
+        name: local-${{ inputs.tag }}-apple-internal
         path: ${{ runner.temp }}/APPLE-INTERNAL.json
         if-no-files-found: warn

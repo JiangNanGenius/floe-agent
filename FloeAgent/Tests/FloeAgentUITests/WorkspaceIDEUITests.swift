@@ -101,6 +101,27 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertTrue(app.buttons["file.preview.openIDE"].waitForExistence(timeout: 10))
     }
 
+    func testFirstRunSheetAndWebServiceEntry() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let ipad = UIDevice.current.userInterfaceIdiom == .pad
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing", "--ui-test-skip-onboarding", "--ui-test-batch-fixture", "--ui-test-ide-fixture"]
+        if ipad { app.launchArguments.append("-ui-testing-ipad") }
+        XCUIDevice.shared.orientation = ipad ? .landscapeLeft : .portrait
+        app.launch()
+        defer { app.terminate() }
+        try openWorkbench(app, ipad: ipad)
+        app.buttons["workspace.ide.run"].tap()
+        let serviceEntry = app.buttons["workspace.ide.run.webService"]
+        XCTAssertTrue(serviceEntry.waitForExistence(timeout: 15), "the first run presentation must contain its controls")
+        capture("ide-run-sheet-content")
+        serviceEntry.tap()
+        XCTAssertTrue(app.buttons["workspace.ide.service.start"].waitForExistence(timeout: 10))
+        capture("ide-web-service-options")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["workspace.ide.run.close"].tap()
+    }
+
     /// The Git sidebar stays usable at the workbench's narrow split width:
     /// fetch/pull/push render as one row of equal icon buttons (never
     /// single-character columns), each keeping a >=44pt target inside the
@@ -375,6 +396,14 @@ final class WorkspaceIDEUITests: XCTestCase {
         if !panel.exists { rail.tap() }
         XCTAssertTrue(panel.waitForExistence(timeout: 10), "tapping the rail must open the terminal panel", file: file, line: line)
         capture("ide-terminal-panel")
+        let expand = app.buttons["terminal.fullscreen"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        expand.tap()
+        let close = app.buttons["terminal.fullscreen.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        capture("ide-terminal-fullscreen")
+        close.tap()
+        XCTAssertTrue(panel.waitForExistence(timeout: 10))
         let collapse = app.buttons["workspace.ide.panel.close"]
         XCTAssertTrue(collapse.waitForExistence(timeout: 5), "the panel must offer a collapse control", file: file, line: line)
         collapse.tap()

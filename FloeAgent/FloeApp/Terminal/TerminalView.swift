@@ -114,7 +114,7 @@ struct SSHEmulatorView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let terminal = SwiftTerm.TerminalView(frame: .zero)
+        let terminal = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
         terminal.terminalDelegate = context.coordinator
         terminal.nativeForegroundColor = .white
         terminal.nativeBackgroundColor = .black
@@ -128,6 +128,7 @@ struct SSHEmulatorView: UIViewRepresentable {
         context.coordinator.onResize = onResize
         context.coordinator.isInteractive = isInteractive
 
+        terminal.layoutIfNeeded()
         let newBytes: Data
         if output.starts(with: context.coordinator.renderedOutput) {
             newBytes = output.dropFirst(context.coordinator.renderedOutput.count)
@@ -138,6 +139,7 @@ struct SSHEmulatorView: UIViewRepresentable {
         if !newBytes.isEmpty {
             let bytes = [UInt8](newBytes)
             terminal.feed(byteArray: bytes[...])
+            terminal.setNeedsDisplay()
         }
         context.coordinator.renderedOutput = output
     }

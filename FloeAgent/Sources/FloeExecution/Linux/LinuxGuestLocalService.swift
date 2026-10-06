@@ -24,6 +24,7 @@ import FloeTools
 public enum LinuxGuestLocalServiceRuntime: String, Sendable, Codable, CaseIterable {
     case node
     case python
+    case shell
 }
 
 public struct LinuxGuestLocalServiceRequest: Sendable {
@@ -704,6 +705,8 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
             )
         case .node:
             command = ["node", entryGuest] + request.arguments
+        case .shell:
+            command = ["/bin/sh", "-c", "if command -v bash >/dev/null 2>&1; then exec bash \"$@\"; else exec /bin/sh \"$@\"; fi", "floe-service", entryGuest] + request.arguments
         }
 
         var variables = request.environment
