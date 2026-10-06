@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 最近已记录内部交付 / Last recorded internal delivery | 1.7.14 (255), `v1.7.14`; 记录显示 VALID 和 Floe QA 可用；这里未重新核验 Apple 当前状态 / historical VALID and internal availability, not a fresh Apple query | [交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md) |
 | 公开测试 / External beta | Build 255 的最后记录为等待审核；不据此推断现在仍在等待或已批准 / last recorded pending review; current approval not inferred | [送审记录](public-beta/build255/README.md) |
-| 当前源码候选 / Current source candidate | 1.7.19 (260), `cb974b3c35e36d86a53fd9890903cc419ae0ec9d`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37388972399) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37367163822) |
+| 当前源码候选 / Current source candidate | 1.7.19 (260), `2e089fa55aae867ef48df2ecf83a58e2d0e9eedc`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37404454871) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37376267169) |
 | 256–258 候选 / Earlier candidates | 测试受阻，未据此发布 / blocked by verification; not delivered | [稳定性修复](releases/repairs/FLOE_256_STABILITY.md) |
 | 原生 Office / Native Office | 编译与部分工具链证据不替代 iPad 连续笔迹、原文件写回、保存重开 / device ink and writeback remain separate | [验收范围](OFFICE_FRONTEND_ACCEPTANCE.md) |
 
@@ -18,17 +18,9 @@
 - 本地模型提示压缩并保留工具契约。Bounded local prompt retaining required contracts.
 - 工程图本地初次连接失败的一次恢复；已交付文档/编辑状态不重载。One initial local-preview recovery without reloading delivered editing state.
 
-Build 259 完整 CI 通过，但发布资格验证发现独立 NativeNotes 源码清单遗漏及一次 iPhone 导入跳转失败；`v1.7.18` 保持不变。Build 260 补齐清单后，原独立 NativeNotes 已通过。其后完整 CI 的手记 UI 检查失败，录像显示工具环已关闭、画面已横屏，而自动化状态判断未同步。现已修正消失等待、窗口坐标与窄屏标签滚动，并提前上传手记诊断产物。受影响的 iPad/iPhone 定向用例在本机通过（复用云端 App，仅重编测试模块）；新完整 CI 和独立验证进行中。尚未打标签、上传或宣布可安装。
+Build 259 发布资格验证失败，`v1.7.18` 保持不变。Build 260 最近完整 CI 因 iPhone 工程图封面启动失败而未通过；该问题在本地及云端定向测试中未复现，仍保留原失败记录。本地随后定位了另一处测试问题：保留多个文档时，固定六次拖动不足以到达目标标签。修正滚动距离后，本地完整手记用例 4 项通过、原生 Office 1 项按模拟器规则跳过；运行时 367 项测试也已通过。上述为本地定向证据；新提交的完整 CI 正在运行，尚未打标签、上传或宣布可安装。
 
-Build 259 passed full CI, but release qualification found a missing standalone Notes source dependency and an iPhone import-transition failure; its tag remains immutable. Build 260 corrected the manifest and passed standalone Notes qualification. Its subsequent full CI failed Notes UI checks despite video showing the wheel dismissed and the screen in landscape. Test synchronization, window coordinates and narrow tab-strip scrolling have now been corrected, with earlier diagnostic retention. Focused iPad/iPhone tests passed locally using the retained cloud App and a rebuilt test module. Fresh full CI and standalone qualification are running; no tag, Apple upload or installability is claimed.
-
-兼容 SDK 后续又发现测试辅助函数的亮度表达式类型推断超时；已拆分为显式整数运算，计算与断言未变，本机 Swift 6 对象编译通过，云端重新验证中。The accepted-SDK compiler subsequently hit a type-inference limit in the thumbnail test helper. Explicit integer subexpressions preserve the calculation and assertions; local Swift 6 object compilation passed, with fresh cloud validation pending.
-
-完整 CI 37354218580 已在前一源码通过。独立兼容验证的功能测试通过，但 Xcode 26 结果格式导致诊断误分类：空警告字段被省略、源码位置嵌入失败文本。现已补齐兼容读取，保留警告/异常拦截；34 项分类测试通过，原始结果回放正确。仅验证脚本变更，新源码完整 CI 与独立验证待通过。Full CI passed on the preceding source. Standalone compatibility functional tests passed, but Xcode 26 diagnostic schema differences caused misclassification. The reader now handles omitted warning fields with legacy issue verification and embedded source coordinates; warning/error guards remain. All 34 classifier tests and original-result replay passed. Fresh checks of the script-only revision are pending.
-
-最新完整 CI 在 iPad 正文搜索的全局文字查询超时；失败截图已显示正确标题和匹配片段。现将查询限定到目标结果卡片，保留正文断言和点击打开验证，新 CI 待完成。The latest full CI timed out in an iPad global text query despite the retained screenshot showing the title and body match. Assertions now query the specific result card and still verify the snippet and opening the document; fresh CI is pending.
-
-手记与 IDE 界面验证已通过；随后跨平台测试的 6 项状态等待报告超时。已修正等待函数在恢复执行后先检查期限、遗漏最终状态读取的问题，保留 5 秒期限并改用单调时钟；仅测试辅助函数改变，新 CI 待验证。Notes and IDE UI checks passed. Six subsequent runtime tests reported state-wait timeouts. The test helper now observes actor state before checking the unchanged five-second deadline, using a monotonic clock; fresh CI is pending.
+Build 259 release qualification failed; its tag remains immutable. Build 260's last full CI failed to start an iPhone engineering cover, which isolated local and cloud tests did not reproduce. The original failure remains recorded. Local diagnosis also found that six fixed drags could not reach a distant retained document tab. After correcting travel, all four simulator Notes cases passed, with native Office skipped by its existing simulator rule; 367 runtime tests also passed locally. These are focused local results. Full CI for the new commit is running; no tag, upload or installability is claimed.
 
 ## 阅读顺序 / Reading order
 
