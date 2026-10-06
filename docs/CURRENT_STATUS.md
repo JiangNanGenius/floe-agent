@@ -4,9 +4,10 @@
 
 | 项目 / Item | 状态 / State | 证据 / Evidence |
 | --- | --- | --- |
-| 最近已记录内部交付 / Last recorded internal delivery | 1.7.14 (255), `v1.7.14`; 记录显示 VALID 和 Floe QA 可用；这里未重新核验 Apple 当前状态 / historical VALID and internal availability, not a fresh Apple query | [交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md) |
-| 公开测试 / External beta | Build 255 的最后记录为等待审核；不据此推断现在仍在等待或已批准 / last recorded pending review; current approval not inferred | [送审记录](public-beta/build255/README.md) |
-| 当前源码候选 / Current source candidate | 1.7.19 (260), `0fbb7a191937fed37dbc2ada08c3d9d6921e3a91`; 完整 CI 通过；不可变标签 `v1.7.19` 已创建，尚未上传 / full CI passed; immutable tag created, not uploaded | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37414808365) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37376267169) |
+| 内部测试 / Internal beta | 1.7.19 (260), Apple VALID、未过期、Floe QA 已可用 / VALID, unexpired, available in Floe QA | [内部准备验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37436584073) |
+| 公开测试 / External beta | Build 260 尚未送审；审核备注 API 更新返回 403，网页登录过期，等待恢复后完成 / not submitted; review-notes update blocked, browser sign-in required | [送审记录](public-beta/build260/README.md) |
+| 当前发布 / Current release | 1.7.19 (260), `0fbb7a191937fed37dbc2ada08c3d9d6921e3a91`; 完整 CI、签名上传和发布通过；标签不可变 / full CI, signed upload and release passed; immutable tag | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37414808365) · [发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/37424141658) |
+| GitHub / Feather | GitHub prerelease 与 Feather 源已更新；Feather 使用未签名开发 IPA，需要用户自行签名 / prerelease and source updated; unsigned developer IPA requires signing | [预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.19) · [Feather 发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/37434428471) |
 | 256–258 候选 / Earlier candidates | 测试受阻，未据此发布 / blocked by verification; not delivered | [稳定性修复](releases/repairs/FLOE_256_STABILITY.md) |
 | 原生 Office / Native Office | 编译与部分工具链证据不替代 iPad 连续笔迹、原文件写回、保存重开 / device ink and writeback remain separate | [验收范围](OFFICE_FRONTEND_ACCEPTANCE.md) |
 
@@ -18,9 +19,9 @@
 - 本地模型提示压缩并保留工具契约。Bounded local prompt retaining required contracts.
 - 工程图本地初次连接失败的一次恢复；已交付文档/编辑状态不重载。One initial local-preview recovery without reloading delivered editing state.
 
-Build 260 的完整 CI 已通过，包括手记、IDE、运行时测试及兼容 SDK/Linux 检查。源码已合并 main；不可变标签 `v1.7.19` 固定在通过验证的 `0fbb7a19`。发布构建已由标签推送触发，尚未获得上传、Apple VALID 或测试组可安装证据。历史失败与本地验证记录保留。
+Build 260 已通过完整 CI、发布构建和签名上传。2026-10-06 08:30 UTC 的 Apple 验证显示 VALID、未过期、内部 IN_BETA_TESTING，已确认现有 Floe QA 组关联与双语测试说明。源码已合并 main，标签固定 `0fbb7a19`；可恢复设备产物已留存。外部 publictest1 尚未完成送审，不能视为审核通过。实体设备安装和 Office 连续笔迹验收仍待用户测试。
 
-Build 260 passed full CI, including Notes, IDE, runtime tests and compatibility SDK/Linux checks. Main is merged; immutable tag `v1.7.19` points to verified source `0fbb7a19`. The tag push triggered release building. Upload, Apple validation and test-group availability are not yet confirmed. Historical failures and local evidence remain retained.
+Build 260 passed full CI, release building and signed upload. Apple verification at 08:30 UTC on 2026-10-06 confirmed VALID, unexpired, internal IN_BETA_TESTING, existing Floe QA membership and bilingual test notes. Main is merged, the tag remains fixed at `0fbb7a19`, and a recoverable device artifact is retained. External publictest1 submission is still pending, not approved. Physical installation and sustained Office ink acceptance remain unverified.
 
 ## 阅读顺序 / Reading order
 
