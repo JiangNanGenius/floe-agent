@@ -10,6 +10,11 @@ on:
         description: Existing SemVer tag to validate and build
         required: true
         type: string
+      local_artifact_sha256:
+        description: SHA256 of the locally built Build261 draft transport archive; signing only
+        required: false
+        default: ''
+        type: string
       direct_testflight:
         description: Build the existing tag and upload directly without simulator qualification (explicit user request)
         required: false
@@ -68,7 +73,7 @@ concurrency:
 
 jobs:
   developer-recovery:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_developer_build191 && inputs.tag == 'v1.7.0-beta.48' && inputs.publish && !inputs.direct_testflight && !inputs.recover_build_156 && !inputs.build191_ui_waiver && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && github.event_name == 'workflow_dispatch' && inputs.recover_developer_build191 && inputs.tag == 'v1.7.0-beta.48' && inputs.publish && !inputs.direct_testflight && !inputs.recover_build_156 && !inputs.build191_ui_waiver && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     permissions:
       contents: write
       actions: read
@@ -77,7 +82,7 @@ jobs:
     uses: ./.github/workflows/developer-ipa-from-recovery.yml
 
   direct-testflight:
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
       actions: read
@@ -87,7 +92,7 @@ jobs:
     secrets: inherit
 
   expedited-testflight:
-    if: ${{ !inputs.recover_developer_build191 && github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != '' && inputs.component_recovery_run == '' && (!inputs.build191_ui_waiver || (inputs.tag == 'v1.7.0-beta.48' && inputs.reuse_accepted_run == '35337960392' && !inputs.publish && !inputs.direct_testflight)) }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && github.event_name == 'workflow_dispatch' && inputs.reuse_accepted_run != '' && inputs.component_recovery_run == '' && (!inputs.build191_ui_waiver || (inputs.tag == 'v1.7.0-beta.48' && inputs.reuse_accepted_run == '35337960392' && !inputs.publish && !inputs.direct_testflight)) }}
     permissions:
       contents: read
       actions: read
@@ -99,7 +104,7 @@ jobs:
     secrets: inherit
 
   recover-testflight:
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish && inputs.component_recovery_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.recover_build_156 && inputs.tag == 'v1.7.0-beta.13' && !inputs.publish && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
       actions: read
@@ -107,7 +112,7 @@ jobs:
     secrets: inherit
 
   component-recovery:
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && github.event_name == 'workflow_dispatch' && inputs.component_recovery_run != '' }}
     permissions:
       contents: read
       actions: read
@@ -119,7 +124,7 @@ jobs:
     secrets: inherit
 
   prepare-release:
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.lean_release && inputs.reuse_direct_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.lean_release && inputs.reuse_direct_run == '' }}
     runs-on: macos-26
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -144,7 +149,7 @@ jobs:
   notes-component:
     name: Qualify the NativeNotes development component in parallel
     needs: prepare-release
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.lean_release && inputs.reuse_direct_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.lean_release && inputs.reuse_direct_run == '' }}
     permissions:
       contents: read
     # Branch-local reusable call at the caller's commit. sdk=development selects
@@ -158,7 +163,7 @@ jobs:
 
   build-verify-release:
     needs: prepare-release
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.lean_release && inputs.reuse_direct_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.direct_testflight && !inputs.recover_build_156 && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' && !inputs.lean_release && inputs.reuse_direct_run == '' }}
     # Verify the complete iOS 27 source path here. The upload job below
     # separately rebuilds this exact tag with the App Store accepted SDK.
     runs-on: xcode-27
@@ -1582,7 +1587,7 @@ jobs:
   # ---------------------------------------------------------------------------
   lean-request-check:
     name: Reject reuse without a lean request
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_direct_run != '' && !inputs.lean_release }}
+    if: ${{ inputs.local_artifact_sha256 == '' && github.event_name == 'workflow_dispatch' && inputs.reuse_direct_run != '' && !inputs.lean_release }}
     runs-on: ubuntu-latest
     steps:
       - name: Require lean_release for reuse_direct_run
@@ -1592,7 +1597,7 @@ jobs:
 
   lean-source:
     name: Bind the immutable release tag without a triggering tag push
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1668,7 +1673,7 @@ jobs:
   lean-build:
     name: Build once with the accepted upload SDK or reuse the retained unsigned IPA
     needs: [lean-source]
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && !inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && !inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     permissions:
       contents: read
       actions: read
@@ -1682,7 +1687,7 @@ jobs:
   lean-publish:
     name: Attest, publish the unsigned IPA and continue to Feather
     needs: [lean-source, lean-build]
-    if: ${{ !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && inputs.publish && !inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
+    if: ${{ inputs.local_artifact_sha256 == '' && !inputs.recover_developer_build191 && !inputs.build191_ui_waiver && !inputs.recover_build_156 && github.event_name == 'workflow_dispatch' && inputs.lean_release && inputs.publish && !inputs.direct_testflight && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -1953,3 +1958,14 @@ jobs:
             ${{ runner.temp }}/DirectArtifact/verification.json
             ${{ runner.temp }}/lean-publish-preflight.out
           if-no-files-found: ignore
+
+  local-artifact-testflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.local_artifact_sha256 != '' && !inputs.publish && !inputs.lean_release && !inputs.direct_testflight }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/testflight-local-artifact.yml
+    with:
+      tag: ${{ inputs.tag }}
+      artifact_sha256: ${{ inputs.local_artifact_sha256 }}
+    secrets: inherit

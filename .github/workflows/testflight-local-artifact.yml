@@ -1,0 +1,228 @@
+name: Sign and upload exact local Build261 without rebuilding
+'on':
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      artifact_sha256:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: floe-local-build261-upload
+  cancel-in-progress: false
+jobs:
+  upload:
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+    - name: Check out immutable local App source
+      uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        fetch-depth: 0
+        ref: ${{ inputs.tag }}
+    - name: Require exact local release source
+      id: source
+      run: |
+        set -euo pipefail
+        test "$RELEASE_TAG" = v1.7.20
+        test "$(git rev-parse HEAD)" = 55061b66d294b7fc118d07b3441cd7f70bf503ef
+        scripts/release_preflight.sh "$RELEASE_TAG"
+    - name: Download private draft transport and verify local provenance
+      env:
+        EXPECTED_SHA: ${{ inputs.artifact_sha256 }}
+      run: |
+        set -euo pipefail
+        [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]
+        mkdir -p "$RUNNER_TEMP/local-input"
+        gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -x true
+        gh release download "$RELEASE_TAG" -p local-build261.zip -D "$RUNNER_TEMP/local-input"
+        test "$(shasum -a 256 "$RUNNER_TEMP/local-input/local-build261.zip" | cut -d ' ' -f1)" = "$EXPECTED_SHA"
+        ditto -x -k "$RUNNER_TEMP/local-input/local-build261.zip" "$RUNNER_TEMP/FloeSignedPayload"
+        python3 - <<'CHECK'
+        import json, os, pathlib, plistlib, subprocess
+        root=pathlib.Path(os.environ['RUNNER_TEMP'])/'FloeSignedPayload'
+        p=json.loads((root/'provenance.json').read_text())
+        assert p['source_sha']=='55061b66d294b7fc118d07b3441cd7f70bf503ef'
+        assert p['version']=='1.7.20' and p['build']=='261'
+        apps=list((root/'Payload').glob('*.app')); assert len(apps)==1
+        info=plistlib.loads((apps[0]/'Info.plist').read_bytes())
+        assert (info['CFBundleIdentifier'],info['CFBundleShortVersionString'],info['CFBundleVersion'])==('org.floeagent.ios','1.7.20','261')
+        assert info['DTXcodeBuild']==p['xcode_build']
+        assert info['DTSDKName']==p['sdk']
+        assert p['xcode_build']=='27A266a'
+        assert (root/'symbols').is_dir()
+        subprocess.run(['dwarfdump','--uuid',str(apps[0]/info['CFBundleExecutable'])],check=True)
+        CHECK
+        cp "$RUNNER_TEMP/FloeSignedPayload/bundle-normalization.json" "$RUNNER_TEMP/bundle-normalization.json"
+    - name: Install App Store Connect API key
+      env:
+        ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+        ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      run: |
+        set -euo pipefail
+        test -n "$ASC_API_PRIVATE_KEY_BASE64"
+        test -n "$ASC_KEY_ID"
+        echo "$ASC_API_PRIVATE_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+        chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+        mkdir -p "$HOME/.appstoreconnect/private_keys"
+        cp "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
+    - name: Install distribution identity and existing App Store profiles
+      env:
+        DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+        DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        HOST_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        SCREENSHARE_PROVISIONING_PROFILE: ${{ secrets.APPLE_SCREENSHARE_PROVISIONING_PROFILE_BASE64 }}
+      run: |
+        set -euo pipefail
+        test -n "$DISTRIBUTION_CERTIFICATE"
+        test -n "$HOST_PROVISIONING_PROFILE"
+        test -n "$SCREENSHARE_PROVISIONING_PROFILE"
+        KEYCHAIN="$RUNNER_TEMP/floe-release.keychain-db"
+        KEYCHAIN_PASSWORD="$(uuidgen)$(uuidgen)"
+        echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+        echo "$HOST_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Floe.mobileprovision"
+        echo "$SCREENSHARE_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/FloeScreenShare.mobileprovision"
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security import "$RUNNER_TEMP/distribution.p12" -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+        security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+        security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        SIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Apple Distribution/{print $2; exit}')"
+        test "${#SIGN_IDENTITY}" -eq 40
+        echo "SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+        validate_profile() {
+          PROFILE_PATH="$1"
+          EXPECTED_APP_ID="$2"
+          SOURCE_ENTITLEMENTS_PATH="$3"
+          ENTITLEMENTS_PATH="$4"
+          EXPECTED_HOMEKIT="${5:-false}"
+          PROFILE_PLIST="$RUNNER_TEMP/$(basename "$PROFILE_PATH").plist"
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")" = "$EXPECTED_APP_ID"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$PROFILE_PLIST")" = false
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:beta-reports-active' "$PROFILE_PLIST")" = true
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups:0' "$PROFILE_PLIST")" = group.org.floeagent.ios
+          if test "$EXPECTED_HOMEKIT" = true; then
+            test "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.homekit' "$PROFILE_PLIST")" = true
+          fi
+          # Sign with the app's declared capabilities, not the profile's raw
+          # wildcard/development values. Xcode normally performs these exact
+          # App Store substitutions while exporting an archive.
+          cp "$SOURCE_ENTITLEMENTS_PATH" "$ENTITLEMENTS_PATH"
+          /usr/libexec/PlistBuddy \
+            -c "Add :application-identifier string $EXPECTED_APP_ID" \
+            -c 'Add :com.apple.developer.team-identifier string QYL72C43K6' \
+            -c 'Add :get-task-allow bool false' \
+            -c 'Add :beta-reports-active bool true' \
+            -c 'Add :keychain-access-groups array' \
+            -c "Add :keychain-access-groups:0 string $EXPECTED_APP_ID" \
+            "$ENTITLEMENTS_PATH"
+          plutil -lint "$ENTITLEMENTS_PATH"
+        }
+        validate_profile \
+          "$RUNNER_TEMP/Floe.mobileprovision" \
+          QYL72C43K6.org.floeagent.ios \
+          FloeApp/Entitlements/Floe.entitlements \
+          "$RUNNER_TEMP/Floe.entitlements" \
+          true
+        /usr/libexec/PlistBuddy \
+          -c 'Add :com.apple.developer.icloud-container-environment string Production' \
+          -c 'Add :com.apple.developer.ubiquity-kvstore-identifier string QYL72C43K6.org.floeagent.ios' \
+          "$RUNNER_TEMP/Floe.entitlements"
+        validate_profile \
+          "$RUNNER_TEMP/FloeScreenShare.mobileprovision" \
+          QYL72C43K6.org.floeagent.ios.screenshare \
+          FloeScreenShare/FloeScreenShare.entitlements \
+          "$RUNNER_TEMP/FloeScreenShare.entitlements"
+        test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.icloud-container-environment' "$RUNNER_TEMP/Floe.entitlements")" = Production
+        test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.ubiquity-kvstore-identifier' "$RUNNER_TEMP/Floe.entitlements")" = QYL72C43K6.org.floeagent.ios
+    - name: Sign, verify, package, and upload to TestFlight
+      env:
+        ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/TestFlightExport"
+        cp "$RUNNER_TEMP/bundle-normalization.json" "$RUNNER_TEMP/TestFlightExport/"
+        APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+        test -n "$APP_PATH"
+        APPEX_PATH="$APP_PATH/PlugIns/Floe Screen Share.appex"
+        test -d "$APPEX_PATH"
+
+        cp "$RUNNER_TEMP/FloeScreenShare.mobileprovision" "$APPEX_PATH/embedded.mobileprovision"
+        cp "$RUNNER_TEMP/Floe.mobileprovision" "$APP_PATH/embedded.mobileprovision"
+
+        if test -d "$APP_PATH/Frameworks"; then
+          find "$APP_PATH/Frameworks" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 \
+            | while IFS= read -r -d '' CODE_PATH; do
+                codesign --force --sign "$SIGN_IDENTITY" --generate-entitlement-der "$CODE_PATH"
+              done
+        fi
+        codesign --force --sign "$SIGN_IDENTITY" \
+          --entitlements "$RUNNER_TEMP/FloeScreenShare.entitlements" \
+          --generate-entitlement-der "$APPEX_PATH"
+        codesign --force --sign "$SIGN_IDENTITY" \
+          --entitlements "$RUNNER_TEMP/Floe.entitlements" \
+          --generate-entitlement-der "$APP_PATH"
+        codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+        mkdir -p "$RUNNER_TEMP/TestFlightPayload/Payload"
+        ditto "$APP_PATH" "$RUNNER_TEMP/TestFlightPayload/Payload/$(basename "$APP_PATH")"
+        (
+          cd "$RUNNER_TEMP/TestFlightPayload"
+          ditto -c -k --sequesterRsrc --keepParent Payload "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+        )
+        unzip -t "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+        python3 scripts/audit_native_runtime_free.py --ipa "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+        xcrun altool --validate-app \
+          --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
+          --type ios \
+          --apiKey "$ASC_KEY_ID" \
+          --apiIssuer "$ASC_ISSUER_ID"
+        xcrun altool --upload-app \
+          --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
+          --type ios \
+          --apiKey "$ASC_KEY_ID" \
+          --apiIssuer "$ASC_ISSUER_ID" \
+          | tee "$RUNNER_TEMP/TestFlightExport/UPLOAD-RECEIPT.txt"
+        {
+          echo "tag=${{ steps.source.outputs.tag }}"
+          echo "version=${{ steps.source.outputs.version }}"
+          echo "build=${{ steps.source.outputs.build }}"
+          echo "commit=${{ steps.source.outputs.source_sha }}"
+          echo "local_build_toolchain=Xcode 27.0 (27A266a)"
+          echo "qualification_policy=user_requested_skip_simulator_qualification"
+          echo "app_rebuilt=false; source=verified_local_build"
+          echo "symbols_state=retained_local_and_private_artifact"
+          echo "testflight_upload=accepted_by_transport"
+          echo "apple_processing_state=not_verified"
+          echo "floe_qa_visibility=not_verified"
+        } > "$RUNNER_TEMP/TestFlightExport/TESTFLIGHT-SUMMARY.txt"
+    - name: Upload TestFlight evidence
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: testflight-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
+        path: ${{ runner.temp }}/TestFlightExport/
+        if-no-files-found: error
+    - name: Retain local provenance and symbols
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: local-build261-provenance-symbols
+        path: |-
+          ${{ runner.temp }}/FloeSignedPayload/provenance.json
+          ${{ runner.temp }}/FloeSignedPayload/symbols/
+        if-no-files-found: warn
