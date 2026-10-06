@@ -27,6 +27,7 @@ import FloePersistence
 /// log lines or JSON content cannot collide with it by accident.
 enum DiagnosticsSection: String, CaseIterable {
     case reportIdentity = "report_identity"
+    case executionTrace = "execution_trace"
     case systemRuntime = "system_runtime"
     case officeStageTrace = "office_stage_trace"
     case localInference = "local_inference_evidence"
@@ -71,6 +72,7 @@ enum DiagnosticsExporter {
         var sections: [RenderedSection] = []
         sections.append(RenderedSection(id: .reportIdentity, body: identitySection(center: center)))
 
+        sections.append(RenderedSection(id: .executionTrace, body: ExecutionBreadcrumbs.shared.report()))
         let runtime = splitRuntimeEvidence(RuntimeDiagnostics.shared.report())
         sections.append(RenderedSection(id: .systemRuntime, body: runtime.runtime))
         sections.append(RenderedSection(id: .officeStageTrace,

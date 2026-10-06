@@ -1610,6 +1610,12 @@ public actor LinuxGuestCommandChannel {
         maxOutputBytes: Int? = nil,
         cancellation: CancellationToken? = nil
     ) async throws -> LinuxCommandResult {
+        let breadcrumbID = UUID()
+        var breadcrumbCompleted = false
+        ExecutionBreadcrumbs.shared.record(.shell, .began, id: breadcrumbID)
+        defer {
+            if !breadcrumbCompleted { ExecutionBreadcrumbs.shared.record(.shell, .failed, id: breadcrumbID) }
+        }
         guard !argv.isEmpty else {
             throw LinuxGuestError.invalidConfiguration("argv must not be empty")
         }
@@ -1634,8 +1640,9 @@ public actor LinuxGuestCommandChannel {
             }
         }
         try await ensureNegotiated()
+        ExecutionBreadcrumbs.shared.record(.shell, .negotiated, id: breadcrumbID)
 
-        let token = UUID().uuidString
+        let token = breadcrumbID.uuidString
         let tokenStream = LinuxGuestTokenStream()
         registerToken(token, stream: tokenStream)
         runningCommands.insert(token)
@@ -1716,8 +1723,10 @@ public actor LinuxGuestCommandChannel {
             await self.failSilentStartup(token)
         }
 
+        ExecutionBreadcrumbs.shared.record(.shell, .sending, id: breadcrumbID)
         try await send(LinuxGuestFraming.payloadFrames(name: "EXEC", token: token, payload: payload))
 
+        ExecutionBreadcrumbs.shared.record(.shell, .awaitingReply, id: breadcrumbID)
         var parser = LinuxGuestFraming.Parser(token: token, maxOutputBytes: effectiveLimit)
         while true {
             guard let chunk = await tokenStream.next() else {
@@ -1746,6 +1755,8 @@ public actor LinuxGuestCommandChannel {
                     // the timeout/cancellation allowed to surface.
                     throw interruptError
                 }
+                breadcrumbCompleted = true
+                ExecutionBreadcrumbs.shared.record(.shell, .completed, id: breadcrumbID, code: exitCode)
                 return LinuxCommandResult(
                     stdout: parser.stdoutText,
                     stderr: parser.stderrText,
@@ -1864,6 +1875,13 @@ public actor LinuxGuestCommandChannel {
         timeout: TimeInterval,
         cancellation: CancellationToken?
     ) async throws -> ControlOutcome {
+        let breadcrumbID = UUID()
+        let operation: ExecutionBreadcrumbs.Operation? = name == "SPAWN" ? .serviceStart : (name == "KILL" ? .serviceStop : nil)
+        var completed = false
+        if let operation { ExecutionBreadcrumbs.shared.record(operation, .began, id: breadcrumbID) }
+        defer {
+            if let operation, !completed { ExecutionBreadcrumbs.shared.record(operation, .failed, id: breadcrumbID) }
+        }
         guard !poisoned else {
             throw LinuxGuestError.consoleUnavailable("the guest channel was poisoned by an earlier failed command")
         }
@@ -1898,7 +1916,9 @@ public actor LinuxGuestCommandChannel {
         }
         defer { cancellationTask.cancel() }
 
+        if let operation { ExecutionBreadcrumbs.shared.record(operation, .sending, id: breadcrumbID) }
         try await send(frames)
+        if let operation { ExecutionBreadcrumbs.shared.record(operation, .awaitingReply, id: breadcrumbID) }
 
         var parser = LinuxGuestFraming.ControlParser(token: token)
         while true {
@@ -1912,6 +1932,8 @@ public actor LinuxGuestCommandChannel {
             case .needMore:
                 continue
             case .finished(let exit):
+                completed = true
+                if let operation { ExecutionBreadcrumbs.shared.record(operation, .completed, id: breadcrumbID, code: exit) }
                 return ControlOutcome(pid: parser.pid, exit: exit, text: parser.textString)
             }
         }
@@ -2114,6 +2136,7 @@ public actor LinuxGuestCommandChannel {
     private func requestInterrupt(token: String, error: any Error & Sendable) async {
         guard runningCommands.contains(token), pendingInterrupts[token] == nil else { return }
         pendingInterrupts[token] = error
+        if let id = UUID(uuidString: token) { ExecutionBreadcrumbs.shared.record(.shell, .interruptRequested, id: id) }
         // A command waiting on host work cannot finish it after an interrupt:
         // cancel the handler now so it stops touching the share instead of
         // running to completion for a reply nobody will read.

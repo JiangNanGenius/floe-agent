@@ -1,0 +1,20 @@
+import Foundation
+let folder = URL(fileURLWithPath: CommandLine.arguments[1])
+let first = ExecutionBreadcrumbs(folder: folder)
+let id = UUID()
+first.record(.shell, .began, id: id)
+first.record(.shell, .awaitingReply, id: id)
+let second = ExecutionBreadcrumbs(folder: folder)
+precondition(second.report().contains("shell awaitingReply"))
+second.record(.serviceStop, .completed, id: UUID(), code: 0)
+precondition(second.report().contains("shell awaitingReply"))
+DispatchQueue.concurrentPerform(iterations: 100) { _ in second.record(.shell, .completed, id: UUID(), code: 0) }
+let stored = try Data(contentsOf: folder.appendingPathComponent("current.json"))
+let records = try JSONSerialization.jsonObject(with: stored) as! [[String: Any]]
+precondition(records.count == 64)
+precondition(records.allSatisfy { Set($0.keys).isSubset(of: ["id", "time", "operation", "phase", "code"]) })
+try Data("broken".utf8).write(to: folder.appendingPathComponent("current.json"))
+let recovered = ExecutionBreadcrumbs(folder: folder)
+recovered.record(.serviceStart, .failed, id: UUID())
+precondition(recovered.report().contains("write_failed=false"))
+print("PASS: restart retention, bounded concurrent writes, fixed schema, corrupt journal recovery")

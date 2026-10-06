@@ -20,6 +20,7 @@ final class RuntimeDiagnostics: NSObject, MXMetricManagerSubscriber {
     func start() {
         guard !started else { return }
         started = true
+        _ = ExecutionBreadcrumbs.shared
         previousExit = defaults.bool(forKey: activeKey) ? "noTerminationCallback; requiresMetricKitOrIPS" : "normalOrFirstLaunch"
         defaults.set(true, forKey: activeKey)
         FloeLogger(category: .app).info("processLaunch previousExit=\(previousExit)")
