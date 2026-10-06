@@ -1962,7 +1962,7 @@ jobs:
   local-artifact-testflight:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.local_artifact_sha256 != '' && !inputs.publish && !inputs.lean_release && !inputs.direct_testflight }}
     permissions:
-      contents: read
+      contents: write
       actions: read
     uses: ./.github/workflows/testflight-local-artifact.yml
     with:

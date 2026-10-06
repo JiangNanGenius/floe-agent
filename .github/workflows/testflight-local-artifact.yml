@@ -9,7 +9,7 @@ name: Sign and upload exact local Build261 without rebuilding
         required: true
         type: string
 permissions:
-  contents: read
+  contents: write
   actions: read
 concurrency:
   group: floe-local-build261-upload
