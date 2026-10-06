@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 最近已记录内部交付 / Last recorded internal delivery | 1.7.14 (255), `v1.7.14`; 记录显示 VALID 和 Floe QA 可用；这里未重新核验 Apple 当前状态 / historical VALID and internal availability, not a fresh Apple query | [交付记录](releases/testflight/TESTFLIGHT_1.7.14_BETA.md) |
 | 公开测试 / External beta | Build 255 的最后记录为等待审核；不据此推断现在仍在等待或已批准 / last recorded pending review; current approval not inferred | [送审记录](public-beta/build255/README.md) |
-| 当前源码候选 / Current source candidate | 1.7.19 (260), `2e089fa55aae867ef48df2ecf83a58e2d0e9eedc`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37404454871) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37376267169) |
+| 当前源码候选 / Current source candidate | 1.7.19 (260), `0fbb7a191937fed37dbc2ada08c3d9d6921e3a91`; 尚未打标签/上传 / no tag or upload | [完整 CI](https://github.com/JiangNanGenius/floe-agent/actions/runs/37414808365) · [独立手记验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37376267169) |
 | 256–258 候选 / Earlier candidates | 测试受阻，未据此发布 / blocked by verification; not delivered | [稳定性修复](releases/repairs/FLOE_256_STABILITY.md) |
 | 原生 Office / Native Office | 编译与部分工具链证据不替代 iPad 连续笔迹、原文件写回、保存重开 / device ink and writeback remain separate | [验收范围](OFFICE_FRONTEND_ACCEPTANCE.md) |
 
@@ -30,3 +30,5 @@ Build 259 release qualification failed; its tag remains immutable. Build 260's l
 4. [发布档案](releases/README.md)只作为逐版本证据。Release archives preserve original results.
 
 发布完成需分别确认：构建、留存产物、签名上传、Apple VALID、目标测试组可用、外部审核。Build, retained artifact, signed upload, Apple processing, group availability and external approval are distinct gates. 官网文档上线不代表 App 候选发布。Website publication is separate from App release.
+
+2026-10-06 更新：前轮手记、IDE、兼容检查通过，Swift 包测试因审批等待超时后继续执行而挂起。测试现改为超时取消并抛错，状态机组串行执行，保留 5 秒期限；本地 367 项通过，新提交云端验证进行中。Previous Notes, IDE and compatibility checks passed; runtime tests stalled after a timed-out approval wait continued. Tests now cancel and throw on timeout, and serialize the state-machine suite, keeping the five-second bound. All 367 local runtime tests passed; cloud validation of the new commit is pending.
