@@ -9,6 +9,8 @@ Use this path for an explicitly authorized expedited release. Keep the exact-sou
 5. Independently read Apple status. An upload receipt alone is insufficient: require `VALID`, unexpired, the intended existing group and beta availability. External review submission and approval are separate states.
 6. Save the final signed IPA, symbols, hashes and distribution evidence before removing transport staging and completed task build caches. Never delete source, credentials, user Simulator data, unrelated work or the necessary rollback artifact.
 
+Prefer authenticated direct transport first; measure an alternate route before moving a large archive. A slow or interrupted transfer does not require rebuilding: inspect the existing asset state and digest, and reuse the retained exact-source archive.
+
 Public TestFlight, GitHub prerelease and Feather require their own authorized distribution steps; do not publish the private transport archive or signing materials. Use the verified unsigned developer IPA for Feather.
 
 ## 中文
@@ -16,3 +18,5 @@ Public TestFlight, GitHub prerelease and Feather require their own authorized di
 经用户授权的快速发布采用“本地完整设备构建与相关测试 → 固定源码 → 保存可恢复产物 → 云端仅签名上传 → Apple 状态与既有测试组核验”。不重复编译已经验证的同源产物。记录实际检查与省略项目，不把本地通过写成完整 CI 通过。
 
 公测送审与审核批准分开记录。保留签名包、符号、哈希、日志及必要回滚版本后，清理本任务的一次性构建缓存和中转文件；不删除模拟器数据及无关任务文件。
+
+大文件优先直接认证上传；改用其他链路前先测量吞吐。网络慢或传输中断时检查已有资源状态和哈希，复用已留存的同源压缩包，不重新编译 App。
