@@ -3110,6 +3110,130 @@ private struct CanvasVideoEditorPresentation: Identifiable {
     let source: URL
 }
 
+/// Canvas video node editor bound to a durable child project: reopening the
+/// node resumes the same project/draft, and completing updates the ORIGINAL
+/// node while recording the applied revision and rendered asset.
+private struct CanvasVideoChildProjectSheet: View {
+    @EnvironmentObject private var environment: AppEnvironment
+    @ObservedObject var store: CanvasDocumentStore
+    let presentation: CanvasVideoEditorPresentation
+    @State private var applying = false
+    @State private var errorMessage: String?
+    @State private var startFresh = false
+
+    private var node: CanvasNode? {
+        store.project.documents.first { $0.id == presentation.documentID }?
+            .nodes.first { $0.id == presentation.id }
+    }
+
+    private var bindingState: CanvasChildProjectBindingState {
+        node?.childProjectBindingState ?? .absent
+    }
+
+    var body: some View {
+        Group {
+            if bindingState.isRecoverable, !startFresh {
+                recoveryBody
+            } else {
+                editor(binding: startFresh ? nil : bindingState.binding)
+            }
+        }
+    }
+
+    private var recoveryBody: some View {
+        ContentUnavailableView {
+            Label(canvasLocalized("工程绑定来自更新版本", "Edit binding is from a newer version"),
+                  systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(canvasLocalized(
+                "已保留原始绑定数据，不会用新工程覆盖。可从此原视频开始一个新的编辑会话。",
+                "The original binding is preserved and will not be overwritten. You can start a new session from this video."))
+        } actions: {
+            Button(canvasLocalized("从此原视频开始", "Start from this video")) { startFresh = true }
+                .frame(minHeight: 44)
+        }
+    }
+
+    @ViewBuilder
+    private func editor(binding: CanvasChildProjectBinding?) -> some View {
+        ZStack {
+            WorkbenchBootstrapSheet(
+                center: environment.workbenchCenter,
+                title: node?.text.isEmpty == false ? (node?.text ?? "") : presentation.source.lastPathComponent,
+                kind: .video,
+                urls: [presentation.source],
+                owner: WorkbenchCenter.Owner(kind: .canvas, id: presentation.documentID, environmentID: nil),
+                onExported: { url in Task { await applyExportedVideo(url) } },
+                allowsResume: true,
+                resumeProjectID: binding?.projectID)
+            if applying {
+                ProgressView().padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            }
+            if let errorMessage {
+                VStack {
+                    Spacer()
+                    Text(errorMessage)
+                        .font(.callout)
+                        .padding(10)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .padding()
+                }
+            }
+        }
+    }
+
+    /// Verified export → immutable asset → ORIGINAL node (identity preserved) →
+    /// persisted child binding with applied revision and rendered asset.
+    @MainActor
+    private func applyExportedVideo(_ url: URL) async {
+        guard !applying else { return }
+        applying = true
+        defer { applying = false }
+        guard store.selectedDocument?.id == presentation.documentID,
+              store.selectedDocument?.nodes.contains(where: { $0.id == presentation.id }) == true else {
+            errorMessage = canvasLocalized("视频已导出；原画布或节点已改变，请从素材库插入。",
+                                           "The video was exported; the canvas or node changed, so insert it from the material library.")
+            return
+        }
+        do {
+            let ingestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
+            let record = try await ingestion.importLocalFile(url)
+            guard store.selectedDocument?.id == presentation.documentID,
+                  store.selectedDocument?.nodes.contains(where: { $0.id == presentation.id }) == true else {
+                errorMessage = canvasLocalized("视频已保存到素材库；原节点已改变，请从素材库插入。",
+                                               "The video was saved to the material library; the node changed, so insert it from there.")
+                return
+            }
+            let reference = CanvasAssetReference(
+                id: record.id, contentHash: record.contentHash,
+                localRelativePath: record.localRelativePath,
+                mimeType: record.mimeType, byteCount: record.byteCount)
+            // Update the ORIGINAL node: identity, name, position and edges kept.
+            store.attachAsset(reference, kind: .video, to: presentation.id)
+            let center = environment.workbenchCenter
+            let projectID = center.project?.id ?? bindingState.binding?.projectID
+            let revision = center.project?.revision
+            if let projectID {
+                store.setChildProjectBinding(CanvasChildProjectBinding(
+                    projectID: projectID,
+                    appliedRevision: revision ?? bindingState.binding?.appliedRevision ?? 0,
+                    draftRevision: revision ?? bindingState.binding?.draftRevision,
+                    renderedAssetID: record.id,
+                    sourceNodeID: bindingState.binding?.sourceNodeID ?? presentation.id,
+                    sourceAssetHash: record.contentHash
+                ), for: presentation.id)
+            }
+            store.updateNodeMetadata(presentation.id, values: [
+                "editor": "media-workbench", "editFormat": "video-mp4",
+                "appliedRevision": String(revision ?? 0)
+            ])
+        } catch {
+            errorMessage = canvasLocalized("视频已导出，但应用回画布失败：", "The video was exported but applying it back failed: ")
+                + error.localizedDescription
+        }
+    }
+}
+
 private struct CanvasDeletionRequest: Identifiable {
     let id: UUID
     let name: String
@@ -3380,15 +3504,7 @@ struct WorkspaceCanvasView: View {
             }
         }
         .sheet(item: $videoEditorPresentation) { presentation in
-            WorkbenchBootstrapSheet(
-                center: environment.workbenchCenter,
-                title: presentation.source.lastPathComponent,
-                kind: .video,
-                urls: [presentation.source],
-                owner: WorkbenchCenter.Owner(kind: .canvas, id: presentation.documentID, environmentID: nil),
-                onExported: { url in
-                    Task { await attachEditedVideo(url, presentation: presentation) }
-                })
+            CanvasVideoChildProjectSheet(store: store, presentation: presentation)
         }
         .sheet(isPresented: $showsMediaJobs) {
             CanvasMediaJobCenter(
