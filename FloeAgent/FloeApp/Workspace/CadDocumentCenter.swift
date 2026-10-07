@@ -48,6 +48,10 @@ actor CadDocumentCenter: CadDocumentHost {
     private var proposalAccess: [UUID: CadDocumentAccess] = [:]
     private let grants = CadProposalGrantStore()
     private var appliedReceipts: [String: CadDocumentReceipt] = [:]
+    /// Successful proposal outcomes kept as tombstones so a tool retry with
+    /// the same request id replays the original receipt instead of failing to
+    /// load the (now applied) proposal. Maps proposal id -> (access, requestID, receipt).
+    private var proposalOutcomes: [UUID: (access: CadDocumentAccess, requestID: String, receipt: CadDocumentReceipt)] = [:]
     /// One serializing gate per canonical document key. Whole transaction
     /// units (open → edit → save → commit) run under the gate so two grants at
     /// the same revision can never both edit before one save, and a queueing
@@ -167,8 +171,24 @@ actor CadDocumentCenter: CadDocumentHost {
         proposals[proposal.id] = proposal
     }
 
-    func loadProposal(id: UUID) async throws -> CadProposal? {
-        proposals[id]
+    func loadProposal(id: UUID, access: CadDocumentAccess) async throws -> CadProposal? {
+        // Ownership is recorded when the proposal is prepared; a caller from
+        // another task, workspace root or environment gets the same denial as
+        // an unknown proposal, so ids are not enumerable across owners.
+        guard let recorded = proposalAccess[id], recorded == access else { return nil }
+        return proposals[id]
+    }
+
+    func verifyProposalBinding(_ proposal: CadProposal, documentID: String,
+                               access: CadDocumentAccess) async throws {
+        guard let recorded = proposalAccess[proposal.id], recorded == access else {
+            throw FloeError.unauthorized
+        }
+        let resolved = try resolve(documentID: documentID, access: access)
+        guard resolved.id == proposal.documentID else {
+            throw FloeError.validationFailed(
+                "proposal \(proposal.id.uuidString) belongs to \(proposal.documentID), not \(resolved.id)")
+        }
     }
 
     func removeProposal(id: UUID) async throws {
@@ -194,6 +214,11 @@ actor CadDocumentCenter: CadDocumentHost {
             if let replay = appliedReceipts[key] {
                 return replayReceipt(replay, requestID: requestID)
             }
+            // A request id is bound to its payload: reusing it with different
+            // content is a conflict, never a silent rerun.
+            try noteRequestPayload(action: "apply", access: access, documentID: resolved.id,
+                                   requestID: requestID,
+                                   payload: proposal.baseSHA256 + "|" + proposal.operationsJSON)
             let session = try await refreshSession(resolved)
             guard session.sha256.lowercased() == proposal.baseSHA256.lowercased(),
                   session.revision == proposal.baseRevision else {
@@ -236,8 +261,10 @@ actor CadDocumentCenter: CadDocumentHost {
                                          created: created, service: resolved.service,
                                          relativePath: resolved.id)
                 _ = await grants.commitReservation(grantID: grantID)
-                proposals.removeValue(forKey: proposal.id)
-                proposalAccess.removeValue(forKey: proposal.id)
+                // Keep the proposal as an applied tombstone: a tool retry with
+                // the same request id must replay the original receipt instead
+                // of failing to load a deleted proposal.
+                proposalOutcomes[proposal.id] = (access: access, requestID: requestID, receipt: receipt)
                 appliedReceipts[key] = receipt
                 return receipt
             } catch {
@@ -275,6 +302,8 @@ actor CadDocumentCenter: CadDocumentHost {
             if let replay = appliedReceipts[key] {
                 return replayReceipt(replay, requestID: requestID)
             }
+            try noteRequestPayload(action: "save", access: access, documentID: resolved.id,
+                                   requestID: requestID, payload: expectedSHA256)
             let session = try await refreshSession(resolved)
             guard session.sha256.lowercased() == expectedSHA256.lowercased() else {
                 throw FloeError.validationFailed("The drawing changed on disk; save refused. Draft remains in the editor.")
@@ -371,12 +400,39 @@ actor CadDocumentCenter: CadDocumentHost {
     }
 
     func pendingProposals() -> [CadProposal] {
-        proposals.values.sorted { $0.createdAt > $1.createdAt }
+        proposals.values
+            .filter { proposalOutcomes[$0.id] == nil }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// Proposals pending for one canonical document+owner identity. The same
+    /// relative filename under two workspace roots (or two tasks) never mixes:
+    /// the recorded prepare-time access must match exactly and the stored
+    /// document id must equal the resolved canonical relative path. Applied
+    /// proposals (kept as replay tombstones) are excluded.
+    func pendingProposals(documentID: String, access: CadDocumentAccess) throws -> [CadProposal] {
+        let resolved = try resolve(documentID: documentID, access: access)
+        return proposals.values
+            .filter { $0.documentID == resolved.id && proposalAccess[$0.id] == access
+                && proposalOutcomes[$0.id] == nil }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
     func discardProposal(id: UUID) {
         proposals.removeValue(forKey: id)
         proposalAccess.removeValue(forKey: id)
+        proposalOutcomes.removeValue(forKey: id)
+    }
+
+    /// Whether a proposal already ran to a successful commit; applied
+    /// proposals stay loadable for request-id replay but leave the pending list.
+    func isProposalApplied(_ id: UUID) -> Bool {
+        proposalOutcomes[id] != nil
+    }
+
+    func loadProposalOutcome(id: UUID, access: CadDocumentAccess) async throws -> CadProposalOutcome? {
+        guard let outcome = proposalOutcomes[id], outcome.access == access else { return nil }
+        return CadProposalOutcome(requestID: outcome.requestID, receipt: outcome.receipt)
     }
 
     /// The visible editor committed through the shared file service; record the
@@ -601,6 +657,29 @@ actor CadDocumentCenter: CadDocumentHost {
         return FloeDigest.sha256Hex(Data(identity.utf8))
     }
 
+    /// requestID -> payload digest per (action, owner, document). The first
+    /// use binds the id; a later call with different content is a conflict.
+    private var requestPayloads: [String: String] = [:]
+
+    private func noteRequestPayload(action: String, access: CadDocumentAccess, documentID: String,
+                                    requestID: String, payload: String) throws {
+        let indexKey = [
+            action,
+            access.environmentID ?? "",
+            access.ownerKind ?? "",
+            access.ownerID?.uuidString ?? "",
+            access.workspacePath ?? "",
+            documentID,
+            requestID,
+        ].joined(separator: "|")
+        let payloadDigest = FloeDigest.sha256Hex(Data(payload.utf8))
+        if let existing = requestPayloads[indexKey], existing != payloadDigest {
+            throw FloeError.validationFailed(
+                "request_id '\(requestID)' was already used with a different payload for \(documentID); use a new request_id.")
+        }
+        requestPayloads[indexKey] = payloadDigest
+    }
+
     private func replayReceipt(_ receipt: CadDocumentReceipt, requestID: String) -> CadDocumentReceipt {
         CadDocumentReceipt(documentID: receipt.documentID, revision: receipt.revision,
                            sha256: receipt.sha256, created: receipt.created,
@@ -617,6 +696,67 @@ actor CadDocumentCenter: CadDocumentHost {
             return try jsonString(operations[0])
         }
         return try jsonString(["operation": "batch", "operations": operations])
+    }
+
+    /// Derives a world-space polyline from the engine's canonical entity
+    /// serialization so the proposal overlay can draw the actual geometry
+    /// (line/arc/circle/polyline/text box) instead of only bounds rectangles.
+    static func entityPolyline(from entity: Any?, fallbackBounds: CadBounds?) -> [[Double]]? {
+        guard let object = entity as? [String: Any],
+              let body = object.values.first as? [String: Any] else { return nil }
+        func pair(_ value: Any?) -> [Double]? {
+            guard let array = value as? [Any], array.count >= 2,
+                  let x = array[0] as? Double, let y = array[1] as? Double,
+                  x.isFinite, y.isFinite else { return nil }
+            return [x, y]
+        }
+        func number(_ value: Any?) -> Double? {
+            (value as? Double).flatMap { $0.isFinite ? $0 : nil }
+        }
+        func field(_ body: [String: Any], _ snake: String, _ camel: String) -> Any? {
+            body[snake] ?? body[camel]
+        }
+        func sampledArc(center: [Double], radius: Double, start: Double, end: Double) -> [[Double]] {
+            var sweep = end - start
+            while sweep < 0 { sweep += 2 * .pi }
+            while sweep > 2 * .pi { sweep -= 2 * .pi }
+            let segments = max(8, min(96, Int(ceil(sweep / (.pi / 24)))))
+            return (0...segments).map { index in
+                let angle = start + sweep * Double(index) / Double(segments)
+                return [center[0] + radius * cos(angle), center[1] + radius * sin(angle)]
+            }
+        }
+        if let start = pair(field(body, "start", "start")), let end = pair(field(body, "end", "end")) {
+            return [start, end]
+        }
+        if let center3 = field(body, "center", "center") as? [Any],
+           let center = pair(center3), let radius = number(field(body, "radius", "radius")), radius > 0 {
+            let start = number(field(body, "start_angle", "startAngle")) ?? 0
+            let end = number(field(body, "end_angle", "endAngle")) ?? (start + 2 * .pi)
+            if number(field(body, "start_angle", "startAngle")) != nil {
+                return sampledArc(center: center, radius: radius, start: start, end: end)
+            }
+            return sampledArc(center: center, radius: radius, start: 0, end: 2 * .pi)
+        }
+        if let vertices = field(body, "vertices", "vertices") as? [Any] {
+            let points = vertices.compactMap { pair($0) }
+            if points.count >= 2 { return points }
+        }
+        if let position3 = field(body, "position", "position") as? [Any],
+           let position = pair(position3), let height = number(field(body, "height", "height")), height > 0 {
+            let half = height * 0.5
+            return [
+                [position[0] - half, position[1] - half],
+                [position[0] + half, position[1] - half],
+                [position[0] + half, position[1] + half],
+                [position[0] - half, position[1] + half],
+                [position[0] - half, position[1] - half]
+            ]
+        }
+        // Fallback: rectangle from bounds so the overlay still shows location.
+        guard let bounds = fallbackBounds, bounds.min.count >= 2, bounds.max.count >= 2 else { return nil }
+        let (minX, minY, maxX, maxY) = (bounds.min[0], bounds.min[1], bounds.max[0], bounds.max[1])
+        return [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY], [minX, minY]]
     }
 
     private func entityPages(from session: CadWebEngineSession) async throws -> (rows: [[String: Any]], truncated: Bool) {
@@ -657,7 +797,9 @@ actor CadDocumentCenter: CadDocumentHost {
                let min = boundsObject["min"] as? [Double], let max = boundsObject["max"] as? [Double] {
                 bounds = CadBounds(min: min, max: max)
             }
-            return CadEntityPreview(handle: handle, type: type, layer: layer, bounds: bounds)
+            let points = Self.entityPolyline(from: row["entity"], fallbackBounds: bounds)
+            return CadEntityPreview(handle: handle, type: type, layer: layer, bounds: bounds,
+                                    points: points)
         }
         var added: [CadEntityPreview] = []
         var changed: [CadEntityPreview] = []

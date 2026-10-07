@@ -25,6 +25,7 @@ actor FakeCadHost: CadDocumentHost {
     var appliedReceipts: [String: CadDocumentReceipt] = [:]
     var applyCount = 0
     var queryReply = #"{"entities":[],"entityCount":0}"#
+    var queryRequests: [String] = []
     var preview = CadDiffPreview(added: [], changed: [], deleted: [], counts: ["added": 0, "changed": 0, "deleted": 0], truncated: false, note: "preview")
     var snapshotCalls = 0
     var appliedOperationsJSON: String?
@@ -51,23 +52,49 @@ actor FakeCadHost: CadDocumentHost {
     }
 
     func query(documentID: String, requestJSON: String, access: CadDocumentAccess) async throws -> String {
-        queryReply
+        queryRequests.append(requestJSON)
+        return queryReply
     }
 
     func prepareProposal(documentID: String, snapshot: CadDocumentSnapshot, summary: String,
-                         operationsJSON: String, access: CadDocumentAccess) async throws -> CadProposal {
+                          operationsJSON: String, access: CadDocumentAccess) async throws -> CadProposal {
         appliedOperationsJSON = operationsJSON
+        storedAccess = access
         return CadProposal(documentID: documentID, baseRevision: snapshot.revision,
                            baseSHA256: snapshot.sha256, summary: summary,
                            operationsJSON: operationsJSON, preview: preview)
     }
 
     func storeProposal(_ proposal: CadProposal) async throws { storedProposal = proposal }
-    func loadProposal(id: UUID) async throws -> CadProposal? {
-        storedProposal?.id == id ? storedProposal : nil
+    var storedAccess: CadDocumentAccess?
+    var bindingChecked = 0
+    var lastBindingDocumentID: String?
+    /// Mirrors the real host's applied-proposal tombstone.
+    var outcome: (proposalID: UUID, access: CadDocumentAccess, requestID: String, receipt: CadDocumentReceipt)?
+    func loadProposal(id: UUID, access: CadDocumentAccess) async throws -> CadProposal? {
+        // Mirrors the real host: proposals are only visible to the exact
+        // environment/workspace/owner that prepared them, and applied
+        // proposals leave only the outcome tombstone.
+        guard outcome?.proposalID != id else { return nil }
+        guard storedAccess == nil || storedAccess == access else { return nil }
+        return storedProposal?.id == id ? storedProposal : nil
+    }
+    func loadProposalOutcome(id: UUID, access: CadDocumentAccess) async throws -> CadProposalOutcome? {
+        guard let outcome, outcome.proposalID == id, outcome.access == access else { return nil }
+        return CadProposalOutcome(requestID: outcome.requestID, receipt: outcome.receipt)
+    }
+    func verifyProposalBinding(_ proposal: CadProposal, documentID: String,
+                               access: CadDocumentAccess) async throws {
+        bindingChecked += 1
+        lastBindingDocumentID = documentID
+        guard storedAccess == nil || storedAccess == access else { throw FloeError.unauthorized }
+        guard proposal.documentID == documentID else {
+            throw FloeError.validationFailed("proposal belongs to \(proposal.documentID), not \(documentID)")
+        }
     }
     func removeProposal(id: UUID) async throws {
         if storedProposal?.id == id { storedProposal = nil }
+        if outcome?.proposalID == id { outcome = nil }
     }
 
     func consumeGrant(grantID: String, proposalID: UUID, documentID: String,
@@ -91,6 +118,8 @@ actor FakeCadHost: CadDocumentHost {
         let receipt = CadDocumentReceipt(documentID: proposal.documentID, revision: revision,
                                          sha256: sha, created: ["AB"], saved: true)
         appliedReceipts[requestID] = receipt
+        storedAccess = access
+        outcome = (proposal.id, access, requestID, receipt)
         return receipt
     }
 
@@ -230,9 +259,11 @@ struct CadDocumentToolTests {
     func applyRequiresGrant() async throws {
         let host = FakeCadHost()
         let tool = CadDocumentTool(host: host)
+        // One task owns the whole propose→preview→apply sequence.
+        let context = makeContext()
         _ = try await execute(tool, #"""
         {"action":"propose","path":"plate.dwg","operations":[{"operation":"delete","handle":"AB"}]}
-        """#)
+        """#, context: context)
         guard let proposal = await host.storedProposal else {
             Issue.record("proposal not stored")
             return
@@ -241,7 +272,7 @@ struct CadDocumentToolTests {
         await #expect(throws: FloeError.self) {
             _ = try await execute(tool, """
             {"action":"apply","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)"}
-            """)
+            """, context: context)
         }
         let initialApplies = await host.applyCount
         #expect(initialApplies == 0)
@@ -249,13 +280,20 @@ struct CadDocumentToolTests {
         let grant = await tool.issueUserGrant(for: proposal)
         let output = try await execute(tool, """
         {"action":"apply","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)","grant_id":"\(grant)"}
-        """)
+        """, context: context)
         #expect(output.summary.contains("\"saved\":true"))
         let applies = await host.applyCount
         #expect(applies == 1)
-        let remaining = await host.storedProposal
-        #expect(remaining == nil)
-        // A consumed grant cannot be replayed.
+        // The applied proposal stays as a replay tombstone (not deleted), so a
+        // retry with the SAME request id returns the original receipt without
+        // mutating again — the tool path, not only the center.
+        let replay = try await execute(tool, """
+        {"action":"apply","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)","grant_id":"\(grant)"}
+        """, context: context)
+        #expect(replay.summary.contains("\"replay\":true"))
+        #expect(await host.applyCount == 1)
+        // A different request id (new tool call) after the grant was consumed
+        // is a new operation and is refused without mutation.
         await #expect(throws: FloeError.self) {
             _ = try await execute(tool, """
             {"action":"apply","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)","grant_id":"\(grant)"}
@@ -341,16 +379,17 @@ struct CadDocumentToolTests {
             added: [], changed: [CadEntityPreview(handle: "CD", type: "Circle", layer: "0", bounds: CadBounds(min: [0, 0], max: [1, 1]))],
             deleted: [], counts: ["added": 0, "changed": 1, "deleted": 0], truncated: false, note: "n"))
         let tool = CadDocumentTool(host: host)
+        let context = makeContext()
         _ = try await execute(tool, #"""
         {"action":"propose","path":"plate.dwg","operations":[{"operation":"setRadius","handle":"CD","radius":2}]}
-        """#)
+        """#, context: context)
         guard let proposal = await host.storedProposal else {
             Issue.record("proposal not stored")
             return
         }
         let preview = try await execute(tool, """
         {"action":"preview","path":"plate.dwg","proposal_id":"\(proposal.id.uuidString)"}
-        """)
+        """, context: context)
         #expect(preview.summary.contains("CD"))
 
         let save = try await execute(tool, #"{"action":"save","path":"plate.dwg"}"#)
@@ -358,6 +397,117 @@ struct CadDocumentToolTests {
         let export = try await execute(tool, #"{"action":"export","path":"plans/plate.dwg"}"#)
         #expect(export.summary.contains("plans/plate.export.dxf"))
         #expect(CadDocumentTool.defaultExportPath(for: "plate.dwg") == "plate.export.dxf")
+    }
+
+    @Test("query action validates kind and dispatches typed engine requests")
+    func queryAction() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        // Legal kinds pass validate and reach the engine.
+        let entities = try await execute(tool, #"{"action":"query","path":"plate.dwg","kind":"entities","offset":0,"limit":50,"layer":"0"}"#)
+        #expect(entities.summary.contains("cad.document query"))
+        let layers = try await execute(tool, #"{"action":"query","path":"plate.dwg","kind":"layers"}"#)
+        #expect(layers.summary.contains("cad.document query"))
+        let drawing = try await execute(tool, #"{"action":"query","path":"plate.dwg","kind":"drawing"}"#)
+        #expect(drawing.summary.contains("cad.document query"))
+        let text = try await execute(tool, #"{"action":"query","path":"plate.dwg","kind":"text","text":"beam"}"#)
+        #expect(text.summary.contains("cad.document query"))
+        let snap = try await execute(tool, #"{"action":"query","path":"plate.dwg","kind":"snap","points":[[1.5,2.5]]}"#)
+        #expect(snap.summary.contains("cad.document query"))
+        let requests = await host.queryRequests
+        #expect(requests.count == 5)
+        #expect(requests[0].contains("\"operation\":\"entities\""))
+        #expect(requests[0].contains("\"limit\":50"))
+        #expect(requests[4].contains("\"operation\":\"snap\""))
+
+        // Invalid inputs fail validation before any engine work.
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"query","path":"plate.dwg"}"#))
+        }
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"query","path":"plate.dwg","kind":"volume"}"#))
+        }
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"query","path":"plate.dwg","kind":"snap"}"#))
+        }
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"query","path":"plate.dwg","kind":"entities","offset":-1}"#))
+        }
+        #expect(throws: FloeError.self) {
+            try tool.validate(try decode(#"{"action":"query","path":"plate.dwg","kind":"entities","limit":501}"#))
+        }
+        let requestCount = await host.queryRequests.count
+        #expect(requestCount == 5)
+    }
+
+    @Test("preview/apply enforce proposal ownership and canonical target path")
+    func proposalBindingEnforced() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        // One task owns the propose→preview→apply sequence.
+        let owner = makeContext()
+        _ = try await execute(tool, #"""
+        {"action":"propose","path":"plans/plate.dwg","operations":[{"operation":"delete","handle":"AB"}]}
+        """#, context: owner)
+        guard let proposal = await host.storedProposal else {
+            Issue.record("proposal not stored")
+            return
+        }
+        // Preview from the owning context succeeds and binds the supplied path.
+        let preview = try await execute(tool, """
+        {"action":"preview","path":"plans/plate.dwg","proposal_id":"\(proposal.id.uuidString)"}
+        """, context: owner)
+        #expect(preview.summary.contains("\"changed\""))
+        #expect(await host.bindingChecked >= 1)
+
+        // A different conversation (task owner) cannot even see the proposal.
+        let otherContext = makeContext(conversation: UUID())
+        await #expect(throws: FloeError.self) {
+            let args = try self.decode("""
+            {"action":"preview","path":"plans/plate.dwg","proposal_id":"\(proposal.id.uuidString)"}
+            """)
+            try tool.validate(args)
+            _ = try await tool.execute(args, context: otherContext)
+        }
+        // A different workspace root for the same relative filename is refused.
+        let otherRoot = ToolContext(runID: UUID(), toolCallID: "call-1", scope: .local,
+                                    workspaceRootURL: URL(fileURLWithPath: "/tmp/other-root"),
+                                    cancellation: CancellationToken(), environmentID: "env-1",
+                                    conversationID: owner.conversationID)
+        await #expect(throws: FloeError.self) {
+            let args = try self.decode("""
+            {"action":"preview","path":"plans/plate.dwg","proposal_id":"\(proposal.id.uuidString)"}
+            """)
+            try tool.validate(args)
+            _ = try await tool.execute(args, context: otherRoot)
+        }
+
+        // The owning task cannot preview the same proposal id against another path.
+        await #expect(throws: FloeError.self) {
+            let args = try self.decode("""
+            {"action":"preview","path":"other/frame.dwg","proposal_id":"\(proposal.id.uuidString)"}
+            """)
+            try tool.validate(args)
+            _ = try await tool.execute(args, context: owner)
+        }
+
+        // Apply against a mismatched path is refused before any mutation.
+        let grant = await tool.issueUserGrant(for: proposal)
+        await #expect(throws: FloeError.self) {
+            let args = try self.decode("""
+            {"action":"apply","path":"other/frame.dwg","proposal_id":"\(proposal.id.uuidString)","grant_id":"\(grant)"}
+            """)
+            try tool.validate(args)
+            _ = try await tool.execute(args, context: owner)
+        }
+        #expect(await host.applyCount == 0)
+
+        // Apply with the correct canonical path succeeds for the owner.
+        let applied = try await execute(tool, """
+        {"action":"apply","path":"plans/plate.dwg","proposal_id":"\(proposal.id.uuidString)","grant_id":"\(grant)"}
+        """, context: owner)
+        #expect(applied.summary.contains("\"saved\":true"))
+        #expect(await host.applyCount == 1)
     }
 
     @Test("query/measure/check dispatch typed engine requests")

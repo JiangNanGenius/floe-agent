@@ -1300,6 +1300,17 @@ final class ConversationCenter: ObservableObject {
         )
     }
 
+    /// Records a user decision (adopt/reject) on an AI proposal in the
+    /// originating conversation transcript. The original task that produced
+    /// the proposal learns the outcome on its next turn instead of assuming
+    /// the proposal is still pending. Bounded and idempotent by message id.
+    func recordProposalNotice(conversationID: UUID, summary: String) async {
+        let content = String(summary.prefix(2000))
+        let message = PersistedMessage(id: UUID(), conversationID: conversationID,
+                                       role: "system", content: content, createdAt: Date())
+        try? await environment.conversationStore.appendMessage(message)
+    }
+
     /// Launches a new run and returns immediately. The task result covers
     /// the complete run; the run itself is persisted at the beginning of
     /// `ConversationRunService.start`, before provider I/O starts.

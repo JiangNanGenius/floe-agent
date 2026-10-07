@@ -122,7 +122,11 @@ struct WorkbenchImagePreview: View {
                 }
             }
             .contentShape(Rectangle())
-            .gesture(dragGesture(display: display))
+            // The drag/tap recognizers are attached ONLY outside ink mode: a
+            // parent DragGesture (even one whose onChanged returns early)
+            // still recognizes and cancels the PressureTouchView touch
+            // sequence, which discarded real brush strokes end-to-end.
+            .gesture(isInkTool ? nil : dragGesture(display: display))
             .simultaneousGesture(
                 MagnificationGesture()
                     .onChanged { value in liveScale = selectedLayer.map { $0.transform.scale * Double(value) } }
@@ -147,9 +151,9 @@ struct WorkbenchImagePreview: View {
                                                   adjustment: nil, text: nil, crop: .unchanged))
                     }
             )
-            .onTapGesture { location in
-                handleTap(at: location, display: display)
-            }
+            .modifier(ExclusiveTapGestureModifier(
+                isEnabled: !isInkTool,
+                action: { location in handleTap(at: location, display: display) }))
         }
         .accessibilityIdentifier("workbench.preview.image")
     }
@@ -611,6 +615,23 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
         private func normalizedForce(_ touch: UITouch) -> Double {
             guard touch.type == .pencil, touch.maximumPossibleForce > 0 else { return 0 }
             return min(max(Double(touch.force / touch.maximumPossibleForce), 0), 1)
+        }
+    }
+}
+
+/// Attaches a tap gesture only when enabled. SwiftUI has no optional
+/// `.onTapGesture`; a recognizer that always exists would claim single-finger
+/// touches in ink mode and cancel the pressure surface before `touchesEnded`,
+/// losing both strokes and tap dots.
+private struct ExclusiveTapGestureModifier: ViewModifier {
+    let isEnabled: Bool
+    let action: (CGPoint) -> Void
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.onTapGesture(perform: action)
+        } else {
+            content
         }
     }
 }

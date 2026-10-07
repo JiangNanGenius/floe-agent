@@ -197,12 +197,14 @@ struct FilePreviewView: View {
                     Button("engineering.cad.keepEditing", role: .cancel) {}
                 }
                 .sheet(item: $engineeringReview) { capture in
-                    EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID, center: center)
+                    EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID,
+                                           center: center, webSession: engineeringSession)
                 }
             }
         }
         .sheet(item: Binding(get: { isEngineeringFullScreen ? nil : engineeringReview }, set: { engineeringReview = $0 })) { capture in
-            EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID, center: center)
+            EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID,
+                                   center: center, webSession: engineeringSession)
         }
         // The unified media workbench replaces the old parameter form and
         // single-file image editor; export drives the actual render.
@@ -254,8 +256,20 @@ struct FilePreviewView: View {
         }
     }
 
+    /// The conversation bound to this exact document: an explicit preview
+    /// binding wins, then the durable per-document Drawing Assistant binding
+    /// (survives restarts), then the currently selected conversation when it
+    /// belongs to this workspace.
     private var engineeringConversationID: UUID? {
-        guard let id = conversationID ?? router.selectedConversationID,
+        if let id = conversationID, center.workspaceID(for: id) == center.currentWorkspace?.id {
+            return id
+        }
+        if let workspaceID = center.currentWorkspace?.id,
+           let durable = DrawingAssistantConversationStore.shared
+            .conversationID(workspaceID: workspaceID, relativePath: relativePath) {
+            return durable
+        }
+        guard let id = router.selectedConversationID,
               center.workspaceID(for: id) == center.currentWorkspace?.id else { return nil }
         return id
     }

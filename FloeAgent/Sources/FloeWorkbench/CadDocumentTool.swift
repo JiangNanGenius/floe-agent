@@ -154,12 +154,18 @@ public struct CadEntityPreview: Codable, Sendable, Equatable {
     public var type: String
     public var layer: String
     public var bounds: CadBounds?
+    /// World-space polyline approximating the actual entity geometry
+    /// (line endpoints, sampled circle/arc, polyline vertices, text box).
+    /// The overlay draws this instead of only the bounding rectangle.
+    public var points: [[Double]]?
 
-    public init(handle: String, type: String, layer: String, bounds: CadBounds?) {
+    public init(handle: String, type: String, layer: String, bounds: CadBounds?,
+                points: [[Double]]? = nil) {
         self.handle = handle
         self.type = type
         self.layer = layer
         self.bounds = bounds
+        self.points = points
     }
 }
 
@@ -205,8 +211,19 @@ public struct CadProposal: Codable, Sendable, Equatable {
     }
 }
 
-public struct CadDocumentReceipt: Codable, Sendable, Equatable {
-    public var documentID: String
+/// Recorded result of an applied proposal, kept so a tool retry with the
+/// same request id replays the original receipt instead of re-running the edit.
+public struct CadProposalOutcome: Sendable, Equatable {
+    public var requestID: String
+    public var receipt: CadDocumentReceipt
+
+    public init(requestID: String, receipt: CadDocumentReceipt) {
+        self.requestID = requestID
+        self.receipt = receipt
+    }
+}
+
+public struct CadDocumentReceipt: Codable, Sendable, Equatable {    public var documentID: String
     public var revision: Int64
     public var sha256: String
     public var created: [String]
@@ -287,7 +304,18 @@ public protocol CadDocumentHost: Sendable {
     func prepareProposal(documentID: String, snapshot: CadDocumentSnapshot, summary: String,
                          operationsJSON: String, access: CadDocumentAccess) async throws -> CadProposal
     func storeProposal(_ proposal: CadProposal) async throws
-    func loadProposal(id: UUID) async throws -> CadProposal?
+    /// Returns the proposal only when it was created by this exact
+    /// environment/workspace/owner; a proposal stored by another task, root or
+    /// environment must never be visible through a foreign access context.
+    func loadProposal(id: UUID, access: CadDocumentAccess) async throws -> CadProposal?
+    /// Returns the recorded outcome of an already-applied proposal for the
+    /// same owner, so a retry carrying the same request id can replay the
+    /// original receipt without re-mutating the document.
+    func loadProposalOutcome(id: UUID, access: CadDocumentAccess) async throws -> CadProposalOutcome?
+    /// Confirms `documentID` resolves to the proposal's canonical target for
+    /// this access before preview/apply/replay touches it.
+    func verifyProposalBinding(_ proposal: CadProposal, documentID: String,
+                               access: CadDocumentAccess) async throws
     func removeProposal(id: UUID) async throws
     /// Consumes a single-use interactive grant bound to proposal/document/
     /// revision/SHA. Anything else is denied.
@@ -534,10 +562,39 @@ public struct CadDocumentTool: AgentTool {
         switch args.action {
         case .capabilities:
             break
-        case .read, .save, .export, .preview, .apply:
+        case .read, .save, .export:
             break
+        case .preview:
+            guard args.proposalID != nil else {
+                throw FloeError.validationFailed("preview requires proposal_id")
+            }
+        case .apply:
+            guard args.proposalID != nil else {
+                throw FloeError.validationFailed("apply requires proposal_id")
+            }
+            guard let grant = args.grantID, !grant.isEmpty else {
+                throw FloeError.validationFailed("apply requires a user-issued grant_id")
+            }
         case .query:
-            throw FloeError.validationFailed("query requires kind (entities|text|layers|drawing|snap)")
+            // A query must name a kind; "entities"/"text" additionally accept
+            // pagination/filter fields and "snap" requires one finite point.
+            // Without this the dispatcher rejected every legal query.
+            guard let kind = args.kind,
+                  ["entities", "text", "layers", "drawing", "snap"].contains(kind) else {
+                throw FloeError.validationFailed("query requires kind (entities|text|layers|drawing|snap)")
+            }
+            if kind == "snap" {
+                guard let point = args.points?.first, point.count >= 2,
+                      point[0].isFinite, point[1].isFinite else {
+                    throw FloeError.validationFailed("snap query requires a finite point")
+                }
+            }
+            if let offset = args.offset, offset < 0 {
+                throw FloeError.validationFailed("offset must be >= 0")
+            }
+            if let limit = args.limit, !(1...500).contains(limit) {
+                throw FloeError.validationFailed("limit must be between 1 and 500")
+            }
         case .locate:
             guard let handles = args.handles, handles.count == 1 else {
                 throw FloeError.validationFailed("locate requires exactly one handle")
@@ -638,26 +695,49 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded(summary, 8_000), requiresUserAction: true)
 
         case .preview:
-            guard let id = args.proposalID, let proposal = try await host.loadProposal(id: id) else {
+            guard let id = args.proposalID,
+                  let proposal = try await host.loadProposal(id: id, access: access) else {
                 throw FloeError.notFound("CAD proposal")
             }
+            try await host.verifyProposalBinding(proposal, documentID: args.path!, access: access)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(proposal.preview), encoding: .utf8) ?? "{}"
             return ToolExecutionOutput(digesting: bounded("cad.document preview: \(json)", 32_000))
 
         case .apply:
-            guard let id = args.proposalID, let proposal = try await host.loadProposal(id: id) else {
+            guard let id = args.proposalID else {
                 throw FloeError.notFound("CAD proposal")
             }
             guard let grantID = args.grantID, !grantID.isEmpty else {
                 throw FloeError.unauthorized
             }
-            let receipt = try await host.apply(proposal: proposal, grantID: grantID, requestID: requestID, access: access)
-            try await host.removeProposal(id: proposal.id)
+            // The proposal may still be loadable (applied tombstone retained
+            // for replay) or fully applied; both paths verify ownership first.
+            if let proposal = try await host.loadProposal(id: id, access: access) {
+                try await host.verifyProposalBinding(proposal, documentID: args.path!, access: access)
+                let receipt = try await host.apply(proposal: proposal, grantID: grantID,
+                                                   requestID: requestID, access: access)
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
+                return ToolExecutionOutput(digesting: bounded("cad.document apply: \(json)", 16_000))
+            }
+            guard let outcome = try await host.loadProposalOutcome(id: id, access: access) else {
+                throw FloeError.notFound("CAD proposal")
+            }
+            // Already applied: only the identical request id replays the
+            // original receipt; anything else is a new operation and the
+            // consumed grant refuses it.
+            guard outcome.requestID == requestID else {
+                throw FloeError.validationFailed(
+                    "proposal \(id.uuidString) was already applied with a different request; start a new proposal to change the drawing again.")
+            }
+            var replay = outcome.receipt
+            replay.replay = true
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-            let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
+            let json = String(data: try encoder.encode(replay), encoding: .utf8) ?? "{}"
             return ToolExecutionOutput(digesting: bounded("cad.document apply: \(json)", 16_000))
 
         case .save:

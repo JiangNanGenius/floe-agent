@@ -59,6 +59,17 @@ struct EngineeringReviewSheet: View {
         self.workspaceID = center.currentWorkspace?.id
     }
 
+    /// The exact environment/workspace/owner identity the cad.document tool
+    /// presents for this document, so pending proposals are matched against
+    /// the canonical binding recorded at prepare time — never by filename
+    /// suffix across workspace roots or tasks.
+    private var documentAccess: CadDocumentAccess {
+        CadDocumentAccess(environmentID: nil,
+                          workspacePath: capture.workspaceRoot?.path,
+                          ownerKind: conversationID == nil ? "workspace" : "chat",
+                          ownerID: conversationID)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -188,8 +199,12 @@ struct EngineeringReviewSheet: View {
         func append(_ kind: String, _ items: [CadEntityPreview]) {
             for item in items.prefix(200) {
                 guard let bounds = item.bounds else { continue }
-                entries.append(["kind": kind, "handle": item.handle,
-                                "min": bounds.min, "max": bounds.max])
+                var entry: [String: Any] = ["kind": kind, "handle": item.handle,
+                                            "min": bounds.min, "max": bounds.max]
+                if let points = item.points {
+                    entry["points"] = points
+                }
+                entries.append(entry)
             }
         }
         append("added", proposal.preview.added)
@@ -229,6 +244,12 @@ struct EngineeringReviewSheet: View {
                 createdConversationID = record.id
                 target = record.id
             }
+            // Durable document-bound binding: reopening this drawing later
+            // resumes the same Drawing Assistant conversation.
+            if let documentID = capture.documentID, let workspaceID {
+                DrawingAssistantConversationStore.shared
+                    .bind(workspaceID: workspaceID, relativePath: documentID, conversationID: target)
+            }
             guard center.currentWorkspace?.id == workspaceID else {
                 throw FloeError.validationFailed(String(localized: "engineering.review.workspaceChanged"))
             }
@@ -248,8 +269,22 @@ struct EngineeringReviewSheet: View {
 
     @MainActor private func loadProposals() async {
         guard let documentID = capture.documentID else { return }
-        let pending = await center.environment.cadDocumentCenter.pendingProposals()
-        proposals = pending.filter { $0.documentID == documentID || $0.documentID.hasSuffix(documentID) }
+        do {
+            proposals = try await center.environment.cadDocumentCenter
+                .pendingProposals(documentID: documentID, access: documentAccess)
+        } catch {
+            proposals = []
+        }
+    }
+
+    /// The original task that asked for the change is told the outcome, so a
+    /// late or follow-up run in the same conversation sees the decision.
+    @MainActor private func notifyOriginalTask(summary: String) {
+        guard let target = conversationID ?? createdConversationID else { return }
+        Task {
+            await center.environment.conversationCenter
+                .recordProposalNotice(conversationID: target, summary: summary)
+        }
     }
 
     @MainActor private func apply(_ proposal: CadProposal) async {
@@ -262,6 +297,7 @@ struct EngineeringReviewSheet: View {
                 "已应用并保存修订 \(receipt.revision)（\(receipt.sha256.prefix(8))…）",
                 "Applied and saved revision \(receipt.revision) (\(receipt.sha256.prefix(8))…)")
             proposals.removeAll { $0.id == proposal.id }
+            notifyOriginalTask(summary: "Drawing Assistant proposal applied by the user: \(proposal.summary) (revision \(receipt.revision))")
         } catch {
             proposalMessage = error.localizedDescription
         }
@@ -272,6 +308,7 @@ struct EngineeringReviewSheet: View {
         webSession?.clearCADOverlay()
         proposals.removeAll { $0.id == proposal.id }
         proposalMessage = engineeringReviewText("已放弃该提案。", "Proposal discarded.")
+        notifyOriginalTask(summary: "Drawing Assistant proposal rejected by the user: \(proposal.summary)")
     }
 }
 #endif

@@ -449,7 +449,19 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
    if(!Array.isArray(entry.min)||!Array.isArray(entry.max))continue;
    const a=worldToScreen({x:entry.min[0],y:entry.min[1]},state),b=worldToScreen({x:entry.max[0],y:entry.max[1]},state);
    context.strokeStyle=colors[entry.kind]??'#7a8ba8';context.lineWidth=2;
-   context.strokeRect(Math.min(a.x,b.x),Math.min(a.y,b.y),Math.max(2,Math.abs(b.x-a.x)),Math.max(2,Math.abs(b.y-a.y)));
+   // Draw the actual entity geometry when the proposal carries a polyline;
+   // fall back to the bounds rectangle otherwise.
+   if(Array.isArray(entry.points)&&entry.points.length>=2){
+    context.beginPath();
+    entry.points.forEach((point,index)=>{
+     if(!Array.isArray(point)||point.length<2)return;
+     const p=worldToScreen({x:point[0],y:point[1]},state);
+     if(index===0)context.moveTo(p.x,p.y);else context.lineTo(p.x,p.y);
+    });
+    context.stroke();
+   }else{
+    context.strokeRect(Math.min(a.x,b.x),Math.min(a.y,b.y),Math.max(2,Math.abs(b.x-a.x)),Math.max(2,Math.abs(b.y-a.y)));
+   }
   }
   if(diffHighlight){
    const p=worldToScreen(diffHighlight,state);

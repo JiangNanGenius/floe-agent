@@ -35,43 +35,6 @@ struct WorkbenchAssetsPanel: View {
                 }
             }
 
-            Section(WorkbenchText.t("显示", "Display")) {
-                ForEach(LayoutListKind.allCases, id: \.self) { kind in
-                    Picker(kind == .files
-                           ? WorkbenchText.t("文件列表字号", "File list font")
-                           : kind == .assets
-                           ? WorkbenchText.t("素材列表字号", "Asset list font")
-                           : WorkbenchText.t("图层列表字号", "Layer list font"),
-                           selection: Binding(
-                            get: { layout.settings.fontSize(for: kind) },
-                            set: { layout.setFontSize($0, for: kind) })) {
-                        ForEach(LayoutListFontSize.allCases, id: \.self) { size in
-                            Text(WorkbenchText.t(size.titleZH, size.titleEN)).tag(size)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("workbench.display.font.\(kind.rawValue)")
-                }
-                Picker(WorkbenchText.t("文件名行数", "File name lines"), selection: Binding(
-                    get: { layout.settings.fileNameLines },
-                    set: { layout.setFileNameLines($0) })) {
-                    Text(WorkbenchText.t("一行", "One line")).tag(1)
-                    Text(WorkbenchText.t("两行", "Two lines")).tag(2)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("workbench.display.fileNameLines")
-                Toggle(WorkbenchText.t("显示完整路径", "Show full path"), isOn: Binding(
-                    get: { layout.settings.showFullPath },
-                    set: { layout.setShowFullPath($0) }))
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("workbench.display.showPath")
-                Toggle(WorkbenchText.t("显示扩展名", "Show file extension"), isOn: Binding(
-                    get: { layout.settings.showFileExtension },
-                    set: { layout.setShowFileExtension($0) }))
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("workbench.display.showExtension")
-            }
-
             Section(WorkbenchText.t("素材", "Assets")) {
                 ForEach(center.project?.assets ?? []) { asset in
                     HStack {
@@ -235,6 +198,60 @@ struct WorkbenchAssetsPanel: View {
                     }
                     .disabled(center.selectedLayerID == nil)
                     .accessibilityIdentifier("workbench.layer.delete")
+                }
+            }
+
+            // Display preferences are secondary: collapsed by default so the
+            // editing tools and layers stay visible in compact drawers.
+            Section {
+                DisclosureGroup {
+                    ForEach(LayoutListKind.allCases, id: \.self) { kind in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(kind == .files
+                                 ? WorkbenchText.t("文件列表字号", "File list font")
+                                 : kind == .assets
+                                 ? WorkbenchText.t("素材列表字号", "Asset list font")
+                                 : WorkbenchText.t("图层列表字号", "Layer list font"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker(kind == .files
+                                   ? WorkbenchText.t("文件列表字号", "File list font")
+                                   : kind == .assets
+                                   ? WorkbenchText.t("素材列表字号", "Asset list font")
+                                   : WorkbenchText.t("图层列表字号", "Layer list font"),
+                                   selection: Binding(
+                                    get: { layout.settings.fontSize(for: kind) },
+                                    set: { layout.setFontSize($0, for: kind) })) {
+                                ForEach(LayoutListFontSize.allCases, id: \.self) { size in
+                                    Text(WorkbenchText.t(size.titleZH, size.titleEN)).tag(size)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("workbench.display.font.\(kind.rawValue)")
+                        }
+                    }
+                    Picker(WorkbenchText.t("文件名行数", "File name lines"), selection: Binding(
+                        get: { layout.settings.fileNameLines },
+                        set: { layout.setFileNameLines($0) })) {
+                        Text(WorkbenchText.t("一行", "One line")).tag(1)
+                        Text(WorkbenchText.t("两行", "Two lines")).tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("workbench.display.fileNameLines")
+                    Toggle(WorkbenchText.t("显示完整路径", "Show full path"), isOn: Binding(
+                        get: { layout.settings.showFullPath },
+                        set: { layout.setShowFullPath($0) }))
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("workbench.display.showPath")
+                    Toggle(WorkbenchText.t("显示扩展名", "Show file extension"), isOn: Binding(
+                        get: { layout.settings.showFileExtension },
+                        set: { layout.setShowFileExtension($0) }))
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("workbench.display.showExtension")
+                } label: {
+                    Label(WorkbenchText.t("显示设置", "Display settings"), systemImage: "textformat.size")
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("workbench.display.settings")
                 }
             }
         }

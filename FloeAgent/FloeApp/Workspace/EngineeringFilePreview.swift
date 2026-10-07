@@ -15,6 +15,60 @@ struct EngineeringReviewCapture: Identifiable {
     var workspaceRoot: URL? = nil
 }
 
+/// Durable binding between one canonical drawing document (workspace id +
+/// relative path) and the assistant conversation that discusses it. The
+/// Drawing Assistant therefore stays bound to the same chat across sheet
+/// open/close and app restarts, instead of whichever conversation happens to
+/// be selected in the router.
+final class DrawingAssistantConversationStore: @unchecked Sendable {
+    static let shared = DrawingAssistantConversationStore()
+
+    private let lock = NSLock()
+    private var bindings: [String: String] = [:]
+    private var loaded = false
+    private let fileURL: URL
+
+    private init() {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?.appendingPathComponent("FloeAgent/DrawingAssistant", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("DrawingAssistant")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        fileURL = root.appendingPathComponent("conversations.json")
+    }
+
+    private func key(workspaceID: UUID, relativePath: String) -> String {
+        "\(workspaceID.uuidString)|\(relativePath)"
+    }
+
+    private func loadLocked() {
+        guard !loaded else { return }
+        loaded = true
+        guard let data = try? Data(contentsOf: fileURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return }
+        bindings = object
+    }
+
+    func conversationID(workspaceID: UUID, relativePath: String) -> UUID? {
+        lock.lock(); defer { lock.unlock() }
+        loadLocked()
+        guard let raw = bindings[key(workspaceID: workspaceID, relativePath: relativePath)] else { return nil }
+        return UUID(uuidString: raw)
+    }
+
+    func bind(workspaceID: UUID, relativePath: String, conversationID: UUID) {
+        lock.lock()
+        loadLocked()
+        bindings[key(workspaceID: workspaceID, relativePath: relativePath)] = conversationID.uuidString
+        let snapshot = bindings
+        lock.unlock()
+        let url = fileURL
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+}
+
 /// Owns the single WKWebView used by an engineering preview. The same web
 /// view is re-parented between the embedded preview and the fullscreen
 /// presentation, so an unsaved CAD editing session (JS state, undo history,
