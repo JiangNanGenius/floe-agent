@@ -7,10 +7,10 @@ document.body.classList.toggle('dark',!!config.dark);
 $('fit').textContent=say('复位','Fit');$('layersButton').textContent=say('图层','Layers');
 $('layersButton').onclick=()=>{const opening=$('layers').hidden;$('layers').hidden=!opening;if(opening){const editor=$('cadPanel');if(editor)editor.hidden=true;}};
 let destroy=()=>{},fit=()=>{},timer,finished=false,cadDirty=false,cadInfo=null,reviewContext=()=>({});
-$('review').textContent=say('AI 审图','Ask AI');
+$('review').textContent=say('图纸助手','Drawing Assistant');
 $('review').onclick=async()=>{
  $('review').disabled=true;
- try{const context=JSON.stringify(reviewContext());if(context.length>60000)throw Error(say('审图信息过大','Review context too large'));
+ try{const context=JSON.stringify(reviewContext());if(context.length>60000)throw Error(say('图纸助手上下文过大','Drawing Assistant context too large'));
   await window.webkit.messageHandlers.floeEngineering.postMessage({operation:'review',context});
  }catch(error){$('status').textContent=String(error?.message??error);}
  finally{$('review').disabled=false;}

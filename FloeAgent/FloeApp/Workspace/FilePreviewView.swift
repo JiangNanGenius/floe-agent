@@ -54,6 +54,7 @@ struct FilePreviewView: View {
     @State private var engineeringRoot: URL?
     @State private var cadDirty = false
     @State private var confirmDiscardCAD = false
+    @StateObject private var engineeringSession = EngineeringWebSession()
     @State private var shareURL: URL?
     @State private var isPreparingShare = false
     /// Sharing a cloud/network snapshot must not clear the preview copy that
@@ -283,7 +284,7 @@ struct FilePreviewView: View {
                 try service.commitBinaryEdit(path: path, data: data, expectedSHA256: baseline)
             }.value
             return result.write.sha256
-        } : nil, onDirty: { cadDirty = $0 })
+        } : nil, onDirty: { cadDirty = $0 }, session: engineeringSession)
     }
 
     private var fileName: String {

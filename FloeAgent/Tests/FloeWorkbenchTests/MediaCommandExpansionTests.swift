@@ -303,6 +303,88 @@ struct MediaCommandExpansionTests {
         }
     }
 
+    // MARK: Gesture-to-selection mapping (CUA regression)
+
+    @Test("rectangle/ellipse marquee uses the drag START, not the current point")
+    func marqueeUsesStartPoint() {
+        let start = ImageFreehandStroke.Point(x: 0.1, y: 0.1)
+        let current = ImageFreehandStroke.Point(x: 0.9, y: 0.7)
+        let shape = ImageSelectionGesture.shape(kind: .rectangle, operation: .replace,
+                                                start: start, current: current, lassoPoints: [])
+        #expect(shape?.points.first == start, "rectangle must anchor at the finger's start point")
+        #expect(shape?.points.last == current)
+    }
+
+    @Test("lasso accumulates enough samples to commit and respects spacing/cap")
+    func lassoAccumulation() {
+        var points: [ImageFreehandStroke.Point] = []
+        points = ImageSelectionGesture.accumulateLasso(points, candidate: .init(x: 0.2, y: 0.2))
+        #expect(points.count == 1)
+        // A too-close candidate is ignored (bounded spacing).
+        points = ImageSelectionGesture.accumulateLasso(points, candidate: .init(x: 0.2001, y: 0.2))
+        #expect(points.count == 1)
+        points = ImageSelectionGesture.accumulateLasso(points, candidate: .init(x: 0.4, y: 0.2))
+        points = ImageSelectionGesture.accumulateLasso(points, candidate: .init(x: 0.4, y: 0.5))
+        #expect(points.count == 3, "a lasso must be able to reach the 3-point minimum")
+        // Cap is enforced.
+        var capped: [ImageFreehandStroke.Point] = []
+        for index in 0..<600 {
+            capped = ImageSelectionGesture.accumulateLasso(
+                capped, candidate: .init(x: Double(index) * 0.01, y: 0),
+                minimumSpacing: 0.001, maximumPoints: 64)
+        }
+        #expect(capped.count == 64)
+        // Committed lasso keeps >= 3 distinct points.
+        let shape = ImageSelectionGesture.shape(kind: .lasso, operation: .replace,
+                                                start: points[0], current: .init(x: 0.6, y: 0.5),
+                                                lassoPoints: points)
+        #expect((shape?.points.count ?? 0) >= 3)
+    }
+
+    @Test("move/scale/rotate preserve non-destructive mirroring")
+    func transformPreservesFlips() {
+        let flipped = ImageLayerTransform(centerX: 0.5, centerY: 0.5, scale: 2,
+                                          rotationDegrees: 45, flipX: true, flipY: true)
+        let moved = flipped.movedBy(dx: 0.1, dy: -0.05)
+        #expect(moved.flipX == true && moved.flipY == true)
+        #expect(abs(moved.centerX - 0.6) < 0.0001)
+        #expect(abs(moved.centerY - 0.45) < 0.0001)
+        #expect(moved.scale == 2 && moved.rotationDegrees == 45)
+        #expect(flipped.scaled(by: 2).flipX == true)
+        #expect(flipped.rotated(byDegrees: -90).flipY == true)
+        // Clamping still applies at the edges.
+        #expect(flipped.movedBy(dx: 5, dy: -5).centerX == 1)
+        #expect(flipped.movedBy(dx: 5, dy: -5).centerY == 0)
+    }
+
+    @Test("a known stroke renders at the matching pixels on a 960x540 canvas")
+    func strokeRenderingCoordinates() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var project = MediaProject(kind: .image, name: "Ink",
+                                   canvas: MediaCanvas(width: 960, height: 540))
+        let stroke = ImageFreehandStroke(
+            points: [.init(x: 0.25, y: 0.5), .init(x: 0.75, y: 0.5)],
+            width: 8, colorHex: "#FF0000")
+        let layer = ImageLayer(kind: .freehand, name: "Ink",
+                               freehand: ImageFreehandContent(strokes: [stroke]))
+        try MediaTransactions.apply(.addImageLayer(layer), to: &project)
+        let renderer = WorkbenchImageRenderer()
+        let image = try await renderer.render(project: project,
+                                              canvas: CGSize(width: 960, height: 540),
+                                              resolveAsset: { _ in nil })
+        // The horizontal stroke at normalized y=0.5 must paint the middle row
+        // across x=240..720 and leave the top region untouched.
+        func sample(_ x: Int, _ y: Int) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) {
+            pixel(image, x: x, y: y)
+        }
+        var hits = 0
+        for x in stride(from: 250, to: 710, by: 40) where sample(x, 270).r > 150 { hits += 1 }
+        #expect(hits >= 10, "stroke must render across the expected middle row (hits=\(hits))")
+        #expect(sample(480, 100).a < 40, "no ink above the stroke line")
+        #expect(sample(100, 270).a < 40, "no ink left of the stroke start")
+    }
+
     @Test("present-but-invalid optional command fields propagate instead of silently no-op")
     func strictOptionalFields() {
         // A malformed adjustment on update_layer must throw, not be ignored.

@@ -37,9 +37,11 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  const entities=document.createElement('select');entities.id='cadEntities';entities.setAttribute('aria-label',say('选择图元','Select entity'));
  const selectionInfo=document.createElement('p');selectionInfo.className='cadMessage';
  const tools=document.createElement('div');tools.className='cadActions';
- const title=document.createElement('strong');title.textContent=say('二维图纸编辑','2D drawing editor');
+ const title=document.createElement('strong');title.textContent=say('图纸助手 · 二维编辑','Drawing Assistant · 2D editor');
  const close=document.createElement('button');close.textContent=say('收起','Close');
- panel.append(title,close,message,controls,entities,selectionInfo,fields,tools);document.body.append(panel);
+ const properties=document.createElement('div');properties.className='cadSection';
+ properties.append(entities,selectionInfo,fields,tools);
+ panel.append(title,close,message,controls,properties);document.body.append(panel);
  let layersLoaded=false;
  const toggle=document.createElement('button');toggle.id='cadEdit';toggle.textContent=say('编辑','Edit');toggle.onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){const layersEl=document.getElementById('layers');if(layersEl)layersEl.hidden=true;if(!layersLoaded){layersLoaded=true;void refreshLayers();}}};
  document.querySelector('header').append(toggle);
@@ -47,7 +49,16 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  const redo=button(controls,say('重做','Redo'),()=>mutate('redo'));
  const save=button(controls,say('保存','Save'),saveDocument);save.id='cadSave';
  function button(parent,label,action){const b=document.createElement('button');b.textContent=label;b.onclick=action;parent.append(b);return b;}
+ function collapsible(section,label,open){
+  const header=document.createElement('button');header.type='button';header.className='cadSectionToggle';
+  header.textContent=label;header.setAttribute('aria-expanded',String(!!open));
+  header.onclick=()=>{const collapsed=section.classList.toggle('collapsed');header.setAttribute('aria-expanded',String(!collapsed));};
+  section.insertBefore(header,section.firstChild??null);
+  if(!open)section.classList.add('collapsed');
+  return header;
+ }
  function note(text,error=false){message.textContent=text;message.classList.toggle('failure',error);}
+ collapsible(properties,say('属性','Properties'),true);
 
  // ------------------------------------------------------------ snap indicator
  const snapDot=document.createElement('div');snapDot.className='cadSnapDot';snapDot.hidden=true;document.body.append(snapDot);
@@ -75,7 +86,6 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
 
  // ------------------------------------------------------------------ ink UI
  const ink=document.createElement('div');ink.className='cadInk';
- const inkTitle=document.createElement('strong');inkTitle.textContent=say('Pencil 批注','Pencil ink');
  const inkMessage=document.createElement('p');inkMessage.className='cadInkMessage';inkMessage.setAttribute('role','status');
  const colorLabel=document.createElement('span');colorLabel.className='cadFieldLabel';colorLabel.textContent=say('笔色','Ink color');
  const colorGroup=document.createElement('div');colorGroup.className='cadSwatches';colorGroup.setAttribute('role','radiogroup');colorGroup.setAttribute('aria-label',say('笔色','Ink color'));
@@ -84,7 +94,8 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  const fingerRow=document.createElement('label');fingerRow.className='cadFinger';
  const finger=document.createElement('input');finger.type='checkbox';finger.checked=false;
  fingerRow.append(finger,document.createTextNode(say('用手指绘制','Draw with finger')));
- ink.append(inkTitle,inkMessage,colorLabel,colorGroup,widthLabel,widthGroup,fingerRow);
+ ink.append(inkMessage,colorLabel,colorGroup,widthLabel,widthGroup,fingerRow);
+ collapsible(ink,say('Pencil 批注','Pencil ink'),false);
 
  const pen=document.createElement('button');pen.id='cadPen';pen.type='button';pen.textContent=say('画笔','Pen');
  pen.setAttribute('aria-pressed','false');
@@ -244,10 +255,10 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
 
  // -------------------------------------------------------------- draw tools
  const draw=document.createElement('div');draw.className='cadSection';
- const drawTitle=document.createElement('strong');drawTitle.textContent=say('绘制','Draw');
  const drawFields=document.createElement('div');drawFields.className='cadFields';
  const drawActions=document.createElement('div');drawActions.className='cadActions';
- draw.append(drawTitle,drawFields,drawActions);
+ draw.append(drawFields,drawActions);
+ collapsible(draw,say('绘制','Draw'),true);
  function numberField(label,value=0,parent=drawFields){const row=document.createElement('label'),input=document.createElement('input');input.type='number';input.step='any';input.value=String(value);row.append(document.createTextNode(label),input);parent.append(row);return ()=>{const v=Number(input.value);if(!input.value||!Number.isFinite(v))throw Error(say('请输入有效数字','Enter a valid number'));return v;};}
  function textField(label,value='',parent=drawFields){const row=document.createElement('label'),input=document.createElement('input');input.type='text';input.value=value;row.append(document.createTextNode(label),input);parent.append(row);return ()=>input.value;}
  function pickField(label,parent=drawFields){const row=document.createElement('label'),value=document.createElement('span');value.className='cadPickValue';value.textContent=say('未取点','no point');const b=document.createElement('button');b.type='button';b.textContent=say('画布取点','Pick');b.onclick=()=>{clickAction=point=>{value.textContent=`${point.x.toFixed(3)}, ${point.y.toFixed(3)}`;pickValue=point;clickAction=null;};note(say('请在画布上取点','Pick a point on the drawing'));};row.append(document.createTextNode(label),value,b);parent.append(row);return ()=>pickValue;};
@@ -279,10 +290,10 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
 
  // ------------------------------------------------------------ modify tools
  const modify=document.createElement('div');modify.className='cadSection';
- const modifyTitle=document.createElement('strong');modifyTitle.textContent=say('修改','Modify');
  const modifyFields=document.createElement('div');modifyFields.className='cadFields';
  const modifyActions=document.createElement('div');modifyActions.className='cadActions';
- modify.append(modifyTitle,modifyFields,modifyActions);
+ modify.append(modifyFields,modifyActions);
+ collapsible(modify,say('修改','Modify'),false);
  const dx=numberField('ΔX',0,modifyFields),dy=numberField('ΔY',0,modifyFields),angle=numberField(say('角度','Angle'),0,modifyFields),factor=numberField(say('比例','Factor'),2,modifyFields);
  const mirrorX=numberField(say('镜像轴 X1','Axis X1'),0,modifyFields),mirrorY=numberField(say('镜像轴 Y1','Axis Y1'),0,modifyFields);
  const offsetDistance=numberField(say('偏移距离','Offset'),1,modifyFields);
@@ -312,12 +323,12 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
 
  // -------------------------------------------------------------- layer tools
  const layerSection=document.createElement('div');layerSection.className='cadSection';
- const layerTitle=document.createElement('strong');layerTitle.textContent=say('图层','Layers');
  const layerList=document.createElement('div');layerList.className='cadLayerList';
  const layerFields=document.createElement('div');layerFields.className='cadFields';
  const layerName=textField(say('名称','Name'),'',layerFields),layerColor=numberField(say('颜色 ACI','Color ACI'),7,layerFields),layerType=textField(say('线型','Linetype'),'Continuous',layerFields),layerWeight=numberField(say('线宽','LineWeight'),25,layerFields);
  const layerActions=document.createElement('div');layerActions.className='cadActions';
- layerSection.append(layerTitle,layerList,layerFields,layerActions);
+ layerSection.append(layerList,layerFields,layerActions);
+ collapsible(layerSection,say('图层','Layers'),false);
  button(layerActions,say('新建图层','Add layer'),()=>{try{const request=buildLayerRequest('add',{name:layerName(),color:layerColor(),lineType:layerType(),lineWeight:layerWeight()});void mutate('edit',request);}catch(e){note(e.message,true);}});
  button(layerActions,say('重命名','Rename'),()=>{try{const to=String(layerName()).trim();if(!to)throw Error(say('请输入新名称','Enter the new name'));void mutate('edit',buildLayerRequest('rename',{name:activeLayer(),to}));}catch(e){note(e.message,true);}});
  button(layerActions,say('删除图层','Delete layer'),()=>{try{void mutate('edit',buildLayerRequest('delete',{name:activeLayer()}));}catch(e){note(e.message,true);}});
@@ -345,11 +356,11 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
 
  // ------------------------------------------------------------ measure tools
  const measure=document.createElement('div');measure.className='cadSection';
- const measureTitle=document.createElement('strong');measureTitle.textContent=say('测量与检查','Measure & check');
  const measureActions=document.createElement('div');measureActions.className='cadActions';
  const checkTolerance=numberField(say('容差','Tolerance'),0.001,modifyFields);
  let recentPoints=[];
- measure.append(measureTitle,measureActions);
+ measure.append(measureActions);
+ collapsible(measure,say('测量与检查','Measure & check'),false);
  async function runMeasure(kind){
   try{
    const handles=targets();

@@ -136,3 +136,79 @@ public struct LayerLayoutEntry: Sendable, Hashable {
         self.naturalHeight = naturalHeight; self.transform = transform
     }
 }
+
+public extension ImageLayerTransform {
+    /// Translation that preserves mirroring, scale and rotation. Rebuilding a
+    /// transform from only its center silently reset flipX/flipY (a real CUA
+    /// regression), so drag/pinch/rotate gestures must go through these.
+    func movedBy(dx: Double, dy: Double, clampToUnit: Bool = true) -> ImageLayerTransform {
+        var copy = self
+        copy.centerX = clampToUnit ? min(max(centerX + dx, 0), 1) : centerX + dx
+        copy.centerY = clampToUnit ? min(max(centerY + dy, 0), 1) : centerY + dy
+        return copy
+    }
+
+    func scaled(by factor: Double) -> ImageLayerTransform {
+        var copy = self
+        copy.scale = min(max(scale * factor, 0.1), 5)
+        return copy
+    }
+
+    /// Adds degrees and normalizes into 0..<360 while preserving flips.
+    func rotated(byDegrees degrees: Double) -> ImageLayerTransform {
+        var copy = self
+        var value = (rotationDegrees + degrees).truncatingRemainder(dividingBy: 360)
+        if value < 0 { value += 360 }
+        copy.rotationDegrees = value
+        return copy
+    }
+}
+
+/// Pure gesture→selection mapping shared by the touch UI (and unit-testable):
+///   * rectangle/ellipse use the drag's START and current point (the CUA bug
+///     sampled only the current point, so the marquee began mid-drag);
+///   * lasso accumulates samples with bounded spacing/count so a lasso can
+///     actually reach the engine's 3-point minimum.
+public enum ImageSelectionGesture {
+    public static let defaultMinimumSpacing = 0.006
+    public static let defaultMaximumPoints = 512
+
+    /// Appends `candidate` when it is far enough from the last sample, capping
+    /// the total. The first point is always preserved.
+    public static func accumulateLasso(
+        _ points: [ImageFreehandStroke.Point],
+        candidate: ImageFreehandStroke.Point,
+        minimumSpacing: Double = defaultMinimumSpacing,
+        maximumPoints: Int = defaultMaximumPoints
+    ) -> [ImageFreehandStroke.Point] {
+        guard !points.isEmpty else { return [candidate] }
+        guard points.count < maximumPoints else { return points }
+        guard let last = points.last else { return [candidate] }
+        let distance = ((candidate.x - last.x) * (candidate.x - last.x)
+            + (candidate.y - last.y) * (candidate.y - last.y)).squareRoot()
+        guard distance >= minimumSpacing else { return points }
+        return points + [candidate]
+    }
+
+    /// Builds the committed shape. Rectangle/ellipse always use `start` and
+    /// `current`; lasso requires at least three accumulated points.
+    public static func shape(kind: ImageSelectionKind,
+                             operation: ImageSelectionOperation,
+                             start: ImageFreehandStroke.Point,
+                             current: ImageFreehandStroke.Point,
+                             lassoPoints: [ImageFreehandStroke.Point]) -> ImageSelectionShape? {
+        switch kind {
+        case .rectangle, .ellipse:
+            return ImageSelectionShape(kind: kind, operation: operation, points: [start, current])
+        case .lasso:
+            var points = lassoPoints
+            if points.isEmpty { points = [start] }
+            if let last = points.last,
+               last.x != current.x || last.y != current.y {
+                points.append(current)
+            }
+            guard points.count >= 3 else { return nil }
+            return ImageSelectionShape(kind: .lasso, operation: operation, points: points)
+        }
+    }
+}

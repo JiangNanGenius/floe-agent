@@ -93,10 +93,14 @@ struct WorkbenchImagePreview: View {
                 }
 
                 // Pencil pressure capture for brush/eraser (finger strokes have
-                // no pressure and stay fixed width).
+                // no pressure and stay fixed width). The surface reports LOCAL
+                // coordinates, which are converted into the preview's display
+                // space (aspect-fit letterboxing) before use.
                 if isInkTool {
                     WorkbenchPressureSurface(
-                        onChanged: { point, pressure in
+                        onChanged: { localPoint, pressure in
+                            let point = CGPoint(x: display.minX + localPoint.x,
+                                                y: display.minY + localPoint.y)
                             guard display.contains(point) else { return }
                             if freehandPoints.isEmpty {
                                 freehandPoints = [point]
@@ -123,12 +127,8 @@ struct WorkbenchImagePreview: View {
                     .onEnded { value in
                         defer { liveScale = nil }
                         guard center.imageTool == .move, let layer = selectedLayer else { return }
-                        let scale = min(max(layer.transform.scale * Double(value), 0.1), 5)
                         center.apply(.updateLayer(id: layer.id,
-                                                  transform: ImageLayerTransform(centerX: layer.transform.centerX,
-                                                                                 centerY: layer.transform.centerY,
-                                                                                 scale: scale,
-                                                                                 rotationDegrees: layer.transform.rotationDegrees),
+                                                  transform: layer.transform.scaled(by: Double(value)),
                                                   opacity: nil, isHidden: nil, isLocked: nil,
                                                   adjustment: nil, text: nil, crop: .unchanged))
                     }
@@ -139,13 +139,8 @@ struct WorkbenchImagePreview: View {
                     .onEnded { value in
                         defer { liveRotation = nil }
                         guard center.imageTool == .move, let layer = selectedLayer else { return }
-                        var degrees = (layer.transform.rotationDegrees + value.degrees).truncatingRemainder(dividingBy: 360)
-                        if degrees < 0 { degrees += 360 }
                         center.apply(.updateLayer(id: layer.id,
-                                                  transform: ImageLayerTransform(centerX: layer.transform.centerX,
-                                                                                 centerY: layer.transform.centerY,
-                                                                                 scale: layer.transform.scale,
-                                                                                 rotationDegrees: degrees),
+                                                  transform: layer.transform.rotated(byDegrees: value.degrees),
                                                   opacity: nil, isHidden: nil, isLocked: nil,
                                                   adjustment: nil, text: nil, crop: .unchanged))
                     }
@@ -176,11 +171,26 @@ struct WorkbenchImagePreview: View {
             .onChanged { value in
                 if isInkTool { return } // pressure surface owns ink gestures
                 if center.imageTool == .marquee {
-                    guard display.contains(value.location) else { return }
-                    if selectionPoints.isEmpty {
-                        selectionPoints = [value.location, value.location]
-                    } else {
-                        selectionPoints[selectionPoints.count - 1] = value.location
+                    guard display.width > 0, display.height > 0 else { return }
+                    let start = display.contains(value.startLocation) ? value.startLocation : value.location
+                    switch center.selectionKind {
+                    case .rectangle, .ellipse:
+                        // Rectangle/ellipse span the drag's START to its
+                        // current point (sampling only the current point made
+                        // the marquee begin mid-drag).
+                        selectionPoints = [start, value.location]
+                    case .lasso:
+                        if selectionPoints.isEmpty {
+                            selectionPoints = [start]
+                        }
+                        let normalized = normalizedPoint(value.location, display: display)
+                        let accumulated = ImageSelectionGesture.accumulateLasso(
+                            selectionPoints.map { normalizedPoint($0, display: display) },
+                            candidate: normalized)
+                        selectionPoints = accumulated.map {
+                            CGPoint(x: display.minX + CGFloat($0.x) * display.width,
+                                    y: display.minY + CGFloat($0.y) * display.height)
+                        }
                     }
                 } else if center.isCropping {
                     // Movement handled by the crop overlay gesture.
@@ -200,12 +210,10 @@ struct WorkbenchImagePreview: View {
                 let dx = value.translation.width / display.width
                 let dy = value.translation.height / display.height
                 guard abs(dx) > 0.001 || abs(dy) > 0.001 else { return }
+                // Move preserves mirroring/scale/rotation (rebuilding the
+                // transform from its center reset flipX/flipY).
                 center.apply(.updateLayer(id: layer.id,
-                                          transform: ImageLayerTransform(
-                                            centerX: min(max(layer.transform.centerX + dx, 0), 1),
-                                            centerY: min(max(layer.transform.centerY + dy, 0), 1),
-                                            scale: layer.transform.scale,
-                                            rotationDegrees: layer.transform.rotationDegrees),
+                                          transform: layer.transform.movedBy(dx: dx, dy: dy),
                                           opacity: nil, isHidden: nil, isLocked: nil,
                                           adjustment: nil, text: nil, crop: .unchanged))
             }
@@ -219,21 +227,17 @@ struct WorkbenchImagePreview: View {
 
     private func commitMarquee(display: CGRect, end: CGPoint) {
         defer { selectionPoints = [] }
-        guard display.width > 0, display.height > 0, selectionPoints.count >= 2 else { return }
-        var points = selectionPoints
-        points[points.count - 1] = end
-        let normalized = points.map { normalizedPoint($0, display: display) }
-        switch center.selectionKind {
-        case .rectangle, .ellipse:
-            guard let first = normalized.first, let last = normalized.last else { return }
-            center.commitSelectionShape(kind: center.selectionKind,
-                                        operation: center.selectionOperation,
-                                        points: [first, last])
-        case .lasso:
-            guard normalized.count >= 3 else { return }
-            center.commitSelectionShape(kind: .lasso, operation: center.selectionOperation,
-                                        points: normalized)
-        }
+        guard display.width > 0, display.height > 0, let first = selectionPoints.first else { return }
+        let mapped = selectionPoints.map { normalizedPoint($0, display: display) }
+        let start = mapped.first ?? normalizedPoint(first, display: display)
+        let current = normalizedPoint(end, display: display)
+        guard let shape = ImageSelectionGesture.shape(kind: center.selectionKind,
+                                                      operation: center.selectionOperation,
+                                                      start: start, current: current,
+                                                      lassoPoints: mapped) else { return }
+        center.commitSelectionShape(kind: shape.kind,
+                                    operation: shape.operation,
+                                    points: shape.points)
     }
 
     private func commitInkStroke(display: CGRect) {

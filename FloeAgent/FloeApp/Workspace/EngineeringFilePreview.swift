@@ -15,14 +15,112 @@ struct EngineeringReviewCapture: Identifiable {
     var workspaceRoot: URL? = nil
 }
 
+/// Owns the single WKWebView used by an engineering preview. The same web
+/// view is re-parented between the embedded preview and the fullscreen
+/// presentation, so an unsaved CAD editing session (JS state, undo history,
+/// camera, ink readiness) survives the transition instead of reloading from
+/// disk. The page is only reloaded when `generation` changes (explicit retry).
+@MainActor
+final class EngineeringWebSession: ObservableObject {
+    private(set) var generation: UUID?
+    private(set) var web: WKWebView?
+    private(set) var coordinator: EngineeringWebView.Coordinator?
+    private(set) var server: LocalPreviewServer?
+    private(set) var startup: Task<Void, Never>?
+    private(set) var watchdog: Task<Void, Never>?
+
+    func attach(package: EngineeringPreviewPackage, generation: UUID,
+                error: Binding<String?>,
+                onReview: ((EngineeringReviewCapture) -> Void)?,
+                onSave: ((Data, String) async throws -> String)?,
+                onDirty: ((Bool) -> Void)?,
+                dark: Bool, locale: String) -> WKWebView {
+        if let web, coordinator != nil, generation == self.generation {
+            coordinator?.update(callbacks: error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+            return web
+        }
+        tearDown()
+        self.generation = generation
+        let coordinator = EngineeringWebView.Coordinator(package: package, error: error,
+                                                         onReview: onReview, onSave: onSave,
+                                                         onDirty: onDirty)
+        self.coordinator = coordinator
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        config.userContentController.addScriptMessageHandler(coordinator, contentWorld: .page, name: "floeEngineering")
+        let options: [String: Any] = ["dark": dark, "language": locale,
+                                      "canReview": onReview != nil, "canEdit": onSave != nil]
+        if let bytes = try? JSONSerialization.data(withJSONObject: options),
+           let json = String(data: bytes, encoding: .utf8) {
+            config.userContentController.addUserScript(WKUserScript(
+                source: "window.floeEngineeringConfiguration = \(json);",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.navigationDelegate = coordinator
+        web.scrollView.isScrollEnabled = false
+        web.isOpaque = false
+        web.accessibilityIdentifier = "file.preview.engineering.web"
+        coordinator.web = web
+        self.web = web
+        startup = Task { @MainActor [weak self, weak web] in
+            do {
+                guard let root = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let (server, session) = try await LocalPreviewServer.start(root: root, entry: "index.html")
+                guard !Task.isCancelled, let web else { server.stop(); return }
+                self?.server = server
+                coordinator.page = session.url
+                web.load(URLRequest(url: session.url))
+            } catch { if !Task.isCancelled { coordinator.error.wrappedValue = error.localizedDescription } }
+        }
+        // Native watchdog also works when a malformed model stalls JavaScript.
+        watchdog = Task { @MainActor [weak web] in
+            do {
+                try await Task.sleep(for: .seconds(65))
+                guard !Task.isCancelled, let web else { return }
+                // Do not wait on a potentially stuck web process to decide timeout.
+                if !coordinator.completed {
+                    web.stopLoading()
+                    coordinator.error.wrappedValue = String(localized: "engineering.timeout")
+                }
+            } catch {}
+        }
+        return web
+    }
+
+    func update(dark: Bool) {
+        web?.evaluateJavaScript("document.body.classList.toggle('dark', \(dark ? "true" : "false"));",
+                                completionHandler: nil)
+    }
+
+    /// Full teardown only when the session itself goes away.
+    func tearDown() {
+        startup?.cancel(); watchdog?.cancel()
+        server?.stop(); server = nil
+        web?.stopLoading(); web?.navigationDelegate = nil
+        web?.configuration.userContentController.removeScriptMessageHandler(forName: "floeEngineering", contentWorld: .page)
+        web = nil; coordinator = nil; generation = nil
+        startup = nil; watchdog = nil
+    }
+}
+
 struct EngineeringFilePreview: View {
     let package: EngineeringPreviewPackage
     var onReview: ((EngineeringReviewCapture) -> Void)? = nil
     var onSave: ((Data, String) async throws -> String)? = nil
     var onDirty: ((Bool) -> Void)? = nil
+    /// Optional externally owned session (so a fullscreen presentation can
+    /// re-parent the SAME web view and preserve the editing session).
+    var session: EngineeringWebSession? = nil
     @Environment(\.colorScheme) private var colorScheme
     @State private var error: String?
     @State private var generation = UUID()
+    @StateObject private var ownedSession = EngineeringWebSession()
+
+    private var activeSession: EngineeringWebSession { session ?? ownedSession }
 
     var body: some View {
         Group {
@@ -39,15 +137,18 @@ struct EngineeringFilePreview: View {
                     Button("engineering.retry") { self.error = nil; generation = UUID() }
                 }
             } else {
-                EngineeringWebView(package: package, error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty).id(generation)
+                EngineeringWebView(session: activeSession, package: package, generation: generation,
+                                   error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
             }
         }
         .accessibilityIdentifier("file.preview.engineering")
     }
 }
 
-private struct EngineeringWebView: UIViewRepresentable {
+struct EngineeringWebView: UIViewRepresentable {
+    let session: EngineeringWebSession
     let package: EngineeringPreviewPackage
+    let generation: UUID
     @Binding var error: String?
     var onReview: ((EngineeringReviewCapture) -> Void)?
     var onSave: ((Data, String) async throws -> String)?
@@ -55,89 +156,94 @@ private struct EngineeringWebView: UIViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.locale) private var locale
 
-    func makeCoordinator() -> Coordinator { Coordinator(package: package, error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty) }
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        config.preferences.javaScriptCanOpenWindowsAutomatically = false
-        config.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "floeEngineering")
-        let options: [String: Any] = ["dark": colorScheme == .dark, "language": locale.identifier, "canReview": onReview != nil, "canEdit": onSave != nil]
-        if let bytes = try? JSONSerialization.data(withJSONObject: options), let json = String(data: bytes, encoding: .utf8) {
-            config.userContentController.addUserScript(WKUserScript(source: "window.floeEngineeringConfiguration = \(json);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        }
-        let web = WKWebView(frame: .zero, configuration: config)
-        web.navigationDelegate = context.coordinator
-        web.scrollView.isScrollEnabled = false
-        web.isOpaque = false
-        web.accessibilityIdentifier = "file.preview.engineering.web"
-        let coordinator = context.coordinator
-        coordinator.web = web
-        coordinator.startup = Task { @MainActor [weak web] in
-            do {
-                guard let root = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil) else {
-                    throw CocoaError(.fileNoSuchFile)
-                }
-                let (server, session) = try await LocalPreviewServer.start(root: root, entry: "index.html")
-                guard !Task.isCancelled, let web else { server.stop(); return }
-                coordinator.server = server
-                coordinator.page = session.url
-                web.load(URLRequest(url: session.url))
-            } catch { if !Task.isCancelled { coordinator.error.wrappedValue = error.localizedDescription } }
-        }
-        // Native watchdog also works when a malformed model stalls JavaScript.
-        coordinator.watchdog = Task { @MainActor [weak web] in
-            do {
-                try await Task.sleep(for: .seconds(65))
-                guard !Task.isCancelled, let web else { return }
-                // Do not wait on a potentially stuck web process to decide timeout.
-                if !coordinator.completed {
-                    web.stopLoading()
-                    coordinator.error.wrappedValue = String(localized: "engineering.timeout")
-                }
-            } catch {}
-        }
-        return web
+    func makeCoordinator() -> Coordinator {
+        if let existing = session.coordinator { return existing }
+        return Coordinator(package: package, error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
     }
-    func updateUIView(_ web: WKWebView, context: Context) {
+
+    func makeUIView(context: Context) -> EngineeringContainerView {
+        let container = EngineeringContainerView()
+        container.session = session
+        _ = session.attach(package: package, generation: generation, error: $error,
+                           onReview: onReview, onSave: onSave, onDirty: onDirty,
+                           dark: colorScheme == .dark, locale: locale.identifier)
+        container.setNeedsLayout()
+        return container
+    }
+
+    func updateUIView(_ container: EngineeringContainerView, context: Context) {
+        container.session = session
+        session.coordinator?.update(callbacks: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
         // A theme change must not destroy an unsaved CAD session.
-        web.evaluateJavaScript("document.body.classList.toggle('dark', \(colorScheme == .dark ? "true" : "false"));", completionHandler: nil)
+        session.update(dark: colorScheme == .dark)
+        container.setNeedsLayout()
     }
-    static func dismantleUIView(_ web: WKWebView, coordinator: Coordinator) {
-        coordinator.startup?.cancel(); coordinator.navigationRecovery?.cancel(); coordinator.watchdog?.cancel(); coordinator.server?.stop()
-        web.stopLoading(); web.navigationDelegate = nil
-        web.configuration.userContentController.removeScriptMessageHandler(forName: "floeEngineering", contentWorld: .page)
+
+    /// Intentionally does NOT dismantle the session: the same web view is
+    /// re-adopted by whichever container is on screen, and the session is
+    /// released (and torn down) by its owner when the preview truly goes away.
+    static func dismantleUIView(_ container: EngineeringContainerView, coordinator: Coordinator) {}
+
+    /// Hosts the shared WKWebView. Whenever a container becomes visible again
+    /// (fullscreen dismissal, tab switch) it re-adopts the session's web view,
+    /// which keeps its JavaScript state, camera, undo history and ink.
+    final class EngineeringContainerView: UIView {
+        weak var session: EngineeringWebSession?
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let web = session?.web else { return }
+            if web.superview !== self {
+                web.removeFromSuperview()
+                web.frame = bounds
+                web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                addSubview(web)
+            } else {
+                web.frame = bounds
+            }
+        }
     }
 
     @MainActor final class Coordinator: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
         let package: EngineeringPreviewPackage
-        let error: Binding<String?>
-        let onReview: ((EngineeringReviewCapture) -> Void)?
-        let onSave: ((Data, String) async throws -> String)?
-        let onDirty: ((Bool) -> Void)?
+        var error: Binding<String?>
+        var onReview: ((EngineeringReviewCapture) -> Void)?
+        var onSave: ((Data, String) async throws -> String)?
+        var onDirty: ((Bool) -> Void)?
         var baselineSHA: String
         var saving = false
         var dirty = false
         weak var web: WKWebView?
         var reviewing = false
         var page: URL?
-        var server: LocalPreviewServer?
-        var startup: Task<Void, Never>?
-        var watchdog: Task<Void, Never>?
         var completed = false
         var delivered = false
         var navigationRecovery: Task<Void, Never>?
         var recoveryPolicy = EngineeringNavigationRecovery()
-        init(package: EngineeringPreviewPackage, error: Binding<String?>, onReview: ((EngineeringReviewCapture) -> Void)?, onSave: ((Data, String) async throws -> String)?, onDirty: ((Bool) -> Void)?) {
-            self.package = package; self.error = error; self.onReview = onReview; self.onSave = onSave; self.onDirty = onDirty
+
+        init(package: EngineeringPreviewPackage, error: Binding<String?>,
+             onReview: ((EngineeringReviewCapture) -> Void)?,
+             onSave: ((Data, String) async throws -> String)?,
+             onDirty: ((Bool) -> Void)?) {
+            self.package = package; self.error = error; self.onReview = onReview
+            self.onSave = onSave; self.onDirty = onDirty
             baselineSHA = FloeDigest.sha256Hex(Data(base64Encoded: package.files.first?.base64 ?? "") ?? Data())
         }
+
+        func update(callbacks error: Binding<String?>,
+                    onReview: ((EngineeringReviewCapture) -> Void)?,
+                    onSave: ((Data, String) async throws -> String)?,
+                    onDirty: ((Bool) -> Void)?) {
+            self.error = error; self.onReview = onReview; self.onSave = onSave; self.onDirty = onDirty
+        }
+
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
                                    replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
             guard message.frameInfo.isMainFrame, message.frameInfo.request.url == page,
                   let body = message.body as? [String: Any], let operation = body["operation"] as? String else {
                 replyHandler(nil, "Invalid preview origin"); return
             }
-            if operation == "complete", delivered { completed = true; watchdog?.cancel(); replyHandler([:], nil); return }
+            if operation == "complete", delivered { completed = true; replyHandler([:], nil); return }
             if operation == "dirty", completed, onSave != nil, let dirty = body["dirty"] as? Bool {
                 self.dirty = dirty; onDirty?(dirty); replyHandler([:], nil); return
             }
@@ -180,16 +286,22 @@ private struct EngineeringWebView: UIViewRepresentable {
             do { replyHandler(try JSONSerialization.jsonObject(with: JSONEncoder().encode(package)), nil) }
             catch { replyHandler(nil, error.localizedDescription) }
         }
+
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             decisionHandler(navigationAction.request.url == page ? .allow : .cancel)
         }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { error.wrappedValue = String(localized: "engineering.processStopped") }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            error.wrappedValue = String(localized: "engineering.processStopped")
+        }
+
         private func navigationFailed(_ webView: WKWebView, error: Error) {
             // Recover only the first local navigation, before document delivery.
             // Never reload a live editor or reset its unsaved state.
             if recoveryPolicy.consume(error: error as NSError, page: page,
-                                      serverAvailable: server != nil, delivered: delivered,
+                                      serverAvailable: true,
+                                      delivered: delivered,
                                       completed: completed, dirty: dirty, saving: saving), let page {
                 navigationRecovery = Task { @MainActor [weak self, weak webView] in
                     do {
@@ -203,8 +315,14 @@ private struct EngineeringWebView: UIViewRepresentable {
             }
             self.error.wrappedValue = error.localizedDescription
         }
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navigationFailed(webView, error: error) }
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { navigationFailed(webView, error: error) }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            navigationFailed(webView, error: error)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            navigationFailed(webView, error: error)
+        }
     }
 }
 #endif

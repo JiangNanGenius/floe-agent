@@ -330,6 +330,23 @@ const view = {
   pointer('pointerdown', { clientX: 100, clientY: 100 });
   pointer('lostpointercapture', { clientX: 150, clientY: 150 });
   const panel = body.children.find(child => child.id === 'cadPanel');
+  // Grouped/collapsible panel + Drawing Assistant rename (CUA feedback).
+  const title = panel.children.find(child => child.tag === 'strong');
+  check('panel: titled Drawing Assistant', typeof title?.textContent === 'string'
+    && title.textContent.includes('Drawing Assistant'), String(title?.textContent));
+  const sections = panel.children.filter(child => child.className === 'cadSection');
+  check('panel: categorized into >=4 collapsible sections', sections.length >= 4, String(sections.length));
+  const toggles = sections.map(section => section.children.find(child => child.className === 'cadSectionToggle'));
+  check('panel: every section has a >=44pt collapse toggle (CSS contract)',
+    toggles.every(toggle => toggle && toggle.tag === 'button'));
+  const modifySection = sections.find(section => section.children.some(t => typeof t.textContent === 'string' && t.textContent.includes('Modify')));
+  const modifyToggle = modifySection?.children.find(child => child.className === 'cadSectionToggle');
+  check('panel: Modify starts collapsed', modifySection?.classList.contains('collapsed') === true
+    && modifyToggle?.getAttribute('aria-expanded') === 'false');
+  modifyToggle?.onclick();
+  check('panel: toggle expands and updates aria-expanded',
+    modifySection?.classList.contains('collapsed') === false
+    && modifyToggle?.getAttribute('aria-expanded') === 'true');
   pointer('pointerdown', { clientX: 100, clientY: 100 });
   panel.children.find(child => child.textContent === 'Close').onclick();
   await new Promise(resolve => setTimeout(resolve, 10));

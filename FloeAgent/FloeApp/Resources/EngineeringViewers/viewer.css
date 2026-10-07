@@ -21,3 +21,11 @@
 
 /* Keep save reachable after focusing fields or scrolling pen settings. */
 .cadPrimaryActions{position:sticky;top:-12px;z-index:1;background:var(--bg);padding:4px 0;border-bottom:1px solid var(--line)}
+
+#cadPanel .cadSection{clear:both;border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+#cadPanel .cadSectionToggle{display:flex;width:100%;align-items:center;justify-content:space-between;min-height:44px;padding:0 6px;font-size:14px;font-weight:600;color:var(--ink);background:transparent;border-radius:10px}
+#cadPanel .cadSectionToggle::after{content:"▸";font-weight:400;opacity:.7;transition:transform .15s}
+#cadPanel .cadSection:not(.collapsed) .cadSectionToggle::after{transform:rotate(90deg)}
+#cadPanel .cadSection.collapsed>*:not(.cadSectionToggle){display:none}
+#cadPanel .cadSection.collapsed{margin-top:6px;padding-top:2px}
+#cadPanel .cadActions button{min-height:44px}
