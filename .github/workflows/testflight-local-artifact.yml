@@ -47,12 +47,16 @@ jobs:
         version = re.search(r'MARKETING_VERSION: "([0-9.]+)"', project).group(1)
         build = re.search(r'CURRENT_PROJECT_VERSION: "([0-9]+)"', project).group(1)
         series = '.'.join(version.split('.')[:2])
-        path = f'docs/releases/testflight/TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json'
-        target = pathlib.Path('..') / path
-        if not target.exists():
-            data = subprocess.check_output(['git', 'show', os.environ['RELEASE_METADATA_SHA'] + ':' + path])
-            target.write_bytes(data)
-            print('Release metadata:', os.environ['RELEASE_METADATA_SHA'], path)
+        paths = [
+            f'docs/releases/testflight/TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json',
+            f'docs/releases/notes/RELEASE_NOTES_{version}_BUILD_{build}.md',
+        ]
+        for path in paths:
+            target = pathlib.Path('..') / path
+            if not target.exists():
+                data = subprocess.check_output(['git', 'show', os.environ['RELEASE_METADATA_SHA'] + ':' + path])
+                target.write_bytes(data)
+                print('Release metadata:', os.environ['RELEASE_METADATA_SHA'], path)
         METADATA
         scripts/release_preflight.sh "$RELEASE_TAG"
     - name: Download private draft transport and verify local provenance

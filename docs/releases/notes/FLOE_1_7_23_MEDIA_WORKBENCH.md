@@ -1,8 +1,9 @@
 # Floe 1.7.23 (build 264) — Media workbench candidate note
 
-Status: **uncommitted validation candidate** on `codex/build264-media-workbench`
-(branch base `3b001ba3`). Not published, not tagged, not uploaded. TestFlight,
-public test group and website deployment remain with the primary agent.
+Status: source frozen at `7f23c5023257914c1e136400ecdd0659f06a0af4`.
+Local Xcode 27 Release device build and TestFlight delivery are in progress.
+Bilingual website manuals are live and verified against repository sources.
+Apple processing and test-group availability are not yet confirmed.
 
 ## Scope
 
@@ -53,7 +54,7 @@ frames, orientation/crop, dissolve ramp, audio mix, preview/export agreement).
 - Real paid cloud generations.
 - The `FloeAgentUITests` UI-test bundle was compiled but not executed; module
   tests plus `FloeAppTests` are the executed behavioral evidence.
-- Signed/packaged release, Apple processing and test-group availability.
+- Apple processing and test-group availability remain pending release verification.
 
 ## Primary rendered-UI acceptance
 
