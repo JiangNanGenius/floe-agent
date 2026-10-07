@@ -322,9 +322,19 @@ struct NotesDocumentEditor: View {
                             Label("第 \(index + 1) 页", systemImage: value.isBookmarked ? "bookmark.fill" : "doc")
                         }
                         .swipeActions {
+                            Button {
+                                session.apply([.duplicatePage(value.id)], title: "复制页面", base: document)
+                            } label: { Label("复制", systemImage: "plus.square.on.square") }
+                            .tint(.blue)
+                            .accessibilityIdentifier("notes.pages.duplicate.\(value.id.uuidString)")
                             Button(role: .destructive) {
                                 session.apply([.deletePage(value.id)], title: "删除页面", base: document)
                             } label: { Label("删除", systemImage: "trash") }.disabled(document.pages.count <= 1)
+                        }
+                        .contextMenu {
+                            Button {
+                                session.apply([.duplicatePage(value.id)], title: "复制页面", base: document)
+                            } label: { Label("复制页面", systemImage: "plus.square.on.square") }
                         }
                     }
                     .onMove { indices, destination in

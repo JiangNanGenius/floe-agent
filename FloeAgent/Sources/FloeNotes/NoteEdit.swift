@@ -12,6 +12,9 @@ public enum NoteEdit: Codable, Hashable, Sendable {
     case insertPage(NotePage, at: Int)
     case updatePage(NotePage)
     case movePage(UUID, to: Int)
+    /// Copies a page directly after the original with fresh element identities
+    /// (ink/background references stay shared by reference, never duplicated).
+    case duplicatePage(UUID)
     case deletePage(UUID)
     case drawing(pageID: UUID, resourceID: UUID?)
     case upsertElement(pageID: UUID, element: NoteElement)
@@ -55,6 +58,18 @@ public enum NoteEdit: Codable, Hashable, Sendable {
             guard document.pages.indices.contains(index) else { throw NoteError.invalidOperation("页面位置无效。") }
             let page = document.pages.remove(at: try pageIndex(id, in: document))
             document.pages.insert(page, at: index)
+        case .duplicatePage(let id):
+            let index = try pageIndex(id, in: document)
+            var copy = document.pages[index]
+            copy.id = UUID()
+            // Fresh element identities so later edits/deletes never alias the
+            // original page; drawing/background resources stay shared.
+            copy.elements = copy.elements.map { element in
+                var duplicate = element
+                duplicate.id = UUID()
+                return duplicate
+            }
+            document.pages.insert(copy, at: index + 1)
         case .deletePage(let id):
             document.pages.remove(at: try pageIndex(id, in: document))
             // Preserve the relationship at document level when its page is removed.

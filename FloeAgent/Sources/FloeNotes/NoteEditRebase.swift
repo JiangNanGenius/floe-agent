@@ -50,7 +50,7 @@ extension NoteEdit {
                 page(id, base)?.elements.first { $0.id == elementID } == page(id, current)?.elements.first { $0.id == elementID }
             }
         case .updatePage(let value): return page(value.id, base) == page(value.id, current)
-        case .insertPage, .movePage, .deletePage:
+        case .insertPage, .movePage, .deletePage, .duplicatePage:
             return base.pages == current.pages && base.linkedMindMaps == current.linkedMindMaps
         case .upsertNode(let value):
             return base.nodes.first { $0.id == value.id } == current.nodes.first { $0.id == value.id }
