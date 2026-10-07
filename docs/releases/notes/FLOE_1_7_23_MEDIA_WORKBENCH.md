@@ -54,7 +54,7 @@ frames, orientation/crop, dissolve ramp, audio mix, preview/export agreement).
 - Real paid cloud generations.
 - The `FloeAgentUITests` UI-test bundle was compiled but not executed; module
   tests plus `FloeAppTests` are the executed behavioral evidence.
-- Apple processing and test-group availability remain pending release verification.
+- External Apple review approval remains pending; internal delivery is verified below.
 
 ## Primary rendered-UI acceptance
 
@@ -62,3 +62,9 @@ frames, orientation/crop, dissolve ramp, audio mix, preview/export agreement).
 - Actual speed slider changes timeline duration; one Undo restores the prior speed and Redo restores the edit. Saved-project reopen preserves edits.
 - H.264 export independently reopened: 640×360, 24fps, 3.833333s video with AAC audio. PNG960×540 exported through native Share → Save to Files, with identical source/destination SHA256.
 - OS window resizing could not be actuated even in Apple Settings through the simulator controller, so actual split-window dragging remains unverified. Physical-device performance, HDR and paid providers remain separate acceptance items.
+
+## Delivery / 交付
+
+The immutable v1.7.23 source is 7f23c5023257914c1e136400ecdd0659f06a0af4. Local Xcode 27 Release artifacts were reused by [signing run](https://github.com/JiangNanGenius/floe-agent/actions/runs/37628290765). Apple returned VALID, unexpired and IN_BETA_TESTING for the existing Floe QA group. Build264 was submitted to existing publictest1 on 2026-10-07 and is waiting for review, not yet approved. [Independent readback](https://github.com/JiangNanGenius/floe-agent/actions/runs/37630764926).
+
+已复用本地设备产物完成签名上传，现有 Floe QA 内部可安装；现有 publictest1 已送审，等待审核。内部可用不代表外部审核通过；实体设备效果仍待用户测试。

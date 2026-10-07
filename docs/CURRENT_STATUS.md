@@ -2,11 +2,12 @@
 
 更新时间 / Updated: 2026-10-07. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
 
-## 1.7.23（264）媒体工作台候选 / Media workbench candidate
+## 1.7.23（264）内部可用，公测待审 / Internal available, external review pending
 
 - 图片／视频统一工程、图层、时间线、AI 候选和 `media.project`，中英文手册已更新。Unified projects, layers, timeline, AI candidates and media.project; bilingual guides updated.
 - Xcode 27 模拟器完整 App 编译通过，46 项模块测试及 19 项 App 定向测试通过；iPad 横竖屏、宽屏三栏、iPhone 窄屏、全屏、保存重开和系统“存储到文件”已实际检查。Full simulator App compile, 46 module and 19 focused App tests passed; rendered layouts, full screen, reopening and native Save to Files verified.
-- 不可变标签 `v1.7.23` 固定源码 `7f23c5023257914c1e136400ecdd0659f06a0af4`；Xcode 27 设备 Release 构建通过，设备包和匹配符号已留存。签名上传和 Apple 验证仍在推进。Immutable source/tag, Xcode 27 device Release build and retained matching symbols confirmed; signing/upload and Apple validation are pending.
+- 不可变标签 `v1.7.23` 固定源码 `7f23c5023257914c1e136400ecdd0659f06a0af4`；Xcode 27 设备 Release 构建通过，设备包和匹配符号已留存。已复用本地产物完成签名上传；Apple VALID、未过期、现有 Floe QA 关联和内部 IN_BETA_TESTING 已确认。2026-10-07 已加入现有 publictest1 并提交，正在等待审核，尚未外部批准。Immutable source/tag, device build and matching symbols are confirmed. The local artifact was signed and uploaded; VALID, unexpired status and Floe QA internal availability are confirmed. Submitted to existing publictest1 on 2026-10-07; waiting for review, not externally approved.
+- [签名与内部验证 / Signing and internal verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37628290765) · [送审后独立回读 / Independent submission readback](https://github.com/JiangNanGenius/floe-agent/actions/runs/37630764926).
 - 实际系统分屏拖动未能通过模拟器控制工具完成；真实设备流畅度、HDR 和付费生成未验收。OS split-window dragging could not be exercised through the simulator controller; physical performance, HDR and paid generation remain unverified.
 
 [工作台说明 / Workbench guide](FLOE_MEDIA_WORKBENCH.md) · [验证记录 / Evidence](releases/notes/FLOE_1_7_23_MEDIA_WORKBENCH.md)
