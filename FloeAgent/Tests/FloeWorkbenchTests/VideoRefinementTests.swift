@@ -135,9 +135,9 @@ struct VideoRefinementTests {
     @Test("trim/speed keep source, timeline and caption mappings consistent")
     func trimSpeedSubtitleMapping() throws {
         // Clip: source 2...6s at 2× speed → 2s of timeline content.
-        var fast = clip(trimStart: 2, trimEnd: 6, speed: 2)
         let asset = MediaAssetReference(kind: .video, relativePath: "a.mp4", originalName: "a.mp4",
                                         metadata: .init(durationSeconds: 8))
+        var fast = clip(assetID: asset.id, trimStart: 2, trimEnd: 6, speed: 2)
         var project = MediaProject(kind: .video, name: "V",
                                    assets: [asset],
                                    videoTimeline: VideoTimeline(clips: [fast]))
