@@ -29,6 +29,7 @@ let package = Package(
         .library(name: "FloeEnvironments", targets: ["FloeEnvironments"]),
         .library(name: "FloePackages", targets: ["FloePackages"]),
         .library(name: "FloeMedia", targets: ["FloeMedia"]),
+        .library(name: "FloeWorkbench", targets: ["FloeWorkbench"]),
         .library(name: "FloeNotes", targets: ["FloeNotes"]),
         .library(name: "FloeGit", targets: ["FloeGit"]),
         .library(name: "FloeLocalModelCatalog", targets: ["FloeLocalModelCatalog"]),
@@ -531,6 +532,21 @@ let package = Package(
             ]
         ),
 
+        .target(
+            name: "FloeWorkbench",
+            dependencies: [
+                "FloeCore", "FloeTools",
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
+            path: "Sources/FloeWorkbench",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
         // MARK: - Test targets
 
         .target(
@@ -747,6 +763,16 @@ let package = Package(
             name: "FloeNotesTests",
             dependencies: ["FloeNotes"],
             path: "Tests/FloeNotesTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+
+        .testTarget(
+            name: "FloeWorkbenchTests",
+            dependencies: ["FloeWorkbench", "FloeTools", "FloeCore"],
+            path: "Tests/FloeWorkbenchTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

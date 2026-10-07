@@ -176,6 +176,10 @@ final class AppEnvironment: ObservableObject {
     private lazy var _backgroundVideoService = BackgroundVideoService()
     private lazy var _webSearchSettingsCenter = WebSearchSettingsCenter()
     private lazy var _mcpSettingsCenter = MCPSettingsCenter.shared
+    private lazy var _workbenchCenter = WorkbenchCenter(
+        rootProvider: WorkspaceCenter.toolRootProvider,
+        bridge: WorkbenchAIBridge.live(environment: self)
+    )
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     /// Set during tool registration; used at launch to reconcile interrupted
@@ -196,6 +200,7 @@ final class AppEnvironment: ObservableObject {
     var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
     var mediaGenerationService: MediaGenerationService { _mediaGenerationService }
     var creativeAssetStore: CreativeAssetStore { _creativeAssetStore }
+    var workbenchCenter: WorkbenchCenter { _workbenchCenter }
     var canvasSyncOperationStore: CanvasSyncOperationStore { _canvasSyncOperationStore }
     var canvasCloudAssetService: CanvasCloudAssetService { _canvasCloudAssetService }
     var screenShareCenter: ScreenShareCenter {
@@ -764,6 +769,9 @@ final class AppEnvironment: ObservableObject {
         // Seedance, DashScope Wan) for ordinary chat. Submissions become
         // conversation-owned media jobs that survive relaunches.
         registerRemoteVideoTools(center: filesCenter)
+        // Unified image/video workbench: `media.project` read/propose/apply/
+        // export. Proposals only apply through a UI-minted grant.
+        registerWorkbenchTools(center: workbenchCenter)
         // Public Apple-framework integrations. Device-local settings filter
         // these descriptors before each provider request.
         registerAppleSystemTools(database: database)

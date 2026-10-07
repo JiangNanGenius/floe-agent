@@ -3212,14 +3212,15 @@ struct WorkspaceCanvasView: View {
             }
         }
         .sheet(item: $videoEditorPresentation) { presentation in
-            NavigationStack {
-                MediaEditorView(
-                    workspaceRoot: presentation.source.deletingLastPathComponent(),
-                    previewURL: presentation.source
-                ) { url in
+            WorkbenchBootstrapSheet(
+                center: environment.workbenchCenter,
+                title: presentation.source.lastPathComponent,
+                kind: .video,
+                urls: [presentation.source],
+                owner: WorkbenchCenter.Owner(kind: .canvas, id: presentation.documentID, environmentID: nil),
+                onExported: { url in
                     Task { await attachEditedVideo(url, presentation: presentation) }
-                }
-            }
+                })
         }
         .sheet(isPresented: $showsMediaJobs) {
             CanvasMediaJobCenter(
@@ -6923,9 +6924,18 @@ private struct CanvasLocalImageEditor: View {
     let onSave: (UUID) -> Void
 
     var body: some View {
-        FloeImageEditorView(sourceURL: CanvasAssetNodeContent.localURL(for: node)) { data in
-            try await saveDerivedImage(data)
-        }
+        // Unified workbench; the flattened export is registered as a derived
+        // canvas asset through the existing ingestion path.
+        WorkbenchBootstrapSheet(
+            center: environment.workbenchCenter,
+            title: node.text.isEmpty ? "canvas-image" : node.text,
+            kind: .image,
+            urls: CanvasAssetNodeContent.localURL(for: node).map { [$0] } ?? [],
+            owner: WorkbenchCenter.Owner(kind: .canvas, id: documentID, environmentID: nil),
+            onSaveToSource: { options in
+                let data = try await environment.workbenchCenter.exportImageData(options: options)
+                try await saveDerivedImage(data)
+            })
     }
 
     @MainActor

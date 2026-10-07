@@ -2,6 +2,15 @@
 
 更新时间 / Updated: 2026-10-07. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
 
+## 1.7.23（264）媒体工作台候选 / Media workbench candidate
+
+- 图片／视频统一工程、图层、时间线、AI 候选和 `media.project`，中英文手册已更新。Unified projects, layers, timeline, AI candidates and media.project; bilingual guides updated.
+- Xcode 27 模拟器完整 App 编译通过，46 项模块测试及 19 项 App 定向测试通过；iPad 横竖屏、宽屏三栏、iPhone 窄屏、全屏、保存重开和系统“存储到文件”已实际检查。Full simulator App compile, 46 module and 19 focused App tests passed; rendered layouts, full screen, reopening and native Save to Files verified.
+- 设备 Release 构建、签名上传和 Apple 验证尚待完成。Device Release build, signing/upload and Apple validation pending.
+- 实际系统分屏拖动未能通过模拟器控制工具完成；真实设备流畅度、HDR 和付费生成未验收。OS split-window dragging could not be exercised through the simulator controller; physical performance, HDR and paid generation remain unverified.
+
+[工作台说明 / Workbench guide](FLOE_MEDIA_WORKBENCH.md) · [验证记录 / Evidence](releases/notes/FLOE_1_7_23_MEDIA_WORKBENCH.md)
+
 ## 1.7.22（263）内部可用，公测待审 / Internal available, external review pending
 
 - 浏览器接管交接、真实地址和全屏；大会话首批数据与时间线缓存；虚拟机启动合并、停止确认；终端与共享端口管理。Browser handoff, address/full screen, bounded history and cached timeline, coalesced VM startup, terminal and shared ports.

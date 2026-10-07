@@ -15,6 +15,7 @@ struct FilesView: View {
     @StateObject private var viewModel: FilesViewModel
     @StateObject private var center: FilesCenter
     @State private var showingImageCreation = false
+    @State private var videoEditingAttachment: AttachmentRef?
 
     init(center: FilesCenter) {
         self._center = StateObject(wrappedValue: center)
@@ -70,10 +71,23 @@ struct FilesView: View {
         .sheet(item: $viewModel.quickLookAttachment) { attachment in
             quickLookSheet(for: attachment)
         }
+        // The unified media workbench replaces the old single-file editor:
+        // interactive crop/resize/color plus layers, undo/redo and export.
         .sheet(item: $viewModel.editingImage) { attachment in
-            NavigationStack {
-                ImageEditorView(attachment: attachment, center: center)
-            }
+            WorkbenchBootstrapSheet(
+                center: center.environment.workbenchCenter,
+                title: attachment.displayName,
+                kind: .image,
+                urls: (try? center.resolveURL(for: attachment)).map { [$0] } ?? [],
+                owner: WorkbenchCenter.Owner(kind: .files, id: nil, environmentID: nil))
+        }
+        .sheet(item: $videoEditingAttachment) { attachment in
+            WorkbenchBootstrapSheet(
+                center: center.environment.workbenchCenter,
+                title: attachment.displayName,
+                kind: .video,
+                urls: (try? center.resolveURL(for: attachment)).map { [$0] } ?? [],
+                owner: WorkbenchCenter.Owner(kind: .files, id: nil, environmentID: nil))
         }
         .alert(item: $center.conflict) { conflict in
             Alert(
@@ -84,6 +98,11 @@ struct FilesView: View {
                 }
             )
         }
+    }
+
+    static func isVideoAttachment(_ attachment: AttachmentRef) -> Bool {
+        let extensionName = (attachment.displayName as NSString).pathExtension.lowercased()
+        return ["mp4", "mov", "m4v", "avi", "mkv", "webm"].contains(extensionName)
     }
 
     private var recentList: some View {
@@ -113,6 +132,13 @@ struct FilesView: View {
                                 viewModel.openImageEditor(attachment)
                             } label: {
                                 Label("files.edit_image", systemImage: "wand.and.stars")
+                            }
+                        }
+                        if Self.isVideoAttachment(attachment) {
+                            Button {
+                                videoEditingAttachment = attachment
+                            } label: {
+                                Label(WorkbenchText.t("媒体工作台", "Media workbench"), systemImage: "film.stack")
                             }
                         }
                     } label: {

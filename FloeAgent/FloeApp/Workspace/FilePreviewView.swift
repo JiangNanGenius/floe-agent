@@ -203,18 +203,36 @@ struct FilePreviewView: View {
         .sheet(item: Binding(get: { isEngineeringFullScreen ? nil : engineeringReview }, set: { engineeringReview = $0 })) { capture in
             EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID, center: center)
         }
+        // The unified media workbench replaces the old parameter form and
+        // single-file image editor; export drives the actual render.
+        // When this preview is mounted for a chat task (a conversation
+        // recorded against the current workspace), the project records that
+        // conversation as its owner so the agent in the SAME task reaches it
+        // and another task is refused. A genuinely workspace-only preview
+        // keeps workspace ownership. No environment id exists on the
+        // conversation API, so none is invented.
         .fullScreenCover(item: $mediaEditorSource, onDismiss: { Task { await load() } }) { url in
-            if let root = center.currentRootURL {
-                NavigationStack { MediaEditorView(workspaceRoot: root, previewURL: url) }
-            }
+            WorkbenchBootstrapSheet(
+                center: environment.workbenchCenter,
+                title: url.lastPathComponent,
+                kind: .video,
+                urls: [url],
+                owner: workbenchOwner)
         }
-        // The built-in image workbench edits the selected workspace file in
-        // place; dismissing it reloads the preview against the committed
-        // bytes without leaving the inspector/document-tab context.
+        // The workbench edits the selected workspace file and writes the
+        // re-encoded result back through the same digest-checked commit path;
+        // dismissing reloads the preview against the committed bytes.
         .fullScreenCover(item: $imageEditRequest, onDismiss: { Task { await load() } }) { request in
-            FloeImageEditorView(sourceURL: request.sourceURL) { data in
-                try await saveEditedImage(request, editorPNG: data)
-            }
+            WorkbenchBootstrapSheet(
+                center: environment.workbenchCenter,
+                title: request.relativePath,
+                kind: .image,
+                urls: [request.sourceURL],
+                owner: workbenchOwner,
+                onSaveToSource: { options in
+                    let data = try await environment.workbenchCenter.exportImageData(options: options)
+                    try await saveEditedImage(request, editorPNG: data)
+                })
         }
         .sheet(item: $quickLookURL) { url in
             QuickLookView(url: url)
@@ -239,6 +257,16 @@ struct FilePreviewView: View {
         guard let id = conversationID ?? router.selectedConversationID,
               center.workspaceID(for: id) == center.currentWorkspace?.id else { return nil }
         return id
+    }
+
+    /// Ownership recorded on workbench projects opened from this preview:
+    /// chat ownership when a conversation belonging to the current workspace
+    /// is known, otherwise workspace ownership. The project's media root stays
+    /// the current workspace either way; only the owner id changes.
+    private var workbenchOwner: WorkbenchCenter.Owner {
+        WorkbenchCenter.Owner(kind: engineeringConversationID == nil ? .workspace : .chat,
+                              id: engineeringConversationID,
+                              environmentID: nil)
     }
 
     private func engineeringView(_ package: EngineeringPreviewPackage, editing: Bool = false) -> some View {

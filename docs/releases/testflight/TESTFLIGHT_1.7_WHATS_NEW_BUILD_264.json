@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "新增统一图片与视频创作工作台：图片、文字、涂鸦图层，可撤销编辑和工程保存重开；视频多片段拼接、变速、配乐、字幕与叠化。支持图片和视频格式、尺寸及质量导出。AI 修改先确认，生成结果作为候选素材；新增 media.project 工具。请重点测试 iPad 横竖屏、iPhone 窄屏、保存重开、导出及原素材保护。实际云端生成需要自行配置服务。",
+  "en-US": "Adds a unified image and video workbench with image, text and drawing layers, undo/redo and saved projects. Edit a primary video track with multiple clips, speed, music, captions and dissolves. Export with explicit format and size options. AI changes require confirmation and generated results remain candidates. Adds media.project. Please test iPad rotation, iPhone compact layout, project reopening, exports and preservation of originals. Cloud generation requires your own configured provider."
+}

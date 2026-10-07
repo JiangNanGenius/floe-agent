@@ -69,6 +69,11 @@ struct FloeAgentApp: App {
                 if ProcessInfo.processInfo.arguments.contains("--ui-test-long-reasoning"),
                    ProcessInfo.processInfo.arguments.contains("-ui-testing") {
                     LongReasoningTestHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-workbench-fixture"),
+                          ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                    // Synthetic media workbench fixture for primary CUA
+                    // acceptance on iPad and iPhone.
+                    WorkbenchUITestHarness()
                 } else {
                     RootView()
                 }

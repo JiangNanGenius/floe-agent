@@ -22,6 +22,10 @@ public struct MediaJobOwner: Sendable, Codable, Hashable {
 
     public static func canvas(_ id: UUID) -> MediaJobOwner { .init(kind: .canvas, id: id) }
     public static func conversation(_ id: UUID) -> MediaJobOwner { .init(kind: .conversation, id: id) }
+    /// Workbench/project-owned jobs (unified media projects). The document
+    /// kind stores the project UUID; there is no canvas or conversation
+    /// identity and callers must not invent one.
+    public static func document(_ id: UUID) -> MediaJobOwner { .init(kind: .document, id: id) }
 }
 
 /// One durable job plus its explicit ownership. `canvasID`/`documentID` are

@@ -223,3 +223,54 @@ The terminal toolbar includes font size, copy output, paste, clear screen, Ctrl-
 Choose the environment in port management before adding or editing a rule. The guest port is the Linux service's listening port; an empty requested host port uses dynamic allocation. Conflicts may change the actual bound port, so copy the currently available address. **Allow this device only** binds to loopback; disabling it permits LAN access.
 
 A saved rule is not a live listener. The VM must be running and the service must listen on the guest port. Stopping the VM retains rules but makes their addresses unavailable. The agent should list rules before using `linux.port` to modify its scoped environment. Forwarding alone is not evidence that a web service started.
+
+
+## Media workbench (1.7.23 / 264)
+
+The image and video editors are now one workbench, opened from the Files tab,
+the workspace file preview and Canvas. On a wide landscape iPad it shows
+assets/layers on the left, a large preview in the centre, properties on the
+right and the video timeline at the bottom; portrait iPad, narrow split views
+and iPhone show a large preview with the panels in drawers so the preview is
+never squeezed into a strip.
+
+- Images: interactive crop (drag the frame and corner handles), move, pinch to
+  scale, rotate, layer reorder, hide/lock/opacity, text and freehand layers,
+  basic colour, blur/sharpen, mosaic and filters. The source file is never
+  modified destructively: you export when ready, and the workspace preview can
+  save the result back into the original file.
+- Video: one primary track with multiple clips (trim, split at the playhead,
+  reorder by dragging, delete, speed, rotation, crop, volume, mute), a music
+  track (offset, source trim start and length, volume, fade in/out mixed with
+  the original audio), a caption track with manual captions or transcription of
+  the selected clip, and hard-cut or cross-dissolve transitions. The preview is
+  rendered through the same pipeline as the export and then played back, so
+  transforms, crop, dissolves, burned captions and the audio mix look and sound
+  exactly like the exported file.
+- Projects and reopening: every edit is saved as an atomic JSON project with
+  its undo history. The folder button in the workbench toolbar lists saved
+  projects for the current owner/workspace; opening one restores its layers,
+  timeline, edit history and asset root. Opening a source that already has a
+  saved project offers to resume it instead of starting over, and you can
+  always choose “Start fresh”.
+- Export: PNG/JPEG/HEIC with explicit dimensions, quality, transparency and
+  metadata options (invalid combinations are reported, never silently
+  changed); video exports H.264 or HEVC with explicit resolution and frame
+  rate. Exports are written to `Workbench/Exports` in the workspace, and a
+  verified export shows a “Share / Save to Files” button in the panel
+  (native system sheet; large videos stay on disk and are shared by URL).
+  Starting a new export, a failure or a cancellation clears the previous
+  success immediately, so a stale result can never be shared. The project
+  itself is an atomic JSON document that survives relaunch with its undo/redo
+  history.
+- AI: the AI drawer opens only when you ask. It shows the current selection,
+  pending AI proposals and durable generation jobs. Before anything is sent
+  you see the model, assets, parameters and a cost note, and the confirmed
+  request is exactly what the review showed (including an image-edit source
+  asset and video duration/aspect/resolution). Candidates are never applied
+  automatically: accept one to import it as a new layer or clip, then undo is
+  still available. Candidates and running jobs survive closing the view.
+  Image generation has no provider job id to poll: if the app stops waiting or
+  the network fails after submission, the request is listed truthfully as
+  interrupted/unknown and is never resubmitted automatically (no duplicate
+  charges or generations). A confirmed review can never be submitted twice.
