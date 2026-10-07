@@ -18,6 +18,8 @@ actor WorkbenchCandidateStore {
         var modelName: String
         var parametersSummary: String
         var createdAt: Date
+        /// Owning AI request; optional so older records keep decoding.
+        var requestID: UUID? = nil
     }
 
     private let directory: URL
@@ -36,7 +38,8 @@ actor WorkbenchCandidateStore {
             Record(id: candidate.id, path: candidate.url.path, kind: candidate.kind,
                    modelName: candidate.modelName,
                    parametersSummary: candidate.parametersSummary,
-                   createdAt: candidate.createdAt)
+                   createdAt: candidate.createdAt,
+                   requestID: candidate.requestID)
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -58,7 +61,8 @@ actor WorkbenchCandidateStore {
                                                         kind: record.kind,
                                                         modelName: record.modelName,
                                                         parametersSummary: record.parametersSummary,
-                                                        createdAt: record.createdAt))
+                                                        createdAt: record.createdAt,
+                                                        requestID: record.requestID))
         }
         if candidates.count != records.count {
             try? save(projectID: projectID, candidates: candidates)
@@ -86,7 +90,8 @@ actor WorkbenchCandidateStore {
             WorkbenchCenter.Candidate(id: record.id, url: URL(fileURLWithPath: record.path),
                                       kind: record.kind, modelName: record.modelName,
                                       parametersSummary: record.parametersSummary,
-                                      createdAt: record.createdAt)
+                                      createdAt: record.createdAt,
+                                      requestID: record.requestID)
         }
     }
 

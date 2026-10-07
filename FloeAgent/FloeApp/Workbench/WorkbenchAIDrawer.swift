@@ -191,30 +191,68 @@ struct WorkbenchAIDrawer: View {
                         Text(WorkbenchText.t("候选不会自动替换项目；导入后作为新图层或片段。",
                                              "Candidates never replace the project automatically; import them as a new layer or clip."))
                             .font(.caption).foregroundStyle(.secondary)
-                        ForEach(center.candidates) { candidate in
-                            HStack {
-                                Image(systemName: candidate.kind == .image ? "photo" : "film")
-                                VStack(alignment: .leading) {
-                                    Text(candidate.url.lastPathComponent).font(.caption).lineLimit(1)
-                                    Text(candidate.modelName).font(.caption2).foregroundStyle(.secondary)
+                        ForEach(candidateGroups, id: \.requestID) { group in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(group.title)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("workbench.ai.candidateGroup")
+                                ForEach(group.candidates) { candidate in
+                                    candidateRow(candidate)
                                 }
-                                Spacer()
-                                Button(WorkbenchText.t("导入", "Import")) {
-                                    center.acceptCandidate(candidate)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .frame(minHeight: 44)
-                                .accessibilityIdentifier("workbench.ai.candidate.accept")
-                                Button(role: .destructive) {
-                                    center.rejectCandidate(candidate)
-                                } label: { Image(systemName: "xmark") }
-                                .frame(minWidth: 44, minHeight: 44)
                             }
+                            .padding(.vertical, 2)
                         }
                     }
                     .accessibilityIdentifier("workbench.ai.candidates")
                 }
             }
+        }
+    }
+
+    /// Candidates grouped by the AI request that produced them, so results are
+    /// owned by their originating request and never presented as unrelated.
+    private var candidateGroups: [(requestID: String, title: String, candidates: [WorkbenchCenter.Candidate])] {
+        var order: [String] = []
+        var buckets: [String: [WorkbenchCenter.Candidate]] = [:]
+        for candidate in center.candidates {
+            let key = candidate.requestID?.uuidString ?? "imported"
+            if buckets[key] == nil { order.append(key); buckets[key] = [] }
+            buckets[key]?.append(candidate)
+        }
+        return order.map { key in
+            let items = buckets[key] ?? []
+            let title: String
+            if key == "imported" {
+                title = WorkbenchText.t("导入的候选", "Imported candidates")
+            } else {
+                let short = String(key.prefix(8))
+                let prompt = items.first?.parametersSummary ?? ""
+                title = WorkbenchText.t("请求 \(short)：", "Request \(short): ")
+                    + String(prompt.prefix(40))
+            }
+            return (key, title, items)
+        }
+    }
+
+    @ViewBuilder
+    private func candidateRow(_ candidate: WorkbenchCenter.Candidate) -> some View {
+        HStack {
+            Image(systemName: candidate.kind == .image ? "photo" : "film")
+            VStack(alignment: .leading) {
+                Text(candidate.url.lastPathComponent).font(.caption).lineLimit(1)
+                Text(candidate.modelName).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(WorkbenchText.t("导入", "Import")) {
+                center.acceptCandidate(candidate)
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("workbench.ai.candidate.accept")
+            Button(role: .destructive) {
+                center.rejectCandidate(candidate)
+            } label: { Image(systemName: "xmark") }
+            .frame(minWidth: 44, minHeight: 44)
         }
     }
 

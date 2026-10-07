@@ -129,6 +129,10 @@ final class WorkbenchCenter: ObservableObject {
         var modelName: String
         var parametersSummary: String
         var createdAt: Date
+        /// The AI request that produced this candidate. Candidates persist with
+        /// the project they belong to and are never auto-placed on nodes; the
+        /// request id keeps per-request grouping/recovery intact.
+        var requestID: UUID? = nil
     }
 
     enum Drawer: String, Identifiable {
@@ -1222,7 +1226,8 @@ final class WorkbenchCenter: ObservableObject {
                     delivered.append(Candidate(id: UUID(), url: url, kind: .image,
                                                modelName: request.modelName,
                                                parametersSummary: request.prompt,
-                                               createdAt: Date()))
+                                               createdAt: Date(),
+                                               requestID: request.id))
                 }
                 guard !delivered.isEmpty else {
                     // The provider answered without an identifiable local
