@@ -390,9 +390,37 @@ public typealias CanvasAdjustment = ImageLayerAdjustment
 
 // MARK: - Geometry
 
+/// Renderer-measured untransformed size of a layer, in canvas-pixel space,
+/// supplied by the host so the pure engine can align rendered edges.
+public struct LayerNaturalSize: Sendable, Codable, Hashable {
+    public var layerID: UUID
+    public var width: Double
+    public var height: Double
+
+    public init(layerID: UUID, width: Double, height: Double) {
+        self.layerID = layerID; self.width = width; self.height = height
+    }
+}
+
+/// Result of a host-rendered layer merge: a new full-canvas transparent image
+/// asset that contains exactly the merged layers' composited pixels. The host
+/// renders this through the real image pipeline (not a screen capture),
+/// persists it as an asset, and hands the reference to the engine.
+public struct MergedLayerRaster: Sendable, Codable, Hashable {
+    /// Newly imported asset containing the merged pixels.
+    public var assetID: UUID
+    public var width: Int
+    public var height: Int
+    public var contentHash: String?
+
+    public init(assetID: UUID, width: Int, height: Int, contentHash: String? = nil) {
+        self.assetID = assetID; self.width = width; self.height = height
+        self.contentHash = contentHash
+    }
+}
+
 /// Unit-square normalized rectangle (0...1 per component).
-public struct NormalizedRect: Sendable, Codable, Hashable {
-    public var x: Double
+public struct NormalizedRect: Sendable, Codable, Hashable {    public var x: Double
     public var y: Double
     public var width: Double
     public var height: Double
@@ -790,10 +818,13 @@ public struct MediaProjectMemento: Sendable, Codable, Hashable {
     public var imageLayers: [ImageLayer]
     public var canvasAdjustment: CanvasAdjustment
     public var videoTimeline: VideoTimeline?
+    /// Project-wide vector selection so selection edits are undoable.
+    public var imageSelection: ImageSelection?
 
     public init(revision: Int64, canvas: MediaCanvas?, assets: [MediaAssetReference] = [],
                 sourceAssetID: UUID? = nil, imageLayers: [ImageLayer],
-                canvasAdjustment: CanvasAdjustment, videoTimeline: VideoTimeline?) {
+                canvasAdjustment: CanvasAdjustment, videoTimeline: VideoTimeline?,
+                imageSelection: ImageSelection? = nil) {
         self.revision = revision
         self.canvas = canvas
         self.assets = assets
@@ -801,6 +832,12 @@ public struct MediaProjectMemento: Sendable, Codable, Hashable {
         self.imageLayers = imageLayers
         self.canvasAdjustment = canvasAdjustment
         self.videoTimeline = videoTimeline
+        self.imageSelection = imageSelection
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case revision, canvas, assets, sourceAssetID, imageLayers, canvasAdjustment
+        case videoTimeline, imageSelection
     }
 
     public init(from decoder: Decoder) throws {
@@ -812,6 +849,7 @@ public struct MediaProjectMemento: Sendable, Codable, Hashable {
         imageLayers = try container.decodeIfPresent([ImageLayer].self, forKey: .imageLayers) ?? []
         canvasAdjustment = try container.decodeIfPresent(CanvasAdjustment.self, forKey: .canvasAdjustment) ?? .init()
         videoTimeline = try container.decodeIfPresent(VideoTimeline.self, forKey: .videoTimeline)
+        imageSelection = try container.decodeIfPresent(ImageSelection.self, forKey: .imageSelection)
     }
 }
 
@@ -820,7 +858,8 @@ public extension MediaProject {
     func memento() -> MediaProjectMemento {
         MediaProjectMemento(revision: revision, canvas: canvas, assets: assets,
                             sourceAssetID: sourceAssetID, imageLayers: imageLayers,
-                            canvasAdjustment: canvasAdjustment, videoTimeline: videoTimeline)
+                            canvasAdjustment: canvasAdjustment, videoTimeline: videoTimeline,
+                            imageSelection: imageSelection)
     }
 
     mutating func restore(_ memento: MediaProjectMemento) {
@@ -830,6 +869,7 @@ public extension MediaProject {
         imageLayers = memento.imageLayers
         canvasAdjustment = memento.canvasAdjustment
         videoTimeline = memento.videoTimeline
+        imageSelection = memento.imageSelection
         // Revision is intentionally NOT restored: every transition advances
         // monotonically so proposal base revisions never alias via undo ABA.
         updatedAt = Date()

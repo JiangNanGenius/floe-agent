@@ -15,16 +15,28 @@ struct WorkbenchImagePreview: View {
     @State private var liveScale: Double?
     @State private var liveRotation: Double?
     @State private var freehandPoints: [CGPoint] = []
+    @State private var freehandPressures: [Double] = []
+    @State private var freehandWidths: [Double] = []
+    @State private var selectionPoints: [CGPoint] = []
     @State private var cropGestureStart: NormalizedRect?
 
     private var selectedLayer: ImageLayer? {
         center.project?.imageLayers.first { $0.id == center.selectedLayerID }
     }
 
+    private var isInkTool: Bool {
+        center.imageTool == .brush || center.imageTool == .eraser
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let display = displayRect(in: geometry.size)
             ZStack {
+                if center.showsCheckerboard {
+                    CheckerboardBackground()
+                        .frame(width: display.width, height: display.height)
+                        .position(x: display.midX, y: display.midY)
+                }
                 if center.compareWithSource, let reference = center.sourcePreviewImage {
                     Image(decorative: reference, scale: 1)
                         .resizable()
@@ -46,20 +58,61 @@ struct WorkbenchImagePreview: View {
                     ProgressView()
                 }
 
+                // Vector selection overlay (project-level selection), visible
+                // for the marquee tool and whenever a selection exists.
+                if center.imageTool == .marquee || !(center.project?.imageSelection?.isEmpty ?? true) {
+                    selectionMaskOverlay(display: display)
+                        .allowsHitTesting(false)
+                }
+
+                // Live marquee draft.
+                if !selectionPoints.isEmpty, center.imageTool == .marquee {
+                    marqueeDraftPath()
+                        .stroke(Color.white.opacity(0.9),
+                                style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                }
+
                 if center.isDrawingFreehand {
                     Path { path in
                         guard let first = freehandPoints.first else { return }
                         path.move(to: first)
                         for point in freehandPoints.dropFirst() { path.addLine(to: point) }
                     }
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                    .stroke(center.imageTool == .eraser ? Color.white : WorkbenchPreviewColor.color(center.brushColorHex),
+                            style: StrokeStyle(lineWidth: max(1, center.brushWidth * 0.5),
+                                               lineCap: .round, lineJoin: .round))
+                    .opacity(center.imageTool == .eraser ? 0.7 : center.brushOpacity)
                 }
 
                 if center.isCropping, let crop = center.cropRect {
                     cropOverlay(crop: crop, display: display)
                         .gesture(cropMoveGesture(display: display))
-                } else if let layer = selectedLayer, !center.isDrawingFreehand {
+                } else if let layer = selectedLayer, !center.isDrawingFreehand,
+                          center.imageTool == .move {
                     selectionOverlay(layer: layer, display: display)
+                }
+
+                // Pencil pressure capture for brush/eraser (finger strokes have
+                // no pressure and stay fixed width).
+                if isInkTool {
+                    WorkbenchPressureSurface(
+                        onChanged: { point, pressure in
+                            guard display.contains(point) else { return }
+                            if freehandPoints.isEmpty {
+                                freehandPoints = [point]
+                                freehandPressures = [pressure]
+                                freehandWidths = [max(0.15, pressure)]
+                            } else {
+                                freehandPoints.append(point)
+                                freehandPressures.append(pressure)
+                                freehandWidths.append(max(0.15, pressure))
+                            }
+                        },
+                        onEnded: {
+                            commitInkStroke(display: display)
+                        })
+                    .frame(width: display.width, height: display.height)
+                    .position(x: display.midX, y: display.midY)
                 }
             }
             .contentShape(Rectangle())
@@ -69,7 +122,7 @@ struct WorkbenchImagePreview: View {
                     .onChanged { value in liveScale = selectedLayer.map { $0.transform.scale * Double(value) } }
                     .onEnded { value in
                         defer { liveScale = nil }
-                        guard let layer = selectedLayer else { return }
+                        guard center.imageTool == .move, let layer = selectedLayer else { return }
                         let scale = min(max(layer.transform.scale * Double(value), 0.1), 5)
                         center.apply(.updateLayer(id: layer.id,
                                                   transform: ImageLayerTransform(centerX: layer.transform.centerX,
@@ -85,7 +138,7 @@ struct WorkbenchImagePreview: View {
                     .onChanged { value in liveRotation = selectedLayer.map { $0.transform.rotationDegrees + value.degrees } }
                     .onEnded { value in
                         defer { liveRotation = nil }
-                        guard let layer = selectedLayer else { return }
+                        guard center.imageTool == .move, let layer = selectedLayer else { return }
                         var degrees = (layer.transform.rotationDegrees + value.degrees).truncatingRemainder(dividingBy: 360)
                         if degrees < 0 { degrees += 360 }
                         center.apply(.updateLayer(id: layer.id,
@@ -98,7 +151,7 @@ struct WorkbenchImagePreview: View {
                     }
             )
             .onTapGesture { location in
-                selectLayer(at: location, display: display)
+                handleTap(at: location, display: display)
             }
         }
         .accessibilityIdentifier("workbench.preview.image")
@@ -121,23 +174,29 @@ struct WorkbenchImagePreview: View {
     private func dragGesture(display: CGRect) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
-                if center.isDrawingFreehand {
-                    let point = value.location
-                    guard display.contains(point) else { return }
-                    freehandPoints.append(point)
+                if isInkTool { return } // pressure surface owns ink gestures
+                if center.imageTool == .marquee {
+                    guard display.contains(value.location) else { return }
+                    if selectionPoints.isEmpty {
+                        selectionPoints = [value.location, value.location]
+                    } else {
+                        selectionPoints[selectionPoints.count - 1] = value.location
+                    }
                 } else if center.isCropping {
                     // Movement handled by the crop overlay gesture.
-                } else {
+                } else if center.imageTool == .move {
                     dragTranslation = value.translation
                 }
             }
             .onEnded { value in
-                if center.isDrawingFreehand {
-                    commitFreehand(display: display)
+                if isInkTool { return }
+                if center.imageTool == .marquee {
+                    commitMarquee(display: display, end: value.location)
                     return
                 }
                 defer { dragTranslation = .zero }
-                guard let layer = selectedLayer, display.width > 0, display.height > 0 else { return }
+                guard center.imageTool == .move,
+                      let layer = selectedLayer, display.width > 0, display.height > 0 else { return }
                 let dx = value.translation.width / display.width
                 let dy = value.translation.height / display.height
                 guard abs(dx) > 0.001 || abs(dy) > 0.001 else { return }
@@ -152,20 +211,75 @@ struct WorkbenchImagePreview: View {
             }
     }
 
-    private func commitFreehand(display: CGRect) {
-        defer { freehandPoints = [] }
+    private func normalizedPoint(_ point: CGPoint, display: CGRect) -> ImageFreehandStroke.Point {
+        ImageFreehandStroke.Point(
+            x: min(max((point.x - display.minX) / max(display.width, 1), 0), 1),
+            y: min(max((point.y - display.minY) / max(display.height, 1), 0), 1))
+    }
+
+    private func commitMarquee(display: CGRect, end: CGPoint) {
+        defer { selectionPoints = [] }
+        guard display.width > 0, display.height > 0, selectionPoints.count >= 2 else { return }
+        var points = selectionPoints
+        points[points.count - 1] = end
+        let normalized = points.map { normalizedPoint($0, display: display) }
+        switch center.selectionKind {
+        case .rectangle, .ellipse:
+            guard let first = normalized.first, let last = normalized.last else { return }
+            center.commitSelectionShape(kind: center.selectionKind,
+                                        operation: center.selectionOperation,
+                                        points: [first, last])
+        case .lasso:
+            guard normalized.count >= 3 else { return }
+            center.commitSelectionShape(kind: .lasso, operation: center.selectionOperation,
+                                        points: normalized)
+        }
+    }
+
+    private func commitInkStroke(display: CGRect) {
+        defer {
+            freehandPoints = []
+            freehandPressures = []
+            freehandWidths = []
+        }
         guard display.width > 0, display.height > 0, freehandPoints.count >= 2 else { return }
-        let points = freehandPoints.map { point in
-            ImageFreehandStroke.Point(x: min(max((point.x - display.minX) / display.width, 0), 1),
-                                      y: min(max((point.y - display.minY) / display.height, 0), 1))
+        let points = freehandPoints.enumerated().map { index, point -> ImageFreehandStroke.Point in
+            let p = normalizedPoint(point, display: display)
+            let pressure = center.brushUsesPressure
+                ? (index < freehandPressures.count ? freehandPressures[index] : nil)
+                : nil
+            return ImageFreehandStroke.Point(x: p.x, y: p.y, pressure: pressure)
         }
-        let stroke = ImageFreehandStroke(points: points, width: 4, colorHex: "#FF3B30")
-        let layer = ImageLayer(kind: .freehand, name: WorkbenchText.t("手绘", "Freehand"),
-                               freehand: ImageFreehandContent(strokes: [stroke]))
-        if center.apply(.addImageLayer(layer)) {
-            center.selectedLayerID = layer.id
+        if center.imageTool == .eraser {
+            center.commitMaskStroke(ImageMaskStroke(points: points,
+                                                    width: center.brushWidth,
+                                                    hardness: center.brushHardness,
+                                                    restore: center.maskRestore))
+            return
         }
-        center.isDrawingFreehand = false
+        let stroke = ImageFreehandStroke(points: points,
+                                         width: center.brushWidth,
+                                         colorHex: center.brushColorHex,
+                                         hardness: center.brushHardness,
+                                         opacity: center.brushOpacity)
+        center.commitBrushStroke(stroke)
+    }
+
+    private func handleTap(at point: CGPoint, display: CGRect) {
+        switch center.imageTool {
+        case .eyedropper:
+            guard display.contains(point) else { return }
+            let normalized = normalizedPoint(point, display: display)
+            if let hex = center.sampleColor(atNormalized: CGPoint(x: normalized.x, y: normalized.y)) {
+                center.brushColorHex = hex
+                center.imageTool = .brush
+                center.isDrawingFreehand = true
+            }
+        case .move:
+            selectLayer(at: point, display: display)
+        case .marquee, .brush, .eraser:
+            break
+        }
     }
 
     private func cropMoveGesture(display: CGRect) -> some Gesture {
@@ -202,6 +316,40 @@ struct WorkbenchImagePreview: View {
     }
 
     // MARK: Overlays
+
+    private func selectionMaskOverlay(display: CGRect) -> some View {
+        let selection = center.project?.imageSelection
+        return ZStack {
+            if let selection, !selection.isEmpty {
+                SelectionShapePath(shapes: selection.shapes, display: display, inverted: selection.inverted)
+                    .fill(Color.white.opacity(0.18))
+                SelectionShapePath(shapes: selection.shapes, display: display, inverted: selection.inverted)
+                    .stroke(Color.white, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+            }
+        }
+    }
+
+    private func marqueeDraftPath() -> Path {
+        Path { path in
+            guard selectionPoints.count >= 2 else { return }
+            switch center.selectionKind {
+            case .rectangle, .ellipse:
+                let rect = CGRect(x: min(selectionPoints[0].x, selectionPoints[selectionPoints.count - 1].x),
+                                  y: min(selectionPoints[0].y, selectionPoints[selectionPoints.count - 1].y),
+                                  width: abs(selectionPoints[selectionPoints.count - 1].x - selectionPoints[0].x),
+                                  height: abs(selectionPoints[selectionPoints.count - 1].y - selectionPoints[0].y))
+                if center.selectionKind == .ellipse {
+                    path.addEllipse(in: rect)
+                } else {
+                    path.addRect(rect)
+                }
+            case .lasso:
+                path.move(to: selectionPoints[0])
+                for point in selectionPoints.dropFirst() { path.addLine(to: point) }
+                path.closeSubpath()
+            }
+        }
+    }
 
     @ViewBuilder
     private func selectionOverlay(layer: ImageLayer, display: CGRect) -> some View {
@@ -310,3 +458,144 @@ extension View {
         }
     }
 }
+
+/// Draws vector selection shapes in normalized coordinates mapped onto the
+/// preview's display rect.
+struct SelectionShapePath: Shape {
+    var shapes: [ImageSelectionShape]
+    var display: CGRect
+    var inverted: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        func map(_ point: ImageFreehandStroke.Point) -> CGPoint {
+            CGPoint(x: display.minX + CGFloat(point.x) * display.width,
+                    y: display.minY + CGFloat(point.y) * display.height)
+        }
+        for shape in shapes {
+            switch shape.kind {
+            case .rectangle, .ellipse:
+                guard shape.points.count == 2 else { continue }
+                let a = map(shape.points[0]); let b = map(shape.points[1])
+                let box = CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
+                                 width: abs(b.x - a.x), height: abs(b.y - a.y))
+                if shape.kind == .ellipse {
+                    path.addEllipse(in: box)
+                } else {
+                    path.addRect(box)
+                }
+            case .lasso:
+                guard shape.points.count >= 3 else { continue }
+                path.move(to: map(shape.points[0]))
+                for point in shape.points.dropFirst() { path.addLine(to: map(point)) }
+                path.closeSubpath()
+            }
+        }
+        if inverted {
+            // Visual marker for an inverted selection: full-canvas outline.
+            path.addRect(display)
+        }
+        return path
+    }
+}
+
+/// Checkerboard transparency backdrop so transparent pixels are visible.
+struct CheckerboardBackground: View {
+    var square: CGFloat = 12
+
+    var body: some View {
+        Canvas { context, size in
+            let columns = Int(ceil(size.width / square))
+            let rows = Int(ceil(size.height / square))
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    let isDark = (row + column) % 2 == 0
+                    let rect = CGRect(x: CGFloat(column) * square, y: CGFloat(row) * square,
+                                      width: square, height: square)
+                    context.fill(Path(rect), with: .color(isDark ? Color(white: 0.82) : Color(white: 0.94)))
+                }
+            }
+        }
+        .clipped()
+        .accessibilityHidden(true)
+    }
+}
+
+/// Minimal hex → Color parser for preview strokes.
+enum WorkbenchPreviewColor {
+    static func color(_ hex: String) -> Color {
+        var value = hex
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.count == 6, let int = UInt32(value, radix: 16) else { return .accentColor }
+        return Color(red: Double((int >> 16) & 0xFF) / 255,
+                     green: Double((int >> 8) & 0xFF) / 255,
+                     blue: Double(int & 0xFF) / 255)
+    }
+}
+
+#if canImport(UIKit)
+/// Captures Pencil/finger touches with `force` for brush/eraser strokes. The
+/// pressure is 0 for fingers/unsupported input, and the model never
+/// synthesizes pressure where none was measured.
+struct WorkbenchPressureSurface: UIViewRepresentable {
+    var onChanged: (CGPoint, Double) -> Void
+    var onEnded: () -> Void
+
+    func makeUIView(context: Context) -> PressureTouchView {
+        let view = PressureTouchView()
+        view.backgroundColor = .clear
+        view.isMultipleTouchEnabled = false
+        view.onChanged = onChanged
+        view.onEnded = onEnded
+        return view
+    }
+
+    func updateUIView(_ uiView: PressureTouchView, context: Context) {
+        uiView.onChanged = onChanged
+        uiView.onEnded = onEnded
+    }
+
+    final class PressureTouchView: UIView {
+        var onChanged: ((CGPoint, Double) -> Void)?
+        var onEnded: (() -> Void)?
+        private var activeTouch: UITouch?
+        private var hasMoved = false
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = touches.first else { return }
+            activeTouch = touch
+            hasMoved = false
+            onChanged?(touch.location(in: self), normalizedForce(touch))
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = touches.first, touch === activeTouch else { return }
+            hasMoved = true
+            // Coalesced touches give the full Pencil sample rate.
+            if let coalesced = event?.coalescedTouches(for: touch), !coalesced.isEmpty {
+                for sample in coalesced {
+                    onChanged?(sample.location(in: self), normalizedForce(sample))
+                }
+            } else {
+                onChanged?(touch.location(in: self), normalizedForce(touch))
+            }
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+            activeTouch = nil
+            onEnded?()
+        }
+
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+            activeTouch = nil
+            onEnded?()
+        }
+
+        private func normalizedForce(_ touch: UITouch) -> Double {
+            guard touch.type == .pencil, touch.maximumPossibleForce > 0 else { return 0 }
+            return min(max(Double(touch.force / touch.maximumPossibleForce), 0), 1)
+        }
+    }
+}
+#endif
+

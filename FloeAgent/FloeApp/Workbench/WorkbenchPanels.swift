@@ -17,6 +17,7 @@ struct WorkbenchAssetsPanel: View {
     @State private var assetImportMode: AssetImportMode = .imageLayer
     @State private var showMusicImporter = false
     @State private var relinkAssetID: UUID?
+    @State private var multiSelectLayers = false
 
     enum AssetImportMode { case imageLayer, videoClip, music }
 
@@ -75,7 +76,51 @@ struct WorkbenchAssetsPanel: View {
             }
 
             if center.project?.kind == .image {
+                Section(WorkbenchText.t("工具", "Tools")) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(WorkbenchCenter.ImageAuthoringTool.allCases) { tool in
+                                Button {
+                                    center.setImageTool(tool)
+                                } label: {
+                                    VStack(spacing: 2) {
+                                        Image(systemName: toolIcon(tool))
+                                            .font(.system(size: 18))
+                                        Text(toolTitle(tool))
+                                            .font(.caption2)
+                                    }
+                                    .frame(minWidth: 52, minHeight: 44)
+                                    .padding(.horizontal, 6)
+                                    .background(center.imageTool == tool
+                                                ? Color.accentColor.opacity(0.18) : Color.clear,
+                                                in: RoundedRectangle(cornerRadius: 10))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("workbench.tool.\(tool.rawValue)")
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    if center.imageTool == .marquee {
+                        selectionControls
+                    }
+                    if center.imageTool == .brush || center.imageTool == .eraser {
+                        brushControls(isEraser: center.imageTool == .eraser)
+                    }
+                }
                 Section(WorkbenchText.t("图层", "Layers")) {
+                    HStack {
+                        Button(WorkbenchText.t("全选图层", "Select all layers")) {
+                            center.selectAllLayers()
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("workbench.layer.selectAll")
+                        Spacer()
+                        Toggle(WorkbenchText.t("多选", "Multi"), isOn: $multiSelectLayers)
+                            .toggleStyle(.button)
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("workbench.layer.multiSelect")
+                    }
                     layerRows
                 }
                 Section {
@@ -87,34 +132,65 @@ struct WorkbenchAssetsPanel: View {
                     }
                     .accessibilityIdentifier("workbench.layer.addText")
                     Button {
-                        center.isDrawingFreehand.toggle()
+                        center.setImageTool(.brush)
                     } label: {
-                        Label(center.isDrawingFreehand
-                              ? WorkbenchText.t("结束手绘", "Finish freehand")
-                              : WorkbenchText.t("手绘图层", "Freehand layer"),
-                              systemImage: "scribble")
+                        Label(WorkbenchText.t("使用画笔", "Use brush"), systemImage: "paintbrush.pointed")
                             .frame(minHeight: 44)
                     }
                     .accessibilityIdentifier("workbench.layer.freehand")
-                    if let selected = selectedLayer, selected.kind == .image {
+                    Button {
+                        center.duplicateSelectedLayer()
+                    } label: {
+                        Label(WorkbenchText.t("复制图层", "Duplicate layer"), systemImage: "plus.square.on.square")
+                            .frame(minHeight: 44)
+                    }
+                    .disabled(center.selectedLayerID == nil)
+                    .accessibilityIdentifier("workbench.layer.duplicate")
+                    HStack {
                         Button {
-                            center.apply(.addImageLayer(
-                                ImageLayer(kind: .image, name: "\(selected.name) +",
-                                           assetID: selected.assetID,
-                                           transform: selected.transform)))
+                            center.flipSelectedLayer(horizontal: true)
                         } label: {
-                            Label(WorkbenchText.t("复制图层", "Duplicate layer"), systemImage: "plus.square.on.square")
-                                .frame(minHeight: 44)
+                            Label(WorkbenchText.t("水平翻转", "Flip horizontal"), systemImage: "arrow.left.and.right")
                         }
-                    }
-                    if let selected = center.selectedLayerID {
-                        Button(role: .destructive) {
-                            center.apply(.removeLayer(id: selected))
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("workbench.layer.flipH")
+                        Button {
+                            center.flipSelectedLayer(horizontal: false)
                         } label: {
-                            Label(WorkbenchText.t("删除图层", "Delete layer"), systemImage: "trash")
-                                .frame(minHeight: 44)
+                            Label(WorkbenchText.t("垂直翻转", "Flip vertical"), systemImage: "arrow.up.and.down")
                         }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("workbench.layer.flipV")
                     }
+                    .disabled(center.selectedLayerID == nil)
+                    Menu {
+                        ForEach(LayerAlignment.allCases, id: \.self) { alignment in
+                            Button(alignmentTitle(alignment)) {
+                                Task { await center.alignSelectedLayers(alignment) }
+                            }
+                        }
+                    } label: {
+                        Label(WorkbenchText.t("对齐所选图层", "Align selected layers"), systemImage: "align.horizontal.left")
+                            .frame(minHeight: 44)
+                    }
+                    .disabled(center.selectedLayerIDs.count < 2)
+                    .accessibilityIdentifier("workbench.layer.align")
+                    Button {
+                        Task { await center.mergeSelectedLayers() }
+                    } label: {
+                        Label(WorkbenchText.t("合并所选图层", "Merge selected layers"), systemImage: "square.stack.3d.down.right")
+                            .frame(minHeight: 44)
+                    }
+                    .disabled(center.selectedLayerIDs.count < 2 || center.busy)
+                    .accessibilityIdentifier("workbench.layer.merge")
+                    Button(role: .destructive) {
+                        center.deleteSelectedLayers()
+                    } label: {
+                        Label(WorkbenchText.t("删除图层", "Delete layer"), systemImage: "trash")
+                            .frame(minHeight: 44)
+                    }
+                    .disabled(center.selectedLayerID == nil)
+                    .accessibilityIdentifier("workbench.layer.delete")
                 }
             }
         }
@@ -166,6 +242,152 @@ struct WorkbenchAssetsPanel: View {
         center.project?.imageLayers.first { $0.id == center.selectedLayerID }
     }
 
+    // MARK: Image tool controls
+
+    private func toolIcon(_ tool: WorkbenchCenter.ImageAuthoringTool) -> String {
+        switch tool {
+        case .move: "arrow.up.and.down.and.arrow.left.and.right"
+        case .marquee: "selection.pin.in.out"
+        case .brush: "paintbrush.pointed"
+        case .eraser: "eraser"
+        case .eyedropper: "eyedropper"
+        }
+    }
+
+    private func toolTitle(_ tool: WorkbenchCenter.ImageAuthoringTool) -> String {
+        switch tool {
+        case .move: WorkbenchText.t("移动", "Move")
+        case .marquee: WorkbenchText.t("选区", "Select")
+        case .brush: WorkbenchText.t("画笔", "Brush")
+        case .eraser: WorkbenchText.t("擦除", "Erase")
+        case .eyedropper: WorkbenchText.t("吸管", "Pick")
+        }
+    }
+
+    private func alignmentTitle(_ alignment: LayerAlignment) -> String {
+        switch alignment {
+        case .left: WorkbenchText.t("左对齐", "Align left")
+        case .centerX: WorkbenchText.t("水平居中", "Center horizontally")
+        case .right: WorkbenchText.t("右对齐", "Align right")
+        case .top: WorkbenchText.t("顶对齐", "Align top")
+        case .centerY: WorkbenchText.t("垂直居中", "Center vertically")
+        case .bottom: WorkbenchText.t("底对齐", "Align bottom")
+        }
+    }
+
+    @ViewBuilder
+    private var selectionControls: some View {
+        Picker(WorkbenchText.t("选区形状", "Selection shape"), selection: $center.selectionKind) {
+            Text(WorkbenchText.t("矩形", "Rectangle")).tag(ImageSelectionKind.rectangle)
+            Text(WorkbenchText.t("椭圆", "Ellipse")).tag(ImageSelectionKind.ellipse)
+            Text(WorkbenchText.t("套索", "Lasso")).tag(ImageSelectionKind.lasso)
+        }
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("workbench.selection.kind")
+        Picker(WorkbenchText.t("选区运算", "Selection operation"), selection: $center.selectionOperation) {
+            Text(WorkbenchText.t("替换", "Replace")).tag(ImageSelectionOperation.replace)
+            Text(WorkbenchText.t("添加", "Add")).tag(ImageSelectionOperation.add)
+            Text(WorkbenchText.t("减去", "Subtract")).tag(ImageSelectionOperation.subtract)
+        }
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("workbench.selection.operation")
+        VStack(alignment: .leading) {
+            Text(WorkbenchText.t("羽化", "Feather") + " \(Int((center.project?.imageSelection?.feather ?? 0) * 100))%")
+                .font(.caption)
+            Slider(value: Binding(
+                get: { center.project?.imageSelection?.feather ?? 0 },
+                set: { center.setSelectionFeather($0) }), in: 0...0.5)
+                .accessibilityIdentifier("workbench.selection.feather")
+        }
+        HStack {
+            Button(WorkbenchText.t("全选", "Select all")) { center.selectAllImage() }
+                .frame(minHeight: 44)
+            Button(WorkbenchText.t("反选", "Invert")) { center.invertImageSelection() }
+                .frame(minHeight: 44)
+                .disabled((center.project?.imageSelection?.isEmpty ?? true))
+            Button(WorkbenchText.t("清除", "Clear")) { center.clearImageSelection() }
+                .frame(minHeight: 44)
+                .disabled(center.project?.imageSelection == nil)
+        }
+        .font(.callout)
+        if let layer = selectedLayer, let selection = center.project?.imageSelection, !selection.isEmpty {
+            Button {
+                center.apply(.setLayerSelectionMask(id: layer.id, selection: .set(selection)))
+            } label: {
+                Label(WorkbenchText.t("将选区应用到图层", "Apply selection to layer"),
+                      systemImage: "square.on.square.dashed")
+                    .frame(minHeight: 44)
+            }
+            .disabled(layer.isLocked)
+            .accessibilityIdentifier("workbench.selection.applyToLayer")
+        }
+    }
+
+    @ViewBuilder
+    private func brushControls(isEraser: Bool) -> some View {
+        VStack(alignment: .leading) {
+            Text(WorkbenchText.t("粗细", "Size") + " \(Int(center.brushWidth))")
+                .font(.caption)
+            Slider(value: $center.brushWidth, in: 1...120)
+                .accessibilityIdentifier("workbench.brush.width")
+        }
+        VStack(alignment: .leading) {
+            Text(WorkbenchText.t("硬度", "Hardness") + " \(Int(center.brushHardness * 100))%")
+                .font(.caption)
+            Slider(value: $center.brushHardness, in: 0...1)
+                .accessibilityIdentifier("workbench.brush.hardness")
+        }
+        VStack(alignment: .leading) {
+            Text(WorkbenchText.t("不透明度", "Opacity") + " \(Int(center.brushOpacity * 100))%")
+                .font(.caption)
+            Slider(value: $center.brushOpacity, in: 0.05...1)
+                .accessibilityIdentifier("workbench.brush.opacity")
+        }
+        if !isEraser {
+            ColorPicker(WorkbenchText.t("颜色", "Color"),
+                        selection: Binding(
+                            get: { WorkbenchPreviewColor.color(center.brushColorHex) },
+                            set: { center.brushColorHex = hexString($0) }))
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("workbench.brush.color")
+            HStack(spacing: 8) {
+                ForEach(["#FF3B30", "#FF9500", "#FFCC00", "#34C759", "#007AFF", "#AF52DE", "#000000", "#FFFFFF"],
+                        id: \.self) { preset in
+                    Button {
+                        center.brushColorHex = preset
+                    } label: {
+                        Circle()
+                            .fill(WorkbenchPreviewColor.color(preset))
+                            .frame(width: 26, height: 26)
+                            .overlay(Circle().stroke(Color.secondary.opacity(0.4), lineWidth: 1))
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Toggle(WorkbenchText.t("压感（仅 Apple Pencil）", "Pressure (Apple Pencil only)"),
+                   isOn: $center.brushUsesPressure)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("workbench.brush.pressure")
+        } else {
+            Toggle(WorkbenchText.t("恢复（还原被擦除的像素）", "Restore erased pixels"),
+                   isOn: $center.maskRestore)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("workbench.brush.restore")
+        }
+    }
+
+    private func hexString(_ color: Color) -> String {
+        #if canImport(UIKit)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
+        #else
+        return center.brushColorHex
+        #endif
+    }
+
     private var layerRows: some View {
         ForEach(Array((center.project?.imageLayers ?? []).reversed())) { layer in
             HStack {
@@ -205,8 +427,10 @@ struct WorkbenchAssetsPanel: View {
                 .buttonStyle(.plain)
             }
             .contentShape(Rectangle())
-            .onTapGesture { center.selectedLayerID = layer.id }
-            .background(center.selectedLayerID == layer.id ? Color.accentColor.opacity(0.15) : Color.clear)
+            .onTapGesture {
+                center.setLayerSelected(layer.id, additive: multiSelectLayers)
+            }
+            .background(center.selectedLayerIDs.contains(layer.id) ? Color.accentColor.opacity(0.15) : Color.clear)
             .accessibilityIdentifier("workbench.layer.\(layer.id.uuidString)")
             .draggable(layer.id.uuidString)
             .dropDestination(for: String.self) { items, _ in

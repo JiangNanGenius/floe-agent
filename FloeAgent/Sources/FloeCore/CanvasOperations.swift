@@ -43,6 +43,9 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
     public var generationJobID: UUID?
     public var createdByRunID: UUID?
     public var metadata: [String: String]?
+    /// Metadata keys to remove (used when a pending fork marker resolves into
+    /// a binding, so the two keys never coexist).
+    public var removedMetadataKeys: [String]?
     public var sourceNodeID: UUID?
     public var destinationNodeID: UUID?
     public var connectionID: UUID?
@@ -59,8 +62,9 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
         position: CanvasPoint? = nil, size: CanvasSize? = nil,
         rotation: Double? = nil, isLocked: Bool? = nil,
         shape: CanvasShapeKind? = nil, asset: CanvasAssetReference? = nil,
-        generationJobID: UUID? = nil, createdByRunID: UUID? = nil,
+        generationJobID: UUID? = nil,         createdByRunID: UUID? = nil,
         metadata: [String: String]? = nil,
+        removedMetadataKeys: [String]? = nil,
         sourceNodeID: UUID? = nil,
         destinationNodeID: UUID? = nil, connectionID: UUID? = nil,
         connectionKind: CanvasConnectionKind? = nil,
@@ -74,6 +78,7 @@ public struct CanvasPatchOperation: Sendable, Codable, Hashable, Identifiable {
         self.shape = shape; self.asset = asset; self.sourceNodeID = sourceNodeID
         self.generationJobID = generationJobID
         self.createdByRunID = createdByRunID; self.metadata = metadata
+        self.removedMetadataKeys = removedMetadataKeys
         self.destinationNodeID = destinationNodeID; self.connectionID = connectionID
         self.connectionKind = connectionKind
         self.sourcePort = sourcePort; self.destinationPort = destinationPort
@@ -474,6 +479,9 @@ public enum CanvasCommandService {
             }
             if let metadata = operation.metadata {
                 document.nodes[index].metadata.merge(metadata) { _, new in new }
+            }
+            if let removedKeys = operation.removedMetadataKeys {
+                for key in removedKeys { document.nodes[index].metadata.removeValue(forKey: key) }
             }
             changedNodes.insert(id)
         case .delete:

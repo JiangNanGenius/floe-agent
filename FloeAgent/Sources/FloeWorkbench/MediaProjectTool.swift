@@ -38,7 +38,7 @@ public struct MediaProjectAccess: Sendable, Hashable {
 
 /// Host boundary implemented by the app, where workspace ownership,
 /// credentials and renderers live.
-public protocol MediaProjectHost: Sendable {
+public protocol MediaProjectHost: Sendable, MediaCommandEnrichmentHost {
     /// Refuses access when the project's recorded environment/task ownership
     /// does not match the caller. Called before every load/propose/apply and
     /// before an export is started.
@@ -54,6 +54,35 @@ public protocol MediaProjectHost: Sendable {
                      relativeOutput: String, cancellation: CancellationToken?) async throws -> WorkbenchVideoExportReceipt
     func exportImage(project: MediaProject, options: ImageExportOptions,
                      relativeOutput: String) async throws -> WorkbenchImageExportReceipt
+
+    /// Measures untransformed rendered layer sizes in canvas pixels so edge/
+    /// center alignment can use real rendered bounds (the pure model has no
+    /// asset bytes). Default unsupported; the app implements it.
+    func measureLayers(project: MediaProject, layerIDs: [UUID]) async throws -> [LayerNaturalSize]
+
+    /// Renders ONLY the named layers to a transparent full-canvas image via the
+    /// real pipeline and stages it as a new image asset file on disk. The tool
+    /// prepends an `add_asset` command for it to the proposal, so the project
+    /// is not mutated until the user accepts. Never a screen capture.
+    func renderMergeAsset(project: MediaProject, layerIDs: [UUID], name: String?) async throws -> MergePreparation
+}
+
+public struct MergePreparation: Sendable {
+    /// Staged asset to add (via `add_asset`) immediately before the merge.
+    public var asset: MediaAssetReference
+    public var raster: MergedLayerRaster
+    public init(asset: MediaAssetReference, raster: MergedLayerRaster) {
+        self.asset = asset; self.raster = raster
+    }
+}
+
+public extension MediaProjectHost {
+    func measureLayers(project: MediaProject, layerIDs: [UUID]) async throws -> [LayerNaturalSize] {
+        throw FloeError.validationFailed("layer alignment requires the app image renderer")
+    }
+    func renderMergeAsset(project: MediaProject, layerIDs: [UUID], name: String?) async throws -> MergePreparation {
+        throw FloeError.validationFailed("layer merge requires the app image renderer")
+    }
 }
 
 public struct MediaProjectTool: AgentTool {
@@ -61,9 +90,11 @@ public struct MediaProjectTool: AgentTool {
 
     public static let name = "media.project"
     public static let toolDescription = """
-    Read, propose changes to, apply confirmed proposals to, or export a Floe \
-    unified image/video workbench project. Proposals bind a revision and take \
-    effect only after the user accepts them in the workbench UI.
+    Read, inspect capabilities of, propose changes to, apply confirmed proposals to, or export a Floe \
+    unified image/video workbench project. Workflow is discover -> read/capabilities -> propose (draft, \
+    revision-bound) -> user confirms in the workbench UI (grant) -> apply -> verify the returned revision/export. \
+    Proposals never change the project until the user accepts them; the model cannot mint a grant. Editing the \
+    current draft and making a variant are distinct: use the bound project for the current draft, forks for variants.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -76,12 +107,12 @@ public struct MediaProjectTool: AgentTool {
       "additionalProperties": false,
       "required": ["action", "project_id"],
       "properties": {
-        "action": { "type": "string", "enum": ["read", "propose", "apply", "export"] },
+        "action": { "type": "string", "enum": ["capabilities", "read", "propose", "apply", "export"], "description": "capabilities/read are safe queries; propose stores a revision-bound draft (no change); apply needs a UI grant; export writes verified bytes." },
         "project_id": { "type": "string", "format": "uuid", "description": "Stable project UUID (from media.project read / the workbench UI)." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable summary shown to the user before acceptance (propose)." },
         "commands": {
           "type": "array",
-          "description": "Edit commands (propose only). Each object requires type. Supported types and required fields: add_asset {kind: image|video|audio, relative_path}; relink_asset {asset_id, relative_path}; set_canvas {width, height, frame_rate?}; add_image_layer {kind: image|text|freehand, name?, asset_id?, transform?{center_x,center_y,scale,rotation_degrees}, opacity?, text?{text,font_size,color_hex}, freehand?{strokes:[{points:[{x,y}],width,color_hex}]}, crop?{x,y,width,height}}; update_layer {id, transform?, opacity?, is_hidden?, is_locked?, adjustment?{saturation,contrast,brightness,exposure_ev,blur_radius,sharpen_radius,mosaic_block_size,filter_id}, text?{text,font_size,color_hex}, crop?{x,y,width,height}|null}; reorder_layers {ordered_ids}; move_layer {id, to_index}; remove_layer {id}; set_canvas_adjustment {saturation?,contrast?,brightness?,exposure_ev?,blur_radius?,sharpen_radius?,mosaic_block_size?,filter_id?}; append_clip {asset_id, trim_start, trim_end, speed?, volume?, is_muted?, rotation_degrees?, crop?, leading_transition?: none|crossDissolve, transition_duration?}; update_clip {id, trim_start?, trim_end?, speed?, volume?, is_muted?, rotation_degrees?, crop?, leading_transition?, transition_duration?}; reorder_clips {ordered_ids}; split_clip {id, at_seconds}; remove_clip {id}; set_primary_audio {volume?, muted?}; add_music {asset_id, offset_seconds, trim_start?, length_seconds, volume?, fade_in_seconds?, fade_out_seconds?}; update_music {id, offset_seconds?, trim_start?, length_seconds?, volume?, fade_in_seconds?, fade_out_seconds?}; remove_music {id}; add_caption {start, end, text, source?: manual|transcription}; update_caption {id, start?, end?, text?}; remove_caption {id}; set_caption_style {font_size?, color_hex?, background_hex?, position_y?}. Unknown types are rejected.",
+          "description": "Edit commands (propose only). Each object requires type. Supported image commands: add_asset {kind: image|video|audio, relative_path}; relink_asset {asset_id, relative_path}; set_canvas {width, height, frame_rate?}; add_image_layer {kind: image|text|freehand|fill, name?, asset_id?, transform?{center_x,center_y,scale,rotation_degrees,flip_x?,flip_y?}, opacity?, is_hidden?, is_locked?, text?{text,font_size,color_hex,font_name?,tracking?,leading?,alignment?:left|center|right,stroke_color_hex?,stroke_width?,shadow?{color_hex,blur,offset_x,offset_y}}, freehand?{strokes:[{points:[{x,y,pressure?}],width,color_hex,hardness?,opacity?}]}, crop?, adjustment?, mask?{strokes:[{points,width,hardness?,restore}]}, selection_mask?, fill_color_hex?}; update_layer {id, transform?, opacity?, is_hidden?, is_locked?, adjustment?{saturation,contrast,brightness,exposure_ev,blur_radius,sharpen_radius,mosaic_block_size,filter_id,temperature,hue_degrees,levels?{black,white,gamma}}, text?, crop?|null}; add_freehand_stroke {id, points:[{x,y,pressure?}], width, color_hex, hardness?, opacity?}; set_canvas_adjustment {same adjustment fields applied once to the flattened result}; reorder_layers {ordered_ids}; move_layer {id, to_index}; duplicate_layer {id, name?}; remove_layer {id}; set_selection {selection:{shapes:[{kind:rectangle|ellipse|lasso,operation?:replace|add|subtract,points:[{x,y}]}],feather?,inverted?}}; clear_selection; set_layer_selection {id, selection:null|{...}}; add_mask_stroke {id, points:[{x,y}],width,hardness?,restore?}; clear_layer_mask {id}; flip_layer {id, horizontal?:true|false}; align_layers {ids:[uuid...], alignment:left|centerX|right|top|centerY|bottom} (renderer-measured bounds are filled in automatically); merge_layers {ids:[uuid...], name?} (raster-merges visible layers via the real renderer into one reversible image layer). Video commands: append_clip {asset_id, trim_start, trim_end, speed?, volume?, is_muted?, rotation_degrees?, crop?, leading_transition?, transition_duration?}; update_clip {...}; reorder_clips {ordered_ids}; split_clip {id, at_seconds}; duplicate_clip {id}; remove_clip {id}; set_cover {time?}; shift_captions {by_seconds}; set_primary_audio {volume?, muted?}; add_music {...}; update_music {...}; remove_music {id}; add_caption {start, end, text, source?}; update_caption {id, start?, end?, text?}; remove_caption {id}; set_caption_style {font_size?,color_hex?,background_hex?,position_y?,alignment?:leading|center|trailing,respects_safe_area?}. Unknown types are rejected. Discover workflow: call action=capabilities first, then read, then propose a batch; the user confirms in the UI before apply; verify the returned revision and (separately) the export receipt.",
           "items": { "type": "object", "required": ["type"], "properties": { "type": { "type": "string" } } }
         },
         "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id returned by propose (apply only)." },
@@ -100,7 +131,8 @@ public struct MediaProjectTool: AgentTool {
             "preserve_transparency": { "type": "boolean", "description": "JPEG + transparency + alpha pixels is rejected, not flattened silently." },
             "strip_metadata": { "type": "boolean" },
             "codec": { "type": "string", "enum": ["h264", "hevc"], "description": "video exports" },
-            "frame_rate": { "type": "number", "exclusiveMinimum": 0, "maximum": 240 }
+            "frame_rate": { "type": "number", "exclusiveMinimum": 0, "maximum": 240 },
+            "preset": { "type": "string", "enum": ["landscape1080p", "portrait1080p", "square1080"], "description": "video export preset; sets concrete width/height (frame_rate still required unless the project canvas has one)." }
           }
         }
       }
@@ -115,7 +147,7 @@ public struct MediaProjectTool: AgentTool {
 
     public func validate(_ args: Arguments) throws {
         switch args.action {
-        case .read:
+        case .capabilities, .read:
             break
         case .propose:
             guard let commands = args.commands, !commands.isEmpty else {
@@ -152,12 +184,19 @@ public struct MediaProjectTool: AgentTool {
             throw FloeError.notFound("media project \(args.projectID.uuidString)")
         }
         switch args.action {
+        case .capabilities:
+            return ToolExecutionOutput(digesting: MediaProjectSummaries.capabilities(project))
+
         case .read:
             let summary = try MediaProjectSummaries.summary(project)
             return ToolExecutionOutput(digesting: summary)
 
         case .propose:
-            let commands = try MediaProjectCommandCoding.commands(from: args.commands ?? [])
+            let decoded = try MediaProjectCommandCoding.commands(from: args.commands ?? [])
+            // Fill renderer-dependent payloads (edge alignment measurements,
+            // raster merge asset) through the real app renderer before the
+            // all-or-nothing dry run. The project is not mutated here.
+            let commands = try await MediaCommandEnrichment.enrich(decoded, project: project, host: host)
             let proposal = MediaProposal(projectID: project.id, baseRevision: project.revision,
                                          summary: args.summary ?? "", commands: commands)
             // Full dry run validates every command on a draft; throws on the
@@ -232,7 +271,7 @@ public struct MediaProjectArguments: Decodable, Sendable {
 }
 
 public enum MediaProjectAction: String, Decodable, Sendable {
-    case read, propose, apply, export
+    case capabilities, read, propose, apply, export
 }
 
 /// Loosely-typed JSON value used only at the tool argument boundary; command
@@ -278,9 +317,10 @@ public struct MediaExportArguments: Decodable, Sendable {
     public let stripMetadata: Bool?
     public let codec: String?
     public let frameRate: Double?
+    public let preset: String?
 
     enum CodingKeys: String, CodingKey {
-        case kind, width, height, quality, format, codec
+        case kind, width, height, quality, format, codec, preset
         case fileName = "file_name"
         case preserveTransparency = "preserve_transparency"
         case stripMetadata = "strip_metadata"
@@ -310,6 +350,21 @@ public struct MediaExportArguments: Decodable, Sendable {
     func videoOptions(project: MediaProject) throws -> VideoExportOptions {
         guard let codecRaw = codec, let codec = VideoExportCodec(rawValue: codecRaw) else {
             throw FloeError.validationFailed("video export requires codec h264/hevc")
+        }
+        if let presetRaw = preset {
+            guard let preset = VideoExportPreset(rawValue: presetRaw) else {
+                throw FloeError.validationFailed(
+                    "video export preset must be landscape1080p/portrait1080p/square1080")
+            }
+            // Explicit width/height (if also supplied) must agree with the preset.
+            if let width, width != preset.width {
+                throw FloeError.validationFailed("width \(width) does not match preset \(presetRaw) (\(preset.width))")
+            }
+            if let height, height != preset.height {
+                throw FloeError.validationFailed("height \(height) does not match preset \(presetRaw) (\(preset.height))")
+            }
+            let fps = frameRate ?? project.canvas?.frameRate ?? preset.defaultFrameRate
+            return preset.options(frameRate: fps, codec: codec, fileName: fileName)
         }
         guard let canvas = project.canvas, let fps = frameRate ?? canvas.frameRate else {
             throw FloeError.validationFailed("video export requires explicit frame_rate")

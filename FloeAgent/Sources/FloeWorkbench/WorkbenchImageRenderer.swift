@@ -142,6 +142,19 @@ public actor WorkbenchImageRenderer {
         resolveAsset: @Sendable (UUID) -> URL?,
         previewMaxEdge: Int?
     ) throws -> CIImage? {
+        guard let unplaced = try unplacedLayer(layer, canvas: canvas,
+                                               resolveAsset: resolveAsset,
+                                               previewMaxEdge: previewMaxEdge) else { return nil }
+        return try place(image: unplaced, layer: layer, canvas: canvas)
+    }
+
+    /// Layer content after adjustments/selection/mask but before placement.
+    private func unplacedLayer(
+        _ layer: ImageLayer,
+        canvas: CGSize,
+        resolveAsset: @Sendable (UUID) -> URL?,
+        previewMaxEdge: Int?
+    ) throws -> CIImage? {
         var image: CIImage
         switch layer.kind {
         case .image:
@@ -181,12 +194,63 @@ public actor WorkbenchImageRenderer {
         if let mask = layer.mask, !mask.strokes.isEmpty {
             image = try applyMask(mask, to: image, canvas: canvas)
         }
-        image = try place(image: image, layer: layer, canvas: canvas)
         return image
     }
 
-    private func makeFillLayer(colorHex: String, canvas: CGSize) throws -> CIImage {
-        let color = UIColorLike.ciColor(colorHex)
+    /// Measures the untransformed rendered size of a layer in canvas pixels,
+    /// used for rendered-edge alignment. Returns nil if the layer cannot be
+    /// resolved (e.g. missing asset); the caller must refuse that alignment.
+    public func naturalSize(
+        of layer: ImageLayer,
+        canvas: CGSize,
+        resolveAsset: @Sendable (UUID) -> URL?,
+        previewMaxEdge: Int? = nil
+    ) throws -> CGSize? {
+        guard let unplaced = try unplacedLayer(layer, canvas: canvas,
+                                               resolveAsset: resolveAsset,
+                                               previewMaxEdge: previewMaxEdge) else { return nil }
+        let extent = unplaced.extent
+        guard extent.width.isFinite, extent.height.isFinite,
+              extent.width > 0, extent.height > 0 else { return nil }
+        return CGSize(width: extent.width, height: extent.height)
+    }
+
+    /// Composites ONLY the named layers (project stacking order, hidden
+    /// skipped) into a transparent full-canvas bitmap, without the
+    /// whole-canvas adjustment. The returned pixels are exactly what those
+    /// layers contributed, so replacing them with a single identity-placed
+    /// image layer is render-preserving (used by layer merge).
+    public func renderMerge(
+        project: MediaProject,
+        layerIDs: Set<UUID>,
+        canvas: CGSize,
+        resolveAsset: @Sendable (UUID) -> URL?,
+        previewMaxEdge: Int? = nil
+    ) throws -> CGImage {
+        guard project.kind == .image else {
+            throw WorkbenchImageError.unsupportedSource("not an image project")
+        }
+        let extent = CGRect(origin: .zero, size: canvas)
+        var composited = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: extent)
+        var contributed = false
+        for layer in project.imageLayers where !layer.isHidden && layerIDs.contains(layer.id) {
+            if let placed = try renderLayer(layer, canvas: canvas,
+                                            resolveAsset: resolveAsset,
+                                            previewMaxEdge: previewMaxEdge) {
+                composited = placed.composited(over: composited)
+                contributed = true
+            }
+        }
+        guard contributed else {
+            throw WorkbenchImageError.unsupportedSource("none of the merge layers could be rendered")
+        }
+        guard let output = context.createCGImage(composited, from: extent) else {
+            throw WorkbenchImageError.encodeFailed("Core Image could not render the merge")
+        }
+        return output
+    }
+
+        private func makeFillLayer(colorHex: String, canvas: CGSize) throws -> CIImage {        let color = UIColorLike.ciColor(colorHex)
         return CIImage(color: color).cropped(to: CGRect(origin: .zero, size: canvas))
     }
 
@@ -577,13 +641,25 @@ public actor WorkbenchImageRenderer {
         }
     }
 }
-
 public struct WorkbenchImageExportReceipt: Sendable, Hashable {
     public var url: URL
     public var width: Int
     public var height: Int
     public var format: String
     public var byteCount: Int64
+}
+
+/// Encodes a CGImage to a lossless, alpha-preserving PNG. Used to stage the
+/// output of a layer merge as a new project asset.
+public enum WorkbenchPNG {
+    public static func encode(_ image: CGImage) -> Data? {
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
+    }
 }
 
 private enum UIColorLike {

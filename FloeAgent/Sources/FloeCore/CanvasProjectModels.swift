@@ -538,6 +538,14 @@ public enum CanvasChildProjectBindingState: Sendable, Equatable {
     case valid(CanvasChildProjectBinding)
     case unknownVersion(raw: String)
     case malformed(raw: String)
+    /// A duplicated/pasted node whose independent editable project is being
+    /// forked. The copy must never open the parent's mutable session; while
+    /// pending it is read-only and shows progress. `parentProjectID` allows a
+    /// crash/interruption recovery to finish the fork.
+    case pending(CanvasChildProjectPending)
+    /// Forking failed. The original parent binding is retained by id so the
+    /// user can retry; the copy stays non-editable (never shares the parent).
+    case failed(CanvasChildProjectPending, reason: String)
 
     public var binding: CanvasChildProjectBinding? {
         if case .valid(let binding) = self { return binding }
@@ -547,16 +555,53 @@ public enum CanvasChildProjectBindingState: Sendable, Equatable {
     public var isRecoverable: Bool {
         switch self {
         case .unknownVersion, .malformed: true
-        case .absent, .valid: false
+        case .absent, .valid, .pending, .failed: false
         }
+    }
+
+    /// True while the node must not open an editable project (everything but
+    /// a resolved valid binding).
+    public var isNotEditable: Bool {
+        if case .valid = self { return false }
+        return true
+    }
+}
+
+/// Persisted "fork in progress / failed" marker for a copied node.
+public struct CanvasChildProjectPending: Sendable, Codable, Equatable {
+    public static let currentSchemaVersion = 1
+    public var schemaVersion: Int
+    public var parentProjectID: UUID
+    public var sourceNodeID: UUID?
+    public var startedAt: Date
+
+    public init(schemaVersion: Int = CanvasChildProjectPending.currentSchemaVersion,
+                parentProjectID: UUID, sourceNodeID: UUID? = nil, startedAt: Date = Date()) {
+        self.schemaVersion = schemaVersion
+        self.parentProjectID = parentProjectID
+        self.sourceNodeID = sourceNodeID
+        self.startedAt = startedAt
     }
 }
 
 public extension CanvasNode {
     static let childProjectMetadataKey = "canvas.childProject"
+    static let childProjectPendingMetadataKey = "canvas.childProject.pending"
 
-    /// Full binding state, including unknown-newer and malformed raw data.
+    /// Full binding state, including unknown-newer, malformed, pending and
+    /// failed fork data. Pending/failed markers live under a separate key so a
+    /// copy never accidentally resolves to the parent's live binding.
     var childProjectBindingState: CanvasChildProjectBindingState {
+        if let pendingRaw = metadata[Self.childProjectPendingMetadataKey] {
+            guard let data = pendingRaw.data(using: .utf8),
+                  let wrapper = try? JSONDecoder().decode(PendingWrapper.self, from: data) else {
+                return .malformed(raw: pendingRaw)
+            }
+            if wrapper.status == "failed" {
+                return .failed(wrapper.pending, reason: wrapper.reason ?? "")
+            }
+            return .pending(wrapper.pending)
+        }
         guard let raw = metadata[Self.childProjectMetadataKey] else { return .absent }
         guard let data = raw.data(using: .utf8) else { return .malformed(raw: raw) }
         guard let binding = try? JSONDecoder().decode(CanvasChildProjectBinding.self, from: data) else {
@@ -572,6 +617,8 @@ public extension CanvasNode {
     var childProjectBinding: CanvasChildProjectBinding? {
         get { childProjectBindingState.binding }
         set {
+            // Writing a resolved binding always clears any pending marker.
+            metadata.removeValue(forKey: Self.childProjectPendingMetadataKey)
             guard let newValue,
                   let data = try? JSONEncoder().encode(newValue),
                   let raw = String(data: data, encoding: .utf8) else {
@@ -580,6 +627,49 @@ public extension CanvasNode {
             }
             metadata[Self.childProjectMetadataKey] = raw
         }
+    }
+
+    /// Writes a pending/failed fork marker (and removes any resolved binding
+    /// key), so a copied node can never open the parent's mutable session.
+    mutating func setChildProjectPending(_ state: CanvasChildProjectBindingState) {
+        var node = self
+        switch state {
+        case .pending(let pending):
+            node.metadata[Self.childProjectMetadataKey] = nil
+            if let raw = PendingWrapper(status: "pending", pending: pending, reason: nil).json {
+                node.metadata[Self.childProjectPendingMetadataKey] = raw
+            }
+        case .failed(let pending, let reason):
+            node.metadata[Self.childProjectMetadataKey] = nil
+            if let raw = PendingWrapper(status: "failed", pending: pending, reason: reason).json {
+                node.metadata[Self.childProjectPendingMetadataKey] = raw
+            }
+        case .valid(let binding):
+            node.childProjectBinding = binding
+        case .absent:
+            node.metadata.removeValue(forKey: Self.childProjectMetadataKey)
+            node.metadata.removeValue(forKey: Self.childProjectPendingMetadataKey)
+        case .unknownVersion, .malformed:
+            break
+        }
+        self = node
+    }
+}
+
+/// Disk envelope for a pending/failed child-project fork marker.
+struct PendingWrapper: Sendable, Codable, Equatable {
+    var status: String // "pending" | "failed"
+    var pending: CanvasChildProjectPending
+    var reason: String?
+
+    init(status: String, pending: CanvasChildProjectPending, reason: String?) {
+        self.status = status; self.pending = pending; self.reason = reason
+    }
+
+    var json: String? {
+        guard let data = try? JSONEncoder().encode(self),
+              let raw = String(data: data, encoding: .utf8) else { return nil }
+        return raw
     }
 }
 

@@ -1795,6 +1795,105 @@ private final class CanvasDocumentStore: ObservableObject {
         }
     }
 
+    // MARK: Copied-node child-project forks (fixed-document, crash safe)
+
+    /// Forks independent editable projects for duplicated/pasted nodes.
+    /// The document id and the pending parent bindings are captured BEFORE any
+    /// await, so a document switch cannot rebind into the wrong canvas, and the
+    /// result is committed back with file revision checks. There is no fallback
+    /// that leaves a copy sharing the parent's mutable project.
+    @MainActor
+    func resolveCopiedForks(_ ids: Set<UUID>, environment: AppEnvironment) {
+        guard !ids.isEmpty else { return }
+        let capturedDocumentID = project.selectedDocumentID
+        guard let document = project.documents.first(where: { $0.id == capturedDocumentID }) else { return }
+        let requests = CanvasCopyForkPlanner.pendingRequests(in: document)
+            .filter { ids.contains($0.key) }
+        guard !requests.isEmpty else { return }
+        let center = environment.workbenchCenter
+        let captured = requests
+        Task { @MainActor in
+            var resolutions: [UUID: CanvasCopyForkPlanner.Resolution] = [:]
+            for (nodeID, pending) in captured {
+                do {
+                    let fork = try await center.forkProjectForVariantOrThrow(parentID: pending.parentProjectID)
+                    resolutions[nodeID] = .forked(projectID: fork.id, revision: fork.revision)
+                } catch {
+                    resolutions[nodeID] = .failed(reason: error.localizedDescription)
+                }
+            }
+            commitForkResolutions(documentID: capturedDocumentID, resolutions: resolutions)
+        }
+    }
+
+    /// Retries a node whose fork previously failed (or was interrupted into a
+    /// pending marker), capturing the current document afresh.
+    @MainActor
+    func retryCopiedFork(nodeID: UUID, environment: AppEnvironment) {
+        let documentID = project.selectedDocumentID
+        guard let document = project.documents.first(where: { $0.id == documentID }),
+              let node = document.nodes.first(where: { $0.id == nodeID }) else { return }
+        let pending: CanvasChildProjectPending
+        switch node.childProjectBindingState {
+        case .failed(let p, _): pending = p
+        case .pending(let p): pending = p
+        default: return
+        }
+        // Reset to a pending marker synchronously, then fork.
+        mutateDocument(documentID) { doc in
+            guard let index = doc.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            doc.nodes[index].setChildProjectPending(.pending(pending))
+        }
+        let center = environment.workbenchCenter
+        Task { @MainActor in
+            let resolution: CanvasCopyForkPlanner.Resolution
+            do {
+                let fork = try await center.forkProjectForVariantOrThrow(parentID: pending.parentProjectID)
+                resolution = .forked(projectID: fork.id, revision: fork.revision)
+            } catch {
+                resolution = .failed(reason: error.localizedDescription)
+            }
+            commitForkResolutions(documentID: documentID, resolutions: [nodeID: resolution])
+        }
+    }
+
+    /// Atomically commits fork resolutions to the CAPTURED document with a
+    /// revision check and bounded conflict retries.
+    @discardableResult
+    private func commitForkResolutions(
+        documentID: UUID,
+        resolutions: [UUID: CanvasCopyForkPlanner.Resolution]
+    ) -> Bool {
+        for commitIndex in 0..<Self.fileCommitAttemptLimit {
+            let current = project
+            guard var document = current.documents.first(where: { $0.id == documentID }) else {
+                // The captured document is gone (deleted while the fork ran).
+                // Do not touch any other document; the forked projects are
+                // unreferenced orphans the store can prune.
+                return false
+            }
+            let outcome = CanvasCopyForkPlanner.resolve(document: &document, resolutions: resolutions)
+            guard !outcome.resolvedIDs.isEmpty || !outcome.failedIDs.isEmpty else { return true }
+            var candidate = current
+            guard let index = candidate.documents.firstIndex(where: { $0.id == documentID }) else { return false }
+            candidate.documents[index] = document
+            candidate = projectPreparedForPersistence(candidate, incrementRevision: true)
+            do {
+                try writeCandidate(candidate, expectedRevision: current.revision)
+                return true
+            } catch {
+                guard CanvasProjectFileWriter.isRevisionConflict(error),
+                      commitIndex + 1 < Self.fileCommitAttemptLimit,
+                      reloadAuthoritativeProject(after: error) else {
+                    saveError = error.localizedDescription
+                    return false
+                }
+            }
+        }
+        saveError = "画布写入重试次数已用尽。"
+        return false
+    }
+
     /// User-triggered recovery for a node whose asset file is missing or was
     /// only present in the cloud: fetch the content-hash record, then point the
     /// node at the downloaded material file.
@@ -2092,14 +2191,19 @@ private final class CanvasDocumentStore: ObservableObject {
         var duplicatedAssetIDs: [UUID] = []
         mutateSelectedDocument { document in
             let originals = document.nodes.filter { ids.contains($0.id) }
+            var newIDs: [UUID] = []
             for var copy in originals {
                 copy.id = UUID()
                 copy.x += 36; copy.y += 36
                 copy.zIndex = document.nodes.count
+                newIDs.append(copy.id)
                 document.nodes.append(copy)
                 created.insert(copy.id)
                 if let assetID = copy.asset?.id { duplicatedAssetIDs.append(assetID) }
             }
+            // Before the copies are visible they must never share the parent's
+            // mutable project: mark them pending a fork in the same mutation.
+            CanvasCopyForkPlanner.markCopiesPending(nodes: &document.nodes, copyNodeIDs: newIDs)
         }
         for assetID in duplicatedAssetIDs {
             Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: 1) }
@@ -2131,6 +2235,7 @@ private final class CanvasDocumentStore: ObservableObject {
         var created = Set<UUID>()
         var referencedAssets: [UUID] = []
         mutateSelectedDocument { document in
+            var newIDs: [UUID] = []
             for var node in clipboard.nodes {
                 let oldID = node.id
                 node.id = UUID()
@@ -2138,10 +2243,12 @@ private final class CanvasDocumentStore: ObservableObject {
                 node.y += offset.height
                 node.zIndex = (document.nodes.map(\.zIndex).max() ?? 0) + 1
                 mapping[oldID] = node.id
+                newIDs.append(node.id)
                 created.insert(node.id)
                 if let assetID = node.asset?.id { referencedAssets.append(assetID) }
                 document.nodes.append(node)
             }
+            CanvasCopyForkPlanner.markCopiesPending(nodes: &document.nodes, copyNodeIDs: newIDs)
             var connections = document.connections
             for connection in clipboard.connections {
                 guard let source = mapping[connection.sourceNodeID],
@@ -4614,32 +4721,14 @@ struct WorkspaceCanvasView: View {
     /// copy never shares the original's mutable edit session.
     private func duplicateSelection(_ ids: Set<UUID>) -> Set<UUID> {
         let copies = store.duplicateNodes(ids)
-        forkChildProjectsForCopies(copies)
+        store.resolveCopiedForks(copies, environment: environment)
         return copies
     }
 
     private func pasteSelection(from data: Data) throws -> Set<UUID> {
         let copies = try store.pasteNodes(from: data)
-        forkChildProjectsForCopies(copies)
+        store.resolveCopiedForks(copies, environment: environment)
         return copies
-    }
-
-    private func forkChildProjectsForCopies(_ ids: Set<UUID>) {
-        guard !ids.isEmpty else { return }
-        Task {
-            for id in ids {
-                guard let node = store.selectedDocument?.nodes.first(where: { $0.id == id }),
-                      case .valid(let binding) = node.childProjectBindingState else { continue }
-                guard let forked = await environment.workbenchCenter.forkProjectForVariant(parentID: binding.projectID) else { continue }
-                var rebound = binding
-                rebound.projectID = forked.id
-                rebound.appliedRevision = forked.revision
-                rebound.draftRevision = forked.revision
-                rebound.renderedAssetID = nil
-                rebound.sourceNodeID = node.id
-                store.setChildProjectBinding(rebound, for: id)
-            }
-        }
     }
 
     private func nodeLayer(_ document: FloeCanvasDocument) -> some View {
@@ -7030,13 +7119,60 @@ private struct CanvasLocalImageEditor: View {
 
     private enum ApplyChoice { case updateOriginal, makeVariant }
 
+    /// Live binding state from the store so a forked/retry resolution
+    /// re-renders this sheet; falls back to the presentation-time capture.
+    private var liveState: CanvasChildProjectBindingState {
+        store.project.documents.first { $0.id == documentID }?
+            .nodes.first { $0.id == node.id }?
+            .childProjectBindingState ?? bindingState
+    }
+
     var body: some View {
-        if startFreshVariant || !bindingState.isRecoverable {
-            editor(binding: bindingState.binding,
-                   variantOnly: startFreshVariant)
-        } else {
-            recoveryBody
+        switch liveState {
+        case .pending:
+            pendingBody
+        case .failed(_, let reason):
+            failedBody(reason: reason)
+        default:
+            if startFreshVariant || !liveState.isRecoverable {
+                editor(binding: liveState.binding ?? bindingState.binding,
+                       variantOnly: startFreshVariant)
+            } else {
+                recoveryBody
+            }
         }
+    }
+
+    private var pendingBody: some View {
+        ContentUnavailableView {
+            Label(canvasLocalized("正在准备独立可编辑副本", "Preparing an independent editable copy"),
+                  systemImage: "arrow.triangle.2.circlepath")
+        } description: {
+            Text(canvasLocalized(
+                "正在为该副本创建独立工程，完成前不会共享原图的编辑状态。",
+                "A separate project is being forked for this copy; it does not share the original's editable state until ready."))
+        }
+        .accessibilityIdentifier("canvas.imageEditor.pending")
+    }
+
+    private func failedBody(reason: String) -> some View {
+        ContentUnavailableView {
+            Label(canvasLocalized("副本工程创建失败", "Could not create the editable copy"),
+                  systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(canvasLocalized(
+                "独立工程创建失败，该副本仍未共享原图的可编辑状态。可重试。\n\(reason)",
+                "The separate project could not be created; this copy still does not share the original's editable state. You can retry.\n\(reason)"))
+        } actions: {
+            Button(canvasLocalized("重试", "Retry")) {
+                store.retryCopiedFork(nodeID: node.id, environment: environment)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("canvas.imageEditor.retryFork")
+            Button(canvasLocalized("取消", "Cancel")) { onSave(node.id) }
+                .frame(minHeight: 44)
+        }
+        .accessibilityIdentifier("canvas.imageEditor.forkFailed")
     }
 
     private var recoveryBody: some View {

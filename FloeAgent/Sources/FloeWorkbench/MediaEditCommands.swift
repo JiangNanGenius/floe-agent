@@ -30,6 +30,29 @@ public enum MediaEditCommand: Sendable, Codable, Hashable {
     case reorderLayers(orderedIDs: [UUID])
     case moveLayer(id: UUID, toIndex: Int)
     case removeLayer(id: UUID)
+    /// Duplicates a layer directly after its original with a fresh identity.
+    case duplicateLayer(id: UUID, name: String?)
+    /// Appends a brush stroke to an existing freehand layer (bounded).
+    case addFreehandStroke(id: UUID, stroke: ImageFreehandStroke)
+    /// Sets the project-wide vector selection (nil clears it). Undoable.
+    case setImageSelection(ImageSelection?)
+    /// Sets a single layer's selection-limiting mask (`.clear` removes it).
+    case setLayerSelectionMask(id: UUID, selection: OptionalUpdate<ImageSelection>)
+    /// Appends a non-destructive erase/restore mask stroke to a layer.
+    case addLayerMaskStroke(id: UUID, stroke: ImageMaskStroke)
+    /// Removes every mask stroke from a layer.
+    case clearLayerMask(id: UUID)
+    /// Toggles a non-destructive horizontal/vertical mirror flag on a layer.
+    case flipLayer(id: UUID, horizontal: Bool)
+    /// Aligns the rendered edges/centers of two or more layers. Locked layers
+    /// are rejected. `naturalSizes` are renderer-measured untransformed layer
+    /// sizes in canvas-unit space; alignment moves only transform anchors.
+    case alignLayers(ids: [UUID], alignment: LayerAlignment, naturalSizes: [LayerNaturalSize])
+    /// Raster-merges two or more contiguous visible layers into one full-canvas
+    /// transparent image layer. `raster` is the renderer-produced snapshot
+    /// (a persisted image asset). Original layers stay in undo history, so the
+    /// merge is reversible; no screenshot of the screen is used.
+    case mergeLayers(ids: [UUID], name: String?, raster: MergedLayerRaster)
 
     // Whole-canvas effects
     case setCanvasAdjustment(CanvasAdjustment)
@@ -60,6 +83,20 @@ public enum MediaEditCommand: Sendable, Codable, Hashable {
     case updateCaption(id: UUID, start: Double?, end: Double?, text: String?)
     case removeCaption(id: UUID)
     case setCaptionStyle(CaptionStyle)
+}
+
+/// Layer alignment anchors applied to transform centers in canvas unit space.
+public enum LayerAlignment: String, Sendable, Codable, CaseIterable {
+    case left, centerX, right
+    case top, centerY, bottom
+
+    /// Vertical distribution axis implied by this alignment.
+    public var isHorizontal: Bool {
+        switch self {
+        case .left, .centerX, .right: return true
+        case .top, .centerY, .bottom: return false
+        }
+    }
 }
 
 public enum MediaCommandError: Error, Sendable {
@@ -170,6 +207,113 @@ public enum MediaEditCommandApplier {
         case .removeLayer(let id):
             guard project.imageLayers.contains(where: { $0.id == id }) else {
                 throw MediaCommandError.notFound("layer \(id)")
+            }
+
+        case .duplicateLayer(let id, let name):
+            guard project.imageLayers.contains(where: { $0.id == id }) else {
+                throw MediaCommandError.notFound("layer \(id)")
+            }
+            if let name, name.isEmpty { throw MediaCommandError.validation("layer name must not be empty") }
+
+        case .addFreehandStroke(let id, let stroke):
+            guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                throw MediaCommandError.notFound("layer \(id)")
+            }
+            if layer.isLocked {
+                throw MediaCommandError.conflict("layer is locked; unlock before drawing")
+            }
+            guard layer.kind == .freehand else {
+                throw MediaCommandError.validation("brush strokes can only be added to a freehand layer")
+            }
+            let existing = layer.freehand?.strokes ?? []
+            guard existing.count < 200 else {
+                throw MediaCommandError.validation("too many strokes (200 max)")
+            }
+            // Validate a content with every accumulated stroke so the bound is
+            // enforced against the real result, not just the new stroke.
+            try validateFreehand(ImageFreehandContent(strokes: existing + [stroke]))
+
+        case .setImageSelection(let selection):
+            if let selection { try validateSelection(selection) }
+
+        case .setLayerSelectionMask(let id, let update):
+            guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                throw MediaCommandError.notFound("layer \(id)")
+            }
+            if layer.isLocked {
+                throw MediaCommandError.conflict("layer is locked; unlock before changing its selection")
+            }
+            if case .set(let selection) = update { try validateSelection(selection) }
+
+        case .addLayerMaskStroke(let id, let stroke):
+            guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                throw MediaCommandError.notFound("layer \(id)")
+            }
+            if layer.isLocked {
+                throw MediaCommandError.conflict("layer is locked; unlock before masking")
+            }
+            // Validate the FULLY accumulated stroke list (parenthesized so the
+            // new stroke is never dropped when a mask already exists).
+            let accumulated = (project.imageLayers.first { $0.id == id }?.mask?.strokes ?? []) + [stroke]
+            try validateMask(ImageLayerMask(strokes: accumulated))
+
+        case .clearLayerMask(let id):
+            guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                throw MediaCommandError.notFound("layer \(id)")
+            }
+            if layer.isLocked {
+                throw MediaCommandError.conflict("layer is locked; unlock before clearing its mask")
+            }
+
+        case .flipLayer(let id, _):
+            guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                throw MediaCommandError.notFound("layer \(id)")
+            }
+            if layer.isLocked { throw MediaCommandError.conflict("layer is locked; unlock before flipping") }
+
+        case .alignLayers(let ids, _, let naturalSizes):
+            guard ids.count >= 2, Set(ids).count == ids.count else {
+                throw MediaCommandError.validation("alignment needs at least two distinct layers")
+            }
+            guard project.canvas != nil else {
+                throw MediaCommandError.validation("canvas must be initialized before aligning layers")
+            }
+            for id in ids {
+                guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                    throw MediaCommandError.notFound("layer \(id)")
+                }
+                if layer.isLocked {
+                    throw MediaCommandError.conflict("layer '\(layer.name)' is locked; unlock before aligning")
+                }
+                guard naturalSizes.contains(where: { $0.layerID == id }) else {
+                    throw MediaCommandError.validation("missing measured size for layer \(id)")
+                }
+            }
+
+        case .mergeLayers(let ids, let name, let raster):
+            guard ids.count >= 2, Set(ids).count == ids.count else {
+                throw MediaCommandError.validation("merge needs at least two distinct layers")
+            }
+            if let name, name.isEmpty { throw MediaCommandError.validation("layer name must not be empty") }
+            for id in ids {
+                guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                    throw MediaCommandError.notFound("layer \(id)")
+                }
+                if layer.isLocked {
+                    throw MediaCommandError.conflict("layer '\(layer.name)' is locked; unlock before merging")
+                }
+            }
+            // The host renders the merged pixels through the real pipeline and
+            // registers a transparent full-canvas asset referenced here.
+            guard let rasterAsset = project.asset(raster.assetID), rasterAsset.kind == .image else {
+                throw MediaCommandError.validation(
+                    "merge raster asset \(raster.assetID) must be an imported image asset")
+            }
+            if let hash = rasterAsset.contentHash, let rasterHash = raster.contentHash, hash != rasterHash {
+                throw MediaCommandError.conflict("merge raster hash does not match the registered asset")
+            }
+            guard raster.width > 0, raster.height > 0 else {
+                throw MediaCommandError.validation("merge raster dimensions must be positive")
             }
 
         case .setCanvasAdjustment(let adjustment):
@@ -363,6 +507,88 @@ public enum MediaEditCommandApplier {
         case .removeLayer(let id):
             project.imageLayers.removeAll { $0.id == id }
 
+        case .duplicateLayer(let id, let name):
+            guard let index = project.imageLayers.firstIndex(where: { $0.id == id }) else { return }
+            var copy = project.imageLayers[index]
+            copy.id = UUID()
+            copy.name = name ?? "\(copy.name) copy"
+            project.imageLayers.insert(copy, at: index + 1)
+
+        case .addFreehandStroke(let id, let stroke):
+            guard let index = project.imageLayers.firstIndex(where: { $0.id == id }) else { return }
+            var content = project.imageLayers[index].freehand ?? ImageFreehandContent()
+            content.strokes.append(stroke)
+            project.imageLayers[index].freehand = content
+
+        case .setImageSelection(let selection):
+            project.imageSelection = selection
+
+        case .setLayerSelectionMask(let id, let update):
+            guard let index = project.imageLayers.firstIndex(where: { $0.id == id }) else { return }
+            switch update {
+            case .unchanged: break
+            case .clear: project.imageLayers[index].selectionMask = nil
+            case .set(let selection): project.imageLayers[index].selectionMask = selection
+            }
+
+        case .addLayerMaskStroke(let id, let stroke):
+            guard let index = project.imageLayers.firstIndex(where: { $0.id == id }) else { return }
+            var mask = project.imageLayers[index].mask ?? ImageLayerMask()
+            mask.strokes.append(stroke)
+            project.imageLayers[index].mask = mask
+
+        case .clearLayerMask(let id):
+            guard let index = project.imageLayers.firstIndex(where: { $0.id == id }) else { return }
+            project.imageLayers[index].mask = nil
+
+        case .flipLayer(let id, let horizontal):
+            guard let index = project.imageLayers.firstIndex(where: { $0.id == id }) else { return }
+            if horizontal {
+                let current = project.imageLayers[index].transform.flipX ?? false
+                project.imageLayers[index].transform.flipX = !current
+            } else {
+                let current = project.imageLayers[index].transform.flipY ?? false
+                project.imageLayers[index].transform.flipY = !current
+            }
+
+        case .alignLayers(let ids, let alignment, let naturalSizes):
+            guard let canvas = project.canvas else { return }
+            let sizeByID = Dictionary(uniqueKeysWithValues: naturalSizes.map { ($0.layerID, $0) })
+            let entries: [LayerLayoutEntry] = ids.compactMap { id in
+                guard let layer = project.imageLayers.first(where: { $0.id == id }),
+                      let size = sizeByID[id] else { return nil }
+                return LayerLayoutEntry(id: id, naturalWidth: size.width,
+                                        naturalHeight: size.height, transform: layer.transform)
+            }
+            guard entries.count == ids.count else { return }
+            let deltas = LayerLayout.alignmentDeltas(
+                entries, alignment: alignment,
+                canvasSize: (Double(canvas.width), Double(canvas.height)))
+            for id in ids {
+                guard let delta = deltas[id],
+                      let i = project.imageLayers.firstIndex(where: { $0.id == id }) else { continue }
+                project.imageLayers[i].transform.centerX += delta.dx
+                project.imageLayers[i].transform.centerY += delta.dy
+            }
+
+        case .mergeLayers(let ids, let name, let raster):
+            // Validate already guarantees the host registered the raster asset.
+            let merging = project.imageLayers.filter { ids.contains($0.id) }
+            guard merging.count >= 2 else { return }
+            // Insert at the position of the topmost merged layer (renders last)
+            // so the composite's stacking order matches the source layers.
+            let insertIndex = merging.map { project.imageLayers.firstIndex(of: $0) ?? 0 }.max() ?? 0
+            project.imageLayers.removeAll { ids.contains($0.id) }
+            let merged = ImageLayer(
+                kind: .image,
+                name: name ?? "Merged \(merging.count) layers",
+                assetID: raster.assetID,
+                // The raster is already full-canvas composited pixels; keep an
+                // identity placement so they land exactly where they rendered.
+                transform: .init(centerX: 0.5, centerY: 0.5, scale: 1),
+                opacity: 1)
+            project.imageLayers.insert(merged, at: min(insertIndex, project.imageLayers.count))
+
         case .setCanvasAdjustment(let adjustment):
             project.canvasAdjustment = adjustment
 
@@ -473,8 +699,7 @@ public enum MediaEditCommandApplier {
 
     // MARK: Validation helpers
 
-    private static func validate(transform: ImageLayerTransform, opacity: Double) throws {
-        guard transform.centerX.isFinite, transform.centerY.isFinite,
+    private static func validate(transform: ImageLayerTransform, opacity: Double) throws {        guard transform.centerX.isFinite, transform.centerY.isFinite,
               (0...2).contains(transform.centerX), (0...2).contains(transform.centerY),
               transform.scale.isFinite, transform.scale > 0, transform.scale <= 20,
               transform.rotationDegrees.isFinite, abs(transform.rotationDegrees) <= 360 else {

@@ -184,6 +184,25 @@ final class WorkbenchCenter: ObservableObject {
     @Published var isCropping = false
     @Published var cropRect: NormalizedRect?
 
+    // Image authoring (Build265): explicit tool modes, selection authoring and
+    // multi-layer operations. Kept on the center so fullscreen/drawer changes
+    // never reset the active tool or the multi-selection.
+    enum ImageAuthoringTool: String, CaseIterable, Identifiable {
+        case move, marquee, brush, eraser, eyedropper
+        var id: String { rawValue }
+    }
+    @Published var imageTool: ImageAuthoringTool = .move
+    @Published var selectionKind: ImageSelectionKind = .rectangle
+    @Published var selectionOperation: ImageSelectionOperation = .replace
+    @Published var brushWidth: Double = 8
+    @Published var brushHardness: Double = 0
+    @Published var brushOpacity: Double = 1
+    @Published var brushColorHex: String = "#FF3B30"
+    @Published var brushUsesPressure = true
+    @Published var maskRestore = false
+    @Published var selectedLayerIDs: Set<UUID> = []
+    @Published var showsCheckerboard = false
+
     /// Pre-submission review. The payload is typed and immutable so the
     /// confirmed submission always equals what the sheet displayed: image
     /// edits keep their exact source asset + size + count, video jobs keep
@@ -467,14 +486,20 @@ final class WorkbenchCenter: ObservableObject {
     /// asset bytes stay shared by reference.
     func forkProjectForVariant(parentID: UUID) async -> (id: UUID, revision: Int64)? {
         do {
-            let fork = try await store.forkProject(
-                id: parentID,
-                nameSuffix: WorkbenchText.t("分支", "variant"))
-            return (fork.id, fork.revision)
+            return try await forkProjectForVariantOrThrow(parentID: parentID)
         } catch {
             present(error)
             return nil
         }
+    }
+
+    /// Throwing variant used by copy/paste fork orchestration so failures can
+    /// be recorded explicitly on the copied node instead of silently dropped.
+    func forkProjectForVariantOrThrow(parentID: UUID) async throws -> (id: UUID, revision: Int64) {
+        let fork = try await store.forkProject(
+            id: parentID,
+            nameSuffix: WorkbenchText.t("分支", "variant"))
+        return (fork.id, fork.revision)
     }
 
     func refreshProjectSummaries() async {
@@ -1492,8 +1517,44 @@ extension WorkbenchCenter: MediaProjectHost {
     }
 
     nonisolated func removeProposal(id: UUID) async throws {
+        // A rejected/removed proposal must not leak its staged merge rasters.
+        if let proposal = await proposalStore.get(id: id) {
+            await cleanStagedAssets(in: proposal.commands)
+        }
         await proposalStore.remove(id: id)
         await self.refreshProposalCache()
+    }
+
+    nonisolated func discardStagedAsset(_ asset: MediaAssetReference) async {
+        let current = await MainActor.run { self.project }
+        if Set(current?.assets.map(\.id) ?? []).contains(asset.id) { return }
+        let root = await MainActor.run {
+            WorkbenchPaths.mediaRoot(preferred: self.rootProvider())
+                .resolvingSymlinksInPath().standardizedFileURL
+        }
+        let url = asset.relativePath.hasPrefix("/")
+            ? URL(fileURLWithPath: asset.relativePath)
+            : root.appendingPathComponent(asset.relativePath)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Deletes stage-only merge rasters that the current project does not
+    /// reference. Referenced assets are never deleted.
+    private nonisolated func cleanStagedAssets(in commands: [MediaEditCommand]) async {
+        let staged = MediaCommandEnrichment.stagedAssets(in: commands)
+        guard !staged.isEmpty else { return }
+        let current = await MainActor.run { self.project }
+        let referenced = Set(current?.assets.map(\.id) ?? [])
+        let root = await MainActor.run {
+            WorkbenchPaths.mediaRoot(preferred: self.rootProvider())
+                .resolvingSymlinksInPath().standardizedFileURL
+        }
+        for asset in staged where !referenced.contains(asset.id) {
+            let url = asset.relativePath.hasPrefix("/")
+                ? URL(fileURLWithPath: asset.relativePath)
+                : root.appendingPathComponent(asset.relativePath)
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     nonisolated func consumeGrant(grantID: String, proposalID: UUID, projectID: UUID,
@@ -1518,12 +1579,254 @@ extension WorkbenchCenter: MediaProjectHost {
     nonisolated func exportImage(project: MediaProject, options: ImageExportOptions,
                                  relativeOutput: String) async throws -> WorkbenchImageExportReceipt {
         let destination = await MainActor.run {
-            self.mediaRoot().appendingPathComponent(relativeOutput)
+            WorkbenchPaths.mediaRoot(for: project, current: self.rootProvider())
+                .appendingPathComponent(relativeOutput)
         }
         let urls = await MainActor.run { self.assetURLMap(for: project) }
         return try await imageRenderer.exportImage(project: project, options: options,
                                                    resolveAsset: { urls[$0] },
                                                    destination: destination)
+    }
+
+    // MARK: Renderer-assisted command enrichment (align / merge)
+
+    nonisolated func measureLayers(project: MediaProject, layerIDs: [UUID]) async throws -> [LayerNaturalSize] {
+        guard let canvas = project.canvas else {
+            throw FloeError.validationFailed("canvas must be initialized before aligning layers")
+        }
+        let urls = await MainActor.run { self.assetURLMap(for: project) }
+        let size = CGSize(width: canvas.width, height: canvas.height)
+        var result: [LayerNaturalSize] = []
+        for id in layerIDs {
+            guard let layer = project.imageLayers.first(where: { $0.id == id }) else {
+                throw FloeError.notFound("layer \(id)")
+            }
+            guard let measured = try await imageRenderer.naturalSize(
+                of: layer, canvas: size, resolveAsset: { urls[$0] }) else {
+                throw FloeError.validationFailed(
+                    "layer '\(layer.name)' could not be rendered (missing asset?); alignment refused")
+            }
+            result.append(LayerNaturalSize(layerID: id, width: Double(measured.width),
+                                           height: Double(measured.height)))
+        }
+        return result
+    }
+
+    nonisolated func renderMergeAsset(project: MediaProject, layerIDs: [UUID],
+                                      name: String?) async throws -> MergePreparation {
+        guard let canvas = project.canvas else {
+            throw FloeError.validationFailed("canvas must be initialized before merging layers")
+        }
+        let ids = Set(layerIDs)
+        let urls = await MainActor.run { self.assetURLMap(for: project) }
+        let size = CGSize(width: canvas.width, height: canvas.height)
+        let cgImage = try await imageRenderer.renderMerge(
+            project: project, layerIDs: ids, canvas: size, resolveAsset: { urls[$0] })
+        // Encode a transparent PNG and stage it in the frozen project's assets.
+        guard let data = WorkbenchPNG.encode(cgImage) else {
+            throw FloeError.internalError("could not encode merged layer PNG")
+        }
+        let hash = FloeDigest.sha256Hex(data)
+        let root = await MainActor.run {
+            WorkbenchPaths.mediaRoot(for: project, current: self.rootProvider())
+                .resolvingSymlinksInPath().standardizedFileURL
+        }
+        let assetsDir = root.appendingPathComponent("Workbench/Assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
+        let fileURL = assetsDir.appendingPathComponent("\(UUID().uuidString.prefix(8))-merge.png")
+        try data.write(to: fileURL, options: .atomic)
+        let assetID = UUID()
+        let asset = MediaAssetReference(
+            id: assetID, kind: .image,
+            relativePath: "Workbench/Assets/\(fileURL.lastPathComponent)",
+            originalName: (name?.isEmpty == false ? name! : "merged") + ".png",
+            byteCount: Int64(data.count), contentHash: hash)
+        let raster = MergedLayerRaster(assetID: assetID, width: cgImage.width,
+                                       height: cgImage.height, contentHash: hash)
+        return MergePreparation(asset: asset, raster: raster)
+    }
+}
+
+// MARK: - Image authoring (Build265)
+
+extension WorkbenchCenter {
+    var selectedImageLayers: [ImageLayer] {
+        guard let project else { return [] }
+        return project.imageLayers.filter { selectedLayerIDs.contains($0.id) }
+    }
+
+    func setImageTool(_ tool: ImageAuthoringTool) {
+        imageTool = tool
+        isDrawingFreehand = (tool == .brush || tool == .eraser)
+    }
+
+    // MARK: Selection authoring
+
+    func commitSelectionShape(kind: ImageSelectionKind, operation: ImageSelectionOperation,
+                              points: [ImageFreehandStroke.Point]) {
+        var selection = project?.imageSelection ?? ImageSelection()
+        let shape = ImageSelectionShape(kind: kind, operation: operation, points: points)
+        switch operation {
+        case .replace:
+            selection.shapes = [shape]
+        case .add, .subtract:
+            selection.shapes.append(shape)
+        }
+        selection.inverted = selection.inverted && operation == .replace
+        apply(.setImageSelection(selection))
+    }
+
+    func selectAllImage() {
+        apply(.setImageSelection(ImageSelection(shapes: [
+            ImageSelectionShape(kind: .rectangle, operation: .replace,
+                                points: [.init(x: 0, y: 0), .init(x: 1, y: 1)])
+        ])))
+    }
+
+    func invertImageSelection() {
+        var selection = project?.imageSelection ?? ImageSelection()
+        selection.inverted.toggle()
+        apply(.setImageSelection(selection))
+    }
+
+    func clearImageSelection() {
+        apply(.setImageSelection(nil))
+    }
+
+    func setSelectionFeather(_ feather: Double) {
+        guard var selection = project?.imageSelection else { return }
+        selection.feather = min(max(feather, 0), 0.5)
+        apply(.setImageSelection(selection))
+    }
+
+    // MARK: Brush / eraser
+
+    /// Appends a brush stroke: onto the selected freehand layer when possible,
+    /// otherwise a new freehand layer. Pressure stays nil for finger strokes
+    /// (never synthesized).
+    @discardableResult
+    func commitBrushStroke(_ stroke: ImageFreehandStroke) -> Bool {
+        guard let project else { return false }
+        if let id = selectedLayerID,
+           let layer = project.imageLayers.first(where: { $0.id == id }),
+           layer.kind == .freehand, !layer.isLocked {
+            return apply(.addFreehandStroke(id: id, stroke: stroke))
+        }
+        let layer = ImageLayer(kind: .freehand, name: WorkbenchText.t("手绘", "Freehand"),
+                               freehand: ImageFreehandContent(strokes: [stroke]))
+        guard apply(.addImageLayer(layer)) else { return false }
+        selectedLayerID = layer.id
+        selectedLayerIDs = [layer.id]
+        return true
+    }
+
+    /// Non-destructive erase (or restore) mask stroke on the selected layer.
+    @discardableResult
+    func commitMaskStroke(_ stroke: ImageMaskStroke) -> Bool {
+        guard let id = selectedLayerID else {
+            present(FloeError.validationFailed(WorkbenchText.t(
+                "请先选择一个图层再擦除。", "Select a layer before erasing.")))
+            return false
+        }
+        return apply(.addLayerMaskStroke(id: id, stroke: stroke))
+    }
+
+    // MARK: Layer operations
+
+    func setLayerSelected(_ id: UUID, additive: Bool) {
+        if additive {
+            if selectedLayerIDs.contains(id) { selectedLayerIDs.remove(id) }
+            else { selectedLayerIDs.insert(id) }
+        } else {
+            selectedLayerIDs = [id]
+        }
+        selectedLayerID = selectedLayerIDs.contains(id) ? id : selectedLayerIDs.first
+    }
+
+    func selectAllLayers() {
+        guard let project else { return }
+        selectedLayerIDs = Set(project.imageLayers.map(\.id))
+        selectedLayerID = project.imageLayers.first?.id
+    }
+
+    func duplicateSelectedLayer() {
+        guard let id = selectedLayerID else { return }
+        if apply(.duplicateLayer(id: id, name: nil)),
+           let project, let index = project.imageLayers.firstIndex(where: { $0.id == id }),
+           project.imageLayers.indices.contains(index + 1) {
+            let copyID = project.imageLayers[index + 1].id
+            selectedLayerID = copyID
+            selectedLayerIDs = [copyID]
+        }
+    }
+
+    func flipSelectedLayer(horizontal: Bool) {
+        let ids = selectedLayerIDs.isEmpty ? [selectedLayerID].compactMap({ $0 }) : Array(selectedLayerIDs)
+        for id in ids {
+            _ = apply(.flipLayer(id: id, horizontal: horizontal))
+        }
+    }
+
+    func deleteSelectedLayers() {
+        let ids = selectedLayerIDs.isEmpty ? [selectedLayerID].compactMap { $0 } : Array(selectedLayerIDs)
+        guard !ids.isEmpty else { return }
+        for id in ids { _ = apply(.removeLayer(id: id)) }
+        selectedLayerIDs.subtract(ids)
+        if let primary = selectedLayerID, ids.contains(primary) {
+            selectedLayerID = selectedLayerIDs.first
+        }
+    }
+
+    /// Renders measured edges from the real pipeline, then aligns on them.
+    func alignSelectedLayers(_ alignment: LayerAlignment) async {
+        let ids = Array(selectedLayerIDs)
+        guard ids.count >= 2, let project else { return }
+        do {
+            let sizes = try await measureLayers(project: project, layerIDs: ids)
+            _ = apply(.alignLayers(ids: ids, alignment: alignment, naturalSizes: sizes))
+        } catch {
+            present(error)
+        }
+    }
+
+    /// Render-preserving, undoable merge of the selected visible layers into a
+    /// single raster image layer (staged through the real renderer).
+    func mergeSelectedLayers() async {
+        let ids = Array(selectedLayerIDs)
+        guard ids.count >= 2, let project else { return }
+        do {
+            let prep = try await renderMergeAsset(project: project, layerIDs: ids, name: nil)
+            var draft = project
+            try MediaTransactions.apply(
+                [.addAsset(prep.asset),
+                 .mergeLayers(ids: ids, name: nil, raster: prep.raster)],
+                to: &draft)
+            self.project = draft
+            selectedLayerIDs.subtract(ids)
+            selectedLayerID = draft.imageLayers.last(where: { $0.kind == .image && $0.assetID == prep.asset.id })?.id
+            selectedLayerIDs = Set([selectedLayerID].compactMap { $0 })
+            scheduleSave()
+            refreshPreview()
+        } catch {
+            present(error)
+        }
+    }
+
+    // MARK: Eyedropper
+
+    /// Samples the rendered preview at a normalized (top-leading) point and
+    /// returns a #RRGGBB string, or nil when no preview exists.
+    func sampleColor(atNormalized point: CGPoint) -> String? {
+        guard let image = previewImage else { return nil }
+        let x = min(max(Int((point.x * CGFloat(image.width)).rounded(.down)), 0), image.width - 1)
+        let y = min(max(Int((point.y * CGFloat(image.height)).rounded(.down)), 0), image.height - 1)
+        var pixel = [UInt8](repeating: 0, count: 4)
+        guard let ctx = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8,
+                                  bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: -CGFloat(x), y: -CGFloat(image.height - 1 - y),
+                                   width: CGFloat(image.width), height: CGFloat(image.height)))
+        return String(format: "#%02X%02X%02X", pixel[0], pixel[1], pixel[2])
     }
 }
 
