@@ -1,0 +1,142 @@
+# Floe CAD engine, `cad.document` and Canvas child projects
+
+Status: implementation validated locally (Build265 branch `codex/build265-creative-cad`).
+No tag, TestFlight or public release was produced; primary UI/CUA acceptance and
+the release execution remain with the primary agent.
+
+本文件说明 1.7.24（265）候选中的二维 CAD 引擎、`cad.document` 工具以及画布子工程绑定。
+状态：本地实现与测试已验证；未打标签、未上传、未发布，UI 实机验收仍由 primary 执行。
+
+## 1. Engine / 引擎
+
+The existing Floe-owned MPL-2.0 binding over acadrust 0.5.5
+(`FloeAgent/ThirdParty/CADEngine`) was extended; no parallel CAD engine exists.
+
+| Capability | Support |
+| --- | --- |
+| Create | `addLine`, `addCircle`, `addArc`, `addLwPolyline` (closed rectangle = 4 points), `addText`, `addLeader` (vertices only), `addDimension` linear/aligned/angular/radius/diameter |
+| Modify | `move`, `copy`, `rotate`, `scale` (uniform), `mirror`, `delete`, `setText`, `setRadius`, `setLayer`, `setColor`, `setLineWeight` |
+| Geometry | `trim` (line/arc targets), `extend` (line target), `offset` (line/circle/arc/open LWPolyline) |
+| Layers | create / rename / update (lock, visibility, ACI color, linetype, canonical line weight) / delete only when unreferenced; move entity to layer |
+| Annotation | atomic `addStroke` pencil ink on `FLOE_ANNOTATION` (one undo snapshot, Z preserved) |
+| Queries | `capabilities`, `drawing`, `layers`, `entities`/`text` (paginated ≤ 500), `snap`, `measure`, `check`, `locate` |
+| Atomicity | every edit validates on a clone; a failed request leaves document and history untouched. `batch` (≤ 64 ops) is all-or-nothing with one undo snapshot |
+
+Coordinate/space rules: edits are limited to model-space entities on the Z=0 XY
+plane with a +Z extrusion. Raised/sloped geometry, paper space, non-default OCS,
+splines, blocks, xrefs, proxy graphics and 3D content stay read-only and are
+never flattened. Undefined `INSUNITS` stays “unitless drawing units”; mm is
+never assumed.
+
+Save (`save`) re-encodes DWG or DXF, reparses the actual output, and compares
+entities, references, layer values and auxiliary objects before returning
+bytes. Lossy unsupported data blocks overwrite rather than silently replacing
+the source. This remains a compatibility guard, not proof for arbitrary
+third-party files.
+
+Independent cross-check: LibreDWG 0.13.3 (`/opt/homebrew/bin/dwgread`,
+`dwg2dxf`) parsed native-test DWG outputs (LINE/CIRCLE/TEXT, including Chinese
+text) alongside the acadrust round-trip tests.
+
+## 2. Viewer UI / 查看器界面
+
+`EngineeringViewers/cad-editor.js` + `cad-commands.js` add: draw tools
+(line/rectangle/two-click circle/numeric arc/polyline/text/dimension/leader),
+modify tools (move/copy/rotate/scale/mirror/delete/trim/extend/offset with a
+boundary pick), layer panel (active layer, lock, visibility, counts, add /
+rename / delete), measure and check, locate-selected, window selection from
+entity bounds, and an object-snap indicator backed by the engine’s own snap
+query. All requests are the same typed operations the tool uses; there is no
+arbitrary JS or file API.
+
+## 3. Headless host / 无界面宿主
+
+Agent tools and the Drawing Assistant run the same wasm and the same
+`cad-worker.js` inside a disposable offscreen WKWebView served from the pinned
+`EngineeringViewers` bundle (`cad-host.html`, `CadWebEngineSession.swift`):
+
+* one session per document revision; every call is deadline-bounded;
+* a timed-out or failed call destroys the web view (loader stopped, handler
+  removed, reference released), terminating the page and its Worker — there is
+  no unstoppable in-process evaluation;
+* the wasm build caps linear memory at 384 MiB (`-C link-arg=--max-memory=`),
+  and the engine bounds files (10 MiB), entities (20k), history (8) and text.
+
+## 4. `cad.document` tool
+
+| Action | Effect |
+| --- | --- |
+| `capabilities` | engine-declared surface (no document needed) |
+| `read`, `query`, `locate`, `measure`, `check` | read-only; structured engine JSON |
+| `propose` | validates a typed batch on a throwaway session and returns an added/changed/deleted preview; never writes |
+| `preview` | stored proposal overlay |
+| `apply` | consumes a single-use UI grant bound to proposal + document + revision + SHA; applies one atomic undoable transaction and commits with SHA compare-and-swap |
+| `save` | commits the verified engine output with CAS |
+| `export` | writes a separate verified DXF presentation copy; the source stays unchanged |
+
+Confirmation: only the interactive CAD UI mints grants. `apply` reserves the
+grant, runs the edit, engine-verifies and commits; on any failure it rolls the
+engine draft back (one `undo`) and releases the reservation so the same
+authorized proposal can be retried inside the TTL. Tool-call ids replay the
+recorded receipt only for the same authenticated owner/environment/workspace/
+document/action/payload.
+
+## 5. Canvas child projects / 画布子工程
+
+* `CanvasChildProjectBinding` (schemaVersion 1) is stored in node metadata:
+  project id, applied revision, draft revision, rendered asset, source node,
+  source asset hash. Legacy nodes without the key decode to `.absent`; unknown
+  newer versions and malformed values are preserved raw and surfaced for
+  recovery instead of silently starting a new edit.
+* Opening an image node resumes the bound project id (not a filename guess).
+  A missing bound project is an explicit error with “start new edit”.
+* “Apply to canvas” updates the ORIGINAL node (identity, name, position, size,
+  edges preserved) after a verified export; “Make variant” is the only path
+  that creates a new node + `.generatedFrom` edge, bound to a persisted forked
+  project (new identity, `parentProjectID`, fresh undo/redo, shared asset
+  bytes). Copied nodes follow the same fork rule.
+* Closing or switching the workbench flushes the draft before teardown.
+* Asset placeholders distinguish missing local file, cloud-only, undecodable
+  format and unsupported types, with a cloud-restore action; node images use a
+  bounded downsampled thumbnail cache instead of decoding full files per pass.
+
+## 6. Verification executed in this job
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Rust engine native tests | `cargo test --locked` (Rust 1.98.1, wasm-bindgen 0.2.126) | **39/39 passed** |
+| Viewer ink contract | `node FloeAgent/scripts/test_cad_ink.mjs` | **73 passed, 0 failed** |
+| Viewer command surface + bundled WASM | `node FloeAgent/scripts/test_cad_commands.mjs` | **47 passed, 0 failed** |
+| Asset inventory/pins | `python3 FloeAgent/scripts/check_engineering_viewer_assets.py` | 32 hashes verified |
+| `cad.document` tool tests | `swift test --filter CadDocumentToolTests` | **12/12 passed** |
+| Child-project fork tests | `swift test --filter MediaProjectForkTests` | **3/3 passed** |
+| Canvas binding tests | `swift test --filter CanvasChildProjectBindingTests` | **7/7 passed** |
+| Full app compile (simulator) | `xcodebuild build -scheme FloeAgent -destination 'generic/platform=iOS Simulator' ARCHS=arm64` | **BUILD SUCCEEDED** |
+| Independent DWG reader | `dwgread -O JSON edited-AC1032.dwg` | SUCCESS; entities/layers parsed |
+
+## 6b. Checkpoint additions (image/video/assistant)
+
+* Image model+renderer: vector selections with feather/invert and alpha-mask
+  rasterization, non-destructive layer erase/restore masks, selection-scoped
+  fill layers, brush pressure/hardness/opacity, text tracking/leading/alignment/
+  stroke/shadow (a real Core Text color bug was fixed), temperature/hue/levels,
+  flipX/flipY. 9 renderer/model tests + command validation tests pass.
+* Video: exact `HH:MM:SS:FF` timecode, frame stepping, edge snapping, explicit
+  cover time, caption batch shift/alignment/safe-area flags, clip duplication,
+  landscape/portrait/square presets with explicit resolution/fps. 9 tests pass.
+* Drawing Assistant: scope picker (whole drawing / viewport / selection),
+  structured context (units, layers, active layer, unsaved revision, selected
+  handle) and pending-proposal apply/discard in the review sheet.
+
+## 7. Known gaps (honest)
+
+* Drawing Assistant scope selector (whole drawing / viewport / selection) and
+  the proposal overlay are only partially wired; `CadDocumentCenter` already
+  returns structured assistant context including located selection handles.
+* Images/video/notes/PDF/Office/layout increments from the approved matrix were
+  not implemented in this job; see the private requirement matrix.
+* No real paid model/provider workflow was exercised; no CUA/visual acceptance
+  was performed here.
+* The device artifact is built from source whose version is still
+  1.7.23(264); the primary must bump to 1.7.24(265) and verify build numbers
+  before any distribution.

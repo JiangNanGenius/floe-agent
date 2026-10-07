@@ -39,6 +39,7 @@
 | [../skill-hub/](../skill-hub/) / [../ios-wheelhouse/](../ios-wheelhouse/) | 官方技能中心 / 已封存的 iOS wheel 产线（不再随 App 分发原生载荷，见 [Phase 2 迁移](PHASE2_migration.md)） |
 | [Floe 1.7 图像编辑器集成](FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md) / [视频编辑器集成](FLOE_1_7_VIDEO_EDITOR_INTEGRATION.md) | 媒体编辑来源、接入状态与验证边界 |
 | [媒体工作台（1.7.23／264）](FLOE_MEDIA_WORKBENCH.md) | 统一图像/视频工作台：版本化项目、渲染器、`media.project` 工具契约与已执行验证 |
+| [CAD 引擎、cad.document 与画布子工程（1.7.24／265 候选）](FLOE_CAD_AND_DRAWING_ASSISTANT.md) | 二维 CAD 引擎能力、无界面 Worker 宿主、`cad.document` 契约、画布绑定/分支语义与图像/视频细化（候选，未发布） |
 | [截图档案](evidence/floe-1.7/SCREENSHOTS.md) | 界面截图与对应证据 |
 
 ## 发布档案（只追加、不回改）
