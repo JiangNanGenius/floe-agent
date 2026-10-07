@@ -23,10 +23,13 @@ final class SSHSessionOwner {
     private(set) var handle: SSHSessionHandle?
     private(set) var pty: PTYSessionHandle?
     private var pumpTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    let presentation = TerminalPresentation()
     private let registry: any RemoteSessionRegistry
 
     /// Terminal output buffer (bounded; the view renders the tail).
     private(set) var output = Data()
+    private(set) var outputEnd = 0
     private let maxOutputBytes = 256 * 1024
     /// Called on the main actor when new output arrives.
     var onOutput: (() -> Void)?
@@ -64,11 +67,22 @@ final class SSHSessionOwner {
     }
 
     private func append(_ chunk: Data) {
+        outputEnd += chunk.count
         output.append(chunk)
         if output.count > maxOutputBytes {
             output = output.suffix(maxOutputBytes)
         }
-        onOutput?()
+        // Parse every byte before the bounded history can roll over. SwiftTerm
+        // batches display invalidation; observable UI refreshes are capped here.
+        presentation.consume(output, byteEnd: outputEnd, generation: sessionID)
+        if refreshTask == nil {
+            refreshTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled, let self else { return }
+                self.refreshTask = nil
+                self.onOutput?()
+            }
+        }
     }
 
     private func handlePumpEnded() async {
@@ -95,6 +109,8 @@ final class SSHSessionOwner {
     func disconnect() async {
         pumpTask?.cancel()
         pumpTask = nil
+        refreshTask?.cancel()
+        refreshTask = nil
         await pty?.close()
         await handle?.close()
         pty = nil

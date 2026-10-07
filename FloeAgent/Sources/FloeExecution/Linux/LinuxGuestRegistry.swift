@@ -331,6 +331,7 @@ public actor TinyEMULinuxGuestRegistry {
     /// awaits, so without this a concurrent start of the same environment
     /// would prepare a second disk copy and create a second VM.
     private var startingEnvironments: Set<String> = []
+    private var sharedStarts: [String: (id: UUID, shape: GuestResourceRequest?, task: Task<Bool, Error>)] = [:]
     /// Environments asked to stop while their start was in flight; the start
     /// tears its own handle down instead of registering a session.
     private var pendingStops: Set<String> = []
@@ -915,12 +916,23 @@ public actor TinyEMULinuxGuestRegistry {
         taskID: String?,
         explicitShape: GuestResourceRequest?
     ) async throws -> Bool {
-        try await start(
-            environmentID: environmentID,
-            taskID: taskID,
-            explicitShape: explicitShape,
-            transactionToken: nil
-        )
+        if let pending = sharedStarts[environmentID] {
+            // Joining never changes the creator's requested resources.
+            if let explicitShape, pending.shape != explicitShape {
+                throw LinuxGuestError.guestBusy(environmentID: environmentID)
+            }
+            let result = try await pending.task.value
+            try Task.checkCancellation()
+            return result
+        }
+        let id = UUID()
+        let task = Task { try await self.start(environmentID: environmentID,
+            taskID: taskID, explicitShape: explicitShape, transactionToken: nil) }
+        sharedStarts[environmentID] = (id, explicitShape, task)
+        defer { if sharedStarts[environmentID]?.id == id { sharedStarts.removeValue(forKey: environmentID) } }
+        let result = try await task.value
+        try Task.checkCancellation()
+        return result
     }
 
     /// The body of `start`. `transactionToken` is set only by a hard
@@ -933,6 +945,7 @@ public actor TinyEMULinuxGuestRegistry {
         explicitShape: GuestResourceRequest?,
         transactionToken: UInt64?
     ) async throws -> Bool {
+        try Task.checkCancellation()
         let inTransaction = transactionToken != nil
             && lifecycleTransactions[environmentID] == transactionToken
         if reconnectBarrier != nil {
@@ -1007,6 +1020,7 @@ public actor TinyEMULinuxGuestRegistry {
         // in-flight start, records the stop and cancels the queued admission
         // instead of mistaking it for "nothing to stop" and letting the
         // guest boot later.
+        try Task.checkCancellation()
         guard startingEnvironments.insert(environmentID).inserted else {
             throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
@@ -2066,6 +2080,7 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func stop(environmentID: String) async {
+        sharedStarts[environmentID]?.task.cancel()
         await teardown(environmentID: environmentID, action: "stop")
     }
 
@@ -2074,6 +2089,7 @@ public actor TinyEMULinuxGuestRegistry {
     /// the next start boots the same disk fresh. Other environments — guests,
     /// disks, forwards — are never touched by one environment's reset.
     public func reset(environmentID: String) async {
+        sharedStarts[environmentID]?.task.cancel()
         await teardown(environmentID: environmentID, action: "reset")
     }
 

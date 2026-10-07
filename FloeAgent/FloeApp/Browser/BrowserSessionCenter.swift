@@ -42,6 +42,76 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     @Published private(set) var activeTabID: UUID?
     @Published private(set) var isUserControlling = false
     @Published var addressText = ""
+    var isEditingAddress = false
+    struct Handoff: Codable, Equatable {
+        let id: UUID
+        let conversationID: UUID
+        let runID: UUID?
+        let sessionID: UUID
+        let tabID: UUID?
+        var returning: Bool
+        var pageAddress: String? = nil
+    }
+    @Published private(set) var handoff: Handoff?
+    @Published private(set) var returningControl = false
+    @Published private(set) var handoffError: String?
+    @Published private(set) var handoffNeedsContinue = false
+    @Published private(set) var handoffNotified = false
+    var handoffRun: ((UUID) -> UUID?)?
+    var deliverHandoff: ((Handoff, Bool) async throws -> Bool)?
+    private var handoffs: [UUID: Handoff] = [:]
+    private var deliveringHandoffs = Set<UUID>()
+    private var knownRunIDs: [UUID: UUID] = [:]
+    func recordOwnerRun(conversationID: UUID, runID: UUID) { knownRunIDs[conversationID] = runID }
+    private var handoffURL: URL { artifactDirectory.deletingLastPathComponent().appendingPathComponent("BrowserHandoffs.json") }
+
+    private let durableHandoffs: Bool
+    private func persistHandoffs() throws {
+        guard durableHandoffs else { return }
+        try FileManager.default.createDirectory(at: handoffURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(Array(handoffs.values)).write(to: handoffURL, options: .atomic)
+    }
+
+    func returnToAgent(continueTask: Bool = false) async {
+        guard !returningControl, var event = handoff, let deliverHandoff else { return }
+        guard deliveringHandoffs.insert(event.id).inserted else { return }
+        returningControl = true
+        handoffError = nil
+        defer { returningControl = false; deliveringHandoffs.remove(event.id) }
+        do {
+            let firstReturn = !event.returning
+            event.returning = true
+            // Never persist credentials, fragments or query parameters from the page.
+            if firstReturn, var address = activeWebView?.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) {
+                address.user = nil; address.password = nil; address.query = nil; address.fragment = nil
+                event.pageAddress = address.url?.absoluteString
+            }
+            handoffs[event.conversationID] = event
+            try persistHandoffs()
+            // Invalidate every pre-takeover element/document reference.
+            for index in tabs.indices {
+                tabs[index].documentID = UUID().uuidString
+                tabs[index].visualFallbackEvidence = nil
+            }
+            let needsContinue = try await deliverHandoff(event, continueTask)
+            // Keep the durable outbox until a later takeover replaces it. On app
+            // recovery the input store decides whether this ID was consumed.
+            handoffs[event.conversationID] = event
+            if var saved = taskSessions[event.conversationID] {
+                saved.isUserControlling = false
+                taskSessions[event.conversationID] = saved
+            }
+            try persistHandoffs()
+            guard conversationID == event.conversationID else { return }
+            handoff = event
+            handoffNotified = !needsContinue
+            handoffNeedsContinue = needsContinue
+            isUserControlling = false
+            surfaceState = .ready
+        } catch {
+            if conversationID == event.conversationID { handoffError = error.localizedDescription }
+        }
+    }
     struct PanelRequest: Equatable {
         let id = UUID()
         let conversationID: UUID
@@ -66,7 +136,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     private let contentWorld = WKContentWorld.world(name: "org.floeagent.browser.agent")
     private let artifactDirectory: URL
 
-    override init() {
+    init(durableHandoffs: Bool = true) {
+        self.durableHandoffs = durableHandoffs
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -78,6 +149,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             .appendingPathComponent("BrowserArtifacts", isDirectory: true)
         super.init()
         cleanupArtifacts()
+        if durableHandoffs, let data = try? Data(contentsOf: handoffURL),
+           let saved = try? JSONDecoder().decode([Handoff].self, from: data) {
+            handoffs = Dictionary(saved.map { ($0.conversationID, $0) }, uniquingKeysWith: { _, latest in latest })
+        }
     }
 
     /// Binds the visible WebKit surface to one durable task. Tabs and page
@@ -95,6 +170,11 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             )
         }
         conversationID = newConversationID
+        isEditingAddress = false
+        handoff = newConversationID.flatMap { handoffs[$0] }
+        handoffNeedsContinue = handoff?.returning == true
+        handoffError = nil
+        handoffNotified = false
         if let newConversationID, let saved = taskSessions[newConversationID] {
             sessionID = saved.sessionID
             tabs = saved.tabs
@@ -119,8 +199,34 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         }
     }
 
+    /// Called from the original runtime's state stream, including after cold
+    /// recovery. No visible browser rebinding and no implicit task restart.
+    func recoverHandoff(conversationID: UUID, runID: UUID) async {
+        guard let event = handoffs[conversationID], event.returning, event.runID == runID,
+              let deliverHandoff, deliveringHandoffs.insert(event.id).inserted else { return }
+        defer { deliveringHandoffs.remove(event.id) }
+        do {
+            let needsContinue = try await deliverHandoff(event, false)
+            if self.conversationID == conversationID {
+                handoffNeedsContinue = needsContinue
+                handoffNotified = !needsContinue
+                handoffError = nil
+                isUserControlling = false
+            }
+        } catch {
+            if self.conversationID == conversationID { handoffError = error.localizedDescription }
+        }
+    }
+
+    func recoverHandoff() async {
+        guard handoff?.returning == true else { return }
+        await returnToAgent()
+    }
+
     func discard(conversationID: UUID) {
         if self.conversationID == conversationID { bind(to: nil) }
+        handoffs.removeValue(forKey: conversationID)
+        try? persistHandoffs()
         taskSessions.removeValue(forKey: conversationID)?.tabs.forEach {
             $0.webView.stopLoading()
         }
@@ -193,9 +299,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         activeWebView.load(URLRequest(url: url))
     }
 
-    /// The address bar deliberately presents a human label for app-owned
-    /// loopback previews. The real URL remains on WKWebView for navigation,
-    /// browser tools, diagnostics, and an explicit copy action.
+    /// The title never replaces the navigable address, including loopback pages.
     var technicalAddress: String? { activeWebView?.url?.absoluteString }
 
     var isDisplayingLocalPreview: Bool {
@@ -203,23 +307,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     }
 
     func refreshVisibleAddress() {
+        guard !isEditingAddress else { return }
         addressText = Self.visibleAddress(for: activeWebView)
     }
 
     private static func visibleAddress(for webView: WKWebView?) -> String {
-        guard let webView, let url = webView.url else { return "" }
-        guard isLocalPreview(url) else { return url.absoluteString }
-        if let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !title.isEmpty,
-           title.caseInsensitiveCompare("localhost") != .orderedSame {
-            return title
-        }
-        let decodedName = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
-        let baseName = (decodedName as NSString).deletingPathExtension
-            .replacingOccurrences(of: "-", with: " ")
-            .replacingOccurrences(of: "_", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return baseName.isEmpty ? String(localized: "本地网页预览") : baseName
+        webView?.url?.absoluteString ?? ""
     }
 
     private static func isLocalPreview(_ url: URL) -> Bool {
@@ -227,22 +320,29 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         return url.host == "127.0.0.1" || url.host?.lowercased() == "localhost"
     }
 
-    func takeControl() {
+    func takeControl(runID: UUID? = nil) {
+        guard let conversationID else { return }
+        if handoff == nil || handoff?.returning == true {
+            let event = Handoff(id: UUID(), conversationID: conversationID,
+                runID: runID ?? handoffRun?(conversationID) ?? knownRunIDs[conversationID], sessionID: sessionID,
+                tabID: activeTabID, returning: false)
+            handoff = event
+            handoffs[conversationID] = event
+            do { try persistHandoffs() } catch { handoffError = error.localizedDescription }
+        }
+        handoffNeedsContinue = false
+        handoffNotified = false
         isUserControlling = true
-        surfaceState = .needsUser("Complete login, QR scan, verification, or file selection, then return control to the Agent.")
+        surfaceState = .needsUser("Browser control is yours; the task can continue other work.")
     }
-    func returnToAgent() {
-        isUserControlling = false
-        surfaceState = .ready
-    }
-    func requestUserInteraction(reason: String, tabID: UUID?) throws {
+    func requestUserInteraction(reason: String, tabID: UUID?, runID: UUID? = nil) throws {
         guard let conversationID else { throw FloeError.validationFailed("No task browser is active") }
         if let tabID {
             guard tabs.contains(where: { $0.id == tabID }) else { throw FloeError.notFound("Unknown browser tab") }
             guard !isUserControlling || activeTabID == tabID else { throw FloeError.validationFailed("The user controls the current tab") }
             activate(tabID)
         }
-        isUserControlling = true
+        takeControl(runID: runID)
         surfaceState = .needsUser(reason)
         presentationRequest = PanelRequest(conversationID: conversationID, show: true)
     }
@@ -453,7 +553,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             }
             return await observeResult(command, tabID: tabID, cursor: nil)
         } catch BrowserInteractionError.needsUser(let message) {
-            isUserControlling = true
+            takeControl()
             surfaceState = .needsUser(message)
             return failure(command, status: .needsUser, code: "takeover", message)
         } catch BrowserInteractionError.stale(let message) {

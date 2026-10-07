@@ -4,6 +4,9 @@
 import Foundation
 import Testing
 import WebKit
+import SwiftUI
+import UIKit
+import FloeExecution
 import FloeTools
 import FloeCore
 @testable import FloeApp
@@ -45,14 +48,15 @@ struct BrowserProtocolTests {
         }
         #expect(center.presentationRequest == nil)
         let result = try await panel.execute(argumentsJSON: Data(#"{"action":"requestUser","reason":"请完成网页登录，然后交还控制权。"}"#.utf8), context: context)
-        #expect(result.requiresUserAction)
+        #expect(!result.requiresUserAction)
         #expect(center.presentationRequest?.show == true)
         #expect(center.presentationRequest?.conversationID == owner)
         #expect(center.isUserControlling)
         await #expect(throws: (any Error).self) {
             _ = try await panel.execute(argumentsJSON: Data(#"{"action":"hide"}"#.utf8), context: context)
         }
-        center.returnToAgent()
+        center.deliverHandoff = { _, _ in false }
+        await center.returnToAgent()
         _ = try await panel.execute(argumentsJSON: Data(#"{"action":"hide"}"#.utf8), context: context)
         #expect(center.presentationRequest?.show == false)
         let request = center.presentationRequest
@@ -61,6 +65,60 @@ struct BrowserProtocolTests {
             _ = try await panel.execute(argumentsJSON: Data(#"{"action":"requestUser","reason":"Wrong task"}"#.utf8), context: wrongTask)
         }
         #expect(center.presentationRequest == request)
+    }
+
+    @Test("Handoff retries retain identity, original task and stale document invalidation")
+    @MainActor
+    func durableHandoffRetry() async throws {
+        let center = BrowserSessionCenter()
+        let owner = UUID(), run = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        center.takeControl(runID: run)
+        let event = try #require(center.handoff)
+        let before = center.tabs.first?.documentID
+        var attempts = 0
+        center.deliverHandoff = { delivered, _ in
+            #expect(delivered.id == event.id)
+            #expect(delivered.conversationID == owner)
+            #expect(delivered.runID == run)
+            attempts += 1
+            if attempts == 1 { throw FloeError.validationFailed("synthetic delivery failure") }
+            return false
+        }
+        await center.returnToAgent()
+        #expect(center.handoffError != nil)
+        #expect(center.isUserControlling)
+        await center.returnToAgent()
+        #expect(center.handoffNotified)
+        #expect(!center.isUserControlling)
+        #expect(center.tabs.first?.documentID != before)
+        center.bind(to: UUID())
+        center.bind(to: owner)
+        #expect(!center.isUserControlling)
+        let preview = BrowserSessionCenter(durableHandoffs: false)
+        preview.bind(to: owner)
+        preview.discard(conversationID: owner)
+        let recovered = BrowserSessionCenter()
+        recovered.bind(to: owner)
+        #expect(recovered.handoff?.id == event.id)
+        #expect(recovered.handoff?.returning == true)
+    }
+
+    @Test("Ended task handoff offers continuation and never requests it implicitly")
+    @MainActor
+    func endedHandoff() async throws {
+        let center = BrowserSessionCenter(), owner = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        center.takeControl(runID: UUID())
+        center.deliverHandoff = { _, explicitlyContinue in
+            #expect(!explicitlyContinue)
+            return true
+        }
+        await center.returnToAgent()
+        #expect(center.handoffNeedsContinue)
+        #expect(!center.isUserControlling)
     }
 
     @Test("Static preview navigation remains in the background")
@@ -91,7 +149,7 @@ struct BrowserProtocolTests {
         registerBrowserTools(center: center, registry: registry)
         let tabs = try #require(registry.runner(named: "browser.tabs"))
         let tab = try #require(registry.runner(named: "browser.tab"))
-        let context = ToolContext(runID: runID, cancellation: CancellationToken())
+        let context = ToolContext(runID: runID, cancellation: CancellationToken(), conversationID: runID)
         _ = try await tab.execute(argumentsJSON: Data(#"{"action":"create"}"#.utf8), context: context)
         let created = try #require(center.activeTabID)
         #expect(created != initial)
@@ -363,6 +421,95 @@ struct BrowserProtocolTests {
         ))
         #expect(invalid.result.status == .failed)
         #expect(invalid.result.error?.code == "invalid-params")
+    }
+}
+@Suite("FloeApp.PortManagement", .serialized)
+struct PortManagementTests {
+    @MainActor @Test("Concurrent edits converge and stopped rules stay saved without listeners")
+    func portRuleConvergence() async throws {
+        let suite = "floe-port-test-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let applier = QualificationPortApplier()
+        let center = LinuxPortForwardCenter(applier: applier, defaults: defaults, deviceAddressProvider: { "192.0.2.10" })
+        async let first: Void = center.addRule(environmentID: "A", guestPort: 8080, requestedHostPort: nil, label: "one", bindAddress: "127.0.0.1")
+        async let second: Void = center.addRule(environmentID: "A", guestPort: 9090, requestedHostPort: nil, label: "two", bindAddress: "127.0.0.1")
+        _ = try await (first, second)
+        #expect(center.rules(environmentID: "A").count == 2)
+        #expect(center.previews(environmentID: "A").allSatisfy { $0.isApplied })
+        #expect(await applier.count("A") == 2)
+        #expect(center.rules(environmentID: "B").isEmpty)
+        let rule = try #require(center.rules(environmentID: "A").first)
+        try await center.updateRule(environmentID: "A", ruleID: rule.id, guestPort: 8081,
+            requestedHostPort: nil, label: "edited", bindAddress: "127.0.0.1")
+        #expect(center.rule(environmentID: "A", id: rule.id)?.guestPort == 8081)
+        try await center.setEnabled(environmentID: "A", ruleID: rule.id, isEnabled: false)
+        #expect(await applier.count("A") == 1)
+        await applier.stop()
+        center.guestStopped(environmentID: "A")
+        await center.applyRules(environmentID: "A")
+        #expect(center.rules(environmentID: "A").count == 2)
+        #expect(center.previews(environmentID: "A").allSatisfy { !$0.isApplied })
+    }
+}
+
+private actor QualificationPortApplier: LinuxPortForwardApplying {
+    private var running = true
+    private var forwards: [String: Set<LinuxGuestServiceForward>] = [:]
+    func guestIsRunning(environmentID: String) async -> Bool { running }
+    func apply(environmentID: String, forward: LinuxGuestServiceForward) async throws {
+        try await Task.sleep(for: .milliseconds(2))
+        forwards[environmentID, default: []].insert(forward)
+    }
+    func remove(environmentID: String, forward: LinuxGuestServiceForward) async {
+        forwards[environmentID]?.remove(forward)
+    }
+    func count(_ environmentID: String) -> Int { forwards[environmentID]?.count ?? 0 }
+    func stop() { running = false; forwards.removeAll() }
+}
+
+@Suite("FloeApp.TerminalRendering", .serialized)
+struct TerminalRenderingTests {
+    @MainActor @Test("UTF8 and ANSI continue across chunks and buffer rollover without resetting the renderer")
+    func orderedByteRendering() async throws {
+        let state = TerminalPresentation(), generation = UUID()
+        func surface(_ data: Data, end: Int) -> SSHEmulatorView {
+            SSHEmulatorView(output: data, byteEnd: end, generation: generation, presentation: state,
+                isInteractive: false, onSend: { _ in }, onResize: { _, _ in })
+        }
+        let host = UIHostingController(rootView: surface(Data([0xe4, 0xbd]), end: 2))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        window.rootViewController = host; window.isHidden = false
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        // The retained window starts in the middle of a UTF8 scalar. Byte
+        // positions let the parser consume only the not-yet-rendered suffix.
+        let tail = Data([0xbd, 0xa0, 0x1b, 0x5b])
+        host.rootView = surface(tail, end: 5)
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        host.rootView = surface(Data("31m好\r\nDONE".utf8), end: 5 + Data("31m好\r\nDONE".utf8).count)
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        // SwiftTerm exports a NUL continuation cell after each double-width
+        // glyph; exclude those cell markers, as the clipboard export does.
+        let text = String(decoding: state.view.getTerminal().getBufferAsData(), as: UTF8.self)
+            .replacingOccurrences(of: "\u{0}", with: "")
+        #expect(text.contains("你好"))
+        #expect(text.contains("DONE"))
+        #expect(!text.contains("�"))
+        #expect(state.renderedEnd == 5 + Data("31m好\r\nDONE".utf8).count)
+        let scrollback = Data(String(repeating: "line 中文\r\n", count: 200).utf8)
+        state.consume(scrollback, byteEnd: (state.renderedEnd ?? 0) + scrollback.count, generation: generation)
+        try await Task.sleep(for: .milliseconds(100))
+        state.view.setContentOffset(.zero, animated: false)
+        let more = Data("tail\r\n".utf8)
+        state.consume(more, byteEnd: (state.renderedEnd ?? 0) + more.count, generation: generation)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(state.view.contentOffset.y < 1) // output must not steal scrollback position
+        state.clear()
+        #expect(state.renderedEnd != nil) // screen clear does not reset the byte cursor
     }
 }
 #endif

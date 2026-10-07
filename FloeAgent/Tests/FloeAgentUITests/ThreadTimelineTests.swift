@@ -50,6 +50,54 @@ struct ThreadTimelineTests {
         }
     }
 
+    @MainActor @Test("Large histories keep first page bounded and reuse unchanged timeline projections")
+    func largeHistoryProjectionQualification() async throws {
+        for count in [1_000, 10_000] {
+            let environment = AppEnvironment.preview()
+            try await environment.database.migrate()
+            let center = environment.conversationCenter
+            let conversation = try await center.createConversation(title: "Synthetic history")
+            let content = String(repeating: "## Synthetic Markdown\n- bounded history and 中文 text\n", count: 80)
+            // Synthetic only: measurements never print message contents.
+            for index in 0..<count {
+                try await environment.conversationStore.appendMessage(.init(
+                    id: UUID(), conversationID: conversation.id, role: index % 2 == 0 ? "user" : "assistant",
+                    content: content, createdAt: Date(timeIntervalSince1970: Double(index)), parts: []))
+            }
+            let model = ThreadDetailViewModel(conversationID: conversation.id, center: center)
+            let loadStart = ContinuousClock.now
+            await model.load()
+            let loadDuration = loadStart.duration(to: .now)
+            model.stopLiveUpdates()
+            #expect(model.actionError == nil)
+            #expect(model.messages.count == 20)
+            #expect(model.hasEarlierMessages)
+            let expected = ThreadTimelineBuilder.buildConversation(messages: model.messages, runs: [],
+                eventsByRun: [:], liveRunID: nil, isRunning: false, liveStreamedText: "",
+                liveReasoningText: "", pendingApprovals: [])
+            #expect(model.timeline == expected)
+            let buildCount = model.timelineBuildCount
+            let cachedStart = ContinuousClock.now
+            for _ in 0..<100 { #expect(model.timeline == expected) }
+            let cachedDuration = cachedStart.duration(to: .now)
+            #expect(model.timelineBuildCount == buildCount)
+            let uncachedStart = ContinuousClock.now
+            for _ in 0..<100 {
+                #expect(ThreadTimelineBuilder.buildConversation(messages: model.messages, runs: [],
+                    eventsByRun: [:], liveRunID: nil, isRunning: false, liveStreamedText: "",
+                    liveReasoningText: "", pendingApprovals: []) == expected)
+            }
+            let uncachedDuration = uncachedStart.duration(to: .now)
+            print("FLOE_HISTORY_QUALIFICATION messages=\(count) load=\(loadDuration) cachedProjection100=\(cachedDuration) uncachedProjection100=\(uncachedDuration)")
+            let previous = Set(model.messages.map(\.id))
+            await model.loadEarlierMessages()
+            #expect(model.messages.count == 50)
+            #expect(Set(model.messages.map(\.id)).count == 50)
+            #expect(previous.isSubset(of: Set(model.messages.map(\.id))))
+            model.stopLiveUpdates()
+        }
+    }
+
     @MainActor @Test("Reopening a long timeline retains history and pages through reconnect gaps")
     func timelineReconnectGaps() async throws {
         let environment = AppEnvironment.preview()

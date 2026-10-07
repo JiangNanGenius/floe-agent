@@ -52,6 +52,8 @@ public struct LinuxPortForwardRule: Sendable, Codable, Hashable, Identifiable {
     public var transport: LinuxPortForwardTransport
     public var isEnabled: Bool
     public var createdAt: Date
+    /// Originating task identity for audit; environment permissions remain authoritative.
+    public var ownerTaskID: String?
 
     public init(
         id: UUID = UUID(),
@@ -62,7 +64,8 @@ public struct LinuxPortForwardRule: Sendable, Codable, Hashable, Identifiable {
         bindAddress: String = LinuxPortForwardLimits.defaultBindAddress,
         transport: LinuxPortForwardTransport = .tcp,
         isEnabled: Bool = true,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        ownerTaskID: String? = nil
     ) {
         self.id = id
         self.environmentID = environmentID
@@ -73,6 +76,7 @@ public struct LinuxPortForwardRule: Sendable, Codable, Hashable, Identifiable {
         self.transport = transport
         self.isEnabled = isEnabled
         self.createdAt = createdAt
+        self.ownerTaskID = ownerTaskID
     }
 
     public var isDynamic: Bool { requestedHostPort == nil }
@@ -178,7 +182,8 @@ public struct LinuxPortForwardSet: Sendable, Equatable {
         requestedHostPort: Int? = nil,
         label: String,
         bindAddress: String = LinuxPortForwardLimits.defaultBindAddress,
-        now: Date = Date()
+        now: Date = Date(),
+        ownerTaskID: String? = nil
     ) throws -> LinuxPortForwardRule {
         guard (1...65_535).contains(guestPort) else {
             throw LinuxPortForwardRuleError.guestPortOutOfRange(guestPort)
@@ -212,7 +217,8 @@ public struct LinuxPortForwardSet: Sendable, Equatable {
             requestedHostPort: requestedHostPort.map(UInt16.init),
             bindAddress: bindAddress,
             isEnabled: true,
-            createdAt: now
+            createdAt: now,
+            ownerTaskID: ownerTaskID
         )
         rules.append(rule)
         return rule

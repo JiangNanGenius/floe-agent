@@ -16,6 +16,7 @@ import UIKit
 struct TerminalView: View {
     @StateObject private var viewModel: TerminalViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var expanded = false
 
     init(sessionID: UUID, center: RemoteSessionCenter) {
         _viewModel = StateObject(
@@ -24,11 +25,26 @@ struct TerminalView: View {
     }
 
     var body: some View {
+        Group { if expanded { Color.clear } else { content } }
+            .fullScreenCover(isPresented: $expanded) { content }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
-            statusBar
+            HStack {
+                statusBar
+                Button { expanded.toggle() } label: {
+                    Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 44, height: 44)
+                }.accessibilityLabel(IDELanguageRunText.t("切换全屏", "Toggle full screen"))
+            }
+            TerminalControls(presentation: viewModel.presentation, interactive: viewModel.isInteractive) { data in Task { await viewModel.send(data) } }
+            if let error = viewModel.error { Text(error).font(.caption).foregroundStyle(.red) }
             Divider()
             SSHEmulatorView(
                 output: viewModel.outputData,
+                byteEnd: viewModel.outputEnd,
+                generation: viewModel.sessionID,
+                presentation: viewModel.presentation,
                 isInteractive: viewModel.isInteractive,
                 onSend: { data in
                     Task { await viewModel.send(data) }
@@ -100,11 +116,70 @@ struct TerminalView: View {
     }
 }
 
+@MainActor
+final class TerminalPresentation: ObservableObject {
+    let view = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
+    var renderedEnd: Int?
+    var generation: UUID?
+    @Published var fontSize: CGFloat = 14 {
+        didSet { view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular) }
+    }
+    func clear() { view.feed(text: "\u{1b}[2J\u{1b}[3J\u{1b}[H") }
+    func consume(_ output: Data, byteEnd: Int, generation: UUID?) {
+        let start = byteEnd - output.count
+        let newBytes: Data
+        if self.generation != generation || (renderedEnd ?? start) < start || (renderedEnd ?? start) > byteEnd {
+            view.getTerminal().resetToInitialState()
+            newBytes = output
+        } else { newBytes = Data(output.dropFirst((renderedEnd ?? start) - start)) }
+        renderedEnd = byteEnd; self.generation = generation
+        guard !newBytes.isEmpty else { return }
+        let atBottom = view.contentOffset.y + view.bounds.height >= view.contentSize.height - 24
+        let offset = view.contentOffset
+        let bytes = [UInt8](newBytes)
+        view.feed(byteArray: bytes[...])
+        if !atBottom { view.setContentOffset(offset, animated: false) }
+        view.setNeedsDisplay()
+    }
+}
+
+struct TerminalControls: View {
+    @ObservedObject var presentation: TerminalPresentation
+    let interactive: Bool
+    let send: (Data) -> Void
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                Menu {
+                    Button(IDELanguageRunText.t("放大字体", "Larger text")) { presentation.fontSize = min(28, presentation.fontSize + 1) }
+                    Button(IDELanguageRunText.t("缩小字体", "Smaller text")) { presentation.fontSize = max(10, presentation.fontSize - 1) }
+                    Button(IDELanguageRunText.t("复制输出", "Copy output")) {
+                        UIPasteboard.general.string = String(decoding: presentation.view.getTerminal().getBufferAsData(), as: UTF8.self).replacingOccurrences(of: "\u{0}", with: "")
+                    }
+                    Button(IDELanguageRunText.t("粘贴", "Paste")) {
+                        if let text = UIPasteboard.general.string { send(Data(text.utf8)) }
+                    }.disabled(!interactive)
+                    Button(IDELanguageRunText.t("清屏", "Clear screen")) { presentation.clear() }
+                } label: { Image(systemName: "textformat.size").frame(width: 44, height: 44) }
+                .accessibilityLabel(IDELanguageRunText.t("终端显示与剪贴板", "Terminal display and clipboard"))
+                key("Ctrl-C", "\u{03}"); key("Tab", "\t"); key("Esc", "\u{1b}")
+                key("←", "\u{1b}[D"); key("↓", "\u{1b}[B"); key("↑", "\u{1b}[A"); key("→", "\u{1b}[C")
+            }.font(.caption.monospaced())
+        }
+    }
+    private func key(_ title: String, _ bytes: String) -> some View {
+        Button(title) { send(Data(bytes.utf8)) }.frame(minWidth: 44, minHeight: 44).disabled(!interactive)
+    }
+}
+
 /// SwiftTerm-backed PTY renderer. It interprets ANSI/VT sequences, owns the
 /// software/hardware keyboard surface, and forwards raw bytes and resize
 /// events to the long-lived SSH session owned by RemoteSessionCenter.
 struct SSHEmulatorView: UIViewRepresentable {
     let output: Data
+    var byteEnd: Int? = nil
+    var generation: UUID? = nil
+    var presentation: TerminalPresentation? = nil
     let isInteractive: Bool
     let onSend: @MainActor (Data) -> Void
     let onResize: @MainActor (Int, Int) -> Void
@@ -114,7 +189,7 @@ struct SSHEmulatorView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let terminal = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
+        let terminal = presentation?.view ?? context.coordinator.presentation.view
         terminal.terminalDelegate = context.coordinator
         terminal.nativeForegroundColor = .white
         terminal.nativeBackgroundColor = .black
@@ -128,9 +203,18 @@ struct SSHEmulatorView: UIViewRepresentable {
         context.coordinator.onResize = onResize
         context.coordinator.isInteractive = isInteractive
 
+        let state = presentation ?? context.coordinator.presentation
+        if terminal.font.pointSize != state.fontSize {
+            terminal.font = .monospacedSystemFont(ofSize: state.fontSize, weight: .regular)
+        }
         terminal.layoutIfNeeded()
+        let wasAtBottom = terminal.contentOffset.y + terminal.bounds.height >= terminal.contentSize.height - 24
+        let previousOffset = terminal.contentOffset
         let newBytes: Data
-        if output.starts(with: context.coordinator.renderedOutput) {
+        if let byteEnd {
+            state.consume(output, byteEnd: byteEnd, generation: generation)
+            return
+        } else if output.starts(with: context.coordinator.renderedOutput) {
             newBytes = output.dropFirst(context.coordinator.renderedOutput.count)
         } else {
             terminal.getTerminal().resetToInitialState()
@@ -139,13 +223,15 @@ struct SSHEmulatorView: UIViewRepresentable {
         if !newBytes.isEmpty {
             let bytes = [UInt8](newBytes)
             terminal.feed(byteArray: bytes[...])
+            if !wasAtBottom { terminal.setContentOffset(previousOffset, animated: false) }
             terminal.setNeedsDisplay()
         }
-        context.coordinator.renderedOutput = output
+        if byteEnd == nil { context.coordinator.renderedOutput = output }
     }
 
     @MainActor
     final class Coordinator: NSObject, @preconcurrency SwiftTerm.TerminalViewDelegate {
+        let presentation = TerminalPresentation()
         var renderedOutput = Data()
         var isInteractive = false
         var onSend: @MainActor (Data) -> Void

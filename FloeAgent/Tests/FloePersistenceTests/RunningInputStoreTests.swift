@@ -79,6 +79,21 @@ struct RunningInputStoreTests {
         #expect(recovered.targetRunID == nil)
     }
 
+    @Test("Browser handoffs survive recovery without starting a queued follow-up")
+    func browserHandoffRecovery() async throws {
+        let (store, conversationID, runID) = try await makeStore()
+        let input = try await store.enqueue(.init(conversationID: conversationID,
+            targetRunID: runID, content: "Browser returned", mode: .steer, executionMode: "browserHandoff"))
+        #expect(try await store.claimNextQueued(conversationID: conversationID) == nil)
+        #expect(try await store.beginSteerPromotion(id: input.id, expectedRunID: runID) != nil)
+        try await store.markSteerAccepted(id: input.id, runID: runID)
+        try await store.recoverTransientInputs()
+        #expect(try await store.input(id: input.id)?.executionMode == "browserHandoff")
+        #expect(try await store.claimNextQueued(conversationID: conversationID) == nil)
+        #expect(try await store.beginSteerPromotion(id: input.id, expectedRunID: runID) != nil)
+        #expect(try await store.beginSteerPromotion(id: input.id, expectedRunID: runID) == nil)
+    }
+
     @Test("user-authored credentials are not rewritten in the running-input queue")
     func preservesCredentialsInAuthoredInput() async throws {
         let (store, conversationID, runID) = try await makeStore()

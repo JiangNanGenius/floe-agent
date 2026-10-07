@@ -122,6 +122,10 @@ enum ToolDiscovery {
             let shell = descriptors.filter { $0.name == "exec.shell" }
             return lifecycle + shell
         }
+        if ["port", "forward", "端口", "转发"].contains(where: query.contains),
+           let ports = descriptors.first(where: { $0.name == "linux.port" }) {
+            return [ports] + descriptors.filter { $0.name == "environment.linuxStatus" || $0.name == "exec.localService" }
+        }
         for descriptor in descriptors {
             if tokens.contains(where: { descriptor.name.lowercased().contains($0) }) {
                 groups.insert(group(descriptor.name))

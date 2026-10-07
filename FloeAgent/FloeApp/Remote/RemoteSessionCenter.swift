@@ -282,6 +282,10 @@ final class RemoteSessionCenter: ObservableObject {
     }
 
     /// The terminal output buffer for a session (for the view).
+    func terminalPresentation(for sessionID: UUID) -> TerminalPresentation? { sshOwners[sessionID]?.presentation }
+
+    func terminalOutputEnd(for sessionID: UUID) -> Int { sshOwners[sessionID]?.outputEnd ?? 0 }
+
     func terminalOutput(for sessionID: UUID) -> Data {
         sshOwners[sessionID]?.output ?? Data()
     }

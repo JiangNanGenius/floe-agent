@@ -119,7 +119,7 @@ struct ToolCallCardView: View {
             Text(title)
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(.secondary)
-            Text(text)
+            BoundedToolEvidence(text: text)
                 .font(FloeTheme.Typography.evidence)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -327,6 +327,22 @@ private struct FullScreenArtifactImage: View {
                             .foregroundStyle(.white)
                     }
                 }
+            }
+        }
+    }
+}
+/// Expanding a large result lays out a bounded prefix. Loading more is explicit
+/// and never alters the complete persisted tool result supplied to the model.
+private struct BoundedToolEvidence: View {
+    let text: String
+    @State private var limit = 8_192
+    var body: some View {
+        let end = text.index(text.startIndex, offsetBy: limit, limitedBy: text.endIndex) ?? text.endIndex
+        VStack(alignment: .leading) {
+            Text(String(text[..<end]))
+            if end != text.endIndex {
+                Button(IDELanguageRunText.t("显示更多输出", "Show more output")) { limit += 8_192 }
+                    .frame(minHeight: 44)
             }
         }
     }

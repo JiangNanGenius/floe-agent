@@ -13,6 +13,7 @@ import FloeCore
 import FloeEnvironments
 import FloeExecution
 import FloeSSH
+import FloePersistence
 
 struct ExecutionEnvironmentView: View {
     @ObservedObject var center: SettingsCenter
@@ -28,6 +29,8 @@ struct ExecutionEnvironmentView: View {
     @State private var linuxImageModel: LinuxImageInstallModel? = LinuxImageInstallModel(imageID: LinuxGuestImageDistributionCatalog.defaultImageID)
     @State private var linuxImageStatus: LinuxGuestImageInstallationService.ImageStatus?
     @State private var linuxEnvironmentID: String?
+    @State private var stopEnvironmentID: String?
+    @State private var stopImpact = ""
     @State private var linuxEnvironmentTitle = String(localized: "exec.linux.env_title")
     @State private var linuxGuestStatus: LinuxGuestStatus?
     @State private var linuxBusy = false
@@ -121,6 +124,12 @@ struct ExecutionEnvironmentView: View {
                 // the controls are removed until they take real effect.
             }
         }
+        .confirmationDialog(IDELanguageRunText.t("停止虚拟机？", "Stop virtual machine?"), isPresented: Binding(get: { stopEnvironmentID != nil }, set: { if !$0 { stopEnvironmentID = nil } })) {
+            Button(IDELanguageRunText.t("停止", "Stop"), role: .destructive) {
+                if let id = stopEnvironmentID { Task { await stopLinuxEnvironment(id: id) } }
+                stopEnvironmentID = nil
+            }
+        } message: { Text(stopImpact) }
         .navigationTitle("settings.section.execution")
         .task {
             async let settings: Void = center.load()
@@ -316,7 +325,19 @@ struct ExecutionEnvironmentView: View {
                     .textSelection(.enabled)
             }
             Button("environment.backend.stop", systemImage: "stop") {
-                Task { await stopLinuxEnvironment(id: environmentID) }
+                Task {
+                    let terminalIDs = await center.environment.shellSessionCenter.activeSessionIDs(environmentID: environmentID)
+                    let count = terminalIDs.count
+                    let jobs = (try? await BackgroundJobStore(database: center.environment.database).jobs(environmentID: environmentID, targetTool: "exec.localService")) ?? []
+                    let services = jobs.filter { !$0.state.isTerminal }.count
+                    stopImpact = IDELanguageRunText.t("将关闭 \(count) 个终端、\(services) 个网页服务及此环境的端口监听。磁盘和转发规则保留。", "This stops \(count) terminals, \(services) web services and this environment's listeners. Disk and forwarding rules are retained.")
+                    let serviceNames = jobs.filter { !$0.state.isTerminal }.map { job in
+                        (try? JSONDecoder().decode(LocalServiceTool.Arguments.self, from: job.payloadJSON))?.entry ?? String(job.id.uuidString.prefix(8))
+                    }
+                    let affected = terminalIDs.map { "Terminal " + String($0.prefix(8)) } + serviceNames
+                    if !affected.isEmpty { stopImpact += "\n\n" + affected.joined(separator: "\n") }
+                    stopEnvironmentID = environmentID
+                }
             }
             .disabled(linuxBusy)
         }
@@ -473,12 +494,18 @@ struct ExecutionEnvironmentView: View {
         // Stopping the guest ends the current background hold; the durable
         // "allow background running" preference is preserved so starting the
         // environment again restores it.
-        await center.environment.backgroundRunCoordinator.linuxEnvironmentDidStop(
-            environmentID: id,
-            title: linuxEnvironmentTitle
-        )
+        await center.environment.shellSessionCenter.closeAll(environmentID: id)
+        await LinuxPortForwardCenter.shared.clearEngineForwards(environmentID: id)
         await FloePlatformServices.shared.stopLinuxGuest(id: id)
+        let stoppedStatus = await FloePlatformServices.shared.linuxGuestStatus(id: id)
         await refreshLinux(force: true)
+        if stoppedStatus?.running != false {
+            linuxError = IDELanguageRunText.t("虚拟机未能停止，数据已保留，请重试。", "The virtual machine did not stop. Data was retained; retry stopping.")
+        } else {
+            await center.environment.backgroundRunCoordinator.linuxEnvironmentDidStop(
+                environmentID: id, title: linuxEnvironmentTitle
+            )
+        }
     }
 
     private func runtimeRow(_ entry: RuntimeInventoryEntry) -> some View {

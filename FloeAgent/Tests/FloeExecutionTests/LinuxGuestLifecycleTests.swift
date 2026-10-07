@@ -228,6 +228,25 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         )
     }
 
+    func testConcurrentStartsShareOneGuestAndPreserveShape() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        let manager = makeManager(controller: controller)
+        let id = environmentID
+        let results = try await withThrowingTaskGroup(of: LinuxGuestLifecycleReceipt.self) { group in
+            for _ in 0..<8 {
+                group.addTask { try await manager.start(environmentID: id, config: .init(vcpus: 2, memoryMB: 512)) }
+            }
+            var receipts: [LinuxGuestLifecycleReceipt] = []
+            for try await receipt in group { receipts.append(receipt) }
+            return receipts
+        }
+        XCTAssertEqual(results.count, 8)
+        XCTAssertTrue(results.allSatisfy { $0.actualVCPUs == 2 })
+        let generation = await controller.activeGeneration(id)
+        XCTAssertEqual(generation, 1)
+    }
+
     /// Parameterless cold start: default single core, 512 MiB requested tier;
     /// the receipt reports requested/actual honestly and reused=false.
     func testDefaultColdStartIsSingleCore() async throws {

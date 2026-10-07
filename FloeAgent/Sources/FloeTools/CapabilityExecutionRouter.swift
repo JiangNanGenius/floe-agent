@@ -79,7 +79,7 @@ public enum CapabilityExecutionRouter {
         "apt", "python.packages",
         // Explicit Linux lifecycle.
         "environment.prepareLinux",
-        "environment.startLinux", "environment.linuxStatus", "environment.stopLinux",
+        "environment.startLinux", "environment.linuxStatus", "environment.stopLinux", "linux.port",
         "environment.softRestartLinux", "environment.hardRestartLinux"
     ]
 

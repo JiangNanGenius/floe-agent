@@ -936,6 +936,8 @@ final class AppEnvironment: ObservableObject {
         }
         // Browser automation.
         registerBrowserTools(center: browserCenter)
+        ToolCatalog.register(LinuxPortTool.self)
+        ToolRunnerRegistry.shared.register(LinuxPortTool())
         registerMailTools()
         // Local preview server.
         registerPreviewTools(environment: previewCenter)

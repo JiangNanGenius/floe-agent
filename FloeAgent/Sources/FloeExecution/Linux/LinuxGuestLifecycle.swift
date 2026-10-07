@@ -310,6 +310,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
     /// Environment ids with an operation in flight; guards even across actor
     /// reentrancy at awaited boundaries.
     private var busyEnvironments = Set<String>()
+    private var sharedStarts: [String: (id: UUID, config: LinuxGuestLifecycleConfig, task: Task<LinuxGuestLifecycleReceipt, Error>)] = [:]
     /// Internal deterministic interleaving point (never set by the app): a
     /// hard restart awaits it after the old instance is confirmed stopped and
     /// before the replacement start, so cross-concurrency tests can land a
@@ -648,8 +649,26 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
         ownerTaskID: String? = nil,
         cancellation: CancellationToken? = nil
     ) async throws -> LinuxGuestLifecycleReceipt {
+        try Self.throwIfCancelled(cancellation)
+        if let pending = sharedStarts[environmentID] {
+            guard config == .init() || config == pending.config else {
+                throw LinuxGuestLifecycleError.busy(environmentID: environmentID)
+            }
+            let result = try await pending.task.value
+            try Self.throwIfCancelled(cancellation)
+            return result
+        }
         try beginOperation(environmentID)
         defer { endOperation(environmentID) }
+        let id = UUID()
+        let task = Task { try await self.startOwned(environmentID: environmentID, config: config, ownerTaskID: ownerTaskID, cancellation: cancellation) }
+        sharedStarts[environmentID] = (id, config, task)
+        defer { if sharedStarts[environmentID]?.id == id { sharedStarts.removeValue(forKey: environmentID) } }
+        return try await task.value
+    }
+
+    private func startOwned(environmentID: String, config: LinuxGuestLifecycleConfig,
+                            ownerTaskID: String?, cancellation: CancellationToken?) async throws -> LinuxGuestLifecycleReceipt {
         try Self.throwIfCancelled(cancellation)
         // Server-side authority: an out-of-ladder configuration is refused
         // before anything is read or started, never silently rounded.

@@ -20,6 +20,9 @@ struct LinuxPortForwardSection: View {
 
     @ObservedObject private var center = LinuxPortForwardCenter.shared
     @State private var showingAdd = false
+    @State private var editingID: UUID?
+    @State private var localOnly = true
+    @State private var previewURL: URL?
     @State private var newLabel = ""
     @State private var newGuestPort = "8080"
     @State private var newHostPort = ""
@@ -42,6 +45,8 @@ struct LinuxPortForwardSection: View {
             }
 
             Button {
+                editingID = nil
+                localOnly = true
                 newLabel = ""
                 newGuestPort = "8080"
                 newHostPort = ""
@@ -57,7 +62,7 @@ struct LinuxPortForwardSection: View {
                     .foregroundStyle(FloeTheme.pending)
                     .textSelection(.enabled)
             }
-            if let errorMessage {
+            if let errorMessage = errorMessage ?? center.errorsByEnvironment[environmentID] {
                 Label(errorMessage, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(FloeTheme.destructive)
@@ -70,6 +75,9 @@ struct LinuxPortForwardSection: View {
             Text("portforward.title")
         }
         .sheet(isPresented: $showingAdd) { addSheet }
+        .sheet(isPresented: Binding(get: { previewURL != nil }, set: { if !$0 { previewURL = nil } })) {
+            if let previewURL { PortForwardPreview(url: previewURL) }
+        }
     }
 
     @ViewBuilder
@@ -82,6 +90,8 @@ struct LinuxPortForwardSection: View {
                      : rule.label)
                     .font(.body)
                 Spacer()
+                Text(rule.bindAddress == "127.0.0.1" ? IDELanguageRunText.t("仅本机", "This device") : IDELanguageRunText.t("局域网", "LAN"))
+                    .font(.caption).foregroundStyle(.secondary)
                 Text(rule.isDynamic ? "portforward.dynamic" : "portforward.fixed")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
@@ -116,6 +126,10 @@ struct LinuxPortForwardSection: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()
+                        if preview.isApplied, let local = preview.loopbackURL {
+                            Button(IDELanguageRunText.t("预览", "Preview"), systemImage: "safari") { previewURL = local }
+                                .buttonStyle(.borderless).frame(minHeight: 44)
+                        }
                         Button {
                             UIPasteboard.general.string = url.absoluteString
                             copiedRuleID = rule.id
@@ -188,6 +202,14 @@ struct LinuxPortForwardSection: View {
                 ))
                 .frame(minHeight: FloeTheme.minimumTarget)
                 Spacer()
+                Button(IDELanguageRunText.t("编辑", "Edit"), systemImage: "pencil") {
+                    editingID = rule.id
+                    newLabel = rule.label
+                    newGuestPort = String(rule.guestPort)
+                    newHostPort = rule.requestedHostPort.map(String.init) ?? ""
+                    localOnly = rule.bindAddress == "127.0.0.1"
+                    showingAdd = true
+                }.buttonStyle(.borderless).frame(minHeight: 44)
                 Button(role: .destructive) {
                     Task { await center.removeRule(environmentID: environmentID, ruleID: rule.id) }
                 } label: {
@@ -204,6 +226,7 @@ struct LinuxPortForwardSection: View {
         NavigationStack {
             Form {
                 Section {
+                    Toggle(IDELanguageRunText.t("仅允许本机访问", "Allow this device only"), isOn: $localOnly)
                     TextField("portforward.name_optional", text: $newLabel)
                     TextField("portforward.guest_port_field", text: $newGuestPort)
                         .keyboardType(.numberPad)
@@ -230,7 +253,7 @@ struct LinuxPortForwardSection: View {
                     Button("action.cancel") { showingAdd = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("portforward.add") { submit() }
+                    Button(IDELanguageRunText.t("保存", "Save")) { submit() }
                 }
             }
         }
@@ -262,16 +285,15 @@ struct LinuxPortForwardSection: View {
         showingAdd = false
         Task {
             do {
-                try await center.addRule(
-                    environmentID: environmentID,
-                    guestPort: guestPort,
-                    requestedHostPort: hostPort,
-                    label: label.isEmpty
-                        ? String.localizedStringWithFormat(
-                            String(localized: "portforward.port"), Int64(guestPort)
-                        )
-                        : label
-                )
+                let title = label.isEmpty ? "TCP \(guestPort)" : label
+                let address = localOnly ? "127.0.0.1" : "0.0.0.0"
+                if let editingID {
+                    try await center.updateRule(environmentID: environmentID, ruleID: editingID,
+                        guestPort: guestPort, requestedHostPort: hostPort, label: title, bindAddress: address)
+                } else {
+                    try await center.addRule(environmentID: environmentID, guestPort: guestPort,
+                        requestedHostPort: hostPort, label: title, bindAddress: address)
+                }
             } catch {
                 errorMessage = error.localizedDescription
                 if !guestRunning {
@@ -280,6 +302,56 @@ struct LinuxPortForwardSection: View {
                 }
             }
         }
+    }
+}
+
+/// Every entry uses the same center and section. With no explicit environment,
+/// require the user to select one instead of silently targeting the first VM.
+struct LinuxPortManagementView: View {
+    var environmentID: String? = nil
+    @State private var choices: [(id: String, title: String, running: Bool)] = []
+    @State private var selected: String?
+    @State private var error: String?
+    var body: some View {
+        Form {
+            if environmentID == nil {
+                Picker(IDELanguageRunText.t("环境", "Environment"), selection: $selected) {
+                    Text(IDELanguageRunText.t("选择环境", "Choose environment")).tag(String?.none)
+                    ForEach(choices, id: \.id) { item in Text(item.title).tag(Optional(item.id)) }
+                }
+            }
+            if let id = environmentID ?? selected {
+                LinuxPortForwardSection(environmentID: id,
+                    environmentTitle: choices.first(where: { $0.id == id })?.title ?? id,
+                    guestRunning: choices.first(where: { $0.id == id })?.running == true)
+            }
+            if let error { Text(error).foregroundStyle(.red) }
+        }.navigationTitle("portforward.title")
+        .task {
+            do {
+                let reports = try await FloePlatformServices.shared.environmentReports()
+                for report in reports where report.record.effectiveExecutionBackend == .linuxVM && report.record.state != .deleting {
+                    let status = await FloePlatformServices.shared.linuxGuestStatus(id: report.id)
+                    choices.append((report.id, report.record.name ?? report.id, status?.running == true))
+                }
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+private struct PortForwardPreview: View {
+    let url: URL
+    @StateObject private var center = BrowserSessionCenter(durableHandoffs: false)
+    @State private var owner = UUID()
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            BrowserView(center: center)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.close") { dismiss() } } }
+        }.task {
+            BrowserURLPolicy.authorizeService(url, owner: owner, conversationID: owner)
+            center.bind(to: owner); center.addressText = url.absoluteString; center.navigateFromAddressBar()
+        }.onDisappear { BrowserURLPolicy.revokeService(owner: owner) }
     }
 }
 

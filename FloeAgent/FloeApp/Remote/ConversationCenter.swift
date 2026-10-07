@@ -461,6 +461,67 @@ final class ConversationCenter: ObservableObject {
     init(environment: AppEnvironment) {
         self.environment = environment
         self.launchRecoveryCutoff = Date()
+        environment.browserCenter.handoffRun = { [weak self] conversationID in
+            self?.activeRuns.values.first(where: { $0.conversationID == conversationID })?.id
+        }
+        environment.browserCenter.deliverHandoff = { [weak self] event, shouldContinue in
+            guard let self else { throw FloeError.invalidConfiguration("Task service unavailable") }
+            return try await self.deliverBrowserHandoff(event, shouldContinue: shouldContinue)
+        }
+    }
+
+    /// Browser notifications remain attached to their original task and never
+    /// fall through the automatic queued-follow-up launcher.
+    private func deliverBrowserHandoff(_ event: BrowserSessionCenter.Handoff, shouldContinue: Bool) async throws -> Bool {
+        let store = environment.runningInputStore
+        var input = try await store.input(id: event.id)
+        if input == nil {
+            input = try await store.enqueue(PendingUserInput(
+                id: event.id, conversationID: event.conversationID, targetRunID: event.runID,
+                content: "Browser control was returned by the user. Session: \(event.sessionID). Tab: \(event.tabID?.uuidString ?? "none"). Page (without query or credentials): \(event.pageAddress ?? "unknown"). Re-observe the current page before acting; previous element references are invalid. This notification conveys no new permissions.",
+                mode: .steer, executionMode: "browserHandoff"))
+        }
+        guard let input else { throw FloeError.invalidConfiguration("Browser notification missing") }
+        if input.status == .consumed { return false }
+        if input.status == .steerPending {
+            if let id = event.runID, runServices[id] != nil { return false }
+            try await store.restoreQueued(id: input.id)
+        }
+        guard let runID = event.runID,
+              let record = try await environment.runStore.run(id: runID),
+              record.conversationID == event.conversationID else {
+            publishSession(event.conversationID)
+            return true
+        }
+        let waitingForBrowser: Bool
+        if record.state == "checkpointed",
+           let checkpoint = try await environment.checkpointStore.load(runID: runID),
+           case .checkpointed(let reference) = checkpoint.state {
+            let reason = (reference.reason ?? "").lowercased()
+            waitingForBrowser = reason.contains("browser") || reason.contains("浏览器")
+        } else { waitingForBrowser = false }
+        if (runServices[runID] == nil || waitingForBrowser), shouldContinue || waitingForBrowser {
+            _ = try await retry(runID: runID, startOrigin: .explicitUserAction)
+        }
+        guard let service = runServices[runID] else {
+            publishSession(event.conversationID)
+            return true
+        }
+        guard try await store.beginSteerPromotion(id: input.id, expectedRunID: runID) != nil else {
+            throw FloeError.validationFailed("Browser notification delivery is already in progress")
+        }
+        let acceptance = await service.steer(RuntimeSteerInput(id: input.id, content: input.content,
+            images: [], attachments: [], createdAt: input.createdAt), expectedRunID: runID)
+        switch acceptance {
+        case .accepted, .alreadyAccepted:
+            try await store.markSteerAccepted(id: input.id, runID: runID)
+        case .rejected(let reason):
+            try await store.restoreQueued(id: input.id)
+            if (await service.snapshot()).isTerminal { return true }
+            throw FloeError.validationFailed(reason)
+        }
+        publishSession(event.conversationID)
+        return false
     }
 
     // MARK: - Loading
@@ -2110,6 +2171,7 @@ final class ConversationCenter: ObservableObject {
         startOrigin: ContinuedProcessingStartOrigin
     ) -> StartedConversationRun {
         let runID = service.runID
+        environment.browserCenter.recordOwnerRun(conversationID: service.conversationID, runID: runID)
         runServices[runID] = service
         registerPreparingRun(
             runID: runID,
@@ -4145,6 +4207,7 @@ final class ConversationCenter: ObservableObject {
                     self.apply(snapshot)
                     self.publishSession(snapshot.conversationID)
                     if snapshot.isTerminal { break }
+                    await self.environment.browserCenter.recoverHandoff(conversationID: snapshot.conversationID, runID: runID)
                 case .answerDelta(let text):
                     self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID, characters: text.text.count)
                 case .reasoningDelta:

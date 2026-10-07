@@ -23,11 +23,13 @@ struct StepGroupView: View {
     let isLatest: Bool
     let isLive: Bool
     let hasError: Bool
-    let pendingApprovals: [PendingApproval]
+    private let allPendingApprovals: [PendingApproval]
+    private var pendingApprovals: [PendingApproval] { allPendingApprovals.filter { requestCallIDs.contains($0.toolCall.id) } }
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
-    private let payloads: [UUID: [String: String]]
-    private let resultByCallID: [String: RunEventRecord]
-    private let requestCallIDs: Set<String>
+    @StateObject private var projection = StepGroupMetadata()
+    private var payloads: [UUID: [String: String]] { projection.read(events).payloads }
+    private var resultByCallID: [String: RunEventRecord] { projection.read(events).results }
+    private var requestCallIDs: Set<String> { projection.read(events).requests }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded: Bool
 
@@ -43,28 +45,14 @@ struct StepGroupView: View {
         self.isLatest = isLatest
         self.isLive = isLive
         self.hasError = hasError
-        var payloads: [UUID: [String: String]] = [:]
-        var results: [String: RunEventRecord] = [:]
-        var callIDs = Set<String>()
-        for event in events {
-            let payload = (try? JSONDecoder().decode([String: String].self, from: Data(event.payloadJSON.utf8))) ?? [:]
-            payloads[event.id] = payload
-            if let id = payload["callID"] ?? payload["id"], !id.isEmpty {
-                if event.kind == .toolRequest { callIDs.insert(id) }
-                if event.kind == .toolResult { results[id] = event }
-            }
-        }
-        self.payloads = payloads
-        self.resultByCallID = results
-        self.requestCallIDs = callIDs
-        self.pendingApprovals = pendingApprovals.filter { callIDs.contains($0.toolCall.id) }
+        self.allPendingApprovals = pendingApprovals
         self.onResolveApproval = onResolveApproval
         // The active/latest group is the user's only view into current tool
         // progress. Historical groups stay compact, while the latest group
         // and human decisions open at their exact call site.
         self._isExpanded = State(initialValue: StepGroupDisclosurePolicy.initiallyExpanded(
             isLatest: isLatest, isLive: isLive, hasError: hasError,
-            hasPendingApproval: !self.pendingApprovals.isEmpty
+            hasPendingApproval: false
         ))
     }
 
@@ -153,7 +141,7 @@ struct StepGroupView: View {
                 withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded = false }
             }
         }
-        .onChange(of: pendingApprovals.map(\.id)) { _, ids in
+        .onChange(of: pendingApprovals.map(\.id), initial: true) { _, ids in
             if !ids.isEmpty {
                 withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded = true }
             }
@@ -216,6 +204,45 @@ struct StepGroupView: View {
         let approvalCallID = payload["callID"] ?? payload["id"] ?? ""
         let hasMatchingTool = events.contains { callID(for: $0) == approvalCallID }
         return !approvalCallID.isEmpty && hasMatchingTool && approvalSummariesByCallID[approvalCallID] != nil
+    }
+}
+/// Run events are append-only. Decode only the small header fields needed by
+/// collapsed groups, once per event set; full evidence stays in lazy row views.
+@MainActor
+private final class StepGroupMetadata: ObservableObject {
+    struct Snapshot {
+        var payloads: [UUID: [String: String]] = [:]
+        var results: [String: RunEventRecord] = [:]
+        var requests = Set<String>()
+    }
+    private struct Header: Decodable {
+        let values: [String: String]
+        enum CodingKeys: String, CodingKey, CaseIterable { case id, callID, status, outcome, reason }
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            var values: [String: String] = [:]
+            for key in CodingKeys.allCases {
+                if let value = try? container.decode(String.self, forKey: key) { values[key.rawValue] = value }
+            }
+            self.values = values
+        }
+    }
+    private var ids: [UUID] = []
+    private var snapshot = Snapshot()
+    func read(_ events: [RunEventRecord]) -> Snapshot {
+        let nextIDs = events.map(\.id)
+        guard nextIDs != ids else { return snapshot }
+        var next = Snapshot()
+        for event in events {
+            let payload = (try? JSONDecoder().decode(Header.self, from: Data(event.payloadJSON.utf8)))?.values ?? [:]
+            next.payloads[event.id] = payload
+            if let call = payload["callID"] ?? payload["id"], !call.isEmpty {
+                if event.kind == .toolRequest { next.requests.insert(call) }
+                if event.kind == .toolResult { next.results[call] = event }
+            }
+        }
+        ids = nextIDs; snapshot = next
+        return next
     }
 }
 #endif

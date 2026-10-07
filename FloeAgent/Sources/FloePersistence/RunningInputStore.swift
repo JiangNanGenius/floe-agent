@@ -117,7 +117,7 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         try await database.writer { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT * FROM pending_user_inputs
-                WHERE conversation_id = ? AND status = 'queued'
+                WHERE conversation_id = ? AND status = 'queued' AND execution_mode != 'browserHandoff'
                 ORDER BY position, created_at, id LIMIT 1
                 """, arguments: [conversationID.uuidString]) else { return nil }
             let value = try Self.decode(row)
@@ -181,7 +181,10 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         try await database.writer { db in
             try db.execute(sql: """
                 UPDATE pending_user_inputs
-                SET status = 'queued', mode = 'queue', target_run_id = NULL, updated_at = ?
+                SET status = 'queued',
+                    mode = CASE WHEN execution_mode = 'browserHandoff' THEN 'steer' ELSE 'queue' END,
+                    target_run_id = CASE WHEN execution_mode = 'browserHandoff' THEN target_run_id ELSE NULL END,
+                    updated_at = ?
                 WHERE status IN ('promoting', 'steerPending') AND consumed_run_id IS NULL
                 """, arguments: [PersistenceCodec.encode(Date())])
         }

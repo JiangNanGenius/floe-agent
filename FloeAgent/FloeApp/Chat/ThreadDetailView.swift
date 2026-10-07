@@ -383,7 +383,7 @@ struct ThreadDetailView: View {
                             .id("thread-latest-anchor")
                     }
                     .padding()
-                    .animation(viewModel.isRunning && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: viewModel.timeline.map(\.id))
+                    .animation(viewModel.isRunning && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: viewModel.timelineIDs)
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .onScrollPhaseChange { _, phase in
@@ -996,15 +996,20 @@ private struct PendingInputQueueView: View {
             ForEach(inputs) { input in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(input.content)
+                        Text(input.executionMode == "browserHandoff"
+                            ? IDELanguageRunText.t("浏览器控制权已交还", "Browser control returned") : input.content)
                             .font(.subheadline)
                             .lineLimit(2)
-                        Text(statusTitle(input.status))
+                        Text(input.executionMode == "browserHandoff" && input.status == .queued
+                            ? IDELanguageRunText.t("通知已保存至原任务，可在浏览器中继续任务", "Saved to the original task; continue from the browser")
+                            : statusTitle(input.status))
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(input.status == .queued ? .secondary : FloeTheme.pending)
                     }
                     Spacer(minLength: 4)
-                    if input.status == .queued || input.status == .steerPending {
+                    if input.executionMode == "browserHandoff" {
+                        Image(systemName: "safari").foregroundStyle(.secondary)
+                    } else if input.status == .queued || input.status == .steerPending {
                         let queuedIndex = queuedInputs.firstIndex(where: { $0.id == input.id })
                         Menu {
                             Button("编辑", systemImage: "pencil") { onEdit(input) }

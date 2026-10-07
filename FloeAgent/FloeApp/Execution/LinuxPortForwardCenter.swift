@@ -17,6 +17,8 @@ import Combine
 import Darwin
 import FloeCore
 import FloeExecution
+import FloeTools
+import FloeModels
 
 /// The applying side of the center. The production implementation talks to the
 /// injected Linux guest controller; tests inject a scriptable fake so the
@@ -117,6 +119,26 @@ final class LinuxPortForwardCenter: ObservableObject {
     @Published private(set) var lastConflictNotice: String?
     @Published private(set) var lastAppliedAt: Date?
 
+    private var browserLeases: [UUID: [UUID: UUID]] = [:]
+    func authorizeBrowserPreviews(environmentID: String, conversationID: UUID) {
+        for preview in previews(environmentID: environmentID) where preview.isApplied {
+            guard let url = preview.loopbackURL else { continue }
+            let lease = browserLeases[preview.id]?[conversationID] ?? UUID()
+            browserLeases[preview.id, default: [:]][conversationID] = lease
+            BrowserURLPolicy.authorizeService(url, owner: lease, conversationID: conversationID)
+        }
+    }
+    private func revokeBrowserPreviews(environmentID: String) {
+        for rule in rules(environmentID: environmentID) {
+            for lease in browserLeases.removeValue(forKey: rule.id)?.values ?? Dictionary<UUID, UUID>().values {
+                BrowserURLPolicy.revokeService(owner: lease)
+            }
+        }
+    }
+    private var applyTasks: [String: Task<Void, Never>] = [:]
+    private var pendingApplies = Set<String>()
+    private var generations: [String: UInt64] = [:]
+    @Published private(set) var errorsByEnvironment: [String: String] = [:]
     private let applier: any LinuxPortForwardApplying
     private let defaults: UserDefaults
     private let deviceAddressProvider: @Sendable () -> String?
@@ -161,18 +183,9 @@ final class LinuxPortForwardCenter: ObservableObject {
     func previews(environmentID: String) -> [LinuxPortForwardPreview] {
         let deviceAddress = deviceAddressProvider()
         let applied = appliedPlansByEnvironment[environmentID] ?? []
-        let plans: [LinuxPortForwardPlan]
-        let isApplied: Bool
-        if applied.isEmpty {
-            let set = LinuxPortForwardSet(
-                environmentID: environmentID,
-                rules: rules(environmentID: environmentID)
-            )
-            plans = (try? set.plan()) ?? []
-            isApplied = false
-        } else {
-            plans = applied
-            isApplied = true
+        let set = LinuxPortForwardSet(environmentID: environmentID, rules: rules(environmentID: environmentID))
+        let plans = ((try? set.plan()) ?? []).map { saved in
+            applied.first(where: { $0.rule.id == saved.rule.id }) ?? saved
         }
         let appliedIDs = Set(applied.map(\.rule.id))
         return plans.compactMap { plan in
@@ -190,7 +203,7 @@ final class LinuxPortForwardCenter: ObservableObject {
                     deviceAddress: deviceAddress
                 ),
                 loopbackURL: loopback,
-                isApplied: isApplied && appliedIDs.contains(plan.rule.id)
+                isApplied: appliedIDs.contains(plan.rule.id)
             )
         }
     }
@@ -213,7 +226,9 @@ final class LinuxPortForwardCenter: ObservableObject {
         environmentID: String,
         guestPort: Int,
         requestedHostPort: Int?,
-        label: String
+        label: String,
+        bindAddress: String = LinuxPortForwardLimits.defaultBindAddress,
+        ownerTaskID: String? = nil
     ) async throws {
         var set = LinuxPortForwardSet(
             environmentID: environmentID,
@@ -222,10 +237,30 @@ final class LinuxPortForwardCenter: ObservableObject {
         try set.addRule(
             guestPort: guestPort,
             requestedHostPort: requestedHostPort,
-            label: label
+            label: label,
+            bindAddress: bindAddress,
+            ownerTaskID: ownerTaskID
         )
         persist(set.rules, environmentID: environmentID)
         lastError = nil
+        await applyRules(environmentID: environmentID)
+    }
+
+    func updateRule(environmentID: String, ruleID: UUID, guestPort: Int,
+                    requestedHostPort: Int?, label: String, bindAddress: String) async throws {
+        guard let old = rule(environmentID: environmentID, id: ruleID) else {
+            throw LinuxPortForwardRuleError.ruleNotFound(ruleID)
+        }
+        var validation = LinuxPortForwardSet(environmentID: environmentID,
+            rules: rules(environmentID: environmentID).filter { $0.id != ruleID })
+        let checked = try validation.addRule(guestPort: guestPort, requestedHostPort: requestedHostPort,
+            label: label, bindAddress: bindAddress)
+        var changed = old
+        changed.guestPort = checked.guestPort
+        changed.requestedHostPort = checked.requestedHostPort
+        changed.label = checked.label
+        changed.bindAddress = checked.bindAddress
+        persist(rules(environmentID: environmentID).map { $0.id == ruleID ? changed : $0 }, environmentID: environmentID)
         await applyRules(environmentID: environmentID)
     }
 
@@ -235,15 +270,8 @@ final class LinuxPortForwardCenter: ObservableObject {
             rules: rules(environmentID: environmentID)
         )
         guard (try? set.removeRule(id: ruleID)) != nil else { return }
+        for lease in browserLeases.removeValue(forKey: ruleID)?.values ?? Dictionary<UUID, UUID>().values { BrowserURLPolicy.revokeService(owner: lease) }
         persist(set.rules, environmentID: environmentID)
-        // Drop the engine forward for the removed rule before re-planning.
-        if let applied = appliedPlansByEnvironment[environmentID]?
-            .first(where: { $0.rule.id == ruleID }) {
-            await applier.remove(
-                environmentID: environmentID,
-                forward: Self.forward(for: applied)
-            )
-        }
         await applyRules(environmentID: environmentID)
     }
 
@@ -258,13 +286,6 @@ final class LinuxPortForwardCenter: ObservableObject {
         )
         try set.updateRule(id: ruleID, isEnabled: isEnabled)
         persist(set.rules, environmentID: environmentID)
-        if !isEnabled, let applied = appliedPlansByEnvironment[environmentID]?
-            .first(where: { $0.rule.id == ruleID }) {
-            await applier.remove(
-                environmentID: environmentID,
-                forward: Self.forward(for: applied)
-            )
-        }
         await applyRules(environmentID: environmentID)
     }
 
@@ -279,12 +300,29 @@ final class LinuxPortForwardCenter: ObservableObject {
     /// The VM stopped: the engine drops its own forwards with the VM, so only
     /// the applied view is cleared. Rules and the user's preference stay.
     func guestStopped(environmentID: String) {
+        revokeBrowserPreviews(environmentID: environmentID)
+        generations[environmentID, default: 0] &+= 1
         appliedPlansByEnvironment.removeValue(forKey: environmentID)
     }
 
     /// Restores every enabled rule of a running VM. Called on guest start, on
     /// rule changes and after a relaunch when the guest is started again.
     func applyRules(environmentID: String) async {
+        pendingApplies.insert(environmentID)
+        if let pending = applyTasks[environmentID] { await pending.value; return }
+        let task = Task { @MainActor in
+            while self.pendingApplies.remove(environmentID) != nil {
+                await self.applyRulesOnce(environmentID: environmentID)
+            }
+        }
+        applyTasks[environmentID] = task
+        await task.value
+        applyTasks.removeValue(forKey: environmentID)
+    }
+
+    private func applyRulesOnce(environmentID: String) async {
+        let generation = generations[environmentID, default: 0]
+        errorsByEnvironment.removeValue(forKey: environmentID)
         guard await applier.guestIsRunning(environmentID: environmentID) else {
             appliedPlansByEnvironment.removeValue(forKey: environmentID)
             return
@@ -340,11 +378,17 @@ final class LinuxPortForwardCenter: ObservableObject {
                 }
                 if !retried {
                     lastError = "端口转发失败：\(plan.rule.label) → guest \(plan.rule.guestPort) · \(error.localizedDescription)"
+                    errorsByEnvironment[environmentID] = lastError
                     FloeLogger(category: .app).warning(
                         "linuxPortForwardApplyFailed environment=\(environmentID) rule=\(plan.rule.id.uuidString) port=\(plan.hostPort)"
                     )
                 }
             }
+        }
+        guard generation == generations[environmentID, default: 0],
+              await applier.guestIsRunning(environmentID: environmentID) else {
+            appliedPlansByEnvironment.removeValue(forKey: environmentID)
+            return
         }
         appliedPlansByEnvironment[environmentID] = applied
         lastConflictNotice = conflict
@@ -356,6 +400,7 @@ final class LinuxPortForwardCenter: ObservableObject {
 
     /// Removes all engine forwards of one environment (VM stop/delete).
     func clearEngineForwards(environmentID: String) async {
+        revokeBrowserPreviews(environmentID: environmentID)
         let applied = appliedPlansByEnvironment[environmentID] ?? []
         for plan in applied {
             await applier.remove(
@@ -383,6 +428,81 @@ final class LinuxPortForwardCenter: ObservableObject {
             rulesByEnvironment[environmentID] = rules
         }
         LinuxPortForwardRuleStore.save(rulesByEnvironment, to: defaults)
+    }
+}
+
+/// All writes flow through the same approval-gated tool runner as lifecycle
+/// tools. The environment comes from ToolContext, never from a model-supplied ID.
+struct LinuxPortTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let action: String
+        let ruleID: UUID?
+        let guestPort: Int?
+        let hostPort: Int?
+        let label: String?
+        let access: String?
+    }
+    static let name = "linux.port"
+    static let toolDescription = "Manage TCP forwarding for the task's explicitly scoped Linux environment. List first. create/update require guestPort, label and access (local or lan); hostPort omitted means dynamic allocation. update replaces the rule settings. Other actions use ruleID from list. Responses distinguish saved rules from actually bound ports and report remapping/errors. Forwarding does not start a server or VM. Stopped guests retain rules but URLs are unavailable. LAN access uses the existing approval policy; this never configures a router or public internet exposure."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","create","update","enable","disable","delete"]},"ruleID":{"type":"string","format":"uuid"},"guestPort":{"type":"integer","minimum":1,"maximum":65535},"hostPort":{"type":"integer","minimum":49152,"maximum":65535},"label":{"type":"string","maxLength":120},"access":{"type":"string","enum":["local","lan"]}},"required":["action"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.networkAccess, .writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+
+    func validate(_ args: Arguments) throws {
+        guard ["list", "create", "update", "enable", "disable", "delete"].contains(args.action) else { throw FloeError.validationFailed("Unknown port action") }
+        if ["create", "update"].contains(args.action) {
+            guard let port = args.guestPort, (1...65535).contains(port),
+                  let label = args.label, label.count <= 120,
+                  let access = args.access, ["local", "lan"].contains(access),
+                  args.hostPort.map(LinuxPortForwardLimits.isAllowedHostPort) ?? true else {
+                throw FloeError.validationFailed("Provide a valid guestPort, label, access and optional hostPort")
+            }
+        }
+        if !["list", "create"].contains(args.action), args.ruleID == nil { throw FloeError.validationFailed("ruleID is required") }
+    }
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        try context.cancellation.throwIfCancelled()
+        guard let environmentID = context.environmentID ?? context.environment?.id else {
+            throw FloeError.validationFailed("No Linux environment is in this task's scope")
+        }
+        let center = LinuxPortForwardCenter.shared
+        if let id = args.ruleID, center.rule(environmentID: environmentID, id: id) == nil {
+            throw FloeError.validationFailed("Rule does not belong to this environment")
+        }
+        let bind = args.access == "lan" ? "0.0.0.0" : "127.0.0.1"
+        switch args.action {
+        case "create": try await center.addRule(environmentID: environmentID, guestPort: args.guestPort!, requestedHostPort: args.hostPort, label: args.label!, bindAddress: bind, ownerTaskID: context.conversationID?.uuidString ?? context.runID.uuidString)
+        case "update": try await center.updateRule(environmentID: environmentID, ruleID: args.ruleID!, guestPort: args.guestPort!, requestedHostPort: args.hostPort, label: args.label!, bindAddress: bind)
+        case "enable", "disable": try await center.setEnabled(environmentID: environmentID, ruleID: args.ruleID!, isEnabled: args.action == "enable")
+        case "delete": await center.removeRule(environmentID: environmentID, ruleID: args.ruleID!)
+        default: break
+        }
+        if let owner = context.conversationID { center.authorizeBrowserPreviews(environmentID: environmentID, conversationID: owner) }
+        struct Row: Encodable {
+            let rule: LinuxPortForwardRule
+            let actualHostPort: UInt16?
+            let state: String
+            let localURL: String?
+            let lanURL: String?
+            let remapped: Bool
+        }
+        struct PortError: Encodable { let code: String; let message: String; let retryable: Bool }
+        struct Receipt: Encodable { let environmentID: String; let rows: [Row]; let error: PortError? }
+        let rows = center.rules(environmentID: environmentID).map { rule in
+            let p = center.preview(environmentID: environmentID, ruleID: rule.id)
+            let applied = p?.isApplied == true
+            return Row(rule: rule, actualHostPort: applied ? p?.plan.hostPort : nil,
+                state: applied ? "listening" : (rule.isEnabled ? "saved" : "disabled"),
+                localURL: applied ? p?.loopbackURL?.absoluteString : nil,
+                lanURL: applied ? p?.lanURL?.absoluteString : nil, remapped: p?.wasRemapped ?? false)
+        }
+        let data = try JSONEncoder().encode(Receipt(environmentID: environmentID, rows: rows, error: center.errorsByEnvironment[environmentID].map {
+            PortError(code: "forwarding_failed", message: $0, retryable: true)
+        }))
+        return ToolExecutionOutput(digesting: String(decoding: data, as: UTF8.self))
     }
 }
 #endif

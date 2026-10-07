@@ -26,6 +26,9 @@ final class LocalTerminalOwner: Identifiable {
     private let sessions: ShellSessionCenter
     private(set) var sessionID: String?
     private(set) var output = Data()
+    private(set) var outputEnd = 0
+    private(set) var outputGeneration = UUID()
+    let presentation = TerminalPresentation()
     private(set) var status = String(localized: "terminal.status.not_started")
     private(set) var alive = false
     private(set) var opening = false
@@ -48,6 +51,8 @@ final class LocalTerminalOwner: Identifiable {
         token = CancellationToken()
         sessionID = nil
         output = Data()
+        outputEnd = 0
+        outputGeneration = UUID()
         missingImageID = nil
         status = String(localized: "terminal.status.starting")
         do {
@@ -163,8 +168,10 @@ final class LocalTerminalOwner: Identifiable {
     }
 
     private func append(_ data: Data) {
+        outputEnd += data.count
         output.append(data)
         if output.count > 1024 * 1024 { output = Data(output.suffix(1024 * 1024)) }
+        presentation.consume(output, byteEnd: outputEnd, generation: outputGeneration)
     }
 }
 
@@ -179,6 +186,7 @@ struct LocalTerminalView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var installModel: LinuxImageInstallModel?
     @State private var expanded = false
+    @State private var showingPorts = false
 
     var body: some View {
         if embedded {
@@ -238,15 +246,14 @@ struct LocalTerminalView: View {
                         .disabled(!owner.alive)
                         .accessibilityLabel(String(localized: "terminal.end_session"))
                 }
-                Button("Ctrl-C") { Task { await owner.interrupt() } }
-                    .font(.caption)
-                    .buttonStyle(.bordered)
-                    .disabled(!owner.alive)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             Divider()
-            SSHEmulatorView(output: owner.output, isInteractive: owner.alive,
+            Button("portforward.title", systemImage: "network") { showingPorts = true }.frame(minHeight: 44)
+            TerminalControls(presentation: owner.presentation, interactive: owner.alive, send: owner.enqueue)
+            SSHEmulatorView(output: owner.output, byteEnd: owner.outputEnd, generation: owner.outputGeneration,
+                presentation: owner.presentation, isInteractive: owner.alive,
                 onSend: { data in owner.enqueue(data) },
                 onResize: { columns, rows in Task { await owner.resize(columns: columns, rows: rows) } })
             if let missingID = owner.missingImageID,
@@ -264,6 +271,7 @@ struct LocalTerminalView: View {
                     .padding()
             }
         }
+        .sheet(isPresented: $showingPorts) { NavigationStack { LinuxPortManagementView() } }
         .task(id: owner.missingImageID) {
             if let missingID = owner.missingImageID, installModel?.imageID != missingID {
                 installModel = LinuxImageInstallModel(imageID: missingID)

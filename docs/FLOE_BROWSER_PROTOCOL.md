@@ -57,3 +57,28 @@ Programmatic pointer and keyboard events are not trusted iOS input. Pages that
 require trusted user activation, closed shadow DOM, protected file selection,
 payments, credentials, CAPTCHA, or other anti-automation checks must return to
 the visible user-controlled browser.
+
+## Task-scoped takeover (1.7.22 candidate)
+
+`browser.panel` with `requestUser` requests a human browser handoff. Browser
+mutation commands return protocol `needsUser` while control is held by the user,
+but the enclosing tool result does **not** request suspension of the whole agent
+runtime. Other authorized tools remain usable. Browser commands reject a
+conversation that does not own the currently bound session.
+
+Return-to-agent writes an atomic outbox event before delivery. Its stable ID is
+also the persisted running-input ID. The original conversation/run, browser
+session, tab and sanitized page address accompany the notification; query strings,
+fragments, URL credentials and form contents are excluded. Earlier document IDs
+are invalidated and the model must observe again. Failed delivery retains the ID
+for retry. Browser inputs are excluded from automatic queued-follow-up launches;
+a terminal run requires explicit continuation. Runtime state updates retry an
+unconsumed original-run handoff after recovery.
+
+Explicitly authorized local previews and scoped port rules may allow their exact
+loopback origin. This does not open general access to arbitrary private-network
+addresses or authorize a different task's services.
+
+用户接管仅阻止模型的浏览器操作，不暂停整个任务。交还通知按事件 ID 持久化并去重，
+只投递给原会话／任务。模型再次操作前必须重新观察页面。已结束任务需要明确继续，
+不会把交接通知作为新的自动任务启动。通知不含密码、表单内容、地址查询参数或片段。

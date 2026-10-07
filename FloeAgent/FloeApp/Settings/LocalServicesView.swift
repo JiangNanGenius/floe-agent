@@ -18,6 +18,9 @@ struct LocalServicesView: View {
             Section {
                 Text("services.description").font(.subheadline).foregroundStyle(.secondary)
             }
+            NavigationLink { LinuxPortManagementView(environmentID: environmentID) } label: {
+                Label("portforward.title", systemImage: "network")
+            }
             if let error {
                 Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(FloeTheme.destructive) }
             }
@@ -100,7 +103,7 @@ struct LocalServicesView: View {
 
 struct LocalServicePreview: View {
     let job: BackgroundJob
-    @StateObject private var browser = BrowserSessionCenter()
+    @StateObject private var browser = BrowserSessionCenter(durableHandoffs: false)
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {

@@ -221,6 +221,15 @@ public actor ShellSessionCenter {
     /// Closes every live session. Container teardown uses this hook; session
     /// tagging by container is applied when the run context carries an
     /// environment identifier.
+    public func activeSessionIDs(environmentID: String) -> [String] {
+        sessions.values.filter { $0.environmentLease.context.environmentID == environmentID && $0.alive }
+            .map(\.sessionID).sorted()
+    }
+
+    public func activeSessionCount(environmentID: String) -> Int {
+        sessions.values.filter { $0.environmentLease.context.environmentID == environmentID }.count
+    }
+
     public func closeAll(environmentID: String) async {
         let owned = sessions.values.filter { $0.environmentLease.context.environmentID == environmentID }
         for entry in owned { await close(sessionID: entry.sessionID, runID: entry.runID) }

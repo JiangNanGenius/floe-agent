@@ -62,3 +62,5 @@
 - 面向用户的能力描述必须与工具目录一致；工具行为变化时同步 USER_GUIDE 双语版。
 - 每版发布在 `releases/notes/` 新增 `RELEASE_NOTES_<版本>.md`（含 `### 简体中文` 与 `### English` 两节）与对应核验记录。
 - 已过时的结论就地加"历史"横幅，不删除（保留考古上下文）。
+
+- [Port management and linux.port / 端口管理](FLOE_PORT_MANAGEMENT.md) — candidate 1.7.22 contract; current availability is tracked separately.

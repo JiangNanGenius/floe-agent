@@ -16,6 +16,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
 
     @MainActor
     func run(
+        context: ToolContext,
         action: BrowserAction,
         tabID: UUID? = nil,
         documentID: String? = nil,
@@ -24,6 +25,9 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         timeoutMilliseconds: Int = 15_000
     ) async throws -> ToolExecutionOutput {
         guard let center else { throw FloeError.invalidConfiguration("The visible browser is unavailable") }
+        guard center.conversationID == context.conversationID else {
+            throw FloeError.validationFailed("This task's browser is not currently visible. Continue other work or ask the user to reopen its browser.")
+        }
         let command = BrowserCommand(
             sessionID: center.sessionID,
             tabID: tabID,
@@ -51,7 +55,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             summary: summary,
             fullOutputSHA256: FloeDigest.sha256Hex(data),
             artifacts: artifacts,
-            requiresUserAction: result.status == .needsUser
+            requiresUserAction: false
         )
     }
 }
@@ -63,7 +67,7 @@ private struct BrowserPanelTool: AgentTool {
         let tabID: UUID?
     }
     static let name = "browser.panel"
-    static let toolDescription = "Browser navigation and previews run without opening the user's panel. Only when human interaction is necessary (login, verification, file selection or an explicit user interaction request), call requestUser with a concise reason explaining what the user must do. It opens this task's browser panel, hands control to the user and pauses automation. Do not use it for ordinary navigation or progress display. hide closes only the browser panel after the user has returned control; it never changes the main navigation sidebar."
+    static let toolDescription = "Browser navigation and previews run without opening the user's panel. Only when human interaction is necessary (login, verification, file selection or an explicit user interaction request), call requestUser with a concise reason explaining what the user must do. It opens this task's browser panel, hands browser control to the user. The task may continue other work; browser mutations are unavailable until the user returns control. The return event is delivered to this task; observe the page again before acting. Do not use it for ordinary navigation or progress display. hide closes only the browser panel after the user has returned control; it never changes the main navigation sidebar."
     static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["requestUser","hide"]},"reason":{"type":"string","maxLength":500},"tabID":{"type":"string","format":"uuid"}},"required":["action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
@@ -88,8 +92,8 @@ private struct BrowserPanelTool: AgentTool {
         }
         if args.action == "requestUser" {
             let reason = args.reason!.trimmingCharacters(in: .whitespacesAndNewlines)
-            try center.requestUserInteraction(reason: reason, tabID: args.tabID)
-            return ToolExecutionOutput(summary: "Waiting for user: " + reason, fullOutputSHA256: FloeDigest.sha256Hex(Data(reason.utf8)), requiresUserAction: true)
+            try center.requestUserInteraction(reason: reason, tabID: args.tabID, runID: context.runID)
+            return ToolExecutionOutput(summary: "The user controls the browser; continue other authorized work. A return notification will arrive in this task. Requested interaction: " + reason, fullOutputSHA256: FloeDigest.sha256Hex(Data(reason.utf8)), requiresUserAction: false)
         }
         try center.requestPanelDismissal()
         return ToolExecutionOutput(digesting: "Browser panel closed; sidebar preference retained")
@@ -108,7 +112,7 @@ private struct BrowserTabsTool: AgentTool {
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        return try await environment.run(action: .listTabs)
+        return try await environment.run(context: context, action: .listTabs)
     }
 }
 
@@ -141,7 +145,7 @@ private struct BrowserTabTool: AgentTool {
         case "activate": action = .activateTab(args.tabID!)
         default: action = .closeTab(args.tabID!)
         }
-        return try await environment.run(action: action)
+        return try await environment.run(context: context, action: action)
     }
 }
 
@@ -159,7 +163,7 @@ private struct BrowserEventsTool: AgentTool {
         if let limit = args.limit, !(1...50).contains(limit) { throw FloeError.validationFailed("limit must be between 1 and 50") }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(
+        try await environment.run(context: context,
             action: .events(afterSequence: args.afterSequence, limit: args.limit ?? 20),
             tabID: args.tabID
         )
@@ -209,7 +213,7 @@ private struct BrowserWaitTool: AgentTool {
         case "documentChanged": condition = .documentChanged(from: args.value ?? "")
         default: condition = .idle(milliseconds: args.quietMilliseconds ?? 500)
         }
-        return try await environment.run(
+        return try await environment.run(context: context,
             action: .wait(condition),
             tabID: args.tabID,
             timeoutMilliseconds: args.timeoutMilliseconds ?? 15_000
@@ -228,7 +232,7 @@ private struct BrowserNavigateTool: AgentTool {
     let environment: BrowserToolEnvironment
     func validate(_ args: Arguments) throws { _ = try BrowserURLPolicy.validate(args.url, allowRegisteredServices: true) }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(action: .navigate(url: args.url), tabID: args.tabID)
+        try await environment.run(context: context, action: .navigate(url: args.url), tabID: args.tabID)
     }
 }
 
@@ -245,7 +249,7 @@ private struct BrowserObserveTool: AgentTool {
         if let cursor = args.cursor, cursor < 0 { throw FloeError.validationFailed("cursor must be non-negative") }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(action: .observe(cursor: args.cursor), tabID: args.tabID)
+        try await environment.run(context: context, action: .observe(cursor: args.cursor), tabID: args.tabID)
     }
 }
 
@@ -259,7 +263,7 @@ private struct BrowserScreenshotTool: AgentTool {
     let environment: BrowserToolEnvironment
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(action: .screenshot, tabID: args.tabID)
+        try await environment.run(context: context, action: .screenshot, tabID: args.tabID)
     }
 }
 
@@ -288,7 +292,7 @@ private struct BrowserClickVisualTextTool: AgentTool {
         }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(
+        try await environment.run(context: context,
             action: .click(.visualText(reference: args.reference)),
             tabID: args.tabID,
             documentID: args.documentID,
@@ -311,7 +315,7 @@ private struct BrowserClickTool: AgentTool {
         guard !args.ref.isEmpty, !args.documentID.isEmpty else { throw FloeError.validationFailed("ref and documentID are required") }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(
+        try await environment.run(context: context,
             action: .click(.element(ref: args.ref, documentID: args.documentID)),
             tabID: args.tabID,
             documentID: args.documentID
@@ -353,7 +357,7 @@ private struct BrowserClickPointTool: AgentTool {
         }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(
+        try await environment.run(context: context,
             action: .click(.point(x: args.x, y: args.y)),
             tabID: args.tabID,
             documentID: args.documentID,
@@ -383,7 +387,7 @@ private struct BrowserTypeTool: AgentTool {
         guard args.text.utf8.count <= 16 * 1024 else { throw FloeError.validationFailed("text exceeds 16 KiB") }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(
+        try await environment.run(context: context,
             action: .type(.element(ref: args.ref, documentID: args.documentID), text: args.text, submit: args.submit ?? false),
             tabID: args.tabID,
             documentID: args.documentID
@@ -406,7 +410,7 @@ private struct BrowserScrollTool: AgentTool {
         }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(action: .scroll(deltaX: args.deltaX ?? 0, deltaY: args.deltaY), tabID: args.tabID)
+        try await environment.run(context: context, action: .scroll(deltaX: args.deltaX ?? 0, deltaY: args.deltaY), tabID: args.tabID)
     }
 }
 

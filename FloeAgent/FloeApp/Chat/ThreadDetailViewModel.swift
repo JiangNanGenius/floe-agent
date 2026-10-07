@@ -9,11 +9,52 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import Darwin
 import FloeCore
 import FloeModels
 import FloePersistence
 import FloeSecurity
 import FloeAgentRuntime
+
+/// Aggregate load diagnostics only: no conversation identifiers or content.
+@MainActor private final class ThreadLoadMetrics {
+    private var sampler: Task<Void, Never>?
+    private var peakFootprint: UInt64 = 0
+    private var longestMainActorDelay: Duration = .zero
+    private var finished = false
+
+    init() {
+        sampleMemory()
+        sampler = Task { [weak self] in
+            while !Task.isCancelled {
+                let expected = ContinuousClock.now.advanced(by: .milliseconds(50))
+                do { try await Task.sleep(until: expected, clock: .continuous) } catch { return }
+                guard let self else { return }
+                self.longestMainActorDelay = max(self.longestMainActorDelay, expected.duration(to: .now))
+                self.sampleMemory()
+            }
+        }
+    }
+
+    private func sampleMemory() {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        if status == KERN_SUCCESS { peakFootprint = max(peakFootprint, info.phys_footprint) }
+    }
+
+    func finish() {
+        guard !finished else { return }
+        finished = true
+        sampler?.cancel(); sampler = nil
+        sampleMemory()
+        FloeLogger(category: .app).info("threadLoadMetrics sampledPeakBytes=\(peakFootprint) mainActorSchedulingDelay=\(longestMainActorDelay)")
+    }
+}
 
 struct ThreadUsageSummary: Equatable {
     var inputTokens: Int
@@ -58,12 +99,12 @@ final class ThreadDetailViewModel: ObservableObject {
     // MARK: - Published presentation state
 
     /// The conversation's runs, newest first.
-    @Published private(set) var runs: [RunRecord] = []
+    @Published private(set) var runs: [RunRecord] = [] { didSet { timelineRevision &+= 1 } }
     /// The run currently displayed (the one the user expanded / latest).
-    @Published var selectedRunID: UUID?
+    @Published var selectedRunID: UUID? { didSet { timelineRevision &+= 1 } }
     /// Persisted events of the selected run, in sequence order.
     @Published private(set) var events: [RunEventRecord] = []
-    @Published private(set) var eventsByRun: [UUID: [RunEventRecord]] = [:]
+    @Published private(set) var eventsByRun: [UUID: [RunEventRecord]] = [:] { didSet { timelineRevision &+= 1 } }
     @Published private(set) var usageByRun: [UUID: [RunUsageRecord]] = [:]
     @Published private(set) var liveUsage = UsageSnapshot()
     @Published private(set) var latestUsage = UsageSnapshot()
@@ -76,9 +117,9 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var liveStreamedText: String = ""
     @Published private(set) var hasProviderActivity = false
     /// Persisted messages of the conversation (user goals, final answers).
-    @Published private(set) var messages: [PersistedMessage] = []
+    @Published private(set) var messages: [PersistedMessage] = [] { didSet { timelineRevision &+= 1 } }
     @Published private(set) var hasLoaded = false
-    @Published private(set) var earlierEventRunIDs = Set<UUID>()
+    @Published private(set) var earlierEventRunIDs = Set<UUID>() { didSet { timelineRevision &+= 1 } }
     @Published private(set) var loadingEventRunIDs = Set<UUID>()
     @Published private(set) var loadingEarlierMessages = false
     /// Composer draft text. Every real change (typing, dictation, a send's
@@ -366,17 +407,17 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Loads persisted state, then subscribes to the selected run's bounded
     /// push stream while it is non-terminal.
     func load() async {
-        defer { hasLoaded = true }
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let started = ContinuousClock.now
+        let metrics = ThreadLoadMetrics()
+        defer {
+            metrics.finish()
+            if generation == loadGeneration { hasLoaded = true }
+        }
         actionError = nil
-        var stage = "centerReload"
+        var stage = "conversationRead"
         do {
-            await center.reload()
-            stage = "runningInputPreferences"
-            await center.environment.settingsCenter.loadRunningInputMode()
-            runningInputMode = center.environment.settingsCenter.runningInputMode
-            stage = "workspaceReload"
-            await center.environment.workspaceCenter.reload()
-            stage = "conversationRead"
             guard let conversation = try await center.environment.conversationStore
                 .conversation(id: conversationID) else {
                 isConversationMissing = true
@@ -386,12 +427,30 @@ final class ThreadDetailViewModel: ObservableObject {
                 stopLiveUpdates()
                 return
             }
+            try Task.checkCancellation()
+            guard generation == loadGeneration else { return }
             isConversationMissing = false
             taskTitle = conversation.title
             center.environment.browserCenter.bind(to: conversationID)
             selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
             stage = "runList"
             runs = try await center.environment.runStore.recentRuns(conversationID: conversationID, limit: 30)
+            if let latest = runs.first {
+                center.environment.browserCenter.recordOwnerRun(conversationID: conversationID, runID: latest.id)
+            }
+            stage = "messageList"
+            let page = try await center.environment.conversationStore.messagePage(
+                conversationID: conversationID, before: nil, limit: 20
+            )
+            try Task.checkCancellation()
+            guard generation == loadGeneration else { return }
+            mergeMessagePage(page)
+            hasLoaded = true
+            logger.info("threadFirstPage elapsed=\(started.duration(to: .now)) messages=\(page.messages.count)")
+            // Publish recent history before unrelated configuration and plan reads.
+            if center.providers.isEmpty { await center.reload() }
+            try Task.checkCancellation()
+            guard generation == loadGeneration else { return }
             if !didRestoreConversationModel {
                 let previousModelID = runs.first?.modelID
                 selectedModelID = center.providerAndModel(modelID: previousModelID) != nil
@@ -399,11 +458,10 @@ final class ThreadDetailViewModel: ObservableObject {
                     : center.modelPreferences.defaultAgentModelID
                 didRestoreConversationModel = true
             }
-            stage = "messageList"
-            let page = try await center.environment.conversationStore.messagePage(
-                conversationID: conversationID, before: nil, limit: 20
-            )
-            mergeMessagePage(page)
+            await center.environment.settingsCenter.loadRunningInputMode()
+            runningInputMode = center.environment.settingsCenter.runningInputMode
+            await center.environment.workspaceCenter.reload()
+            selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
             stage = "visibleRunDetails"
             try await hydrateVisibleRunDetails()
             stage = "planLoad"
@@ -431,7 +489,10 @@ final class ThreadDetailViewModel: ObservableObject {
             try await loadSelectedRunDetails()
             startSessionUpdates()
             startLiveUpdates()
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == loadGeneration else { return }
             actionError = presentableError(error, stage: stage)
         }
     }
@@ -550,11 +611,31 @@ final class ThreadDetailViewModel: ObservableObject {
         actionError = nil
     }
 
+    private var timelineRevision: UInt64 = 0
+    private struct TimelineKey: Equatable {
+        var revision: UInt64
+        var running: Bool
+        var hasText: Bool
+        var hasReasoning: Bool
+        var approvals: [PendingApproval]
+    }
+    private var cachedTimelineKey: TimelineKey?
+    private var cachedTimeline: [ThreadTimelineItem] = []
+    private(set) var timelineBuildCount = 0
+    private var cachedTimelineIDs: [String] = []
+    var timelineIDs: [String] { _ = timeline; return cachedTimelineIDs }
+    private var loadGeneration: UInt64 = 0
+
     /// The unified, sequence-ordered timeline for the selected run.
     var timeline: [ThreadTimelineItem] {
+        let approvals = pendingApprovals
+        let key = TimelineKey(revision: timelineRevision, running: showsLiveTail,
+            hasText: !liveStreamedText.isEmpty, hasReasoning: !liveReasoningText.isEmpty,
+            approvals: approvals)
+        if cachedTimelineKey == key { return cachedTimeline }
         let visibleRunIDs = Set(messages.compactMap(\.runID))
             .union(selectedRunID.map { [$0] } ?? [])
-        return ThreadTimelineBuilder.buildConversation(
+        cachedTimeline = ThreadTimelineBuilder.buildConversation(
             messages: messages,
             runs: runs.filter { visibleRunIDs.contains($0.id) },
             eventsByRun: eventsByRun,
@@ -565,6 +646,10 @@ final class ThreadDetailViewModel: ObservableObject {
             pendingApprovals: pendingApprovals,
             earlierEventRunIDs: earlierEventRunIDs
         )
+        cachedTimelineKey = key
+        cachedTimelineIDs = cachedTimeline.map(\.id)
+        timelineBuildCount += 1
+        return cachedTimeline
     }
 
     /// The live tail stays mounted while the run is active OR while the
