@@ -33,3 +33,11 @@ The full cloud qualification matrix was not used for this user-authorized local 
 Build success is not upload, Apple processing or installation availability. See [current state](../../CURRENT_STATUS.md) for independent TestFlight and external-review results.
 
 Task-owned completed test/device caches, transfer staging and superseded validation copies reclaimed17,784,254,464 allocated bytes. Current App/transport/symbols, prior-build rollback and success/failure evidence remain. Both task simulators were shut down; no booted device remained. No scheduled monitor was restarted.
+
+## TestFlight delivery (2026-10-07)
+
+Signing/upload run [37575259173](https://github.com/JiangNanGenius/floe-agent/actions/runs/37575259173) succeeded without rebuilding the App. Its Apple readback confirms VALID, unexpired, existing Floe QA and internal IN_BETA_TESTING, with both beta-note localizations verified. The final signed artifact was downloaded and its server SHA-256 and ZIP integrity verified. Signed IPA SHA-256: `083d06304eab1b15708c07caeb79bd6b2090be939c4b8f8f3f87474f6324bd19`.
+
+Existing publictest1 received Build263 and review submission through App Store Connect at05:36UTC. The page shows waiting for review. Review notes were saved and read back exactly before submission; automatic tester notification remains enabled. External approval is pending. No scheduled monitor was resumed.
+
+Independent readback [37577098938](https://github.com/JiangNanGenius/floe-agent/actions/runs/37577098938) at05:36UTC confirmed VALID, unexpired, internal IN_BETA_TESTING, publictest1 attachment and WAITING_FOR_BETA_REVIEW, with no reported issues. The completed temporary draft transport was removed after final signed-artifact retention; the immutable Git tag remains.

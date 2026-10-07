@@ -2,11 +2,11 @@
 
 更新时间 / Updated: 2026-10-07. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
 
-## 1.7.22（263）候选 / Candidate
+## 1.7.22（263）内部可用，公测待审 / Internal available, external review pending
 
 - 浏览器接管交接、真实地址和全屏；大会话首批数据与时间线缓存；虚拟机启动合并、停止确认；终端与共享端口管理。Browser handoff, address/full screen, bounded history and cached timeline, coalesced VM startup, terminal and shared ports.
 - 本地 Xcode 27 完整设备验证构建通过；模块 38 + 19 项、iPad 模拟器 45 项定向测试通过。最终源码 `0a847da5cf14fe5ee259056f0ac994b9dd9b9f4e` 的设备构建已通过，App／符号已留存并匹配 UUID；交接恢复 11 项通过，iPad 与 iPhone 浏览器 UI 已检查。Local Xcode 27 exact-source device build, 38 + 19 module cases, 45 focused iPad cases and 11 final handoff cases passed; matching App/symbol artifacts were retained and iPad/iPhone browser UI inspected.
-- 已复用本地产物完成签名验证及 Apple 上传；2026-10-07 05:30 UTC 仍在处理，内部可安装和外部送审尚未确认。[分发运行](https://github.com/JiangNanGenius/floe-agent/actions/runs/37575259173)。Signed validation and Apple upload reused the local artifact. Apple processing remained pending at 05:30 UTC; internal availability and external submission are not yet confirmed.
+- 已复用本地产物完成签名上传；Apple VALID、未过期、现有 Floe QA 关联及内部 IN_BETA_TESTING 已确认。2026-10-07 05:36 UTC，263 已加入现有 publictest1 并提交审核，正在等待 Apple 审核，尚未外部批准。[签名与内部验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/37575259173) · [送审后独立回读](https://github.com/JiangNanGenius/floe-agent/actions/runs/37577098938)。Signing/upload reused the local artifact; VALID, unexpired status and existing Floe QA internal availability are confirmed. Build263 was submitted to existing publictest1 at05:36 UTC and is waiting for review; external approval remains pending.
 - 1 万条合成消息的首批数据读取约 11 ms；这不是完整首屏历史版本对比，尚不能证明 40% 改善或峰值内存不回退。The 10k synthetic first data page took about 11 ms; this does not establish the 40% full-first-screen improvement or a peak-memory baseline comparison.
 
 [更新说明 / Changes](releases/notes/RELEASE_NOTES_1.7.22_BUILD_263.md) · [端口说明 / Ports](FLOE_PORT_MANAGEMENT.md)
