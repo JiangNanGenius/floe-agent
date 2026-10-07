@@ -63,4 +63,61 @@ struct CadDocumentSupportTests {
         private(set) var value = 0
         func set(_ newValue: Int) { value = newValue }
     }
+
+    @Test("a transaction task cancelled while queued never runs and frees the gate")
+    func queuedCancellation() async {
+        let gate = CadDocumentGate()
+        let ran = Counter()
+        try? await gate.acquire() // current holder
+        let waiter = Task { () -> Bool in
+            do {
+                try await gate.acquire()
+                await ran.set(1)
+                await gate.release()
+                return true
+            } catch {
+                return false
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        waiter.cancel()
+        await gate.release() // the cancelled waiter is resumed here
+        let executed = await waiter.value
+        #expect(executed == false, "a cancelled queued transaction must not execute")
+        #expect(await ran.value == 0)
+        // The gate was handed on/freed, so a later acquirer still works.
+        let next = Task { () -> Bool in
+            do {
+                try await gate.acquire()
+                await gate.release()
+                return true
+            } catch { return false }
+        }
+        #expect(await next.value == true)
+        #expect(await gate.isBusy == false)
+    }
+
+    @Test("gate serializes overlapping acquisitions without loss")
+    func gateFairness() async {
+        let gate = CadDocumentGate()
+        let order = OrderRecorder()
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<10 {
+                group.addTask {
+                    do {
+                        try await gate.acquire()
+                        await order.append(index)
+                        try? await Task.sleep(for: .microseconds(100))
+                        await gate.release()
+                    } catch {}
+                }
+            }
+        }
+        #expect(await order.values.count == 10)
+    }
+
+    private actor OrderRecorder {
+        private(set) var values: [Int] = []
+        func append(_ value: Int) { values.append(value) }
+    }
 }

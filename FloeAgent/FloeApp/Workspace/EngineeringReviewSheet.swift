@@ -36,6 +36,9 @@ struct EngineeringReviewSheet: View {
     let conversationID: UUID?
     private let workspaceID: UUID?
     @ObservedObject var center: WorkspaceCenter
+    /// Live viewer session, so response handles can be highlighted/located and
+    /// a pending proposal's geometry diff can be previewed in color.
+    let webSession: EngineeringWebSession?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var router: AppRouter
     @State private var createdConversationID: UUID?
@@ -47,10 +50,12 @@ struct EngineeringReviewSheet: View {
     @State private var proposalMessage: String?
     @State private var applyingProposalID: UUID?
 
-    init(capture: EngineeringReviewCapture, conversationID: UUID?, center: WorkspaceCenter) {
+    init(capture: EngineeringReviewCapture, conversationID: UUID?, center: WorkspaceCenter,
+         webSession: EngineeringWebSession? = nil) {
         self.capture = capture
         self.conversationID = conversationID
         self.center = center
+        self.webSession = webSession
         self.workspaceID = center.currentWorkspace?.id
     }
 
@@ -80,6 +85,7 @@ struct EngineeringReviewSheet: View {
                                 Text(proposal.summary).font(.callout)
                                 Text("+\(proposal.preview.counts["added"] ?? 0) ~\(proposal.preview.counts["changed"] ?? 0) -\(proposal.preview.counts["deleted"] ?? 0)")
                                     .font(.caption).foregroundStyle(.secondary)
+                                proposalHandles(proposal)
                                 HStack {
                                     Button(engineeringReviewText("应用", "Apply")) {
                                         Task { await apply(proposal) }
@@ -87,6 +93,12 @@ struct EngineeringReviewSheet: View {
                                     .buttonStyle(.borderedProminent)
                                     .disabled(applyingProposalID != nil)
                                     .accessibilityIdentifier("engineering.review.proposal.apply")
+                                    Button(engineeringReviewText("图中预览", "Preview in viewer")) {
+                                        previewInViewer(proposal)
+                                    }
+                                    .disabled(webSession == nil)
+                                    .accessibilityIdentifier("engineering.review.proposal.preview")
+                                    .frame(minHeight: 44)
                                     Button(engineeringReviewText("放弃", "Discard"), role: .destructive) {
                                         Task { await discard(proposal) }
                                     }
@@ -130,11 +142,71 @@ struct EngineeringReviewSheet: View {
                 }
             }
             .interactiveDismissDisabled(sending)
+            .onDisappear { webSession?.clearCADOverlay() }
         }
     }
 
-    @MainActor private func send() async {
-        sending = true; defer { sending = false }
+    /// Handle chips grouped by change kind. A tap asks the live viewer to
+    /// highlight and center that exact engine handle (no image guessing).
+    @ViewBuilder private func proposalHandles(_ proposal: CadProposal) -> some View {
+        let groups: [(String, [CadEntityPreview], Color)] = [
+            (engineeringReviewText("新增", "Added"), Array(proposal.preview.added.prefix(12)), .green),
+            (engineeringReviewText("修改", "Changed"), Array(proposal.preview.changed.prefix(12)), .orange),
+            (engineeringReviewText("删除", "Deleted"), Array(proposal.preview.deleted.prefix(12)), .red)
+        ]
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(groups, id: \.0) { group in
+                if !group.1.isEmpty {
+                    Text(group.0).font(.caption2).foregroundStyle(group.2)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(group.1, id: \.handle) { item in
+                                Button {
+                                    webSession?.locateCADHandle(item.handle)
+                                    proposalMessage = engineeringReviewText(
+                                        "已在图纸中定位 \(item.handle)。",
+                                        "Located \(item.handle) in the drawing.")
+                                } label: {
+                                    Text(item.handle)
+                                        .font(.caption.monospaced())
+                                        .padding(.horizontal, 8)
+                                        .frame(minHeight: 44)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(group.2)
+                                .accessibilityIdentifier("engineering.review.handle.\(item.handle)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor private func previewInViewer(_ proposal: CadProposal) {
+        var entries: [[String: Any]] = []
+        func append(_ kind: String, _ items: [CadEntityPreview]) {
+            for item in items.prefix(200) {
+                guard let bounds = item.bounds else { continue }
+                entries.append(["kind": kind, "handle": item.handle,
+                                "min": bounds.min, "max": bounds.max])
+            }
+        }
+        append("added", proposal.preview.added)
+        append("changed", proposal.preview.changed)
+        append("deleted", proposal.preview.deleted)
+        guard !entries.isEmpty else {
+            proposalMessage = engineeringReviewText("该提案没有可预览的几何变化。",
+                                                    "This proposal has no previewable geometry changes.")
+            return
+        }
+        webSession?.showCADOverlay(entries: entries)
+        proposalMessage = engineeringReviewText(
+            "已在图纸中显示彩色变更预览（绿=新增，橙=修改，红=删除）。",
+            "Showing the colored change preview (green=added, orange=changed, red=deleted).")
+    }
+
+    @MainActor private func send() async {        sending = true; defer { sending = false }
         do {
             guard let workspace = center.currentWorkspace,
                   workspace.id == workspaceID else {
@@ -185,6 +257,7 @@ struct EngineeringReviewSheet: View {
         defer { applyingProposalID = nil }
         do {
             let receipt = try await center.environment.cadDocumentCenter.approveAndApply(proposal: proposal)
+            webSession?.clearCADOverlay()
             proposalMessage = engineeringReviewText(
                 "已应用并保存修订 \(receipt.revision)（\(receipt.sha256.prefix(8))…）",
                 "Applied and saved revision \(receipt.revision) (\(receipt.sha256.prefix(8))…)")
@@ -196,6 +269,7 @@ struct EngineeringReviewSheet: View {
 
     @MainActor private func discard(_ proposal: CadProposal) async {
         await center.environment.cadDocumentCenter.discardProposal(id: proposal.id)
+        webSession?.clearCADOverlay()
         proposals.removeAll { $0.id == proposal.id }
         proposalMessage = engineeringReviewText("已放弃该提案。", "Proposal discarded.")
     }

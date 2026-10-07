@@ -9,6 +9,7 @@
 //     and actor reentrancy otherwise lets two grants interleave at awaits.
 
 import Foundation
+import FloeCore
 
 public enum CadDocumentIdentity {
     /// Stable session key for a resolved document. `rootPath` must already be
@@ -28,8 +29,7 @@ public enum CadDocumentIdentity {
 
 /// A minimal fair async mutex. `lock()` waits for the current holder; `unlock()`
 /// hands off to the next waiter. Used to serialize whole document transactions.
-public actor AsyncMutex {
-    private var isLocked = false
+public actor AsyncMutex {    private var isLocked = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     public init() {}
@@ -67,4 +67,43 @@ public actor AsyncMutex {
     }
 
     public var isBusy: Bool { isLocked }
+}
+
+/// Cancellable FIFO gate used for whole CAD document transactions. Unlike a
+/// plain mutex, a task cancelled while queued refuses to run when the gate
+/// would otherwise open for it: it hands the gate to the next waiter and
+/// throws `FloeError.cancelled`, so a cancelled tool call can never execute
+/// later against a document someone else has since changed.
+public actor CadDocumentGate {
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    public func acquire() async throws {
+        if Task.isCancelled { throw FloeError.cancelled }
+        if !busy {
+            busy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+        // Woken while cancelled: pass the gate on and refuse to proceed.
+        if Task.isCancelled {
+            release()
+            throw FloeError.cancelled
+        }
+    }
+
+    public func release() {
+        if waiters.isEmpty {
+            busy = false
+        } else {
+            let next = waiters.removeFirst()
+            next.resume()
+        }
+    }
+
+    public var isBusy: Bool { busy }
 }

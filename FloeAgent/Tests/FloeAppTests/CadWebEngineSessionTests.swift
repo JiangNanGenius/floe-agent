@@ -10,6 +10,7 @@ import Foundation
 import Testing
 @testable import FloeApp
 import FloeCore
+import FloeWorkbench
 
 @Suite("CAD WKWebView worker bridge", .serialized)
 @MainActor
@@ -91,6 +92,97 @@ struct CadWebEngineSessionTests {
             _ = try await session.query("\"{\\\"operation\\\":\\\"layers\\\"}\"")
         }
         await session.shutdown()
+    }
+}
+/// Real transaction serialization: two distinct grants at the same revision
+/// must not both edit, and the same request id in flight must replay rather
+/// than double-apply. These exercise the actual CadDocumentCenter gate against
+/// the real engine + file CAS, not a string helper.
+@Suite("CAD document transaction serialization", .serialized)
+@MainActor
+struct CadDocumentCenterConcurrencyTests {
+    private func workspace() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        guard let bundleRoot = Bundle.main.url(forResource: "EngineeringViewers", withExtension: nil),
+              let sample = try? Data(contentsOf: bundleRoot.appendingPathComponent("sample-plate.dxf")) else {
+            throw FloeError.notFound("EngineeringViewers sample-plate.dxf in the app bundle")
+        }
+        try sample.write(to: root.appendingPathComponent("plan.dxf"))
+        return root
+    }
+
+    private func access(_ root: URL) -> CadDocumentAccess {
+        CadDocumentAccess(environmentID: nil, workspacePath: root.path,
+                          ownerKind: "workspace", ownerID: nil)
+    }
+
+    private let addLineOperations =
+        #"[{"operation":"addLine","start":[0,0,0],"end":[5,0,0],"layer":"0"}]"#
+
+    @Test func distinctGrantsAtSameRevisionOnlyOneEdits() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = CadDocumentCenter()
+        let access = access(root)
+        let snapshot = try await center.snapshot(documentID: "plan.dxf", access: access)
+        let proposal = try await center.prepareProposal(
+            documentID: "plan.dxf", snapshot: snapshot, summary: "add line",
+            operationsJSON: addLineOperations, access: access)
+        try await center.storeProposal(proposal)
+        let grant1 = await center.issueUserGrant(for: proposal)
+        let grant2 = await center.issueUserGrant(for: proposal)
+        #expect(grant1 != grant2)
+
+        let successes = await withTaskGroup(of: Bool.self) { group in
+            for (grant, request) in [(grant1, "req-a"), (grant2, "req-b")] {
+                group.addTask {
+                    do {
+                        _ = try await center.apply(proposal: proposal, grantID: grant,
+                                                   requestID: request, access: access)
+                        return true
+                    } catch { return false }
+                }
+            }
+            var total = 0
+            for await value in group where value { total += 1 }
+            return total
+        }
+        #expect(successes == 1, "exactly one of two same-revision grants may edit")
+        let after = try await center.snapshot(documentID: "plan.dxf", access: access)
+        #expect(after.revision > snapshot.revision)
+        #expect(after.sha256 != snapshot.sha256)
+    }
+
+    @Test func sameRequestInFlightReplaysInsteadOfDoubleApplying() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = CadDocumentCenter()
+        let access = access(root)
+        let snapshot = try await center.snapshot(documentID: "plan.dxf", access: access)
+        let proposal = try await center.prepareProposal(
+            documentID: "plan.dxf", snapshot: snapshot, summary: "add line",
+            operationsJSON: addLineOperations, access: access)
+        try await center.storeProposal(proposal)
+        let grant = await center.issueUserGrant(for: proposal)
+
+        let receipts = await withTaskGroup(of: CadDocumentReceipt?.self) { group in
+            for _ in 0..<2 {
+                group.addTask {
+                    try? await center.apply(proposal: proposal, grantID: grant,
+                                            requestID: "same-request", access: access)
+                }
+            }
+            var values: [CadDocumentReceipt] = []
+            for await receipt in group { if let receipt { values.append(receipt) } }
+            return values
+        }
+        #expect(receipts.count == 2, "both callers receive a result")
+        #expect(receipts.filter { $0.replay }.count == 1, "the second call must be a replay")
+        #expect(Set(receipts.map(\.revision)).count == 1)
+        let after = try await center.snapshot(documentID: "plan.dxf", access: access)
+        #expect(after.revision == snapshot.revision + 1, "the document advanced exactly once")
     }
 }
 #endif

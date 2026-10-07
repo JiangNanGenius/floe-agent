@@ -50,46 +50,38 @@ actor CadDocumentCenter: CadDocumentHost {
     private var appliedReceipts: [String: CadDocumentReceipt] = [:]
     /// One serializing gate per canonical document key. Whole transaction
     /// units (open → edit → save → commit) run under the gate so two grants at
-    /// the same revision can never both edit before one save. Implemented
-    /// inside the actor (FIFO continuations) so no non-Sendable closures cross
-    /// an isolation boundary.
-    private var documentGates: [String: [CheckedContinuation<Void, Never>]] = [:]
-    private var busyGates: Set<String> = []
+    /// the same revision can never both edit before one save, and a queueing
+    /// task cancelled before it runs refuses to execute.
+    private var documentGates: [String: CadDocumentGate] = [:]
     private let maximumCachedSessions = 3
     private let maximumDocumentBytes = 10 * 1024 * 1024
 
-    private func acquireGate(_ key: String) async {
-        if !busyGates.contains(key) {
-            busyGates.insert(key)
-            return
-        }
-        await withCheckedContinuation { continuation in
-            documentGates[key, default: []].append(continuation)
-        }
-    }
-
-    private func releaseGate(_ key: String) {
-        if var waiters = documentGates[key], !waiters.isEmpty {
-            let next = waiters.removeFirst()
-            documentGates[key] = waiters.isEmpty ? nil : waiters
-            next.resume()
-        } else {
-            busyGates.remove(key)
-        }
+    private func gate(for key: String) -> CadDocumentGate {
+        if let existing = documentGates[key] { return existing }
+        let gate = CadDocumentGate()
+        documentGates[key] = gate
+        return gate
     }
 
     /// Runs `body` while holding the document gate, releasing it on every path.
+    /// Throws `FloeError.cancelled` when the task was cancelled while queued.
     private func withDocumentGate<T>(_ key: String,
                                      _ body: () async throws -> T) async throws -> T {
-        await acquireGate(key)
+        let gate = gate(for: key)
+        try await gate.acquire()
         do {
             let result = try await body()
-            releaseGate(key)
+            await gate.release()
             return result
         } catch {
-            releaseGate(key)
+            await gate.release()
             throw error
         }
+    }
+
+    private func isGateBusy(_ key: String) async -> Bool {
+        guard let gate = documentGates[key] else { return false }
+        return await gate.isBusy
     }
 
     // MARK: - CadDocumentHost
@@ -208,6 +200,9 @@ actor CadDocumentCenter: CadDocumentHost {
                 throw FloeError.validationFailed(
                     "The drawing changed after the proposal was created (revision \(session.revision), sha \(session.sha256.prefix(12))…); regenerate the proposal.")
             }
+            // Cancellation gates: a tool call cancelled while queued (or just
+            // before mutating) must not later edit or commit.
+            if Task.isCancelled { throw FloeError.cancelled }
             switch await grants.reserve(grantID: grantID, proposalID: proposal.id,
                                         documentID: resolved.id, revision: proposal.baseRevision,
                                         sha256: proposal.baseSHA256) {
@@ -226,6 +221,10 @@ actor CadDocumentCenter: CadDocumentHost {
             }
 
             var draftApplied = false
+            if Task.isCancelled {
+                await grants.releaseReservation(grantID: grantID)
+                throw FloeError.cancelled
+            }
             do {
                 let request = try batchRequest(from: proposal.operationsJSON)
                 let editSummary = try await session.engine.edit(request)
@@ -280,6 +279,7 @@ actor CadDocumentCenter: CadDocumentHost {
             guard session.sha256.lowercased() == expectedSHA256.lowercased() else {
                 throw FloeError.validationFailed("The drawing changed on disk; save refused. Draft remains in the editor.")
             }
+            if Task.isCancelled { throw FloeError.cancelled }
             let bytes = try await session.engine.save()
             let receipt = try commit(session: session, bytes: bytes, expectedSHA256: expectedSHA256,
                                      created: [], service: resolved.service, relativePath: resolved.id)
@@ -311,12 +311,16 @@ actor CadDocumentCenter: CadDocumentHost {
             }
             // Full diagram serialization from the engine (not the display
             // subset). Unknown entities are carried by the engine's save path.
+            if Task.isCancelled { throw FloeError.cancelled }
             let bytes = try await session.engine.save()
             guard bytes.count <= maximumDocumentBytes else {
                 throw FloeError.validationFailed("CAD export exceeds the size limit")
             }
-            // Independent reparse gate: the exported bytes must open in a fresh
-            // engine and expose the same entity count before we write them.
+            // Fresh same-engine reparse gate: the exported bytes must open in a
+            // new engine session and expose the same entity count before we
+            // write them. This is not independent-reader validation; the
+            // independent compatibility evidence is the LibreDWG check run
+            // against actual exported samples.
             let check = await CadWebEngineSession()
             let exportedInfo: String
             do {
@@ -343,7 +347,7 @@ actor CadDocumentCenter: CadDocumentHost {
             }
             return CadExportReceipt(documentID: resolved.id, relativePath: output, sha256: digest,
                                     byteCount: written.count,
-                                    note: "full \(session.format.uppercased()) serialization verified by independent reparse; source drawing unchanged.")
+                                    note: "full \(session.format.uppercased()) serialization verified by a fresh same-engine reparse (not an independent reader); source drawing unchanged.")
         }
     }
 
@@ -545,7 +549,7 @@ actor CadDocumentCenter: CadDocumentHost {
             // Never shut down a session whose transaction gate is held.
             var victim: String?
             for candidate in sessionOrder where candidate != id {
-                if busyGates.contains(candidate) { continue }
+                if await isGateBusy(candidate) { continue }
                 victim = candidate
                 break
             }

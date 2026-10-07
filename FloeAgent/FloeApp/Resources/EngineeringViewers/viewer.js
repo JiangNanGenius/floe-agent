@@ -75,6 +75,11 @@ async function load(pkg){
     cadDirty=dirty;
     window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'dirty',dirty}).catch(()=>{});
    }});
+   // Drawing Assistant bridges: highlight/locate a handle and preview a
+   // proposal's colored geometry diff in the live viewer session.
+   window.floeCadLocate=handle=>{try{return cadEditor?.locate(handle)??false;}catch{return false;}};
+   window.floeCadOverlay=payload=>{try{cadEditor?.showDiff(payload?.entries??[]);}catch{}};
+   window.floeCadClearOverlay=()=>{try{cadEditor?.clearDiff();}catch{}};
   }
   reviewContext=()=>{
    const parsed=viewer.GetDxf(),camera=viewer.GetCamera(),origin=viewer.GetOrigin();

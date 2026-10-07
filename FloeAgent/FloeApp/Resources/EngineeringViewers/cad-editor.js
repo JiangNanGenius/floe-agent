@@ -420,8 +420,60 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
    dirty=false;onDirty(false);note(say('已保存，原版已保留','Saved; previous version retained'));
   }catch(e){note(e.message,true);}finally{busy=false;update();}
  }
- function reset(){fields.replaceChildren();}
- function action(label,build){button(tools,label,()=>{try{void mutate('edit',build());}catch(e){note(e.message,true);}});}
+ // ------------------------------------------- drawing assistant locate/overlay
+ const diffCanvas=document.createElement('canvas');diffCanvas.className='cadDiffOverlay';diffCanvas.setAttribute('aria-hidden','true');
+ let diffEntries=[],diffHighlight=null,diffReady=false;
+ function ensureDiffOverlay(){
+  if(diffReady)return;
+  const canvas=viewer.GetCanvas(),host=canvas.parentElement??canvas;
+  if(getComputedStyle(host).position==='static')host.style.position='relative';
+  host.append(diffCanvas);diffReady=true;
+  viewer.Subscribe('viewChanged',drawDiff);viewer.Subscribe('resized',drawDiff);
+  syncDiffOverlay();
+ }
+ function syncDiffOverlay(){
+  const canvas=viewer.GetCanvas();
+  if(!diffReady||canvas.clientWidth<=0||canvas.clientHeight<=0)return;
+  const ratio=window.devicePixelRatio||1,width=Math.round(canvas.clientWidth*ratio),height=Math.round(canvas.clientHeight*ratio);
+  if(diffCanvas.width!==width||diffCanvas.height!==height){diffCanvas.width=width;diffCanvas.height=height;}
+  diffCanvas.getContext('2d').setTransform(ratio,0,0,ratio,0,0);
+ }
+ function drawDiff(){
+  if(!diffReady)return;
+  syncDiffOverlay();
+  const context=diffCanvas.getContext('2d');
+  context.clearRect(0,0,diffCanvas.width,diffCanvas.height);
+  const state=viewState();
+  const colors={added:'#2fbf71',changed:'#f5a623',deleted:'#e5484d'};
+  for(const entry of diffEntries){
+   if(!Array.isArray(entry.min)||!Array.isArray(entry.max))continue;
+   const a=worldToScreen({x:entry.min[0],y:entry.min[1]},state),b=worldToScreen({x:entry.max[0],y:entry.max[1]},state);
+   context.strokeStyle=colors[entry.kind]??'#7a8ba8';context.lineWidth=2;
+   context.strokeRect(Math.min(a.x,b.x),Math.min(a.y,b.y),Math.max(2,Math.abs(b.x-a.x)),Math.max(2,Math.abs(b.y-a.y)));
+  }
+  if(diffHighlight){
+   const p=worldToScreen(diffHighlight,state);
+   context.beginPath();context.arc(p.x,p.y,9,0,Math.PI*2);context.strokeStyle='#ffd60a';context.lineWidth=3;context.stroke();
+   context.beginPath();context.arc(p.x,p.y,3,0,Math.PI*2);context.fillStyle='#ffd60a';context.fill();
+  }
+ }
+ function showDiff(entries){diffEntries=Array.isArray(entries)?entries.slice(0,200):[];if(diffEntries.length||diffHighlight)ensureDiffOverlay();drawDiff();}
+ function clearDiff(){diffEntries=[];diffHighlight=null;drawDiff();}
+ async function locateHandle(handle){
+  if(!handle)return false;
+  try{
+   const result=await engine.call('query',{request:buildQuery('locate',{handle})});
+   const point=result?.point;
+   if(point){
+    const origin=viewer.GetOrigin(),bounds=viewer.GetBounds();
+    viewer.SetView({x:point[0]-origin.x,y:point[1]-origin.y},Math.max(10,(bounds.maxX-bounds.minX)*.5));
+    viewer.Render();
+    diffHighlight={x:point[0],y:point[1]};ensureDiffOverlay();drawDiff();
+   }
+   return !!point;
+  }catch{return false;}
+ }
+ function reset(){fields.replaceChildren();} function action(label,build){button(tools,label,()=>{try{void mutate('edit',build());}catch(e){note(e.message,true);}});}
  entities.onchange=()=>{
   selected=entities.value;reset();const row=info.entities.find(e=>e.handle===selected);if(!row)return;
   const kind=Object.keys(row.entity)[0],body=row.entity[kind];
@@ -499,7 +551,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  });
  note(say('支持线、圆、圆弧、多段线/矩形、文字、标注、移动/复制/旋转/缩放/镜像、修剪/延伸/偏移、图层与测量。复杂图元保留，暂不编辑。','Lines, circles, arcs, polylines/rectangles, text, dimensions, move/copy/rotate/scale/mirror, trim/extend/offset, layers and measures. Other entities are retained and read only.'));
  update();
- return {inspect:()=>({...info,selectedHandle:selected,selection:[...selection],activeLayer:activeLayer(),units,ink:{active:inkState.active,ready:inkState.ready,reason:inkState.reason,color:inkState.color,lineWeight:inkState.lineWeight,drawWithFinger:inkState.drawWithFinger,capabilities:inkState.capabilities?{pointCount:inkState.capabilities.pointCount,lineWeights:inkState.capabilities.lineWeights.length}:null}}),destroy(){
+ return {showDiff,clearDiff,locate:locateHandle,inspect:()=>({...info,selectedHandle:selected,selection:[...selection],activeLayer:activeLayer(),units,ink:{active:inkState.active,ready:inkState.ready,reason:inkState.reason,color:inkState.color,lineWeight:inkState.lineWeight,drawWithFinger:inkState.drawWithFinger,capabilities:inkState.capabilities?{pointCount:inkState.capabilities.pointCount,lineWeights:inkState.capabilities.lineWeights.length}:null}}),destroy(){
   document.removeEventListener('pointerdown',onPointerDown,captureOptions);
   document.removeEventListener('pointermove',onPointerMove,captureOptions);
   document.removeEventListener('pointerup',onPointerUp,captureOptions);
@@ -512,6 +564,8 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
   inkState.overlay?.remove();inkState.overlay=null;inkState.context=null;
   snapDot.remove();
   viewer.Unsubscribe('pointerdown',down);viewer.Unsubscribe('pointerup',up);
+  if(diffReady){viewer.Unsubscribe('viewChanged',drawDiff);viewer.Unsubscribe('resized',drawDiff);}
+  diffCanvas.remove();
   panel.remove();toggle.remove();pen.remove();
  }};
 }

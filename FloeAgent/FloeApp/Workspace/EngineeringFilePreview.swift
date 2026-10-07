@@ -96,6 +96,36 @@ final class EngineeringWebSession: ObservableObject {
                                 completionHandler: nil)
     }
 
+    // MARK: Drawing Assistant viewer bridge
+
+    /// Highlights and centers an entity handle in the live viewer session.
+    func locateCADHandle(_ handle: String) {
+        guard let encoded = Self.javaScriptString(handle) else { return }
+        web?.evaluateJavaScript("window.floeCadLocate && window.floeCadLocate(\(encoded));",
+                                completionHandler: nil)
+    }
+
+    /// Draws the proposal's colored geometry diff (added/changed/deleted) over
+    /// the drawing. Purely a view overlay; nothing is written.
+    func showCADOverlay(entries: [[String: Any]]) {
+        guard JSONSerialization.isValidJSONObject(entries),
+              let data = try? JSONSerialization.data(withJSONObject: ["entries": entries]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        web?.evaluateJavaScript("window.floeCadOverlay && window.floeCadOverlay(\(json));",
+                                completionHandler: nil)
+    }
+
+    func clearCADOverlay() {
+        web?.evaluateJavaScript("window.floeCadClearOverlay && window.floeCadClearOverlay();",
+                                completionHandler: nil)
+    }
+
+    private static func javaScriptString(_ value: String) -> String? {
+        guard let data = try? JSONEncoder().encode(value),
+              let encoded = String(data: data, encoding: .utf8) else { return nil }
+        return encoded
+    }
+
     /// Full teardown only when the session itself goes away.
     func tearDown() {
         startup?.cancel(); watchdog?.cancel()
