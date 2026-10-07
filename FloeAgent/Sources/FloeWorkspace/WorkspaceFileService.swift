@@ -451,6 +451,38 @@ public struct WorkspaceFileService: Sendable {
         return try performWrite(url, path: path, content: content)
     }
 
+    /// Creates a new binary file (e.g. a verified DWG export), failing when the
+    /// target already exists unless `overwrite` is true. Bytes are written
+    /// atomically and the resulting SHA-256 is returned.
+    @discardableResult
+    public func createBinaryFile(
+        _ path: String,
+        data: Data,
+        overwrite: Bool = false,
+        cancellation: CancellationToken? = nil
+    ) throws -> WriteOutcome {
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+
+        try cancellation?.throwIfCancelled()
+        let url = try guardResolver.resolve(path)
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            guard overwrite, !isDirectory.boolValue else {
+                throw isDirectory.boolValue
+                    ? WorkspaceToolError.alreadyExists(path)
+                    : WorkspaceToolError.alreadyExistsOverwritable(path)
+            }
+        }
+        try guardResolver.assertWritableSize(bytes: data.count)
+        try guardResolver.assertWritable(url)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        let mtime = (try? fileManager.attributesOfItem(atPath: url.path)[.modificationDate] as? Date)?
+            .timeIntervalSince1970 ?? Date().timeIntervalSince1970
+        return WriteOutcome(bytesWritten: data.count, sha256: Self.sha256Hex(of: data), mtime: mtime)
+    }
+
     /// Creates a directory (and any missing intermediate parents). Fails when
     /// a file already exists at the target path.
     public func createDirectory(
