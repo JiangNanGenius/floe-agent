@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "优化浏览器真实地址、触控按钮和全屏。接管期间模型可继续其他工作，交还时通知原任务，已结束任务需明确继续。改进大会话首批加载和历史缓存、虚拟机并发启动与停止提示、终端中文输出和滚动。新增统一端口管理及 linux.port 工具。请重点测试接管交接、全屏、中文终端、长会话和端口状态。",
+  "en-US": "Improves browser URL display, touch controls and full screen. During takeover the agent can continue other work; returning control notifies the original task, with explicit continuation for ended tasks. Improves history loading/cache, VM startup coordination and stop prompts, terminal Chinese output and scrollback. Adds shared port management and linux.port. Please test handoff, full screen, terminal output, long histories and port state."
+}

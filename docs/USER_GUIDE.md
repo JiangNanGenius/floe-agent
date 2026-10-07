@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Release and verification status](CURRENT_STATUS.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
-Updated 2026-10-07. Floe 1.7 is iPad first and also supports iPhone on iOS/iPadOS 26 or later. Features depend on the installed build; this manual includes the terminal and web-service controls in 1.7.21 (262). **See [release and verification status](CURRENT_STATUS.md) for installation eligibility, Apple processing and external review; the actual TestFlight state is authoritative.** Physical-device acceptance remains separate.
+Updated 2026-10-07. Floe 1.7 is iPad first and also supports iPhone on iOS/iPadOS 26 or later. Features depend on the installed build; this manual includes the browser, terminal and port controls in 1.7.22 (263). **See [release and verification status](CURRENT_STATUS.md) for installation eligibility, Apple processing and external review; the actual TestFlight state is authoritative.** Physical-device acceptance remains separate.
 
 ## 1. Installation and first use
 
@@ -206,7 +206,7 @@ Use the terminal status bar's expand button for full screen, then Hide to return
 
 Use ordinary Run for scripts that are expected to finish. Choose Run as web service for HTTP servers so you can inspect readiness, preview and stop them separately. Logs alone do not prove the port is ready. If a port is occupied, inspect existing services before starting another; resolve task/workspace errors instead of retrying in a different directory. Full-screen and embedded terminals share one session; hiding the window does not explicitly terminate it. Ctrl-C interrupts the foreground command.
 
-## Workspace experience candidate (1.7.22 / 263)
+## Workspace experience (1.7.22 / 263)
 
 These controls ship with 263; check [current status](CURRENT_STATUS.md) for availability.
 

@@ -38,6 +38,22 @@ jobs:
         set -euo pipefail
         [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
         echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        # Release text can be a separately recorded packaging-policy change.
+        # Never alter App source or move its tag to correct distribution copy.
+        export RELEASE_METADATA_SHA="${{ github.sha }}"
+        python3 - <<'METADATA'
+        import os, pathlib, re, subprocess
+        project = pathlib.Path('project.yml').read_text()
+        version = re.search(r'MARKETING_VERSION: "([0-9.]+)"', project).group(1)
+        build = re.search(r'CURRENT_PROJECT_VERSION: "([0-9]+)"', project).group(1)
+        series = '.'.join(version.split('.')[:2])
+        path = f'docs/releases/testflight/TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json'
+        target = pathlib.Path('..') / path
+        if not target.exists():
+            data = subprocess.check_output(['git', 'show', os.environ['RELEASE_METADATA_SHA'] + ':' + path])
+            target.write_bytes(data)
+            print('Release metadata:', os.environ['RELEASE_METADATA_SHA'], path)
+        METADATA
         scripts/release_preflight.sh "$RELEASE_TAG"
     - name: Download private draft transport and verify local provenance
       env:
