@@ -8,8 +8,11 @@ import FloeNotes
 @MainActor enum NotesExport {
     struct Artifact: Identifiable { let id = UUID(); let url: URL }
 
-    /// Pages are read and drawn one at a time. Cancelled/failed exports never expose a partial PDF.
-    static func pdf(document: NoteDocument, store: NotesStore, progress: (Int, Int) -> Void) async throws -> Artifact {
+    /// Pages are read and drawn one at a time. Cancelled/failed exports never
+    /// expose a partial PDF. `pages` selects a subset (e.g. the current page);
+    /// nil exports the whole document.
+    static func pdf(document: NoteDocument, pages selectedPages: [NotePage]? = nil,
+                    store: NotesStore, progress: (Int, Int) -> Void) async throws -> Artifact {
         guard document.kind == .notebook else { throw NoteError.invalidOperation("请从 Office 编辑器导出 Office PDF。") }
         try document.validate()
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-export-\(UUID().uuidString)", isDirectory: true)
@@ -22,7 +25,9 @@ import FloeNotes
         }
         var closed = false
         defer { if !closed { context.closePDF() } }
-        for (index, page) in document.pages.enumerated() {
+        let pages = selectedPages ?? document.pages
+        guard !pages.isEmpty else { throw NoteError.invalidOperation("没有可导出的页面。") }
+        for (index, page) in pages.enumerated() {
             try Task.checkCancellation()
             let sourcePDF: CGPDFDocument?
             let sourcePage: CGPDFPage?
@@ -67,16 +72,21 @@ import FloeNotes
                 UIGraphicsPopContext()
                 context.restoreGState(); context.endPDFPage()
             }
-            progress(index + 1, document.pages.count)
+            progress(index + 1, pages.count)
             await Task.yield()
         }
         context.closePDF(); closed = true
         try Task.checkCancellation()
-        guard let pdf = CGPDFDocument(temporary as CFURL), pdf.numberOfPages == document.pages.count,
+        guard let pdf = CGPDFDocument(temporary as CFURL), pdf.numberOfPages == pages.count,
               (try temporary.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0 > 0 else {
             throw NoteError.invalidDocument("导出的 PDF 无法重新读取。")
         }
-        let final = folder.appendingPathComponent(fileName(document.title)).appendingPathExtension("pdf")
+        var stem = fileName(document.title)
+        if let firstPage = pages.first,
+           let pageIndex = document.pages.firstIndex(where: { $0.id == firstPage.id }) {
+            stem += pages.count == 1 ? "-p\(pageIndex + 1)" : "-p\(pageIndex + 1)-p\(pageIndex + pages.count)"
+        }
+        let final = folder.appendingPathComponent(stem).appendingPathExtension("pdf")
         try FileManager.default.moveItem(at: temporary, to: final)
         success = true
         return Artifact(url: final)

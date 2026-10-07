@@ -335,6 +335,10 @@ struct NotesDocumentEditor: View {
                             Button {
                                 session.apply([.duplicatePage(value.id)], title: "复制页面", base: document)
                             } label: { Label("复制页面", systemImage: "plus.square.on.square") }
+                            Button {
+                                exportPages([value.id])
+                            } label: { Label("导出此页", systemImage: "square.and.arrow.up") }
+                            .accessibilityIdentifier("notes.pages.export.\(value.id.uuidString)")
                         }
                     }
                     .onMove { indices, destination in
@@ -398,6 +402,23 @@ struct NotesDocumentEditor: View {
                         exportProgress = "正在导出 \(page) / \(total) 页"
                     }
                 } else { exportArtifact = try NotesExport.outline(document: snapshot) }
+            } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
+        }
+    }
+
+    /// Exports a selected page subset (e.g. the page picked in the page list)
+    /// as a verified PDF; the whole-document export path is unchanged.
+    private func exportPages(_ pageIDs: [UUID]) {
+        guard let store = session.store, exportTask == nil else { return }
+        let snapshot = document
+        let pages = snapshot.pages.filter { pageIDs.contains($0.id) }
+        guard !pages.isEmpty else { return }
+        exportTask = Task {
+            defer { exportTask = nil; exportProgress = "" }
+            do {
+                exportArtifact = try await NotesExport.pdf(document: snapshot, pages: pages, store: store) { page, total in
+                    exportProgress = "正在导出 \(page) / \(total) 页"
+                }
             } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
         }
     }
