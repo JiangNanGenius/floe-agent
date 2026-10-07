@@ -41,6 +41,7 @@ public enum ToolAliasTable {
         "packages": ["apt", "package", "packages", "包", "安装", "pip", "dpkg", "pkg"],
         "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
         "pdf": ["pdf"],
+        "cad": ["cad", "dwg", "dxf", "drawing", "图纸", "图纸助手", "工程图", "二维图", "cad drawing"],
         "office": ["markdown", "rtf", "富文本", "格式转换", "互转", "office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
         "http": ["http", "接口", "api", "rest", "请求", "网页接口"],
         "network": ["network", "网络", "ping", "dns", "http", "端口", "traceroute"],

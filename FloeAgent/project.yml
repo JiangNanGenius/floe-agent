@@ -505,6 +505,7 @@ targets:
       - path: Tests/FloeAppTests/ExternalWorkspaceTemplateAccessTests.swift
       - path: Tests/FloeAppTests/WorkbenchAIReviewTests.swift
       - path: Tests/FloeAppTests/WorkbenchExportDeliveryTests.swift
+      - path: Tests/FloeAppTests/CadWebEngineSessionTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift

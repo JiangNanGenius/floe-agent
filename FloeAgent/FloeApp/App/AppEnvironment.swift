@@ -180,6 +180,9 @@ final class AppEnvironment: ObservableObject {
         rootProvider: WorkspaceCenter.toolRootProvider,
         bridge: WorkbenchAIBridge.live(environment: self)
     )
+    /// Single mutation/commit authority for CAD documents (visible editor and
+    /// agent tools share it).
+    private lazy var _cadDocumentCenter = CadDocumentCenter()
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     /// Set during tool registration; used at launch to reconcile interrupted
@@ -201,6 +204,7 @@ final class AppEnvironment: ObservableObject {
     var mediaGenerationService: MediaGenerationService { _mediaGenerationService }
     var creativeAssetStore: CreativeAssetStore { _creativeAssetStore }
     var workbenchCenter: WorkbenchCenter { _workbenchCenter }
+    var cadDocumentCenter: CadDocumentCenter { _cadDocumentCenter }
     var canvasSyncOperationStore: CanvasSyncOperationStore { _canvasSyncOperationStore }
     var canvasCloudAssetService: CanvasCloudAssetService { _canvasCloudAssetService }
     var screenShareCenter: ScreenShareCenter {
@@ -772,6 +776,9 @@ final class AppEnvironment: ObservableObject {
         // Unified image/video workbench: `media.project` read/propose/apply/
         // export. Proposals only apply through a UI-minted grant.
         registerWorkbenchTools(center: workbenchCenter)
+        // CAD drawings: cad.document read/propose/apply/save/export through the
+        // native Rust WASM engine, with a UI-minted confirmation grant.
+        registerCadDocumentTools(center: cadDocumentCenter)
         // Public Apple-framework integrations. Device-local settings filter
         // these descriptors before each provider request.
         registerAppleSystemTools(database: database)

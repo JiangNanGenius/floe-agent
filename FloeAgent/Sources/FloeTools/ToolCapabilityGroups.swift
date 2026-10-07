@@ -11,6 +11,7 @@ public enum ToolCapabilityGroups {
         if name == "exec.shell" || name.hasPrefix("shell.") { return "shell" }
         if name == "apt" { return "packages" }
         if name == "exec.localPython" { return "python" }
+        if name.hasPrefix("cad.") { return "cad" }
         if name.hasPrefix("document.pdf.") { return "pdf" }
         if name.hasPrefix("document.") || name.hasPrefix("font.") { return "office" }
         if name == "network.http" { return "http" }

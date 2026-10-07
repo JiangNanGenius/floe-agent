@@ -204,6 +204,9 @@ enum ToolDiscovery {
         lines.append("Use \(n("tools.list")) to enumerate tool metadata available in this run; it does not load every schema. Use \(n("tools.search")) to load definitions by exact name or capability, batching independent queries. Available groups: "
             + (groups.isEmpty ? "none" : groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", "))
             + ". Deferred schemas are not missing capabilities; runtime permissions and prerequisites still apply.")
+        if names.contains("cad.document") {
+            lines.append("Use \(n("cad.document")) for 2D DWG/DXF work. read/query/locate/measure/check are read-only; propose binds the exact revision and SHA and returns a new/changed/deleted preview without writing; apply requires a grant the user issued in the CAD UI, then commits one atomic undoable transaction. Never claim a drawing edit was applied or saved without an apply/save receipt.")
+        }
         if names.contains("skill.list") { lines.append("Use \(n("skill.list")) for the complete installed guide inventory.") }
         if names.isSuperset(of: ["skill.search", "skill.read"]) {
             lines.append("Guides provide optional workflow help via \(n("skill.search"))/\(n("skill.read")). Known tool calls do not require a guide; reuse a guide already read at the current revision.")

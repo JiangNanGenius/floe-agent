@@ -102,6 +102,7 @@ public enum CapabilityExecutionRouter {
         ("document.convert", .pdf, "native document conversion"),
         ("document.", .general, "native document engine"),
         ("canvas.", .metal, "native Canvas rendering surface"),
+        ("cad.", .general, "native Rust/acadrust WASM CAD engine"),
         ("notes.", .general, "native Notes workspace"),
         ("browser.", .general, "in-app native browser surface"),
         ("vnc.", .general, "native VNC client"),

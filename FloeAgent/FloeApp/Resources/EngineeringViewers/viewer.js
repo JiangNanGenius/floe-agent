@@ -6,7 +6,7 @@ const $=id=>document.getElementById(id),view=$('view');
 document.body.classList.toggle('dark',!!config.dark);
 $('fit').textContent=say('复位','Fit');$('layersButton').textContent=say('图层','Layers');
 $('layersButton').onclick=()=>{const opening=$('layers').hidden;$('layers').hidden=!opening;if(opening){const editor=$('cadPanel');if(editor)editor.hidden=true;}};
-let destroy=()=>{},fit=()=>{},timer,finished=false,reviewContext=()=>({});
+let destroy=()=>{},fit=()=>{},timer,finished=false,cadDirty=false,cadInfo=null,reviewContext=()=>({});
 $('review').textContent=say('AI 审图','Ask AI');
 $('review').onclick=async()=>{
  $('review').disabled=true;
@@ -70,7 +70,9 @@ async function load(pkg){
   fit=()=>{const b=viewer.bounds,o=viewer.GetOrigin();viewer.FitView(b.minX-o.x,b.maxX-o.x,b.minY-o.y,b.maxY-o.y);viewer.Render();};
   if(cad&&config.canEdit){
    const {installCadEditor}=await import('./cad-editor.js');
+   cadInfo=cadState.info;
    cadEditor=installCadEditor({engine:cad,initial:cadState.info,render,viewer,zh,dark:!!config.dark,onDirty:dirty=>{
+    cadDirty=dirty;
     window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'dirty',dirty}).catch(()=>{});
    }});
   }
@@ -81,12 +83,15 @@ async function load(pkg){
     const value=boundedValue(entity),length=JSON.stringify(value).length;
     if(size+length>40000)break;sample.push(value);size+=length;
    }
+   const info=cadEditor?.inspect()??cadInfo;
    return {type:pkg.kind.toUpperCase(),bounds:viewer.GetBounds(),origin,viewport:{x:camera.position.x,y:camera.position.y,zoom:camera.zoom},
+    activeLayer:info?.activeLayer??null,unsaved:cadDirty,editable:info?.capabilities?true:false,
+    scopeNote:'whole-drawing structured context; viewport and selection are explicit scopes',
     layers:[...$('layers').querySelectorAll('label')].slice(0,100).map(e=>({name:e.textContent,visible:e.querySelector('input').checked})),
     version:parsed?.header?.$ACADVER,units:parsed?.header?.$INSUNITS,entityCount:all.length,entities:sample,
     truncated:sample.length<all.length,missingGlyphs:viewer.hasMissingChars,
-    nativeDiagnostics:(cadEditor?.inspect()??cadState?.info)?.diagnostics,
-    selectedHandle:cadEditor?.inspect().selectedHandle,
+    nativeDiagnostics:info?.diagnostics,
+    selectedHandle:info?.selectedHandle,
     limitations:'Viewport may simplify dimensions, line styles and layouts. Sampled entities are not a complete engineering review.'};
   };
   $('hint').textContent=say('双指缩放 · 拖动平移 · 部分标注、线型和布局可能简化','Pinch to zoom · Drag to pan · Some dimensions, line styles and layouts may be simplified');
