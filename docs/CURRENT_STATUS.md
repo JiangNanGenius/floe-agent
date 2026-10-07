@@ -6,7 +6,7 @@
 
 - 图片／视频统一工程、图层、时间线、AI 候选和 `media.project`，中英文手册已更新。Unified projects, layers, timeline, AI candidates and media.project; bilingual guides updated.
 - Xcode 27 模拟器完整 App 编译通过，46 项模块测试及 19 项 App 定向测试通过；iPad 横竖屏、宽屏三栏、iPhone 窄屏、全屏、保存重开和系统“存储到文件”已实际检查。Full simulator App compile, 46 module and 19 focused App tests passed; rendered layouts, full screen, reopening and native Save to Files verified.
-- 设备 Release 构建、签名上传和 Apple 验证尚待完成。Device Release build, signing/upload and Apple validation pending.
+- 不可变标签 `v1.7.23` 固定源码 `7f23c5023257914c1e136400ecdd0659f06a0af4`；Xcode 27 设备 Release 构建通过，设备包和匹配符号已留存。签名上传和 Apple 验证仍在推进。Immutable source/tag, Xcode 27 device Release build and retained matching symbols confirmed; signing/upload and Apple validation are pending.
 - 实际系统分屏拖动未能通过模拟器控制工具完成；真实设备流畅度、HDR 和付费生成未验收。OS split-window dragging could not be exercised through the simulator controller; physical performance, HDR and paid generation remain unverified.
 
 [工作台说明 / Workbench guide](FLOE_MEDIA_WORKBENCH.md) · [验证记录 / Evidence](releases/notes/FLOE_1_7_23_MEDIA_WORKBENCH.md)
