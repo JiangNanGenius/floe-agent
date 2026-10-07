@@ -74,3 +74,35 @@ Complete native two-device checks, corrupted/missing/compressed inputs and memor
 ### Open CASCADE component checkpoint
 
 The bundled library makes use of Open CASCADE Technology. Wrapper tag `c2148e54b456b571238d35cac037d304053d64b2` and OCCT source `d2abb6d844231cb8f29be6894440874a4700e4a5` are recorded with licenses/exception and reproducible memory-cap patch in the [integration README](../FloeAgent/ThirdParty/EngineeringViewers/README.md). The npm WASM exactly matched the tagged distribution before the documented cap patch; JS differs only in newline encoding. Six desktop browser cases passed, including actual render, noncollapsed canvas, fit interaction, no external requests/errors, and parsed AI evidence. The 10 mm IGES cube has 12 triangles, six faces and expected bounding sphere radius 8.660254 mm. App acceptance is still pending. [Component results](evidence/floe-1.7/cad-surfaces/result.json).
+
+## Shared AI contract (media.project / cad.document)
+
+Both editing tools follow the same explicit-effect workflow so the model can
+discover, read, propose, confirm, apply and verify without ever minting its own
+permission:
+
+1. **Capabilities** — `cad.document action=capabilities` and
+   `media.project action=capabilities` report what the current engine/format and
+   project kind actually support (dynamic, never a hard-coded promise).
+2. **Read/query** — paginated structured reads bound to an explicit owner,
+   environment, workspace/task and revision (`media.project read`,
+   `cad.document read/query/locate/measure/check`).
+3. **Propose/preview** — a revision-bound draft. CAD previews added/changed/
+   deleted handles; media dry-runs every command on a scratch copy. Nothing is
+   written and no screenshot counts as evidence.
+4. **Confirm** — the user accepts in the workbench/review UI. Only that UI mints
+   a single-use grant (CAD additionally reserves/commits so a failed save can be
+   retried without losing the authorized proposal).
+5. **Apply/verify** — apply re-checks revision + SHA, is idempotent per request
+   id, and returns the actual new revision/receipt. Media edits and CAD
+   transactions are atomic with undo; a CAD transaction that cannot roll back
+   cleanly reloads the engine from the last committed bytes.
+6. **Save/export** — media exports verified bytes; CAD exports full DWG/DXF
+   serialization verified by a fresh same-engine reparse (independent
+   compatibility evidence is LibreDWG against exported samples), and PNG/PDF
+   remain separate presentation outputs.
+
+Draft vs applied is explicit in both tools: edit the bound project to modify the
+current draft; a fork (`parent_project_id`) or a new CAD proposal is a variant.
+Candidates and proposals stay owned by the request/project that produced them and
+are never auto-placed on nodes.
