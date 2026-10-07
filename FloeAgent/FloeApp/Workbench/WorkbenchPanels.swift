@@ -1020,6 +1020,21 @@ struct WorkbenchExportPanel: View {
                     Text("HEVC").tag(VideoExportCodec.hevc)
                 }
                 .accessibilityIdentifier("workbench.export.video.codec")
+                Menu {
+                    Button(WorkbenchText.t("横版 1080p（1920×1080）", "Landscape 1080p (1920×1080)")) {
+                        applyExportPreset(.landscape1080p)
+                    }
+                    Button(WorkbenchText.t("竖版 1080p（1080×1920）", "Portrait 1080p (1080×1920)")) {
+                        applyExportPreset(.portrait1080p)
+                    }
+                    Button(WorkbenchText.t("方形 1080（1080×1080）", "Square 1080 (1080×1080)")) {
+                        applyExportPreset(.square1080)
+                    }
+                } label: {
+                    Label(WorkbenchText.t("导出预设", "Export preset"), systemImage: "rectangle.on.rectangle")
+                        .frame(minHeight: 44)
+                }
+                .accessibilityIdentifier("workbench.export.video.preset")
                 HStack {
                     Text(WorkbenchText.t("宽", "W"))
                     TextField("W", value: $videoWidth, format: .number)
@@ -1044,6 +1059,12 @@ struct WorkbenchExportPanel: View {
                 .accessibilityIdentifier("workbench.export.video.run")
             }
         }
+    }
+
+    private func applyExportPreset(_ preset: VideoExportPreset) {
+        videoWidth = Double(preset.width)
+        videoHeight = Double(preset.height)
+        videoFPS = preset.defaultFrameRate
     }
 
     private func saveToSource(_ save: @escaping (ImageExportOptions) async throws -> Void,

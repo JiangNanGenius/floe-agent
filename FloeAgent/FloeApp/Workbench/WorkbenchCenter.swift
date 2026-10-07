@@ -180,6 +180,10 @@ final class WorkbenchCenter: ObservableObject {
     @Published var selectedClipID: UUID?
     @Published var playheadSeconds: Double = 0
     @Published var pixelsPerSecond: Double = 60
+    /// Timeline snapping to clip edges (Build265). Persisted per session.
+    @Published var videoSnapEnabled = true
+    /// Subtitle title-safe area guide in the video preview.
+    @Published var showsCaptionSafeArea = false
     @Published var isDrawingFreehand = false
     @Published var isCropping = false
     @Published var cropRect: NormalizedRect?

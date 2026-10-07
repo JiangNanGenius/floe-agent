@@ -149,8 +149,13 @@ struct WorkbenchVideoSurface: View {
                     .padding()
                     .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
                 }
+                if center.showsCaptionSafeArea {
+                    SafeAreaGuide(positionY: center.project?.videoTimeline?.captionStyle.positionY ?? 0.88,
+                                  alignment: center.project?.videoTimeline?.captionStyle.alignment ?? .center)
+                        .allowsHitTesting(false)
+                }
             }
-            HStack(spacing: 16) {
+            HStack(spacing: 10) {
                 Button {
                     model.togglePlay()
                 } label: {
@@ -159,19 +164,53 @@ struct WorkbenchVideoSurface: View {
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .accessibilityIdentifier("workbench.video.play")
-                Text(timecode(model.currentTime))
+                Button {
+                    step(frames: -1)
+                } label: {
+                    Image(systemName: "backward.frame")
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityIdentifier("workbench.video.frameBack")
+                Button {
+                    step(frames: 1)
+                } label: {
+                    Image(systemName: "forward.frame")
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityIdentifier("workbench.video.frameForward")
+                Text(MediaTimelineMath.timecode(seconds: model.currentTime, frameRate: frameRate))
                     .font(.caption.monospacedDigit())
-                    .frame(width: 60, alignment: .leading)
+                    .frame(width: 96, alignment: .leading)
+                    .accessibilityIdentifier("workbench.video.timecode")
                 Slider(value: Binding(
                     get: { model.currentTime },
                     set: { value in
-                        center.playheadSeconds = value
-                        model.seek(value)
+                        let snapped = center.videoSnapEnabled
+                            ? MediaTimelineMath.snap(seconds: value,
+                                                     to: MediaTimelineMath.snapCandidates(center.project?.videoTimeline ?? VideoTimeline()),
+                                                     tolerance: 0.08)
+                            : value
+                        center.playheadSeconds = snapped
+                        model.seek(snapped)
                     }), in: 0...max(primaryDuration, 0.1))
                     .accessibilityIdentifier("workbench.video.scrub")
-                Text(timecode(primaryDuration))
+                Text(MediaTimelineMath.timecode(seconds: primaryDuration, frameRate: frameRate))
                     .font(.caption.monospacedDigit())
-                    .frame(width: 60, alignment: .trailing)
+                    .frame(width: 96, alignment: .trailing)
+                Toggle(isOn: $center.videoSnapEnabled) {
+                    Image(systemName: "magnet")
+                }
+                .toggleStyle(.button)
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityIdentifier("workbench.video.snap")
+                Button {
+                    center.apply(.setCover(time: center.playheadSeconds))
+                } label: {
+                    Image(systemName: "photo.on.rectangle.angled")
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityIdentifier("workbench.video.setCover")
+                .help(WorkbenchText.t("将播放头位置设为封面", "Set the playhead as the cover frame"))
             }
             .padding(.horizontal, 12)
             .frame(height: 52)
@@ -198,10 +237,17 @@ struct WorkbenchVideoSurface: View {
         return center.project?.videoTimeline?.primaryDuration ?? 0
     }
 
-    private func timecode(_ seconds: Double) -> String {
-        guard seconds.isFinite else { return "00:00.0" }
-        let value = max(0, seconds)
-        return String(format: "%02d:%04.1f", Int(value) / 60, value.truncatingRemainder(dividingBy: 60))
+    private var frameRate: Double {
+        center.project?.canvas?.frameRate ?? 30
+    }
+
+    private func step(frames: Int) {
+        let next = MediaTimelineMath.frameStep(seconds: model.currentTime,
+                                               deltaFrames: frames,
+                                               frameRate: frameRate,
+                                               duration: primaryDuration)
+        center.playheadSeconds = next
+        model.seek(next)
     }
 }
 
@@ -224,6 +270,43 @@ struct WorkbenchPlayerLayerView: UIViewRepresentable {
 final class WorkbenchPlayerContainerView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+}
+
+/// Title-safe guide + caption baseline for the current style position, shown
+/// only when the user asks for it.
+struct SafeAreaGuide: View {
+    var positionY: Double
+    var alignment: CaptionAlignment
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let height = geometry.size.height
+            let lineY = height * CGFloat(min(max(positionY, 0), 1))
+            let barWidth = width * 0.3
+            let barX: CGFloat = switch alignment {
+            case .leading: width * 0.05
+            case .center: (width - barWidth) / 2
+            case .trailing: width * 0.95 - barWidth
+            }
+            ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .stroke(Color.yellow.opacity(0.85), style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+                    .padding(.horizontal, width * 0.05)
+                    .padding(.vertical, height * 0.05)
+                Rectangle()
+                    .fill(Color.yellow.opacity(0.85))
+                    .frame(width: width, height: 1)
+                    .offset(y: lineY)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.yellow.opacity(0.6))
+                    .frame(width: barWidth, height: 14)
+                    .offset(x: barX, y: lineY - 7)
+            }
+        }
+        .accessibilityIdentifier("workbench.caption.safeAreaOverlay")
+        .accessibilityHidden(true)
+    }
 }
 
 // MARK: - Timeline
@@ -273,6 +356,13 @@ struct WorkbenchVideoTimeline: View {
             .frame(minHeight: 44)
             .accessibilityIdentifier("workbench.timeline.split")
             if let selected = center.selectedClipID {
+                Button {
+                    center.apply(.duplicateClip(id: selected))
+                } label: {
+                    Label(WorkbenchText.t("复制", "Duplicate"), systemImage: "plus.square.on.square")
+                }
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("workbench.timeline.duplicate")
                 Button(role: .destructive) {
                     center.apply(.removeClip(id: selected))
                     center.selectedClipID = nil
@@ -376,6 +466,12 @@ struct WorkbenchVideoTimeline: View {
             Button(WorkbenchText.t("在播放头分割", "Split at playhead")) {
                 center.selectedClipID = item.clip.id
                 center.apply(.splitClip(id: item.clip.id, atTimelineSeconds: splitOffset()))
+            }
+            Button(WorkbenchText.t("复制片段", "Duplicate clip")) {
+                center.apply(.duplicateClip(id: item.clip.id))
+            }
+            Button(WorkbenchText.t("在播放头设为封面", "Set cover at playhead")) {
+                center.apply(.setCover(time: center.playheadSeconds))
             }
             Button(WorkbenchText.t("删除片段", "Delete clip"), role: .destructive) {
                 center.apply(.removeClip(id: item.clip.id))
@@ -693,6 +789,56 @@ struct VideoPropertiesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Divider()
+                Text(WorkbenchText.t("字幕样式", "Caption style"))
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker(WorkbenchText.t("对齐", "Alignment"), selection: Binding(
+                    get: { center.project?.videoTimeline?.captionStyle.alignment ?? .center },
+                    set: { value in
+                        guard var style = center.project?.videoTimeline?.captionStyle else { return }
+                        style.alignment = value
+                        center.apply(.setCaptionStyle(style))
+                    })) {
+                    Text(WorkbenchText.t("左对齐", "Leading")).tag(CaptionAlignment.leading)
+                    Text(WorkbenchText.t("居中", "Center")).tag(CaptionAlignment.center)
+                    Text(WorkbenchText.t("右对齐", "Trailing")).tag(CaptionAlignment.trailing)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("workbench.caption.alignment")
+                Toggle(WorkbenchText.t("限制在安全区内", "Keep inside safe area"), isOn: Binding(
+                    get: { center.project?.videoTimeline?.captionStyle.respectsSafeArea ?? false },
+                    set: { value in
+                        guard var style = center.project?.videoTimeline?.captionStyle else { return }
+                        style.respectsSafeArea = value
+                        center.apply(.setCaptionStyle(style))
+                    }))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("workbench.caption.safeArea")
+                CommitSlider(label: WorkbenchText.t("垂直位置", "Vertical position"),
+                             value: center.project?.videoTimeline?.captionStyle.positionY ?? 0.88,
+                             range: 0.4...0.98,
+                             identifier: "workbench.caption.position") { value in
+                    guard var style = center.project?.videoTimeline?.captionStyle else { return }
+                    style.positionY = value
+                    center.apply(.setCaptionStyle(style))
+                }
+                Toggle(WorkbenchText.t("显示安全区参考线", "Show safe-area guide"),
+                       isOn: $center.showsCaptionSafeArea)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("workbench.caption.safeAreaGuide")
+                HStack {
+                    Button(WorkbenchText.t("整体提前 0.1s", "Shift earlier 0.1s")) {
+                        center.apply(.shiftCaptions(bySeconds: -0.1))
+                    }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("workbench.caption.shiftEarlier")
+                    Button(WorkbenchText.t("整体延后 0.1s", "Shift later 0.1s")) {
+                        center.apply(.shiftCaptions(bySeconds: 0.1))
+                    }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("workbench.caption.shiftLater")
+                }
+                .disabled((center.project?.videoTimeline?.captions.isEmpty ?? true))
             }
 
             SectionCard(title: WorkbenchText.t("视频画布", "Video canvas")) {
