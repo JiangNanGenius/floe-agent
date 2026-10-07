@@ -546,6 +546,10 @@ public enum CanvasChildProjectBindingState: Sendable, Equatable {
     /// Forking failed. The original parent binding is retained by id so the
     /// user can retry; the copy stays non-editable (never shares the parent).
     case failed(CanvasChildProjectPending, reason: String)
+    /// A pending/failure marker written by a newer app whose status word this
+    /// build does not understand. Preserved verbatim, read-only, and never
+    /// retryable or forkable here.
+    case unrecognizedStatus(raw: String)
 
     public var binding: CanvasChildProjectBinding? {
         if case .valid(let binding) = self { return binding }
@@ -554,7 +558,7 @@ public enum CanvasChildProjectBindingState: Sendable, Equatable {
 
     public var isRecoverable: Bool {
         switch self {
-        case .unknownVersion, .malformed: true
+        case .unknownVersion, .malformed, .unrecognizedStatus: true
         case .absent, .valid, .pending, .failed: false
         }
     }
@@ -597,10 +601,20 @@ public extension CanvasNode {
                   let wrapper = try? JSONDecoder().decode(PendingWrapper.self, from: data) else {
                 return .malformed(raw: pendingRaw)
             }
-            if wrapper.status == "failed" {
-                return .failed(wrapper.pending, reason: wrapper.reason ?? "")
+            // A newer build's pending/failure marker is preserved verbatim and
+            // stays read-only here: it must never be retried, replaced or
+            // resolved into a writable fork under the old schema.
+            guard wrapper.pending.schemaVersion <= CanvasChildProjectPending.currentSchemaVersion else {
+                return .unknownVersion(raw: pendingRaw)
             }
-            return .pending(wrapper.pending)
+            switch wrapper.status {
+            case "pending":
+                return .pending(wrapper.pending)
+            case "failed":
+                return .failed(wrapper.pending, reason: wrapper.reason ?? "")
+            default:
+                return .unrecognizedStatus(raw: pendingRaw)
+            }
         }
         guard let raw = metadata[Self.childProjectMetadataKey] else { return .absent }
         guard let data = raw.data(using: .utf8) else { return .malformed(raw: raw) }
@@ -649,7 +663,7 @@ public extension CanvasNode {
         case .absent:
             node.metadata.removeValue(forKey: Self.childProjectMetadataKey)
             node.metadata.removeValue(forKey: Self.childProjectPendingMetadataKey)
-        case .unknownVersion, .malformed:
+        case .unknownVersion, .malformed, .unrecognizedStatus:
             break
         }
         self = node

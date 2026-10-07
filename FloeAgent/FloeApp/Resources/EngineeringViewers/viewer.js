@@ -80,6 +80,22 @@ async function load(pkg){
    window.floeCadLocate=handle=>{try{return cadEditor?.locate(handle)??false;}catch{return false;}};
    window.floeCadOverlay=payload=>{try{cadEditor?.showDiff(payload?.entries??[]);}catch{}};
    window.floeCadClearOverlay=()=>{try{cadEditor?.clearDiff();}catch{}};
+   // Reconcile the visible editor after a Drawing Assistant apply committed
+   // new bytes through the tool engine: re-open THIS engine with the
+   // committed bytes, re-render, and reset stale selection/undo/dirty state.
+   window.floeCadReload=async base64=>{
+    if(!cad||!cadEditor)return false;
+    try{
+     const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
+     cadState=await cad.call('open',{bytes,format:pkg.kind});
+     source=cadState.dxf;cadInfo=cadState.info;
+     cadEditor.reload(cadState.info);
+     await render(source);
+     cadDirty=false;
+     window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'externally-synced'}).catch(()=>{});
+     return true;
+    }catch{return false;}
+   };
   }
   reviewContext=()=>{
    const parsed=viewer.GetDxf(),camera=viewer.GetCamera(),origin=viewer.GetOrigin();

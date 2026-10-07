@@ -3670,13 +3670,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ask about this drawing"
+            "value": "Drawing Assistant"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "图纸审阅"
+            "value": "图纸助手"
           }
         }
       }

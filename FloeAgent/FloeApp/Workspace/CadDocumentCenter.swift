@@ -405,16 +405,25 @@ actor CadDocumentCenter: CadDocumentHost {
             .sorted { $0.createdAt > $1.createdAt }
     }
 
-    /// Proposals pending for one canonical document+owner identity. The same
-    /// relative filename under two workspace roots (or two tasks) never mixes:
-    /// the recorded prepare-time access must match exactly and the stored
-    /// document id must equal the resolved canonical relative path. Applied
-    /// proposals (kept as replay tombstones) are excluded.
+    /// Proposals pending for one canonical document as seen by the interactive
+    /// UI. The same relative filename under two workspace roots (or two
+    /// tasks) never mixes: workspace path, owner kind/id and the resolved
+    /// canonical relative path must match the recorded prepare-time access.
+    /// The environment dimension is intentionally NOT matched here — the
+    /// human at the screen is environment-agnostic, and tool callers keep
+    /// exact environment equality through `loadProposal`/`verifyProposalBinding`.
+    /// Applied proposals (kept as replay tombstones) are excluded.
     func pendingProposals(documentID: String, access: CadDocumentAccess) throws -> [CadProposal] {
         let resolved = try resolve(documentID: documentID, access: access)
         return proposals.values
-            .filter { $0.documentID == resolved.id && proposalAccess[$0.id] == access
-                && proposalOutcomes[$0.id] == nil }
+            .filter { proposal in
+                guard proposal.documentID == resolved.id,
+                      proposalOutcomes[proposal.id] == nil,
+                      let recorded = proposalAccess[proposal.id] else { return false }
+                return recorded.workspacePath == access.workspacePath
+                    && recorded.ownerKind == access.ownerKind
+                    && recorded.ownerID == access.ownerID
+            }
             .sorted { $0.createdAt > $1.createdAt }
     }
 

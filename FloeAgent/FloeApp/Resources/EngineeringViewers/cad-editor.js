@@ -413,7 +413,11 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
   catch(e){note(e.message,true);}
   finally{busy=false;update();}
  }
- async function refresh(){const next=await engine.call('inspect',{offset:0,limit:500});info=next;update();}
+ function refresh(){return _refresh();} async function _refresh(){const next=await engine.call('inspect',{offset:0,limit:500});info=next;update();}
+ // Replaces the editor state after an external (Drawing Assistant) apply
+ // committed new bytes through the tool engine. The engine was re-opened by
+ // the caller; here we drop stale selection/undo UI state and rebind.
+ function reload(next){info=next;selected='';selection.clear();diffEntries=[];diffHighlight=null;dirty=false;busy=false;clickAction=null;boundaryHandle='';update();refreshLayers().catch(()=>{});}
  async function saveDocument(){if(busy)return;busy=true;update();note(say('正在校验并保存…','Validating and saving…'));
   try{const bytes=await engine.call('save');let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
    await window.webkit.messageHandlers.floeEngineering.postMessage({operation:'save',base64:btoa(binary)});
@@ -563,7 +567,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  });
  note(say('支持线、圆、圆弧、多段线/矩形、文字、标注、移动/复制/旋转/缩放/镜像、修剪/延伸/偏移、图层与测量。复杂图元保留，暂不编辑。','Lines, circles, arcs, polylines/rectangles, text, dimensions, move/copy/rotate/scale/mirror, trim/extend/offset, layers and measures. Other entities are retained and read only.'));
  update();
- return {showDiff,clearDiff,locate:locateHandle,inspect:()=>({...info,selectedHandle:selected,selection:[...selection],activeLayer:activeLayer(),units,ink:{active:inkState.active,ready:inkState.ready,reason:inkState.reason,color:inkState.color,lineWeight:inkState.lineWeight,drawWithFinger:inkState.drawWithFinger,capabilities:inkState.capabilities?{pointCount:inkState.capabilities.pointCount,lineWeights:inkState.capabilities.lineWeights.length}:null}}),destroy(){
+ return {showDiff,clearDiff,locate:locateHandle,reload,inspect:()=>({...info,selectedHandle:selected,selection:[...selection],activeLayer:activeLayer(),units,ink:{active:inkState.active,ready:inkState.ready,reason:inkState.reason,color:inkState.color,lineWeight:inkState.lineWeight,drawWithFinger:inkState.drawWithFinger,capabilities:inkState.capabilities?{pointCount:inkState.capabilities.pointCount,lineWeights:inkState.capabilities.lineWeights.length}:null}}),destroy(){
   document.removeEventListener('pointerdown',onPointerDown,captureOptions);
   document.removeEventListener('pointermove',onPointerMove,captureOptions);
   document.removeEventListener('pointerup',onPointerUp,captureOptions);

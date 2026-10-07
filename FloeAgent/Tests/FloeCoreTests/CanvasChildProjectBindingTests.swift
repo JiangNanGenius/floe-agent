@@ -103,4 +103,87 @@ struct CanvasChildProjectBindingTests {
         #expect(subject.metadata[CanvasNode.childProjectMetadataKey] == nil)
         #expect(subject.childProjectBinding == nil)
     }
+
+    @Test("higher-version pending marker is preserved raw, read-only, never forkable")
+    func higherVersionPendingPreserved() throws {
+        let raw = try #require(PendingWrapper(
+            status: "pending",
+            pending: CanvasChildProjectPending(schemaVersion: 42, parentProjectID: UUID()),
+            reason: nil).json)
+        var subject = node(metadata: [CanvasNode.childProjectPendingMetadataKey: raw])
+        guard case .unknownVersion(let preserved) = subject.childProjectBindingState else {
+            Issue.record("expected unknownVersion, got \(subject.childProjectBindingState)")
+            return
+        }
+        #expect(preserved == raw)
+        #expect(subject.childProjectBinding == nil)
+        #expect(subject.childProjectBindingState.isNotEditable)
+        #expect(subject.childProjectBindingState.isRecoverable)
+        // It must not be treated as pending: no fork request is collected.
+        let document = CanvasDocument(name: "Doc", nodes: [subject])
+        #expect(CanvasCopyForkPlanner.pendingRequests(in: document).isEmpty)
+        // A copied node carries the same unknown marker forward untouched.
+        var copy = subject
+        copy.id = UUID()
+        #expect(copy.childProjectBindingState.isNotEditable)
+        // Attempting to write a pending state over it must not clobber the raw marker.
+        copy.setChildProjectPending(.pending(CanvasChildProjectPending(parentProjectID: UUID())))
+        #expect(copy.childProjectBindingState.isNotEditable)
+        // Re-encoding preserves the original raw bytes.
+        let decoded = try JSONDecoder().decode(CanvasNode.self, from: JSONEncoder().encode(subject))
+        #expect(decoded.metadata[CanvasNode.childProjectPendingMetadataKey] == raw)
+    }
+
+    @Test("unrecognized pending status is preserved raw and never retried or forked")
+    func unrecognizedStatusPreserved() throws {
+        let raw = try #require(PendingWrapper(
+            status: "blocked-by-policy",
+            pending: CanvasChildProjectPending(parentProjectID: UUID()),
+            reason: "needs review").json)
+        let subject = node(metadata: [CanvasNode.childProjectPendingMetadataKey: raw])
+        guard case .unrecognizedStatus(let preserved) = subject.childProjectBindingState else {
+            Issue.record("expected unrecognizedStatus, got \(subject.childProjectBindingState)")
+            return
+        }
+        #expect(preserved == raw)
+        #expect(subject.childProjectBinding == nil)
+        #expect(subject.childProjectBindingState.isNotEditable)
+        #expect(subject.childProjectBindingState.isRecoverable)
+        // Not pending: fork planner ignores it; retry UI switches do nothing.
+        let document = CanvasDocument(name: "Doc", nodes: [subject])
+        #expect(CanvasCopyForkPlanner.pendingRequests(in: document).isEmpty)
+        // Higher-version failure metadata is likewise unknown, not failed.
+        let futureFailed = try #require(PendingWrapper(
+            status: "failed",
+            pending: CanvasChildProjectPending(schemaVersion: 7, parentProjectID: UUID()),
+            reason: "x").json)
+        let failedNode = node(metadata: [CanvasNode.childProjectPendingMetadataKey: futureFailed])
+        guard case .unknownVersion = failedNode.childProjectBindingState else {
+            Issue.record("expected unknownVersion for future failed marker")
+            return
+        }
+        #expect(failedNode.childProjectBindingState.isNotEditable)
+    }
+
+    @Test("current-version pending and failed markers still decode for retry")
+    func currentVersionPendingStillWorks() throws {
+        var subject = node()
+        let pending = CanvasChildProjectPending(parentProjectID: UUID())
+        subject.setChildProjectPending(.pending(pending))
+        guard case .pending(let decoded) = subject.childProjectBindingState else {
+            Issue.record("expected pending, got \(subject.childProjectBindingState)")
+            return
+        }
+        #expect(decoded.parentProjectID == pending.parentProjectID)
+        let document = CanvasDocument(name: "Doc", nodes: [subject])
+        #expect(CanvasCopyForkPlanner.pendingRequests(in: document).count == 1)
+
+        subject.setChildProjectPending(.failed(pending, reason: "disk full"))
+        guard case .failed(let failed, let reason) = subject.childProjectBindingState else {
+            Issue.record("expected failed")
+            return
+        }
+        #expect(failed.parentProjectID == pending.parentProjectID)
+        #expect(reason == "disk full")
+    }
 }

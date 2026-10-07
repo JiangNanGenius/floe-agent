@@ -19,22 +19,39 @@ struct EngineeringReviewCapture: Identifiable {
 /// relative path) and the assistant conversation that discusses it. The
 /// Drawing Assistant therefore stays bound to the same chat across sheet
 /// open/close and app restarts, instead of whichever conversation happens to
-/// be selected in the router.
+/// be selected in the router. Writes are serialized so concurrent binds can
+/// never persist out of order and lose the newest mapping; a persistence
+/// failure is reported, never silently dropped to a non-durable location.
 final class DrawingAssistantConversationStore: @unchecked Sendable {
+    struct PersistenceFailure: Error, LocalizedError {
+        var errorDescription: String? {
+            "无法持久化图纸助手会话绑定。"
+        }
+    }
+
     static let shared = DrawingAssistantConversationStore()
 
     private let lock = NSLock()
     private var bindings: [String: String] = [:]
     private var loaded = false
     private let fileURL: URL
+    /// Serializes snapshot writes so the newest mapping always wins.
+    private let writeQueue = DispatchQueue(label: "floe.drawing-assistant.store")
 
     private init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?.appendingPathComponent("FloeAgent/DrawingAssistant", isDirectory: true)
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("DrawingAssistant")
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        fileURL = root.appendingPathComponent("conversations.json")
+        if let root {
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            fileURL = root.appendingPathComponent("conversations.json")
+        } else {
+            // No silent temporaryDirectory fallback: without an Application
+            // Support location there is nothing durable to write to.
+            fileURL = URL(fileURLWithPath: "/dev/null")
+        }
     }
+
+    var isDurable: Bool { fileURL.path != "/dev/null" }
 
     private func key(workspaceID: UUID, relativePath: String) -> String {
         "\(workspaceID.uuidString)|\(relativePath)"
@@ -43,7 +60,7 @@ final class DrawingAssistantConversationStore: @unchecked Sendable {
     private func loadLocked() {
         guard !loaded else { return }
         loaded = true
-        guard let data = try? Data(contentsOf: fileURL),
+        guard isDurable, let data = try? Data(contentsOf: fileURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return }
         bindings = object
     }
@@ -55,14 +72,18 @@ final class DrawingAssistantConversationStore: @unchecked Sendable {
         return UUID(uuidString: raw)
     }
 
-    func bind(workspaceID: UUID, relativePath: String, conversationID: UUID) {
+    /// Persists the newest mapping. Serialized on `writeQueue`, so two rapid
+    /// binds keep the latest value on disk. Throws when no durable location
+    /// exists; the caller surfaces that instead of assuming persistence.
+    func bind(workspaceID: UUID, relativePath: String, conversationID: UUID) throws {
         lock.lock()
         loadLocked()
         bindings[key(workspaceID: workspaceID, relativePath: relativePath)] = conversationID.uuidString
         let snapshot = bindings
         lock.unlock()
+        guard isDurable else { throw PersistenceFailure() }
         let url = fileURL
-        Task.detached(priority: .utility) {
+        writeQueue.sync {
             guard let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]) else { return }
             try? data.write(to: url, options: .atomic)
         }
@@ -152,9 +173,31 @@ final class EngineeringWebSession: ObservableObject {
 
     // MARK: Drawing Assistant viewer bridge
 
+    /// Whether the visible CAD editor currently holds unsaved edits. Used to
+    /// avoid clobbering manual edits when reconciling an externally-applied
+    /// proposal into the live viewer.
+    var isCADDirty: Bool {
+        coordinator?.dirty ?? false
+    }
+
+    /// Reconciles the visible CAD editor after a Drawing Assistant apply
+    /// committed new bytes through the tool engine. Returns false when the
+    /// reload did not run (no editor, decode failure, or page error).
+    @MainActor
+    func reloadCAD(bytes: Data) async -> Bool {
+        guard let coordinator, coordinator.web != nil else { return false }
+        let base64 = bytes.base64EncodedString()
+        guard let encoded = Self.javaScriptString(base64) else { return false }
+        coordinator.pendingExternalSyncSHA = FloeDigest.sha256Hex(bytes)
+        return await withCheckedContinuation { continuation in
+            web?.evaluateJavaScript("window.floeCadReload && window.floeCadReload(\(encoded));") { result, _ in
+                continuation.resume(returning: (result as? Bool) ?? false)
+            }
+        }
+    }
+
     /// Highlights and centers an entity handle in the live viewer session.
-    func locateCADHandle(_ handle: String) {
-        guard let encoded = Self.javaScriptString(handle) else { return }
+    func locateCADHandle(_ handle: String) {        guard let encoded = Self.javaScriptString(handle) else { return }
         web?.evaluateJavaScript("window.floeCadLocate && window.floeCadLocate(\(encoded));",
                                 completionHandler: nil)
     }
@@ -297,6 +340,9 @@ struct EngineeringWebView: UIViewRepresentable {
         var baselineSHA: String
         var saving = false
         var dirty = false
+        /// SHA of the bytes last pushed through `floeCadReload`; becomes the
+        /// new save baseline when the page acknowledges the external sync.
+        var pendingExternalSyncSHA: String?
         weak var web: WKWebView?
         var reviewing = false
         var page: URL?
@@ -330,6 +376,19 @@ struct EngineeringWebView: UIViewRepresentable {
             if operation == "complete", delivered { completed = true; replyHandler([:], nil); return }
             if operation == "dirty", completed, onSave != nil, let dirty = body["dirty"] as? Bool {
                 self.dirty = dirty; onDirty?(dirty); replyHandler([:], nil); return
+            }
+            if operation == "externally-synced", completed {
+                // A Drawing Assistant apply was pushed into this live viewer
+                // and the engine re-opened the committed bytes: adopt the new
+                // baseline and clear the stale dirty flag.
+                if let sha = pendingExternalSyncSHA {
+                    baselineSHA = sha
+                    pendingExternalSyncSHA = nil
+                }
+                dirty = false
+                onDirty?(false)
+                replyHandler([:], nil)
+                return
             }
             if operation == "save", completed, !saving, let onSave,
                let base64 = body["base64"] as? String, base64.utf8.count <= 14 * 1024 * 1024,

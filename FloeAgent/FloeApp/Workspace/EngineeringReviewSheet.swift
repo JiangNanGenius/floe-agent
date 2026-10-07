@@ -53,6 +53,11 @@ struct EngineeringReviewSheet: View {
     init(capture: EngineeringReviewCapture, conversationID: UUID?, center: WorkspaceCenter,
          webSession: EngineeringWebSession? = nil) {
         self.capture = capture
+        // `conversationID` is the durable, drawing-specific assistant
+        // conversation (validated to still exist), or nil when this drawing
+        // has none yet — in which case a fresh one is created on first send.
+        // The initiating-task/router chat is deliberately NOT reused: two
+        // different drawings must never share one assistant conversation.
         self.conversationID = conversationID
         self.center = center
         self.webSession = webSession
@@ -245,10 +250,15 @@ struct EngineeringReviewSheet: View {
                 target = record.id
             }
             // Durable document-bound binding: reopening this drawing later
-            // resumes the same Drawing Assistant conversation.
+            // resumes the same Drawing Assistant conversation. A persistence
+            // failure is surfaced; the conversation still works for this send.
             if let documentID = capture.documentID, let workspaceID {
-                DrawingAssistantConversationStore.shared
-                    .bind(workspaceID: workspaceID, relativePath: documentID, conversationID: target)
+                do {
+                    try DrawingAssistantConversationStore.shared
+                        .bind(workspaceID: workspaceID, relativePath: documentID, conversationID: target)
+                } catch {
+                    self.error = error.localizedDescription
+                }
             }
             guard center.currentWorkspace?.id == workspaceID else {
                 throw FloeError.validationFailed(String(localized: "engineering.review.workspaceChanged"))
@@ -277,13 +287,22 @@ struct EngineeringReviewSheet: View {
         }
     }
 
-    /// The original task that asked for the change is told the outcome, so a
-    /// late or follow-up run in the same conversation sees the decision.
-    @MainActor private func notifyOriginalTask(summary: String) {
+    /// The original task that asked for the change is told the outcome through
+    /// the durable runtime-input ingress, so a late or follow-up run in the
+    /// same conversation sees the decision instead of assuming the proposal
+    /// is still pending.
+    @MainActor private func notifyOriginalTask(proposal: CadProposal, decision: String,
+                                               revision: Int64?, sha256: String?) {
         guard let target = conversationID ?? createdConversationID else { return }
         Task {
-            await center.environment.conversationCenter
-                .recordProposalNotice(conversationID: target, summary: summary)
+            do {
+                try await center.environment.conversationCenter
+                    .recordProposalDecision(conversationID: target, proposalID: proposal.id,
+                                            decision: decision, revision: revision, sha256: sha256,
+                                            summary: proposal.summary)
+            } catch {
+                proposalMessage = error.localizedDescription
+            }
         }
     }
 
@@ -292,14 +311,47 @@ struct EngineeringReviewSheet: View {
         defer { applyingProposalID = nil }
         do {
             let receipt = try await center.environment.cadDocumentCenter.approveAndApply(proposal: proposal)
-            webSession?.clearCADOverlay()
-            proposalMessage = engineeringReviewText(
-                "已应用并保存修订 \(receipt.revision)（\(receipt.sha256.prefix(8))…）",
-                "Applied and saved revision \(receipt.revision) (\(receipt.sha256.prefix(8))…)")
             proposals.removeAll { $0.id == proposal.id }
-            notifyOriginalTask(summary: "Drawing Assistant proposal applied by the user: \(proposal.summary) (revision \(receipt.revision))")
+            notifyOriginalTask(proposal: proposal, decision: "applied",
+                               revision: receipt.revision, sha256: receipt.sha256)
+            await reconcileLiveViewerAfterApply()
         } catch {
             proposalMessage = error.localizedDescription
+        }
+    }
+
+    /// After an apply, the same visible CAD editor still holds the pre-apply
+    /// geometry, undo stack and save baseline. Reload the committed bytes
+    /// into the live session so the screen matches disk. Manual unsaved
+    /// edits are never clobbered: the conflict is surfaced and the user
+    /// resolves it by saving or discarding in the editor first.
+    @MainActor private func reconcileLiveViewerAfterApply() {
+        guard let webSession else {
+            proposalMessage = engineeringReviewText(
+                "已应用并保存。",
+                "Applied and saved.")
+            return
+        }
+        if webSession.isCADDirty {
+            proposalMessage = engineeringReviewText(
+                "已应用并保存；当前图纸窗口还有未保存的手工修改，未强行刷新。请先保存或放弃这些修改，再重新打开图纸查看最新结果。",
+                "Applied and saved; the open drawing has unsaved manual edits and was not force-reloaded. Save or discard them, then reopen the drawing to see the result.")
+            return
+        }
+        guard let root = capture.workspaceRoot, let documentID = capture.documentID,
+              let bytes = try? Data(contentsOf: root.appendingPathComponent(documentID)) else {
+            proposalMessage = engineeringReviewText(
+                "已应用并保存；无法自动刷新图纸窗口，请重新打开图纸。",
+                "Applied and saved; the open viewer could not be refreshed automatically. Reopen the drawing.")
+            return
+        }
+        Task {
+            let ok = await webSession.reloadCAD(bytes: bytes)
+            await MainActor.run {
+                proposalMessage = ok
+                    ? engineeringReviewText("已应用并保存，图纸窗口已同步最新结果。", "Applied and saved; the open drawing now shows the latest revision.")
+                    : engineeringReviewText("已应用并保存；图纸窗口刷新失败，请重新打开图纸。", "Applied and saved; refreshing the open drawing failed. Reopen it to see the latest revision.")
+            }
         }
     }
 
@@ -308,7 +360,7 @@ struct EngineeringReviewSheet: View {
         webSession?.clearCADOverlay()
         proposals.removeAll { $0.id == proposal.id }
         proposalMessage = engineeringReviewText("已放弃该提案。", "Proposal discarded.")
-        notifyOriginalTask(summary: "Drawing Assistant proposal rejected by the user: \(proposal.summary)")
+        notifyOriginalTask(proposal: proposal, decision: "rejected", revision: nil, sha256: nil)
     }
 }
 #endif

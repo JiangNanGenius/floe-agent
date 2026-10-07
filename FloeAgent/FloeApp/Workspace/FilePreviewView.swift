@@ -184,8 +184,17 @@ struct FilePreviewView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
+                                // Done is a SIZING transition back to the
+                                // embedded preview: the same live WKWebView
+                                // session (including unsaved edits) is
+                                // re-adopted, so a dirty drawing is never
+                                // confronted with a discard dialog here.
+                                // Dirty state still blocks the interactive
+                                // swipe; discarding is a separate explicit
+                                // choice in the confirmation dialog.
                                 Button("engineering.done") {
-                                    if cadDirty { confirmDiscardCAD = true } else { isEngineeringFullScreen = false }
+                                    if cadDirty { confirmDiscardCAD = true }
+                                    else { isEngineeringFullScreen = false }
                                 }
                                     .accessibilityIdentifier("engineering.done")
                             }
@@ -193,17 +202,33 @@ struct FilePreviewView: View {
                 }
                 .interactiveDismissDisabled(cadDirty)
                 .confirmationDialog("engineering.cad.unsaved", isPresented: $confirmDiscardCAD, titleVisibility: .visible) {
-                    Button("engineering.cad.discard", role: .destructive) { cadDirty = false; isEngineeringFullScreen = false }
+                    Button("engineering.cad.keepSession") {
+                        // Preserve the live unsaved session and only change
+                        // the presentation size; edits stay open in the
+                        // re-adopted embedded preview.
+                        isEngineeringFullScreen = false
+                    }
+                    Button("engineering.cad.discard", role: .destructive) {
+                        // True close: drop the unsaved session and reload
+                        // from the last committed bytes.
+                        cadDirty = false
+                        isEngineeringFullScreen = false
+                        Task { await load() }
+                    }
                     Button("engineering.cad.keepEditing", role: .cancel) {}
                 }
-                .sheet(item: $engineeringReview) { capture in
-                    EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID,
+                .sheet(item: $engineeringReview,
+                       onDismiss: { Task { await refreshDrawingAssistantBinding() } }) { capture in
+                    EngineeringReviewSheet(capture: capture,
+                                           conversationID: drawingAssistantConversationID,
                                            center: center, webSession: engineeringSession)
                 }
             }
         }
-        .sheet(item: Binding(get: { isEngineeringFullScreen ? nil : engineeringReview }, set: { engineeringReview = $0 })) { capture in
-            EngineeringReviewSheet(capture: capture, conversationID: engineeringConversationID,
+        .sheet(item: Binding(get: { isEngineeringFullScreen ? nil : engineeringReview }, set: { engineeringReview = $0 }),
+               onDismiss: { Task { await refreshDrawingAssistantBinding() } }) { capture in
+            EngineeringReviewSheet(capture: capture,
+                                   conversationID: drawingAssistantConversationID,
                                    center: center, webSession: engineeringSession)
         }
         // The unified media workbench replaces the old parameter form and
@@ -256,22 +281,33 @@ struct FilePreviewView: View {
         }
     }
 
-    /// The conversation bound to this exact document: an explicit preview
-    /// binding wins, then the durable per-document Drawing Assistant binding
-    /// (survives restarts), then the currently selected conversation when it
-    /// belongs to this workspace.
+    /// The initiating task conversation (explicit preview binding, else the
+    /// router's selected chat when it belongs to this workspace). Used for
+    /// workbench ownership — NOT for the Drawing Assistant chat, which is
+    /// drawing-specific to avoid cross-file context bleed.
     private var engineeringConversationID: UUID? {
-        if let id = conversationID, center.workspaceID(for: id) == center.currentWorkspace?.id {
-            return id
-        }
-        if let workspaceID = center.currentWorkspace?.id,
-           let durable = DrawingAssistantConversationStore.shared
-            .conversationID(workspaceID: workspaceID, relativePath: relativePath) {
-            return durable
-        }
-        guard let id = router.selectedConversationID,
+        guard let id = conversationID ?? router.selectedConversationID,
               center.workspaceID(for: id) == center.currentWorkspace?.id else { return nil }
         return id
+    }
+
+    /// Durable, drawing-specific assistant conversation, validated against
+    /// the conversation store (a deleted conversation drops the binding).
+    @State private var drawingAssistantConversationID: UUID?
+
+    @MainActor
+    private func refreshDrawingAssistantBinding() async {
+        guard let workspaceID = center.currentWorkspace?.id else {
+            drawingAssistantConversationID = nil
+            return
+        }
+        guard let stored = DrawingAssistantConversationStore.shared
+            .conversationID(workspaceID: workspaceID, relativePath: relativePath) else {
+            drawingAssistantConversationID = nil
+            return
+        }
+        let exists = (try? await center.environment.conversationStore.conversation(id: stored)) != nil
+        drawingAssistantConversationID = exists ? stored : nil
     }
 
     /// Ownership recorded on workbench projects opened from this preview:
@@ -693,6 +729,7 @@ struct FilePreviewView: View {
         engineeringRoot = nil
         cadDirty = false
         remotePreview.clear()
+        await refreshDrawingAssistantBinding()
         if center.fileService == nil, let conversationID {
             do {
                 try await center.openTaskWorkspace(conversationID: conversationID)
