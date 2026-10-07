@@ -31,6 +31,9 @@ async function load(pkg){
  const missing=pkg.missingReferences?.length??0;
  if(pkg.kind==='dxf'||pkg.kind==='dwg'){
   let cad=null,cadState=null,cadEditor=null,source=bytes(main);
+  // Original document bytes retained: the external-undo slot restores exactly
+  // this content after a Drawing Assistant apply.
+  const originalBytes=source;
   if(pkg.kind==='dwg'||config.canEdit){
    const {createCadEngine}=await import('./cad-editor.js');cad=createCadEngine();destroy=()=>cad.close();
    cadState=await cad.call('open',{bytes:source,format:pkg.kind});source=cadState.dxf;
@@ -82,14 +85,19 @@ async function load(pkg){
    window.floeCadClearOverlay=()=>{try{cadEditor?.clearDiff();}catch{}};
    // Reconcile the visible editor after a Drawing Assistant apply committed
    // new bytes through the tool engine: re-open THIS engine with the
-   // committed bytes, re-render, and reset stale selection/undo/dirty state.
+   // committed bytes, re-render, and reset stale selection/dirty state.
+   // The PREVIOUS state is retained as ONE undoable step so the user can
+   // revert the AI change safely (marked dirty; nothing writes disk until an
+   // explicit save).
    window.floeCadReload=async base64=>{
     if(!cad||!cadEditor)return false;
     try{
      const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
+     const before={bytes:originalBytes,dxf:source,info:cadInfo,format:pkg.kind};
      cadState=await cad.call('open',{bytes,format:pkg.kind});
      source=cadState.dxf;cadInfo=cadState.info;
      cadEditor.reload(cadState.info);
+     cadEditor.pushExternalUndo(before);
      await render(source);
      cadDirty=false;
      window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'externally-synced'}).catch(()=>{});

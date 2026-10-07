@@ -3889,6 +3889,22 @@
         }
       }
     },
+    "engineering.cad.keepSession": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep edits and exit fullscreen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留修改并退出全屏"
+          }
+        }
+      }
+    },
     "engineering.unsupported.title": {
       "localizations": {
         "en": {

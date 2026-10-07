@@ -153,6 +153,11 @@ final class WorkbenchCenter: ObservableObject {
     /// True while the video preview proxy is being (re)rendered.
     @Published private(set) var isRenderingPreview = false
     @Published private(set) var thumbnails: [UUID: [WorkbenchThumbnail]] = [:]
+    /// Music-waveform peak caches keyed by asset id. A missing entry means
+    /// "not loaded yet or undecodable"; the UI keeps its placeholder instead
+    /// of drawing a fake waveform.
+    @Published private(set) var waveforms: [UUID: [Float]] = [:]
+    private var waveformTasks: [UUID: Task<Void, Never>] = [:]
     @Published private(set) var pendingProposals: [MediaProposal] = []
     @Published private(set) var candidates: [Candidate] = []
     @Published private(set) var aiJobs: [WorkbenchAIJobInfo] = []
@@ -753,6 +758,34 @@ final class WorkbenchCenter: ObservableObject {
             for thumb in thumbs { grouped[thumb.clipID, default: []].append(thumb) }
             self.thumbnails = grouped
         }
+    }
+
+    /// Loads (and caches) the waveform peaks for a music asset. Dedupes
+    /// in-flight work per asset; undecodable assets leave the cache empty so
+    /// the strip keeps its truthful placeholder.
+    func loadWaveform(for assetID: UUID) {
+        guard waveforms[assetID] == nil, waveformTasks[assetID] == nil,
+              let project else { return }
+        let urls = assetURLMap(for: project)
+        guard let url = urls[assetID] else { return }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            // Bucket count scales with the strip's drawing resolution.
+            let peaks = try? await MediaWaveformSampler.peaks(from: url, bucketCount: 512)
+            guard !Task.isCancelled else { return }
+            if let peaks { self.waveforms[assetID] = peaks }
+            self.waveformTasks[assetID] = nil
+        }
+        waveformTasks[assetID] = task
+    }
+
+    /// Clamp/quantization helper shared by the trim handles and the
+    /// properties sliders: quantizes a source-time value to whole frames when
+    /// the canvas has a frame rate, so drag, slider and renderer agree.
+    func quantizedSourceTime(_ value: Double, frameRate: Double?) -> Double {
+        guard let frameRate, frameRate.isFinite, frameRate > 0 else { return value }
+        let frame = 1.0 / frameRate
+        return (value / frame).rounded() * frame
     }
 
     // MARK: - Assets

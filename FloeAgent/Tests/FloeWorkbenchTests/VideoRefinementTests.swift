@@ -131,4 +131,37 @@ struct VideoRefinementTests {
         #expect(decoded.captionStyle.alignment == .trailing)
         #expect(decoded.captionStyle.respectsSafeArea == false)
     }
+
+    @Test("trim/speed keep source, timeline and caption mappings consistent")
+    func trimSpeedSubtitleMapping() throws {
+        // Clip: source 2...6s at 2× speed → 2s of timeline content.
+        var fast = clip(trimStart: 2, trimEnd: 6, speed: 2)
+        let asset = MediaAssetReference(kind: .video, relativePath: "a.mp4", originalName: "a.mp4",
+                                        metadata: .init(durationSeconds: 8))
+        var project = MediaProject(kind: .video, name: "V",
+                                   assets: [asset],
+                                   videoTimeline: VideoTimeline(clips: [fast]))
+        // Trim the right edge by one source second: 2...5s at 2× → 1.5s timeline.
+        try MediaTransactions.apply(.updateClip(id: fast.id, trimStart: nil, trimEnd: 5,
+                                                speed: nil, volume: nil, isMuted: nil,
+                                                rotationDegrees: nil, crop: .unchanged,
+                                                leadingTransition: nil, transitionDuration: nil),
+                                    to: &project)
+        let trimmed = try #require(project.videoTimeline?.clips.first)
+        #expect(trimmed.trimEnd == 5)
+        let placed = MediaTimelineMath.placeClips([trimmed])
+        #expect(placed.count == 1)
+        #expect(abs(placed[0].duration - 1.5) < 0.001)
+        // Playhead→source mapping honors the trim AND the speed.
+        #expect(MediaTimelineMath.sourceTime(for: placed[0], timeline: 0.5) == 3.0)
+        // Captions after the retimed clip shift by the duration delta (−0.5s).
+        let captions = [CaptionSegment(start: 0.2, end: 0.9, text: "in"),
+                        CaptionSegment(start: 2.0, end: 2.8, text: "after")]
+        let retimed = MediaTimelineMath.retimeCaptions(captions, clipAfter: placed[0], previousDuration: 2.0)
+        #expect(abs(retimed[0].start - 0.2) < 0.001)
+        #expect(abs(retimed[1].start - 1.5) < 0.001)
+        // Crossfade windows still land inside the retimed clip.
+        let windows = MediaTimelineMath.dissolveWindows(placed)
+        #expect(windows.count == placed.filter { $0.clip.leadingTransition == .crossDissolve }.count)
+    }
 }

@@ -94,28 +94,44 @@ final class DrawingAssistantConversationStore: @unchecked Sendable {
 /// view is re-parented between the embedded preview and the fullscreen
 /// presentation, so an unsaved CAD editing session (JS state, undo history,
 /// camera, ink readiness) survives the transition instead of reloading from
-/// disk. The page is only reloaded when `generation` changes (explicit retry).
+/// disk. The reload generation lives HERE (not in any view instance), so two
+/// different EngineeringFilePreview instances attaching the same session can
+/// never tear each other down; only an explicit `retry()` reloads the page.
 @MainActor
 final class EngineeringWebSession: ObservableObject {
+    /// Identity of the currently loaded page; nil while no page is loaded.
     private(set) var generation: UUID?
+    /// Name of the document the current page was loaded from.
+    private(set) var loadedDocumentName: String?
+    /// Set by `retry()`: the next attach rebuilds the web view.
+    private var pendingRebuild = false
     private(set) var web: WKWebView?
     private(set) var coordinator: EngineeringWebView.Coordinator?
     private(set) var server: LocalPreviewServer?
     private(set) var startup: Task<Void, Never>?
     private(set) var watchdog: Task<Void, Never>?
 
-    func attach(package: EngineeringPreviewPackage, generation: UUID,
+    /// Explicit user retry: tear down now so the next attach reloads.
+    func retry() {
+        pendingRebuild = true
+        tearDown()
+    }
+
+    func attach(package: EngineeringPreviewPackage,
                 error: Binding<String?>,
                 onReview: ((EngineeringReviewCapture) -> Void)?,
                 onSave: ((Data, String) async throws -> String)?,
                 onDirty: ((Bool) -> Void)?,
                 dark: Bool, locale: String) -> WKWebView {
-        if let web, coordinator != nil, generation == self.generation {
+        let sameDocument = loadedDocumentName == package.name
+        if let web, coordinator != nil, generation != nil, !pendingRebuild, sameDocument {
             coordinator?.update(callbacks: error, onReview: onReview, onSave: onSave, onDirty: onDirty)
             return web
         }
         tearDown()
-        self.generation = generation
+        pendingRebuild = false
+        generation = UUID()
+        loadedDocumentName = package.name
         let coordinator = EngineeringWebView.Coordinator(package: package, error: error,
                                                          onReview: onReview, onSave: onSave,
                                                          onDirty: onDirty)
@@ -223,13 +239,15 @@ final class EngineeringWebSession: ObservableObject {
         return encoded
     }
 
-    /// Full teardown only when the session itself goes away.
+    /// Full teardown only when the session itself goes away (or an explicit
+    /// retry asks for a rebuild). View instances never trigger this.
     func tearDown() {
         startup?.cancel(); watchdog?.cancel()
         server?.stop(); server = nil
         web?.stopLoading(); web?.navigationDelegate = nil
         web?.configuration.userContentController.removeScriptMessageHandler(forName: "floeEngineering", contentWorld: .page)
         web = nil; coordinator = nil; generation = nil
+        loadedDocumentName = nil
         startup = nil; watchdog = nil
     }
 }
@@ -244,7 +262,6 @@ struct EngineeringFilePreview: View {
     var session: EngineeringWebSession? = nil
     @Environment(\.colorScheme) private var colorScheme
     @State private var error: String?
-    @State private var generation = UUID()
     @StateObject private var ownedSession = EngineeringWebSession()
 
     private var activeSession: EngineeringWebSession { session ?? ownedSession }
@@ -261,10 +278,17 @@ struct EngineeringFilePreview: View {
                 ContentUnavailableView {
                     Label("engineering.failed", systemImage: "exclamationmark.triangle")
                 } description: { Text(error) } actions: {
-                    Button("engineering.retry") { self.error = nil; generation = UUID() }
+                    // Retry bumps the SESSION generation: the reload decision
+                    // belongs to the durable session, never to a view
+                    // instance, so retrying cannot tear down an unsaved edit
+                    // session owned elsewhere.
+                    Button("engineering.retry") {
+                        self.error = nil
+                        activeSession.retry()
+                    }
                 }
             } else {
-                EngineeringWebView(session: activeSession, package: package, generation: generation,
+                EngineeringWebView(session: activeSession, package: package,
                                    error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
             }
         }
@@ -275,7 +299,6 @@ struct EngineeringFilePreview: View {
 struct EngineeringWebView: UIViewRepresentable {
     let session: EngineeringWebSession
     let package: EngineeringPreviewPackage
-    let generation: UUID
     @Binding var error: String?
     var onReview: ((EngineeringReviewCapture) -> Void)?
     var onSave: ((Data, String) async throws -> String)?
@@ -291,7 +314,7 @@ struct EngineeringWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> EngineeringContainerView {
         let container = EngineeringContainerView()
         container.session = session
-        _ = session.attach(package: package, generation: generation, error: $error,
+        _ = session.attach(package: package, error: $error,
                            onReview: onReview, onSave: onSave, onDirty: onDirty,
                            dark: colorScheme == .dark, locale: locale.identifier)
         container.setNeedsLayout()

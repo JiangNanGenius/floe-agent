@@ -45,7 +45,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  let layersLoaded=false;
  const toggle=document.createElement('button');toggle.id='cadEdit';toggle.textContent=say('编辑','Edit');toggle.onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){const layersEl=document.getElementById('layers');if(layersEl)layersEl.hidden=true;if(!layersLoaded){layersLoaded=true;void refreshLayers();}}};
  document.querySelector('header').append(toggle);
- const undo=button(controls,say('撤销','Undo'),()=>mutate('undo'));
+ const undo=button(controls,say('撤销','Undo'),()=>{if(externalUndo&&!info.canUndo){void restoreExternalUndo();return;}void mutate('undo');});
  const redo=button(controls,say('重做','Redo'),()=>mutate('redo'));
  const save=button(controls,say('保存','Save'),saveDocument);save.id='cadSave';
  function button(parent,label,action){const b=document.createElement('button');b.textContent=label;b.onclick=action;parent.append(b);return b;}
@@ -391,7 +391,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
    const option=new Option(`${kind} · ${body.common?.layer??''} · ${row.handle}`,row.handle);option.disabled=!row.editable;entities.append(option);
   }
   if(selected&&!info.entities.some(row=>row.handle===selected)){selected='';selection.delete(previous);}
-  entities.value=selected;undo.disabled=busy||!info.canUndo;redo.disabled=busy||!info.canRedo;save.disabled=busy||!dirty;
+  entities.value=selected;undo.disabled=busy||(!info.canUndo&&!externalUndo);redo.disabled=busy||!info.canRedo;save.disabled=busy||!dirty;
   selectionInfo.textContent=selection.size?say(`已选 ${selection.size} 个图元`,`${selection.size} selected`):'';
   if(info.entities.length<info.entityCount)note(say('显示前 500 个图元，其他内容保留在原图纸中。','Showing the first 500 entities; other content remains in the drawing.'));
   updateInk();
@@ -418,6 +418,25 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  // committed new bytes through the tool engine. The engine was re-opened by
  // the caller; here we drop stale selection/undo UI state and rebind.
  function reload(next){info=next;selected='';selection.clear();diffEntries=[];diffHighlight=null;dirty=false;busy=false;clickAction=null;boundaryHandle='';update();refreshLayers().catch(()=>{});}
+ // ONE external undo slot retaining the pre-apply document bytes so undoing
+ // an AI change restores the exact prior content (then marked dirty; disk is
+ // only rewritten by an explicit save). Newer slots replace the old one so
+ // at most one AI transaction is revertible this way.
+ let externalUndo=null;
+ function pushExternalUndo(before){externalUndo=before;}
+ async function restoreExternalUndo(){
+  if(!externalUndo||busy)return;busy=true;update();
+  try{
+   const next=await engine.call('open',{bytes:externalUndo.bytes,format:externalUndo.format});
+   externalUndo=null;
+   info=next.info;selected='';selection.clear();
+   await render(next.dxf);
+   dirty=true;onDirty(true);
+   note(say('已撤销 AI 修改（未保存）；保存后才会写回图纸。','Reverted the AI change (unsaved); it is written back only when you save.'));
+   await refreshLayers();
+  }catch(e){note(e.message,true);}
+  finally{busy=false;update();}
+ }
  async function saveDocument(){if(busy)return;busy=true;update();note(say('正在校验并保存…','Validating and saving…'));
   try{const bytes=await engine.call('save');let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
    await window.webkit.messageHandlers.floeEngineering.postMessage({operation:'save',base64:btoa(binary)});
@@ -567,7 +586,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  });
  note(say('支持线、圆、圆弧、多段线/矩形、文字、标注、移动/复制/旋转/缩放/镜像、修剪/延伸/偏移、图层与测量。复杂图元保留，暂不编辑。','Lines, circles, arcs, polylines/rectangles, text, dimensions, move/copy/rotate/scale/mirror, trim/extend/offset, layers and measures. Other entities are retained and read only.'));
  update();
- return {showDiff,clearDiff,locate:locateHandle,reload,inspect:()=>({...info,selectedHandle:selected,selection:[...selection],activeLayer:activeLayer(),units,ink:{active:inkState.active,ready:inkState.ready,reason:inkState.reason,color:inkState.color,lineWeight:inkState.lineWeight,drawWithFinger:inkState.drawWithFinger,capabilities:inkState.capabilities?{pointCount:inkState.capabilities.pointCount,lineWeights:inkState.capabilities.lineWeights.length}:null}}),destroy(){
+ return {showDiff,clearDiff,locate:locateHandle,reload,pushExternalUndo,inspect:()=>({...info,selectedHandle:selected,selection:[...selection],activeLayer:activeLayer(),externalUndo:!!externalUndo,units,ink:{active:inkState.active,ready:inkState.ready,reason:inkState.reason,color:inkState.color,lineWeight:inkState.lineWeight,drawWithFinger:inkState.drawWithFinger,capabilities:inkState.capabilities?{pointCount:inkState.capabilities.pointCount,lineWeights:inkState.capabilities.lineWeights.length}:null}}),destroy(){
   document.removeEventListener('pointerdown',onPointerDown,captureOptions);
   document.removeEventListener('pointermove',onPointerMove,captureOptions);
   document.removeEventListener('pointerup',onPointerUp,captureOptions);

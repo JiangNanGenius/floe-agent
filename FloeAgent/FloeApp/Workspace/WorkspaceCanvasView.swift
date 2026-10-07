@@ -904,22 +904,27 @@ enum WorkspaceCanvasRegistry {
     }
 
     static func packageData(canvasID: UUID) throws -> Data {
-        // Full backup package: canvas + bound child media projects +
-        // referenced Materials assets, hash-verified on import.
+        // Full backup package: canvas + bound child media projects (with the
+        // assets those projects reference) + referenced Materials assets,
+        // hash-verified on import.
         let project = try decodeProject(at: projectURL(canvasID: canvasID, createDirectory: false))
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false)
         let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
         let projectsRoot = floeRoot.appendingPathComponent("MediaProjects", isDirectory: true)
+        let mediaRoot = WorkbenchPaths.mediaRoot(for: nil, current: nil)
         return try CanvasBackupPackage.make(
             project: project,
             childProjectData: { id in
                 let url = projectsRoot.appendingPathComponent(MediaProjectStore.projectFileName(id: id))
                 return try? Data(contentsOf: url)
             },
-            materialData: { relative in
-                try? Data(contentsOf: floeRoot.appendingPathComponent(relative))
+            materialData: { fileName in
+                try? Data(contentsOf: floeRoot.appendingPathComponent("Materials/\(fileName)"))
+            },
+            assetData: { relative in
+                try? Data(contentsOf: mediaRoot.appendingPathComponent(relative))
             })
     }
 
@@ -949,37 +954,18 @@ enum WorkspaceCanvasRegistry {
         return id
     }
 
-    /// Restores a backup package: child projects and materials are written
-    /// with verified hashes under fresh ids/paths before the canvas registers.
+    /// Restores a backup package through the staged verifier: materials,
+    /// child projects and their assets are only committed after every hash
+    /// and path validates, so a bad package changes nothing on disk.
     private static func importBackupPackage(data: Data) throws -> UUID {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true)
         let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
-        let projectsRoot = floeRoot.appendingPathComponent("MediaProjects", isDirectory: true)
-        try FileManager.default.createDirectory(at: projectsRoot, withIntermediateDirectories: true)
-        let restored = try CanvasBackupPackage.restore(
-            data: data,
-            childProjectWriter: { newID, bytes in
-                let target = projectsRoot.appendingPathComponent(
-                    MediaProjectStore.projectFileName(id: newID))
-                let staging = projectsRoot.appendingPathComponent(".\(newID.uuidString).partial")
-                try bytes.write(to: staging, options: .atomic)
-                try? FileManager.default.removeItem(at: target)
-                try FileManager.default.moveItem(at: staging, to: target)
-            },
-            materialWriter: { relative, bytes in
-                let target = floeRoot.appendingPathComponent(relative)
-                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
-                                                        withIntermediateDirectories: true)
-                try bytes.write(to: target, options: .atomic)
-            })
-        let project = restored.project
-        guard !project.documents.isEmpty else {
-            throw FloeError.validationFailed("画布备份不包含任何文档。")
-        }
-        try encodeProject(project, to: projectURL(canvasID: project.id, createDirectory: true))
-        return project.id
+        let restored = try CanvasBackupPackage.restore(data: data, floeRoot: floeRoot)
+        try encodeProject(restored.project,
+                          to: projectURL(canvasID: restored.project.id, createDirectory: true))
+        return restored.project.id
     }
 
     @MainActor

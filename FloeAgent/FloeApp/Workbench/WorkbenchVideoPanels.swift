@@ -311,6 +311,27 @@ struct SafeAreaGuide: View {
 
 // MARK: - Timeline
 
+/// Symmetric audio waveform rendered from `MediaWaveformSampler` peaks.
+private struct WaveformShape: Shape {
+    let peaks: [Float]
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard !peaks.isEmpty, rect.width > 0, rect.height > 0 else { return path }
+        let midY = rect.midY
+        let half = rect.height / 2
+        let step = rect.width / CGFloat(peaks.count)
+        for (index, peak) in peaks.enumerated() {
+            let clamped = min(max(peak, 0.02), 1)
+            let x = CGFloat(index) * step
+            let barWidth = max(step * 0.7, 0.5)
+            path.addRect(CGRect(x: x, y: midY - half * CGFloat(clamped),
+                                width: barWidth, height: rect.height * CGFloat(clamped)))
+        }
+        return path
+    }
+}
+
 struct WorkbenchVideoTimeline: View {
     @ObservedObject var center: WorkbenchCenter
     var compact = false
@@ -462,6 +483,16 @@ struct WorkbenchVideoTimeline: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Color.accentColor : Color.gray.opacity(0.4), lineWidth: selected ? 2 : 1))
         .contentShape(Rectangle())
         .onTapGesture { center.selectedClipID = item.clip.id }
+        .overlay(alignment: .leading) {
+            if selected {
+                trimHandle(item: item, edge: .leading, width: width)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            if selected {
+                trimHandle(item: item, edge: .trailing, width: width)
+            }
+        }
         .contextMenu {
             Button(WorkbenchText.t("在播放头分割", "Split at playhead")) {
                 center.selectedClipID = item.clip.id
@@ -494,21 +525,125 @@ struct WorkbenchVideoTimeline: View {
         }
     }
 
+    private enum TrimEdge { case leading, trailing }
+
+    /// Precise edge trim: a 44pt-wide invisible handle at each clip edge.
+    /// Dragging maps screen deltas to source-time deltas through the shared
+    /// pixels-per-second scale, quantizes to whole frames (canvas frame rate)
+    /// and commits ONE validated updateClip command at drag end, so undo
+    /// history records one trim, not a stream of micro-edits.
+    @ViewBuilder
+    private func trimHandle(item: PlacedClip, edge: TrimEdge, width: CGFloat) -> some View {
+        let assetDuration = center.project?.assets
+            .first(where: { $0.id == item.clip.assetID })?
+            .metadata?.durationSeconds
+        let frameRate = center.project?.canvas?.frameRate
+        let symbol = edge == .leading ? "chevron.compact.left" : "chevron.compact.right"
+        RoundedRectangle(cornerRadius: 4)
+            .fill(Color.accentColor.opacity(0.55))
+            .frame(width: 14, height: compact ? 40 : 54)
+            .overlay(Image(systemName: symbol).font(.system(size: 10, weight: .bold)))
+            .frame(width: 44, height: compact ? 44 : 58)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onEnded { value in
+                        let deltaSeconds = Double(value.translation.width / center.pixelsPerSecond)
+                        let clip = item.clip
+                        let minimumDuration = 0.2
+                        switch edge {
+                        case .leading:
+                            let raw = clip.trimStart + deltaSeconds
+                            let upper = clip.trimEnd - minimumDuration
+                            let clamped = min(max(raw, 0), upper)
+                            let quantized = center.quantizedSourceTime(clamped, frameRate: frameRate)
+                            let final = min(max(quantized, 0), upper)
+                            guard abs(final - clip.trimStart) > 0.001 else { return }
+                            center.apply(.updateClip(id: clip.id, trimStart: final, trimEnd: nil,
+                                                     speed: nil, volume: nil, isMuted: nil,
+                                                     rotationDegrees: nil, crop: .unchanged,
+                                                     leadingTransition: nil, transitionDuration: nil))
+                        case .trailing:
+                            let raw = clip.trimEnd + deltaSeconds
+                            let lower = clip.trimStart + minimumDuration
+                            let upper = assetDuration.map { $0 + 0.05 } ?? .infinity
+                            let clamped = min(max(raw, lower), upper)
+                            let quantized = center.quantizedSourceTime(clamped, frameRate: frameRate)
+                            let final = min(max(quantized, lower), upper)
+                            guard abs(final - clip.trimEnd) > 0.001 else { return }
+                            center.apply(.updateClip(id: clip.id, trimStart: nil, trimEnd: final,
+                                                     speed: nil, volume: nil, isMuted: nil,
+                                                     rotationDegrees: nil, crop: .unchanged,
+                                                     leadingTransition: nil, transitionDuration: nil))
+                        }
+                    }
+            )
+            .accessibilityIdentifier("workbench.clip.\(edge == .leading ? "trimStart" : "trimEnd").\(item.clip.id.uuidString)")
+    }
+
     private var musicStrip: some View {
         ZStack(alignment: .topLeading) {
             Rectangle().fill(Color.purple.opacity(0.12)).frame(height: 26)
             ForEach(center.project?.videoTimeline?.music ?? []) { music in
-                Text("♪ \(WorkbenchText.t("音乐", "Music"))")
-                    .font(.system(size: 10))
-                    .padding(.horizontal, 6)
-                    .frame(width: max(40, CGFloat(music.lengthSeconds) * center.pixelsPerSecond),
-                           height: 26, alignment: .leading)
-                    .background(Color.purple.opacity(0.3), in: RoundedRectangle(cornerRadius: 4))
-                    .offset(x: CGFloat(music.offsetSeconds * center.pixelsPerSecond))
-                    .accessibilityIdentifier("workbench.music.\(music.id.uuidString)")
+                musicClipView(music)
             }
         }
         .frame(height: 26, alignment: .topLeading)
+    }
+
+    private func musicClipView(_ music: MusicClip) -> some View {
+        let width = max(40, CGFloat(music.lengthSeconds) * center.pixelsPerSecond)
+        return ZStack(alignment: .leading) {
+            if let peaks = center.waveforms[music.assetID], !peaks.isEmpty {
+                WaveformShape(peaks: peaks)
+                    .fill(Color.purple.opacity(0.35 + 0.5 * min(max(music.volume, 0), 1.5) / 1.5))
+                    .frame(width: width, height: 20)
+                    .overlay(alignment: .leading) {
+                        // Fade-in/fade-out visualization: the waveform is
+                        // masked by a ramp at each edge (shared timeline math).
+                        if music.fadeInSeconds > 0 {
+                            LinearGradient(colors: [.white, .clear],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .frame(width: min(width, CGFloat(music.fadeInSeconds) * center.pixelsPerSecond))
+                                .blendMode(.destinationOut)
+                        }
+                    }
+                    .overlay(alignment: .trailing) {
+                        if music.fadeOutSeconds > 0 {
+                            LinearGradient(colors: [.clear, .white],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .frame(width: min(width, CGFloat(music.fadeOutSeconds) * center.pixelsPerSecond))
+                                .blendMode(.destinationOut)
+                        }
+                    }
+                    .drawingGroup()
+            } else {
+                Text("♪ \(WorkbenchText.t("音乐", "Music"))")
+                    .font(.system(size: 10))
+                    .padding(.horizontal, 6)
+                    .frame(width: width, height: 26, alignment: .leading)
+            }
+            if music.fadeInSeconds > 0 || music.fadeOutSeconds > 0 {
+                HStack {
+                    if music.fadeInSeconds > 0 {
+                        Text("fade").font(.system(size: 7)).foregroundStyle(.secondary)
+                            .padding(.leading, 2)
+                    }
+                    Spacer()
+                    if music.fadeOutSeconds > 0 {
+                        Text("fade").font(.system(size: 7)).foregroundStyle(.secondary)
+                            .padding(.trailing, 2)
+                    }
+                }
+                .frame(width: width, height: 26)
+                .allowsHitTesting(false)
+            }
+        }
+        .frame(width: width, height: 26, alignment: .leading)
+        .background(Color.purple.opacity(0.3), in: RoundedRectangle(cornerRadius: 4))
+        .offset(x: CGFloat(music.offsetSeconds * center.pixelsPerSecond))
+        .accessibilityIdentifier("workbench.music.\(music.id.uuidString)")
+        .task { center.loadWaveform(for: music.assetID) }
     }
 
     private var captionStrip: some View {
