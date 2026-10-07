@@ -168,10 +168,26 @@ public actor WorkbenchImageRenderer {
         case .freehand:
             guard let freehand = layer.freehand else { return nil }
             image = try makeFreehandLayer(freehand, canvas: canvas)
+        case .fill:
+            image = try makeFillLayer(colorHex: layer.fillColorHex ?? "#FFFFFF", canvas: canvas)
         }
         image = try applyAdjustment(layer.adjustment, to: image)
+        // Selection limits the layer's effect; the mask is a second,
+        // non-destructive dimension. Both multiply into the alpha channel and
+        // are applied before placement.
+        if let selection = layer.selectionMask, !selection.isEmpty {
+            image = try applySelection(selection, to: image, canvas: canvas)
+        }
+        if let mask = layer.mask, !mask.strokes.isEmpty {
+            image = try applyMask(mask, to: image, canvas: canvas)
+        }
         image = try place(image: image, layer: layer, canvas: canvas)
         return image
+    }
+
+    private func makeFillLayer(colorHex: String, canvas: CGSize) throws -> CIImage {
+        let color = UIColorLike.ciColor(colorHex)
+        return CIImage(color: color).cropped(to: CGRect(origin: .zero, size: canvas))
     }
 
     private func place(image: CIImage, layer: ImageLayer, canvas: CGSize) throws -> CIImage {
@@ -188,6 +204,10 @@ public actor WorkbenchImageRenderer {
         // rotate around the same center, then move it to the target center.
         var t = CGAffineTransform(translationX: center.x, y: center.y)
         if radians != 0 { t = t.rotated(by: radians) }
+        if layer.transform.flipX == true || layer.transform.flipY == true {
+            t = t.scaledBy(x: layer.transform.flipX == true ? -1 : 1,
+                           y: layer.transform.flipY == true ? -1 : 1)
+        }
         t = t.scaledBy(x: scale, y: scale)
         t = t.translatedBy(x: -naturalWidth / 2, y: -naturalHeight / 2)
         var placed = image.transformed(by: t)
@@ -203,6 +223,38 @@ public actor WorkbenchImageRenderer {
     private func applyAdjustment(_ adjustment: ImageLayerAdjustment, to input: CIImage) throws -> CIImage {
         guard !adjustment.isIdentity else { return input }
         var output = input
+        if let temperature = adjustment.temperature, temperature.isFinite {
+            let filter = CIFilter(name: "CITemperatureAndTint")!
+            filter.setValue(output, forKey: kCIInputImageKey)
+            filter.setValue(CIVector(x: CGFloat(max(1000, min(temperature, 40_000))), y: 0), forKey: "inputNeutral")
+            filter.setValue(CIVector(x: 6500, y: 0), forKey: "inputTargetNeutral")
+            output = filter.outputImage ?? output
+        }
+        if let hue = adjustment.hueDegrees, hue.isFinite, hue != 0 {
+            let filter = CIFilter(name: "CIHueAdjust")!
+            filter.setValue(output, forKey: kCIInputImageKey)
+            filter.setValue(CGFloat(hue * .pi / 180), forKey: kCIInputAngleKey)
+            output = filter.outputImage ?? output
+        }
+        if let levels = adjustment.levels {
+            let black = max(0, min(levels.black, 0.99))
+            let white = max(black + 0.01, min(levels.white, 1))
+            let span = white - black
+            let matrix = CIFilter(name: "CIColorMatrix")!
+            matrix.setValue(output, forKey: kCIInputImageKey)
+            matrix.setValue(CIVector(x: 1 / span, y: 0, z: 0, w: 0), forKey: "inputRVector")
+            matrix.setValue(CIVector(x: 0, y: 1 / span, z: 0, w: 0), forKey: "inputGVector")
+            matrix.setValue(CIVector(x: 0, y: 0, z: 1 / span, w: 0), forKey: "inputBVector")
+            matrix.setValue(CIVector(x: CGFloat(-black / span), y: CGFloat(-black / span), z: CGFloat(-black / span), w: 0),
+                            forKey: "inputBiasVector")
+            output = matrix.outputImage ?? output
+            if levels.gamma.isFinite, levels.gamma > 0, abs(levels.gamma - 1) > 0.001 {
+                let gamma = CIFilter(name: "CIGammaAdjust")!
+                gamma.setValue(output, forKey: kCIInputImageKey)
+                gamma.setValue(CGFloat(1 / max(0.01, min(levels.gamma, 10))), forKey: "inputPower")
+                output = gamma.outputImage ?? output
+            }
+        }
         if let saturation = adjustment.saturation
             ?? (adjustment.contrast != nil || adjustment.brightness != nil ? 1 : nil) {
             let filter = CIFilter(name: "CIColorControls")!
@@ -263,10 +315,37 @@ public actor WorkbenchImageRenderer {
         let fontSize = max(8, min(content.fontSize, canvas.height * 0.5))
         let font = CTFontCreateWithName((content.fontName ?? "Helvetica") as CFString, fontSize, nil)
         let color = UIColorLike.ciColor(content.colorHex)
-        let attributes: [NSAttributedString.Key: Any] = [
+        var attributes: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: color
+            // `.foregroundColor` expects a platform color; the previous
+            // CIColor value was silently ignored by Core Text, so every text
+            // layer rendered black regardless of its colorHex.
+            .foregroundColor: UIColorLike.platformColor(content.colorHex)
         ]
+        if let tracking = content.tracking, tracking.isFinite {
+            attributes[.kern] = CGFloat(max(-fontSize, min(tracking, fontSize * 2)))
+        }
+        let paragraph = NSMutableParagraphStyle()
+        if let leading = content.leading, leading.isFinite {
+            paragraph.lineSpacing = CGFloat(max(0, min(leading, fontSize * 2)))
+        }
+        switch content.alignment ?? .left {
+        case .left: paragraph.alignment = .left
+        case .center: paragraph.alignment = .center
+        case .right: paragraph.alignment = .right
+        }
+        attributes[.paragraphStyle] = paragraph
+        if let strokeHex = content.strokeColorHex, let strokeWidth = content.strokeWidth, strokeWidth > 0 {
+            attributes[.strokeColor] = UIColorLike.platformColor(strokeHex)
+            attributes[.strokeWidth] = -min(strokeWidth, fontSize)
+        }
+        if let shadow = content.shadow {
+            let nsShadow = NSShadow()
+            nsShadow.shadowColor = UIColorLike.platformColor(shadow.colorHex)
+            nsShadow.shadowBlurRadius = CGFloat(max(0, min(shadow.blur, fontSize)))
+            nsShadow.shadowOffset = CGSize(width: shadow.offsetX, height: shadow.offsetY)
+            attributes[.shadow] = nsShadow
+        }
         let attributed = NSAttributedString(string: content.text, attributes: attributes)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         let maxSize = CGSize(width: canvas.width * 0.9, height: canvas.height * 0.9)
@@ -282,10 +361,60 @@ public actor WorkbenchImageRenderer {
     }
 
     private func makeFreehandLayer(_ content: ImageFreehandContent, canvas: CGSize) throws -> CIImage {
-        let size = canvas
-        let renderer = CGImageRenderer(size: size, opaque: false)
-        let cg = try renderer.image { ctx in
-            for stroke in content.strokes {
+        var output = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+            .cropped(to: CGRect(origin: .zero, size: canvas))
+        for stroke in content.strokes {
+            let pressures = stroke.points.compactMap(\.pressure)
+            let pressureScale: Double = pressures.isEmpty
+                ? 1
+                : max(0.15, min(pressures.reduce(0, +) / Double(pressures.count), 1))
+            let width = max(1, stroke.width * pressureScale)
+            let opacity = max(0.02, min(stroke.opacity ?? 1, 1))
+            let renderer = CGImageRenderer(size: canvas, opaque: false)
+            let cg = try renderer.image { ctx in
+                let path = CGMutablePath()
+                for (index, point) in stroke.points.enumerated() {
+                    let p = CGPoint(x: point.x * canvas.width, y: (1 - point.y) * canvas.height)
+                    if index == 0 { path.move(to: p) } else { path.addLine(to: p) }
+                }
+                ctx.addPath(path)
+                ctx.setLineWidth(width)
+                ctx.setLineCap(.round)
+                ctx.setLineJoin(.round)
+                ctx.setStrokeColor(UIColorLike.cgColor(stroke.colorHex))
+                ctx.setAlpha(CGFloat(opacity))
+                ctx.strokePath()
+            }
+            var strokeImage = CIImage(cgImage: cg)
+            let hardness = max(0, min(stroke.hardness ?? 0, 1))
+            if hardness > 0.001 {
+                let blur = CIFilter(name: "CIGaussianBlur")!
+                blur.setValue(strokeImage, forKey: kCIInputImageKey)
+                blur.setValue(CGFloat(hardness * max(1, width) * 0.6), forKey: kCIInputRadiusKey)
+                strokeImage = (blur.outputImage ?? strokeImage).cropped(to: strokeImage.extent)
+            }
+            output = strokeImage.composited(over: output)
+        }
+        return output
+    }
+
+    /// Rasterizes a vector selection to an alpha mask and multiplies it into
+    /// the layer's alpha, so selection-scoped effects never touch pixels
+    /// outside the selection. Feather is applied in normalized space, keeping
+    /// the soft edge proportional when the canvas is scaled.
+    func applySelection(_ selection: ImageSelection, to input: CIImage, canvas: CGSize) throws -> CIImage {
+        guard let mask = ImageSelectionRasterizer.maskImage(for: selection, canvas: canvas) else { return input }
+        return try blend(input, withAlphaMask: mask)
+    }
+
+    /// Applies erase/restore mask strokes in order: erase hides pixels, a later
+    /// restore reveals them again; the original pixels are never modified.
+    func applyMask(_ mask: ImageLayerMask, to input: CIImage, canvas: CGSize) throws -> CIImage {
+        var maskImage = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .cropped(to: CGRect(origin: .zero, size: canvas))
+        for stroke in mask.strokes {
+            let renderer = CGImageRenderer(size: canvas, opaque: false)
+            let cg = try renderer.image { ctx in
                 let path = CGMutablePath()
                 for (index, point) in stroke.points.enumerated() {
                     let p = CGPoint(x: point.x * canvas.width, y: (1 - point.y) * canvas.height)
@@ -295,11 +424,30 @@ public actor WorkbenchImageRenderer {
                 ctx.setLineWidth(max(1, stroke.width))
                 ctx.setLineCap(.round)
                 ctx.setLineJoin(.round)
-                ctx.setStrokeColor(UIColorLike.cgColor(stroke.colorHex))
+                let value: CGFloat = stroke.restore ? 1 : 0
+                ctx.setStrokeColor(CGColor(red: value, green: value, blue: value, alpha: 1))
                 ctx.strokePath()
             }
+            var strokeImage = CIImage(cgImage: cg)
+            let hardness = max(0, min(stroke.hardness ?? 0, 1))
+            if hardness > 0.001 {
+                let blur = CIFilter(name: "CIGaussianBlur")!
+                blur.setValue(strokeImage, forKey: kCIInputImageKey)
+                blur.setValue(CGFloat(hardness * max(1, stroke.width) * 0.6), forKey: kCIInputRadiusKey)
+                strokeImage = (blur.outputImage ?? strokeImage).cropped(to: strokeImage.extent)
+            }
+            maskImage = strokeImage.composited(over: maskImage)
         }
-        return CIImage(cgImage: cg)
+        return try blend(input, withAlphaMask: maskImage)
+    }
+
+    private func blend(_ input: CIImage, withAlphaMask mask: CIImage) throws -> CIImage {
+        let blend = CIFilter(name: "CIBlendWithMask")!
+        blend.setValue(input, forKey: kCIInputImageKey)
+        blend.setValue(CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: input.extent),
+                       forKey: kCIInputBackgroundImageKey)
+        blend.setValue(mask, forKey: kCIInputMaskImageKey)
+        return (blend.outputImage ?? input).cropped(to: input.extent)
     }
 
     private func fit(_ source: CGSize, into target: CGSize) -> CGSize {
@@ -447,6 +595,11 @@ private enum UIColorLike {
         let rgba = parse(hex)
         return CGColor(red: CGFloat(rgba.r), green: CGFloat(rgba.g), blue: CGFloat(rgba.b), alpha: CGFloat(rgba.a))
     }
+#if canImport(UIKit)
+    static func platformColor(_ hex: String) -> UIColor { UIColor(cgColor: cgColor(hex)) }
+#else
+    static func platformColor(_ hex: String) -> NSColor { NSColor(cgColor: cgColor(hex)) ?? .black }
+#endif
     static func parse(_ hex: String) -> (r: Double, g: Double, b: Double, a: Double) {
         var value = hex
         if value.hasPrefix("#") { value.removeFirst() }

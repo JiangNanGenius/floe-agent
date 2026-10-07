@@ -271,7 +271,9 @@ struct FilePreviewView: View {
 
     private func engineeringView(_ package: EngineeringPreviewPackage, editing: Bool = false) -> some View {
         EngineeringFilePreview(package: package, onReview: { capture in
-            engineeringReview = EngineeringReviewCapture(context: "Workspace path: \(relativePath)\n" + capture.context, image: capture.image)
+            engineeringReview = EngineeringReviewCapture(
+                context: "Workspace path: \(relativePath)\n" + capture.context,
+                image: capture.image, documentID: relativePath, workspaceRoot: engineeringRoot)
         }, onSave: editing && engineeringRoot != nil && (package.kind == .dxf || package.kind == .dwg) ? { data, baseline in
             guard let service = center.fileService, service.guardResolver.rootURL == engineeringRoot else {
                 throw CocoaError(.fileReadNoPermission)

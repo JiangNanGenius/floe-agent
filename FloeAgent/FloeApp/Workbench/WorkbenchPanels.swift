@@ -252,6 +252,7 @@ struct WorkbenchAssetsPanel: View {
         case .image: "photo"
         case .text: "textformat"
         case .freehand: "scribble"
+        case .fill: "paintbrush.pointed.fill"
         }
     }
 }
@@ -607,6 +608,9 @@ struct WorkbenchExportPanel: View {
     @ObservedObject var center: WorkbenchCenter
     var onExported: ((URL) -> Void)?
     var onSaveToSource: ((ImageExportOptions) async throws -> Void)?
+    /// Explicit "make variant": a new canvas node/branch keeping the original
+    /// untouched; nil where the entrance has no canvas semantics.
+    var onMakeVariant: ((ImageExportOptions) async throws -> Void)?
 
     @State private var imageFormat: ImageExportFormat = .png
     @State private var useOriginalSize = true
@@ -767,11 +771,18 @@ struct WorkbenchExportPanel: View {
                 .frame(minHeight: 44)
                 .accessibilityIdentifier("workbench.export.image.run")
                 if let onSaveToSource {
-                    Button(WorkbenchText.t("保存到原文件", "Save to source file")) {
-                        saveToSource(onSaveToSource)
+                    Button(WorkbenchText.t("应用到画布", "Apply to canvas")) {
+                        saveToSource(onSaveToSource, success: WorkbenchText.t("已更新画布原节点。", "Canvas node updated."))
                     }
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("workbench.export.image.saveSource")
+                }
+                if let onMakeVariant {
+                    Button(WorkbenchText.t("另存为分支", "Make variant")) {
+                        saveToSource(onMakeVariant, success: WorkbenchText.t("已创建画布分支节点。", "Canvas variant created."))
+                    }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("workbench.export.image.makeVariant")
                 }
             }
         }
@@ -811,7 +822,8 @@ struct WorkbenchExportPanel: View {
         }
     }
 
-    private func saveToSource(_ save: @escaping (ImageExportOptions) async throws -> Void) {
+    private func saveToSource(_ save: @escaping (ImageExportOptions) async throws -> Void,
+                              success: String) {
         let options = ImageExportOptions(format: imageFormat,
                                          width: useOriginalSize ? nil : Int(width),
                                          height: useOriginalSize ? nil : Int(height),
@@ -826,7 +838,7 @@ struct WorkbenchExportPanel: View {
         Task {
             do {
                 try await save(options)
-                center.noteExportMessage(WorkbenchText.t("已保存到原文件。", "Saved to the source file."))
+                center.noteExportMessage(success)
             } catch {
                 validationMessage = error.localizedDescription
             }

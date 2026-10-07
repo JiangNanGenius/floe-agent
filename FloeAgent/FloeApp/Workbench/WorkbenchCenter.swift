@@ -430,7 +430,10 @@ final class WorkbenchCenter: ObservableObject {
         }
     }
 
-    func closeProject() {
+    /// Flushes the latest draft to disk before tearing the session down; a
+    /// close/switch must never cancel an in-flight save and lose edits.
+    func closeProject() async {
+        await saveNow()
         previewTask?.cancel()
         saveTask?.cancel()
         thumbnailTask?.cancel()
@@ -457,6 +460,21 @@ final class WorkbenchCenter: ObservableObject {
         imageRequests = []
         aiJobs = []
         confirmedReviewRequestIDs = []
+    }
+
+    /// Persisted fork used by canvas "make variant" and by copies of bound
+    /// nodes. The fork gets a new identity, parent linkage and fresh history;
+    /// asset bytes stay shared by reference.
+    func forkProjectForVariant(parentID: UUID) async -> (id: UUID, revision: Int64)? {
+        do {
+            let fork = try await store.forkProject(
+                id: parentID,
+                nameSuffix: WorkbenchText.t("分支", "variant"))
+            return (fork.id, fork.revision)
+        } catch {
+            present(error)
+            return nil
+        }
     }
 
     func refreshProjectSummaries() async {

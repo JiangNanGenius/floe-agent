@@ -134,6 +134,129 @@ public enum MediaTimelineMath {
 
 // MARK: - Resource guards
 
+/// Explicit export geometry presets. Resolution and frame rate are always
+/// concrete numbers; a preset never silently substitutes another value.
+public enum VideoExportPreset: String, Sendable, Codable, Hashable, CaseIterable {
+    case landscape1080p
+    case portrait1080p
+    case square1080
+
+    public var width: Int {
+        switch self {
+        case .landscape1080p: 1920
+        case .portrait1080p: 1080
+        case .square1080: 1080
+        }
+    }
+
+    public var height: Int {
+        switch self {
+        case .landscape1080p: 1080
+        case .portrait1080p: 1920
+        case .square1080: 1080
+        }
+    }
+
+    public var defaultFrameRate: Double {
+        switch self {
+        case .landscape1080p, .portrait1080p: 30
+        case .square1080: 30
+        }
+    }
+
+    public func options(frameRate: Double?, codec: VideoExportCodec,
+                        fileName: String) -> VideoExportOptions {
+        VideoExportOptions(codec: codec, width: width, height: height,
+                           frameRate: frameRate ?? defaultFrameRate,
+                           fileName: fileName)
+    }
+}
+
+public extension MediaTimelineMath {
+    /// Exact timecode `HH:MM:SS:FF` for a timeline position.
+    static func timecode(seconds: Double, frameRate: Double) -> String {
+        let fps = frameRate > 0 ? frameRate : 30
+        let totalFrames = Int((max(0, seconds) * fps).rounded())
+        let framesPerHour = Int((fps * 3600).rounded())
+        let framesPerMinute = Int((fps * 60).rounded())
+        let hours = totalFrames / max(1, framesPerHour)
+        let minutes = (totalFrames % max(1, framesPerHour)) / max(1, framesPerMinute)
+        let secondsPart = (totalFrames % max(1, framesPerMinute)) / max(1, Int(fps.rounded()))
+        let frames = totalFrames % max(1, Int(fps.rounded()))
+        return String(format: "%02d:%02d:%02d:%02d", hours, minutes, secondsPart, frames)
+    }
+
+    /// One frame step from `seconds`; negative delta steps backwards. The
+    /// result is clamped to `0...duration` and quantized to the frame grid.
+    static func frameStep(seconds: Double, deltaFrames: Int, frameRate: Double,
+                          duration: Double) -> Double {
+        let fps = frameRate > 0 ? frameRate : 30
+        let frame = (max(0, seconds) * fps).rounded()
+        let next = max(0, frame + Double(deltaFrames)) / fps
+        return min(max(0, next), max(0, duration))
+    }
+
+    /// Snaps `seconds` to the nearest candidate within `tolerance` seconds.
+    /// Returns the input unchanged when nothing is close enough.
+    static func snap(seconds: Double, to candidates: [Double], tolerance: Double) -> Double {
+        guard tolerance > 0 else { return seconds }
+        var best = seconds
+        var bestDistance = tolerance
+        for candidate in candidates where candidate.isFinite {
+            let distance = abs(candidate - seconds)
+            if distance <= bestDistance {
+                bestDistance = distance
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    /// Clip edges plus zero for timeline snapping; playhead is the caller's
+    /// current position, which is never treated as a snap target.
+    static func snapCandidates(_ timeline: VideoTimeline) -> [Double] {
+        var values: [Double] = [0]
+        var cursor = 0.0
+        for clip in timeline.clips {
+            values.append(cursor)
+            cursor += clip.timelineDuration
+            values.append(cursor)
+        }
+        return values
+    }
+
+    /// Validated explicit cover time: clamps into the timeline and rejects
+    /// non-finite input instead of guessing a frame.
+    static func coverTime(_ requested: Double?, timeline: VideoTimeline) -> Double? {
+        guard let requested, requested.isFinite else { return nil }
+        let duration = self.primaryDuration(timeline)
+        guard duration > 0 else { return nil }
+        return min(max(0, requested), duration)
+    }
+
+    /// Shifts every caption by `offset` while keeping order and validity.
+    static func shiftCaptions(_ captions: [CaptionSegment], by offset: Double,
+                              duration: Double) -> [CaptionSegment] {
+        guard offset.isFinite, offset != 0 else { return captions }
+        return captions.compactMap { caption in
+            var shifted = caption
+            shifted.start = max(0, caption.start + offset)
+            shifted.end = max(shifted.start + 0.01, caption.end + offset)
+            guard shifted.start < duration + 0.5 else { return nil }
+            shifted.end = min(shifted.end, max(duration, shifted.start + 0.01))
+            return shifted
+        }
+    }
+
+    /// Duplicates a clip directly after its original, preserving source range
+    /// and all per-clip options; the copy receives a fresh identity.
+    static func duplicatedClip(_ clip: VideoClip) -> VideoClip {
+        var copy = clip
+        copy.id = UUID()
+        return copy
+    }
+}
+
 public enum MediaResourceGuard {
     public struct ImageBudget: Sendable {
         public var maximumPixelCount: Int

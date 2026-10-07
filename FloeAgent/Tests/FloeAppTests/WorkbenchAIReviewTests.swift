@@ -229,7 +229,7 @@ struct WorkbenchAIReviewTests {
 
         // Open through the production reopen path and verify the edit and the
         // owner/root context survived.
-        center.closeProject()
+        await center.closeProject()
         await center.openProject(id: candidate.id)
         let reopened = try #require(center.project)
         #expect(reopened.id == opened.id)

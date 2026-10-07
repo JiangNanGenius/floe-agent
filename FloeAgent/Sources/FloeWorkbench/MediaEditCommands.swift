@@ -41,8 +41,15 @@ public enum MediaEditCommand: Sendable, Codable, Hashable {
                     leadingTransition: VideoTransitionKind?, transitionDuration: Double?)
     case reorderClips(orderedIDs: [UUID])
     case splitClip(id: UUID, atTimelineSeconds: Double)
+    /// Duplicates a clip directly after its original (fresh identity, same
+    /// source range and per-clip options).
+    case duplicateClip(id: UUID)
     case removeClip(id: UUID)
     case setPrimaryAudio(volume: Double?, muted: Bool?)
+    /// Explicit cover frame in timeline seconds; nil derives the first frame.
+    case setCover(time: Double?)
+    /// Batch time correction for every caption.
+    case shiftCaptions(bySeconds: Double)
 
     // Music / captions
     case addMusic(MusicClip)
@@ -120,7 +127,16 @@ public enum MediaEditCommandApplier {
                 guard layer.assetID != nil else {
                     throw MediaCommandError.validation("image layer requires an asset")
                 }
+            case .fill:
+                guard let hex = layer.fillColorHex, !hex.isEmpty else {
+                    throw MediaCommandError.validation("fill layer requires a color")
+                }
+                guard let selection = layer.selectionMask, !selection.isEmpty else {
+                    throw MediaCommandError.validation("fill layer requires a selection")
+                }
             }
+            if let mask = layer.mask { try validateMask(mask) }
+            if let selection = layer.selectionMask { try validateSelection(selection) }
             try validateAdjustment(layer.adjustment)
 
         case .updateLayer(let id, let transform, let opacity, let isHidden, let isLocked, let adjustment, let text, let crop):
@@ -210,6 +226,27 @@ public enum MediaEditCommandApplier {
         case .removeClip(let id):
             guard project.videoTimeline?.clips.contains(where: { $0.id == id }) == true else {
                 throw MediaCommandError.notFound("clip \(id)")
+            }
+
+        case .duplicateClip(let id):
+            guard project.videoTimeline?.clips.contains(where: { $0.id == id }) == true else {
+                throw MediaCommandError.notFound("clip \(id)")
+            }
+
+        case .setCover(let time):
+            if let time {
+                guard time.isFinite, time >= 0 else {
+                    throw MediaCommandError.validation("cover time must be a non-negative finite number")
+                }
+                guard let timeline = project.videoTimeline,
+                      time <= MediaTimelineMath.primaryDuration(timeline) + 0.5 else {
+                    throw MediaCommandError.validation("cover time is outside the timeline")
+                }
+            }
+
+        case .shiftCaptions(let offset):
+            guard offset.isFinite, abs(offset) <= 86_400 else {
+                throw MediaCommandError.validation("caption shift must be finite and under 24h")
             }
 
         case .setPrimaryAudio(let volume, let muted):
@@ -374,8 +411,24 @@ public enum MediaEditCommandApplier {
             project.videoTimeline?.clips[index] = first
             project.videoTimeline?.clips.insert(second, at: index + 1)
 
+        case .duplicateClip(let id):
+            guard let timeline = project.videoTimeline,
+                  let index = timeline.clips.firstIndex(where: { $0.id == id }) else { return }
+            let copy = MediaTimelineMath.duplicatedClip(timeline.clips[index])
+            project.videoTimeline?.clips.insert(copy, at: index + 1)
+
         case .removeClip(let id):
             project.videoTimeline?.clips.removeAll { $0.id == id }
+
+        case .setCover(let time):
+            if project.videoTimeline == nil { project.videoTimeline = VideoTimeline() }
+            project.videoTimeline?.coverTime = time
+
+        case .shiftCaptions(let offset):
+            guard let timeline = project.videoTimeline else { return }
+            let duration = MediaTimelineMath.primaryDuration(timeline)
+            project.videoTimeline?.captions = MediaTimelineMath.shiftCaptions(
+                timeline.captions, by: offset, duration: duration)
 
         case .setPrimaryAudio(let volume, let muted):
             if project.videoTimeline == nil { project.videoTimeline = VideoTimeline() }
@@ -437,6 +490,58 @@ public enum MediaEditCommandApplier {
               rect.width > 0.01, rect.height > 0.01,
               rect.x + rect.width <= 1.0, rect.y + rect.height <= 1.0 else {
             throw MediaCommandError.validation("crop must fit inside the unit square")
+        }
+    }
+
+    private static func validateSelection(_ selection: ImageSelection) throws {
+        guard selection.shapes.count <= 64 else {
+            throw MediaCommandError.validation("selection supports at most 64 shapes")
+        }
+        guard selection.feather.isFinite, (0...0.5).contains(selection.feather) else {
+            throw MediaCommandError.validation("selection feather must be 0...0.5")
+        }
+        for shape in selection.shapes {
+            switch shape.kind {
+            case .rectangle, .ellipse:
+                guard shape.points.count == 2 else {
+                    throw MediaCommandError.validation("rectangle/ellipse selection needs two corners")
+                }
+            case .lasso:
+                guard (3...512).contains(shape.points.count) else {
+                    throw MediaCommandError.validation("lasso selection needs 3...512 points")
+                }
+            }
+            for point in shape.points {
+                guard point.x.isFinite, point.y.isFinite,
+                      (0...1).contains(point.x), (0...1).contains(point.y) else {
+                    throw MediaCommandError.validation("selection points must be normalized 0...1")
+                }
+            }
+        }
+    }
+
+    private static func validateMask(_ mask: ImageLayerMask) throws {
+        guard mask.strokes.count <= 512 else {
+            throw MediaCommandError.validation("mask supports at most 512 strokes")
+        }
+        for stroke in mask.strokes {
+            guard (2...512).contains(stroke.points.count) else {
+                throw MediaCommandError.validation("mask stroke needs 2...512 points")
+            }
+            guard stroke.width.isFinite, (1...2048).contains(stroke.width) else {
+                throw MediaCommandError.validation("mask stroke width must be 1...2048")
+            }
+            if let hardness = stroke.hardness {
+                guard hardness.isFinite, (0...1).contains(hardness) else {
+                    throw MediaCommandError.validation("mask hardness must be 0...1")
+                }
+            }
+            for point in stroke.points {
+                guard point.x.isFinite, point.y.isFinite,
+                      (0...1).contains(point.x), (0...1).contains(point.y) else {
+                    throw MediaCommandError.validation("mask points must be normalized 0...1")
+                }
+            }
         }
     }
 

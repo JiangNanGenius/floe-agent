@@ -20,9 +20,12 @@ struct MediaWorkbenchView: View {
     @ObservedObject var center: WorkbenchCenter
     var title: String
     var onExported: ((URL) -> Void)?
-    /// Entrance-owned write-back: exports image bytes into the caller's own
-    /// destination (workspace file commit, Canvas derived asset, …).
+    /// Entrance-owned apply: verified image bytes update the caller's own
+    /// destination (workspace file commit, Canvas original node, …).
     var onSaveToSource: ((ImageExportOptions) async throws -> Void)?
+    /// Entrance-owned explicit "make variant": creates a new node/branch with
+    /// provenance instead of updating the original.
+    var onMakeVariant: ((ImageExportOptions) async throws -> Void)?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -234,7 +237,8 @@ struct MediaWorkbenchView: View {
                     WorkbenchAIDrawer(center: center)
                 case .export:
                     WorkbenchExportPanel(center: center, onExported: onExported,
-                                         onSaveToSource: onSaveToSource)
+                                         onSaveToSource: onSaveToSource,
+                                         onMakeVariant: onMakeVariant)
                 }
             }
             .navigationTitle(drawerTitle(drawer))
@@ -275,9 +279,13 @@ struct WorkbenchBootstrapSheet: View {
     var owner: WorkbenchCenter.Owner
     var onExported: ((URL) -> Void)?
     var onSaveToSource: ((ImageExportOptions) async throws -> Void)?
+    var onMakeVariant: ((ImageExportOptions) async throws -> Void)?
     /// Production entrances offer to resume a saved project for the same
     /// source; deterministic UI fixtures start fresh.
     var allowsResume = true
+    /// Exact project binding captured when the editor was opened. When set,
+    /// resume opens this project id instead of matching by source filename.
+    var resumeProjectID: UUID?
 
     @Environment(\.dismiss) private var dismiss
     @State private var ready = false
@@ -288,7 +296,7 @@ struct WorkbenchBootstrapSheet: View {
         Group {
             if ready, center.project != nil {
                 WorkbenchSheet(center: center, title: title, onExported: onExported,
-                               onSaveToSource: onSaveToSource)
+                               onSaveToSource: onSaveToSource, onMakeVariant: onMakeVariant)
             } else if let candidate = resumeCandidate, let failure {
                 // Opening a source that already has a saved project offers to
                 // resume it instead of silently starting over.
@@ -347,6 +355,12 @@ struct WorkbenchBootstrapSheet: View {
                         .buttonStyle(.borderedProminent)
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("workbench.bootstrap.retry")
+                        if resumeProjectID != nil {
+                            Button(WorkbenchText.t("新建编辑", "Start new edit")) {
+                                Task { await prepare(ignoringSavedProject: true) }
+                            }
+                            .frame(minHeight: 44)
+                        }
                         Button(WorkbenchText.t("关闭", "Close")) { dismiss() }
                             .frame(minHeight: 44)
                     }
@@ -368,7 +382,22 @@ struct WorkbenchBootstrapSheet: View {
         ready = false
         failure = nil
         resumeCandidate = nil
-        center.closeProject()
+        await center.closeProject()
+        // A bound node resumes its exact project; a missing project is a real
+        // error (with an explicit "start new edit" option), never a silent
+        // fresh start that orphans the saved edits.
+        if !ignoringSavedProject, let resumeProjectID {
+            await center.openProject(id: resumeProjectID)
+            if center.project != nil {
+                ready = true
+                return
+            }
+            failure = center.alert?.message
+                ?? WorkbenchText.t("绑定的编辑工程不存在或无法打开。",
+                                   "The bound edit project is missing or could not be opened.")
+            ready = true
+            return
+        }
         if !ignoringSavedProject, allowsResume,
            let existing = await center.findResumableProject(sourceURLs: urls, kind: kind, owner: owner),
            existing.id != center.project?.id {
@@ -418,17 +447,20 @@ struct WorkbenchSheet: View {
     var title: String
     var onExported: ((URL) -> Void)?
     var onSaveToSource: ((ImageExportOptions) async throws -> Void)?
+    var onMakeVariant: ((ImageExportOptions) async throws -> Void)?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             MediaWorkbenchView(center: center, title: title, onExported: onExported,
-                               onSaveToSource: onSaveToSource)
+                               onSaveToSource: onSaveToSource, onMakeVariant: onMakeVariant)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button(WorkbenchText.t("关闭", "Close")) {
-                            center.closeProject()
-                            dismiss()
+                            Task {
+                                await center.closeProject()
+                                dismiss()
+                            }
                         }
                         .accessibilityIdentifier("workbench.close")
                     }

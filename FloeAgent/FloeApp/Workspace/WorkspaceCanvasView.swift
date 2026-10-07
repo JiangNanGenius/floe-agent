@@ -1230,6 +1230,12 @@ enum CanvasGenerationReferenceLimitPolicy {
     }
 }
 
+/// Bilingual helper for canvas messages added in Build265; existing canvases
+/// keep their historical Chinese literals.
+func canvasLocalized(_ zh: String, _ en: String) -> String {
+    Locale.current.identifier.hasPrefix("zh") ? zh : en
+}
+
 @MainActor
 private final class CanvasDocumentStore: ObservableObject {
     private static let fileCommitAttemptLimit = 4
@@ -1778,6 +1784,42 @@ private final class CanvasDocumentStore: ObservableObject {
     func setBackgroundStyle(_ style: CanvasBackgroundStyle) {
         mutateSelectedDocument { document in
             document.backgroundStyle = style
+        }
+    }
+
+    /// Persists the typed child-project binding inside node metadata.
+    func setChildProjectBinding(_ binding: CanvasChildProjectBinding?, for nodeID: UUID) {
+        mutateSelectedDocument { document in
+            guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            document.nodes[index].childProjectBinding = binding
+        }
+    }
+
+    /// User-triggered recovery for a node whose asset file is missing or was
+    /// only present in the cloud: fetch the content-hash record, then point the
+    /// node at the downloaded material file.
+    @MainActor
+    func retryAssetDownload(nodeID: UUID, service: CanvasCloudAssetService) async {
+        guard let selected = selectedDocument?.nodes.first(where: { $0.id == nodeID }),
+              let asset = selected.asset,
+              let hash = asset.contentHash, !hash.isEmpty else {
+            saveError = canvasLocalized("该素材没有内容哈希，无法从云端恢复。",
+                                        "This asset has no content hash and cannot be restored from the cloud.")
+            return
+        }
+        do {
+            guard let record = try await service.downloadAssetIfNeeded(contentHash: hash),
+                  let relative = record.localRelativePath else {
+                saveError = canvasLocalized("云端没有找到该素材；请检查同步设置后重试。",
+                                            "The asset was not found in the cloud; check sync settings and retry.")
+                return
+            }
+            var updated = asset
+            updated.localRelativePath = relative
+            if updated.cloudRecordName == nil { updated.cloudRecordName = record.cloudRecordName }
+            attachAsset(updated, kind: selected.kind, to: nodeID)
+        } catch {
+            saveError = canvasLocalized("素材下载失败：", "Asset download failed: ") + error.localizedDescription
         }
     }
 
@@ -2949,6 +2991,10 @@ private struct CanvasKeyboardActionsKey: FocusedValueKey {
 private struct CanvasImageEditorPresentation: Identifiable {
     let id: UUID
     let documentID: UUID
+    /// Captured when the editor opens; later selection changes must never
+    /// re-target the edit result.
+    var bindingState: CanvasChildProjectBindingState = .absent
+    var sourceAssetHash: String?
 }
 
 private struct CanvasVideoEditorPresentation: Identifiable {
@@ -3201,14 +3247,29 @@ struct WorkspaceCanvasView: View {
             }
         }
         .sheet(item: $imageEditorPresentation) { presentation in
-            if let node = store.selectedDocument?.nodes.first(where: {
-                $0.id == presentation.id && $0.kind == .image
-            }) {
-                CanvasLocalImageEditor(store: store, node: node, documentID: presentation.documentID) { resultID in
+            if let document = store.project.documents.first(where: { $0.id == presentation.documentID }),
+               let node = document.nodes.first(where: {
+                   $0.id == presentation.id && $0.kind == .image && $0.asset != nil
+               }) {
+                CanvasLocalImageEditor(store: store, node: node,
+                                       documentID: presentation.documentID,
+                                       bindingState: presentation.bindingState) { resultID in
                     selectedNodeIDs = [resultID]
                     imageEditorPresentation = nil
                 }
                 .environmentObject(environment)
+            } else {
+                ContentUnavailableView {
+                    Label(canvasLocalized("无法打开图片编辑器", "Could not open the image editor"),
+                          systemImage: "photo.badge.exclamationmark")
+                } description: {
+                    Text(canvasLocalized("原画布或图片节点已被删除或改变；请重新选择图片节点。",
+                                         "The original canvas or image node was deleted or changed; select an image node again."))
+                } actions: {
+                    Button(canvasLocalized("关闭", "Close")) { imageEditorPresentation = nil }
+                        .frame(minHeight: 44)
+                }
+                .accessibilityIdentifier("canvas.imageEditor.unavailable")
             }
         }
         .sheet(item: $videoEditorPresentation) { presentation in
@@ -3885,7 +3946,9 @@ struct WorkspaceCanvasView: View {
                    }) {
                     Button("编辑图片", systemImage: "slider.horizontal.3") {
                         imageEditorPresentation = CanvasImageEditorPresentation(
-                            id: selected.id, documentID: store.project.selectedDocumentID
+                            id: selected.id, documentID: store.project.selectedDocumentID,
+                            bindingState: selected.childProjectBindingState,
+                            sourceAssetHash: selected.asset?.contentHash
                         )
                     }
                 }
@@ -3899,7 +3962,7 @@ struct WorkspaceCanvasView: View {
                     }
                 }
                 Button("复制到剪贴板", action: copySelection)
-                Button("复制副本") { selectedNodeIDs = store.duplicateNodes(selectedNodeIDs) }
+                Button("复制副本") { selectedNodeIDs = duplicateSelection(selectedNodeIDs) }
                 if selectedNodeIDs.count > 1 {
                     Button("分组") { store.group(selectedNodeIDs) }
                 }
@@ -4547,6 +4610,38 @@ struct WorkspaceCanvasView: View {
         }
     }
 
+    /// Duplicates nodes and forks each copied node's bound child project, so a
+    /// copy never shares the original's mutable edit session.
+    private func duplicateSelection(_ ids: Set<UUID>) -> Set<UUID> {
+        let copies = store.duplicateNodes(ids)
+        forkChildProjectsForCopies(copies)
+        return copies
+    }
+
+    private func pasteSelection(from data: Data) throws -> Set<UUID> {
+        let copies = try store.pasteNodes(from: data)
+        forkChildProjectsForCopies(copies)
+        return copies
+    }
+
+    private func forkChildProjectsForCopies(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        Task {
+            for id in ids {
+                guard let node = store.selectedDocument?.nodes.first(where: { $0.id == id }),
+                      case .valid(let binding) = node.childProjectBindingState else { continue }
+                guard let forked = await environment.workbenchCenter.forkProjectForVariant(parentID: binding.projectID) else { continue }
+                var rebound = binding
+                rebound.projectID = forked.id
+                rebound.appliedRevision = forked.revision
+                rebound.draftRevision = forked.revision
+                rebound.renderedAssetID = nil
+                rebound.sourceNodeID = node.id
+                store.setChildProjectBinding(rebound, for: id)
+            }
+        }
+    }
+
     private func nodeLayer(_ document: FloeCanvasDocument) -> some View {
         ForEach(document.nodes.sorted { $0.zIndex < $1.zIndex }) { node in
             CanvasNodeCard(
@@ -4566,6 +4661,10 @@ struct WorkspaceCanvasView: View {
                 onConfigureGeneration: node.kind == .generationTask ? {
                     handleGenerationAction(for: node)
                 } : nil,
+                onRetryAsset: {
+                    Task { await store.retryAssetDownload(nodeID: node.id,
+                                                          service: environment.canvasCloudAssetService) }
+                },
                 onBeginEditing: {
                     guard node.supportsInlineEditing, !node.isLocked else { return }
                     selectedNodeIDs = [node.id]
@@ -4592,7 +4691,7 @@ struct WorkspaceCanvasView: View {
                     ))
                 },
                 onDuplicate: {
-                    selectedNodeIDs = store.duplicateNodes(contextSelection(for: node))
+                    selectedNodeIDs = duplicateSelection(contextSelection(for: node))
                     selectedConnectionID = nil
                     editingNodeID = nil
                 },
@@ -5445,7 +5544,7 @@ struct WorkspaceCanvasView: View {
                     }
                 }
                 Button("复制", systemImage: "plus.square.on.square") {
-                    selectedNodeIDs = store.duplicateNodes(selectedNodeIDs)
+                    selectedNodeIDs = duplicateSelection(selectedNodeIDs)
                     pencilContextPoint = nil
                 }
                 Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
@@ -5731,7 +5830,7 @@ struct WorkspaceCanvasView: View {
                     }
                 }
                 Button("复制", systemImage: "plus.square.on.square") {
-                    selectedNodeIDs = store.duplicateNodes(selectedNodeIDs)
+                    selectedNodeIDs = duplicateSelection(selectedNodeIDs)
                     editingNodeID = nil
                 }
                 Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
@@ -5902,7 +6001,7 @@ struct WorkspaceCanvasView: View {
             paste: pasteFromClipboard,
             duplicate: {
                 guard !selectedNodeIDs.isEmpty else { return }
-                selectedNodeIDs = store.duplicateNodes(selectedNodeIDs)
+                selectedNodeIDs = duplicateSelection(selectedNodeIDs)
             },
             delete: deleteSelection,
             selectAll: {
@@ -5970,7 +6069,7 @@ struct WorkspaceCanvasView: View {
     private func pasteFromClipboard() {
         do {
             if let data = UIPasteboard.general.data(forPasteboardType: Self.nodePasteboardType) {
-                selectedNodeIDs = try store.pasteNodes(from: data)
+                selectedNodeIDs = try pasteSelection(from: data)
             } else if let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !text.isEmpty {
                 selectedNodeIDs = [store.addNote(
@@ -6921,28 +7020,79 @@ private struct CanvasLocalImageEditor: View {
     @ObservedObject var store: CanvasDocumentStore
     let node: FloeCanvasNode
     let documentID: UUID
+    /// Full binding state captured when the sheet opened. Unknown-newer and
+    /// malformed bindings stay read-only/recovery instead of silently starting
+    /// a new edit that would orphan the saved project.
+    let bindingState: CanvasChildProjectBindingState
     let onSave: (UUID) -> Void
 
+    @State private var startFreshVariant = false
+
+    private enum ApplyChoice { case updateOriginal, makeVariant }
+
     var body: some View {
-        // Unified workbench; the flattened export is registered as a derived
-        // canvas asset through the existing ingestion path.
+        if startFreshVariant || !bindingState.isRecoverable {
+            editor(binding: bindingState.binding,
+                   variantOnly: startFreshVariant)
+        } else {
+            recoveryBody
+        }
+    }
+
+    private var recoveryBody: some View {
+        ContentUnavailableView {
+            Label(canvasLocalized("工程绑定来自更新版本", "Edit binding is from a newer version"),
+                  systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(canvasLocalized(
+                "已保留原始绑定数据，不会用新工程覆盖。可从此原图新建一个分支继续编辑。",
+                "The original binding data is preserved and will not be overwritten. You can create a variant branch from this image instead."))
+        } actions: {
+            Button(canvasLocalized("从此原图新建分支", "Create variant from this image")) {
+                startFreshVariant = true
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("canvas.imageEditor.recoveryVariant")
+            Button(canvasLocalized("取消", "Cancel")) { onSave(node.id) }
+                .frame(minHeight: 44)
+        }
+        .accessibilityIdentifier("canvas.imageEditor.recovery")
+    }
+
+    @ViewBuilder
+    private func editor(binding: CanvasChildProjectBinding?, variantOnly: Bool) -> some View {
         WorkbenchBootstrapSheet(
             center: environment.workbenchCenter,
             title: node.text.isEmpty ? "canvas-image" : node.text,
             kind: .image,
             urls: CanvasAssetNodeContent.localURL(for: node).map { [$0] } ?? [],
             owner: WorkbenchCenter.Owner(kind: .canvas, id: documentID, environmentID: nil),
-            onSaveToSource: { options in
+            onSaveToSource: variantOnly ? nil : { options in
                 let data = try await environment.workbenchCenter.exportImageData(options: options)
-                try await saveDerivedImage(data)
-            })
+                let revision = environment.workbenchCenter.project?.revision
+                try await applyEditedImage(data, projectRevision: revision, choice: .updateOriginal)
+            },
+            onMakeVariant: { options in
+                let data = try await environment.workbenchCenter.exportImageData(options: options)
+                let revision = environment.workbenchCenter.project?.revision
+                try await applyEditedImage(data, projectRevision: revision, choice: .makeVariant)
+            },
+            allowsResume: !variantOnly,
+            resumeProjectID: binding?.projectID)
     }
 
+    /// Persists verified export bytes as an immutable asset first (so a canvas
+    /// change can never lose the result), then either updates the original node
+    /// in place or creates an explicit variant node bound to a persisted fork.
     @MainActor
-    private func saveDerivedImage(_ data: Data) async throws {
-        guard store.selectedDocument?.id == documentID,
-              store.selectedDocument?.nodes.contains(where: { $0.id == node.id }) == true else {
-            throw FloeError.validationFailed("原画布或素材已改变，请重新打开图片编辑器。")
+    private func applyEditedImage(_ data: Data, projectRevision: Int64?, choice: ApplyChoice) async throws {
+        guard !data.isEmpty else {
+            throw FloeError.validationFailed(canvasLocalized("导出为空，未应用到画布。",
+                                                             "The export was empty; nothing was applied to the canvas."))
+        }
+        guard nodeStillExists else {
+            throw FloeError.validationFailed(canvasLocalized("原画布或素材已改变，请重新打开图片编辑器。",
+                                                             "The original canvas or asset changed; reopen the image editor."))
         }
         var writtenTarget: URL?
         do {
@@ -6970,32 +7120,78 @@ private struct CanvasLocalImageEditor: View {
             ))
             // A registered asset remains recoverable in the library if the canvas changes.
             writtenTarget = nil
-            guard store.selectedDocument?.id == documentID,
-                  store.selectedDocument?.nodes.contains(where: { $0.id == node.id }) == true else {
-                throw FloeError.validationFailed("图片已保存到素材库；原画布已改变，请从素材库插入。")
+            guard nodeStillExists else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "图片已保存到素材库；原画布已改变，请从素材库插入。",
+                    "The image was saved to the material library; the canvas changed, so insert it from there."))
             }
             let reference = CanvasAssetReference(
                 id: assetID, contentHash: hash,
                 localRelativePath: "Materials/\(filename)",
                 mimeType: "image/png", byteCount: Int64(data.count)
             )
-            let resultID = store.addAsset(
-                reference, kind: .image,
-                at: CGPoint(x: node.x + node.width + 100, y: node.y)
-            )
-            guard store.selectedDocument?.nodes.contains(where: { $0.id == resultID }) == true else {
-                throw FloeError.validationFailed("图片已保存到素材库，但未能加入画布。请从素材库重新插入。")
+            switch choice {
+            case .updateOriginal:
+                // Preserve node identity, name, position, size and edges.
+                store.attachAsset(reference, kind: .image, to: node.id)
+                guard nodeStillExists else {
+                    throw FloeError.validationFailed(canvasLocalized(
+                        "图片已保存到素材库；原节点已改变，请从素材库插入。",
+                        "The image was saved to the material library; the node changed, so insert it from there."))
+                }
+                let applied = CanvasChildProjectBinding(
+                    projectID: bindingState.binding?.projectID ?? environment.workbenchCenter.project?.id ?? UUID(),
+                    appliedRevision: projectRevision ?? bindingState.binding?.appliedRevision ?? 0,
+                    draftRevision: projectRevision ?? bindingState.binding?.draftRevision,
+                    renderedAssetID: reference.id,
+                    sourceNodeID: bindingState.binding?.sourceNodeID ?? node.id,
+                    sourceAssetHash: reference.contentHash
+                )
+                store.setChildProjectBinding(applied, for: node.id)
+                store.updateNodeMetadata(node.id, values: [
+                    "editor": "media-workbench", "editFormat": "flattened-png",
+                    "appliedRevision": String(applied.appliedRevision)
+                ])
+                onSave(node.id)
+            case .makeVariant:
+                // Only an explicit "make variant" creates a new node + edge,
+                // bound to a persisted fork of the edit project.
+                let parentID = bindingState.binding?.projectID ?? environment.workbenchCenter.project?.id
+                guard let parentID,
+                      let forked = await environment.workbenchCenter.forkProjectForVariant(parentID: parentID) else {
+                    throw FloeError.validationFailed(canvasLocalized(
+                        "无法创建分支工程；原图未改变。",
+                        "Could not create the variant project; the original is unchanged."))
+                }
+                let resultID = store.addAsset(
+                    reference, kind: .image,
+                    at: CGPoint(x: node.x + node.width + 100, y: node.y)
+                )
+                store.updateNodeMetadata(resultID, values: [
+                    "derivedFromNodeID": node.id.uuidString,
+                    "editor": "media-workbench", "editFormat": "flattened-png",
+                    "variant": "true"
+                ])
+                store.setChildProjectBinding(CanvasChildProjectBinding(
+                    projectID: forked.id,
+                    appliedRevision: forked.revision,
+                    draftRevision: forked.revision,
+                    renderedAssetID: reference.id,
+                    sourceNodeID: node.id,
+                    sourceAssetHash: reference.contentHash
+                ), for: resultID)
+                store.connect(node.id, to: resultID, kind: .generatedFrom)
+                onSave(resultID)
             }
-            store.updateNodeMetadata(resultID, values: [
-                "derivedFromNodeID": node.id.uuidString,
-                "editor": "ZLImageEditor-3.0.0", "editFormat": "flattened-png"
-            ])
-            store.connect(node.id, to: resultID, kind: .generatedFrom)
-            onSave(resultID)
         } catch {
             if let writtenTarget { try? FileManager.default.removeItem(at: writtenTarget) }
             throw error
         }
+    }
+
+    private var nodeStillExists: Bool {
+        store.project.documents.first(where: { $0.id == documentID })?
+            .nodes.contains(where: { $0.id == node.id }) == true
     }
 }
 
@@ -7095,6 +7291,7 @@ private struct CanvasNodeCard: View {
     let canGroup: Bool
     let onOpen3D: (() -> Void)?
     let onConfigureGeneration: (() -> Void)?
+    let onRetryAsset: (() -> Void)?
     let onBeginEditing: () -> Void
     let onEndEditing: () -> Void
     let onAskAI: () -> Void
@@ -7507,7 +7704,8 @@ private struct CanvasNodeCard: View {
             CanvasAssetNodeContent(
                 node: node,
                 fallbackIcon: icon,
-                title: text.isEmpty ? fallbackTitle : text
+                title: text.isEmpty ? fallbackTitle : text,
+                onRetryDownload: onRetryAsset
             )
             if isEditing {
                 TextField("节点名称", text: $draftText)
@@ -7596,63 +7794,153 @@ private struct CanvasAssetNodeContent: View {
     let node: FloeCanvasNode
     let fallbackIcon: String
     let title: String
+    var onRetryDownload: (() -> Void)?
 
-    static func localURL(for node: FloeCanvasNode) -> URL? {
-        guard let relativePath = node.asset?.localRelativePath,
-              !relativePath.contains(".."),
+    /// Distinguishes "no asset path", "unsafe path", "path but missing file"
+    /// and "actual file" so recovery messages are truthful.
+    enum LocalAssetResolution: Equatable {
+        case absent
+        case unsafe
+        case missing(URL)
+        case file(URL)
+    }
+
+    static func resolveLocal(for node: FloeCanvasNode) -> LocalAssetResolution {
+        guard let relativePath = node.asset?.localRelativePath, !relativePath.isEmpty else { return .absent }
+        guard !relativePath.contains(".."),
               let support = try? FileManager.default.url(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask,
                 appropriateFor: nil,
                 create: false
-              ) else { return nil }
+              ) else { return .unsafe }
         let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
             .resolvingSymlinksInPath().standardizedFileURL
         let url = root.appendingPathComponent(relativePath)
             .resolvingSymlinksInPath().standardizedFileURL
-        guard url.path.hasPrefix(root.path + "/"),
-              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
-        return url
+        guard url.path.hasPrefix(root.path + "/") else { return .unsafe }
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            return .missing(url)
+        }
+        return .file(url)
     }
 
-    private var fileURL: URL? { Self.localURL(for: node) }
+    static func localURL(for node: FloeCanvasNode) -> URL? {
+        if case .file(let url) = resolveLocal(for: node) { return url }
+        return nil
+    }
+
+    private enum AssetState {
+        case image(UIImage)
+        case video(URL)
+        case missingLocalFile
+        case remoteOnly
+        case undecodable
+        case unsupported
+    }
+
+    private var state: AssetState {
+        guard let asset = node.asset else { return .unsupported }
+        switch Self.resolveLocal(for: node) {
+        case .file(let fileURL):
+            switch node.kind {
+            case .image:
+                if let image = CanvasImageThumbnailCache.thumbnail(for: fileURL) { return .image(image) }
+                return .undecodable
+            case .video:
+                return .video(fileURL)
+            default:
+                return .unsupported
+            }
+        case .missing:
+            return .missingLocalFile
+        case .absent:
+            // No local path at all: only claim "remote" when the record really
+            // is backed by a cloud/content hash; otherwise it is unsupported.
+            return (asset.cloudRecordName != nil || (asset.contentHash?.isEmpty == false))
+                ? .remoteOnly : .unsupported
+        case .unsafe:
+            return .unsupported
+        }
+    }
 
     var body: some View {
         Group {
-            switch node.kind {
-            case .image:
-                if let fileURL, let image = UIImage(contentsOfFile: fileURL.path) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                } else {
-                    placeholder
-                }
-            case .video:
-                if let fileURL, FileManager.default.fileExists(atPath: fileURL.path) {
-                    CanvasVideoNode(url: fileURL)
-                } else {
-                    placeholder
-                }
-            default:
-                placeholder
+            switch state {
+            case .image(let image):
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            case .video(let url):
+                CanvasVideoNode(url: url)
+            case .missingLocalFile:
+                placeholder(message: canvasLocalized("本地素材文件缺失，可从云端恢复或重新插入。",
+                                                     "The local asset file is missing; restore it from the cloud or re-insert it."))
+            case .remoteOnly:
+                placeholder(message: canvasLocalized("素材尚未下载到本机。",
+                                                     "The asset has not been downloaded to this device yet."))
+            case .undecodable:
+                placeholder(message: canvasLocalized("无法解码该图片格式。",
+                                                     "This image format could not be decoded."))
+            case .unsupported:
+                placeholder(message: nil)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 13))
     }
 
-    private var placeholder: some View {
+    private func placeholder(message: String?) -> some View {
         VStack(spacing: 10) {
             Image(systemName: fallbackIcon)
                 .font(.largeTitle)
                 .foregroundStyle(FloeTheme.primary)
             Text(title).lineLimit(2)
-            if let mimeType = node.asset?.mimeType {
+            if let message {
+                Text(message)
+                    .font(.caption2)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            } else if let mimeType = node.asset?.mimeType {
                 Text(mimeType).font(.caption2).foregroundStyle(.secondary)
+            }
+            if message != nil, node.asset?.contentHash != nil || node.asset?.cloudRecordName != nil,
+               let onRetryDownload {
+                Button(canvasLocalized("从云端恢复", "Restore from cloud")) { onRetryDownload() }
+                    .font(.caption)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("canvas.asset.retryDownload")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+}
+
+/// Bounded, downsampled thumbnails so node bodies never decode full-size
+/// images on every layout pass. Keyed by path + maximum pixel size; evicted by
+/// count and total decoded cost.
+private enum CanvasImageThumbnailCache {
+    /// NSCache is internally thread-safe; the annotation only satisfies Swift
+    /// 6 shared-mutable-state checking for this bounded cache.
+    nonisolated(unsafe) private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 48 * 1024 * 1024
+        return cache
+    }()
+
+    static func thumbnail(for url: URL, maxPixel: CGFloat = 1400) -> UIImage? {
+        let key = "\(url.path)|\(Int(maxPixel))" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+              ] as CFDictionary) else { return nil }
+        let image = UIImage(cgImage: cgImage)
+        cache.setObject(image, forKey: key, cost: cgImage.bytesPerRow * cgImage.height)
+        return image
     }
 }
 

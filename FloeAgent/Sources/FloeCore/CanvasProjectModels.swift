@@ -481,6 +481,108 @@ public enum CanvasConnectionPort: String, Sendable, Codable, CaseIterable, Hasha
     case top, trailing, bottom, leading
 }
 
+/// Typed binding between a canvas node and its child editable media project.
+///
+/// Stored inside `CanvasNode.metadata` as JSON. A reader that does not know the
+/// key preserves it verbatim (metadata survives decode/encode), and an older
+/// node without the key decodes to `nil` without any forced rewrite. The
+/// applied revision is what the canvas currently displays; `draftRevision` may
+/// be newer when the editor saved a draft that has not been applied.
+public struct CanvasChildProjectBinding: Sendable, Codable, Hashable {
+    public static let currentSchemaVersion = 1
+
+    public var schemaVersion: Int
+    public var projectID: UUID
+    public var appliedRevision: Int64
+    public var draftRevision: Int64?
+    public var renderedAssetID: UUID?
+    public var sourceNodeID: UUID?
+    public var sourceAssetHash: String?
+
+    public init(schemaVersion: Int = CanvasChildProjectBinding.currentSchemaVersion,
+                projectID: UUID, appliedRevision: Int64, draftRevision: Int64? = nil,
+                renderedAssetID: UUID? = nil, sourceNodeID: UUID? = nil,
+                sourceAssetHash: String? = nil) {
+        self.schemaVersion = schemaVersion
+        self.projectID = projectID
+        self.appliedRevision = appliedRevision
+        self.draftRevision = draftRevision
+        self.renderedAssetID = renderedAssetID
+        self.sourceNodeID = sourceNodeID
+        self.sourceAssetHash = sourceAssetHash
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, projectID, appliedRevision, draftRevision
+        case renderedAssetID, sourceNodeID, sourceAssetHash
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        // Bindings written before the version field existed are version 1.
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        projectID = try values.decode(UUID.self, forKey: .projectID)
+        appliedRevision = try values.decode(Int64.self, forKey: .appliedRevision)
+        draftRevision = try values.decodeIfPresent(Int64.self, forKey: .draftRevision)
+        renderedAssetID = try values.decodeIfPresent(UUID.self, forKey: .renderedAssetID)
+        sourceNodeID = try values.decodeIfPresent(UUID.self, forKey: .sourceNodeID)
+        sourceAssetHash = try values.decodeIfPresent(String.self, forKey: .sourceAssetHash)
+    }
+}
+
+/// Truthful binding state. An unknown newer version or malformed metadata is
+/// preserved verbatim and surfaced for recovery; it is never silently treated
+/// as "unbound" (which would start a new edit and orphan the saved project).
+public enum CanvasChildProjectBindingState: Sendable, Equatable {
+    case absent
+    case valid(CanvasChildProjectBinding)
+    case unknownVersion(raw: String)
+    case malformed(raw: String)
+
+    public var binding: CanvasChildProjectBinding? {
+        if case .valid(let binding) = self { return binding }
+        return nil
+    }
+
+    public var isRecoverable: Bool {
+        switch self {
+        case .unknownVersion, .malformed: true
+        case .absent, .valid: false
+        }
+    }
+}
+
+public extension CanvasNode {
+    static let childProjectMetadataKey = "canvas.childProject"
+
+    /// Full binding state, including unknown-newer and malformed raw data.
+    var childProjectBindingState: CanvasChildProjectBindingState {
+        guard let raw = metadata[Self.childProjectMetadataKey] else { return .absent }
+        guard let data = raw.data(using: .utf8) else { return .malformed(raw: raw) }
+        guard let binding = try? JSONDecoder().decode(CanvasChildProjectBinding.self, from: data) else {
+            return .malformed(raw: raw)
+        }
+        guard binding.schemaVersion <= CanvasChildProjectBinding.currentSchemaVersion else {
+            return .unknownVersion(raw: raw)
+        }
+        return .valid(binding)
+    }
+
+    /// Decoded binding for version-compatible nodes only.
+    var childProjectBinding: CanvasChildProjectBinding? {
+        get { childProjectBindingState.binding }
+        set {
+            guard let newValue,
+                  let data = try? JSONEncoder().encode(newValue),
+                  let raw = String(data: data, encoding: .utf8) else {
+                metadata.removeValue(forKey: Self.childProjectMetadataKey)
+                return
+            }
+            metadata[Self.childProjectMetadataKey] = raw
+        }
+    }
+}
+
 public struct CanvasConnection: Sendable, Codable, Identifiable, Hashable {
     public var id: UUID
     public var sourceNodeID: UUID

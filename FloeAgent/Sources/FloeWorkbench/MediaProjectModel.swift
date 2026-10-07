@@ -107,6 +107,8 @@ public enum ImageLayerKind: String, Sendable, Codable, Hashable {
     case text
     /// Rasterized freehand drawing (bounded point strokes).
     case freehand
+    /// Solid color masked by a vector selection (fill/cut-copy results).
+    case fill
 }
 
 /// Unit-space geometry relative to the canvas. Center anchor + scale keeps
@@ -117,13 +119,35 @@ public struct ImageLayerTransform: Sendable, Codable, Hashable {
     /// Uniform scale multiplier; 1 = the layer fills its natural placement.
     public var scale: Double
     public var rotationDegrees: Double
+    /// Non-destructive mirror flags (nil/false = unflipped).
+    public var flipX: Bool?
+    public var flipY: Bool?
 
     public init(centerX: Double = 0.5, centerY: Double = 0.5, scale: Double = 1,
-                rotationDegrees: Double = 0) {
+                rotationDegrees: Double = 0, flipX: Bool? = nil, flipY: Bool? = nil) {
         self.centerX = centerX
         self.centerY = centerY
         self.scale = scale
         self.rotationDegrees = rotationDegrees
+        self.flipX = flipX
+        self.flipY = flipY
+    }
+}
+
+public enum ImageTextAlignment: String, Sendable, Codable, Hashable {
+    case left, center, right
+}
+
+public struct ImageTextShadow: Sendable, Codable, Hashable {
+    public var colorHex: String
+    public var blur: Double
+    public var offsetX: Double
+    public var offsetY: Double
+
+    public init(colorHex: String = "#00000080", blur: Double = 4,
+                offsetX: Double = 2, offsetY: Double = 2) {
+        self.colorHex = colorHex; self.blur = blur
+        self.offsetX = offsetX; self.offsetY = offsetY
     }
 }
 
@@ -133,13 +157,29 @@ public struct ImageTextContent: Sendable, Codable, Hashable {
     public var colorHex: String
     /// Resolved font family name; nil uses the system font.
     public var fontName: String?
+    /// Letter spacing (points, may be negative).
+    public var tracking: Double?
+    /// Line spacing (points) for multi-line text.
+    public var leading: Double?
+    public var alignment: ImageTextAlignment?
+    public var strokeColorHex: String?
+    public var strokeWidth: Double?
+    public var shadow: ImageTextShadow?
 
     public init(text: String, fontSize: Double = 48, colorHex: String = "#000000",
-                fontName: String? = nil) {
+                fontName: String? = nil, tracking: Double? = nil, leading: Double? = nil,
+                alignment: ImageTextAlignment? = nil, strokeColorHex: String? = nil,
+                strokeWidth: Double? = nil, shadow: ImageTextShadow? = nil) {
         self.text = text
         self.fontSize = fontSize
         self.colorHex = colorHex
         self.fontName = fontName
+        self.tracking = tracking
+        self.leading = leading
+        self.alignment = alignment
+        self.strokeColorHex = strokeColorHex
+        self.strokeWidth = strokeWidth
+        self.shadow = shadow
     }
 }
 
@@ -147,16 +187,28 @@ public struct ImageFreehandStroke: Sendable, Codable, Hashable {
     public struct Point: Sendable, Codable, Hashable {
         public var x: Double
         public var y: Double
-        public init(x: Double, y: Double) { self.x = x; self.y = y }
+        /// Apple Pencil pressure in 0...1; nil means a fixed-width finger or
+        /// mouse stroke (pressure is never synthesized).
+        public var pressure: Double?
+        public init(x: Double, y: Double, pressure: Double? = nil) {
+            self.x = x; self.y = y; self.pressure = pressure
+        }
     }
     public var points: [Point]
     public var width: Double
     public var colorHex: String
+    /// Edge softness 0 (hard) ... 1 (soft). nil = default soft edge.
+    public var hardness: Double?
+    /// Stroke opacity 0...1. nil = 1.
+    public var opacity: Double?
 
-    public init(points: [Point], width: Double = 4, colorHex: String = "#000000") {
+    public init(points: [Point], width: Double = 4, colorHex: String = "#000000",
+                hardness: Double? = nil, opacity: Double? = nil) {
         self.points = points
         self.width = width
         self.colorHex = colorHex
+        self.hardness = hardness
+        self.opacity = opacity
     }
 }
 
@@ -165,6 +217,78 @@ public struct ImageFreehandContent: Sendable, Codable, Hashable {
     public var strokes: [ImageFreehandStroke]
 
     public init(strokes: [ImageFreehandStroke] = []) { self.strokes = strokes }
+}
+
+/// One non-destructive mask stroke. `restore` strokes re-expose erased pixels;
+/// both are stored as vector paths so the original pixels are never destroyed.
+public struct ImageMaskStroke: Sendable, Codable, Hashable {
+    public var points: [ImageFreehandStroke.Point]
+    public var width: Double
+    public var hardness: Double?
+    /// false = erase (hide pixels), true = restore (show pixels again).
+    public var restore: Bool
+
+    public init(points: [ImageFreehandStroke.Point], width: Double = 24,
+                hardness: Double? = nil, restore: Bool = false) {
+        self.points = points; self.width = width; self.hardness = hardness; self.restore = restore
+    }
+}
+
+public struct ImageLayerMask: Sendable, Codable, Hashable {
+    public var strokes: [ImageMaskStroke]
+
+    public init(strokes: [ImageMaskStroke] = []) { self.strokes = strokes }
+}
+
+/// Selection shape in normalized source coordinates.
+public enum ImageSelectionKind: String, Sendable, Codable, Hashable {
+    case rectangle
+    case ellipse
+    case lasso
+}
+
+public enum ImageSelectionOperation: String, Sendable, Codable, Hashable {
+    case replace
+    case add
+    case subtract
+}
+
+public struct ImageSelectionShape: Sendable, Codable, Hashable {
+    public var kind: ImageSelectionKind
+    public var operation: ImageSelectionOperation
+    /// Rectangle/ellipse: two corners. Lasso: the polygon path.
+    public var points: [ImageFreehandStroke.Point]
+
+    public init(kind: ImageSelectionKind, operation: ImageSelectionOperation = .replace,
+                points: [ImageFreehandStroke.Point]) {
+        self.kind = kind; self.operation = operation; self.points = points
+    }
+}
+
+/// Vector selection with feathering. Coordinates are normalized to the canvas;
+/// scaling the canvas or the layer therefore scales the selection geometry, and
+/// the feather radius stays a normalized fraction rather than a pixel constant.
+public struct ImageSelection: Sendable, Codable, Hashable {
+    public var shapes: [ImageSelectionShape]
+    public var feather: Double
+    public var inverted: Bool
+
+    public init(shapes: [ImageSelectionShape] = [], feather: Double = 0, inverted: Bool = false) {
+        self.shapes = shapes; self.feather = feather; self.inverted = inverted
+    }
+
+    public var isEmpty: Bool { shapes.isEmpty && !inverted }
+}
+
+/// Level adjustment: input black/white points and gamma.
+public struct ImageLevels: Sendable, Codable, Hashable {
+    public var black: Double
+    public var white: Double
+    public var gamma: Double
+
+    public init(black: Double = 0, white: Double = 1, gamma: Double = 1) {
+        self.black = black; self.white = white; self.gamma = gamma
+    }
 }
 
 public struct ImageLayer: Sendable, Codable, Hashable, Identifiable {
@@ -181,6 +305,12 @@ public struct ImageLayer: Sendable, Codable, Hashable, Identifiable {
     public var freehand: ImageFreehandContent?
     /// Non-destructive crop of a pixel layer, normalized to the source frame.
     public var crop: NormalizedRect?
+    /// Non-destructive erase/restore mask strokes.
+    public var mask: ImageLayerMask?
+    /// Vector selection limiting this layer's effect (selection-scoped edits).
+    public var selectionMask: ImageSelection?
+    /// Solid fill color for `.fill` layers, masked by `selectionMask`.
+    public var fillColorHex: String?
     /// Per-layer pixel adjustments applied at export. Basic color science is
     /// shared with the deterministic `ImagePipeline` vocabulary.
     public var adjustment: ImageLayerAdjustment
@@ -190,7 +320,9 @@ public struct ImageLayer: Sendable, Codable, Hashable, Identifiable {
                 isHidden: Bool = false, isLocked: Bool = false,
                 text: ImageTextContent? = nil, freehand: ImageFreehandContent? = nil,
                 crop: NormalizedRect? = nil,
-                adjustment: ImageLayerAdjustment = .init()) {
+                adjustment: ImageLayerAdjustment = .init(),
+                mask: ImageLayerMask? = nil, selectionMask: ImageSelection? = nil,
+                fillColorHex: String? = nil) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -203,6 +335,9 @@ public struct ImageLayer: Sendable, Codable, Hashable, Identifiable {
         self.freehand = freehand
         self.crop = crop
         self.adjustment = adjustment
+        self.mask = mask
+        self.selectionMask = selectionMask
+        self.fillColorHex = fillColorHex
     }
 }
 
@@ -214,6 +349,12 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
     public var exposureEV: Double?
     public var blurRadius: Double?
     public var sharpenRadius: Double?
+    /// White-balance temperature in Kelvin (neutral target); nil disables.
+    public var temperature: Double?
+    /// Hue rotation in degrees (-180...180); nil disables.
+    public var hueDegrees: Double?
+    /// Input levels; nil disables.
+    public var levels: ImageLevels?
     /// Mosaic pixelation block size in canvas pixels; 0/nil disables.
     public var mosaicBlockSize: Int?
     /// Built-in color filter identifier (deterministic Core Image name set).
@@ -221,7 +362,8 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
 
     public init(saturation: Double? = nil, contrast: Double? = nil, brightness: Double? = nil,
                 exposureEV: Double? = nil, blurRadius: Double? = nil, sharpenRadius: Double? = nil,
-                mosaicBlockSize: Int? = nil, filterID: String? = nil) {
+                mosaicBlockSize: Int? = nil, filterID: String? = nil,
+                temperature: Double? = nil, hueDegrees: Double? = nil, levels: ImageLevels? = nil) {
         self.saturation = saturation
         self.contrast = contrast
         self.brightness = brightness
@@ -230,11 +372,15 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
         self.sharpenRadius = sharpenRadius
         self.mosaicBlockSize = mosaicBlockSize
         self.filterID = filterID
+        self.temperature = temperature
+        self.hueDegrees = hueDegrees
+        self.levels = levels
     }
 
     public var isIdentity: Bool {
         saturation == nil && contrast == nil && brightness == nil && exposureEV == nil &&
-        blurRadius == nil && sharpenRadius == nil && mosaicBlockSize == nil && filterID == nil
+        blurRadius == nil && sharpenRadius == nil && mosaicBlockSize == nil && filterID == nil &&
+        temperature == nil && hueDegrees == nil && levels == nil
     }
 }
 
@@ -355,19 +501,30 @@ public struct CaptionSegment: Sendable, Codable, Hashable, Identifiable {
 }
 
 /// Style shared by the subtitle overlay track; deterministic and local.
+public enum CaptionAlignment: String, Sendable, Codable, Hashable {
+    case leading, center, trailing
+}
+
 public struct CaptionStyle: Sendable, Codable, Hashable {
     public var fontSize: Double
     public var colorHex: String
     public var backgroundHex: String?
     /// Vertical position of the caption baseline center, normalized 0...1.
     public var positionY: Double
+    /// Horizontal alignment of the rendered caption line.
+    public var alignment: CaptionAlignment?
+    /// Keep captions inside the title-safe area for the export preset.
+    public var respectsSafeArea: Bool?
 
     public init(fontSize: Double = 36, colorHex: String = "#FFFFFF",
-                backgroundHex: String? = "#000000", positionY: Double = 0.88) {
+                backgroundHex: String? = "#000000", positionY: Double = 0.88,
+                alignment: CaptionAlignment? = nil, respectsSafeArea: Bool? = nil) {
         self.fontSize = fontSize
         self.colorHex = colorHex
         self.backgroundHex = backgroundHex
         self.positionY = positionY
+        self.alignment = alignment
+        self.respectsSafeArea = respectsSafeArea
     }
 }
 
@@ -376,17 +533,21 @@ public struct VideoTimeline: Sendable, Codable, Hashable {
     public var music: [MusicClip]
     public var captions: [CaptionSegment]
     public var captionStyle: CaptionStyle
+    /// Explicit user-chosen cover frame in timeline seconds; nil derives the
+    /// first visual frame. Never guessed from an arbitrary thumbnail.
+    public var coverTime: Double?
     /// Master mix of the clips' original audio; music is mixed alongside.
     public var primaryVolume: Double
     public var primaryMuted: Bool
 
     public init(clips: [VideoClip] = [], music: [MusicClip] = [], captions: [CaptionSegment] = [],
-                captionStyle: CaptionStyle = .init(), primaryVolume: Double = 1,
-                primaryMuted: Bool = false) {
+                captionStyle: CaptionStyle = .init(), coverTime: Double? = nil,
+                primaryVolume: Double = 1, primaryMuted: Bool = false) {
         self.clips = clips
         self.music = music
         self.captions = captions
         self.captionStyle = captionStyle
+        self.coverTime = coverTime
         self.primaryVolume = primaryVolume
         self.primaryMuted = primaryMuted
     }
@@ -508,6 +669,12 @@ public struct MediaProject: Sendable, Codable {
     /// only (assets stay external references), keeping the document small.
     public var undoHistory: [MediaProjectMemento]
     public var redoHistory: [MediaProjectMemento]
+    /// Current image-editor selection (vector, normalized, non-destructive).
+    public var imageSelection: ImageSelection?
+    /// Set when this project is a persisted fork (canvas "make variant" or a
+    /// copied bound node). Asset bytes are reused by reference; only editable
+    /// state is independent.
+    public var parentProjectID: UUID?
 
     public init(schemaVersion: Int = MediaProject.currentSchemaVersion, id: UUID = UUID(),
                 kind: MediaProjectKind, name: String, createdAt: Date = Date(),
@@ -520,7 +687,8 @@ public struct MediaProject: Sendable, Codable {
                 environmentID: String? = nil, taskWorkspacePath: String? = nil,
                 unknownOperations: [UnknownOperation] = [],
                 recoveryWarnings: [String] = [],
-                undoHistory: [MediaProjectMemento] = [], redoHistory: [MediaProjectMemento] = []) {
+                undoHistory: [MediaProjectMemento] = [], redoHistory: [MediaProjectMemento] = [],
+                parentProjectID: UUID? = nil, imageSelection: ImageSelection? = nil) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.kind = kind
@@ -544,6 +712,8 @@ public struct MediaProject: Sendable, Codable {
         self.recoveryWarnings = recoveryWarnings
         self.undoHistory = undoHistory
         self.redoHistory = redoHistory
+        self.parentProjectID = parentProjectID
+        self.imageSelection = imageSelection
     }
 
     public func asset(_ id: UUID) -> MediaAssetReference? {
@@ -573,7 +743,7 @@ extension MediaProject {
         case sourceAssetID, imageLayers, canvasAdjustment, videoTimeline
         case lastImageExport, lastVideoExport, unknownOperations, recoveryWarnings
         case ownerKind, ownerID, environmentID, taskWorkspacePath
-        case undoHistory, redoHistory
+        case undoHistory, redoHistory, parentProjectID, imageSelection
     }
 
     public init(from decoder: Decoder) throws {
@@ -601,6 +771,8 @@ extension MediaProject {
         recoveryWarnings = []
         undoHistory = try container.decodeIfPresent([MediaProjectMemento].self, forKey: .undoHistory) ?? []
         redoHistory = try container.decodeIfPresent([MediaProjectMemento].self, forKey: .redoHistory) ?? []
+        parentProjectID = try container.decodeIfPresent(UUID.self, forKey: .parentProjectID)
+        imageSelection = try container.decodeIfPresent(ImageSelection.self, forKey: .imageSelection)
     }
 }
 

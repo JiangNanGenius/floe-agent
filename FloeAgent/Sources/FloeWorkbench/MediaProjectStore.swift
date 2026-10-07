@@ -134,6 +134,26 @@ public actor MediaProjectStore {
         try await persist(project, expectedRevision: expectedRevision)
     }
 
+    /// Creates a persisted fork of `id`: new identity, parent linkage, fresh
+    /// undo/redo history, and reused immutable asset references. Callers bind
+    /// an explicit "make variant" node or a copied node to the returned fork;
+    /// the original project and its files are untouched.
+    public func forkProject(id: UUID, nameSuffix: String = "variant") async throws -> MediaProject {
+        guard let parent = try await loadProject(id: id) else {
+            throw FloeError.notFound("project \(id.uuidString)")
+        }
+        var fork = parent
+        fork.id = UUID()
+        fork.name = "\(parent.name) · \(nameSuffix)"
+        fork.createdAt = Date()
+        fork.updatedAt = Date()
+        fork.parentProjectID = parent.id
+        fork.undoHistory = []
+        fork.redoHistory = []
+        try await save(fork, expectedRevision: nil)
+        return fork
+    }
+
     private func persist(_ project: MediaProject, expectedRevision: Int64?) async throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = projectURL(id: project.id)

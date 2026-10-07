@@ -9,6 +9,10 @@ struct EngineeringReviewCapture: Identifiable {
     let id = UUID()
     let context: String
     let image: Data
+    /// Workspace-relative drawing path and root, captured at review time so
+    /// the Drawing Assistant can bind proposals to the exact document.
+    var documentID: String? = nil
+    var workspaceRoot: URL? = nil
 }
 
 struct EngineeringFilePreview: View {
