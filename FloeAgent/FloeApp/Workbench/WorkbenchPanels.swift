@@ -12,6 +12,7 @@ import UIKit
 
 struct WorkbenchAssetsPanel: View {
     @ObservedObject var center: WorkbenchCenter
+    @ObservedObject private var layout = LayoutPreferences.shared
     @State private var showTextSheet = false
     @State private var showAssetImporter = false
     @State private var assetImportMode: AssetImportMode = .imageLayer
@@ -34,14 +35,57 @@ struct WorkbenchAssetsPanel: View {
                 }
             }
 
+            Section(WorkbenchText.t("显示", "Display")) {
+                ForEach(LayoutListKind.allCases, id: \.self) { kind in
+                    Picker(kind == .files
+                           ? WorkbenchText.t("文件列表字号", "File list font")
+                           : kind == .assets
+                           ? WorkbenchText.t("素材列表字号", "Asset list font")
+                           : WorkbenchText.t("图层列表字号", "Layer list font"),
+                           selection: Binding(
+                            get: { layout.settings.fontSize(for: kind) },
+                            set: { layout.setFontSize($0, for: kind) })) {
+                        ForEach(LayoutListFontSize.allCases, id: \.self) { size in
+                            Text(WorkbenchText.t(size.titleZH, size.titleEN)).tag(size)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("workbench.display.font.\(kind.rawValue)")
+                }
+                Picker(WorkbenchText.t("文件名行数", "File name lines"), selection: Binding(
+                    get: { layout.settings.fileNameLines },
+                    set: { layout.setFileNameLines($0) })) {
+                    Text(WorkbenchText.t("一行", "One line")).tag(1)
+                    Text(WorkbenchText.t("两行", "Two lines")).tag(2)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("workbench.display.fileNameLines")
+                Toggle(WorkbenchText.t("显示完整路径", "Show full path"), isOn: Binding(
+                    get: { layout.settings.showFullPath },
+                    set: { layout.setShowFullPath($0) }))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("workbench.display.showPath")
+                Toggle(WorkbenchText.t("显示扩展名", "Show file extension"), isOn: Binding(
+                    get: { layout.settings.showFileExtension },
+                    set: { layout.setShowFileExtension($0) }))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("workbench.display.showExtension")
+            }
+
             Section(WorkbenchText.t("素材", "Assets")) {
                 ForEach(center.project?.assets ?? []) { asset in
                     HStack {
                         Image(systemName: center.isAssetAvailable(asset.id)
                               ? icon(for: asset.kind) : "exclamationmark.triangle")
                         VStack(alignment: .leading) {
-                            Text(asset.originalName).lineLimit(1)
-                            Text(asset.relativePath).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Text(asset.originalName)
+                                .font(.system(size: layout.settings.fontSize(for: .assets).pointSize))
+                                .lineLimit(layout.settings.fileNameLines)
+                            if layout.settings.fileNameLines > 1 || layout.settings.showFullPath {
+                                Text(asset.relativePath)
+                                    .font(.system(size: layout.settings.fontSize(for: .assets).pointSize - 2))
+                                    .foregroundStyle(.secondary).lineLimit(1)
+                            }
                         }
                         Spacer()
                         if !center.isAssetAvailable(asset.id) {
@@ -397,7 +441,9 @@ struct WorkbenchAssetsPanel: View {
                     HStack {
                         Image(systemName: icon(for: layer.kind))
                         VStack(alignment: .leading) {
-                            Text(layer.name).lineLimit(1)
+                            Text(layer.name)
+                                .font(.system(size: layout.settings.fontSize(for: .layers).pointSize))
+                                .lineLimit(layout.settings.fileNameLines)
                             Text("\(Int(layer.opacity * 100))%")
                                 .font(.caption).foregroundStyle(.secondary)
                         }

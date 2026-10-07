@@ -341,8 +341,53 @@ struct MediaCommandExpansionTests {
         #expect((shape?.points.count ?? 0) >= 3)
     }
 
-    @Test("move/scale/rotate preserve non-destructive mirroring")
-    func transformPreservesFlips() {
+    // MARK: Ink stroke builder (CUA ended-sample regression)
+
+    @Test("a stroke commits the final touch location, not the second-to-last sample")
+    func inkEndSampleIncluded() {
+        var builder = InkStrokeBuilder()
+        builder.begin(.init(x: 0.10, y: 0.10))
+        builder.move(.init(x: 0.20, y: 0.20))
+        builder.end(.init(x: 0.30, y: 0.30))
+        let points = builder.committedPoints()
+        #expect(points?.count == 3)
+        #expect(points?.last?.x == 0.30 && points?.last?.y == 0.30,
+                "the lifted touch location must be committed")
+        #expect(builder.isActive == false)
+    }
+
+    @Test("a tap commits a small dot; a cancelled touch discards everything")
+    func inkTapAndCancelSemantics() {
+        var tap = InkStrokeBuilder()
+        tap.begin(.init(x: 0.5, y: 0.5))
+        tap.end(.init(x: 0.5, y: 0.5))
+        let dot = tap.committedPoints()
+        #expect(dot?.count == 2)
+        #expect(dot?.first?.x != dot?.last?.x, "tap dot is nudged so the round cap renders")
+        var cancelled = InkStrokeBuilder()
+        cancelled.begin(.init(x: 0.1, y: 0.1))
+        cancelled.move(.init(x: 0.2, y: 0.2))
+        cancelled.cancel()
+        #expect(cancelled.committedPoints() == nil)
+        #expect(cancelled.isActive == false)
+    }
+
+    @Test("coalesced samples append in order and spacing filters dense input")
+    func inkSampleAccumulation() {
+        var builder = InkStrokeBuilder()
+        builder.begin(.init(x: 0.0, y: 0.0))
+        for index in 1...20 {
+            builder.move(.init(x: Double(index) * 0.01, y: 0))
+        }
+        builder.end(.init(x: 0.21, y: 0))
+        #expect(builder.committedPoints()?.count == 22)
+        var spaced = InkStrokeBuilder()
+        spaced.begin(.init(x: 0.0, y: 0.0))
+        spaced.move(.init(x: 0.0001, y: 0), minimumSpacing: 0.005)
+        #expect(spaced.committedPoints()?.count == 2, "too-close sample filtered (dot fallback)")
+    }
+
+    @Test("move/scale/rotate preserve non-destructive mirroring")    func transformPreservesFlips() {
         let flipped = ImageLayerTransform(centerX: 0.5, centerY: 0.5, scale: 2,
                                           rotationDegrees: 45, flipX: true, flipY: true)
         let moved = flipped.movedBy(dx: 0.1, dy: -0.05)

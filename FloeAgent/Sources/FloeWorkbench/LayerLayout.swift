@@ -164,8 +164,7 @@ public extension ImageLayerTransform {
     }
 }
 
-/// Pure gesture→selection mapping shared by the touch UI (and unit-testable):
-///   * rectangle/ellipse use the drag's START and current point (the CUA bug
+/// Pure gesture→selection mapping shared by the touch UI (and unit-testable):///   * rectangle/ellipse use the drag's START and current point (the CUA bug
 ///     sampled only the current point, so the marquee began mid-drag);
 ///   * lasso accumulates samples with bounded spacing/count so a lasso can
 ///     actually reach the engine's 3-point minimum.
@@ -210,5 +209,72 @@ public enum ImageSelectionGesture {
             guard points.count >= 3 else { return nil }
             return ImageSelectionShape(kind: .lasso, operation: operation, points: points)
         }
+    }
+}
+
+/// Pure brush-stroke assembly for the touch surface (unit-testable). The
+/// CUA regression this fixes: `touchesEnded` committed without emitting the
+/// final touch location, so every stroke ended halfway to the finger.
+public struct InkStrokeBuilder: Sendable, Equatable {
+    public private(set) var points: [ImageFreehandStroke.Point] = []
+    public private(set) var isActive = false
+
+    public init() {}
+
+    public mutating func begin(_ point: ImageFreehandStroke.Point) {
+        points = [point]
+        isActive = true
+    }
+
+    /// Appends a sample when it is at least `minimumSpacing` from the last one
+    /// (0 keeps every sample, e.g. coalesced Pencil input).
+    public mutating func move(_ point: ImageFreehandStroke.Point,
+                              minimumSpacing: Double = 0) {
+        guard isActive else { return }
+        guard let last = points.last else {
+            points = [point]
+            return
+        }
+        let distance = ((point.x - last.x) * (point.x - last.x)
+            + (point.y - last.y) * (point.y - last.y)).squareRoot()
+        guard minimumSpacing <= 0 || distance >= minimumSpacing else { return }
+        points.append(point)
+    }
+
+    /// Emits the final touch location (even if it equals the last sample, the
+    /// caller may have moved since), then ends the stroke.
+    public mutating func end(_ point: ImageFreehandStroke.Point) {
+        guard isActive else { return }
+        if points.isEmpty {
+            points = [point]
+        } else {
+            points.append(point)
+        }
+        isActive = false
+    }
+
+    /// Explicit discard: a cancelled touch never commits a partial stroke.
+    public mutating func cancel() {
+        points = []
+        isActive = false
+    }
+
+    /// Committed geometry: a tap becomes a small dot (two nearly identical
+    /// points so the round-cap stroke renders). Nil when empty.
+    public func committedPoints() -> [ImageFreehandStroke.Point]? {
+        guard !points.isEmpty else { return nil }
+        if points.count == 1 {
+            let lone = points[0]
+            return [lone, ImageFreehandStroke.Point(x: lone.x + 0.0005, y: lone.y,
+                                                    pressure: lone.pressure)]
+        }
+        var result = points
+        if let first = result.first, let last = result.last,
+           first.x == last.x, first.y == last.y {
+            // Same-position drag: nudge the final point so a dot renders.
+            result[result.count - 1] = ImageFreehandStroke.Point(
+                x: last.x + 0.0005, y: last.y, pressure: last.pressure)
+        }
+        return result
     }
 }

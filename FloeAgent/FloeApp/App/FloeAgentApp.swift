@@ -220,6 +220,9 @@ struct RootView: View {
     /// Foreground notification banner (terminal/approval events that would
     /// otherwise duplicate a system alert).
     @ObservedObject private var taskBannerCenter = TaskBannerCenter.shared
+    /// Persisted list typography and iPad sidebar width (Build265).
+    @ObservedObject private var layoutPreferences = LayoutPreferences.shared
+    @State private var sidebarWidthObservation: CGFloat = 0
     /// Linux session/service deep link destination, optionally focused on the
     /// environment the notification came from.
     @State private var presentedExecutionEnvironment = false
@@ -735,7 +738,18 @@ struct RootView: View {
     /// as a first column on iPad and a native drawer on iPhone.
     private var sidebarColumn: some View {
         SidebarObservationHost(center: environment.conversationCenter, workspaces: environment.workspaceCenter) {
-            sidebarContent
+            GeometryReader { proxy in
+                sidebarContent
+                    .onChange(of: proxy.size.width) { _, width in
+                        // Persist the user's chosen width (bounded) so the next
+                        // presentation restores it; ignore tiny layout noise.
+                        layoutPreferences.setSidebarWidth(Double(width))
+                    }
+            }
+            .navigationSplitViewColumnWidth(
+                min: LayoutSettings.sidebarMinimumWidth,
+                ideal: layoutPreferences.settings.sidebarWidth,
+                max: LayoutSettings.sidebarMaximumWidth)
         }
     }
 

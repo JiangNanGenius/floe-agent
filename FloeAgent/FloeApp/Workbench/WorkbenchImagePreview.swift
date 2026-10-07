@@ -14,9 +14,7 @@ struct WorkbenchImagePreview: View {
     @State private var dragTranslation: CGSize = .zero
     @State private var liveScale: Double?
     @State private var liveRotation: Double?
-    @State private var freehandPoints: [CGPoint] = []
-    @State private var freehandPressures: [Double] = []
-    @State private var freehandWidths: [Double] = []
+    @State private var inkBuilder = InkStrokeBuilder()
     @State private var selectionPoints: [CGPoint] = []
     @State private var cropGestureStart: NormalizedRect?
 
@@ -74,9 +72,13 @@ struct WorkbenchImagePreview: View {
 
                 if center.isDrawingFreehand {
                     Path { path in
-                        guard let first = freehandPoints.first else { return }
+                        let screenPoints = inkBuilder.points.map {
+                            CGPoint(x: display.minX + CGFloat($0.x) * display.width,
+                                    y: display.minY + CGFloat($0.y) * display.height)
+                        }
+                        guard let first = screenPoints.first else { return }
                         path.move(to: first)
-                        for point in freehandPoints.dropFirst() { path.addLine(to: point) }
+                        for point in screenPoints.dropFirst() { path.addLine(to: point) }
                     }
                     .stroke(center.imageTool == .eraser ? Color.white : WorkbenchPreviewColor.color(center.brushColorHex),
                             style: StrokeStyle(lineWidth: max(1, center.brushWidth * 0.5),
@@ -102,18 +104,18 @@ struct WorkbenchImagePreview: View {
                             let point = CGPoint(x: display.minX + localPoint.x,
                                                 y: display.minY + localPoint.y)
                             guard display.contains(point) else { return }
-                            if freehandPoints.isEmpty {
-                                freehandPoints = [point]
-                                freehandPressures = [pressure]
-                                freehandWidths = [max(0.15, pressure)]
-                            } else {
-                                freehandPoints.append(point)
-                                freehandPressures.append(pressure)
-                                freehandWidths.append(max(0.15, pressure))
-                            }
+                            let normalized = normalizedPoint(point, display: display)
+                            let sample = ImageFreehandStroke.Point(
+                                x: normalized.x, y: normalized.y,
+                                pressure: center.brushUsesPressure ? pressure : nil)
+                            if inkBuilder.isActive { inkBuilder.move(sample) }
+                            else { inkBuilder.begin(sample) }
                         },
                         onEnded: {
                             commitInkStroke(display: display)
+                        },
+                        onCancelled: {
+                            inkBuilder.cancel()
                         })
                     .frame(width: display.width, height: display.height)
                     .position(x: display.midX, y: display.midY)
@@ -241,19 +243,12 @@ struct WorkbenchImagePreview: View {
     }
 
     private func commitInkStroke(display: CGRect) {
-        defer {
-            freehandPoints = []
-            freehandPressures = []
-            freehandWidths = []
+        guard display.width > 0, display.height > 0,
+              let points = inkBuilder.committedPoints() else {
+            inkBuilder.cancel()
+            return
         }
-        guard display.width > 0, display.height > 0, freehandPoints.count >= 2 else { return }
-        let points = freehandPoints.enumerated().map { index, point -> ImageFreehandStroke.Point in
-            let p = normalizedPoint(point, display: display)
-            let pressure = center.brushUsesPressure
-                ? (index < freehandPressures.count ? freehandPressures[index] : nil)
-                : nil
-            return ImageFreehandStroke.Point(x: p.x, y: p.y, pressure: pressure)
-        }
+        inkBuilder.cancel() // Explicit reset; a cancelled touch never commits.
         if center.imageTool == .eraser {
             center.commitMaskStroke(ImageMaskStroke(points: points,
                                                     width: center.brushWidth,
@@ -544,6 +539,7 @@ enum WorkbenchPreviewColor {
 struct WorkbenchPressureSurface: UIViewRepresentable {
     var onChanged: (CGPoint, Double) -> Void
     var onEnded: () -> Void
+    var onCancelled: () -> Void
 
     func makeUIView(context: Context) -> PressureTouchView {
         let view = PressureTouchView()
@@ -551,17 +547,20 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
         view.isMultipleTouchEnabled = false
         view.onChanged = onChanged
         view.onEnded = onEnded
+        view.onCancelled = onCancelled
         return view
     }
 
     func updateUIView(_ uiView: PressureTouchView, context: Context) {
         uiView.onChanged = onChanged
         uiView.onEnded = onEnded
+        uiView.onCancelled = onCancelled
     }
 
     final class PressureTouchView: UIView {
         var onChanged: ((CGPoint, Double) -> Void)?
         var onEnded: (() -> Void)?
+        var onCancelled: (() -> Void)?
         private var activeTouch: UITouch?
         private var hasMoved = false
 
@@ -586,13 +585,27 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
         }
 
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = touches.first ?? activeTouch else {
+                activeTouch = nil
+                onEnded?()
+                return
+            }
+            // Emit the FINAL location before committing: without it every
+            // stroke stopped at the second-to-last sample (CUA regression).
+            if let coalesced = event?.coalescedTouches(for: touch), !coalesced.isEmpty {
+                for sample in coalesced {
+                    onChanged?(sample.location(in: self), normalizedForce(sample))
+                }
+            }
+            onChanged?(touch.location(in: self), normalizedForce(touch))
             activeTouch = nil
             onEnded?()
         }
 
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
             activeTouch = nil
-            onEnded?()
+            // Explicit discard semantics: a cancelled touch never commits.
+            onCancelled?()
         }
 
         private func normalizedForce(_ touch: UITouch) -> Double {

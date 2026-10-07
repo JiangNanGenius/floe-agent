@@ -16,6 +16,7 @@ struct FilesView: View {
     @StateObject private var center: FilesCenter
     @State private var showingImageCreation = false
     @State private var videoEditingAttachment: AttachmentRef?
+    @ObservedObject private var layoutPreferences = LayoutPreferences.shared
 
     init(center: FilesCenter) {
         self._center = StateObject(wrappedValue: center)
@@ -105,17 +106,27 @@ struct FilesView: View {
         return ["mp4", "mov", "m4v", "avi", "mkv", "webm"].contains(extensionName)
     }
 
-    private var recentList: some View {
-        List {
+    /// File-name display lines per the persisted layout options (1/2 lines,
+    /// extension visibility, optional path).
+    private func layoutDisplayLines(for attachment: AttachmentRef) -> [String] {
+        layoutPreferences.fileDisplayLines(name: attachment.displayName,
+                                           relativePath: attachment.relativePath)
+    }
+
+    private var recentList: some View {        List {
             ForEach(viewModel.recentFiles) { attachment in
                 HStack {
                     Image(systemName: icon(for: attachment))
                         .foregroundStyle(FloeTheme.primary)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(attachment.displayName)
-                            .font(FloeTheme.Typography.body)
-                            .lineLimit(1)
+                        ForEach(Array(layoutDisplayLines(for: attachment).enumerated()), id: \.offset) { index, line in
+                            Text(line)
+                                .font(.system(size: LayoutPreferences.shared.settings
+                                    .fontSize(for: .files).pointSize))
+                                .foregroundStyle(index == 0 ? .primary : .secondary)
+                                .lineLimit(1)
+                        }
                         Text(byteCount(attachment.byteCount))
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(.secondary)
