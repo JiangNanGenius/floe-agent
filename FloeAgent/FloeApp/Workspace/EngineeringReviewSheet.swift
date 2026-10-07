@@ -147,8 +147,11 @@ struct EngineeringReviewSheet: View {
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }
-            .navigationTitle("engineering.review.title").navigationBarTitleDisplayMode(.inline)
-            .task { await loadProposals() }
+        .navigationTitle("engineering.review.title").navigationBarTitleDisplayMode(.inline)
+        .task {
+            flushPendingDecisions()
+            await loadProposals()
+        }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("engineering.review.cancel") { dismiss() }.disabled(sending) }
                 ToolbarItem(placement: .confirmationAction) {
@@ -290,23 +293,70 @@ struct EngineeringReviewSheet: View {
     /// The original task that asked for the change is told the outcome through
     /// the durable runtime-input ingress, so a late or follow-up run in the
     /// same conversation sees the decision instead of assuming the proposal
-    /// is still pending.
+    /// is still pending. The decision is RECORDED DURABLY FIRST and delivered
+    /// idempotently with retry; an enqueue failure or a crash can never lose
+    /// it. Routing is the bound owner conversation, never the router's
+    /// selected chat.
     @MainActor private func notifyOriginalTask(proposal: CadProposal, decision: String,
                                                revision: Int64?, sha256: String?) {
         guard let target = conversationID ?? createdConversationID else { return }
+        let record: DrawingAssistantDecisionStore.Decision?
+        do {
+            record = try DrawingAssistantDecisionStore.shared.record(
+                conversationID: target, proposalID: proposal.id, decision: decision,
+                revision: revision, sha256: sha256)
+        } catch {
+            // Delivery continues best-effort, but the UI must surface that
+            // the durable record failed; nothing claims durability here.
+            proposalMessage = error.localizedDescription
+            record = nil
+        }
         Task {
             do {
                 try await center.environment.conversationCenter
                     .recordProposalDecision(conversationID: target, proposalID: proposal.id,
-                                            decision: decision, revision: revision, sha256: sha256,
-                                            summary: proposal.summary)
+                                            decision: decision, revision: revision, sha256: sha256)
+                if let record {
+                    try? DrawingAssistantDecisionStore.shared.markDelivered(id: record.id)
+                }
             } catch {
-                proposalMessage = error.localizedDescription
+                // Stays pending in the durable store; retried on next open.
+                await MainActor.run { proposalMessage = error.localizedDescription }
+            }
+        }
+    }
+
+    /// Retries any decision whose durable delivery never acknowledged.
+    @MainActor private func flushPendingDecisions() {
+        let pending = DrawingAssistantDecisionStore.shared.pendingDeliveries()
+        guard !pending.isEmpty else { return }
+        Task {
+            for decision in pending {
+                do {
+                    try await center.environment.conversationCenter
+                        .recordProposalDecision(conversationID: decision.conversationID,
+                                                proposalID: decision.proposalID,
+                                                decision: decision.decision,
+                                                revision: decision.revision,
+                                                sha256: decision.sha256)
+                    try DrawingAssistantDecisionStore.shared.markDelivered(id: decision.id)
+                } catch { break }
             }
         }
     }
 
     @MainActor private func apply(_ proposal: CadProposal) async {
+        // Manual unsaved edits in the live viewer must block the commit, not
+        // produce a warning after disk has already changed: applying under a
+        // dirty viewer would silently discard the user's in-progress edits
+        // on reload. After the user saves, the existing revision/SHA CAS in
+        // the center refuses the stale proposal anyway.
+        if let webSession, webSession.isCADDirty {
+            proposalMessage = engineeringReviewText(
+                "当前图纸窗口有未保存的手工修改，已暂缓应用该提案。请先保存或放弃这些修改；保存后若提示图纸已变化，请让助手重新生成提案。",
+                "The open drawing has unsaved manual edits, so this proposal was NOT applied. Save or discard them first; if the drawing changed, ask the assistant to propose again.")
+            return
+        }
         applyingProposalID = proposal.id
         defer { applyingProposalID = nil }
         do {

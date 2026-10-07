@@ -72,23 +72,126 @@ final class DrawingAssistantConversationStore: @unchecked Sendable {
         return UUID(uuidString: raw)
     }
 
-    /// Persists the newest mapping. Serialized on `writeQueue`, so two rapid
-    /// binds keep the latest value on disk. Throws when no durable location
-    /// exists; the caller surfaces that instead of assuming persistence.
+    /// Persists the newest mapping. The mutation AND the write are serialized
+    /// together (writeQueue, re-entrant via lock ordering), so two rapid binds
+    /// keep the latest value on disk and a write failure is thrown, never
+    /// silently swallowed.
     func bind(workspaceID: UUID, relativePath: String, conversationID: UUID) throws {
-        lock.lock()
-        loadLocked()
-        bindings[key(workspaceID: workspaceID, relativePath: relativePath)] = conversationID.uuidString
-        let snapshot = bindings
-        lock.unlock()
         guard isDurable else { throw PersistenceFailure() }
         let url = fileURL
-        writeQueue.sync {
-            guard let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]) else { return }
-            try? data.write(to: url, options: .atomic)
+        try writeQueue.sync {
+            lock.lock(); defer { lock.unlock() }
+            loadLocked()
+            bindings[key(workspaceID: workspaceID, relativePath: relativePath)] = conversationID.uuidString
+            let snapshot = bindings
+            let data = try JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys])
+            try data.write(to: url, options: .atomic)
         }
     }
 }
+
+/// Persists Drawing Assistant proposal decisions durably (append-only)
+/// so an enqueue failure or a crash right after apply/discard can never
+/// lose the user's decision; delivery is retried until acknowledged.
+final class DrawingAssistantDecisionStore: @unchecked Sendable {
+    struct Decision: Codable, Sendable {
+        var id: String
+        var conversationID: UUID
+        var proposalID: UUID
+        var decision: String
+        var revision: Int64?
+        var sha256: String?
+        var recordedAt: Date
+        var delivered: Bool
+    }
+
+    /// Write/persistence failure is shared by the local stores; callers
+    /// surface it instead of assuming durability.
+    struct StoreFailure: Error, LocalizedError {
+        var errorDescription: String? { "无法持久化图纸助手记录。" }
+    }
+
+    static let shared = DrawingAssistantDecisionStore()
+        private let lock = NSLock()
+        private let fileURL: URL
+        private let writeQueue = DispatchQueue(label: "floe.drawing-assistant.decisions")
+        private var loaded = false
+        private var decisions: [Decision] = []
+
+        private init() {
+            let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                .first?.appendingPathComponent("FloeAgent/DrawingAssistant", isDirectory: true)
+            if let root {
+                try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                fileURL = root.appendingPathComponent("decisions.jsonl")
+            } else {
+                fileURL = URL(fileURLWithPath: "/dev/null")
+            }
+        }
+
+        var isDurable: Bool { fileURL.path != "/dev/null" }
+
+        private func loadLocked() {
+            guard !loaded else { return }
+            loaded = true
+            guard isDurable, let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+            let decoder = JSONDecoder()
+            decisions = text.split(separator: "\n").compactMap { line in
+                try? decoder.decode(Decision.self, from: Data(line.utf8))
+            }
+        }
+
+        /// Records the decision BEFORE any delivery attempt. Mutation and
+        /// write are serialized together; a write failure throws so callers
+        /// never claim durability that did not happen.
+        func record(conversationID: UUID, proposalID: UUID, decision: String,
+                    revision: Int64?, sha256: String?) throws -> Decision {
+            guard isDurable else { throw StoreFailure() }
+            let entry = Decision(
+                id: "\(conversationID.uuidString)|\(proposalID.uuidString)|\(decision)",
+                conversationID: conversationID, proposalID: proposalID, decision: decision,
+                revision: revision, sha256: sha256, recordedAt: Date(), delivered: false)
+            let url = fileURL
+            try writeQueue.sync {
+                lock.lock(); defer { lock.unlock() }
+                loadLocked()
+                decisions.removeAll { $0.id == entry.id }
+                decisions.append(entry)
+                try Self.persist(decisions, to: url)
+            }
+            return entry
+        }
+
+        private static func persist(_ decisions: [Decision], to url: URL) throws {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            var lines = [String]()
+            for decision in decisions {
+                let data = try encoder.encode(decision)
+                lines.append(String(decoding: data, as: UTF8.self))
+            }
+            try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        func pendingDeliveries() -> [Decision] {
+            lock.lock(); defer { lock.unlock() }
+            loadLocked()
+            return decisions.filter { !$0.delivered }
+        }
+
+        func markDelivered(id: String) throws {
+            guard isDurable else { throw StoreFailure() }
+            let url = fileURL
+            try writeQueue.sync {
+                lock.lock(); defer { lock.unlock() }
+                loadLocked()
+                for index in decisions.indices where decisions[index].id == id {
+                    decisions[index].delivered = true
+                }
+                try Self.persist(decisions, to: url)
+            }
+        }
+    }
 
 /// Owns the single WKWebView used by an engineering preview. The same web
 /// view is re-parented between the embedded preview and the fullscreen
@@ -101,8 +204,11 @@ final class DrawingAssistantConversationStore: @unchecked Sendable {
 final class EngineeringWebSession: ObservableObject {
     /// Identity of the currently loaded page; nil while no page is loaded.
     private(set) var generation: UUID?
-    /// Name of the document the current page was loaded from.
-    private(set) var loadedDocumentName: String?
+    /// Full identity of the document the current page was loaded from
+    /// (name + content digest, never name alone).
+    private(set) var loadedDocumentKey: String?
+    /// Edit capability of the loaded page (from the first attach).
+    private(set) var loadedCanEdit = false
     /// Set by `retry()`: the next attach rebuilds the web view.
     private var pendingRebuild = false
     private(set) var web: WKWebView?
@@ -117,21 +223,45 @@ final class EngineeringWebSession: ObservableObject {
         tearDown()
     }
 
+    /// Stable full identity for a package: name plus a digest of the first
+    /// file's bytes, so two different documents with the same filename can
+    /// never share a session.
+    /// Canonical identity for a document shown by a preview: workspace root
+    /// plus relative path. Stable across saves and unique across roots.
+    static func documentKey(rootPath: String?, relativePath: String) -> String {
+        if let rootPath, !rootPath.isEmpty { return "\(rootPath)|\(relativePath)" }
+        return relativePath
+    }
+
     func attach(package: EngineeringPreviewPackage,
+                identity: String? = nil,
                 error: Binding<String?>,
                 onReview: ((EngineeringReviewCapture) -> Void)?,
                 onSave: ((Data, String) async throws -> String)?,
                 onDirty: ((Bool) -> Void)?,
                 dark: Bool, locale: String) -> WKWebView {
-        let sameDocument = loadedDocumentName == package.name
-        if let web, coordinator != nil, generation != nil, !pendingRebuild, sameDocument {
+        // Canonical document identity (workspace root + relative path) when
+        // the caller supplies one: saving changes bytes but never identity,
+        // and two same-name copies in different roots stay separate.
+        let key = identity ?? package.name
+        let canEdit = onSave != nil
+        if let web, coordinator != nil, generation != nil, !pendingRebuild,
+           key == loadedDocumentKey {
             coordinator?.update(callbacks: error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+            // Capability upgrade (embedded read-only → fullscreen editable)
+            // must NOT reload the page: enable editing inside the live page.
+            if canEdit, !loadedCanEdit {
+                loadedCanEdit = true
+                web.evaluateJavaScript("window.floeCadEnableEdit && window.floeCadEnableEdit();",
+                                       completionHandler: nil)
+            }
             return web
         }
         tearDown()
         pendingRebuild = false
         generation = UUID()
-        loadedDocumentName = package.name
+        loadedDocumentKey = key
+        loadedCanEdit = canEdit
         let coordinator = EngineeringWebView.Coordinator(package: package, error: error,
                                                          onReview: onReview, onSave: onSave,
                                                          onDirty: onDirty)
@@ -247,7 +377,8 @@ final class EngineeringWebSession: ObservableObject {
         web?.stopLoading(); web?.navigationDelegate = nil
         web?.configuration.userContentController.removeScriptMessageHandler(forName: "floeEngineering", contentWorld: .page)
         web = nil; coordinator = nil; generation = nil
-        loadedDocumentName = nil
+        loadedDocumentKey = nil
+        loadedCanEdit = false
         startup = nil; watchdog = nil
     }
 }
@@ -260,6 +391,8 @@ struct EngineeringFilePreview: View {
     /// Optional externally owned session (so a fullscreen presentation can
     /// re-parent the SAME web view and preserve the editing session).
     var session: EngineeringWebSession? = nil
+    /// Canonical document identity (workspace root + relative path).
+    var identity: String? = nil
     @Environment(\.colorScheme) private var colorScheme
     @State private var error: String?
     @StateObject private var ownedSession = EngineeringWebSession()
@@ -288,7 +421,7 @@ struct EngineeringFilePreview: View {
                     }
                 }
             } else {
-                EngineeringWebView(session: activeSession, package: package,
+                EngineeringWebView(session: activeSession, package: package, identity: identity,
                                    error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
             }
         }
@@ -299,6 +432,7 @@ struct EngineeringFilePreview: View {
 struct EngineeringWebView: UIViewRepresentable {
     let session: EngineeringWebSession
     let package: EngineeringPreviewPackage
+    let identity: String?
     @Binding var error: String?
     var onReview: ((EngineeringReviewCapture) -> Void)?
     var onSave: ((Data, String) async throws -> String)?
@@ -314,7 +448,7 @@ struct EngineeringWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> EngineeringContainerView {
         let container = EngineeringContainerView()
         container.session = session
-        _ = session.attach(package: package, error: $error,
+        _ = session.attach(package: package, identity: identity, error: $error,
                            onReview: onReview, onSave: onSave, onDirty: onDirty,
                            dark: colorScheme == .dark, locale: locale.identifier)
         container.setNeedsLayout()

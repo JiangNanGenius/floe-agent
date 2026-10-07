@@ -227,14 +227,16 @@ public struct ImageMaskStroke: Sendable, Codable, Hashable {
     public var hardness: Double?
     /// false = erase (hide pixels), true = restore (show pixels again).
     public var restore: Bool
-    /// Region form of the stroke (a vector selection): when set, the FILLED
-    /// shapes erase/restore instead of the polyline in `points`. Used by
-    /// selection cut so a cut is one undoable non-destructive mask stroke.
-    public var region: [ImageSelectionShape]?
+    /// Region form of the stroke: a COMPLETE selection snapshot (shapes with
+    /// their replace/add/subtract operations, inverted flag and feather).
+    /// When set, the renderer rasterizes it through the same mask pipeline
+    /// as the displayed selection — a selection cut erases exactly what the
+    /// marching-ants show, feather included.
+    public var region: ImageSelection?
 
     public init(points: [ImageFreehandStroke.Point], width: Double = 24,
                 hardness: Double? = nil, restore: Bool = false,
-                region: [ImageSelectionShape]? = nil) {
+                region: ImageSelection? = nil) {
         self.points = points; self.width = width; self.hardness = hardness
         self.restore = restore; self.region = region
     }

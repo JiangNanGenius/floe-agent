@@ -477,23 +477,27 @@ public actor WorkbenchImageRenderer {
         var maskImage = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
             .cropped(to: CGRect(origin: .zero, size: canvas))
         for stroke in mask.strokes {
+            if let region = stroke.region,
+               let regionMask = ImageSelectionRasterizer.maskImage(for: region, canvas: canvas) {
+                // Region stroke (selection cut/restore): use the SAME mask
+                // pipeline as the displayed selection — operations
+                // (replace/add/subtract), inverted and feather included.
+                // BlendWithMask(input: black|white, background: current mask,
+                // mask: region): inside the region becomes black (erase) or
+                // white (restore); everything outside keeps the running mask.
+                let extent = CGRect(origin: .zero, size: canvas)
+                let color = stroke.restore
+                    ? CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)).cropped(to: extent)
+                    : CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1)).cropped(to: extent)
+                let blend = CIFilter(name: "CIBlendWithMask")
+                blend?.setValue(color, forKey: kCIInputImageKey)
+                blend?.setValue(maskImage.cropped(to: extent), forKey: kCIInputBackgroundImageKey)
+                blend?.setValue(regionMask.cropped(to: extent), forKey: kCIInputMaskImageKey)
+                maskImage = (blend?.outputImage ?? maskImage).cropped(to: extent)
+                continue
+            }
             let renderer = CGImageRenderer(size: canvas, opaque: false)
             let cg = try renderer.image { ctx in
-                if let region = stroke.region, !region.isEmpty {
-                    // Region stroke (selection cut): the FILLED shapes erase
-                    // or restore, matching the polyline stroke semantics.
-                    let value: CGFloat = stroke.restore ? 1 : 0
-                    ctx.setFillColor(CGColor(red: value, green: value, blue: value, alpha: 1))
-                    var combined = CGMutablePath()
-                    for shape in region {
-                        if let path = ImageSelectionRasterizer.path(for: shape, canvas: canvas) {
-                            combined.addPath(path)
-                        }
-                    }
-                    ctx.addPath(combined)
-                    ctx.fillPath(using: .evenOdd)
-                    return
-                }
                 let path = CGMutablePath()
                 for (index, point) in stroke.points.enumerated() {
                     let p = CGPoint(x: point.x * canvas.width, y: (1 - point.y) * canvas.height)

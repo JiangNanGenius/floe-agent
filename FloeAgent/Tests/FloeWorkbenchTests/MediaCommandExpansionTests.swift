@@ -604,11 +604,11 @@ struct MediaCommandExpansionTests {
                                         to: &project)
         }
 
-        // Cut: one region mask stroke; locked layer refused.
+        // Cut: one region mask stroke keeping the complete selection snapshot.
         try MediaTransactions.apply(.cutSelection(layerID: layer.id), to: &project)
         let cut = try #require(project.imageLayers.first(where: { $0.id == layer.id }))
         #expect(cut.mask?.strokes.count == 1)
-        #expect(cut.mask?.strokes.first?.region == selection.shapes)
+        #expect(cut.mask?.strokes.first?.region == selection)
         #expect(cut.mask?.strokes.first?.restore == false)
 
         // Copy: raster asset must be registered with a matching hash and

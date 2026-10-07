@@ -71,13 +71,32 @@ async function load(pkg){
   await render(source);
   if(!viewer.bounds)throw Error(say('未找到可显示的二维几何。','No supported 2D geometry.'));
   fit=()=>{const b=viewer.bounds,o=viewer.GetOrigin();viewer.FitView(b.minX-o.x,b.maxX-o.x,b.minY-o.y,b.maxY-o.y);viewer.Render();};
-  if(cad&&config.canEdit){
+  // Installs (or reuses) the interactive CAD editor surface. Called at load
+  // when editing is allowed, and later through floeCadEnableEdit when a
+  // read-only preview transitions to fullscreen editing — WITHOUT reloading
+  // the page, so the existing engine state (geometry, camera) is preserved.
+  const installEditSurface=async()=>{
+   if(!cad||cadEditor)return !!cadEditor;
    const {installCadEditor}=await import('./cad-editor.js');
-   cadInfo=cadState.info;
-   cadEditor=installCadEditor({engine:cad,initial:cadState.info,render,viewer,zh,dark:!!config.dark,onDirty:dirty=>{
+   cadInfo=cadInfo??cadState?.info;
+   cadEditor=installCadEditor({engine:cad,initial:cadState?.info??cadInfo,render,viewer,zh,dark:!!config.dark,onDirty:dirty=>{
     cadDirty=dirty;
     window.webkit?.messageHandlers?.floeEngineering?.postMessage({operation:'dirty',dirty}).catch(()=>{});
    }});
+   return true;
+  };
+  window.floeCadEnableEdit=async()=>{
+   const ok=await installEditSurface();
+   if(ok){
+    // Re-render so any drawing-mode UI the editor installs becomes visible.
+    try{await render(source);}catch{}
+   }
+   return ok;
+  };
+  if(cad){
+   // Bridges exist for read-only previews too (locate/overlay); the editor
+   // surface itself installs only when editing is allowed (or on upgrade).
+   if(config.canEdit){await installEditSurface();}
    // Drawing Assistant bridges: highlight/locate a handle and preview a
    // proposal's colored geometry diff in the live viewer session.
    window.floeCadLocate=handle=>{try{return cadEditor?.locate(handle)??false;}catch{return false;}};
@@ -105,7 +124,7 @@ async function load(pkg){
     }catch{return false;}
    };
   }
-  reviewContext=()=>{
+   reviewContext=()=>{
    const parsed=viewer.GetDxf(),camera=viewer.GetCamera(),origin=viewer.GetOrigin();
    const all=parsed?.entities??[],sample=[];let size=0;
    for(const entity of all.slice(0,100)){

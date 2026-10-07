@@ -28,6 +28,11 @@ public actor MediaProposalDraftStore {
 public protocol MediaCommandEnrichmentHost: Sendable {
     func measureLayers(project: MediaProject, layerIDs: [UUID]) async throws -> [LayerNaturalSize]
     func renderMergeAsset(project: MediaProject, layerIDs: [UUID], name: String?) async throws -> MergePreparation
+    /// Renders ONE layer's pixels limited to the current selection, staged as
+    /// a full-canvas asset for `copySelection`. The model never accepts a
+    /// caller-fabricated raster; shared-AI copy goes through this pipeline
+    /// exactly like the UI.
+    func renderCopySelectionAsset(project: MediaProject, sourceLayerID: UUID) async throws -> MergePreparation
     /// Best-effort removal of a staged merge asset whose proposal was invalid
     /// or rejected and which the project does not reference. Never deletes a
     /// referenced asset. Default no-op.
@@ -36,6 +41,9 @@ public protocol MediaCommandEnrichmentHost: Sendable {
 
 public extension MediaCommandEnrichmentHost {
     func discardStagedAsset(_ asset: MediaAssetReference) async {}
+    func renderCopySelectionAsset(project: MediaProject, sourceLayerID: UUID) async throws -> MergePreparation {
+        throw FloeError.validationFailed("copy selection rendering is not available in this host")
+    }
 }
 
 public enum MediaCommandEnrichment {
@@ -83,6 +91,20 @@ public enum MediaCommandEnrichment {
                     let merge = MediaEditCommand.mergeLayers(ids: ids, name: name, raster: prep.raster)
                     try MediaEditCommandApplier.apply(merge, to: &draft)
                     out.append(merge)
+                case .copySelection(let sourceLayerID, let name, let raster) where raster.width == 0:
+                    // Shared-AI copy renders through the SAME pipeline as the
+                    // UI (selection ∩ source layer); the model never accepts
+                    // a caller-fabricated raster hash or asset id.
+                    let prep = try await host.renderCopySelectionAsset(
+                        project: draft, sourceLayerID: sourceLayerID)
+                    staged.append(prep.asset)
+                    let addAsset = MediaEditCommand.addAsset(prep.asset)
+                    try MediaEditCommandApplier.apply(addAsset, to: &draft)
+                    out.append(addAsset)
+                    let copy = MediaEditCommand.copySelection(
+                        sourceLayerID: sourceLayerID, name: name, raster: prep.raster)
+                    try MediaEditCommandApplier.apply(copy, to: &draft)
+                    out.append(copy)
                 default:
                     try MediaEditCommandApplier.apply(command, to: &draft)
                     out.append(command)

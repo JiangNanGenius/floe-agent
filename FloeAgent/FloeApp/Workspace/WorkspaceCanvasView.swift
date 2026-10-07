@@ -956,16 +956,23 @@ enum WorkspaceCanvasRegistry {
 
     /// Restores a backup package through the staged verifier: materials,
     /// child projects and their assets are only committed after every hash
-    /// and path validates, so a bad package changes nothing on disk.
+    /// and path validates, so a bad package changes nothing on disk; the
+    /// registry write is the finalize step and a failure rolls files back.
     private static func importBackupPackage(data: Data) throws -> UUID {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true)
         let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
-        let restored = try CanvasBackupPackage.restore(data: data, floeRoot: floeRoot)
-        try encodeProject(restored.project,
-                          to: projectURL(canvasID: restored.project.id, createDirectory: true))
-        return restored.project.id
+        var registeredID: UUID?
+        let restored = try CanvasBackupPackage.restore(data: data, floeRoot: floeRoot) { project in
+            try encodeProject(project,
+                              to: projectURL(canvasID: project.id, createDirectory: true))
+            registeredID = project.id
+        }
+        guard let id = registeredID else {
+            throw FloeError.validationFailed("画布备份注册失败。")
+        }
+        return id
     }
 
     @MainActor

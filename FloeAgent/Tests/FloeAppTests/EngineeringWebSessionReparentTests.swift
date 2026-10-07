@@ -56,6 +56,31 @@ struct EngineeringWebSessionReparentTests {
         session.tearDown()
     }
 
+    @Test("read-only embedded → editable fullscreen upgrades the live page without reload")
+    func capabilityUpgradePreservesSession() throws {
+        let package = try samplePackage()
+        let session = EngineeringWebSession()
+        // Embedded preview: read-only (no onSave).
+        let web1 = session.attach(package: package, error: Box<String?>(nil).binding,
+                                  onReview: nil, onSave: nil, onDirty: nil,
+                                  dark: false, locale: "en")
+        let generation1 = session.generation
+        #expect(session.loadedCanEdit == false)
+        // Fullscreen: editable. Same web view, same generation, canEdit flipped.
+        let web2 = session.attach(package: package, error: Box<String?>(nil).binding,
+                                  onReview: nil, onSave: { _, _ in "sha" }, onDirty: nil,
+                                  dark: false, locale: "en")
+        #expect(web1 === web2)
+        #expect(session.generation == generation1)
+        #expect(session.loadedCanEdit == true)
+        // Back to embedded read-only: still the same live page.
+        let web3 = session.attach(package: package, error: Box<String?>(nil).binding,
+                                  onReview: nil, onSave: nil, onDirty: nil,
+                                  dark: false, locale: "en")
+        #expect(web3 === web1)
+        session.tearDown()
+    }
+
     @Test("attaching a different document rebuilds instead of mixing content")
     func differentDocumentRebuilds() throws {
         let package = try samplePackage()
@@ -63,15 +88,15 @@ struct EngineeringWebSessionReparentTests {
         _ = session.attach(package: package, error: Box<String?>(nil).binding,
                            onReview: nil, onSave: nil, onDirty: nil, dark: false, locale: "en")
         let firstGeneration = session.generation
-        // A different document name under the same session must not reuse the
-        // loaded page (no cross-document state bleed).
+        let firstKey = session.loadedDocumentKey
+        // A different document (same extension) must not reuse the page.
         let other = try EngineeringPreviewPackage.single(
             name: "other.dxf",
             bytes: Data(contentsOf: Bundle.main.url(forResource: "EngineeringViewers/sample-plate", withExtension: "dxf")!))
         _ = session.attach(package: other, error: Box<String?>(nil).binding,
                            onReview: nil, onSave: nil, onDirty: nil, dark: false, locale: "en")
         #expect(session.generation != firstGeneration)
-        #expect(session.loadedDocumentName == "other.dxf")
+        #expect(session.loadedDocumentKey != firstKey)
         session.tearDown()
     }
 }

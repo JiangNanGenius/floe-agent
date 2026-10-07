@@ -446,6 +446,7 @@ public func registerDocumentTools(
     ToolCatalog.register(DocumentCreateWorkbookTool.self)
     ToolCatalog.register(DocumentCreateTool.self)
     ToolCatalog.register(PresentationCreateDeckTool.self)
+    ToolCatalog.register(OfficeCapabilitiesTool.self)
     registry.register(DocumentReadSheetTool(rootProvider: rootProvider))
     registry.register(OfficeInspectTool(rootProvider: rootProvider))
     registry.register(OfficeUpdateTextTool(rootProvider: rootProvider))
@@ -453,5 +454,6 @@ public func registerDocumentTools(
     registry.register(DocumentCreateWorkbookTool(rootProvider: rootProvider))
     registry.register(DocumentCreateTool(rootProvider: rootProvider))
     registry.register(PresentationCreateDeckTool(rootProvider: rootProvider))
+    registry.register(OfficeCapabilitiesTool())
     return rootProvider
 }

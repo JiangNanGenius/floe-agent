@@ -185,3 +185,44 @@ struct OfficeDocumentTests {
         return data
     }
 }
+
+@Suite("Office capability tool")
+struct OfficeCapabilityToolTests {
+    @Test("capabilities report verified vs engine vs unavailable tiers per format")
+    func tiers() throws {
+        let json = OfficeCapabilityTool.capabilitiesJSON(enginePresent: true)
+        let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        #expect(object["enginePresent"] as? Bool == true)
+        let formats = try #require(object["formats"] as? [[String: Any]])
+        #expect(formats.count == 3)
+        func ops(_ format: String) -> [[String: Any]] {
+            formats.first { $0["format"] as? String == format }.flatMap { $0["operations"] as? [[String: Any]] } ?? []
+        }
+        #expect(ops("docx").contains { $0["name"] as? String == "inspect" && $0["tier"] as? String == "verified" })
+        #expect(ops("xlsx").contains { $0["name"] as? String == "formulaErrorLocation" && $0["tier"] as? String == "unavailable" })
+        #expect(ops("pptx").contains { $0["name"] as? String == "present" })
+        // Nothing engine-tier may claim verified.
+        for format in formats {
+            for op in format["operations"] as? [[String: Any]] ?? [] {
+                #expect(op["tier"] as? String == "verified"
+                        || op["tier"] as? String == "engine"
+                        || op["tier"] as? String == "unavailable")
+            }
+        }
+    }
+
+    @Test("tool validates format filter and returns JSON")
+    func toolExecution() async throws {
+        let tool = OfficeCapabilitiesTool()
+        try tool.validate(OfficeCapabilitiesTool.Arguments(format: "docx"))
+        try #require(throws: (any Error).self) {
+            try tool.validate(OfficeCapabilitiesTool.Arguments(format: "psd"))
+        }
+        let context = ToolContext(runID: UUID(), toolCallID: "c", scope: .local,
+                                  workspaceRootURL: nil, cancellation: CancellationToken())
+        let out = try await tool.execute(OfficeCapabilitiesTool.Arguments(format: "xlsx"),
+                                         context: context)
+        #expect(out.summary.contains("\"format\":\"xlsx\""))
+        #expect(out.summary.contains("formulaErrorLocation"))
+    }
+}

@@ -146,44 +146,86 @@ public enum CanvasBackupPackage {
     /// bytes for a media-root-relative asset path. Unavailable bytes are
     /// RECORDED in the manifest (never silently skipped) so the importer can
     /// surface them.
+    /// Builds the backup zip. Payloads are staged as FILES (never held in
+    /// memory together), the running total is bounded, referenced materials
+    /// with missing bytes are an EXPLICIT error (never silently skipped), and
+    /// unavailable child bytes are recorded in the manifest for the importer
+    /// to surface.
     public static func make(project: CanvasProject,
                             childProjectData: (UUID) throws -> Data?,
                             materialData: (String) throws -> Data?,
                             assetData: (String) throws -> Data?) throws -> Data {
+        let url = try makeZip(project: project, childProjectData: childProjectData,
+                              materialData: materialData, assetData: assetData,
+                              maximumDataBytes: maximumInMemoryBytes)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try Data(contentsOf: url, options: .mappedIfSafe)
+    }
+
+    private static func makeZip(project: CanvasProject,
+                                childProjectData: (UUID) throws -> Data?,
+                                materialData: (String) throws -> Data?,
+                                assetData: (String) throws -> Data?,
+                                maximumDataBytes: Int64) throws -> URL {
+        let manager = FileManager.default
+        let totalCap = min(maximumTotal, maximumDataBytes)
+        let staging = manager.temporaryDirectory
+            .appendingPathComponent("canvas-backup-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: staging) }
+        var total: Int64 = 0
+        func stage(_ data: Data, as name: String) throws -> URL {
+            total += Int64(data.count)
+            guard total <= totalCap else {
+                throw BackupError.corrupt("备份超过大小限制（内存导出 64 MB，文件导出 2 GB）。")
+            }
+            let url = staging.appendingPathComponent(name)
+            try data.write(to: url, options: .atomic)
+            return url
+        }
+        func stagedData(_ name: String) throws -> Data {
+            try Data(contentsOf: staging.appendingPathComponent(name))
+        }
+
         let childIDs = Self.boundChildProjectIDs(in: project)
         var children: [ChildProject] = []
         var missingChildren: [UUID] = []
-        var childPayloads: [UUID: Data] = [:]
         var assetPaths = Set<String>()
         for id in childIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             guard let data = try childProjectData(id), !data.isEmpty else {
                 missingChildren.append(id)
                 continue
             }
+            let name = "child-\(id.uuidString.lowercased()).json"
+            try stage(data, as: name)
             children.append(ChildProject(
                 projectID: id,
                 file: "projects/\(id.uuidString.lowercased()).json",
                 byteCount: Int64(data.count),
                 sha256: Self.digest(data)))
-            childPayloads[id] = data
             for path in Self.assetPaths(inProjectJSON: data) {
                 assetPaths.insert(path)
             }
         }
 
         var materials: [Material] = []
-        var materialPayloads: [String: Data] = [:]
+        var missingMaterials: [String] = []
         for fileName in Self.referencedMaterialNames(in: project).sorted() {
-            guard let data = try materialData(fileName), !data.isEmpty else { continue }
+            guard let data = try materialData(fileName), !data.isEmpty else {
+                missingMaterials.append(fileName)
+                continue
+            }
+            try stage(data, as: "material-\(fileName)")
             materials.append(Material(
                 fileName: fileName,
                 byteCount: Int64(data.count),
                 sha256: Self.digest(data)))
-            materialPayloads[fileName] = data
+        }
+        guard missingMaterials.isEmpty else {
+            throw BackupError.corrupt("备份缺少被节点引用的素材：\(missingMaterials.joined(separator: ", "))")
         }
 
         var assets: [ChildAsset] = []
-        var assetPayloads: [String: Data] = [:]
         var missingAssets: [String] = []
         for path in assetPaths.sorted() {
             guard let data = try assetData(path), !data.isEmpty else {
@@ -191,15 +233,17 @@ public enum CanvasBackupPackage {
                 continue
             }
             let base = (path as NSString).lastPathComponent
+            let name = "asset-\(assets.count)-\(base)"
+            try stage(data, as: name)
             assets.append(ChildAsset(
                 relativePath: path,
                 file: "assets/\(assets.count)-\(base)",
                 byteCount: Int64(data.count),
                 sha256: Self.digest(data)))
-            assetPayloads[path] = data
         }
 
         let canvasData = try CanvasProjectCodec.encode(project)
+        try stage(canvasData, as: "canvas.json")
         let manifest = Manifest(
             formatVersion: formatVersion,
             canvasID: project.id,
@@ -214,40 +258,79 @@ public enum CanvasBackupPackage {
             missingChildProjects: missingChildren,
             missingAssets: missingAssets)
         let manifestData = try JSONEncoder().encode(manifest)
+        try stage(manifestData, as: "manifest.json")
 
-        let temporary = FileManager.default.temporaryDirectory
+        let temporary = manager.temporaryDirectory
             .appendingPathComponent("canvas-backup-\(UUID().uuidString).zip")
-        defer { try? FileManager.default.removeItem(at: temporary) }
         guard let archive = Archive(url: temporary, accessMode: .create) else {
+            try? manager.removeItem(at: temporary)
             throw BackupError.corrupt("无法创建备份存档。")
         }
-        var total: Int64 = 0
-        func append(_ data: Data, as path: String) throws {
-            total += Int64(data.count)
-            guard total <= maximumTotal else {
-                throw BackupError.corrupt("备份超过 2 GB，请拆分画布。")
+        func appendEntry(_ packagePath: String, stagedName: String, sha: String) throws {
+            let source = staging.appendingPathComponent(stagedName)
+            let attributes = try manager.attributesOfItem(atPath: source.path)
+            let size = (attributes[.size] as? Int64) ?? 0
+            let handle = try FileHandle(forReadingFrom: source)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            try archive.addEntry(with: packagePath, type: .file,
+                                 uncompressedSize: size,
+                                 compressionMethod: .deflate) { position, chunkSize in
+                try handle.seek(toOffset: UInt64(position))
+                let data = try handle.read(upToCount: chunkSize) ?? Data()
+                hasher.update(data: data)
+                return data
             }
-            try archive.addEntry(with: path, type: .file,
-                                 uncompressedSize: Int64(data.count),
-                                 compressionMethod: .deflate) { position, size in
-                data.subdata(in: Int(position)..<(Int(position) + size))
-            }
+            let finalized = hasher.finalize()
+            let digest = finalized.map { String(format: "%02x", $0) }.joined()
+            guard digest == sha else { throw BackupError.hashMismatch(packagePath) }
         }
-        try append(canvasData, as: canvasEntry)
-        try append(manifestData, as: manifestEntry)
+        try appendEntry(canvasEntry, stagedName: "canvas.json", sha: manifest.canvasSHA256)
+        try appendEntry(manifestEntry, stagedName: "manifest.json",
+                        sha: Self.digest(manifestData))
         for child in children {
-            guard let data = childPayloads[child.projectID] else { continue }
-            try append(data, as: child.file)
+            try appendEntry(child.file, stagedName: "child-\(child.projectID.uuidString.lowercased()).json",
+                            sha: child.sha256)
         }
         for material in materials {
-            guard let data = materialPayloads[material.fileName] else { continue }
-            try append(data, as: "materials/\(material.fileName)")
+            try appendEntry("materials/\(material.fileName)",
+                            stagedName: "material-\(material.fileName)", sha: material.sha256)
         }
         for asset in assets {
-            guard let data = assetPayloads[asset.relativePath] else { continue }
-            try append(data, as: asset.file)
+            try appendEntry(asset.file, stagedName: stagedAssetName(asset), sha: asset.sha256)
         }
-        return try Data(contentsOf: temporary)
+        return temporary
+    }
+
+    /// File-backed export for production sharing: the zip is built at
+    /// `destination` and never fully resident in memory. Payload reads still
+    /// go through the providers; callers must preflight each source file
+    /// (the app providers read bounded workspace files).
+    public static func makeToURL(project: CanvasProject, destination: URL,
+                                 childProjectData: (UUID) throws -> Data?,
+                                 materialData: (String) throws -> Data?,
+                                 assetData: (String) throws -> Data?) throws {
+        let temporary = try makeZip(project: project,
+                                    childProjectData: childProjectData,
+                                    materialData: materialData,
+                                    assetData: assetData,
+                                    maximumDataBytes: maximumFileBackedBytes)
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+    }
+
+    /// In-memory compatibility bound: above this, callers must use
+    /// `makeToURL` (file-backed) instead of holding the zip as Data.
+    public static let maximumInMemoryBytes: Int64 = 64 * 1024 * 1024
+    private static let maximumFileBackedBytes: Int64 = 2 * 1024 * 1024 * 1024
+
+    private static func stagedAssetName(_ asset: ChildAsset) -> String {
+        // Mirrors the staging name chosen in make(): asset-<index>-<base>.
+        let base = (asset.relativePath as NSString).lastPathComponent
+        guard let index = Int(asset.file.split(separator: "/").last?.split(separator: "-").first ?? "") else {
+            return asset.file
+        }
+        return "asset-\(index)-\(base)"
     }
 
     // MARK: Import
@@ -267,9 +350,11 @@ public enum CanvasBackupPackage {
     /// Materials/<name>, MediaProjects/<id>.json and the fallback media root
     /// WorkbenchRoot/<relativePath>. On ANY validation or hash failure the
     /// file system is left untouched; on a mid-commit failure every file this
-    /// restore created is removed again.
+    /// restore created is removed again. `finalize` (the canvas registry
+    /// write) runs AFTER the payload commits and its failure rolls them back.
     @discardableResult
-    public static func restore(data: Data, floeRoot: URL) throws -> Restored {
+    public static func restore(data: Data, floeRoot: URL,
+                               finalize: ((CanvasProject) throws -> Void)? = nil) throws -> Restored {
         let manager = FileManager.default
         let canonicalRoot = floeRoot.standardizedFileURL.resolvingSymlinksInPath()
         let materialsRoot = try containedDirectory(canonicalRoot, "Materials", create: true)
@@ -465,6 +550,16 @@ public enum CanvasBackupPackage {
                     }
                 }
                 project.documents[documentIndex].nodes[nodeIndex] = node
+            }
+        }
+        // The registry write is the LAST step: if it fails, every payload file
+        // this restore created is rolled back so no orphan state survives.
+        if let finalize {
+            do {
+                try finalize(project)
+            } catch {
+                for url in created { try? manager.removeItem(at: url) }
+                throw error
             }
         }
         return Restored(project: project, manifest: manifest,

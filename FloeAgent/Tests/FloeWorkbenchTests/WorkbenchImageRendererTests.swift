@@ -215,32 +215,64 @@ struct WorkbenchImageRendererTests {
                 "export must match the in-app render at the same dimensions")
     }
 
-    @Test("region mask stroke (selection cut) erases the filled selection and restore brings pixels back")
+    @Test("region mask stroke (selection cut) uses displayed-selection semantics: add, subtract, inverted, feather, undo")
     func regionMaskStrokePixels() async throws {
         let renderer = WorkbenchImageRenderer()
         let size = CGSize(width: 100, height: 100)
         let input = CIImage(cgImage: makeImage(width: 100, height: 100, color: (1, 0, 0, 1)))
+        func eraseMask(_ selection: ImageSelection) async throws -> CGImage {
+            let mask = ImageLayerMask(strokes: [
+                ImageMaskStroke(points: [], width: 0, restore: false, region: selection)])
+            let image = try await renderer.applyMask(mask, to: input, canvas: size)
+            return CIContext().createCGImage(image, from: image.extent)!
+        }
         let rect = ImageSelectionShape(kind: .rectangle,
                                        points: [.init(x: 0.25, y: 0.25), .init(x: 0.75, y: 0.75)])
-        // Cut: region erase.
-        let cut = ImageLayerMask(strokes: [
-            ImageMaskStroke(points: [], width: 0, restore: false, region: [rect])])
-        let cutImage = try await renderer.applyMask(cut, to: input, canvas: size)
-        let cutCG = CIContext().createCGImage(cutImage, from: cutImage.extent)!
-        let cutCenter = pixel(in: cutCG, x: 50, y: 50)
-        let cutCorner = pixel(in: cutCG, x: 5, y: 5)
-        #expect(cutCenter.a < 0.05, "selection cut erases the region")
-        #expect(cutCorner.a > 0.95, "pixels outside the selection survive")
-        #expect(cutCorner.r > 0.9)
+        // Plain replace cut: inside erased, outside kept.
+        let cutCG = try await eraseMask(ImageSelection(shapes: [rect]))
+        #expect(pixel(in: cutCG, x: 50, y: 50).a < 0.05)
+        #expect(pixel(in: cutCG, x: 5, y: 5).a > 0.95)
+        #expect(pixel(in: cutCG, x: 5, y: 5).r > 0.9)
 
-        // Restore the same region: pixels return (non-destructive round trip).
-        let restoredMask = ImageLayerMask(strokes: [
-            ImageMaskStroke(points: [], width: 0, restore: false, region: [rect]),
-            ImageMaskStroke(points: [], width: 0, restore: true, region: [rect])])
-        let restoredImage = try await renderer.applyMask(restoredMask, to: input, canvas: size)
+        // Overlapping ADD: union is erased — the overlap must NOT become a hole.
+        let overlapping = ImageSelection(shapes: [
+            rect,
+            ImageSelectionShape(kind: .rectangle, operation: .add,
+                                points: [.init(x: 0.55, y: 0.55), .init(x: 0.9, y: 0.9)])])
+        let addCG = try await eraseMask(overlapping)
+        #expect(pixel(in: addCG, x: 65, y: 65).a < 0.05, "added overlap is erased, not a hole")
+        #expect(pixel(in: addCG, x: 85, y: 85).a < 0.05, "added region is erased")
+        #expect(pixel(in: addCG, x: 10, y: 85).a > 0.95, "outside the union is kept")
+
+        // SUBTRACT: the second rect removes part of the first.
+        let subtracting = ImageSelection(shapes: [
+            rect,
+            ImageSelectionShape(kind: .rectangle, operation: .subtract,
+                                points: [.init(x: 0.25, y: 0.25), .init(x: 0.6, y: 0.6)])])
+        let subCG = try await eraseMask(subtracting)
+        #expect(pixel(in: subCG, x: 40, y: 40).a > 0.95, "subtracted area survives")
+        #expect(pixel(in: subCG, x: 70, y: 70).a < 0.05, "remaining area is erased")
+
+        // INVERTED: everything outside the rect is erased, inside kept.
+        let inverted = ImageSelection(shapes: [rect], feather: 0, inverted: true)
+        let invCG = try await eraseMask(inverted)
+        #expect(pixel(in: invCG, x: 50, y: 50).a > 0.95, "inverted keeps the rect")
+        #expect(pixel(in: invCG, x: 5, y: 5).a < 0.05, "inverted erases outside")
+
+        // FEATHER: a point well inside is erased; the hard center stays erased.
+        let feathered = ImageSelection(shapes: [rect], feather: 0.1)
+        let feaCG = try await eraseMask(feathered)
+        #expect(pixel(in: feaCG, x: 50, y: 50).a < 0.05, "feathered cut still erases the core")
+        #expect(pixel(in: feaCG, x: 5, y: 5).a > 0.95)
+
+        // Restore round-trip: erase then restore returns the original pixels
+        // (non-destructive undo semantics).
+        let roundTrip = ImageLayerMask(strokes: [
+            ImageMaskStroke(points: [], width: 0, restore: false, region: ImageSelection(shapes: [rect])),
+            ImageMaskStroke(points: [], width: 0, restore: true, region: ImageSelection(shapes: [rect]))])
+        let restoredImage = try await renderer.applyMask(roundTrip, to: input, canvas: size)
         let restoredCG = CIContext().createCGImage(restoredImage, from: restoredImage.extent)!
-        let restoredCenter = pixel(in: restoredCG, x: 50, y: 50)
-        #expect(restoredCenter.a > 0.95 && restoredCenter.r > 0.9, "restore reveals the original pixels again")
+        #expect(pixel(in: restoredCG, x: 50, y: 50).a > 0.95 && pixel(in: restoredCG, x: 50, y: 50).r > 0.9)
 
         // Polyline strokes still behave (backward compatibility).
         let polyline = ImageLayerMask(strokes: [

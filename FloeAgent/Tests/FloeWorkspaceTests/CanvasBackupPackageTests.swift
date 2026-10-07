@@ -333,6 +333,21 @@ struct CanvasBackupPackageTests {
         let projectsRoot = root.appendingPathComponent("MediaProjects")
         #expect((try FileManager.default.contentsOfDirectory(atPath: projectsRoot.path)).isEmpty)
     }
+
+    @Test("export fails explicitly when a referenced material's bytes are missing")
+    func missingMaterialFailsExport() throws {
+        let node = makeNode(assetPath: "Materials/gone.png")
+        let project = makeProject(nodes: [node])
+        do {
+            _ = try CanvasBackupPackage.make(project: project,
+                                             childProjectData: { _ in nil },
+                                             materialData: { _ in nil },
+                                             assetData: { _ in nil })
+            Issue.record("missing material bytes must fail the export")
+        } catch {
+            // expected: explicit, named failure
+        }
+    }
 }
 
 /// Local SHA-256 helper for test fixtures.

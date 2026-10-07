@@ -321,7 +321,9 @@ struct FilePreviewView: View {
     }
 
     private func engineeringView(_ package: EngineeringPreviewPackage, editing: Bool = false) -> some View {
-        EngineeringFilePreview(package: package, onReview: { capture in
+        EngineeringFilePreview(
+            package: package,
+            onReview: { capture in
             engineeringReview = EngineeringReviewCapture(
                 context: "Workspace path: \(relativePath)\n" + capture.context,
                 image: capture.image, documentID: relativePath, workspaceRoot: engineeringRoot)
@@ -334,7 +336,9 @@ struct FilePreviewView: View {
                 try service.commitBinaryEdit(path: path, data: data, expectedSHA256: baseline)
             }.value
             return result.write.sha256
-        } : nil, onDirty: { cadDirty = $0 }, session: engineeringSession)
+        } : nil, onDirty: { cadDirty = $0 }, session: engineeringSession,
+        identity: EngineeringWebSession.documentKey(
+            rootPath: engineeringRoot?.path, relativePath: relativePath))
     }
 
     private var fileName: String {

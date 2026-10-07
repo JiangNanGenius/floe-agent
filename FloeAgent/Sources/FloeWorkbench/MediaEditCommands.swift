@@ -666,8 +666,10 @@ public enum MediaEditCommandApplier {
         case .cutSelection(let layerID):
             guard let index = project.imageLayers.firstIndex(where: { $0.id == layerID }),
                   let selection = project.imageSelection, !selection.shapes.isEmpty else { return }
+            // The COMPLETE selection snapshot (operations/inverted/feather) is
+            // stored so the cut erases exactly the displayed selection.
             let stroke = ImageMaskStroke(points: [], width: 0, hardness: nil, restore: false,
-                                         region: selection.shapes)
+                                         region: selection)
             var mask = project.imageLayers[index].mask ?? ImageLayerMask()
             mask.strokes.append(stroke)
             project.imageLayers[index].mask = mask
