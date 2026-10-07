@@ -67,7 +67,17 @@ jobs:
         [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]
         mkdir -p "$RUNNER_TEMP/local-input"
         gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -x true
-        gh release download "$RELEASE_TAG" -p local-device.zip -D "$RUNNER_TEMP/local-input"
+        if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -qx local-device.zip; then
+          gh release download "$RELEASE_TAG" -p local-device.zip -D "$RUNNER_TEMP/local-input"
+        else
+          # Bounded resumable transport: each immutable chunk can be retried
+          # independently. The original archive digest remains authoritative.
+          gh release download "$RELEASE_TAG" -p 'local-device.zip.part??' -D "$RUNNER_TEMP/local-input"
+          for index in 00 01 02 03 04 05 06 07; do
+            test -s "$RUNNER_TEMP/local-input/local-device.zip.part$index"
+            cat "$RUNNER_TEMP/local-input/local-device.zip.part$index" >> "$RUNNER_TEMP/local-input/local-device.zip"
+          done
+        fi
         test "$(shasum -a 256 "$RUNNER_TEMP/local-input/local-device.zip" | cut -d ' ' -f1)" = "$EXPECTED_SHA"
         ditto -x -k "$RUNNER_TEMP/local-input/local-device.zip" "$RUNNER_TEMP/FloeSignedPayload"
         python3 - <<'CHECK'
