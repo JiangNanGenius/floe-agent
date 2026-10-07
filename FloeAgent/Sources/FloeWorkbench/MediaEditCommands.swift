@@ -53,6 +53,17 @@ public enum MediaEditCommand: Sendable, Codable, Hashable {
     /// (a persisted image asset). Original layers stay in undo history, so the
     /// merge is reversible; no screenshot of the screen is used.
     case mergeLayers(ids: [UUID], name: String?, raster: MergedLayerRaster)
+    /// Fills the current project selection with a solid color as a new
+    /// `.fill` layer (masked by the selection). UI entry 选区填充.
+    case fillSelection(colorHex: String, opacity: Double, name: String?)
+    /// Non-destructive cut: appends one region mask stroke erasing the
+    /// current selection from the layer. Undo removes the stroke and the
+    /// pixels return; the original bytes are never modified.
+    case cutSelection(layerID: UUID)
+    /// Raster-copies the selected region of one layer into a NEW full-canvas
+    /// image layer. `raster` is the renderer-produced masked snapshot (a
+    /// persisted image asset); pixels are real content, not a screen capture.
+    case copySelection(sourceLayerID: UUID, name: String?, raster: MergedLayerRaster)
 
     // Whole-canvas effects
     case setCanvasAdjustment(CanvasAdjustment)
@@ -314,6 +325,58 @@ public enum MediaEditCommandApplier {
             }
             guard raster.width > 0, raster.height > 0 else {
                 throw MediaCommandError.validation("merge raster dimensions must be positive")
+            }
+
+        case .fillSelection(let colorHex, let opacity, let name):
+            let selection = try requireSelection(project)
+            _ = selection
+            guard project.canvas != nil else {
+                throw MediaCommandError.validation("fill requires a canvas")
+            }
+            guard isValidColorHex(colorHex) else {
+                throw MediaCommandError.validation("fill color must be a #RRGGBB or #RRGGBBAA hex value")
+            }
+            guard opacity.isFinite, (0...1).contains(opacity) else {
+                throw MediaCommandError.validation("fill opacity must be 0...1")
+            }
+            if let name, name.isEmpty { throw MediaCommandError.validation("layer name must not be empty") }
+
+        case .cutSelection(let layerID):
+            let selection = try requireSelection(project)
+            guard let layer = project.imageLayers.first(where: { $0.id == layerID }) else {
+                throw MediaCommandError.notFound("layer \(layerID)")
+            }
+            if layer.isLocked {
+                throw MediaCommandError.conflict("layer '\(layer.name)' is locked; unlock before cutting")
+            }
+            guard !selection.shapes.isEmpty else {
+                throw MediaCommandError.validation("cut requires a shaped selection (Select All works)")
+            }
+
+        case .copySelection(let sourceLayerID, let name, let raster):
+            let selection = try requireSelection(project)
+            guard let layer = project.imageLayers.first(where: { $0.id == sourceLayerID }) else {
+                throw MediaCommandError.notFound("layer \(sourceLayerID)")
+            }
+            if layer.isLocked {
+                throw MediaCommandError.conflict("layer '\(layer.name)' is locked; unlock before copying")
+            }
+            guard !selection.shapes.isEmpty else {
+                throw MediaCommandError.validation("copy requires a shaped selection (Select All works)")
+            }
+            if let name, name.isEmpty { throw MediaCommandError.validation("layer name must not be empty") }
+            guard let canvas = project.canvas else {
+                throw MediaCommandError.validation("copy requires a canvas")
+            }
+            guard let rasterAsset = project.asset(raster.assetID), rasterAsset.kind == .image else {
+                throw MediaCommandError.validation(
+                    "copy raster asset \(raster.assetID) must be an imported image asset")
+            }
+            if let hash = rasterAsset.contentHash, let rasterHash = raster.contentHash, hash != rasterHash {
+                throw MediaCommandError.conflict("copy raster hash does not match the registered asset")
+            }
+            guard raster.width == canvas.width, raster.height == canvas.height else {
+                throw MediaCommandError.validation("copy raster must be full-canvas")
             }
 
         case .setCanvasAdjustment(let adjustment):
@@ -589,6 +652,38 @@ public enum MediaEditCommandApplier {
                 opacity: 1)
             project.imageLayers.insert(merged, at: min(insertIndex, project.imageLayers.count))
 
+        case .fillSelection(let colorHex, let opacity, let name):
+            guard let selection = project.imageSelection, !selection.isEmpty else { return }
+            let fill = ImageLayer(
+                kind: .fill,
+                name: name ?? "Fill",
+                transform: .init(centerX: 0.5, centerY: 0.5, scale: 1),
+                opacity: opacity,
+                selectionMask: selection,
+                fillColorHex: colorHex)
+            project.imageLayers.append(fill)
+
+        case .cutSelection(let layerID):
+            guard let index = project.imageLayers.firstIndex(where: { $0.id == layerID }),
+                  let selection = project.imageSelection, !selection.shapes.isEmpty else { return }
+            let stroke = ImageMaskStroke(points: [], width: 0, hardness: nil, restore: false,
+                                         region: selection.shapes)
+            var mask = project.imageLayers[index].mask ?? ImageLayerMask()
+            mask.strokes.append(stroke)
+            project.imageLayers[index].mask = mask
+
+        case .copySelection(let sourceLayerID, let name, let raster):
+            guard project.imageLayers.contains(where: { $0.id == sourceLayerID }) else { return }
+            // Insert directly above the source layer.
+            let insertIndex = (project.imageLayers.firstIndex(where: { $0.id == sourceLayerID }) ?? 0) + 1
+            let copied = ImageLayer(
+                kind: .image,
+                name: name ?? "Copy",
+                assetID: raster.assetID,
+                transform: .init(centerX: 0.5, centerY: 0.5, scale: 1),
+                opacity: 1)
+            project.imageLayers.insert(copied, at: min(insertIndex, project.imageLayers.count))
+
         case .setCanvasAdjustment(let adjustment):
             project.canvasAdjustment = adjustment
 
@@ -788,6 +883,19 @@ public enum MediaEditCommandApplier {
                 throw MediaCommandError.validation("invalid freehand stroke")
             }
         }
+    }
+
+    private static func requireSelection(_ project: MediaProject) throws -> ImageSelection {
+        guard let selection = project.imageSelection, !selection.isEmpty else {
+            throw MediaCommandError.validation("a non-empty selection is required (use Select All to start)")
+        }
+        return selection
+    }
+
+    private static func isValidColorHex(_ value: String) -> Bool {
+        let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
+        guard hex.count == 6 || hex.count == 8 else { return false }
+        return hex.allSatisfy { $0.isHexDigit }
     }
 
     private static func validateAdjustment(_ adjustment: ImageLayerAdjustment) throws {

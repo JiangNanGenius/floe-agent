@@ -5,6 +5,7 @@
 import Foundation
 import Testing
 import CoreGraphics
+import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 import FloeCore
@@ -212,6 +213,43 @@ struct WorkbenchImageRendererTests {
         let b = pixel(in: exported, x: 60, y: 40)
         #expect(abs(a.r - b.r) < 0.05 && abs(a.g - b.g) < 0.05 && abs(a.b - b.b) < 0.05,
                 "export must match the in-app render at the same dimensions")
+    }
+
+    @Test("region mask stroke (selection cut) erases the filled selection and restore brings pixels back")
+    func regionMaskStrokePixels() async throws {
+        let renderer = WorkbenchImageRenderer()
+        let size = CGSize(width: 100, height: 100)
+        let input = CIImage(cgImage: makeImage(width: 100, height: 100, color: (1, 0, 0, 1)))
+        let rect = ImageSelectionShape(kind: .rectangle,
+                                       points: [.init(x: 0.25, y: 0.25), .init(x: 0.75, y: 0.75)])
+        // Cut: region erase.
+        let cut = ImageLayerMask(strokes: [
+            ImageMaskStroke(points: [], width: 0, restore: false, region: [rect])])
+        let cutImage = try await renderer.applyMask(cut, to: input, canvas: size)
+        let cutCG = CIContext().createCGImage(cutImage, from: cutImage.extent)!
+        let cutCenter = pixel(in: cutCG, x: 50, y: 50)
+        let cutCorner = pixel(in: cutCG, x: 5, y: 5)
+        #expect(cutCenter.a < 0.05, "selection cut erases the region")
+        #expect(cutCorner.a > 0.95, "pixels outside the selection survive")
+        #expect(cutCorner.r > 0.9)
+
+        // Restore the same region: pixels return (non-destructive round trip).
+        let restoredMask = ImageLayerMask(strokes: [
+            ImageMaskStroke(points: [], width: 0, restore: false, region: [rect]),
+            ImageMaskStroke(points: [], width: 0, restore: true, region: [rect])])
+        let restoredImage = try await renderer.applyMask(restoredMask, to: input, canvas: size)
+        let restoredCG = CIContext().createCGImage(restoredImage, from: restoredImage.extent)!
+        let restoredCenter = pixel(in: restoredCG, x: 50, y: 50)
+        #expect(restoredCenter.a > 0.95 && restoredCenter.r > 0.9, "restore reveals the original pixels again")
+
+        // Polyline strokes still behave (backward compatibility).
+        let polyline = ImageLayerMask(strokes: [
+            ImageMaskStroke(points: [.init(x: 0.5, y: 0.2), .init(x: 0.5, y: 0.8)],
+                            width: 12, restore: false)])
+        let lineImage = try await renderer.applyMask(polyline, to: input, canvas: size)
+        let lineCG = CIContext().createCGImage(lineImage, from: lineImage.extent)!
+        #expect(pixel(in: lineCG, x: 50, y: 50).a < 0.05)
+        #expect(pixel(in: lineCG, x: 5, y: 50).a > 0.95)
     }
 
     // MARK: Pixel helpers

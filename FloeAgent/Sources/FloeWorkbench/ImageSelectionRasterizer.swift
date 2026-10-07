@@ -35,7 +35,7 @@ public enum ImageSelectionRasterizer {
         return mask
     }
 
-    static func path(for shape: ImageSelectionShape, canvas: CGSize) -> CGPath? {
+    public static func path(for shape: ImageSelectionShape, canvas: CGSize) -> CGPath? {
         let points = shape.points.map { CGPoint(x: $0.x * canvas.width, y: (1 - $0.y) * canvas.height) }
         switch shape.kind {
         case .rectangle:

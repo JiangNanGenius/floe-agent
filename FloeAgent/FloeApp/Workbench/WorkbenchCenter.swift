@@ -1687,6 +1687,89 @@ extension WorkbenchCenter: MediaProjectHost {
                                        height: cgImage.height, contentHash: hash)
         return MergePreparation(asset: asset, raster: raster)
     }
+
+    /// Renders ONE layer's pixels limited to the current selection and stages
+    /// the result as a full-canvas transparent asset for `copySelection`.
+    /// The pixels come from the real render pipeline (never a screen capture).
+    nonisolated func renderCopySelectionAsset(project: MediaProject,
+                                              sourceLayerID: UUID) async throws -> MergePreparation {
+        guard let canvas = project.canvas else {
+            throw FloeError.validationFailed("canvas must be initialized before copying a selection")
+        }
+        guard let source = project.imageLayers.first(where: { $0.id == sourceLayerID }) else {
+            throw FloeError.notFound("layer \(sourceLayerID)")
+        }
+        guard let selection = project.imageSelection, !selection.isEmpty else {
+            throw FloeError.validationFailed("a non-empty selection is required")
+        }
+        var single = project
+        single.imageLayers = [source]
+        let urls = await MainActor.run { self.assetURLMap(for: project) }
+        let size = CGSize(width: canvas.width, height: canvas.height)
+        let renderedCG = try await imageRenderer.render(
+            project: single, canvas: size, resolveAsset: { urls[$0] },
+            previewMaxEdge: max(canvas.width, canvas.height))
+        var outputCG = renderedCG
+        // Limit the copy to the selection: multiply by the rasterized mask.
+        if let mask = ImageSelectionRasterizer.maskImage(for: selection, canvas: size) {
+            let input = CIImage(cgImage: renderedCG)
+            let filter = CIFilter(name: "CIBlendWithMask")
+            filter?.setValue(input, forKey: kCIInputImageKey)
+            filter?.setValue(CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+                .cropped(to: input.extent), forKey: kCIInputBackgroundImageKey)
+            filter?.setValue(mask, forKey: kCIInputMaskImageKey)
+            if let output = filter?.outputImage?.cropped(to: input.extent),
+               let cg = CIContext().createCGImage(output, from: output.extent) {
+                outputCG = cg
+            }
+        }
+        guard let data = WorkbenchPNG.encode(outputCG) else {
+            throw FloeError.internalError("could not encode copied selection PNG")
+        }
+        let hash = FloeDigest.sha256Hex(data)
+        let root = await MainActor.run {
+            WorkbenchPaths.mediaRoot(for: project, current: self.rootProvider())
+                .resolvingSymlinksInPath().standardizedFileURL
+        }
+        let assetsDir = root.appendingPathComponent("Workbench/Assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
+        let fileURL = assetsDir.appendingPathComponent("\(UUID().uuidString.prefix(8))-copy.png")
+        try data.write(to: fileURL, options: .atomic)
+        let assetID = UUID()
+        let asset = MediaAssetReference(
+            id: assetID, kind: .image,
+            relativePath: "Workbench/Assets/\(fileURL.lastPathComponent)",
+            originalName: "selection-copy.png",
+            byteCount: Int64(data.count), contentHash: hash)
+        let raster = MergedLayerRaster(assetID: assetID, width: outputCG.width,
+                                       height: outputCG.height, contentHash: hash)
+        return MergePreparation(asset: asset, raster: raster)
+    }
+
+    /// UI entry for 选区填充: adds a `.fill` layer masked by the selection.
+    @MainActor func fillSelection(colorHex: String, opacity: Double) -> Bool {
+        apply(.fillSelection(colorHex: colorHex, opacity: opacity, name: nil))
+    }
+
+    /// UI entry for 选区剪切: one non-destructive region mask stroke.
+    @MainActor func cutSelection(layerID: UUID) -> Bool {
+        apply(.cutSelection(layerID: layerID))
+    }
+
+    /// UI entry for 拷贝选区为图层: renders selection∩source pixels through
+    /// the pipeline and appends them as a new full-canvas image layer.
+    @MainActor func copySelectionToNewLayer(sourceLayerID: UUID) async -> Bool {
+        guard let project else { return false }
+        do {
+            let prep = try await renderCopySelectionAsset(project: project, sourceLayerID: sourceLayerID)
+            guard apply(.addAsset(prep.asset)) else { return false }
+            return apply(.copySelection(sourceLayerID: sourceLayerID, name: nil, raster: prep.raster))
+        } catch {
+            self.alert = .init(title: WorkbenchText.t("拷贝选区失败", "Copy selection failed"),
+                               message: error.localizedDescription)
+            return false
+        }
+    }
 }
 
 // MARK: - Image authoring (Build265)

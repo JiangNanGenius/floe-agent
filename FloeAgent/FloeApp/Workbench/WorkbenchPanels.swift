@@ -381,6 +381,35 @@ struct WorkbenchAssetsPanel: View {
             }
             .disabled(layer.isLocked)
             .accessibilityIdentifier("workbench.selection.applyToLayer")
+
+            // Selection copy/cut/fill: real model operations, never UI fakes.
+            HStack(spacing: 8) {
+                Button {
+                    Task { await center.copySelectionToNewLayer(sourceLayerID: layer.id) }
+                } label: {
+                    Label(WorkbenchText.t("拷贝选区", "Copy selection"), systemImage: "doc.on.doc")
+                        .frame(minHeight: 44)
+                }
+                .disabled(layer.isLocked)
+                .accessibilityIdentifier("workbench.selection.copy")
+                Button {
+                    center.cutSelection(layerID: layer.id)
+                } label: {
+                    Label(WorkbenchText.t("剪切选区", "Cut selection"), systemImage: "scissors")
+                        .frame(minHeight: 44)
+                }
+                .disabled(layer.isLocked)
+                .accessibilityIdentifier("workbench.selection.cut")
+                Button {
+                    center.fillSelection(colorHex: center.brushColorHex,
+                                         opacity: max(0.02, min(center.brushOpacity, 1)))
+                } label: {
+                    Label(WorkbenchText.t("填充选区", "Fill selection"), systemImage: "paintbucket")
+                        .frame(minHeight: 44)
+                }
+                .accessibilityIdentifier("workbench.selection.fill")
+            }
+            .font(.callout)
         }
     }
 

@@ -571,6 +571,94 @@ struct MediaCommandExpansionTests {
                                             codec: "h264", frameRate: nil, preset: "portrait1080p")
         #expect(throws: (any Error).self) { _ = try mismatch.videoOptions(project: project) }
     }
+
+    @Test("selection fill/cut/copy validate and apply through the model")
+    func selectionFillCutCopy() throws {
+        var project = MediaProject(kind: .image, name: "P", canvas: MediaCanvas(width: 200, height: 200))
+        let layer = ImageLayer(kind: .freehand, name: "A",
+                               freehand: ImageFreehandContent(strokes: [
+                                ImageFreehandStroke(points: [.init(x: 0.2, y: 0.2), .init(x: 0.4, y: 0.4)],
+                                                    width: 6, colorHex: "#FF0000")]))
+        try MediaTransactions.apply(.addImageLayer(layer), to: &project)
+        let rect = ImageSelectionShape(kind: .rectangle,
+                                       points: [.init(x: 0.1, y: 0.1), .init(x: 0.5, y: 0.5)])
+        let selection = ImageSelection(shapes: [rect])
+        try MediaTransactions.apply(.setImageSelection(selection), to: &project)
+
+        // Fill: adds a `.fill` layer masked by the selection.
+        try MediaTransactions.apply(.fillSelection(colorHex: "#00FF00", opacity: 0.6, name: nil),
+                                    to: &project)
+        let fill = try #require(project.imageLayers.last)
+        #expect(fill.kind == .fill)
+        #expect(fill.fillColorHex == "#00FF00")
+        #expect(fill.opacity == 0.6)
+        #expect(fill.selectionMask == selection)
+
+        // Fill validation.
+        #expect(throws: (any Error).self) {
+            try MediaTransactions.apply(.fillSelection(colorHex: "red", opacity: 1, name: nil),
+                                        to: &project)
+        }
+        #expect(throws: (any Error).self) {
+            try MediaTransactions.apply(.fillSelection(colorHex: "#00FF00", opacity: 2, name: nil),
+                                        to: &project)
+        }
+
+        // Cut: one region mask stroke; locked layer refused.
+        try MediaTransactions.apply(.cutSelection(layerID: layer.id), to: &project)
+        let cut = try #require(project.imageLayers.first(where: { $0.id == layer.id }))
+        #expect(cut.mask?.strokes.count == 1)
+        #expect(cut.mask?.strokes.first?.region == selection.shapes)
+        #expect(cut.mask?.strokes.first?.restore == false)
+
+        // Copy: raster asset must be registered with a matching hash and
+        // full-canvas dimensions.
+        let assetID = UUID()
+        let badRaster = MergedLayerRaster(assetID: assetID, width: 10, height: 10)
+        #expect(throws: (any Error).self) {
+            try MediaTransactions.apply(.copySelection(sourceLayerID: layer.id, name: nil,
+                                                       raster: badRaster), to: &project)
+        }
+        let rasterData = Data("copy-png".utf8)
+        let hash = FloeDigest.sha256Hex(rasterData)
+        let asset = MediaAssetReference(id: assetID, kind: .image, relativePath: "Workbench/Assets/c.png",
+                                        originalName: "c.png", byteCount: Int64(rasterData.count),
+                                        contentHash: hash)
+        try MediaTransactions.apply(.addAsset(asset), to: &project)
+        let raster = MergedLayerRaster(assetID: assetID, width: 200, height: 200, contentHash: hash)
+        try MediaTransactions.apply(.copySelection(sourceLayerID: layer.id, name: "Copy", raster: raster),
+                                    to: &project)
+        let copiedIndex = project.imageLayers.firstIndex(where: { $0.name == "Copy" })
+        #expect(copiedIndex != nil)
+        #expect(project.imageLayers[try #require(copiedIndex)].assetID == assetID)
+
+        // Undo removes the copied layer; cut stroke undo restores pixels.
+        #expect(MediaTransactions.undo(&project))
+        #expect(project.imageLayers.contains(where: { $0.name == "Copy" }) == false)
+    }
+
+    @Test("selection is required for fill/cut/copy")
+    func selectionRequired() throws {
+        var project = MediaProject(kind: .image, name: "P", canvas: MediaCanvas(width: 100, height: 100))
+        let layer = ImageLayer(kind: .freehand, name: "A",
+                               freehand: ImageFreehandContent(strokes: [
+                                ImageFreehandStroke(points: [.init(x: 0.2, y: 0.2), .init(x: 0.3, y: 0.3)],
+                                                    width: 4, colorHex: "#FF0000")]))
+        try MediaTransactions.apply(.addImageLayer(layer), to: &project)
+        #expect(throws: (any Error).self) {
+            try MediaTransactions.apply(.fillSelection(colorHex: "#00FF00", opacity: 1, name: nil),
+                                        to: &project)
+        }
+        #expect(throws: (any Error).self) {
+            try MediaTransactions.apply(.cutSelection(layerID: layer.id), to: &project)
+        }
+        #expect(throws: (any Error).self) {
+            try MediaTransactions.apply(.copySelection(sourceLayerID: layer.id, name: nil,
+                                                       raster: MergedLayerRaster(assetID: UUID(),
+                                                                                  width: 100, height: 100)),
+                                        to: &project)
+        }
+    }
 }
 
 // Tiny JSON -> AnyCodableValue bridge for tests.

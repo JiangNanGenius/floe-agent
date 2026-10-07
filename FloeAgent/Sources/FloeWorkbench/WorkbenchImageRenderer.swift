@@ -479,6 +479,21 @@ public actor WorkbenchImageRenderer {
         for stroke in mask.strokes {
             let renderer = CGImageRenderer(size: canvas, opaque: false)
             let cg = try renderer.image { ctx in
+                if let region = stroke.region, !region.isEmpty {
+                    // Region stroke (selection cut): the FILLED shapes erase
+                    // or restore, matching the polyline stroke semantics.
+                    let value: CGFloat = stroke.restore ? 1 : 0
+                    ctx.setFillColor(CGColor(red: value, green: value, blue: value, alpha: 1))
+                    var combined = CGMutablePath()
+                    for shape in region {
+                        if let path = ImageSelectionRasterizer.path(for: shape, canvas: canvas) {
+                            combined.addPath(path)
+                        }
+                    }
+                    ctx.addPath(combined)
+                    ctx.fillPath(using: .evenOdd)
+                    return
+                }
                 let path = CGMutablePath()
                 for (index, point) in stroke.points.enumerated() {
                     let p = CGPoint(x: point.x * canvas.width, y: (1 - point.y) * canvas.height)
