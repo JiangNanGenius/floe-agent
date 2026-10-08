@@ -211,6 +211,14 @@ Not verified this round and not claimed:
   query/measure/propose run is still blocked and is not claimed as passed.
 - 后续模拟器实际操作已通过普通及未保存状态的全屏返回、草稿保存和立即打开
   图纸助手。助手导航栏“发送”仍未响应，真实查询／测量／提案流程仍待修复验证。
+- A subsequent in-form Send control was actionable after real keyboard input.
+  Accessibility value assignment alone did not update the input binding and
+  is not evidence of a normal typing defect. The actual Send then surfaced
+  “Conversation has no canonical workspace”; Canvas assistant task
+  initialization is being fixed before the real CAD tool loop or distribution.
+- 后续表单内“发送”在真实键盘编辑后可用；仅辅助功能赋值未更新输入绑定，
+  不能据此宣称正常打字有缺陷。实际发送暴露“会话没有规范工作区”错误，正在
+  修复画布助手任务初始化，尚未完成真实 CAD 工具闭环或分发。
 
 The release preflight (`scripts/release_preflight.sh`) requires this file and
 `docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_265.json` to exist in
