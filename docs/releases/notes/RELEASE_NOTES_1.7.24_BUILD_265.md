@@ -163,8 +163,10 @@ Not verified this round and not claimed:
   bundle has no undo-group command.
 - The CAD-in-Canvas lifecycle and real-page CAD full-screen keep/undo/redo above
   are simulator CUA evidence; the physical-device touch pass is still open.
-  Notes qualification/UI tests were authored but not executed under xcodebuild
-  in the final job.
+  NativeNotes component qualification subsequently passed 35/35 tests on an
+  iPhone simulator. This is component-host evidence, not full-App Notes UI or
+  physical-iPad acceptance; its fixture teardown warning is being corrected
+  before the final source freeze.
 - Real provider configuration save/reopen and one synthetic in-app cloud-model
   response were verified on the intermediate simulator app. This proves
   credential reuse and basic inference only; the Drawing Assistant
