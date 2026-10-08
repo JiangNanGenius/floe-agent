@@ -140,7 +140,7 @@ Local, source-level verification on branch `codex/build265-creative-cad`
   the original node, then add CIRCLE → Finish again — keeping the same node
   id/name/position/size with exactly one node; independent LibreDWG read the
   first output as LINE 1/CIRCLE 2/TEXT 1 and the second as LINE 2/CIRCLE 3/TEXT
-  1, and the original node hash was unchanged (primary CUA record, 2026-10-08).
+  1, and the original source file remained unchanged while the node adopted the new asset (primary CUA record, 2026-10-08).
 
 Not verified this round and not claimed:
 
@@ -165,10 +165,29 @@ Not verified this round and not claimed:
   are simulator CUA evidence; the physical-device touch pass is still open.
   Notes qualification/UI tests were authored but not executed under xcodebuild
   in the final job.
-- No real paid cloud model/provider in-app closed loop was exercised (the
-  fixture system model was unavailable/preparing); do not treat this as
-  real-model acceptance. Physical-device performance, HDR and OS split-window
-  dragging are separately reported.
+- Real provider configuration save/reopen and one synthetic in-app cloud-model
+  response were verified on the intermediate simulator app. This proves
+  credential reuse and basic inference only; the Drawing Assistant
+  query/measure/propose/confirm/save closed loop is still pending.
+  Physical-device performance, HDR and OS split-window dragging are separately
+  reported.
+
+## Additional simulator checks / 补充模拟器验证
+
+- On the intermediate Debug app, saving a configured provider, reopening it,
+  and connecting again without re-entering the credential succeeded. A
+  synthetic request received the expected real model response. This is not
+  acceptance of every provider or of the CAD assistant editing workflow.
+- CAD history was exercised through the real UI: adopt an edit, reopen, inspect
+  original/adopted revisions, then restore the original. The node identity,
+  geometry and relationship remained intact and persisted history contained
+  the restoration. Final conflict/metadata guards and the Canvas assistant /
+  full-screen entry are being completed before source freeze.
+- 中间 Debug 包已验证供应商保存、重开、复用已存凭据连接，以及一次合成请求的
+  真实模型响应；这不代表全部供应商或图纸助手编辑闭环通过。
+- 图纸历史已通过实际界面验证“采用修改、重开、查看版本、恢复原版”，节点身份、
+  位置尺寸及连线保持，恢复记录已持久化。最终冲突保护、元数据一致性以及画布内
+  助手／全屏入口仍在源码冻结前收尾，不据此宣称已发布。
 
 ## Distribution note
 
