@@ -593,12 +593,22 @@ final class CadLiveDraftRegistry {
     /// so a host that is deallocated without leaving its window cannot block a
     /// later host from claiming.
     private(set) weak var presentationHost: EngineeringWebView.EngineeringContainerView?
+    /// Every live container, so that when the current host leaves its window
+    /// the session can PROMOTE the remaining on-screen container immediately:
+    /// a dismissal must never leave the web view parented to a container that
+    /// is leaving (a blank editor) just because no layout pass happened to
+    /// run on the survivor.
+    private final class WeakContainerBox {
+        weak var view: EngineeringWebView.EngineeringContainerView?
+        init(_ view: EngineeringWebView.EngineeringContainerView?) { self.view = view }
+    }
+    private var liveContainers: [WeakContainerBox] = []
 
     /// Claims presentation ownership for `host`. Only a container that is
     /// entering (or already in) a window may claim; a live newer appearance
     /// (the fullscreen cover mounting or the embedded view returning on
-    /// dismissal) takes over from the older host, which then stops touching the
-    /// web view. `window` is the window being entered: during
+    /// dismissal) takes over from the older host, which then stops touching
+    /// the web view. `window` is the window being entered: during
     /// `willMove(toWindow:)` the view's own `.window` still reports the OLD
     /// window, so the caller must pass the incoming one. Call only from view
     /// lifecycle events, never from a layout pass that may race another
@@ -607,14 +617,41 @@ final class CadLiveDraftRegistry {
     func claimPresentationHost(_ host: EngineeringWebView.EngineeringContainerView,
                                in window: UIWindow?) -> Bool {
         guard window != nil else { return false }
+        registerLiveContainer(host)
         presentationHost = host
         return true
     }
 
-    /// Releases ownership only if `host` still holds it. A stale leaving host
-    /// must not clear a newer host's ownership.
+    private func registerLiveContainer(_ container: EngineeringWebView.EngineeringContainerView) {
+        liveContainers.removeAll { $0.view == nil || $0.view === container }
+        liveContainers.append(WeakContainerBox(container))
+    }
+
+    /// A container is leaving its window or being dismantled. It is removed
+    /// from the candidate registry FIRST so no promotion path (including a
+    /// stale release while its `window` still reports the old one) can
+    /// reselect it. If it owned the host, the newest remaining on-screen
+    /// container is promoted and asked to lay out immediately — this is what
+    /// makes fullscreen dismissal restore the embedded editor even when the
+    /// survivor received no layout pass of its own (the reported
+    /// blank-return regression). A non-owner leaving never disturbs the
+    /// newer active host.
     func releasePresentationHost(_ host: EngineeringWebView.EngineeringContainerView) {
-        if presentationHost === host { presentationHost = nil }
+        liveContainers.removeAll { $0.view === host || $0.view == nil }
+        guard presentationHost === host else { return }
+        presentationHost = nil
+        promoteAvailableHost(excluding: host)
+    }
+
+    private func promoteAvailableHost(excluding releasedHost: EngineeringWebView.EngineeringContainerView) {
+        for box in liveContainers.reversed() {
+            guard let candidate = box.view,
+                  candidate !== releasedHost,
+                  candidate.window != nil else { continue }
+            presentationHost = candidate
+            candidate.setNeedsLayout()
+            return
+        }
     }
 
     /// Explicit user retry: tear down now so the next attach reloads.
@@ -808,6 +845,7 @@ final class CadLiveDraftRegistry {
         loadedCanEdit = false
         startup = nil; watchdog = nil
         presentationHost = nil
+        liveContainers.removeAll()
     }
 
     /// Registers the live session with the central draft registry under the
@@ -919,8 +957,8 @@ struct EngineeringWebView: UIViewRepresentable {
     /// Intentionally does NOT dismantle the session: the same web view is
     /// re-adopted by whichever container is on screen, and the session is
     /// released (and torn down) by its owner when the preview truly goes away.
-    /// The leaving container only gives up presentation ownership; it never
-    /// clears a newer host's ownership or tears down the shared web view.
+    /// The leaving container is retired from the arbitration registry so it
+    /// can never be promoted back while a newer host is active.
     static func dismantleUIView(_ container: EngineeringContainerView, coordinator: Coordinator) {
         container.session?.releasePresentationHost(container)
     }

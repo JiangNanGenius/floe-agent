@@ -15,12 +15,14 @@ import FloeCore
 @Suite("Creative asset reference reconciliation")
 struct CreativeAssetReconciliationTests {
     private func makeStore(
-        reachabilityGuard: (@Sendable (UUID) -> CanvasAssetReachability)? = nil
+        reachabilityGuard: (@Sendable (UUID) -> CanvasAssetReachability)? = nil,
+        deferPhysicalReclamation: Bool = false
     ) async throws -> (DatabaseManager, CreativeAssetStore) {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         return (database, CreativeAssetStore(
-            database: database, reachabilityGuard: reachabilityGuard))
+            database: database, reachabilityGuard: reachabilityGuard,
+            deferPhysicalReclamation: deferPhysicalReclamation))
     }
 
     private func seed(
@@ -115,5 +117,31 @@ struct CreativeAssetReconciliationTests {
             _ = try await inFlight.requestPermanentDeletion(assetID: id)
         }
         #expect(try await inFlight.asset(id: id) != nil)
+    }
+
+    @Test("deferred physical reclamation keeps every byte in this release")
+    func deferredReclamationRetainsBytes() async throws {
+        // Production policy: no shared lease with canvas publishers, so
+        // physical deletion defers even when the scan says unreferenced —
+        // logical state and bytes stay, surfacing via orphanedAssets().
+        let id = UUID()
+        let (_, store) = try await makeStore(
+            reachabilityGuard: { _ in .notReachable },
+            deferPhysicalReclamation: true)
+        try await seed(store, id: id)
+        await #expect(throws: (any Error).self) {
+            _ = try await store.requestPermanentDeletion(assetID: id)
+        }
+        #expect(try await store.asset(id: id) != nil, "deferred reclamation must keep the row")
+        let orphans = try await store.orphanedAssets()
+        #expect(orphans.contains { $0.id == id },
+                "deferred bytes must surface through the orphan audit for later cleanup")
+        // A store WITHOUT the deferral (module tests, other tools) keeps the
+        // guarded legacy behavior.
+        let (_, legacy) = try await makeStore(reachabilityGuard: { _ in .notReachable })
+        try await seed(legacy, id: id)
+        let path = try await legacy.requestPermanentDeletion(assetID: id)
+        #expect(path == "Materials/\(id.uuidString).dwg")
+        #expect(try await legacy.asset(id: id) == nil)
     }
 }

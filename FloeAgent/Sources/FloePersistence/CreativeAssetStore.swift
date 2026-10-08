@@ -180,7 +180,25 @@ public actor CreativeAssetStore {
     /// project, in-flight reconciliation op) retains the bytes and surfaces
     /// a recoverable maintenance error. Wired by the app environment; nil
     /// in module tests that exercise the store alone.
+    ///
+    /// The scan is ADVISORY, not a lease: without shared synchronization
+    /// between canvas publishers and the prune decision, a reference-adding
+    /// publish can race any check. Physical byte reclamation is therefore
+    /// governed by `deferPhysicalReclamation` in this release.
     public let reachabilityGuard: (@Sendable (UUID) -> CanvasAssetReachability)?
+
+    /// Conservative physical-reclamation policy for this release. There is
+    /// NO shared lease between canvas project publication and the prune
+    /// decision, so a scan that says "unreferenced" can still be raced by a
+    /// reference-adding publish landing before the bytes are removed. When
+    /// true, every physical byte reclamation path (user-confirmed permanent
+    /// deletion, generated-reservation abandonment cleanup, and cloud-release
+    /// local cleanup) DEFERS: logical state (reference counts, job links,
+    /// orphan listings) is untouched and the bytes stay on disk, surfacing
+    /// through `orphanedAssets()` for a later cleanup once lease-based
+    /// reclamation exists. Deletion requests fail with a recoverable,
+    /// user-visible "deferred" error instead of gambling on a race.
+    public let deferPhysicalReclamation: Bool
 
     /// The fail-closed reachability decision for one asset.
     private func reachability(of assetID: UUID) -> CanvasAssetReachability {
@@ -220,10 +238,12 @@ public actor CreativeAssetStore {
     private let database: DatabaseManager
     public init(
         database: DatabaseManager,
-        reachabilityGuard: (@Sendable (UUID) -> CanvasAssetReachability)? = nil
+        reachabilityGuard: (@Sendable (UUID) -> CanvasAssetReachability)? = nil,
+        deferPhysicalReclamation: Bool = false
     ) {
         self.database = database
         self.reachabilityGuard = reachabilityGuard
+        self.deferPhysicalReclamation = deferPhysicalReclamation
     }
 
     /// Persists the complete owner/slot set before the first generated file is
@@ -534,13 +554,21 @@ public actor CreativeAssetStore {
             var deletedLocalRelativePaths: [String] = []
             let canonicalIDs = Set(slots.compactMap(\.canonicalAssetID))
                 .sorted { $0.uuidString < $1.uuidString }
-            for assetID in canonicalIDs {
-                // Authoritative reachability backstop, failing closed: a
-                // reservation-only asset is never auto-deleted while a
-                // persisted canvas project reaches it OR the reachability
-                // scan cannot prove it unreferenced.
-                guard reachabilityGuard?(assetID) != .reachable,
-                      reachabilityGuard?(assetID) != .unknown else { continue }
+            // Physical reclamation DEFERS in this release (no shared lease
+            // with canvas publishers proves the scan at mutation time): keep
+            // the canonical row and bytes on disk; they surface through
+            // `orphanedAssets()` for later cleanup.
+            if !deferPhysicalReclamation {
+                for assetID in canonicalIDs {
+                // Advisory reachability check, evaluated once per asset:
+                // reachable or unknown (unreadable index, undecodable
+                // journal, in-flight publication/reconciliation) all retain.
+                switch reachabilityGuard?(assetID) ?? .notReachable {
+                case .notReachable:
+                    break
+                case .reachable, .unknown:
+                    continue
+                }
                 guard let row = try Row.fetchOne(
                     db,
                     sql: "SELECT * FROM creative_assets WHERE id = ?",
@@ -615,6 +643,7 @@ public actor CreativeAssetStore {
                     ])
                 if db.changesCount == 1, let path = asset.localRelativePath {
                     deletedLocalRelativePaths.append(path)
+                }
                 }
             }
             return GeneratedAssetReservationAbandonment(
@@ -853,6 +882,15 @@ public actor CreativeAssetStore {
     /// local path is returned only when that row was actually deleted; cloud
     /// releases retain the local copy until their asynchronous confirmation.
     public func requestPermanentDeletion(assetID: UUID) async throws -> String? {
+        // Physical reclamation is DEFERRED in this release: without a shared
+        // lease with canvas publishers, no scan can prove the bytes
+        // unreferenced at the moment of deletion. Fail with a recoverable,
+        // user-visible deferral and keep everything.
+        if deferPhysicalReclamation {
+            throw FloeError.validationFailed(
+                "素材空间清理已在当前版本保守挂起：文件已保留，将在后续版本的安全回收机制上线后释放。"
+            )
+        }
         // Authoritative reachability backstop, failing closed: never delete
         // bytes a persisted canvas project still reaches — and never delete
         // on incomplete knowledge (unreadable index) either.
@@ -1045,11 +1083,29 @@ public actor CreativeAssetStore {
 
             var authorizedLocalPath: String?
             if deleteLocalAfterRelease {
-                // Authoritative reachability backstop, failing closed: a
-                // confirmed cloud release never deletes local bytes a
-                // persisted canvas project reaches — and an unreadable
-                // canvas index retains the local copy with a recoverable
-                // error rather than gambling on incomplete knowledge.
+                // Physical reclamation DEFERS in this release: the remote
+                // record is already gone, but without a shared lease with
+                // canvas publishers the local bytes are conservatively
+                // retained (recoverable deferral, no acknowledged race).
+                // The release completes and the cloud column is made
+                // truthful; only the local byte deletion is skipped, so the
+                // deferred bytes surface through `orphanedAssets()`.
+                if deferPhysicalReclamation {
+                    try db.execute(
+                        sql: """
+                            UPDATE creative_assets
+                            SET cloud_record_name = NULL, updated_at = ?
+                            WHERE id = ?
+                            """,
+                        arguments: [Date(), assetID.uuidString]
+                    )
+                    try db.execute(
+                        sql: "DELETE FROM cloud_asset_releases WHERE id = ?",
+                        arguments: [id.uuidString]
+                    )
+                    return nil
+                }
+                // Advisory reachability check, failing closed.
                 switch reachabilityGuard?(assetID) ?? .notReachable {
                 case .notReachable:
                     break

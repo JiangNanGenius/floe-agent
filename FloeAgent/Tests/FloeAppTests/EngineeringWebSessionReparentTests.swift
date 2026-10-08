@@ -204,11 +204,12 @@ struct EngineeringTwoContainerTransitionTests {
         fullscreen.layoutSubviews()
         #expect(web.superview === fullscreen)
 
-        // Dismissal: the fullscreen cover leaves, the embedded one returns.
+        // Dismissal: the fullscreen cover leaves and the surviving embedded
+        // container is PROMOTED immediately — the editor must never stay
+        // blank waiting for a layout pass that may never arrive.
         fullscreen.removeFromSuperview()
-        #expect(session.presentationHost == nil)
-        embedded.layoutSubviews()
         #expect(session.presentationHost === embedded)
+        embedded.layoutSubviews()
         #expect(web.superview === embedded)
 
         // A stale leaving host must not clear the newer owner either.
@@ -219,6 +220,35 @@ struct EngineeringTwoContainerTransitionTests {
         #expect(session.presentationHost === fullscreen)
         fullscreen.layoutSubviews()
         #expect(web.superview === fullscreen)
+    }
+
+    @Test("releasing the only host promotes the surviving on-screen container without its own layout pass")
+    func hostReleasePromotesSurvivorImmediately() async throws {
+        let session = try attachedSession()
+        defer { session.tearDown() }
+        guard let web = session.web else {
+            Issue.record("session.attach must create a real WKWebView")
+            return
+        }
+        await waitForPageLoad(session)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let embedded = container(session)
+        window.addSubview(embedded)
+        embedded.layoutSubviews()
+        #expect(web.superview === embedded)
+
+        // Fullscreen takes over, then dismisses. No layout pass runs on the
+        // survivor between removal and the assertion — the arbitration must
+        // restore the web view on its own (blank-return regression).
+        let fullscreen = container(session)
+        window.addSubview(fullscreen)
+        fullscreen.layoutSubviews()
+        #expect(session.presentationHost === fullscreen)
+        fullscreen.removeFromSuperview()
+        #expect(session.presentationHost === embedded)
+        embedded.layoutIfNeeded()
+        #expect(web.superview === embedded)
+        #expect(session.presentationHost === embedded)
     }
 
     @Test("dismantling a non-host container leaves the active host untouched")

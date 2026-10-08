@@ -858,6 +858,24 @@ final class ConversationCenter: ObservableObject {
     /// Builds (but does not start) a run service bound to the given
     /// provider and model. Resolves the provider's API key from Keychain at
     /// this call site only; the key is passed to the runtime and discarded.
+    /// The verified Canvas staged-document identity for one assistant
+    /// conversation, or nil when the conversation has no Drawing Assistant
+    /// binding. This is the ONLY supported channel that puts
+    /// `canvasStagedDocument` into a run: it reads the durable
+    /// review-sheet binding (never prompt text), and the canonical draft
+    /// root construction is shared with the editor staging, so the runtime
+    /// and the review sheet resolve the identical path string.
+    static func canvasStagedBinding(conversationID: UUID) -> CanvasStagedDocumentAccess? {
+        guard let bound = DrawingAssistantConversationStore.shared
+            .stagedDocument(conversationID: conversationID),
+              let rootPath = CanvasDrawingNodePlanner.canonicalDraftRoot()?.path
+        else { return nil }
+        return CanvasStagedDocumentAccess(
+            canvasID: bound.canvasID,
+            draftRootPath: rootPath,
+            stagedRelativePath: bound.stagedRelativePath)
+    }
+
     func runService(
         for conversationID: UUID,
         provider: ProviderProfile,
@@ -1072,16 +1090,7 @@ final class ConversationCenter: ObservableObject {
         // exact authorized staged identity so cad.document resolves the SAME
         // document the review sheet presents. Authority comes from the
         // durable binding (verified at bind time), never from prompt text.
-        let canvasStagedDocument: CanvasStagedDocumentAccess? = {
-            guard let bound = DrawingAssistantConversationStore.shared
-                .stagedDocument(conversationID: conversationID),
-                  let rootPath = CanvasDrawingNodePlanner.canonicalDraftRoot()?.path
-            else { return nil }
-            return CanvasStagedDocumentAccess(
-                canvasID: bound.canvasID,
-                draftRootPath: rootPath,
-                stagedRelativePath: bound.stagedRelativePath)
-        }()
+        let canvasStagedDocument = Self.canvasStagedBinding(conversationID: conversationID)
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,

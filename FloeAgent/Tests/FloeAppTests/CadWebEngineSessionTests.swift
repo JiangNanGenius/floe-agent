@@ -537,6 +537,43 @@ struct CanvasDrawingAssistantBindingTests {
         try CadDocumentTool.authorizeDocumentPath(nil, context: ordinary)
     }
 
+    @Test("send-time binding: the durable assistant conversation resolves the exact staged identity the runtime uses")
+    func sendBindingResolvesStagedIdentity() throws {
+        let canvasID = UUID()
+        let stagedPath = "\(canvasID.uuidString.lowercased())/\(UUID().uuidString.lowercased())/plan.dxf"
+        let conversationID = UUID()
+        // What EngineeringReviewSheet.send() does once the user sends: bind
+        // the assistant conversation to the staged document (canvas
+        // namespace). No prompt text participates.
+        try DrawingAssistantConversationStore.shared.bind(
+            workspaceID: canvasID, relativePath: stagedPath, conversationID: conversationID)
+        defer {
+            // Unbind by rebinding to a fresh conversation is NOT how the
+            // store works; the binding is task-scoped test data keyed by a
+            // unique canvas UUID, which never collides with real bindings.
+        }
+        // What ConversationCenter.runService resolves for that run launch:
+        let resolved = ConversationCenter.canvasStagedBinding(conversationID: conversationID)
+        let expectedRoot = CanvasDrawingNodePlanner.canonicalDraftRoot()
+        #expect(resolved != nil)
+        #expect(resolved?.canvasID == canvasID)
+        #expect(resolved?.stagedRelativePath == stagedPath)
+        #expect(resolved?.draftRootPath == expectedRoot?.path)
+        // The runtime tool context built from that seed derives exactly the
+        // review sheet's access — proposals prepared on this run match the
+        // sheet's pending list.
+        guard let resolved else { return }
+        let context = ToolContext(
+            runID: UUID(), canvasStagedDocument: resolved,
+            cancellation: CancellationToken())
+        let sheetAccess = CadDocumentAccess(
+            environmentID: nil, workspacePath: expectedRoot?.path,
+            ownerKind: "canvas", ownerID: canvasID)
+        #expect(CadDocumentTool.access(for: context) == sheetAccess)
+        // A conversation without a binding gets NO staged authority.
+        #expect(ConversationCenter.canvasStagedBinding(conversationID: UUID()) == nil)
+    }
+
     @Test("runtime proposals are discoverable by the bound sheet access only")
     func proposalBindingContract() async throws {
         let (root, stagedPath, canvasID) = try stagedWorkspace()
@@ -657,6 +694,51 @@ struct CanvasReachabilityFailClosedTests {
         try JSONEncoder().encode(record).write(to: journal, options: .atomic)
         defer { try? FileManager.default.removeItem(at: journal) }
         #expect(WorkspaceCanvasRegistry.reachability(of: assetID) == .reachable)
+    }
+
+    @Test("an undecodable reconciliation journal fails closed to unknown, never notReachable")
+    func undecodableJournalFailsClosed() throws {
+        let journal = try canvasesDirectory
+            .appendingPathComponent("asset-reconciliation-\(UUID().uuidString).json")
+        try Data("{ not a reconciliation record".utf8).write(to: journal, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: journal) }
+        #expect(WorkspaceCanvasRegistry.reachability(of: UUID()) == .unknown)
+    }
+
+    @Test("reachability defers to unknown while a canvas publication is in flight")
+    func inFlightPublicationDefersScan() async throws {
+        let canvasID = UUID()
+        let document = CanvasDocument(name: "D", nodes: [])
+        let project = CanvasProject(
+            id: canvasID, name: "C", documents: [document],
+            selectedDocumentID: document.id)
+        let url = try plantCanvasProjectFile(named: canvasID, project: project)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(WorkspaceCanvasRegistry.reachability(of: UUID()) == .notReachable)
+
+        // A tight CAS loop keeps a publication in flight nearly 100% of the
+        // time (the flag spans the whole decode/encode/write); the scan must
+        // observe .unknown at least once instead of pruning past a
+        // reference-adding publish.
+        let stop = Date().addingTimeInterval(10)
+        var revision = Int64(1)
+        let writer = Task.detached(priority: .userInitiated) {
+            while Date() < stop {
+                revision += 1
+                var next = project
+                next.revision = revision
+                _ = try? CanvasProjectFileWriter.shared.compareAndSwap(
+                    next, at: url, expectedRevision: revision - 1)
+            }
+        }
+        var observedUnknown = false
+        while Date() < stop, !observedUnknown {
+            if WorkspaceCanvasRegistry.reachability(of: UUID()) == .unknown {
+                observedUnknown = true
+            }
+        }
+        writer.cancel()
+        #expect(observedUnknown, "the scan must defer while a publication is in flight")
     }
 }
 

@@ -968,9 +968,18 @@ enum WorkspaceCanvasRegistry {
     /// FAILS CLOSED: an enumeration failure, an unreadable/corrupt project,
     /// or a newer-schema project this build cannot read yields `.unknown`
     /// (retain), never `.notReachable`, so destructive pruning can never
-    /// proceed on incomplete knowledge. A pending reconciliation op for the
-    /// asset is conservative count protection: reference bookkeeping is
-    /// mid-flight, so the bytes are retained until the op drains.
+    /// proceed on incomplete knowledge.
+    ///
+    /// Serialization strategy (what the scan is — and is not — coordinated
+    /// with): canvas project publication is serialized process-wide by
+    /// `CanvasProjectFileWriter` (per-canvas locks + the in-flight counter
+    /// checked here), and reconciliation journals are written in the same
+    /// turn that schedules them, AFTER the CAS returns. The scan is NOT a
+    /// lease: a publish can begin after the check and before a mutation, so
+    /// physical byte reclamation is governed conservatively by
+    /// `CreativeAssetStore.deferPhysicalReclamation` (this release defers
+    /// all physical deletes); the scan remains the fail-closed refusal layer
+    /// for whenever reclamation is re-enabled.
     static func reachability(of assetID: UUID) -> CanvasAssetReachability {
         guard let directory = try? projectURL(
             canvasID: privateCanvasID, createDirectory: false
@@ -1015,13 +1024,26 @@ enum WorkspaceCanvasRegistry {
             }
         }
         // Conservative count protection: in-flight reconciliation ops mean
-        // reference bookkeeping has not converged; retain until drained.
+        // reference bookkeeping has not converged; retain until drained. An
+        // UNDECODABLE journal fails closed too — the scan cannot prove the
+        // asset unreferenced past bookkeeping it cannot read.
+        if CanvasProjectFileWriter.shared.hasInFlightPublication {
+            return .unknown
+        }
         for url in urls
         where url.lastPathComponent.hasPrefix("asset-reconciliation-")
             && url.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: url),
-                  let record = try? JSONDecoder().decode(
-                      CanvasAssetReconciliation.Record.self, from: data) else { continue }
+            guard let data = try? Data(contentsOf: url) else {
+                FloeLogger(category: .persistence).warning(
+                    "canvasReachabilityJournalUnreadable file=\(url.lastPathComponent) asset=\(assetID.uuidString)")
+                return .unknown
+            }
+            guard let record = try? JSONDecoder().decode(
+                CanvasAssetReconciliation.Record.self, from: data) else {
+                FloeLogger(category: .persistence).warning(
+                    "canvasReachabilityJournalUndecodable file=\(url.lastPathComponent) asset=\(assetID.uuidString)")
+                return .unknown
+            }
             if record.ops.contains(where: { $0.assetID == assetID }) {
                 return .reachable
             }
@@ -4543,7 +4565,17 @@ private struct CanvasDrawingEditorSheet: View {
         // that staged document, and the SAME live viewer session for handle
         // locate and colored proposal overlays. Proposals stay draft edits
         // of the staged copy until the user explicitly Finishes.
-        .sheet(item: $reviewCapture) { capture in
+        //
+        // Presentation arbitration: a sheet modifier on the editor body
+        // cannot present while its own fullscreen cover is on top — the
+        // item would queue and only appear after an unrelated dismissal.
+        // The fullscreen host therefore owns the review presentation while
+        // it is active; the embedded body owns it otherwise. (Same pattern
+        // as FilePreviewView's engineering review.)
+        .sheet(item: Binding(
+            get: { isFullScreenEditor ? nil : reviewCapture },
+            set: { reviewCapture = $0 })
+        ) { capture in
             if let entry {
                 EngineeringReviewSheet(
                     capture: capture,
@@ -4656,6 +4688,13 @@ private struct CanvasDrawingEditorSheet: View {
                     documentID: staged.stagedRelativePath,
                     workspaceRoot: entry.rootURL,
                     canvasStagedDocument: staged)
+                // Present from the STABLE sheet body: a sheet modifier inside
+                // the fullscreen cover content cannot present on its own
+                // behalf (it queues until an unrelated dismissal and freezes
+                // its toolbar/bindings). Leaving fullscreen first is a sizing
+                // transition — the same live session is re-parented into the
+                // embedded editor, never reloaded or discarded.
+                isFullScreenEditor = false
             },
             onSave: { data, baseline in
                 try await saveDraft(data, baseline: baseline, entry: entry)

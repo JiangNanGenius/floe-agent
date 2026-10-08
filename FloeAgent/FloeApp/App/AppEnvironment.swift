@@ -167,13 +167,19 @@ final class AppEnvironment: ObservableObject {
         CreativeAssetStore(
             database: database,
             reachabilityGuard: { assetID in
-                // Authoritative reachability backstop for every prune/delete
-                // path. Fails closed: reference counts may lag a crashed
-                // reconciliation, and an unreadable/newer-schema canvas
-                // index retains the bytes with a recoverable error instead
-                // of allowing destructive pruning on incomplete knowledge.
+                // Fail-closed reachability backstop for the (deferred)
+                // prune/delete paths: refuse to delete bytes any persisted
+                // canvas project still reaches, and retain on incomplete
+                // knowledge. Physical reclamation itself is DEFERRED in
+                // this release (deferPhysicalReclamation) because there is
+                // no shared lease with canvas publishers.
                 WorkspaceCanvasRegistry.reachability(of: assetID)
-            })
+            },
+            // No shared lease between canvas publishers and the prune
+            // decision exists in this release, so physical byte reclamation
+            // conservatively defers everywhere; deferred bytes surface via
+            // orphanedAssets() for a later cleanup.
+            deferPhysicalReclamation: true)
     }()
     private lazy var _canvasSyncOperationStore = CanvasSyncOperationStore(database: database)
     private lazy var _canvasCloudAssetService: CanvasCloudAssetService = {

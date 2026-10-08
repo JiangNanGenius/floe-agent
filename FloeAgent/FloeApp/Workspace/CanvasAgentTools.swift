@@ -24,8 +24,33 @@ final class CanvasProjectFileWriter: @unchecked Sendable {
 
     private let lockRegistry = NSLock()
     private var locksByCanvasID: [UUID: NSLock] = [:]
+    /// Number of canvas publications (CAS writes/deletes) currently in
+    /// flight, across all writers and threads. The creative-asset
+    /// reachability scan consults this so auto-pruning defers while a
+    /// project file may be mid-publish: pruning decisions must never race
+    /// a reference-adding publication.
+    private let inFlightLock = NSLock()
+    private var inFlightPublications = 0
+
+    var hasInFlightPublication: Bool {
+        inFlightLock.lock()
+        defer { inFlightLock.unlock() }
+        return inFlightPublications > 0
+    }
 
     private init() {}
+
+    private func withInFlightPublication<T>(_ operation: () throws -> T) rethrows -> T {
+        inFlightLock.lock()
+        inFlightPublications += 1
+        inFlightLock.unlock()
+        defer {
+            inFlightLock.lock()
+            inFlightPublications -= 1
+            inFlightLock.unlock()
+        }
+        return try operation()
+    }
 
     func project(canvasID: UUID, at url: URL) throws -> CanvasProject {
         try withCanvasLock(canvasID: canvasID) {
@@ -40,8 +65,10 @@ final class CanvasProjectFileWriter: @unchecked Sendable {
     }
 
     func delete(canvasID: UUID, at url: URL) throws {
-        try withCanvasLock(canvasID: canvasID) {
-            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        try withInFlightPublication {
+            try withCanvasLock(canvasID: canvasID) {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            }
         }
     }
 
@@ -58,8 +85,9 @@ final class CanvasProjectFileWriter: @unchecked Sendable {
         allowCreateIfMissing: Bool = false,
         allowReplacingUnreadableFile: Bool = false
     ) throws -> Data {
-        try withCanvasLock(canvasID: project.id) {
-            let fileExists = FileManager.default.fileExists(atPath: url.path)
+        try withInFlightPublication {
+            try withCanvasLock(canvasID: project.id) {
+                let fileExists = FileManager.default.fileExists(atPath: url.path)
             if fileExists {
                 let current: CanvasProject?
                 do {
@@ -109,6 +137,7 @@ final class CanvasProjectFileWriter: @unchecked Sendable {
             let data = try CanvasProjectCodec.encode(project, encoder: encoder)
             try data.write(to: url, options: .atomic)
             return data
+            }
         }
     }
 
