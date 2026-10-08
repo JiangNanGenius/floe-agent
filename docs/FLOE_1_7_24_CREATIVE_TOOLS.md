@@ -181,7 +181,7 @@ Propose → user confirms in the CAD UI → apply → verify / 提案→界面�
 | LibreDWG independent reader (release qualification only) | LibreDWG 0.13.3 is run **offline by the build/QA process** on representative generated outputs (DWG AC1024/27/32 + DXF projection via `dxf2dwg`); it is **not** bundled in the app and is **not** run on every save | external cross-reader on representative files; neither universal DWG/DXF support nor a per-file guarantee |
 | Unknown/proxy save | **unavailable**: unknown entity/object save fails with `[NotImplemented]` diagnostics; source preserved | honest refusal, not claimed preserved |
 | Real-page editor across full-screen | implemented; simulator CUA verified | keep-draft/undo/redo across embedded↔full-screen passed on the iPad simulator (owned CUA); physical-device pass still open |
-| CAD-in-Canvas node lifecycle | implemented; **simulator CUA verified** | real add-LINE→keep-draft→close→reopen→Finish, then add-CIRCLE→Finish; same node id/name/position/size, exactly one node; LibreDWG LINE1/CIRCLE2→LINE2/CIRCLE3; original node hash unchanged. Simulator CUA only — physical-device pass still open |
+| CAD-in-Canvas node lifecycle | implemented; **simulator CUA verified** | real add-LINE→keep-draft→close→reopen→Finish, then add-CIRCLE→Finish; same node id/name/position/size, exactly one node; LibreDWG LINE1/CIRCLE2→LINE2/CIRCLE3; original source-file hash unchanged; the node points to the newly adopted asset. Simulator CUA only — physical-device pass still open |
 
 | 主题 | 支持（级别） | 证据／限制 |
 | --- | --- | --- |
@@ -197,7 +197,7 @@ Propose → user confirms in the CAD UI → apply → verify / 提案→界面�
 | LibreDWG 独立读取器（仅发布资格） | LibreDWG 0.13.3 由构建/QA 流程**离线**运行在代表性导出上（DWG AC1024/27/32 与经 `dxf2dwg` 的 DXF 投影）；**不随 App 打包，也不在每次保存时运行** | 代表性文件的外部交叉读取，不代表普遍支持所有 DWG/DXF，也不是逐文件保证 |
 | 未知/代理内容保存 | **不支持**：未知图元/对象保存报 `[NotImplemented]`，保留源文件 | 诚实拒绝 |
 | 全屏真实页面编辑 | 已实现；模拟器 CUA 已验证 | iPad 模拟器内嵌↔全屏保留草稿/撤销重做通过；真机仍待验收 |
-| 画布里 CAD 节点生命周期 | 已实现；**模拟器 CUA 已验证** | 真实“加线→保留草稿关闭→重开→完成”，再“加圆→完成”；同一节点 id/名称/位置/尺寸、恰好一个节点；LibreDWG LINE1/CIRCLE2→LINE2/CIRCLE3；原节点哈希不变。仅模拟器 CUA，真机仍待验收 |
+| 画布里 CAD 节点生命周期 | 已实现；**模拟器 CUA 已验证** | 真实“加线→保留草稿关闭→重开→完成”，再“加圆→完成”；同一节点 id/名称/位置/尺寸、恰好一个节点；LibreDWG LINE1/CIRCLE2→LINE2/CIRCLE3；原始素材文件哈希不变，节点改为引用新采用的素材。仅模拟器 CUA，真机仍待验收 |
 
 ## 4. Drawing Assistant / 图纸助手
 
@@ -411,7 +411,7 @@ CUA pass on the final6 app verified the CAD-in-Canvas lifecycle: add LINE → ke
 draft → close → reopen → Finish into the original node, then add CIRCLE → Finish
 again, with the same node id/name/position/size and exactly one node; independent
 LibreDWG read the first output as LINE 1/CIRCLE 2/TEXT 1 and the second as
-LINE 2/CIRCLE 3/TEXT 1, and the original node's hash was unchanged.
+LINE 2/CIRCLE 3/TEXT 1, and the original source-file hash was unchanged while the node's asset reference advanced.
 
 Open CAD-backup gap (in progress before the freeze, do **not** claim yet): the
 current Canvas backup export carries media child projects, their assets and
