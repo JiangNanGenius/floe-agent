@@ -1,5 +1,22 @@
 # Floe CAD engine, `cad.document` and Canvas child projects
 
+> **2026-10-08 superseding note:** this page records the early Build 265 candidate
+> (its verification counts, "known gaps" and the 1.7.23(264) checkpoint artifact
+> note are from that stage). The completed Build 265 surface, current test results
+> (engine 42/42, commands 58/58, ink 78/78, 83 FloeDocuments + 47 FloeNotes +
+> 19 App tests, simulator CAD-in-Canvas CUA), the Office/Notes shared tools and the
+> truthful capability tiers are now documented in
+> [creative tool contracts and format capability table](FLOE_1_7_24_CREATIVE_TOOLS.md)
+> and the [1.7.24 (265) release notes](releases/notes/RELEASE_NOTES_1.7.24_BUILD_265.md).
+> Engine-tier Office editing still needs physical-device qualification; the text
+> below is retained as historical evidence.
+>
+> **2026-10-08 取代说明：** 本页记录 Build 265 早期候选阶段（其中验证计数、“已知缺口”及
+> 1.7.23(264) 检查点产物说明均属当时）。Build 265 的最终能力面、当前测试结果、Office/手记
+> 共享工具与真实能力分级见[创作工具契约与格式能力表](FLOE_1_7_24_CREATIVE_TOOLS.md)和
+> [1.7.24（265）发布说明](releases/notes/RELEASE_NOTES_1.7.24_BUILD_265.md)。引擎层 Office
+> 编辑仍待真机资格；下文作为历史证据保留。
+
 Status: implementation validated locally (Build265 branch `codex/build265-creative-cad`).
 No tag, TestFlight or public release was produced; primary UI/CUA acceptance and
 the release execution remain with the primary agent.

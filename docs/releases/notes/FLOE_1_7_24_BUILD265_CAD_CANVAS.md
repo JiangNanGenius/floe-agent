@@ -95,3 +95,153 @@ packaged native engine; a canvas backup package that includes child projects and
 assets; Notes/Office shared-AI capability parity and the remaining bilingual
 schema/example teaching updates; old-node first-edit migration. See
 `Local/Private/build265-creative/REQUIREMENT_MATRIX.md` for exact status.
+
+## Completion addendum — Office / Notes / Canvas / CAD (this candidate)
+
+The open list above is superseded for the items below. Device-dependent runtime
+qualification is still explicitly pending (a physical iPad was unavailable
+during this work); every local test result below is service/package level.
+
+### Engine-level Office editing (Word / Excel / Presentation)
+
+One typed catalog (`OfficeEngineCommandCatalog`) is shared by the editor UI and
+the `document.office.edit` agent tool. A proposal binds the document path, the
+exact saved SHA-256 and — for commands that act on the current cursor/selection
+— an opaque selection fingerprint captured from the live engine. Apply
+re-checks that fingerprint, dispatches through the same WKWebView bridge the
+ink annotation uses, flushes the private working copy, reopens the SAVED
+package and verifies a target-aware delta before the original is committed with
+a CAS. A failed batch is restored (engine undo of the dispatched commands, then
+a reload from the committed bytes if that cannot be proven) and a failed
+restore quarantines the working copy so a manual save can never publish it.
+
+| Format | Operation | Path | Verification | Tier |
+| --- | --- | --- | --- | --- |
+| docx | style / list / alignment / insert table | engine `.uno:` dispatch | paragraph/style/table delta in `word/document.xml` | engine (device qualification pending) |
+| docx | text replace | OOXML rewrite (`document.office.updateText`) | exact field + package reopen | implemented and locally tested |
+| docx | image insert | native host attachment (live editor only) | media delta after reopen | engine (device qualification pending) |
+| docx / xlsx / pptx | image replace | package rewrite, same image format | media digest + atomic reopen | implemented and locally tested |
+| xlsx | number format / rows / columns / freeze / sort / filter / go-to-cell / recalculate | engine `.uno:` dispatch (explicit cell/range first) | addressed cell format, row/column delta, frozen top-left cell, sheet reorder | engine (device qualification pending) |
+| xlsx | formula set | OOXML rewrite (`updateText`) | cell `<f>` value after reopen | implemented and locally tested |
+| xlsx | formula error locations | saved-package read (`type="e"` cells) | cell + error code list | implemented and locally tested |
+| pptx | duplicate slide / align objects / present | engine `.uno:` dispatch | slide-count delta; alignment is dispatch-only (no OOXML geometry claim) | engine (device qualification pending) |
+| pptx | move slide | engine duplicate-at-target + delete-original (no `.uno:MoveSlide` exists in the pinned bundle) | saved slide order equals the requested order | engine (device qualification pending) |
+
+Known limits, not hidden: the pinned bundle has no undo-group command, so a
+multi-command batch is reverted by restoring the persisted pre-batch bytes
+(with a SHA check and unsaved-edit refusal), not by a guessed number of engine
+undos; PPT move preserves content and notes but may reset slide identity;
+Engine-tier entries still require the device qualification receipts before any
+release claim.
+
+Schema examples / 模式示例:
+
+```json
+{"action":"read","path":"brief.docx"}
+{"action":"propose","path":"brief.docx","expected_sha256":"<64 hex>","summary":"insert table","commands":[{"id":"word.insertTable","arguments":{"rows":"2","columns":"3"}}]}
+{"action":"propose","path":"sheet.xlsx","expected_sha256":"<64 hex>","commands":[{"id":"excel.numberFormat","arguments":{"format":"percent","cell":"B2"}}]}
+{"action":"apply","path":"brief.docx","proposal_id":"<uuid>","grant_id":"<UI-issued>"}
+{"action":"replaceImage","path":"deck.pptx","expected_sha256":"<64 hex>","image":"#1","imagePath":"images/logo.png"}
+{"action":"errors","path":"sheet.xlsx"}
+{"action":"export","path":"sheet.xlsx","output":"exports/copy.xlsx"}
+```
+
+### Notes / PDF shared-AI contract and precise search
+
+- `notes.read section=capabilities` reports a truthful matrix with tiers
+  implemented / delegated (workspace `document.pdf.*` on staged copies) /
+  unavailable (in-place PDF original-text editing; handwriting text edit).
+- `notes.export` exports the selected pages or the whole document to PDF
+  (page count re-verified by reopening) or `.floenote` (re-import verified),
+  only for conversation-granted documents.
+- `notes.edit` gained a propose/preview/apply flow (`action=propose|preview`,
+  apply remains the default) with a durable decision outbox: the decision intent
+  is persisted before the proposal state changes, delivery is origin-scoped and
+  idempotent, and a crash in any gap is reconstructed on restart.
+- Search now positions per text: a shared helper returns page + element/node +
+  UTF-16 offset/length for elements, extracted text, visual index text, Office
+  text and mind-map topics; the library result tap and the agent `notes.search`
+  hits carry the same offsets; the editor switches page, centers and highlights
+  the matched element, and restores the user's own reading viewport. Flat
+  PDF-extracted text without geometry scrolls to the page and says that a
+  precise highlight is unavailable instead of guessing.
+- The document/resource fingerprint is explicitly a document-JSON SHA-256;
+  referenced resource bytes are pinned separately by CAS. Proposal origin
+  (conversation/environment) is persisted from the trusted tool context and
+  revalidated on preview/apply/recovery.
+
+### Canvas CAD nodes, file-backed packages and draft durability
+
+- Drawing (`.dwg`/`.dxf`) nodes now open the existing CAD editor from the node
+  action menu and double-click; the original node is updated with a drawing
+  asset (never rasterized), the variant action creates a new node with
+  provenance, and dirty sessions survive close with a durable staged draft.
+- A failed draft flush is never torn down or deleted: the session is retained
+  by a recovery service and retried; LRU eviction only deletes a draft proven
+  applied and unchanged. Descriptor writes are serialized with generation CAS
+  so a stale marker cannot overwrite a newer applied baseline.
+- Canvas package export/import is file-backed and off-main: preflight resolves
+  each child project's recorded media root, refuses traversal/symlink/oversize
+  sources before writing, carries node drawing assets, and cleans up the
+  exported temporary file (reporting any retained file).
+- Legacy flattened image/video first edits migrate into a typed child binding
+  in ONE canvas patch (asset + binding + refcounts, CAS with retries), keep the
+  original asset until the commit, record the original flatten hash, and leave
+  retryable `.failed` markers plus the draft when the commit fails. Unknown or
+  malformed binding schemas are never overwritten.
+
+### CAD engine additions
+
+- DXF radius/diameter dimensions and leaders round-trip through the engine's
+  own save gate again (the mirroring that only applies to DWG no longer leaks
+  into DXF); independent LibreDWG evidence covers ARC, LWPOLYLINE
+  (open + closed), five DIMENSION kinds and LEADER in DWG AC1024/AC1027/AC1032,
+  with the DXF unsupported/rejected cases listed separately.
+- CAD live-draft protection: the mutation authority takes a document-level
+  lease before apply/save (inside the serialized document gate), refuses a
+  dirty viewer, suspends viewer interaction, re-validates the draft revision at
+  the final commit boundary and rolls the engine draft back when an edit landed
+  meanwhile. The decision outbox now uses a prepared write-ahead record with
+  the expected resulting SHA, reconciled only against the exact committed
+  bytes.
+
+### Local verification executed for this addendum
+
+| Check | Result |
+| --- | --- |
+| `swift test --filter FloeDocumentsTests` | 83 tests / 15 suites passed (Office command catalog, target-aware saved-package verification, tool contract) |
+| `node FloeAgent/scripts/test_office_command_bridge.mjs` | all checks passed (dispatch, partial-failure, per-batch restore undo, selection fingerprint) |
+| FloeCore / FloeWorkspace Canvas suites | 36 + 15 tests passed (migration planner, CAD drawing planner, draft continuity/CAS, backup package) |
+| FloeNotes suites (SwiftPM testing helper) | 47 tests / 7 suites passed (search helper, proposals, durable decision outbox) |
+| CAD engine | `cargo test --locked` 42/42; LibreDWG 0.13.3 DWG matrix pass; `test_cad_commands.mjs` 58/58; viewer hashes 33/33 |
+| Full App simulator build | recorded in the build log referenced by the private evidence file |
+
+English/Chinese UI copy was updated for the new command panel, proposal review,
+batch revert refusal and the CAD draft notices. No tag, TestFlight, upload or
+public release is performed by this candidate; physical-device acceptance
+(engine-tier Office commands, real-page CAD/CAD-in-Canvas interaction) remains
+with the primary reviewer.
+
+## Documentation/metadata completion — 2026-10-08
+
+This candidate note is retained as the dated engineering addendum. The complete
+aligned bilingual user/tool/capability documentation and release metadata now
+live in:
+
+- [Creative tool contracts and format capability table](../../FLOE_1_7_24_CREATIVE_TOOLS.md)
+  (shared discover→read→propose→confirm→apply→verify contract, `cad.document`,
+  `document.office.edit`, Notes and `media.project` schema/examples, Drawing
+  Assistant, truthful CAD/Office capability tiers);
+- [release notes 1.7.24 (265)](RELEASE_NOTES_1.7.24_BUILD_265.md) and the
+  TestFlight what's-new JSON `../testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_265.json`;
+- Build 265 sections in `USER_GUIDE.md` / `USER_GUIDE.zh-CN.md`.
+
+Clarifications carried into those documents: LibreDWG is offline release
+qualification on representative outputs (not an in-app per-save reader);
+implemented-but-device-unverified engine commands differ from runtime-
+unavailable capabilities; and the current Canvas backup export covers media
+child projects/assets while unapplied CAD draft descriptors/history are not yet
+included (being completed and tested before the freeze), so CAD draft/history
+backup is not yet verified. CAD-in-Canvas add/edit/Finish twice was verified in
+an iPad simulator CUA with an independent LibreDWG re-read, but physical-device
+and native Office engine acceptance remain open.

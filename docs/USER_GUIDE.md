@@ -2,7 +2,7 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Release and verification status](CURRENT_STATUS.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
-Updated 2026-10-07. Floe 1.7 is iPad first and also supports iPhone on iOS/iPadOS 26 or later. Features depend on the installed build; this manual includes the browser, terminal and port controls in 1.7.22 (263). **See [release and verification status](CURRENT_STATUS.md) for installation eligibility, Apple processing and external review; the actual TestFlight state is authoritative.** Physical-device acceptance remains separate.
+Updated 2026-10-08. Floe 1.7 is iPad first and also supports iPhone on iOS/iPadOS 26 or later. Features depend on the installed build; this manual includes the browser, terminal and port controls in 1.7.22 (263), the media workbench in 1.7.23 (264), and the 2D CAD/Drawing Assistant, Office and Notes shared-AI work prepared for 1.7.24 (265). Build 265 is a source-validated candidate, not yet an installable TestFlight build. **See [release and verification status](CURRENT_STATUS.md) for installation eligibility, Apple processing and external review; the actual TestFlight state is authoritative.** Physical-device acceptance remains separate.
 
 ## 1. Installation and first use
 
@@ -76,11 +76,11 @@ For text, resolve save errors before running. For Office, preserve and compare b
 
 Open Notes from the sidebar, then use + to create or import. For task files, select Import from Floe Workspace, choose the project or task, then the file. Check pages, text and attachments after import. The Notes copy is independently stored, not a live mirror of the source.
 
-Search titles and document text from the library. Snippets help identify a result; unfinished indexes can omit matches. Use the document menu to rebuild the text index when needed. Tabs switch documents; closing a tab does not delete its document.
+Search titles and document text from the library. Snippets help identify a result; unfinished indexes can omit matches. Use the document menu to rebuild the text index when needed. Tabs switch documents; closing a tab does not delete its document. **Build 265:** in-document hits now position per text — the editor switches page, centres and highlights the matched element (page plus element/node and text offset); flat PDF-extracted text without geometry scrolls to the page and says a precise highlight is unavailable instead of guessing.
 
 Select pen, highlighter, eraser or lasso. Tap the current pen or color again to change type, color, width and transparency. When the UI says transparency, 0% is solid and 100% is transparent. Make a short test stroke. Pencil squeeze/double-tap depend on hardware and system settings; finger drawing is separately enabled. Lasso manipulates content; AI selection provides context.
 
-Check save status before closing or switching. Use Trash for recovery and review attachments before permanent deletion. The document assistant has its own conversation. In ordinary chat, explicitly add Notes material and revoke access when no longer needed. Review assistant edits on the page and use Undo when appropriate.
+Check save status before closing or switching. Use Trash for recovery and review attachments before permanent deletion. The document assistant has its own conversation. In ordinary chat, explicitly add Notes material and revoke access when no longer needed. Review assistant edits on the page and use Undo when appropriate. **Build 265:** assistant document edits follow propose → preview → your confirmation; a confirmed change is an undoable revision-checked batch, and accepting/rejecting is delivered back to the originating conversation even if the app is interrupted in between. You can export selected pages or the whole document to PDF (page count re-verified), or export a portable `.floenote` archive. In-place editing of the PDF's original text and turning recognized handwriting into editable text are not offered; real PDF annotation runs on a staged copy.
 
 ## 8. Office: edit, annotate, save and reopen
 
@@ -92,6 +92,8 @@ Check save status before closing or switching. Use Trash for recovery and review
 6. Save, wait for completion, close and reopen. Verify text, strokes and page count; check exported files separately.
 
 **Build 260:** the native engine addresses freehand mode inserting a default shape. Consecutive strokes, original-file writeback and physical-iPad save/reopen still need acceptance. Preserve originals, file types, reproduction steps and a synthetic sample after a loading or save failure. Notes PDF ink and native Office annotations use different editing paths.
+
+**Build 265 (candidate):** the editor and the `document.office.edit` assistant tool share one command catalog. Word styles, bullet/numbered lists, alignment and table insert, Excel number formats, rows/columns, freeze panes, sort, AutoFilter, go-to-cell and recalculation, and Presentation slide duplicate/reorder/object alignment run through the packaged native engine. Text find/replace, cell formulas, formula-error locations and same-format image replacement use the reliable package path. Unavailable operations (for example engine-level picture replacement) are disabled with a reason, never faked through a screenshot or PDF. AI edits show a preview, require your confirmation, bind the exact saved-file revision and reopen/verify the saved package before committing; a failed batch restores the verified original. These engine commands are structurally/bridge tested but still await physical-device qualification, so do not treat a dispatch acknowledgement as a proven edit — save, close and reopen to verify. See the [format capability table](FLOE_1_7_24_CREATIVE_TOOLS.md).
 
 ## 9. Local terminal and Linux performance
 
@@ -143,9 +145,9 @@ A local preview serves current workspace files. Server startup, page loading and
 
 Open a supported DXF/DWG, mesh or PCB manufacturing file and wait for actual content. Open Full Screen Preview and inspect layers, zoom and orientation. Preserve the original and error message if rendering fails.
 
-Editable local DXF/DWG files expose Edit for selecting entities and adding lines, circles or text. Check save/reopen on a copy first. CAD and Office drawing tools differ; format preservation and pen behavior depend on the actual engine/output.
+Editable local DXF/DWG files expose Edit for selecting entities and adding lines, circles, arcs, polylines, text, dimensions and leaders, with layers, object snap, measuring, trim/extend/offset and numeric move/copy/rotate/scale/mirror. Check save/reopen on a copy first. CAD and Office drawing tools differ; format preservation and pen behavior depend on the actual engine/output. Save re-encodes and re-verifies the drawing before overwriting; 3D, blocks, xrefs, splines and proxy content stay read-only and are never flattened. Undefined units stay drawing units.
 
-AI Review shows a viewport capture and extracted information for review before sending. Its coverage is visible/parsed content, not complete engineering acceptance.
+The review entry is now the **Drawing Assistant** (图纸助手). It is bound to the current drawing (units, layers, active layer, selection, unsaved revision), can locate/highlight referenced entities, measure and check geometry, and answers from deterministic geometry rather than guessing from the screenshot. It shows a colour-coded added/changed/deleted proposal that you confirm as one undoable transaction; asking or previewing never writes the original, and apply is refused while you have unsaved manual edits. The detailed 265 surface is in the [creative tool contracts](FLOE_1_7_24_CREATIVE_TOOLS.md).
 
 **Build 260:** selected transient first-load connection failures get one bounded recovery. Loaded editors or unsaved edits are not automatically reloaded. Build 260 passed full-App CI and release qualification, including the standalone Notes target with its required source dependency. See [engineering viewers](FLOE_ENGINEERING_VIEWERS.md).
 
@@ -154,6 +156,8 @@ AI Review shows a viewport capture and extracted information for review before s
 Create a canvas in Creative Mode, add text/images/generation nodes, connect inputs and check the chosen model's capabilities. Open the produced asset and inspect node state; a success message alone is insufficient.
 
 In the media workspace, select a file, configure crop, trim, subtitles or export format, preview and export. Play the output to check duration, audio, captions and framing. Preserve originals. Image generation, image editing, video generation and local conversion are different capabilities with different providers/quotas. See [Canvas architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md).
+
+**Build 265 (candidate):** drawing (`.dwg`/`.dxf`) nodes open the same vector CAD editor from the node menu and double-click; finishing updates the original node without rasterizing it, and "make variant" creates a provenanced new node. Unsaved CAD edits are kept as a durable draft when you close and are offered again on reopen; a failed save is never silently discarded. A canvas backup package now includes media child projects and their assets (media backup/restore is tested, with unsafe-path protection); carrying unapplied CAD draft descriptors/history inside the backup is intended but is still being completed and is not yet verified, so do not rely on a backup to restore unsaved CAD drafts in this candidate. Legacy flattened image/video edits migrate into typed child projects once on first open. Images add rect/ellipse/lasso selections with add/subtract/invert/feather, non-destructive masks and copy/cut/fill; video adds a music waveform/fades and precise frame-snapped edge trimming. Canvas remains the project manager; the editors are subordinate tools.
 
 ## 16. Voice input and transcription
 
@@ -274,3 +278,15 @@ never squeezed into a strip.
   the network fails after submission, the request is listed truthfully as
   interrupted/unknown and is never resubmitted automatically (no duplicate
   charges or generations). A confirmed review can never be submitted twice.
+
+## 2D CAD, Drawing Assistant and document AI (1.7.24 / 265 candidate)
+
+These controls are prepared for the 265 candidate; check [current status](CURRENT_STATUS.md) before treating any of them as installable. They follow the same rule as the media workbench: AI changes are proposals that need your confirmation, the original is preserved, and a success message is never treated as proof — save, close and reopen to verify.
+
+- **2D drawings:** open an editable local DWG/DXF and draw lines, rectangles, circles, arcs, polylines and single-line text, add native dimensions/leaders, move/copy/rotate/scale/mirror, trim/extend/offset, manage layers and measure. Fit/zoom/pan and the layer/object panels survive full screen; unsaved edits are kept when you switch views. Saving re-encodes and reparses the drawing before overwriting it. Edits are 2D model-space only: 3D, blocks, xrefs, splines and proxy graphics remain viewable but are not edited or flattened, and undefined units stay drawing units.
+- **Drawing Assistant (图纸助手):** ask about the whole drawing, the viewport or the current selection. Answers cite entity handles you can tap to locate/highlight, geometry is measured with deterministic tools, and a proposed change is shown in colour (new/changed/deleted) and applied as one undoable transaction only after you accept it. It cannot write the file from a question or a preview, and it will not apply while you have unsaved manual edits.
+- **Office:** the editor and the assistant share one command set (Word styles/lists/alignment/tables, Excel formats/rows/columns/freeze/sort/filter, slide duplicate/reorder/align), plus reliable package-level text replace, formulas, formula-error listing and same-format image replacement. Implemented engine commands are offered based on actual runtime engine/format support (they still await physical-device acceptance, but they are not disabled for lacking a receipt); only commands the engine genuinely cannot perform — such as engine-level picture replacement — are marked unavailable with a reason.
+- **Notes:** exact text-match positioning, selected-page PDF export, `.floenote` archives, and propose/preview/confirm assistant edits with a durable accept/reject decision. PDF original text and recognized handwriting are not editable in place.
+- **Canvas:** drawing nodes stay vector end to end; backup packages carry media child projects and their assets (tested); including unapplied CAD draft descriptors/history in a backup is intended but not yet implemented/verified in this candidate; older flattened edits migrate once on first open.
+
+How much is actually proven is separated honestly: the CAD engine, commands, backups, Office package path and Notes contracts are implemented and covered by local tests; the save-time gate is the same engine reparsing its own output, while the independent LibreDWG read is an offline release-qualification cross-check on representative files (not an in-app per-save check and not universal DWG support). The native Office engine commands and real-device performance still need on-device qualification, and no real paid-model run is claimed. See the [creative tool contracts and format capability table](FLOE_1_7_24_CREATIVE_TOOLS.md).

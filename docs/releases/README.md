@@ -4,8 +4,8 @@
 
 | 目录 | 内容 | 数量 |
 | --- | --- | ---: |
-| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 91 |
-| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 101 |
+| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 115 |
+| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 137 |
 | [verification/](verification/) | 历史发布核验与代码审计 | 9 |
 | [beta/](beta/) | 早期 1.7 beta 候选记录 | 13 |
 | [builds/](builds/) | 专项构建记录 | 2 |

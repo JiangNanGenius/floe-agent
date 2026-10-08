@@ -1,6 +1,13 @@
 # 当前版本与验证状态 / Current release and verification status
 
-更新时间 / Updated: 2026-10-07. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+更新时间 / Updated: 2026-10-08. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+
+## 1.7.24（265）源码已验证候选，未上传 / Source-validated candidate, not uploaded
+
+- 二维 DWG/DXF 应用内编辑与 `cad.document`、图纸助手（图纸助手/Drawing Assistant）、Office 共享命令目录 `document.office.edit`、手记提案/精确搜索/PDF 与 `.floenote` 导出、画布矢量图纸节点与媒体子工程文件化备份（未应用 CAD 草稿纳入备份仍在冻结前补齐）、图片/视频细化。In-app 2D DWG/DXF editing and `cad.document`, Drawing Assistant, the shared Office `document.office.edit` catalog, Notes propose/exact-search/PDF and `.floenote` export, vector Canvas drawing nodes and file-backed media child-project backups (including unapplied CAD drafts in a backup is still being completed pre-freeze), plus image/video refinements.
+- 分支 `codex/build265-creative-cad`，`project.yml` 1.7.24（265）。模拟器完整 App 构建通过、19 项定向 App 测试通过；CAD-in-Canvas 已在 iPad 模拟器 CUA 中两次“加线/加圆→保留草稿→重开→完成到同一节点”，独立 LibreDWG 复读 LINE1/CIRCLE2→LINE2/CIRCLE3，原节点哈希不变。Simulator App build + 19 focused tests pass; CAD-in-Canvas verified twice in an iPad simulator CUA with an independent LibreDWG re-read and the original node hash unchanged.
+- **未打标签、未上传、未发布；尚不是可安装构建。** 引擎层 Office `.uno:` 编辑仅真机可验（准备时 `devicectl` 无真机），真实付费模型应用内闭环未验；保存时的同引擎重解析是应用内门，LibreDWG 只是代表性产物的离线发布资格核对。**No tag/upload/release; not installable.** Engine-tier Office editing is device-only, the real paid-model loop is unverified; the same-engine reparse is the in-app save gate while LibreDWG is only an offline release-qualification cross-check.
+- [创作工具契约与能力表 / Tool contracts and capability table](FLOE_1_7_24_CREATIVE_TOOLS.md) · [更新说明 / Release notes](releases/notes/RELEASE_NOTES_1.7.24_BUILD_265.md)
 
 ## 1.7.23（264）内部可用，公测待审 / Internal available, external review pending
 
