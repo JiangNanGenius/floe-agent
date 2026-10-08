@@ -12,12 +12,14 @@
 import Foundation
 import SwiftUI
 import Observation
+import FloeCore
+import FloeCore
 
 /// Inline en/zh strings for the app-owned Office ink surface, mirroring the
 /// `IDELanguageRunText` pattern used elsewhere in Workspace. The primary agent
 /// may move these keys into `Localizable.xcstrings`.
 enum OfficeInkText {
-    static var isChinese: Bool { Locale.current.identifier.hasPrefix("zh") }
+    static var isChinese: Bool { FloeL10n.isChinese }
     static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
 }
 

@@ -94,11 +94,11 @@ enum DeviceFontError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidFont: "文件不是 CoreText 可识别的字体。"
-        case .unsupportedExtension: "仅支持 TTF、OTF、TTC 和 OTC 字体。"
-        case .tooLarge: "字体文件超过 32 MB 限制。"
-        case .badResponse(let code): "字体下载失败（HTTP \(code)）。"
-        case .notFound: "找不到这个 Floe 全局字体。"
+        case .invalidFont: FloeL10n.l("fonts.device_font_store.the_file_is_not_a_coretext")
+        case .unsupportedExtension: FloeL10n.l("fonts.device_font_store.only_ttf_otf_ttc_and_otc")
+        case .tooLarge: FloeL10n.l("fonts.device_font_store.the_font_file_exceeds_the_32")
+        case .badResponse(let code): FloeL10n.l("fonts.device_font_store.font_download_failed_http", code)
+        case .notFound: FloeL10n.l("fonts.device_font_store.this_floe_global_font_cannot_be")
         }
     }
 }

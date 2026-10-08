@@ -188,7 +188,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         )
         let output = result.stderr.isEmpty ? result.stdout : result.stdout + "\n" + result.stderr
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("pip 退出码 \(result.exitCode)\n" + bounded(output))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.pip_exit_code", result.exitCode) + bounded(output))
         }
         return output
     }
@@ -200,7 +200,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         cancellation: CancellationToken?
     ) async throws -> String {
         guard distribution.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil else {
-            throw FloeError.validationFailed("pip 卸载只接受单个发行包名")
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.pip_uninstall_accepts_only_a_single"))
         }
         try await requireRunning(environment.id)
         let venv = try await LinuxGuestPythonProvisioner.shared.ensure(
@@ -219,7 +219,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         )
         let output = result.stderr.isEmpty ? result.stdout : result.stdout + "\n" + result.stderr
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("pip uninstall 退出码 \(result.exitCode)\n" + bounded(output))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.pip_uninstall_exit_code", result.exitCode) + bounded(output))
         }
         return output
     }
@@ -250,7 +250,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         )
         let output = result.stderr.isEmpty ? result.stdout : result.stdout + "\n" + result.stderr
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("pip \(command) 退出码 \(result.exitCode)\n" + bounded(output))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.pip_exit_code_2", command, result.exitCode) + bounded(output))
         }
         return output
     }
@@ -277,15 +277,15 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("Python 依赖读取失败：\n" + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.failed_to_read_python_dependencies") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
         guard let line = result.stdout.split(separator: "\n").first(where: { $0.hasPrefix("floePythonInventory=") }) else {
-            throw FloeError.validationFailed("Python 依赖读取没有返回清单")
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.reading_python_dependencies_returned_no_manifest"))
         }
         let json = String(line.dropFirst("floePythonInventory=".count))
         guard let data = json.data(using: .utf8),
               let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            throw FloeError.validationFailed("Python 依赖清单不可解析")
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.the_python_dependency_manifest_cannot_be"))
         }
         return rows.compactMap { row in
             guard let name = row["name"] as? String, !name.isEmpty else { return nil }
@@ -354,7 +354,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("Node 依赖读取失败：\n" + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.failed_to_read_node_dependencies") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
         return Self.parseNodePackages(result.stdout).map { LinuxGuestNodePackage(name: $0.name, version: $0.version, path: $0.path) }
     }
@@ -370,7 +370,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         timeout: TimeInterval = 180,
         cancellation: CancellationToken?
     ) async throws -> String {
-        guard specifications.count <= 256 else { throw FloeError.validationFailed("一次最多更新 256 个依赖") }
+        guard specifications.count <= 256 else { throw FloeError.validationFailed(FloeL10n.l("execution.node_package_manager_policy.at_most_256_dependencies_can_be")) }
         for specification in specifications {
             try NodePackageManagerPolicy.validateSpecification(specification, remove: remove)
         }
@@ -387,7 +387,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             managerPath = node.npmPath
         case .pnpm:
             guard let pnpm = node.pnpmPath else {
-                throw FloeError.validationFailed("此 Linux 环境没有可用的 pnpm；请先在 guest 中安装 pnpm 或改用 npm")
+                throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.pnpm_is_not_available_in_this"))
             }
             managerPath = pnpm
         }
@@ -398,7 +398,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
         for specification in specifications {
             if remove {
                 guard dependencies.removeValue(forKey: specification) != nil else {
-                    throw FloeError.validationFailed("此包不是本层直接安装的依赖；请先检查依赖它的软件包")
+                    throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.this_package_is_not_a_dependency"))
                 }
             } else {
                 let split = specification.dropFirst().lastIndex(of: "@")
@@ -417,7 +417,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             "dependencies": dependencies
         ]
         guard let manifestData = try? JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]) else {
-            throw FloeError.validationFailed("Node 依赖清单无法生成")
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.the_node_dependency_manifest_could_not"))
         }
         let lockName = manager == .npm ? "package-lock.json" : "pnpm-lock.yaml"
         let stage = Self.nodeTransactionRoot + "/stage"
@@ -487,7 +487,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             )
             output = result.stderr.isEmpty ? result.stdout : result.stdout + "\n" + result.stderr
             guard result.exitCode == 0 else {
-                throw FloeError.validationFailed("npm 退出码 \(result.exitCode)\n" + bounded(output))
+                throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.npm_exit_code", result.exitCode) + bounded(output))
             }
             try cancellation?.throwIfCancelled()
             try await writeNodeMetadata(
@@ -507,7 +507,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             return output
         } catch {
             do { try await recoverNodeTransaction(environmentID: environment.id, cancellation: nil) }
-            catch { throw FloeError.validationFailed("npm 恢复未完成，暂存数据已保留：\(error.localizedDescription)") }
+            catch { throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.the_npm_restore_did_not_finish", error.localizedDescription)) }
             throw error
         }
     }
@@ -682,7 +682,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("Node 依赖状态读取失败：\n" + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.failed_to_read_node_dependency_status") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
         var state = NodeState()
         var scanned: [String: String] = [:]
@@ -752,7 +752,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("Node 事务恢复失败：\n" + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.node_transaction_restore_failed") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
     }
 
@@ -778,7 +778,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("Node 暂存目录准备失败：\n" + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.failed_to_prepare_the_node_staging") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
     }
 
@@ -798,7 +798,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("guest 命令失败：\n" + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.the_guest_command_failed") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
     }
 
@@ -849,7 +849,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard let dependenciesData = try? JSONSerialization.data(withJSONObject: dependencies, options: [.sortedKeys]) else {
-            throw FloeError.validationFailed("Node 依赖记录无法生成")
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.the_node_dependency_record_could_not"))
         }
         let metadata = stage + "/node_modules/.floe-install"
         try await writeGuestFile(
@@ -922,7 +922,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
             cancellation: cancellation
         )
         guard result.exitCode == 0 else {
-            throw FloeError.validationFailed("Node 事务提交失败：\n" + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.node_transaction_commit_failed") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
     }
 

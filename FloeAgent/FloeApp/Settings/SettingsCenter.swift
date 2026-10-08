@@ -422,6 +422,8 @@ final class SettingsCenter: ObservableObject {
     func setLanguageOverride(_ value: LanguagePreference) {
         languageOverride = value
         defaults.set(value.rawValue, forKey: UDKey.language)
+        // Apply across the whole process and mirror to the App Group.
+        FloeL10n.setPreference(rawValue: value == .system ? nil : value.rawValue)
     }
 
     func setReduceMotionOverride(_ value: Bool?) {

@@ -278,9 +278,9 @@ final class GitHubActionsJobCenter: ObservableObject {
     private func snapshotErrorText(_ error: Error) -> String {
         if let typed = error as? IDEGitHubActionsSnapshotError {
             switch typed {
-            case .empty: return "快照为空：所选目录没有可上传的普通文件。 / Snapshot is empty: the directory has no eligible files."
-            case .tooManyFiles(let limit): return "快照文件数超过上限 \(limit)。 / Snapshot exceeds \(limit) files."
-            case .totalTooLarge(let limit): return "快照总大小超过上限 \(limit) 字节。 / Snapshot exceeds \(limit) bytes."
+            case .empty: return FloeL10n.l("workspace.git_hub_actions_job_center.snapshot_is_empty_the_directory_has")
+            case .tooManyFiles(let limit): return FloeL10n.l("workspace.git_hub_actions_job_center.snapshot_exceeds_files_2", limit, limit)
+            case .totalTooLarge(let limit): return FloeL10n.l("workspace.git_hub_actions_job_center.snapshot_exceeds_bytes_2", limit, limit)
             }
         }
         return error.localizedDescription
@@ -292,7 +292,7 @@ final class GitHubActionsJobCenter: ObservableObject {
     /// silently reporting "request failed (403)".
     nonisolated static func workflowErrorText(_ error: Error) -> String {
         if case GitHubActionsError.http(let status, let message) = error, status == 403 {
-            return "GitHub 拒绝了此工作流请求（403）。请重新登录并开启“允许配置 GitHub Actions 工作流”，或使用具备 Contents、Actions 与 Workflows 写入权限的细粒度令牌。已有凭据在重新登录前保持不变。 / GitHub denied this workflow request (403). Reconnect GitHub with “Allow GitHub Actions workflow setup”, or use a fine-grained token with Contents, Actions and Workflows write access. Existing credentials are unchanged until you sign in again. (\(message))"
+            return FloeL10n.l("workspace.git_hub_actions_job_center.github_denied_this_workflow_request_403", message)
         }
         return error.localizedDescription
     }

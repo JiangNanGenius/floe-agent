@@ -135,7 +135,7 @@ final class FloePlatformServices: @unchecked Sendable {
             do {
                 let report = try await Task.detached(priority: .utility) {
                     guard let manifest = try LayerManifest.loadChecked(from: root) else {
-                        throw FloeError.validationFailed("环境清单缺失；数据已保留")
+                        throw FloeError.validationFailed(FloeL10n.l("execution.floe_platform_services.the_environment_manifest_is_missing_data"))
                     }
                     var bytes: Int64 = 0
                     if let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]) {
@@ -195,7 +195,7 @@ final class FloePlatformServices: @unchecked Sendable {
     }
     func languagePackageService() throws -> EnvironmentLanguagePackageService {
         guard let service = lock.withLock({ languageManagement }) else {
-            throw FloeError.invalidConfiguration("语言依赖管理尚未就绪")
+            throw FloeError.invalidConfiguration(FloeL10n.l("execution.floe_platform_services.language_dependency_management_is_not_ready"))
         }
         return service
     }
@@ -616,7 +616,7 @@ final class FloePlatformServices: @unchecked Sendable {
             return RuntimeV2TemplateCatalog.officialTemplateIDs.map {
                 RuntimeV2OfficialTemplateAvailability(
                     templateID: $0, state: .dependencyMissing,
-                    reason: "官方软件模板服务不可用 / Official software template service unavailable"
+                    reason: FloeL10n.l("execution.floe_platform_services.official_software_template_service_unavailable")
                 )
             }
         }
@@ -631,7 +631,7 @@ final class FloePlatformServices: @unchecked Sendable {
         onProgress: @escaping @Sendable (RuntimeV2OfficialTemplatePhase) -> Void = { _ in }
     ) async throws -> RuntimeV2TemplateStore.Registration {
         guard let service = lock.withLock({ linuxOfficialTemplates }) else {
-            throw FloeError.invalidConfiguration("官方软件模板服务不可用 / Official software template service unavailable")
+            throw FloeError.invalidConfiguration(FloeL10n.l("execution.floe_platform_services.official_software_template_service_unavailable"))
         }
         return try await service.prepare(templateID: templateID, onProgress: onProgress)
     }
@@ -667,7 +667,7 @@ final class FloePlatformServices: @unchecked Sendable {
         let registry = lock.withLock { self.registry }
         let runtime = lock.withLock { linuxOfficialTemplateRuntime }
         guard let registry, let runtime else {
-            throw FloeError.invalidConfiguration("官方软件模板服务不可用 / Official software template service unavailable")
+            throw FloeError.invalidConfiguration(FloeL10n.l("execution.floe_platform_services.official_software_template_service_unavailable"))
         }
         let template = try await officialTemplateRegistration(templateID: templateID)
         try await rememberWorkspaceAccess(workspaceRootURL, name)
@@ -700,10 +700,10 @@ final class FloePlatformServices: @unchecked Sendable {
 
     private func officialTemplateRegistration(templateID: String) async throws -> RuntimeV2TemplateStore.Registration {
         guard let service = lock.withLock({ linuxOfficialTemplates }) else {
-            throw FloeError.invalidConfiguration("官方软件模板服务不可用 / Official software template service unavailable")
+            throw FloeError.invalidConfiguration(FloeL10n.l("execution.floe_platform_services.official_software_template_service_unavailable"))
         }
         guard let registration = try await service.registered(templateID: templateID) else {
-            throw FloeError.validationFailed("尚无已验证的模板版本，请先下载并注册 / No verified template version yet; download and register it first")
+            throw FloeError.validationFailed(FloeL10n.l("execution.floe_platform_services.no_verified_template_version_yet_download"))
         }
         return registration
     }
@@ -1599,7 +1599,7 @@ final class FloePlatformServices: @unchecked Sendable {
             registry.register(name) { arguments, stdout, stderr in
                 do {
                     guard let manager, let context = FloeShellCommandRegistry.shared.context, let environment = context.environment else {
-                        throw FloeError.invalidConfiguration("当前 Shell 未绑定可安装依赖的环境")
+                        throw FloeError.invalidConfiguration(FloeL10n.l("execution.floe_platform_services.the_current_shell_is_not_bound"))
                     }
                     let operation = try ManagedPythonPackageSpecParser.parseShell(arguments: Array(arguments.dropFirst()))
                     let output = try await manager.pythonFromShell(environment: environment, operation: operation, cancellation: context.cancellation)
@@ -1634,7 +1634,7 @@ final class FloePlatformServices: @unchecked Sendable {
                         if let change = try NodePackageManagerPolicy.shellChange(arguments: userArguments,
                             directory: context.workingDirectory, workspace: context.rootURL) {
                             guard let languageManagement, let environment = context.environment else {
-                                throw FloeError.invalidConfiguration("当前 Shell 未绑定可安装依赖的环境")
+                                throw FloeError.invalidConfiguration(FloeL10n.l("execution.floe_platform_services.the_current_shell_is_not_bound"))
                             }
                             // The shell command named its manager explicitly.
                             // The configured environment default and the

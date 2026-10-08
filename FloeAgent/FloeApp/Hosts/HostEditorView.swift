@@ -10,6 +10,7 @@
 import SwiftUI
 import FloeSSH
 
+import FloeCore
 /// The host editor form.
 struct HostEditorView: View {
     @StateObject private var viewModel: HostEditorViewModel
@@ -49,26 +50,26 @@ struct HostEditorView: View {
 
     private var deviceSection: some View {
         Section {
-            TextField("设备名称", text: $viewModel.displayName)
-            Picker("设备类型", selection: $viewModel.deviceKind) {
-                Text("未指定").tag(RemoteDeviceKind.unspecified)
-                Text("Linux 主机").tag(RemoteDeviceKind.linux)
+            TextField("hosts.host_editor_view.device_name", text: $viewModel.displayName)
+            Picker("hosts.host_editor_view.device_type", selection: $viewModel.deviceKind) {
+                Text("hosts.host_editor_view.unspecified").tag(RemoteDeviceKind.unspecified)
+                Text("hosts.host_editor_view.linux_host").tag(RemoteDeviceKind.linux)
                 Text("Mac").tag(RemoteDeviceKind.mac)
-                Text("Windows 主机").tag(RemoteDeviceKind.windows)
+                Text("hosts.host_editor_view.windows_host").tag(RemoteDeviceKind.windows)
                 Text("NAS").tag(RemoteDeviceKind.nas)
-                Text("路由器").tag(RemoteDeviceKind.router)
-                Text("交换机").tag(RemoteDeviceKind.switchDevice)
-                Text("网络设备").tag(RemoteDeviceKind.appliance)
-                Text("其他设备").tag(RemoteDeviceKind.other)
+                Text("hosts.host_editor_view.router").tag(RemoteDeviceKind.router)
+                Text("hosts.host_editor_view.switch").tag(RemoteDeviceKind.switchDevice)
+                Text("hosts.host_editor_view.network_device").tag(RemoteDeviceKind.appliance)
+                Text("hosts.host_editor_view.other_devices").tag(RemoteDeviceKind.other)
             }
-            Toggle("作为远端执行环境", isOn: $viewModel.isRemoteExecutionEnvironment)
+            Toggle("hosts.host_editor_view.as_a_remote_execution_environment", isOn: $viewModel.isRemoteExecutionEnvironment)
                 .disabled(!viewModel.isSSHEnabled)
         } header: {
-            Text("设备")
+            Text("settings.diagnostics.device")
         } footer: {
             Text(viewModel.isRemoteExecutionEnvironment
-                ? "运行远端任务前会自动检查并维护 Floe 守护程序。"
-                : "设备类型仅供参考；协议配置决定可用能力。未启用远端执行时不会安装 Floe 守护程序。")
+                ? "hosts.host_editor_view.the_floe_daemon_is_automatically_checked"
+                : "hosts.host_editor_view.device_type_is_informational_only_the")
         }
     }
 
@@ -88,9 +89,9 @@ struct HostEditorView: View {
     @ViewBuilder
     private var sshSection: some View {
         Section {
-            Toggle("SSH 连接", isOn: $viewModel.isSSHEnabled)
+            Toggle("hosts.host_editor_view.ssh_connection", isOn: $viewModel.isSSHEnabled)
         } footer: {
-            Text("SSH 是设备可选的连接方式；仅 VNC、Telnet、TCP 或 BLE 串口设备无需启用。")
+            Text("hosts.host_editor_view.ssh_is_an_optional_connection_method")
         }
         if viewModel.isSSHEnabled {
             connectionSection
@@ -133,7 +134,7 @@ struct HostEditorView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(viewModel.isRevealingSecret)
-                    .accessibilityLabel(viewModel.isSecretVisible ? "隐藏主机凭据" : "验证身份并查看主机凭据")
+                    .accessibilityLabel(viewModel.isSecretVisible ? "hosts.host_editor_view.hide_host_credentials" : "hosts.host_editor_view.verify_identity_to_view_host_credentials")
                 }
             }
         } header: {
@@ -170,7 +171,7 @@ struct HostEditorView: View {
             ForEach($viewModel.vncConnections) { $connection in
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        TextField("连接名称", text: $connection.displayName)
+                        TextField("hosts.host_editor_view.connection_name", text: $connection.displayName)
                         Button(role: .destructive) {
                             viewModel.removeVNCConnection(id: connection.id)
                         } label: {
@@ -178,12 +179,12 @@ struct HostEditorView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    Picker("连接方式", selection: $connection.transport) {
-                        Text("直接 VNC").tag(VNCTransport.direct)
-                        Text("VNC 经 SSH 隧道").tag(VNCTransport.sshTunnel)
+                    Picker("hosts.host_editor_view.connection_method", selection: $connection.transport) {
+                        Text("hosts.host_editor_view.direct_vnc").tag(VNCTransport.direct)
+                        Text("hosts.host_editor_view.vnc_over_ssh_tunnel").tag(VNCTransport.sshTunnel)
                     }
                     TextField(
-                        connection.transport == .direct ? "VNC 地址" : "SSH 目标侧地址",
+                        connection.transport == .direct ? "hosts.host_editor_view.vnc_address" : "hosts.host_editor_view.ssh_target_side_address",
                         text: $connection.host
                     )
                     .textInputAutocapitalization(.never)
@@ -192,15 +193,15 @@ struct HostEditorView: View {
                         .keyboardType(.numberPad)
                     SecureField(
                         connection.existingPasswordRef == nil
-                            ? "设置 VNC 密码"
-                            : "输入新密码以替换已保存密码",
+                            ? "hosts.host_editor_view.set_vnc_password"
+                            : "hosts.host_editor_view.enter_a_new_password_to_replace",
                         text: $connection.password
                     )
                         .textInputAutocapitalization(.never)
                     Label(
                         connection.existingPasswordRef == nil
-                            ? "未配置密码"
-                            : "密码已安全保存",
+                            ? "hosts.host_editor_view.password_not_configured"
+                            : "hosts.host_editor_view.password_saved_securely",
                         systemImage: connection.existingPasswordRef == nil
                             ? "exclamationmark.triangle"
                             : "checkmark.shield"
@@ -216,12 +217,12 @@ struct HostEditorView: View {
             Button {
                 viewModel.addVNCConnection()
             } label: {
-                Label("添加 VNC 连接", systemImage: "plus")
+                Label("hosts.enable_vnc", systemImage: "plus")
             }
         } header: {
-            Text("VNC 连接")
+            Text("hosts.host_editor_view.vnc_connection")
         } footer: {
-            Text("同一设备可同时保存普通 VNC 和 SSH 隧道 VNC；凭据只保存在钥匙串。")
+            Text("hosts.host_editor_view.one_device_can_store_both_plain")
         }
     }
 
@@ -230,7 +231,7 @@ struct HostEditorView: View {
             ForEach($viewModel.auxiliaryConnections) { $connection in
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        TextField("连接名称", text: $connection.displayName)
+                        TextField("hosts.host_editor_view.connection_name", text: $connection.displayName)
                         Button(role: .destructive) {
                             viewModel.removeAuxiliaryConnection(id: connection.id)
                         } label: {
@@ -238,32 +239,32 @@ struct HostEditorView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    LabeledContent("协议", value: connectionKindTitle(connection.kind))
+                    LabeledContent("workspace.file_inspector_view.protocol", value: connectionKindTitle(connection.kind))
                     if connection.kind == .bluetoothSerial {
-                        TextField("BLE 外设 UUID", text: $connection.bluetoothPeripheralID)
-                        TextField("服务 UUID", text: $connection.bluetoothServiceUUID)
-                        TextField("写入特征 UUID", text: $connection.bluetoothWriteCharacteristicUUID)
-                        TextField("通知特征 UUID（可选）", text: $connection.bluetoothNotifyCharacteristicUUID)
+                        TextField("hosts.host_editor_view.ble_peripheral_uuid", text: $connection.bluetoothPeripheralID)
+                        TextField("hosts.host_editor_view.service_uuid", text: $connection.bluetoothServiceUUID)
+                        TextField("hosts.host_editor_view.write_characteristic_uuid", text: $connection.bluetoothWriteCharacteristicUUID)
+                        TextField("hosts.host_editor_view.notify_characteristic_uuid_optional", text: $connection.bluetoothNotifyCharacteristicUUID)
                     } else {
-                        TextField("地址", text: $connection.host)
+                        TextField("hosts.address", text: $connection.host)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        TextField("端口", value: $connection.port, format: .number)
+                        TextField("hosts.host_editor_view.port", value: $connection.port, format: .number)
                             .keyboardType(.numberPad)
                     }
                 }
             }
             Menu {
                 Button("Telnet") { viewModel.addAuxiliaryConnection(kind: .telnet) }
-                Button("普通 TCP") { viewModel.addAuxiliaryConnection(kind: .tcp) }
-                Button("BLE 串口") { viewModel.addAuxiliaryConnection(kind: .bluetoothSerial) }
+                Button("hosts.host_editor_view.plain_tcp") { viewModel.addAuxiliaryConnection(kind: .tcp) }
+                Button("hosts.host_editor_view.ble_serial") { viewModel.addAuxiliaryConnection(kind: .bluetoothSerial) }
             } label: {
-                Label("添加其他连接", systemImage: "plus")
+                Label("hosts.host_editor_view.add_another_connection", systemImage: "plus")
             }
         } header: {
-            Text("其他连接")
+            Text("hosts.host_editor_view.other_connections")
         } footer: {
-            Text("BLE 串口使用设备公开的 GATT 服务；传统蓝牙 SPP 仅适用于厂商开放的 MFi 配件。")
+            Text("hosts.host_editor_view.ble_serial_uses_the_device_s")
         }
     }
 
@@ -271,7 +272,7 @@ struct HostEditorView: View {
         switch kind {
         case .telnet: "Telnet"
         case .tcp: "TCP"
-        case .bluetoothSerial: "BLE 串口"
+        case .bluetoothSerial: FloeL10n.l("hosts.host_editor_view.ble_serial")
         }
     }
 

@@ -418,8 +418,7 @@ enum RemoteVideoReferenceImage {
         guard VideoReferenceImagePolicy.supportsReferenceImages(
             providerKind: route.providerKind, modelRemoteID: route.remoteModelID
         ), route.contract.maximumReferenceAssets > 0 else {
-            throw FloeError.validationFailed(
-                "\(route.displayName) 未提供受支持的参考图/首帧输入；请使用 video.models 中 referenceImage.supported=true 的模型。"
+            throw FloeError.validationFailed(FloeL10n.l("conversations.remote_video_tools.did_not_provide_a_supported_reference", route.displayName)
             )
         }
         // Veo reference images are documented as requiring an 8-second video;
@@ -427,7 +426,7 @@ enum RemoteVideoReferenceImage {
         if route.providerKind == .googleGemini,
            !route.remoteModelID.hasPrefix("gemini-omni-"),
            let duration = options.durationSeconds, duration != 8 {
-            throw FloeError.validationFailed("Veo 参考图要求 durationSeconds=8，或省略该参数使用供应商默认值。")
+            throw FloeError.validationFailed(FloeL10n.l("conversations.remote_video_tools.veo_reference_images_require_durationseconds_8"))
         }
         if let path {
             return try workspaceImage(path: path, context: context)
@@ -471,16 +470,15 @@ enum RemoteVideoReferenceImage {
         // never be pulled into this one. Unbound recent files (conversationID
         // nil) are app-owned staged files and remain usable.
         if let owner = attachment.conversationID, owner != conversationID {
-            throw FloeError.validationFailed("该附件属于其它对话，不能作为参考图")
+            throw FloeError.validationFailed(FloeL10n.l("conversations.remote_video_tools.this_attachment_belongs_to_another_conversation"))
         }
         guard attachment.kind == .image else {
-            throw FloeError.validationFailed("参考图附件必须是图片")
+            throw FloeError.validationFailed(FloeL10n.l("conversations.remote_video_tools.reference_image_attachments_must_be_images"))
         }
         let url = try center.resolveURL(for: attachment)
         let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard fileSize > 0, Int64(fileSize) <= Int64(VideoReferenceImagePolicy.maximumBytes) else {
-            throw FloeError.validationFailed(
-                "参考图超过 \(VideoReferenceImagePolicy.maximumBytes) 字节上限"
+            throw FloeError.validationFailed(FloeL10n.l("conversations.remote_video_tools.the_reference_image_exceeds_the_byte", VideoReferenceImagePolicy.maximumBytes)
             )
         }
         let accessing = attachment.storage == .securityScopedBookmark

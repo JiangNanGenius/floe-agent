@@ -2,6 +2,7 @@
 import SwiftUI
 import FloePersistence
 
+import FloeCore
 /// One batch flow for sidebar, workbench and chat history. Only successful
 /// items leave the selection, so partial failures remain actionable.
 struct ConversationBatchManagementView: View {
@@ -33,14 +34,14 @@ struct ConversationBatchManagementView: View {
     var body: some View {
         NavigationStack {
             List {
-                Picker("任务", selection: $archived) {
-                    Text("聊天").tag(false)
-                    Text("已归档").tag(true)
+                Picker("background.task.name_fallback", selection: $archived) {
+                    Text("settings.all_workspaces_files_view.chat").tag(false)
+                    Text("settings.all_workspaces_files_view.archived").tag(true)
                 }.pickerStyle(.segmented)
                 if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                if searching { ProgressView("正在搜索对话内容…") }
+                if searching { ProgressView("chat.conversation_batch_management_view.searching_conversations") }
                 if visible.isEmpty && !searching {
-                    ContentUnavailableView("没有匹配的任务", systemImage: "bubble.left.and.bubble.right")
+                    ContentUnavailableView("chat.conversation_batch_management_view.no_matching_tasks", systemImage: "bubble.left.and.bubble.right")
                 }
                 ForEach(visible) { conversation in
                     Button {
@@ -62,27 +63,27 @@ struct ConversationBatchManagementView: View {
                     .accessibilityIdentifier("tasks.batch.row.\(conversation.id)")
                 }
             }
-            .navigationTitle("选择任务")
-            .searchable(text: $query, prompt: "搜索标题与对话内容")
+            .navigationTitle("chat.conversation_batch_management_view.select_tasks")
+            .searchable(text: $query, prompt: "chat.conversation_batch_management_view.search_titles_and_conversation_content")
             .task(id: query) { await searchContents() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("action.done") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
-                    Button(selected == Set(visible.map(\.id)) && !selected.isEmpty ? "取消全选" : "全选") {
+                    Button(selected == Set(visible.map(\.id)) && !selected.isEmpty ? "chat.conversation_batch_management_view.deselect_all" : "composer.editor.select_all") {
                         let ids = Set(visible.map(\.id))
                         selected = selected == ids ? [] : ids
                     }.disabled(visible.isEmpty)
                 }
                 ToolbarItemGroup(placement: .bottomBar) {
-                    Text("已选 \(selected.count)").font(.caption).foregroundStyle(.secondary)
+                    Text(FloeL10n.l("chat.conversation_batch_management_view.selected", selected.count)).font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button(archived ? "恢复" : "归档", systemImage: "archivebox") {
+                    Button(archived ? "canvas.drawingHistory.restore" : "app.floe_agent_app.archive", systemImage: "archivebox") {
                         if !archived, center.activeRuns.values.contains(where: { selected.contains($0.conversationID) }) {
                             confirmingArchive = true
                         } else { Task { await perform(deleting: false) } }
                     }
                         .disabled(selected.isEmpty)
-                    Button("删除", systemImage: "trash", role: .destructive) { confirmingDelete = true }
+                    Button("workspace.workspace_canvas_view.delete", systemImage: "trash", role: .destructive) { confirmingDelete = true }
                         .disabled(selected.isEmpty)
                 }
             }
@@ -92,15 +93,15 @@ struct ConversationBatchManagementView: View {
             .task { await load() }
             .onChange(of: archived) { _, _ in selected.removeAll() }
 
-            .confirmationDialog("停止运行并归档所选任务？", isPresented: $confirmingArchive, titleVisibility: .visible) {
-                Button("停止并归档") { Task { await perform(deleting: false) } }
+            .confirmationDialog("chat.conversation_batch_management_view.stop_and_archive_the_selected_tasks", isPresented: $confirmingArchive, titleVisibility: .visible) {
+                Button("chat.conversation_batch_management_view.stop_and_archive") { Task { await perform(deleting: false) } }
                 Button("action.cancel", role: .cancel) {}
-            } message: { Text("所选任务仍在运行。归档会先停止执行，之后可从归档区恢复。") }
-            .confirmationDialog("删除所选的 \(selected.count) 个任务？", isPresented: $confirmingDelete, titleVisibility: .visible) {
-                Button("删除", role: .destructive) { Task { await perform(deleting: true) } }
+            } message: { Text("chat.conversation_batch_management_view.the_selected_task_is_still_running") }
+            .confirmationDialog(FloeL10n.l("chat.conversation_batch_management_view.delete_the_selected_tasks", selected.count), isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("workspace.workspace_canvas_view.delete", role: .destructive) { Task { await perform(deleting: true) } }
                 Button("action.cancel", role: .cancel) {}
             } message: {
-                Text("任务及其私有工作区将被删除，共享项目文件保留。此操作不可撤销。")
+                Text("chat.conversation_batch_management_view.the_task_and_its_private_workspace")
             }
         }
     }

@@ -4,6 +4,7 @@ import SwiftUI
 import PencilKit
 import FloeNotes
 
+import FloeCore
 struct NotePencilView: UIViewRepresentable {
     let page: NotePage
     let drawing: Data?
@@ -55,7 +56,7 @@ struct NotePencilView: UIViewRepresentable {
         canvas.minimumZoomScale = 0.1; canvas.maximumZoomScale = 5
         canvas.contentInsetAdjustmentBehavior = .never
         canvas.contentSize = CGSize(width: page.width, height: page.height)
-        canvas.accessibilityLabel = "手记书写页面"
+        canvas.accessibilityLabel = FloeL10n.l("notes.note_pencil_view.notes_writing_page")
         canvas.accessibilityIdentifier = "notes.pencil.page"
         let backdrop = UIImageView()
         backdrop.contentMode = .scaleToFill

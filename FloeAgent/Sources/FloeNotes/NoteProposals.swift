@@ -2,6 +2,7 @@
 import Foundation
 import Crypto
 
+import FloeCore
 /// Stable JSON fingerprint of a decoded document. The Notes store owns the
 /// revision counter; this SHA-256 pins a proposal to the exact decoded
 /// document JSON (title, text, frames, structure AND the content-addressed
@@ -24,18 +25,18 @@ public enum NoteDocumentFingerprint {
 public enum NoteProposalSummary {
     public static func describe(before: NoteDocument, after: NoteDocument) -> String {
         var lines: [String] = []
-        if before.title != after.title { lines.append("标题：“\(before.title)” → “\(after.title)”") }
-        if before.isFavorite != after.isFavorite { lines.append(after.isFavorite ? "加入收藏" : "取消收藏") }
-        if before.notebookID != after.notebookID { lines.append("移动到其他笔记本") }
-        if before.tags != after.tags { lines.append("标签：\(before.tags.joined(separator: "、")) → \(after.tags.joined(separator: "、"))") }
-        if before.officeResourceID != after.officeResourceID { lines.append("替换 Office 正文资源") }
-        if before.engineeringResourceID != after.engineeringResourceID { lines.append("替换工程图资源") }
+        if before.title != after.title { lines.append(FloeL10n.l("notes.note_proposals.title", before.title, after.title)) }
+        if before.isFavorite != after.isFavorite { lines.append(after.isFavorite ? FloeL10n.l("notes.note_proposals.add_to_favorites") : FloeL10n.l("notes.notes_root_view.remove_from_favorites")) }
+        if before.notebookID != after.notebookID { lines.append(FloeL10n.l("notes.note_proposals.move_to_another_notebook")) }
+        if before.tags != after.tags { lines.append(FloeL10n.l("notes.note_proposals.tags", before.tags.joined(separator: "、"), after.tags.joined(separator: "、"))) }
+        if before.officeResourceID != after.officeResourceID { lines.append(FloeL10n.l("notes.note_proposals.replace_office_body_resource")) }
+        if before.engineeringResourceID != after.engineeringResourceID { lines.append(FloeL10n.l("notes.note_proposals.replace_engineering_drawing_resource")) }
 
         let beforePages = Dictionary(before.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let afterPages = Dictionary(after.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let addedPages = after.pages.filter { beforePages[$0.id] == nil }.count
         let removedPages = before.pages.filter { afterPages[$0.id] == nil }.count
-        if addedPages > 0 || removedPages > 0 { lines.append("页面：新增 \(addedPages)，删除 \(removedPages)") }
+        if addedPages > 0 || removedPages > 0 { lines.append(FloeL10n.l("notes.note_proposals.pages_added_deleted", addedPages, removedPages)) }
         var addedElements = 0, updatedElements = 0, removedElements = 0
         var pageStyleChanges = 0
         for page in after.pages {
@@ -55,9 +56,9 @@ public enum NoteProposalSummary {
             removedElements += oldElements.keys.filter { newElements[$0] == nil }.count
         }
         if addedElements > 0 || updatedElements > 0 || removedElements > 0 {
-            lines.append("文字/元素：新增 \(addedElements)，修改 \(updatedElements)，删除 \(removedElements)")
+            lines.append(FloeL10n.l("notes.note_proposals.text_elements_added_changed_deleted", addedElements, updatedElements, removedElements))
         }
-        if pageStyleChanges > 0 { lines.append("页面属性（纸张/背景/提取文本）：修改 \(pageStyleChanges) 页") }
+        if pageStyleChanges > 0 { lines.append(FloeL10n.l("notes.note_proposals.page_properties_paper_background_extracted_text", pageStyleChanges)) }
 
         let beforeNodes = Dictionary(before.nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let afterNodes = Dictionary(after.nodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -66,7 +67,7 @@ public enum NoteProposalSummary {
         var updatedNodes = 0
         for (id, node) in afterNodes where beforeNodes[id] != nil && beforeNodes[id] != node { updatedNodes += 1 }
         if addedNodes > 0 || updatedNodes > 0 || removedNodes > 0 {
-            lines.append("主题：新增 \(addedNodes)，修改 \(updatedNodes)，删除 \(removedNodes)")
+            lines.append(FloeL10n.l("notes.note_proposals.topics_added_changed_deleted", addedNodes, updatedNodes, removedNodes))
         }
 
         let beforeEdges = Dictionary(before.connections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -76,7 +77,7 @@ public enum NoteProposalSummary {
         var updatedEdges = 0
         for (id, edge) in afterEdges where beforeEdges[id] != nil && beforeEdges[id] != edge { updatedEdges += 1 }
         if addedEdges > 0 || updatedEdges > 0 || removedEdges > 0 {
-            lines.append("关联线：新增 \(addedEdges)，修改 \(updatedEdges)，删除 \(removedEdges)")
+            lines.append(FloeL10n.l("notes.note_proposals.connections_added_changed_deleted", addedEdges, updatedEdges, removedEdges))
         }
 
         let beforeSummaries = Dictionary((before.summaries ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -86,17 +87,17 @@ public enum NoteProposalSummary {
         var updatedSummaries = 0
         for (id, value) in afterSummaries where beforeSummaries[id] != nil && beforeSummaries[id] != value { updatedSummaries += 1 }
         if addedSummaries > 0 || updatedSummaries > 0 || removedSummaries > 0 {
-            lines.append("概要：新增 \(addedSummaries)，修改 \(updatedSummaries)，删除 \(removedSummaries)")
+            lines.append(FloeL10n.l("notes.note_proposals.summary_added_changed_deleted", addedSummaries, updatedSummaries, removedSummaries))
         }
-        if before.mindMapDirection != after.mindMapDirection { lines.append("导图方向已修改") }
+        if before.mindMapDirection != after.mindMapDirection { lines.append(FloeL10n.l("notes.note_proposals.mind_map_direction_changed")) }
 
         let beforeLinks = Dictionary((before.linkedMindMaps ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let afterLinks = Dictionary((after.linkedMindMaps ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let linkDeltas = Set(beforeLinks.keys).symmetricDifference(Set(afterLinks.keys)).count
             + afterLinks.filter { beforeLinks[$0.key] != $0.value }.count
-        if linkDeltas > 0 { lines.append("关联导图已修改") }
+        if linkDeltas > 0 { lines.append(FloeL10n.l("notes.note_proposals.the_linked_mind_map_was_modified")) }
 
-        return lines.isEmpty ? "没有可见变化" : lines.joined(separator: "\n")
+        return lines.isEmpty ? FloeL10n.l("notes.note_proposals.no_visible_change") : lines.joined(separator: "\n")
     }
 }
 
@@ -473,7 +474,7 @@ public enum NoteProposalService {
                                sourceRequestID: String? = nil, origin: NoteProposalOrigin? = nil,
                                store: any NoteProposalPersisting,
                                now: Date = Date()) async throws -> NoteProposal {
-        guard !edits.isEmpty else { throw NoteError.invalidOperation("提案不包含任何编辑。") }
+        guard !edits.isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.the_proposal_contains_no_edits")) }
         var draft = document
         for edit in edits { try edit.apply(to: &draft) }
         try draft.validate()
@@ -560,7 +561,7 @@ public enum NoteProposalService {
         // A resolved proposal (rejected/invalidated) must be refused BEFORE the
         // grant is reserved, even while its file is still on disk.
         if proposal.isResolved {
-            throw NoteError.invalidOperation("提案已被拒绝或失效，未应用。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.the_proposal_was_rejected_or_expired"))
         }
         let current = try await store.document(proposal.documentID)
         guard current.revision == proposal.baseRevision,
@@ -576,7 +577,7 @@ public enum NoteProposalService {
         case .reserved:
             break
         case .unknownGrant, .alreadyConsumed, .alreadyReserved, .expired:
-            throw NoteError.invalidOperation("提案确认已失效，请在编辑器中重新确认。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.the_proposal_confirmation_is_no_longer"))
         case .documentMismatch, .revisionMismatch, .shaMismatch:
             throw NoteError.conflict
         }
@@ -640,7 +641,7 @@ public enum NoteProposalService {
                                outbox: any NoteProposalIntentPersisting,
                                now: Date = Date()) async throws -> NoteProposal? {
         guard decision != .accepted else {
-            throw NoteError.invalidOperation("接受的提案必须通过 apply 持久化。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.note_proposals.accepted_proposals_must_be_persisted_through"))
         }
         guard let proposal = await proposals.load(proposalID) else { return nil }
         if proposal.origin != nil {

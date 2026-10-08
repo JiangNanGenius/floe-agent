@@ -15,13 +15,13 @@ struct AudioTranscribeTool: AgentTool {
     func validate(_ args: Arguments) throws {
         guard !args.path.isEmpty, !args.output.isEmpty,
               ["srt", "vtt", "json"].contains((args.output as NSString).pathExtension.lowercased()),
-              args.language == nil || VoiceRecognitionLanguage(rawValue: args.language!) != nil else { throw FloeError.validationFailed("需要素材路径、SRT/VTT/JSON 输出路径和有效语言。") }
+              args.language == nil || VoiceRecognitionLanguage(rawValue: args.language!) != nil else { throw FloeError.validationFailed(FloeL10n.l("media.audio_transcribe_tool.requires_the_asset_path_srt_vtt")) }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         try context.authorizeWorkspacePath(args.path)
         try context.authorizeWorkspacePath(args.output)
-        guard let root = context.workspaceRootURL else { throw FloeError.validationFailed("当前任务没有工作区。") }
+        guard let root = context.workspaceRootURL else { throw FloeError.validationFailed(FloeL10n.l("media.audio_transcribe_tool.the_current_task_has_no_workspace")) }
         let guardrail = WorkspacePathGuard(rootURL: root)
         let input = try guardrail.resolve(args.path), output = try guardrail.resolve(args.output)
         // A symlink within the workspace must not bypass a narrower task scope.
@@ -29,7 +29,7 @@ struct AudioTranscribeTool: AgentTool {
             let relative = String(url.path.dropFirst(guardrail.rootURL.path.count + 1))
             try context.authorizeWorkspacePath(relative)
         }
-        guard input != output else { throw FloeError.validationFailed("输出不能覆盖原素材。") }
+        guard input != output else { throw FloeError.validationFailed(FloeL10n.l("media.audio_transcribe_tool.output_cannot_overwrite_the_original_asset")) }
         let language = VoiceRecognitionLanguage(rawValue: args.language ?? "automatic") ?? .automatic
         let segments = try await withThrowingTaskGroup(of: [TimedSpeechSegment].self) { group in
             group.addTask { try await FileSpeechTranscriber.shared.transcribe(url: input, language: language) }
@@ -44,11 +44,11 @@ struct AudioTranscribeTool: AgentTool {
             return value
         }
         let data = try SpeechCaptionExport.data(segments: segments, format: output.pathExtension.lowercased())
-        guard data.count <= 32 * 1024 * 1024 else { throw FloeError.validationFailed("字幕过大，请拆分素材。") }
+        guard data.count <= 32 * 1024 * 1024 else { throw FloeError.validationFailed(FloeL10n.l("media.audio_transcribe_tool.the_subtitles_are_too_large_split")) }
         try context.cancellation.throwIfCancelled()
         try Task.checkCancellation()
         // Resolve again after long-running inference before any file mutation.
-        guard try guardrail.resolve(args.output) == output else { throw FloeError.validationFailed("输出位置发生变化。") }
+        guard try guardrail.resolve(args.output) == output else { throw FloeError.validationFailed(FloeL10n.l("media.audio_transcribe_tool.the_output_location_changed")) }
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: output, options: .atomic)
         return ToolExecutionOutput(digesting: "Saved \(segments.count) timed segments to \(args.output) (\(data.count) bytes).", exitStatus: 0)

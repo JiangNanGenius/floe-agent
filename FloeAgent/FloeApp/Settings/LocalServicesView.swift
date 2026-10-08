@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloePersistence
 
 /// The view observes durable jobs; leaving it never cancels their runners.
@@ -60,7 +61,7 @@ struct LocalServicesView: View {
                 }
             }
         }
-        .navigationTitle("services.title")
+        .navigationTitle(FloeL10n.l("services.title"))
         .refreshable { await reload() }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }

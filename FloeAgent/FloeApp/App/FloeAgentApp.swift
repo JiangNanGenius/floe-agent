@@ -55,6 +55,8 @@ struct FloeAgentApp: App {
     @StateObject private var router: AppRouter
 
     init() {
+        // Apply the saved in-app language before any catalog lookup.
+        FloeL10n.bootstrap()
         let environment = AppEnvironment.live()
         let router = AppRouter()
         _environment = StateObject(wrappedValue: environment)
@@ -102,93 +104,93 @@ private struct FloeAgentCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("新建任务") { router.startNewTask() }
+            Button("workbench.new_task") { router.startNewTask() }
                 .keyboardShortcut("n", modifiers: .command)
         }
 
-        CommandMenu("导航") {
-            Button("工作台") { router.navigate(to: .home) }
+        CommandMenu(FloeL10n.l("app.floe_agent_app.navigation")) {
+            Button("tab.workbench") { router.navigate(to: .home) }
                 .keyboardShortcut("1", modifiers: [.command, .shift])
-            Button("手记") { router.openMore(.notes) }
-            Button("创意模式") { router.openMore(.creative) }
+            Button("notes.notes_root_view.notes") { router.openMore(.notes) }
+            Button("app.floe_agent_app.creative") { router.openMore(.creative) }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
-            Button("任务中心") { router.openMore(.runs) }
+            Button("app.floe_agent_app.task_center") { router.openMore(.runs) }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-            Button("文件") { router.navigate(to: .files) }
+            Button("app.floe_agent_app.files") { router.navigate(to: .files) }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             Divider()
-            Button("设置") { router.presentedSettings = true }
+            Button("app.floe_agent_app.settings") { router.presentedSettings = true }
                 .keyboardShortcut(",", modifiers: .command)
         }
 
-        CommandMenu("画布") {
-            Button("画布撤销") { canvas?.undo() }
+        CommandMenu(FloeL10n.l("settings.settings_root_view.canvas")) {
+            Button("app.floe_agent_app.undo_canvas") { canvas?.undo() }
                 .keyboardShortcut("z", modifiers: [.command, .option])
                 .disabled(canvas?.canUndo != true)
-            Button("画布重做") { canvas?.redo() }
+            Button("app.floe_agent_app.redo_canvas") { canvas?.redo() }
                 .keyboardShortcut("z", modifiers: [.command, .option, .shift])
                 .disabled(canvas?.canRedo != true)
             Divider()
-            Button("选择与移动") { canvas?.chooseTool(0) }
+            Button("app.floe_agent_app.select_and_move") { canvas?.chooseTool(0) }
                 .keyboardShortcut("1", modifiers: .option)
             Button("Apple Pencil") { canvas?.chooseTool(1) }
                 .keyboardShortcut("2", modifiers: .option)
-            Button("橡皮") { canvas?.chooseTool(2) }
+            Button("workspace.workspace_canvas_view.eraser") { canvas?.chooseTool(2) }
                 .keyboardShortcut("3", modifiers: .option)
-            Button("连接线") { canvas?.chooseTool(3) }
+            Button("workspace.workspace_canvas_view.connector") { canvas?.chooseTool(3) }
                 .keyboardShortcut("4", modifiers: .option)
-            Button("卡片") { canvas?.createCard() }
+            Button("canvas.node.card") { canvas?.createCard() }
                 .keyboardShortcut("5", modifiers: .option)
-            Button("文本") { canvas?.createText() }
+            Button("canvas.node.text") { canvas?.createText() }
                 .keyboardShortcut("6", modifiers: .option)
-            Button("形状") { canvas?.createShape() }
+            Button("canvas.node.shape") { canvas?.createShape() }
                 .keyboardShortcut("7", modifiers: .option)
             Divider()
-            Button("复制所选节点") { canvas?.copy() }
+            Button("app.floe_agent_app.duplicate_selected_nodes") { canvas?.copy() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(canvas?.hasNodeSelection != true)
-            Button("粘贴画布节点") { canvas?.paste() }
+            Button("app.floe_agent_app.paste_canvas_nodes") { canvas?.paste() }
                 .keyboardShortcut("v", modifiers: [.command, .option])
                 .disabled(canvas == nil)
-            Button("复制副本") { canvas?.duplicate() }
+            Button("app.floe_agent_app.duplicate") { canvas?.duplicate() }
                 .keyboardShortcut("d", modifiers: .command)
                 .disabled(canvas?.hasNodeSelection != true)
-            Button("选择全部画布内容") { canvas?.selectAll() }
+            Button("app.floe_agent_app.select_all_canvas_content") { canvas?.selectAll() }
                 .keyboardShortcut("a", modifiers: [.command, .option])
                 .disabled(canvas == nil)
-            Button("删除所选画布内容") { canvas?.delete() }
+            Button("app.floe_agent_app.delete_selected_canvas_content") { canvas?.delete() }
                 .keyboardShortcut(.delete, modifiers: .option)
                 .disabled(canvas?.hasNodeSelection != true && canvas?.hasInkSelection != true)
-            Button("编组") { canvas?.group() }
+            Button("app.floe_agent_app.group") { canvas?.group() }
                 .keyboardShortcut("g", modifiers: [.command, .option])
                 .disabled(canvas?.canGroup != true)
-            Button("取消编组") { canvas?.ungroup() }
+            Button("app.floe_agent_app.ungroup") { canvas?.ungroup() }
                 .keyboardShortcut("g", modifiers: [.command, .option, .shift])
                 .disabled(canvas?.canUngroup != true)
-            Button("理解并整理笔迹") { canvas?.interpretInk() }
+            Button("app.floe_agent_app.understand_and_organize_handwriting") { canvas?.interpretInk() }
                 .keyboardShortcut(.return, modifiers: [.command, .option])
                 .disabled(canvas?.hasInkSelection != true)
             Divider()
-            Button("向左微移") { canvas?.nudge(-4, 0) }
+            Button("app.floe_agent_app.nudge_left") { canvas?.nudge(-4, 0) }
                 .keyboardShortcut(.leftArrow, modifiers: .option)
                 .disabled(canvas?.hasNodeSelection != true)
-            Button("向右微移") { canvas?.nudge(4, 0) }
+            Button("app.floe_agent_app.nudge_right") { canvas?.nudge(4, 0) }
                 .keyboardShortcut(.rightArrow, modifiers: .option)
                 .disabled(canvas?.hasNodeSelection != true)
-            Button("向上微移") { canvas?.nudge(0, -4) }
+            Button("app.floe_agent_app.nudge_up") { canvas?.nudge(0, -4) }
                 .keyboardShortcut(.upArrow, modifiers: .option)
                 .disabled(canvas?.hasNodeSelection != true)
-            Button("向下微移") { canvas?.nudge(0, 4) }
+            Button("app.floe_agent_app.nudge_down") { canvas?.nudge(0, 4) }
                 .keyboardShortcut(.downArrow, modifiers: .option)
                 .disabled(canvas?.hasNodeSelection != true)
             Divider()
-            Button("放大") { canvas?.zoomIn() }
+            Button("app.floe_agent_app.zoom_in") { canvas?.zoomIn() }
                 .keyboardShortcut("+", modifiers: .command)
                 .disabled(canvas == nil)
-            Button("缩小") { canvas?.zoomOut() }
+            Button("app.floe_agent_app.zoom_out") { canvas?.zoomOut() }
                 .keyboardShortcut("-", modifiers: .command)
                 .disabled(canvas == nil)
-            Button("适合画布") { canvas?.resetView() }
+            Button("app.floe_agent_app.fit_canvas") { canvas?.resetView() }
                 .keyboardShortcut("0", modifiers: .command)
                 .disabled(canvas == nil)
         }
@@ -423,8 +425,7 @@ struct RootView: View {
             WorkspaceCanvasView(canvasID: workspace.id, name: workspace.name, workspace: workspace)
                 .environmentObject(environment)
         }
-        .alert(
-            "本地模型需要停止 Linux 环境",
+        .alert("app.floe_agent_app.the_local_model_needs_the_linux",
             isPresented: Binding(
                 get: { environment.heavyRuntimeConflictCenter.pending != nil },
                 set: { presented in
@@ -434,44 +435,43 @@ struct RootView: View {
                 }
             )
         ) {
-            Button("取消", role: .cancel) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {
                 environment.heavyRuntimeConflictCenter.resolve(.deferLocalModel)
             }
-            Button("停止并继续", role: .destructive) {
+            Button("app.floe_agent_app.stop_and_continue", role: .destructive) {
                 environment.heavyRuntimeConflictCenter.resolve(.stopGuestsAndProceed)
             }
         } message: {
             Text(Self.heavyRuntimeConflictMessage(environment.heavyRuntimeConflictCenter.pending))
         }
-        .alert("删除任务？", isPresented: Binding(
+        .alert("app.floe_agent_app.delete_task", isPresented: Binding(
             get: { deletingConversation != nil },
             set: { if !$0 { deletingConversation = nil } }
         )) {
-            Button("取消", role: .cancel) { deletingConversation = nil }
-            Button("删除", role: .destructive) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { deletingConversation = nil }
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                 guard let target = deletingConversation else { return }
                 deletingConversation = nil
                 Task { try? await environment.conversationCenter.deleteConversation(id: target.id) }
             }
         } message: {
-            Text("任务、私有工作区和临时凭据将被删除，此操作不可撤销。")
+            Text("app.floe_agent_app.the_task_private_workspace_and_temporary")
         }
-        .confirmationDialog(
-            "移除工作区？",
+        .confirmationDialog("settings.files_settings_view.remove_workspace_2",
             isPresented: Binding(
                 get: { deletingWorkspace != nil },
                 set: { if !$0 { deletingWorkspace = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("移除", role: .destructive) {
+            Button("localmodels.remove", role: .destructive) {
                 guard let target = deletingWorkspace else { return }
                 deletingWorkspace = nil
                 Task { try? await environment.workspaceCenter.deleteWorkspace(id: target.id) }
             }
-            Button("取消", role: .cancel) { deletingWorkspace = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { deletingWorkspace = nil }
         } message: {
-            Text("只移除 Floe 中的项目入口，不会删除原文件夹。")
+            Text("app.floe_agent_app.only_the_project_entry_in_floe")
         }
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.locale, resolvedLocale)
@@ -494,14 +494,12 @@ struct RootView: View {
         }
     }
 
-    /// Maps the language override to a concrete locale (autoupdating follows
-    /// the system language).
+    /// Concrete locale rooted on FloeL10n. Reading `languageOverride`
+    /// keeps this view subscribed to in-session language changes so the
+    /// environment locale (and every keyed view under it) refreshes.
     private var resolvedLocale: Locale {
-        switch environment.settingsCenter.languageOverride {
-        case .system: return .autoupdatingCurrent
-        case .en: return Locale(identifier: "en")
-        case .zhHans: return Locale(identifier: "zh-Hans")
-        }
+        _ = environment.settingsCenter.languageOverride
+        return FloeL10n.swiftUILocale
     }
 
     @ViewBuilder
@@ -563,10 +561,17 @@ struct RootView: View {
     ) -> String {
         guard let pending else { return "" }
         var parts: [String] = []
-        if pending.guestCount > 0 { parts.append("\(pending.guestCount) 个 Linux 环境") }
-        if pending.serviceCount > 0 { parts.append("\(pending.serviceCount) 个本地服务") }
-        let running = parts.isEmpty ? "Linux 环境" : parts.joined(separator: "、")
-        return "本机正在运行 \(running)。本地模型与 Linux 环境不能同时运行：继续将先停止这些环境（磁盘与数据会保留），或取消本次本地模型请求。"
+        if pending.guestCount > 0 {
+            parts.append(FloeL10n.l("app.floe_agent_app.linux_environments_count", pending.guestCount))
+        }
+        if pending.serviceCount > 0 {
+            parts.append(FloeL10n.l("app.floe_agent_app.local_services_count", pending.serviceCount))
+        }
+        let running = parts.isEmpty
+            ? FloeL10n.l("exec.linux.env_title")
+            : parts.joined(separator: FloeL10n.l("app.floe_agent_app.list_separator"))
+        return FloeL10n.l("app.floe_agent_app.local_models_and_linux_environments_cannot",
+                          running)
     }
 
     private func markDismissedSetupSkipped() {
@@ -606,7 +611,7 @@ struct RootView: View {
                             }
                             .padding(.leading, 8)
                             .padding(.top, 4)
-                            .accessibilityLabel("打开任务列表")
+                            .accessibilityLabel("app.floe_agent_app.open_task_list")
                             .accessibilityIdentifier("phone.sidebar.open")
                         }
                     }
@@ -616,7 +621,7 @@ struct RootView: View {
                         .ignoresSafeArea()
                         .contentShape(Rectangle())
                         .onTapGesture { withAnimation(.snappy) { isPhoneSidebarOpen = false } }
-                        .accessibilityLabel("收起任务列表")
+                        .accessibilityLabel("app.floe_agent_app.collapse_task_list")
                 }
 
                 sidebarColumn
@@ -757,16 +762,16 @@ struct RootView: View {
         VStack(spacing: 0) {
             List(selection: $router.sidebarSelection) {
                 Section {
-                    Label("新建任务", systemImage: "square.and.pencil")
+                    Label("workbench.new_task", systemImage: "square.and.pencil")
                         .tag(SidebarSelection.workbench(.newTask(workspaceID: nil)))
                         .accessibilityIdentifier("sidebar.workbench.new_task")
-                    Label("任务中心", systemImage: "checklist")
+                    Label("app.floe_agent_app.task_center", systemImage: "checklist")
                         .tag(SidebarSelection.workbench(.overview))
                         .accessibilityIdentifier("sidebar.task_center")
-                    Label("手记", systemImage: "book.pages")
+                    Label("notes.notes_root_view.notes", systemImage: "book.pages")
                         .tag(SidebarSelection.more(.notes))
                         .accessibilityIdentifier("sidebar.notes")
-                    Label("创意模式", systemImage: "rectangle.and.pencil.and.ellipsis")
+                    Label("app.floe_agent_app.creative", systemImage: "rectangle.and.pencil.and.ellipsis")
                         .tag(SidebarSelection.more(.creative))
                         .accessibilityIdentifier("sidebar.creative")
                     Label("plugins.title", systemImage: "puzzlepiece.extension")
@@ -789,7 +794,7 @@ struct RootView: View {
                                     Button {
                                         presentedCanvasWorkspace = workspace
                                     } label: {
-                                        Label("画布", systemImage: "rectangle.and.pencil.and.ellipsis")
+                                        Label("settings.settings_root_view.canvas", systemImage: "rectangle.and.pencil.and.ellipsis")
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityIdentifier("sidebar.workspace.canvas.\(workspace.id.uuidString)")
@@ -817,14 +822,14 @@ struct RootView: View {
                                 Button(role: .destructive) {
                                     deletingWorkspace = workspace
                                 } label: {
-                                    Label("移除工作区", systemImage: "trash")
+                                    Label("settings.files_settings_view.remove_workspace", systemImage: "trash")
                                 }
                             }
                         }
                     }
                 }
                 if !chatConversations.isEmpty {
-                    Section("聊天") {
+                    Section("settings.all_workspaces_files_view.chat") {
                         ForEach(chatConversations) { conversation in
                             conversationSidebarRow(conversation)
                         }
@@ -881,14 +886,14 @@ struct RootView: View {
         .tag(SidebarSelection.workbench(.conversation(conversation.id)))
         .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
         .contextMenu {
-            Button("选择多个", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
+            Button("home.home_overview_view.select_multiple", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
                 .accessibilityIdentifier("sidebar.selectMultiple")
             Button {
                 renamingConversation = conversation
             } label: {
-                Label("重命名", systemImage: "pencil")
+                Label("workspace.file_tree_view.rename", systemImage: "pencil")
             }
-            Menu("移动到项目") {
+            Menu("app.floe_agent_app.move_to_project") {
                 ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                     Button(workspace.name) {
                         Task {
@@ -903,21 +908,21 @@ struct RootView: View {
             Button(role: .destructive) {
                 deletingConversation = conversation
             } label: {
-                Label("删除任务", systemImage: "trash")
+                Label("app.floe_agent_app.delete_task_2", systemImage: "trash")
             }
             Button {
                 Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
             } label: {
-                Label("归档任务", systemImage: "archivebox")
+                Label("app.floe_agent_app.archive_task", systemImage: "archivebox")
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button {
                 Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
-            } label: { Label("归档", systemImage: "archivebox") }
+            } label: { Label("app.floe_agent_app.archive", systemImage: "archivebox") }
             .tint(.orange)
             Button(role: .destructive) { deletingConversation = conversation } label: {
-                Label("删除", systemImage: "trash")
+                Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
             }
         }
     }
@@ -934,13 +939,13 @@ struct RootView: View {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel("在 \(workspace.name) 中新建任务")
+            .accessibilityLabel(FloeL10n.l("app.floe_agent_app.new_task_in", workspace.name))
         } else {
             Menu {
                 Button {
                     router.startNewTask(workspaceID: workspace.id)
                 } label: {
-                    Label("新建普通会话", systemImage: "square.and.pencil")
+                    Label("app.floe_agent_app.new_regular_chat", systemImage: "square.and.pencil")
                 }
                 Button {
                     do {
@@ -954,13 +959,13 @@ struct RootView: View {
                         )
                     }
                 } label: {
-                    Label("新建画布", systemImage: "rectangle.and.pencil.and.ellipsis")
+                    Label("workspace.workspace_canvas_view.new_canvas", systemImage: "rectangle.and.pencil.and.ellipsis")
                 }
             } label: {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel("在 \(workspace.name) 中新建")
+            .accessibilityLabel(FloeL10n.l("app.floe_agent_app.new_in", workspace.name))
         }
     }
 
@@ -1129,15 +1134,15 @@ private struct InspectorColumnView: View {
             }
         case .failed(let message):
             ContentUnavailableView {
-                Label("工作区无法挂载", systemImage: "folder.badge.questionmark")
+                Label("app.floe_agent_app.the_workspace_could_not_be_mounted", systemImage: "folder.badge.questionmark")
             } description: {
                 Text(message)
             } actions: {
-                Button("重试") { workspaceMountAttempt += 1 }
+                Button("settings.document_recovery_list_view.retry") { workspaceMountAttempt += 1 }
                     .buttonStyle(.borderedProminent)
             }
         case .idle, .loading:
-            ProgressView("正在挂载任务工作区…")
+            ProgressView("app.floe_agent_app.mounting_task_workspace")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(FloeTheme.readingSurface)
         }
@@ -1302,12 +1307,12 @@ private struct TaskRenameSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("任务名称", text: $title)
+                TextField("app.floe_agent_app.task_name", text: $title)
                 if let errorMessage {
                     Text(errorMessage).foregroundStyle(FloeTheme.destructive)
                 }
             }
-            .navigationTitle("重命名任务")
+            .navigationTitle("app.floe_agent_app.rename_task")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("action.cancel") { dismiss() }

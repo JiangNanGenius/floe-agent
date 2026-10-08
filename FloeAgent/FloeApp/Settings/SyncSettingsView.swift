@@ -86,16 +86,16 @@ struct SyncSettingsView: View {
             }
 
             Section {
-                Toggle("同步已保存凭据", isOn: Binding(
+                Toggle("settings.sync_settings_view.sync_saved_credentials", isOn: Binding(
                     get: { center.savedCredentialsSyncEnabled },
                     set: { value in Task { await changeCredentialSync(to: value) } }
                 ))
                 .disabled(!center.overallSyncEnabled || center.syncControlBusy)
                 .accessibilityIdentifier("settings.sync.saved_credentials")
-                Label("API Key、已保存 SSH/VNC 密钥和网页密码仅通过 iCloud Keychain 同步。任务和项目临时凭据永不上传。", systemImage: "key.icloud")
+                Label("settings.sync_settings_view.api_keys_saved_ssh_vnc_keys", systemImage: "key.icloud")
                     .frame(minHeight: FloeTheme.minimumTarget)
             } footer: {
-                Text("默认关闭。启用需要验证设备身份；不可导出的设备密钥仍只存在于当前设备。")
+                Text("settings.sync_settings_view.off_by_default_enabling_requires_device")
             }
 
             if let credentialAuthenticationError {
@@ -110,7 +110,7 @@ struct SyncSettingsView: View {
                 }
             }
         }
-        .navigationTitle("settings.section.sync")
+        .navigationTitle(FloeL10n.l("settings.section.sync"))
         .task { await center.load() }
     }
 
@@ -131,7 +131,7 @@ struct SyncSettingsView: View {
         if enabled {
             do {
                 guard try await DeviceOwnerAuthenticator.authenticate(
-                    reason: "同步已明确保存的密钥和网页密码"
+                    reason: FloeL10n.l("settings.sync_settings_view.sync_explicitly_saved_keys_and_website")
                 ) else { return }
             } catch {
                 credentialAuthenticationError = error.localizedDescription

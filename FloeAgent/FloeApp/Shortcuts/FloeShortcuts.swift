@@ -106,11 +106,11 @@ enum FloeShortcutCadence: String, AppEnum {
     case daily
     case weekly
 
-    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "重复")
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "shortcuts.cadence.type_name")
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .once: "一次",
-        .daily: "每天",
-        .weekly: "每周"
+        .once: DisplayRepresentation(title: "shortcuts.cadence.once"),
+        .daily: DisplayRepresentation(title: "shortcuts.cadence.daily"),
+        .weekly: DisplayRepresentation(title: "shortcuts.cadence.weekly")
     ]
 
     var taskCadence: TaskScheduleCadence {
@@ -125,41 +125,43 @@ enum FloeShortcutCadence: String, AppEnum {
 /// Sends text to the agent for processing (e.g. summarization).
 struct SendToFloeIntent: AppIntent {
     static var openAppWhenRun: Bool { true }
-    static var title: LocalizedStringResource { "发送给 Floe 处理" }
+    static var title: LocalizedStringResource { "shortcuts.intent.send_to_floe.title" }
     static var description: IntentDescription {
-        IntentDescription("把文字发给 Floe Agent 处理（总结、分析等）")
+        IntentDescription("shortcuts.intent.send_to_floe.description")
     }
 
-    @Parameter(title: "文字内容")
+    @Parameter(title: "shortcuts.intent.send_to_floe.param_text")
     var text: String
 
-    @Parameter(title: "指令", default: "总结这段文字")
+    @Parameter(title: "shortcuts.intent.send_to_floe.param_prompt",
+               default: "Summarize this text")
     var prompt: String
 
     static var parameterSummary: some ParameterSummary {
-        Summary("把 \(\.$text) 发给 Floe，指令：\(\.$prompt)")
+        // The static template (with %@ per parameter) is the catalog key.
+        Summary("shortcuts.intent.send_to_floe.summary \(\.$text) \(\.$prompt)")
     }
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let task = "\(prompt.trimmingCharacters(in: .whitespacesAndNewlines))\n\n\(text)"
         FloeShortcutInbox.enqueue(task)
-        return .result(value: "已放入 Floe，打开后可检查并发送。")
+        return .result(value: FloeL10n.l("shortcuts.intent.send_to_floe.result_placed"))
     }
 }
 
 /// Creates a new task in Floe Agent.
 struct CreateFloeTaskIntent: AppIntent {
     static var openAppWhenRun: Bool { true }
-    static var title: LocalizedStringResource { "新建 Floe 任务" }
+    static var title: LocalizedStringResource { "shortcuts.intent.create_task.title" }
     static var description: IntentDescription {
-        IntentDescription("在 Floe Agent 中新建一个任务")
+        IntentDescription("shortcuts.intent.create_task.description")
     }
 
-    @Parameter(title: "任务描述")
+    @Parameter(title: "shortcuts.intent.create_task.param_description")
     var taskDescription: String
 
     static var parameterSummary: some ParameterSummary {
-        Summary("新建任务：\(\.$taskDescription)")
+        Summary("shortcuts.intent.create_task.summary \(\.$taskDescription)")
     }
 
     func perform() async throws -> some IntentResult {
@@ -174,25 +176,25 @@ struct CreateFloeTaskIntent: AppIntent {
 /// provider execution has been scheduled.
 struct RunFloeTaskIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
-    static var title: LocalizedStringResource { "立即运行 Floe 任务" }
+    static var title: LocalizedStringResource { "shortcuts.intent.run_task.title" }
     static var description: IntentDescription {
-        IntentDescription("在后台创建并开始一个 Floe 任务，适合快捷指令自动化。")
+        IntentDescription("shortcuts.intent.run_task.description")
     }
 
-    @Parameter(title: "任务")
+    @Parameter(title: "shortcuts.intent.run_task.param_task")
     var task: String
 
-    @Parameter(title: "标题")
+    @Parameter(title: "shortcuts.intent.run_task.param_title")
     var taskTitle: String?
 
     static var parameterSummary: some ParameterSummary {
-        Summary("运行 Floe 任务：\(\.$task)")
+        Summary("shortcuts.intent.run_task.summary \(\.$task)")
     }
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let id = try await FloeShortcutsRuntime.shared.run(prompt: task, title: taskTitle)
-        return .result(value: "Floe 任务已开始（\(id.uuidString)）。")
+        return .result(value: FloeL10n.l("shortcuts.intent.run_task.result_started", id.uuidString))
     }
 }
 
@@ -201,25 +203,26 @@ struct RunFloeTaskIntent: AppIntent {
 /// `RunFloeTaskIntent` directly in a Shortcuts personal automation.
 struct ScheduleFloeTaskIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
-    static var title: LocalizedStringResource { "安排 Floe 任务" }
+    static var title: LocalizedStringResource { "shortcuts.intent.schedule_task.title" }
     static var description: IntentDescription {
-        IntentDescription("把任务加入 Floe 的后台调度；系统唤醒时间由 iOS 决定。")
+        IntentDescription("shortcuts.intent.schedule_task.description")
     }
 
-    @Parameter(title: "任务")
+    @Parameter(title: "shortcuts.intent.schedule_task.param_task")
     var task: String
 
-    @Parameter(title: "标题")
+    @Parameter(title: "shortcuts.intent.schedule_task.param_title")
     var taskTitle: String?
 
-    @Parameter(title: "时间")
+    @Parameter(title: "shortcuts.intent.schedule_task.param_time")
     var scheduledAt: Date
 
-    @Parameter(title: "重复", default: .once)
+    @Parameter(title: "shortcuts.intent.schedule_task.param_repeat",
+               default: .once)
     var cadence: FloeShortcutCadence
 
     static var parameterSummary: some ParameterSummary {
-        Summary("在 \(\.$scheduledAt) 安排 \(\.$task)，\(\.$cadence)")
+        Summary("shortcuts.intent.schedule_task.summary \(\.$scheduledAt) \(\.$task) \(\.$cadence)")
     }
 
     @MainActor
@@ -230,7 +233,7 @@ struct ScheduleFloeTaskIntent: AppIntent {
             at: scheduledAt,
             cadence: cadence
         )
-        return .result(value: "Floe 已保存该自动任务（\(id.uuidString)）。")
+        return .result(value: FloeL10n.l("shortcuts.intent.schedule_task.result_saved", id.uuidString))
     }
 }
 
@@ -242,36 +245,45 @@ struct FloeShortcuts: AppShortcutsProvider {
             phrases: [
                 "把文字发给 \(.applicationName)",
                 "用 \(.applicationName) 总结",
-                "\(.applicationName) 处理这段文字"
+                "\(.applicationName) 处理这段文字",
+                "Send text to \(.applicationName)",
+                "Summarize with \(.applicationName)",
+                "Ask \(.applicationName) to process this text"
             ],
-            shortTitle: "发给 Floe",
+            shortTitle: "shortcuts.app_shortcut.send_to_floe",
             systemImageName: "paperplane"
         )
         AppShortcut(
             intent: CreateFloeTaskIntent(),
             phrases: [
                 "新建 \(.applicationName) 任务",
-                "用 \(.applicationName) 创建任务"
+                "用 \(.applicationName) 创建任务",
+                "Create a \(.applicationName) task",
+                "New task with \(.applicationName)"
             ],
-            shortTitle: "新建任务",
+            shortTitle: "workbench.new_task",
             systemImageName: "plus"
         )
         AppShortcut(
             intent: RunFloeTaskIntent(),
             phrases: [
                 "让 \(.applicationName) 立即运行任务",
-                "运行 \(.applicationName) 自动任务"
+                "运行 \(.applicationName) 自动任务",
+                "Run a task with \(.applicationName) now",
+                "Run \(.applicationName) automation"
             ],
-            shortTitle: "立即运行任务",
+            shortTitle: "shortcuts.app_shortcut.run_task_now",
             systemImageName: "play.circle"
         )
         AppShortcut(
             intent: ScheduleFloeTaskIntent(),
             phrases: [
                 "用 \(.applicationName) 安排任务",
-                "安排 \(.applicationName) 自动任务"
+                "安排 \(.applicationName) 自动任务",
+                "Schedule a task with \(.applicationName)",
+                "Schedule \(.applicationName) automation"
             ],
-            shortTitle: "安排自动任务",
+            shortTitle: "shortcuts.app_shortcut.schedule_automation",
             systemImageName: "calendar.badge.clock"
         )
     }

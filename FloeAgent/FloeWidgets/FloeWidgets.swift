@@ -6,6 +6,7 @@
 
 import WidgetKit
 import SwiftUI
+import FloeCore
 
 struct TaskSnapshot: Codable {
     var activeTasks: [ActiveTask]
@@ -25,6 +26,12 @@ struct FloeWidgetEntry: TimelineEntry {
 
 struct FloeWidgetProvider: TimelineProvider {
     private static let appGroupID = "group.org.floeagent.ios"
+
+    init() {
+        // Widgets run in their own process; resolve the language
+        // chosen in the main app (mirrored into the App Group).
+        FloeL10n.bootstrap()
+    }
 
     func placeholder(in context: Context) -> FloeWidgetEntry {
         FloeWidgetEntry(date: Date(), snapshot: nil)
@@ -72,13 +79,13 @@ struct FloeWidgetView: View {
                     }
                 }
             } else {
-                Text("暂无进行中任务")
+                Text(FloeL10n.l("widget.empty_active_tasks"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Link(destination: URL(string: "floe://new")!) {
-                Label("新建任务", systemImage: "plus.circle.fill")
+                Label("workbench.new_task", systemImage: "plus.circle.fill")
                     .font(.caption)
             }
         }
@@ -95,7 +102,7 @@ struct FloeWidget: Widget {
             FloeWidgetView(entry: entry)
         }
         .configurationDisplayName("Floe Agent")
-        .description("查看进行中任务，快速发起新任务")
+        .description(FloeL10n.l("widget.description"))
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }

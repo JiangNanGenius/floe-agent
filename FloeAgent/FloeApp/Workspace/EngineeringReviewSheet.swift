@@ -12,9 +12,9 @@ private enum EngineeringReviewScope: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     func label(_ zh: Bool) -> String {
         switch self {
-        case .whole: zh ? "整张图纸" : "Whole drawing"
-        case .viewport: zh ? "当前视口" : "Current viewport"
-        case .selection: zh ? "当前选择" : "Current selection"
+        case .whole: zh ? FloeL10n.l("workspace.engineering_review_sheet.entire_drawing") : "Whole drawing"
+        case .viewport: zh ? FloeL10n.l("workspace.engineering_review_sheet.current_viewport") : "Current viewport"
+        case .selection: zh ? FloeL10n.l("workspace.engineering_review_sheet.current_selection") : "Current selection"
         }
     }
     func instruction(_ zh: Bool) -> String {
@@ -27,7 +27,7 @@ private enum EngineeringReviewScope: String, CaseIterable, Identifiable {
 }
 
 func engineeringReviewText(_ zh: String, _ en: String) -> String {
-    Locale.current.identifier.hasPrefix("zh") ? zh : en
+    FloeL10n.isChinese ? zh : en
 }
 
 /// A user-authored request with an actual raster attachment and bounded parse
@@ -96,7 +96,7 @@ struct EngineeringReviewSheet: View {
                 Section(engineeringReviewText("分析范围", "Scope")) {
                     Picker("engineering.review.scope", selection: $scope) {
                         ForEach(EngineeringReviewScope.allCases) { value in
-                            Text(value.label(Locale.current.identifier.hasPrefix("zh"))).tag(value)
+                            Text(value.label(FloeL10n.isChinese)).tag(value)
                         }
                     }
                     .pickerStyle(.segmented)

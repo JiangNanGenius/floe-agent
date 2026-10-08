@@ -9,6 +9,7 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+import FloeCore
 struct ScreenShareGuideView: View {
     @ObservedObject var center: ScreenShareCenter
     let userGoal: String
@@ -37,7 +38,7 @@ struct ScreenShareGuideView: View {
                     instructionCard
                 }
             } else {
-                ProgressView("等待屏幕画面…")
+                ProgressView("screenshare.screen_share_guide_view.waiting_for_screen_footage")
                     .foregroundStyle(.white)
             }
         }
@@ -66,7 +67,7 @@ struct ScreenShareGuideView: View {
         }
             .frame(width: 44, height: 44)
             .position(x: x, y: y)
-            .accessibilityLabel("点按：\(hint.elementText)")
+            .accessibilityLabel(FloeL10n.l("screenshare.screen_share_guide_view.tap", hint.elementText))
     }
 
     private func aspectFitRect(imageSize: CGSize, containerSize: CGSize) -> CGRect {
@@ -88,7 +89,7 @@ struct ScreenShareGuideView: View {
     private var instructionCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             if center.guideHints.isEmpty {
-                Text("正在分析屏幕，识别可点按的元素…")
+                Text("screenshare.screen_share_guide_view.analyzing_the_screen_and_recognizing_tappable")
                     .font(.subheadline)
                     .foregroundStyle(.white)
             } else {

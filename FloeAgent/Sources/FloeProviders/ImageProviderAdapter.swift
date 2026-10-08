@@ -91,14 +91,13 @@ public enum RemoteImageError: Error, Sendable, Hashable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .unsupportedOperation(let operation, let provider):
-            "\(provider) 不支持图片操作 \(operation.rawValue)。"
+        case .unsupportedOperation(let operation, let provider):FloeL10n.l("providers.image_provider_adapter.does_not_support_image_actions", provider, operation.rawValue)
         case .providerRejected(_, let message):
             message
         case .requestFailed(let message):
-            message.isEmpty ? "图片服务请求失败。" : message
+            message.isEmpty ? FloeL10n.l("providers.image_provider_adapter.the_image_service_request_failed") : message
         case .invalidResponse(let message):
-            message.isEmpty ? "图片服务返回了无效结果。" : message
+            message.isEmpty ? FloeL10n.l("providers.image_provider_adapter.the_image_service_returned_an_invalid") : message
         }
     }
 }
@@ -149,8 +148,7 @@ public extension ImageProviderAdapter {
         guard request.sourceImages.count <= maximum else {
             let model = request.modelRemoteID?.trimmingCharacters(in: .whitespacesAndNewlines)
             let modelDetail = model.flatMap { $0.isEmpty ? nil : $0 }.map { "（\($0)）" } ?? ""
-            throw RemoteImageError.requestFailed(
-                "\(providerName)\(modelDetail) 最多支持 \(maximum) 张参考图；当前有 \(request.sourceImages.count) 张。请减少明确连接到生成节点的参考图，或改用支持更多参考图的模型。"
+            throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_provider_adapter.supports_up_to_reference_images_are", providerName, modelDetail, maximum, request.sourceImages.count)
             )
         }
     }
@@ -159,8 +157,7 @@ public extension ImageProviderAdapter {
         let maximum = max(1, maximumOutputImages(modelRemoteID: request.modelRemoteID))
         let requested = max(1, request.count)
         guard requested <= maximum else {
-            throw RemoteImageError.requestFailed(
-                "\(providerName) 当前模型单次最多生成 \(maximum) 张图片；当前请求 \(requested) 张。请减少生成数量，或改用支持多图输出的模型。"
+            throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_provider_adapter.the_current_model_can_generate_at", providerName, maximum, requested)
             )
         }
     }

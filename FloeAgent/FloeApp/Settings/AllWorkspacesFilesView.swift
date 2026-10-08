@@ -3,6 +3,7 @@ import SwiftUI
 import FloeModels
 import FloePersistence
 
+import FloeCore
 struct AllWorkspacesFilesView: View {
     @StateObject private var center: WorkspaceCenter
     @State private var conversations: [UUID: ConversationRecord] = [:]
@@ -46,22 +47,22 @@ struct AllWorkspacesFilesView: View {
 
     var body: some View {
         List {
-            Picker("工作区", selection: $filter) {
-                Text("全部").tag(0)
-                Text("项目").tag(1)
-                Text("聊天").tag(2)
-                Text("已归档").tag(3)
+            Picker("settings.all_workspaces_files_view.workspace", selection: $filter) {
+                Text("settings.usage_statistics_view.all").tag(0)
+                Text("settings.all_workspaces_files_view.project").tag(1)
+                Text("settings.all_workspaces_files_view.chat").tag(2)
+                Text("settings.all_workspaces_files_view.archived").tag(3)
             }.pickerStyle(.segmented)
             NavigationLink {
                 DocumentRecoveryListView()
             } label: {
-                Label("保留的文档", systemImage: "doc.badge.clock")
+                Label("settings.all_workspaces_files_view.kept_documents", systemImage: "doc.badge.clock")
             }
             .accessibilityIdentifier("files.recovery.open")
             if pendingCleanupCount > 0 {
                 Section {
-                    Text("\(pendingCleanupCount) 个已删除任务的文件尚未清理")
-                    Button("重试清理") {
+                    Text(FloeL10n.l("settings.all_workspaces_files_view.deleted_tasks_still_have_files_to", pendingCleanupCount))
+                    Button("settings.all_workspaces_files_view.retry_cleanup") {
                         Task {
                             retryingCleanup = true
                             _ = await center.retryPendingLocalCleanup()
@@ -79,17 +80,17 @@ struct AllWorkspacesFilesView: View {
                 } label: {
                     Label {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(workspace.name.isEmpty ? (owners(workspace).first?.title ?? "工作区") : workspace.name)
-                            Text(workspace.kind == .project ? "共享项目" : (isArchived(workspace) ? "已归档聊天" : "聊天工作区"))
+                            Text(workspace.name.isEmpty ? (owners(workspace).first?.title ?? "settings.all_workspaces_files_view.workspace") : workspace.name)
+                            Text(workspace.kind == .project ? "settings.all_workspaces_files_view.shared_projects" : (isArchived(workspace) ? "settings.all_workspaces_files_view.archived_chats" : "settings.all_workspaces_files_view.chat_workspace"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     } icon: { Image(systemName: workspace.kind == .project ? "folder" : "bubble.left") }
                 }
             }
-            if visible.isEmpty { ContentUnavailableView("没有匹配的工作区", systemImage: "folder") }
+            if visible.isEmpty { ContentUnavailableView("settings.all_workspaces_files_view.no_matching_workspaces", systemImage: "folder") }
         }
-        .navigationTitle("所有工作区")
-        .searchable(text: $query, prompt: "搜索工作区或聊天")
+        .navigationTitle(FloeL10n.l("settings.all_workspaces_files_view.all_workspaces"))
+        .searchable(text: $query, prompt: "settings.all_workspaces_files_view.search_workspaces_or_chats")
         .onAppear { center.closeCurrentWorkspace() }
         .task { await load() }
         .refreshable { await load() }
@@ -121,12 +122,12 @@ private struct ManagedWorkspaceFilesView: View {
 
     var body: some View {
         Group {
-            if let error { ContentUnavailableView("无法打开工作区", systemImage: "folder.badge.questionmark", description: Text(error)) }
+            if let error { ContentUnavailableView("settings.all_workspaces_files_view.could_not_open_the_workspace", systemImage: "folder.badge.questionmark", description: Text(error)) }
             else if opened {
                 if let selectedPath {
                     FilePreviewView(relativePath: selectedPath, center: center)
                         .toolbar { ToolbarItem(placement: .topBarLeading) {
-                            Button("返回文件", systemImage: "chevron.left") { self.selectedPath = nil }
+                            Button("settings.all_workspaces_files_view.back_to_files", systemImage: "chevron.left") { self.selectedPath = nil }
                                 .accessibilityIdentifier("workspace.preview.backToFiles")
                         } }
                 } else {

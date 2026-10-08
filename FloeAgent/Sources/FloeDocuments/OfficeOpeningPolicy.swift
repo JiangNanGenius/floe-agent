@@ -32,6 +32,7 @@
 
 import Foundation
 
+import FloeCore
 /// The user-facing outcome of one bounded Office opening attempt.
 public enum OfficeOpeningOutcome: Equatable, Sendable {
     /// Still bounded and in progress: the surface keeps its opening state.
@@ -174,20 +175,20 @@ public struct OfficeOpeningPolicy: Equatable, Sendable {
             return nil
         case .renderUnverified:
             return OfficeOpeningWarning(
-                titleZh: "演示文稿尚未完成首次渲染",
+                titleZh: FloeL10n.l("documents.office_opening_policy.the_presentation_has_not_finished_its"),
                 titleEn: "Presentation Render Not Verified",
                 detailZh: readOnly
-                    ? "编辑副本已保留：可重试预览，或从“保留的文档”恢复。"
-                    : "编辑副本已保留：可重试预览，或恢复编辑副本；保存前请确认页面内容。",
+                    ? FloeL10n.l("documents.office_opening_policy.an_edited_copy_was_kept_retry")
+                    : FloeL10n.l("documents.office_opening_policy.an_edited_copy_was_kept_retry_2"),
                 detailEn: readOnly
                     ? "Your editing copy was retained; retry the preview, or recover it under Retained Documents."
                     : "Your editing copy was retained; retry the preview or recover the editing copy. Confirm the slides before saving.",
                 actions: [.retryPreview, .dismiss])
         case .failed:
             return OfficeOpeningWarning(
-                titleZh: "文档引擎未能在限定时间内打开文档",
+                titleZh: FloeL10n.l("documents.office_opening_policy.the_document_engine_could_not_open"),
                 titleEn: "The Document Did Not Open In Time",
-                detailZh: "编辑副本已保留：可重试，或从“保留的文档”恢复。",
+                detailZh: FloeL10n.l("documents.office_opening_policy.an_edited_copy_was_kept_retry_3"),
                 detailEn: "Your editing copy was retained; retry, or recover it under Retained Documents.",
                 actions: [.recover])
         }

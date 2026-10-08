@@ -11,6 +11,7 @@ import Foundation
 import FloeModels
 import FloeSSH
 
+import FloeCore
 /// View model for the host list.
 @MainActor
 final class HostListViewModel: ObservableObject {
@@ -82,7 +83,7 @@ final class HostListViewModel: ObservableObject {
         defer { updatingAgentHostID = nil }
         do {
             let result = try await center.updateRemoteAgent(on: host)
-            statusMessage = "Floe 守护程序已更新到 \(result.version)。"
+            statusMessage = FloeL10n.l("hosts.host_list_view_model.the_floe_daemon_has_been_updated", result.version)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -95,7 +96,7 @@ final class HostListViewModel: ObservableObject {
         defer { pairingAgentHostID = nil }
         do {
             try await center.pairAdvancedLink(on: host)
-            statusMessage = "已为本设备建立独立 mTLS 高级链路。"
+            statusMessage = FloeL10n.l("hosts.host_list_view_model.a_dedicated_mtls_advanced_link_was")
         } catch { errorMessage = error.localizedDescription }
     }
 }

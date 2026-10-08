@@ -18,6 +18,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import UIKit
 
 // MARK: - Generated manifest
@@ -150,7 +151,7 @@ struct ThirdPartyLicensesView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("settings.diagnostics.licenses")
+        .navigationTitle(FloeL10n.l("settings.diagnostics.licenses"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("diagnostics.licenses")
     }
@@ -328,7 +329,7 @@ private struct LicenseComponentListScreen: View {
             }
         }
         .searchable(text: $query, prompt: Text("settings.licenses.inventory.search"))
-        .navigationTitle("settings.licenses.inventory.title")
+        .navigationTitle(FloeL10n.l("settings.licenses.inventory.title"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("diagnostics.license.inventory")
     }

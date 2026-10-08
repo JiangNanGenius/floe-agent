@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 
+import FloeCore
 /// Value-only commands shared by UI and tool adapters. No executable scripts or filesystem paths.
 public enum NoteEdit: Codable, Hashable, Sendable {
     case linkMindMap(NoteMindMapLink)
@@ -38,24 +39,24 @@ public enum NoteEdit: Codable, Hashable, Sendable {
             guard document.linkedMindMaps?.contains(where: { $0.id == id }) == true else { throw NoteError.notFound }
             document.linkedMindMaps?.removeAll { $0.id == id }
         case .mindMapLayout(let direction, let summaries):
-            guard document.kind == .mindMap else { throw NoteError.invalidOperation("目标不是思维导图。") }
+            guard document.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.the_target_is_not_a_mind")) }
             document.mindMapDirection = direction; document.summaries = summaries
         case .replaceOfficeResource(let resource):
-            guard document.kind == .office else { throw NoteError.invalidOperation("目标不是 Office 文档。") }
+            guard document.kind == .office else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_target_is_not_an_office")) }
             document.officeResourceID = resource
         case .replaceMindMap(let nodes, let connections):
-            guard document.kind == .mindMap else { throw NoteError.invalidOperation("目标不是思维导图。") }
+            guard document.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.the_target_is_not_a_mind")) }
             document.nodes = nodes; document.connections = connections
         case .rename(let title): document.title = title
         case .moveToNotebook(let id): document.notebookID = id
         case .favorite(let value): document.isFavorite = value
         case .tags(let values): document.tags = Array(Set(values)).sorted()
         case .insertPage(let page, let index):
-            guard (0...document.pages.count).contains(index) else { throw NoteError.invalidOperation("页面位置无效。") }
+            guard (0...document.pages.count).contains(index) else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.invalid_page_position")) }
             document.pages.insert(page, at: index)
         case .updatePage(let page): document.pages[try pageIndex(page.id, in: document)] = page
         case .movePage(let id, let index):
-            guard document.pages.indices.contains(index) else { throw NoteError.invalidOperation("页面位置无效。") }
+            guard document.pages.indices.contains(index) else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.invalid_page_position")) }
             let page = document.pages.remove(at: try pageIndex(id, in: document))
             document.pages.insert(page, at: index)
         case .duplicatePage(let id):
@@ -95,7 +96,7 @@ public enum NoteEdit: Codable, Hashable, Sendable {
         case .deleteBranch(let id):
             let previous = document.nodes
             guard let node = document.nodes.first(where: { $0.id == id }), node.parentID != nil else {
-                throw NoteError.invalidOperation("不能删除中心主题；可以重命名或清空其分支。")
+                throw NoteError.invalidOperation(FloeL10n.l("notes.note_edit.the_central_topic_cannot_be_deleted"))
             }
             var removed: Set<UUID> = [id]
             var changed = true

@@ -4,19 +4,35 @@ import SwiftUI
 import PencilKit
 import Observation
 
+import FloeCore
 enum NotesBrushKind: String, CaseIterable, Codable {
     case pen, fountainPen, monoline, pencil, crayon, watercolor, reed, marker
 
     var title: String {
         switch self {
-        case .pen: "圆珠笔"
-        case .fountainPen: "钢笔"
-        case .monoline: "单线笔"
-        case .pencil: "铅笔"
-        case .crayon: "蜡笔"
-        case .watercolor: "水彩"
-        case .reed: "书法笔"
-        case .marker: "荧光笔"
+        case .pen: FloeL10n.l("notes.notes_ink_preferences.ballpoint_pen")
+        case .fountainPen: FloeL10n.l("notes.notes_ink_preferences.fountain_pen")
+        case .monoline: FloeL10n.l("notes.notes_ink_preferences.fine_liner")
+        case .pencil: FloeL10n.l("notes.notes_ink_preferences.pencil")
+        case .crayon: FloeL10n.l("notes.notes_ink_preferences.crayon")
+        case .watercolor: FloeL10n.l("notes.notes_ink_preferences.watercolor")
+        case .reed: FloeL10n.l("notes.notes_ink_preferences.calligraphy_pen")
+        case .marker: FloeL10n.l("notes.notes_ink_preferences.highlighter")
+        }
+    }
+
+
+    /// Same label as `title` but as a SwiftUI `LocalizedStringKey`.
+    var keyTitle: LocalizedStringKey {
+        switch self {
+        case .pen: "notes.notes_ink_preferences.ballpoint_pen"
+        case .fountainPen: "notes.notes_ink_preferences.fountain_pen"
+        case .monoline: "notes.notes_ink_preferences.fine_liner"
+        case .pencil: "notes.notes_ink_preferences.pencil"
+        case .crayon: "notes.notes_ink_preferences.crayon"
+        case .watercolor: "notes.notes_ink_preferences.watercolor"
+        case .reed: "notes.notes_ink_preferences.calligraphy_pen"
+        case .marker: "notes.notes_ink_preferences.highlighter"
         }
     }
     var inkType: PKInkingTool.InkType {
@@ -185,7 +201,7 @@ struct NotesInkOptionsPanel: View {
             HStack {
                 Text(selected.title).font(.headline)
                 Spacer()
-                Button("完成", action: close).frame(minWidth: 44, minHeight: 44)
+                Button("workspace.workspace_canvas_view.done", action: close).frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier(doneIdentifier)
             }.padding(.horizontal, 16)
             ScrollView {
@@ -197,7 +213,7 @@ struct NotesInkOptionsPanel: View {
                     NotesBrushPicker(selected: selected, select: select)
                     Divider()
                     HStack {
-                        Text("粗细").font(.subheadline.weight(.medium))
+                        Text("workspace.workspace_canvas_view.width").font(.subheadline.weight(.medium))
                         Spacer()
                         Text("\(config.width, specifier: "%.1f") pt").monospacedDigit().foregroundStyle(.secondary)
                             .accessibilityIdentifier("notes.ink.width.value")
@@ -207,15 +223,15 @@ struct NotesInkOptionsPanel: View {
                             Button { width.wrappedValue = value } label: {
                                 HStack(spacing: 6) {
                                     Circle().fill(.primary).frame(width: min(16, max(2, value)), height: min(16, max(2, value)))
-                                    Text(["细", "中", "粗"][index]).font(.caption)
+                                    Text(["notes.notes_ink_preferences.hairline", "notes.notes_ink_preferences.medium", "notes.notes_ink_preferences.bold"][index]).font(.caption)
                                 }.frame(maxWidth: .infinity, minHeight: 44)
                                     .background(abs(config.width - value) < 0.01 ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04), in: Capsule())
                             }.buttonStyle(.plain)
-                                .accessibilityLabel("\(["细", "中", "粗"][index])，\(value.formatted(.number.precision(.fractionLength(1)))) 点")
+                                .accessibilityLabel(FloeL10n.l("notes.notes_ink_preferences.points", [FloeL10n.l("notes.notes_ink_preferences.hairline"), FloeL10n.l("notes.notes_ink_preferences.medium"), FloeL10n.l("notes.notes_ink_preferences.bold")][index], value.formatted(.number.precision(.fractionLength(1)))))
                                 .accessibilityIdentifier("notes.ink.width.preset.\(index)")
                         }
                     }
-                    Slider(value: width, in: selected.widthRange).accessibilityLabel("画笔粗细")
+                    Slider(value: width, in: selected.widthRange).accessibilityLabel("notes.notes_ink_preferences.brush_thickness")
                         .accessibilityIdentifier("notes.ink.width.slider")
                     HStack {
                         Text("notes.ink.transparency").font(.subheadline.weight(.medium))
@@ -227,10 +243,10 @@ struct NotesInkOptionsPanel: View {
                     Text("notes.ink.transparency.help").font(.caption).foregroundStyle(.secondary)
                     Divider()
                     HStack {
-                        Text("颜色").font(.subheadline.weight(.medium))
+                        Text("notes.notes_ink_preferences.color").font(.subheadline.weight(.medium))
                         Spacer()
-                        ColorPicker("自定颜色", selection: customColor, supportsOpacity: false).labelsHidden()
-                            .accessibilityLabel("自定画笔颜色")
+                        ColorPicker(FloeL10n.l("notes.notes_ink_preferences.custom_color"), selection: customColor, supportsOpacity: false).labelsHidden()
+                            .accessibilityLabel("notes.notes_ink_preferences.custom_brush_color")
                     }
                     HStack(spacing: 0) {
                         ForEach(["#18181B", "#2563EB", "#DC2626", "#16A34A", "#9333EA", "#FACC15"], id: \.self) { hex in
@@ -239,7 +255,7 @@ struct NotesInkOptionsPanel: View {
                                     .frame(width: 25, height: 25)
                                     .overlay { if config.color == hex { Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(hex == "#FACC15" ? .black : .white) } }
                                     .frame(maxWidth: .infinity, minHeight: 44)
-                            }.buttonStyle(.plain).accessibilityLabel("颜色 \(hex)")
+                            }.buttonStyle(.plain).accessibilityLabel(FloeL10n.l("notes.notes_ink_preferences.color_2", hex))
                                 .accessibilityIdentifier("notes.ink.color.\(hex.dropFirst())")
                         }
                     }

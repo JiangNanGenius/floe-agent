@@ -24,6 +24,7 @@
 import SwiftUI
 import UIKit
 
+import FloeCore
 /// UITextView that intercepts hardware Cmd+Return for sending. The press is
 /// consumed only when the handler reports the send actually fired; every
 /// other Return (plain, Shift+, during IME composition) keeps its default
@@ -212,7 +213,7 @@ struct ComposerReturnField: UIViewRepresentable {
             width: width,
             contentSizeCategory: category
         ) { [self] in
-            Self.textKitHeight(of: "字", width: contentWidth(width), font: bodyFont)
+            Self.textKitHeight(of: FloeL10n.l("design.composer_return_field.chars"), width: contentWidth(width), font: bodyFont)
         }
         let insets = textInsets.top + textInsets.bottom
         let cap = ComposerFieldMetrics.heightCap(
@@ -269,7 +270,7 @@ struct ComposerReturnField: UIViewRepresentable {
         var used = layoutManager.usedRect(for: container).height
         if uiView.textStorage.string.isEmpty {
             // An empty field still rests on one line.
-            used = Self.textKitHeight(of: "字", width: textWidth, font: bodyFont)
+            used = Self.textKitHeight(of: FloeL10n.l("design.composer_return_field.chars"), width: textWidth, font: bodyFont)
         }
         if container.size != oldSize {
             container.size = oldSize

@@ -273,10 +273,10 @@ struct FilePreviewView: View {
         .onDisappear {
             if !isIDEPresented, !isOfficeEditorPresented { Task { await officeSession.release() } }
         }
-        .alert("无法预览文件", isPresented: Binding(
+        .alert("inspector.preview.error", isPresented: Binding(
             get: { previewError != nil },
             set: { if !$0 { previewError = nil } }
-        )) { Button("好", role: .cancel) {} } message: {
+        )) { Button("workspace.office_document_editor_view.ok", role: .cancel) {} } message: {
             Text(previewError ?? "")
         }
     }
@@ -528,7 +528,7 @@ struct FilePreviewView: View {
                         guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
                         mediaEditorSource = try service.guardResolver.resolve(relativePath)
                     } catch { previewError = error.localizedDescription }
-                } label: { Label("媒体工作台", systemImage: "film.stack") }
+                } label: { Label("media.media_editor_view.media_workbench", systemImage: "film.stack") }
                 .accessibilityIdentifier("file.preview.mediaEditor")
             }
             if imageEditAvailability?.isEditable == true {
@@ -548,7 +548,7 @@ struct FilePreviewView: View {
                 Button {
                     startWebPreview()
                 } label: {
-                    Label("预览网页", systemImage: "safari")
+                    Label("workspace.file_preview_view.preview_website", systemImage: "safari")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("file.preview.html")
@@ -573,10 +573,10 @@ struct FilePreviewView: View {
                 Button {
                     isIDEPresented = true
                 } label: {
-                    Label("在编辑器中打开", systemImage: "arrow.up.left.and.arrow.down.right")
+                    Label("workspace.file_preview_view.open_in_editor", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("在编辑器中打开")
+                .accessibilityLabel("workspace.file_preview_view.open_in_editor")
                 .accessibilityIdentifier("file.preview.openIDE")
             }
             // A PDF expands into the IDE's internal document tab (native
@@ -588,10 +588,10 @@ struct FilePreviewView: View {
                 Button {
                     isIDEPresented = true
                 } label: {
-                    Label("在编辑器中打开", systemImage: "arrow.up.left.and.arrow.down.right")
+                    Label("workspace.file_preview_view.open_in_editor", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("在编辑器中打开")
+                .accessibilityLabel("workspace.file_preview_view.open_in_editor")
                 .accessibilityIdentifier("file.preview.pdf.openIDE")
             }
             if officeEditingAvailable {

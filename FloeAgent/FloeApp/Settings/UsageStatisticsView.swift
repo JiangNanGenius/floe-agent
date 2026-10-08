@@ -12,10 +12,15 @@ import FloePersistence
 
 struct UsageStatisticsView: View {
     private enum Dimension: String, CaseIterable, Identifiable {
-        case total = "总览"
-        case model = "模型"
-        case provider = "供应商"
+        case total, model, provider
         var id: String { rawValue }
+        var titleKey: LocalizedStringKey {
+            switch self {
+            case .total: "settings.usage_statistics_view.overview"
+            case .model: "providers.models_section"
+            case .provider: "settings.diagnostics.providers"
+            }
+        }
     }
 
     @EnvironmentObject private var environment: AppEnvironment
@@ -28,62 +33,62 @@ struct UsageStatisticsView: View {
     var body: some View {
         List {
             if let stats {
-                Section("筛选") {
-                    Picker("统计维度", selection: $dimension) {
+                Section("settings.usage_statistics_view.filter") {
+                    Picker("settings.usage_statistics_view.statistics_dimensions", selection: $dimension) {
                         ForEach(Dimension.allCases) { item in
-                            Text(item.rawValue).tag(item)
+                            Text(item.titleKey).tag(item)
                         }
                     }
                     .pickerStyle(.segmented)
                     if dimension != .total {
-                        Picker(dimension == .model ? "模型" : "供应商", selection: $selectedBreakdownID) {
-                            Text("全部").tag(nil as String?)
+                        Picker(dimension == .model ? "settings.usage_statistics_view.model" : "settings.diagnostics.providers", selection: $selectedBreakdownID) {
+                            Text("settings.usage_statistics_view.all").tag(nil as String?)
                             ForEach(dimensionRows(stats)) { row in
                                 Text(row.label).tag(Optional(row.id))
                             }
                         }
                     }
                 }
-                Section("总计") {
-                    LabeledContent("输入用量") {
+                Section("settings.usage_statistics_view.total") {
+                    LabeledContent("settings.usage_statistics_view.input_usage") {
                         Text(TokenUnitFormatter.string(selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens)).foregroundStyle(.secondary)
                     }
-                    LabeledContent("输出用量") {
+                    LabeledContent("settings.usage_statistics_view.output_usage") {
                         Text(TokenUnitFormatter.string(selectedRow(in: stats)?.outputTokens ?? stats.totalOutputTokens)).foregroundStyle(.secondary)
                     }
-                    LabeledContent("总用量") {
+                    LabeledContent("settings.usage_statistics_view.total_usage") {
                         Text(TokenUnitFormatter.string(selectedRow(in: stats)?.totalTokens ?? stats.totalTokens)).foregroundStyle(.secondary)
                     }
-                    LabeledContent("总任务数") {
+                    LabeledContent("settings.usage_statistics_view.total_tasks") {
                         Text("\(selectedRow(in: stats)?.runs ?? stats.totalRuns)").foregroundStyle(.secondary)
                     }
-                    reportedTokenRow("上下文复用", value: selectedCacheRead(in: stats))
-                    reportedTokenRow("思考用量", value: selectedReasoning(in: stats))
-                    LabeledContent("上下文复用率") {
+                    reportedTokenRow(FloeL10n.l("settings.usage_statistics_view.context_reuse"), value: selectedCacheRead(in: stats))
+                    reportedTokenRow(FloeL10n.l("settings.usage_statistics_view.reasoning_usage"), value: selectedReasoning(in: stats))
+                    LabeledContent("settings.usage_statistics_view.context_reuse_rate") {
                         Text(cacheHitRate(
                             input: selectedRow(in: stats)?.inputTokens ?? stats.totalInputTokens,
                             read: selectedCacheRead(in: stats)
                         )).foregroundStyle(.secondary)
                     }
-                    LabeledContent("平均生成速度") {
+                    LabeledContent("settings.usage_statistics_view.average_generation_speed") {
                         Text(speed(selectedSpeed(in: stats))).foregroundStyle(.secondary)
                     }
-                    LabeledContent("平均开始响应") {
+                    LabeledContent("settings.usage_statistics_view.average_time_to_first_response") {
                         Text(milliseconds(selectedTTFT(in: stats))).foregroundStyle(.secondary)
                     }
-                    LabeledContent("平均响应耗时") {
+                    LabeledContent("settings.usage_statistics_view.average_response_time") {
                         Text(milliseconds(selectedDuration(in: stats))).foregroundStyle(.secondary)
                     }
                 }
-                Section("近 30 天") {
+                Section("settings.usage_statistics_view.last_30_days") {
                     if stats.byDay.isEmpty {
-                        ContentUnavailableView("还没有可统计的任务", systemImage: "chart.bar",
-                            description: Text("新任务完成后会在这里显示模型返回的用量。"))
+                        ContentUnavailableView("settings.usage_statistics_view.no_tasks_to_count_yet", systemImage: "chart.bar",
+                            description: Text("settings.usage_statistics_view.usage_returned_by_the_model_appears"))
                     } else {
                         Chart(stats.byDay) { day in
                             BarMark(
-                                x: .value("日期", day.date),
-                                y: .value("用量", day.totalTokens)
+                                x: .value(FloeL10n.l("settings.usage_statistics_view.date"), day.date),
+                                y: .value(FloeL10n.l("thread.kind.usage"), day.totalTokens)
                             )
                             .foregroundStyle(FloeTheme.primary)
                         }
@@ -91,24 +96,24 @@ struct UsageStatisticsView: View {
                     }
                     ForEach(stats.byDay) { day in
                         LabeledContent(day.date) {
-                            Text("\(TokenUnitFormatter.string(day.totalTokens)) · \(day.runs) 任务")
+                            Text(FloeL10n.plural("settings.usage_statistics_view.tasks", count: day.runs, TokenUnitFormatter.string(day.totalTokens)))
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
-                usageSection("按会话", rows: stats.byConversation)
-                usageSection("按模型", rows: stats.byModel)
-                usageSection("按供应商", rows: stats.byProvider)
+                usageSection(FloeL10n.l("settings.usage_statistics_view.by_conversation"), rows: stats.byConversation)
+                usageSection(FloeL10n.l("settings.usage_statistics_view.by_model"), rows: stats.byModel)
+                usageSection(FloeL10n.l("settings.usage_statistics_view.by_provider"), rows: stats.byProvider)
             } else if isLoading {
                 ProgressView()
             } else {
-                ContentUnavailableView("暂无用量数据", systemImage: "chart.bar")
+                ContentUnavailableView("settings.usage_statistics_view.no_usage_data", systemImage: "chart.bar")
             }
             if let errorMessage {
                 Text(errorMessage).foregroundStyle(FloeTheme.destructive)
             }
         }
-        .navigationTitle("用量统计")
+        .navigationTitle(FloeL10n.l("settings.section.usage"))
         .task { await load() }
         .onChange(of: dimension) { _, _ in selectedBreakdownID = nil }
     }
@@ -146,23 +151,23 @@ struct UsageStatisticsView: View {
     private func usageSection(_ title: String, rows: [UsageBreakdown]) -> some View {
         Section(title) {
             if rows.isEmpty {
-                Text("暂无数据")
+                Text("settings.usage_statistics_view.no_data")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(rows) { row in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(row.label)
                         HStack {
-                            Text("输入 \(TokenUnitFormatter.string(row.inputTokens)) · 输出 \(TokenUnitFormatter.string(row.outputTokens))")
+                            Text(FloeL10n.l("settings.usage_statistics_view.input_output", TokenUnitFormatter.string(row.inputTokens), TokenUnitFormatter.string(row.outputTokens)))
                             Spacer()
-                            Text("\(TokenUnitFormatter.string(row.totalTokens)) · \(row.runs) 任务")
+                            Text(FloeL10n.plural("settings.usage_statistics_view.tasks", count: row.runs, TokenUnitFormatter.string(row.totalTokens)))
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        Text("上下文复用 \(reported(row.cacheReadTokens)) · 思考用量 \(reported(row.reasoningTokens))")
+                        Text(FloeL10n.l("settings.usage_statistics_view.context_reuse_reasoning", reported(row.cacheReadTokens), reported(row.reasoningTokens)))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        Text("复用率 \(cacheHitRate(input: row.inputTokens, read: row.cacheReadTokens)) · \(speed(row.averageTokensPerSecond)) · 开始响应 \(milliseconds(row.averageTimeToFirstTokenMs))")
+                        Text(FloeL10n.l("settings.usage_statistics_view.reuse_time_to_first_response", cacheHitRate(input: row.inputTokens, read: row.cacheReadTokens), speed(row.averageTokensPerSecond), milliseconds(row.averageTimeToFirstTokenMs)))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -179,25 +184,25 @@ struct UsageStatisticsView: View {
     }
 
     private func reported(_ value: Int?) -> String {
-        value.map(TokenUnitFormatter.string) ?? "未报告"
+        value.map(TokenUnitFormatter.string) ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 
     private func cacheHitRate(input: Int, read: Int?) -> String {
-        guard let read else { return "未报告" }
+        guard let read else { return FloeL10n.l("settings.usage_statistics_view.not_reported") }
         let cacheable = input + read
-        guard cacheable > 0 else { return "未报告" }
+        guard cacheable > 0 else { return FloeL10n.l("settings.usage_statistics_view.not_reported") }
         return (Double(read) / Double(cacheable))
             .formatted(.percent.precision(.fractionLength(1)))
     }
 
     private func speed(_ value: Double?) -> String {
-        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) 片段/秒" }
-            ?? "未报告"
+        value.map { FloeL10n.plural("settings.usage_statistics_view.fragments_sec", count: Int($0.rounded()), $0.formatted(.number.precision(.fractionLength(1)))) }
+            ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 
     private func milliseconds(_ value: Double?) -> String {
         value.map { "\(($0 / 1_000).formatted(.number.precision(.fractionLength(2))))s" }
-            ?? "未报告"
+            ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 
     private func load() async {

@@ -57,30 +57,30 @@ struct ConversationListView: View {
         .sheet(item: $batchStartingConversation) { conversation in
             ConversationBatchManagementView(center: viewModel.center, initialConversation: conversation)
         }
-        .alert("操作失败", isPresented: Binding(get: { viewModel.actionError != nil }, set: { if !$0 { viewModel.actionError = nil } })) {
-            Button("好", role: .cancel) { viewModel.actionError = nil }
+        .alert("chat.conversation_list_view.action_failed", isPresented: Binding(get: { viewModel.actionError != nil }, set: { if !$0 { viewModel.actionError = nil } })) {
+            Button("workspace.office_document_editor_view.ok", role: .cancel) { viewModel.actionError = nil }
         } message: { Text(viewModel.actionError ?? "") }
-        .confirmationDialog("删除所选任务？", isPresented: $confirmsBatchDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
+        .confirmationDialog("chat.conversation_list_view.delete_the_selected_tasks", isPresented: $confirmsBatchDelete, titleVisibility: .visible) {
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                 let ids = selectedIDs
                 Task { await viewModel.delete(ids: ids); selectedIDs.formIntersection(Set(viewModel.conversations.map(\.id))) }
             }
-        } message: { Text("任务及其私有工作区将被删除，共享项目文件保留。此操作不可撤销。") }
+        } message: { Text("chat.conversation_batch_management_view.the_task_and_its_private_workspace") }
         .sheet(isPresented: $presentsArchive) {
             NavigationStack { ArchivedConversationsView(center: viewModel.center) }
         }
-        .alert("删除任务？", isPresented: Binding(
+        .alert("app.floe_agent_app.delete_task", isPresented: Binding(
             get: { pendingDeletion != nil },
             set: { if !$0 { pendingDeletion = nil } }
         )) {
-            Button("取消", role: .cancel) { pendingDeletion = nil }
-            Button("删除", role: .destructive) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingDeletion = nil }
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                 guard let target = pendingDeletion else { return }
                 pendingDeletion = nil
                 Task { await viewModel.delete(target) }
             }
         } message: {
-            Text("任务、私有工作区和临时凭据将被删除；由 Floe 创建的云工作区会立即清理，离线时会排队后自动清理。此操作不可撤销。")
+            Text("chat.conversation_list_view.the_task_private_workspace_and_temporary")
         }
     }
 
@@ -149,19 +149,19 @@ struct ConversationListView: View {
                     .accessibilityHint("chat.open.hint")
                     .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
                     .contextMenu {
-                        Button("选择多个", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
+                        Button("home.home_overview_view.select_multiple", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
                             .accessibilityIdentifier("chat.selectMultiple")
                     }
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
                         Button {
                             Task { await viewModel.archive(conversation) }
-                        } label: { Label("归档", systemImage: "archivebox") }
+                        } label: { Label("app.floe_agent_app.archive", systemImage: "archivebox") }
                         .tint(.orange)
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) {
                             pendingDeletion = conversation
-                        } label: { Label("删除", systemImage: "trash") }
+                        } label: { Label("workspace.workspace_canvas_view.delete", systemImage: "trash") }
                     }
                 }
             }
@@ -177,7 +177,7 @@ struct ConversationListView: View {
             } label: {
                 Image(systemName: "archivebox")
             }
-            .accessibilityLabel("归档区")
+            .accessibilityLabel("chat.conversation_list_view.archive")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {
@@ -192,7 +192,7 @@ struct ConversationListView: View {
         }
         if editMode.isEditing, !selectedIDs.isEmpty {
             ToolbarItem(placement: .bottomBar) {
-                Button("归档所选") {
+                Button("chat.conversation_list_view.archive_selection") {
                     let ids = selectedIDs
                     selectedIDs.removeAll()
                     editMode = .inactive
@@ -200,7 +200,7 @@ struct ConversationListView: View {
                 }
             }
             ToolbarItem(placement: .bottomBar) {
-                Button("删除所选", role: .destructive) {
+                Button("home.home_overview_view.delete_selection", role: .destructive) {
                     confirmsBatchDelete = true
                 }
             }
@@ -240,7 +240,7 @@ struct ArchivedConversationsView: View {
                 Button {
                     Task { await restore(ids: [conversation.id]) }
                 } label: {
-                    Label("恢复", systemImage: "arrow.uturn.backward")
+                    Label("canvas.drawingHistory.restore", systemImage: "arrow.uturn.backward")
                 }
                 .tint(.blue)
             }
@@ -248,63 +248,62 @@ struct ArchivedConversationsView: View {
                 Button(role: .destructive) {
                     conversationPendingDeletion = conversation
                 } label: {
-                    Label("永久删除", systemImage: "trash")
+                    Label("notes.notes_root_view.delete_permanently", systemImage: "trash")
                 }
             }
         }
         .overlay {
             if conversations.isEmpty {
-                ContentUnavailableView("归档区为空", systemImage: "archivebox")
+                ContentUnavailableView("chat.conversation_list_view.the_archive_is_empty", systemImage: "archivebox")
             }
         }
-        .navigationTitle("归档区")
+        .navigationTitle("chat.conversation_list_view.archive")
         .environment(\.editMode, .constant(.active))
         .toolbar {
             if showsDoneButton {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("完成") { dismiss() }
+                    Button("workspace.workspace_canvas_view.done") { dismiss() }
                 }
             }
             if !selection.isEmpty {
                 ToolbarItem(placement: .bottomBar) {
-                    Button("恢复所选") { Task { await restoreSelection() } }
+                    Button("home.home_overview_view.restore_selection") { Task { await restoreSelection() } }
                 }
                 ToolbarItem(placement: .bottomBar) {
-                    Button("永久删除", role: .destructive) { confirmsDelete = true }
+                    Button("notes.notes_root_view.delete_permanently", role: .destructive) { confirmsDelete = true }
                 }
             }
             if !conversations.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("清空", role: .destructive) { confirmsDeleteAll = true }
+                    Button("chat.conversation_list_view.clear", role: .destructive) { confirmsDeleteAll = true }
                 }
             }
         }
         .task { await load() }
-        .alert("永久删除所选任务？", isPresented: $confirmsDelete) {
-            Button("取消", role: .cancel) {}
-            Button("删除", role: .destructive) { Task { await delete(ids: selection) } }
-        } message: { Text("任务、生成内容、私有工作区和附件引用将被永久删除；Floe 托管的云工作区也会清理，离线时进入待处理队列。") }
-        .alert("清空归档区？", isPresented: $confirmsDeleteAll) {
-            Button("取消", role: .cancel) {}
-            Button("全部删除", role: .destructive) {
+        .alert("chat.conversation_list_view.permanently_delete_the_selected_tasks", isPresented: $confirmsDelete) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) { Task { await delete(ids: selection) } }
+        } message: { Text("chat.conversation_list_view.the_task_generated_content_private_workspace") }
+        .alert("chat.conversation_list_view.clear_the_archive", isPresented: $confirmsDeleteAll) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+            Button("settings.privacy.clear_history.confirm", role: .destructive) {
                 Task { await delete(ids: Set(conversations.map(\.id))) }
             }
-        } message: { Text("归档区内的所有任务及其私有数据将被永久删除。") }
-        .alert(
-            "永久删除这个任务？",
+        } message: { Text("chat.conversation_list_view.all_tasks_in_the_archive_and") }
+        .alert("chat.conversation_list_view.permanently_delete_this_task",
             isPresented: Binding(
                 get: { conversationPendingDeletion != nil },
                 set: { if !$0 { conversationPendingDeletion = nil } }
             )
         ) {
-            Button("取消", role: .cancel) { conversationPendingDeletion = nil }
-            Button("删除", role: .destructive) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { conversationPendingDeletion = nil }
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                 guard let conversation = conversationPendingDeletion else { return }
                 conversationPendingDeletion = nil
                 Task { await delete(ids: [conversation.id]) }
             }
         } message: {
-            Text("任务、生成内容、私有工作区和附件引用将被永久删除。")
+            Text("chat.conversation_list_view.the_task_generated_content_private_workspace_2")
         }
     }
 

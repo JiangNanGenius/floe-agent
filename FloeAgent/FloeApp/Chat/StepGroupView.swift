@@ -10,6 +10,7 @@ import FloeModels
 import FloePersistence
 import FloeSecurity
 
+import FloeCore
 enum StepGroupDisclosurePolicy {
     static func initiallyExpanded(
         isLatest: Bool, isLive: Bool, hasError: Bool, hasPendingApproval: Bool
@@ -71,15 +72,15 @@ struct StepGroupView: View {
     }
     private var summary: String {
         let reasoningCount = displayedEvents.filter { $0.kind == .reasoning }.count
-        return [toolCount > 0 ? "\(toolCount) 个工具调用" : nil,
-                reasoningCount > 0 ? "\(reasoningCount) 段思考" : nil]
+        return [toolCount > 0 ? FloeL10n.plural("chat.step_group_view.tool_calls", count: toolCount) : nil,
+                reasoningCount > 0 ? FloeL10n.plural("chat.step_group_view.thinking_segments", count: reasoningCount) : nil]
             .compactMap { $0 }.joined(separator: " · ")
     }
     private var stateTitle: String {
-        if !pendingApprovals.isEmpty { return "等待确认" }
-        if !failedTools.isEmpty { return "\(failedTools.count) 项需要查看" }
-        if !activeTools.isEmpty { return "\(activeTools.count) 项运行中" }
-        return isLive ? "执行记录" : "查看执行记录"
+        if !pendingApprovals.isEmpty { return FloeL10n.l("chat.step_group_view.waiting_for_confirmation") }
+        if !failedTools.isEmpty { return FloeL10n.plural("chat.step_group_view.items_need_review", count: failedTools.count) }
+        if !activeTools.isEmpty { return FloeL10n.plural("chat.step_group_view.items_running", count: activeTools.count) }
+        return isLive ? FloeL10n.l("chat.step_group_view.run_records") : FloeL10n.l("chat.step_group_view.view_run_records")
     }
     private var stateColor: Color {
         if !pendingApprovals.isEmpty { return FloeTheme.pending }
@@ -101,11 +102,11 @@ struct StepGroupView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "square.stack.3d.up").foregroundStyle(stateColor)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(summary.isEmpty ? "执行记录" : summary).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        Text(summary.isEmpty ? "chat.step_group_view.run_records" : summary).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         Text(stateTitle).font(.caption).foregroundStyle(stateColor)
                     }
                     Spacer(minLength: 8)
-                    Text(isExpanded ? "收起" : "展开").font(.caption).foregroundStyle(.secondary)
+                    Text(isExpanded ? "terminal.hide" : "chat.step_group_view.expand").font(.caption).foregroundStyle(.secondary)
                     Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                         .rotationEffect(.degrees(isExpanded ? 180 : 0)).foregroundStyle(.secondary)
                 }
@@ -114,7 +115,7 @@ struct StepGroupView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("thread.steps.toggle")
-            .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+            .accessibilityValue(isExpanded ? FloeL10n.l("chat.step_group_view.expanded") : FloeL10n.l("chat.step_group_view.collapsed"))
             if !visibleEvents.isEmpty {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(visibleEvents) { event in
@@ -154,7 +155,7 @@ struct StepGroupView: View {
             let payload = (payloads[event.id] ?? [:])
             let callID = payload["callID"] ?? payload["id"] ?? ""
             let summary = payload["outcome"] ?? payload["reason"]
-                ?? (event.kind == .autoApproved ? "已自动批准" : "")
+                ?? (event.kind == .autoApproved ? FloeL10n.l("chat.step_group_view.auto_approved") : "")
             if !callID.isEmpty, !summary.isEmpty {
                 result[callID] = summary
             }

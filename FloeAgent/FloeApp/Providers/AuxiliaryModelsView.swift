@@ -15,18 +15,18 @@ struct AuxiliaryModelsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("通用辅助 LLM", selection: $viewModel.generalLLMModelID) {
-                    Text("跟随主对话模型").tag(Optional<UUID>.none)
+                Picker("providers.auxiliary_models_view.general_auxiliary_llm", selection: $viewModel.generalLLMModelID) {
+                    Text("providers.auxiliary_models_view.follow_the_main_chat_model").tag(Optional<UUID>.none)
                     ForEach(viewModel.textCandidates) { model in
                         Text(viewModel.label(for: model)).tag(Optional(model.id))
                     }
                 }
-                LabeledContent("当前实际使用", value: viewModel.center.generalAuxiliaryModelLabel)
+                LabeledContent("providers.auxiliary_models_view.currently_in_use", value: viewModel.center.generalAuxiliaryModelLabel)
                     .font(FloeTheme.Typography.metadata)
             } header: {
-                Text("文本辅助")
+                Text("providers.auxiliary_models_view.text_assistance")
             } footer: {
-                Text("用于记忆整理、用户画像、技能提炼与自动标题。视觉理解、图片和视频使用下方各自的模型。")
+                Text("providers.auxiliary_models_view.used_for_memory_organization_user_profiles")
             }
             Section("model.capability.vision") {
                 modelPicker(selection: $viewModel.visionModelID, models: viewModel.visionCandidates)
@@ -41,27 +41,27 @@ struct AuxiliaryModelsView: View {
             }
 
             Section {
-                Picker("软件包审查", selection: $viewModel.packageReviewModelID) {
-                    Text("跟随通用辅助 LLM").tag(Optional<UUID>.none)
+                Picker("providers.auxiliary_models_view.package_review", selection: $viewModel.packageReviewModelID) {
+                    Text("providers.auxiliary_models_view.follow_the_general_auxiliary_llm").tag(Optional<UUID>.none)
                     ForEach(viewModel.packageReviewCandidates) { model in
                         Text(viewModel.label(for: model)).tag(Optional(model.id))
                     }
                 }
-                LabeledContent("当前实际使用", value: viewModel.packageReviewModelLabel)
+                LabeledContent("providers.auxiliary_models_view.currently_in_use", value: viewModel.packageReviewModelLabel)
                     .font(FloeTheme.Typography.metadata)
-                Text("安装 Python 包前，会确认它确实用于当前任务。需要额外系统权限或不适合本机运行的包仍会被阻止。")
+                Text("providers.auxiliary_models_view.before_installing_a_python_package_floe")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             } header: {
-                Text("软件包审查模型")
+                Text("providers.auxiliary_models_view.package_review_model")
             }
 
             Section {
-                Toggle("模型自主选择生图配置", isOn: $viewModel.autonomousImageRouting)
+                Toggle("providers.auxiliary_models_view.let_the_model_choose_the_image", isOn: $viewModel.autonomousImageRouting)
             } header: {
                 Text("auxiliary.image.configuration")
             } footer: {
-                Text("允许模型按任务选择已配置的供应商、图像模型和参数。下方预设作为优先选择和备选；关闭后使用指定模型。")
+                Text("providers.auxiliary_models_view.lets_the_model_choose_configured_providers")
             }
 
             Section {
@@ -101,13 +101,13 @@ struct AuxiliaryModelsView: View {
             ToolbarItem(placement: .confirmationAction) {
                 if viewModel.isSaving {
                     ProgressView()
-                        .accessibilityLabel("正在自动保存")
+                        .accessibilityLabel("providers.auxiliary_models_view.auto_saving")
                 } else if viewModel.errorMessage != nil {
-                    Label("未保存", systemImage: "exclamationmark.circle")
+                    Label("providers.auxiliary_models_view.unsaved", systemImage: "exclamationmark.circle")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.destructive)
                 } else {
-                    Text("已自动保存")
+                    Text("providers.auxiliary_models_view.auto_saved")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                 }
@@ -148,9 +148,9 @@ struct AuxiliaryModelsView: View {
                 models: viewModel.videoCandidates
             )
         } header: {
-            Text("默认视频模型")
+            Text("providers.auxiliary_models_view.default_video_model")
         } footer: {
-            Text("在“模型服务商”中添加和维护视频模型；这里仅选择 Agent 默认使用的模型。")
+            Text("providers.auxiliary_models_view.add_and_maintain_video_models_under")
         }
     }
 }
@@ -190,7 +190,7 @@ final class AuxiliaryModelsViewModel: ObservableObject {
             return center.generalAuxiliaryModelLabel
         }
         guard let model = packageReviewCandidates.first(where: { $0.id == id }) else {
-            return "所选模型不可用，请重新选择"
+            return FloeL10n.l("providers.auxiliary_models_view.the_selected_model_is_unavailable_choose")
         }
         return label(for: model)
     }

@@ -30,7 +30,7 @@ struct AssistantMessageView: View {
                     readAloudButton
                     copyButton
                     if let onSaveToNotes {
-                        Button("保存到手记", systemImage: "square.and.arrow.down") { onSaveToNotes(text) }
+                        Button("chat.assistant_message_view.save_to_notes", systemImage: "square.and.arrow.down") { onSaveToNotes(text) }
                             .font(FloeTheme.Typography.metadata).frame(minHeight: FloeTheme.minimumTarget)
                     }
                 }
@@ -46,13 +46,13 @@ struct AssistantMessageView: View {
         Button {
             UIPasteboard.general.string = text
         } label: {
-            Label("复制", systemImage: "doc.on.doc")
+            Label("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc")
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
         .frame(minHeight: FloeTheme.minimumTarget)
-        .accessibilityLabel("复制")
+        .accessibilityLabel("workspace.workspace_canvas_view.copy")
     }
 
     private var readAloudButton: some View {
@@ -62,7 +62,7 @@ struct AssistantMessageView: View {
             speechService.speak(text)
         } label: {
             Label(
-                isThisMessageSpeaking ? "停止朗读" : "朗读",
+                isThisMessageSpeaking ? "chat.assistant_message_view.stop_reading" : "chat.assistant_message_view.read_aloud",
                 systemImage: isThisMessageSpeaking ? "stop.circle.fill" : "speaker.wave.2"
             )
             .font(FloeTheme.Typography.metadata)
@@ -70,7 +70,7 @@ struct AssistantMessageView: View {
         }
         .buttonStyle(.plain)
         .frame(minHeight: FloeTheme.minimumTarget)
-        .accessibilityLabel(isThisMessageSpeaking ? "停止朗读" : "朗读")
+        .accessibilityLabel(isThisMessageSpeaking ? "chat.assistant_message_view.stop_reading" : "chat.assistant_message_view.read_aloud")
     }
 }
 #endif

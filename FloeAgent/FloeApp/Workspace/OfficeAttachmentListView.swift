@@ -1,6 +1,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 
+import FloeCore
 struct OfficeAttachmentItem: Identifiable, Sendable {
     let id: String
     let name: String
@@ -39,22 +40,22 @@ struct OfficeAttachmentListView: View {
                         }
                         Spacer()
                         Menu {
-                            Button("查看", systemImage: "eye") { Task { await open(attachment, preview: true) } }
-                            Button("存储到文件", systemImage: "square.and.arrow.up") { Task { await open(attachment, preview: false) } }
+                            Button("chat.thread_detail_view_model.view", systemImage: "eye") { Task { await open(attachment, preview: true) } }
+                            Button("workspace.office_attachment_list_view.save_to_files", systemImage: "square.and.arrow.up") { Task { await open(attachment, preview: false) } }
                         } label: { Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44) }
-                        .accessibilityLabel("\(attachment.name)，附件操作")
+                        .accessibilityLabel(FloeL10n.l("workspace.office_attachment_list_view.attachment_action", attachment.name))
                     }
                 }
-                if loading { ProgressView("正在读取附件…") }
+                if loading { ProgressView("workspace.office_attachment_list_view.reading_attachment") }
                 if !loading, error == nil, attachments.isEmpty {
-                    ContentUnavailableView("没有文件附件", systemImage: "paperclip",
-                        description: Text("此处列出嵌入文档的文件附件。图表、图片等对象可在文档中操作。"))
+                    ContentUnavailableView("workspace.office_attachment_list_view.no_file_attachments", systemImage: "paperclip",
+                        description: Text("workspace.office_attachment_list_view.file_attachments_embedded_in_the_document"))
                 }
             }
             .disabled(busy)
-            .overlay { if busy { ProgressView("正在读取附件…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-            .navigationTitle("文档附件")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() }.disabled(busy || loading) } }
+            .overlay { if busy { ProgressView("workspace.office_attachment_list_view.reading_attachment").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+            .navigationTitle("workspace.office_attachment_list_view.document_attachments")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("workspace.workspace_canvas_view.done") { dismiss() }.disabled(busy || loading) } }
             .task { await load() }
             .sheet(item: $presentation) { item in
                 if item.preview { QuickLookView(url: item.url).ignoresSafeArea() }

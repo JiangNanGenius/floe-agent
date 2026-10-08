@@ -4,12 +4,13 @@ import SwiftUI
 import FloeModels
 import FloeWorkspace
 
+import FloeCore
 struct OfficeWorkspaceAttachmentPicker: View {
     enum Purpose {
         case attachment, notesImport
-        var title: String { self == .notesImport ? "从工作区导入" : "选择附件" }
-        var progress: String { self == .notesImport ? "正在导入手记…" : "正在插入附件…" }
-        var failure: String { self == .notesImport ? "未能导入文件" : "未能插入附件" }
+        var title: String { self == .notesImport ? FloeL10n.l("workspace.office_workspace_attachment_picker.import_from_workspace") : FloeL10n.l("workspace.office_workspace_attachment_picker.select_attachment") }
+        var progress: String { self == .notesImport ? FloeL10n.l("workspace.office_workspace_attachment_picker.importing_note") : FloeL10n.l("workspace.office_workspace_attachment_picker.inserting_attachment") }
+        var failure: String { self == .notesImport ? FloeL10n.l("workspace.office_workspace_attachment_picker.could_not_import_the_file") : FloeL10n.l("workspace.office_workspace_attachment_picker.could_not_insert_the_attachment") }
     }
     @StateObject private var center: WorkspaceCenter
     let purpose: Purpose
@@ -28,7 +29,7 @@ struct OfficeWorkspaceAttachmentPicker: View {
         NavigationStack {
             List {
                 if purpose == .notesImport {
-                    Text("选择项目或聊天中生成的文件。导入后，手记会独立保存副本。")
+                    Text("workspace.office_workspace_attachment_picker.choose_a_file_generated_in_a")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 if let error = center.actionError { Text(error).foregroundStyle(.secondary) }
@@ -39,16 +40,16 @@ struct OfficeWorkspaceAttachmentPicker: View {
                             dismiss()
                         }
                     } label: {
-                        Label(workspace.name.isEmpty ? "聊天工作区" : workspace.name,
+                        Label(workspace.name.isEmpty ? "settings.all_workspaces_files_view.chat_workspace" : workspace.name,
                               systemImage: workspace.kind == .project ? "folder" : "bubble.left")
                     }
                     .accessibilityIdentifier("workspace.import.source.\(workspace.id)")
                 }
-                if center.workspaces.isEmpty { ContentUnavailableView("没有可用的工作区", systemImage: "folder") }
+                if center.workspaces.isEmpty { ContentUnavailableView("workspace.office_workspace_attachment_picker.no_workspaces_available", systemImage: "folder") }
             }
             .navigationTitle(purpose.title)
-            .searchable(text: $query, prompt: "搜索工作区")
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(busy) } }
+            .searchable(text: $query, prompt: "workspace.office_workspace_attachment_picker.search_workspaces")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { dismiss() }.disabled(busy) } }
             .task { await center.reload() }
         }
         .interactiveDismissDisabled(busy)
@@ -73,7 +74,7 @@ private struct OfficeAttachmentFolder: View {
         List {
             if let error {
                 Text(error).foregroundStyle(.secondary)
-                Button("重试") { Task { await load() } }
+                Button("settings.document_recovery_list_view.retry") { Task { await load() } }
             }
             ForEach(entries, id: \.relativePath) { file in
                 if file.isDirectory {
@@ -96,9 +97,9 @@ private struct OfficeAttachmentFolder: View {
                     .accessibilityIdentifier("office.attachment.workspace.file.\(file.relativePath)")
                 }
             }
-            if nextPage != nil { Button("加载更多文件") { Task { await load(more: true) } }.disabled(loading) }
+            if nextPage != nil { Button("workspace.office_workspace_attachment_picker.load_more_files") { Task { await load(more: true) } }.disabled(loading) }
             if loading { ProgressView() }
-            if !loading, error == nil, entries.isEmpty { ContentUnavailableView("文件夹为空", systemImage: "folder") }
+            if !loading, error == nil, entries.isEmpty { ContentUnavailableView("inspector.tree.empty", systemImage: "folder") }
         }
         .navigationTitle(path == "." ? workspace.name : (path as NSString).lastPathComponent)
         .navigationBarBackButtonHidden(busy)
@@ -106,7 +107,7 @@ private struct OfficeAttachmentFolder: View {
         .overlay { if busy { ProgressView(purpose.progress).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         .task(id: path) { await load() }
         .alert(purpose.failure, isPresented: Binding(get: { insertionError != nil }, set: { if !$0 { insertionError = nil } })) {
-            Button("好", role: .cancel) { insertionError = nil }
+            Button("workspace.office_document_editor_view.ok", role: .cancel) { insertionError = nil }
         } message: { Text(insertionError ?? "") }
     }
 

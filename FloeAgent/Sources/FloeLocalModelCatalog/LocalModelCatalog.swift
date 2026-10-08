@@ -230,11 +230,10 @@ public actor LocalModelStore {
         case insufficientDiskSpace(required: Int64, available: Int64)
         public var errorDescription: String? {
             switch self {
-            case .invalidGGUF: "下载的模型文件无法使用，请删除后重新下载。"
-            case .invalidMLXSnapshot: "下载的模型文件不完整或不兼容，请删除后重新下载。"
-            case .unexpectedArtifact: "下载内容未通过安全检查，已停止安装。"
-            case .insufficientDiskSpace(let required, let available):
-                "设备空间不足，需要 \(ByteCountFormatter.string(fromByteCount: required, countStyle: .file))，目前可用 \(ByteCountFormatter.string(fromByteCount: available, countStyle: .file))。"
+            case .invalidGGUF: FloeL10n.l("localmodels.local_model_catalog.the_downloaded_model_files_cannot_be")
+            case .invalidMLXSnapshot: FloeL10n.l("localmodels.local_model_catalog.the_downloaded_model_files_are_incomplete")
+            case .unexpectedArtifact: FloeL10n.l("localmodels.local_model_catalog.the_download_failed_the_security_check")
+            case .insufficientDiskSpace(let required, let available):FloeL10n.l("localmodels.local_model_catalog.the_device_is_low_on_space", ByteCountFormatter.string(fromByteCount: required, countStyle: .file), ByteCountFormatter.string(fromByteCount: available, countStyle: .file))
             }
         }
     }

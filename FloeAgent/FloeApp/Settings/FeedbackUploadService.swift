@@ -72,10 +72,8 @@ enum FeedbackUploadError: LocalizedError, Equatable {
         case .invalidResponse:
             String(localized: "feedback.error.invalid_response")
         case .rateLimited(let seconds):
-            if let seconds {
-                "反馈服务请求过于频繁，请在 \(seconds) 秒后重试。报告已保存在本机。"
-            } else {
-                "反馈服务请求过于频繁，请稍后重试。报告已保存在本机。"
+            if let seconds {FloeL10n.l("settings.feedback_upload_service.feedback_requests_are_too_frequent_try", seconds)
+            } else {FloeL10n.l("settings.feedback_upload_service.feedback_requests_are_too_frequent_try_2")
             }
         case .rejected(let statusCode):
             String(format: String(localized: "feedback.error.rejected"), statusCode)

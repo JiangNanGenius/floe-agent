@@ -31,11 +31,11 @@ public actor EnvironmentManagementService {
         let stack = await registry.layerStack(for: id, bundledBaseURL: baseSliceURL)
         if writable {
             guard record.kind.isWritableLayer, record.state == .active, !record.requiresRebuild else {
-                throw FloeError.validationFailed("此环境不可写，或需要重建依赖")
+                throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.this_environment_is_not_writable_or"))
             }
             for layer in stack.layers {
                 if let layerID = layer.manifest?.id, let parent = await registry.record(id: layerID), parent.state != .active || parent.requiresRebuild {
-                    throw FloeError.validationFailed("继承的环境不可用；请先恢复父环境")
+                    throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.the_inherited_environment_is_unavailable_restore"))
                 }
             }
         }
@@ -75,9 +75,9 @@ public actor EnvironmentManagementService {
                   url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
                   !source.uri.contains(where: { $0.isWhitespace }), !source.components.isEmpty,
                   ([source.suite] + source.components).allSatisfy({ !$0.isEmpty && $0.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil }) else {
-                throw FloeError.validationFailed("请输入 HTTPS 软件源地址，以及有效的发行版和组件")
+                throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.enter_an_https_software_source_url"))
             }
-            var receipt = "已保存无签名软件源；仅对此源信任"
+            var receipt = FloeL10n.l("packages.environment_management_service.unsigned_software_source_saved_trusted_for")
             if source.trusted {
                 source.signedBy = nil
             } else {
@@ -86,21 +86,21 @@ public actor EnvironmentManagementService {
                    let path = old.signedBy, path.hasPrefix("etc/apt/keyrings/") {
                     let url = try AptSources.confinedURL(path, root: container.layerURL)
                     guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 1_048_576 else {
-                        throw FloeError.validationFailed("公钥文件超过 1 MB")
+                        throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.the_public_key_file_exceeds_1"))
                     }
                     armoredKey = try String(contentsOf: url, encoding: .utf8)
                 }
-                guard armoredKey.utf8.count <= 1_048_576 else { throw FloeError.validationFailed("公钥文件超过 1 MB") }
+                guard armoredKey.utf8.count <= 1_048_576 else { throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.the_public_key_file_exceeds_1")) }
                 let keys = try OpenPGP.parseKeyring(Data(armoredKey.utf8))
                 guard let key = keys.first, !key.revoked, key.signingKey != nil else {
-                    throw FloeError.validationFailed("请提供有效的 OpenPGP 签名公钥")
+                    throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.provide_a_valid_openpgp_public_signing"))
                 }
                 let keyPath = "etc/apt/keyrings/" + key.primary.fingerprint + ".asc"
                 let target = try AptSources.confinedURL(keyPath, root: container.layerURL)
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try Data(armoredKey.utf8).write(to: target, options: .atomic)
                 source.signedBy = keyPath; source.trusted = false
-                receipt = "已保存软件源；签名指纹：" + key.primary.fingerprint
+                receipt = FloeL10n.l("packages.environment_management_service.software_source_saved_signature_fingerprint") + key.primary.fingerprint
             }
             var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
             sources.removeAll { $0.id == source.id || $0.id == replacingID }; sources.append(source)
@@ -110,32 +110,32 @@ public actor EnvironmentManagementService {
             var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
             sources.removeAll { $0.id == sourceID }
             try AptSources.write(sources, toContainer: container.layerURL, replacingAll: true)
-            return "已移除软件源"
+            return FloeL10n.l("packages.environment_management_service.software_source_removed")
         case .setSourceEnabled(let sourceID, let enabled):
             var sources = AptSources.read(inContainerAt: container.layerURL, includingDisabled: true)
-            guard let index = sources.firstIndex(where: { $0.id == sourceID }) else { throw FloeError.notFound("软件源已移除") }
+            guard let index = sources.firstIndex(where: { $0.id == sourceID }) else { throw FloeError.notFound(FloeL10n.l("packages.environment_management_service.software_source_removed_2")) }
             sources[index].enabled = enabled
             try AptSources.write(sources, toContainer: container.layerURL, replacingAll: true)
-            return enabled ? "已启用软件源；请刷新索引" : "已停用软件源"
+            return enabled ? FloeL10n.l("packages.environment_management_service.software_source_enabled_refresh_the_index") : FloeL10n.l("packages.environment_management_service.disabled_software_source")
         case .refresh:
             let sources = AptSources.read(inContainerAt: container.layerURL).filter { $0.enabled }
-            guard !sources.isEmpty else { throw FloeError.validationFailed("此环境尚未配置软件源，请先添加软件源") }
+            guard !sources.isEmpty else { throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.this_environment_has_no_software_sources")) }
             let result = await engine.update(container: container, sources: sources)
             try Task.checkCancellation()
             guard result.failures.isEmpty else { throw FloeError.validationFailed(result.failures.joined(separator: "\n")) }
-            return "已验证并刷新 \(result.packages) 个软件包"
+            return FloeL10n.plural("packages.environment_management_service.verified_and_refreshed_packages", count: result.packages)
         case .install(let name):
             let steps = try await engine.install([name], container: container)
-            return steps.isEmpty ? "软件包已是当前版本" : "已安装：" + steps.map { "\($0.package) \($0.version)" }.joined(separator: ", ")
+            return steps.isEmpty ? FloeL10n.l("packages.environment_management_service.the_package_is_already_at_the") : FloeL10n.l("packages.environment_management_service.installed") + steps.map { "\($0.package) \($0.version)" }.joined(separator: ", ")
         case .remove(let name):
             _ = try await engine.remove([name], container: container, purge: false)
-            return "已卸载 \(name)"
+            return FloeL10n.l("packages.environment_management_service.uninstalled", name)
         case .hold(let name):
             try await engine.hold(name, container: container)
-            return "已固定 \(name) 的版本"
+            return FloeL10n.l("packages.environment_management_service.pinned_the_version_of", name)
         case .unhold(let name):
             try await engine.unhold(name, container: container)
-            return "已解除 \(name) 的版本固定"
+            return FloeL10n.l("packages.environment_management_service.unpinned_the_version_of", name)
         }
     }
 
@@ -146,7 +146,7 @@ public actor EnvironmentManagementService {
     public func resumeEnvironment(id: String) async throws {
         guard let record = await registry.record(id: id),
               record.kind.isWritableLayer, record.state == .stopped, !record.requiresRebuild else {
-            throw FloeError.validationFailed("此环境无法恢复；请检查依赖重建状态")
+            throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.this_environment_cannot_be_restored_check"))
         }
         try await registry.transition(id: id, state: .active)
     }
@@ -157,10 +157,10 @@ public actor EnvironmentManagementService {
 
     public func saveEnvironmentTemplate(id: String, name: String) async throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name.count <= 80 else { throw FloeError.validationFailed("请输入 1–80 字的模板名称") }
+        guard !name.isEmpty, name.count <= 80 else { throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.enter_a_template_name_of_1")) }
         guard let record = await registry.record(id: id), record.kind.isWritableLayer,
               record.state == .stopped, !record.requiresRebuild else {
-            throw FloeError.validationFailed("请先停止此环境，再保存一致的依赖模板")
+            throw FloeError.validationFailed(FloeL10n.l("packages.environment_management_service.stop_this_environment_before_saving_a"))
         }
         _ = try await registry.createTemplate(from: id, name: name)
     }

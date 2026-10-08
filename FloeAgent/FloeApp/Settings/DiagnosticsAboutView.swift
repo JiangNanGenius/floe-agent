@@ -117,7 +117,7 @@ struct DiagnosticsAboutView: View {
                     Button {
                         presentsFullLog = true
                     } label: {
-                        Label("全屏", systemImage: "arrow.up.left.and.arrow.down.right")
+                        Label("pdf.reader.expand", systemImage: "arrow.up.left.and.arrow.down.right")
                     }
                     .disabled(logText.isEmpty)
                 }
@@ -179,7 +179,7 @@ struct DiagnosticsAboutView: View {
                 }
             }
         }
-        .navigationTitle("settings.section.diagnostics")
+        .navigationTitle(FloeL10n.l("settings.section.diagnostics"))
         .task {
             await center.load()
             logText = FloeLogger.buffer.renderedText()
@@ -197,16 +197,16 @@ struct DiagnosticsAboutView: View {
             NavigationStack {
                 DiagnosticLogTextView(text: logText)
                     .ignoresSafeArea(edges: .bottom)
-                .navigationTitle("诊断日志")
+                .navigationTitle(FloeL10n.l("settings.diagnostics_about_view.diagnostic_logs"))
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("完成") { presentsFullLog = false }
+                        Button("workspace.workspace_canvas_view.done") { presentsFullLog = false }
                     }
                     ToolbarItemGroup(placement: .primaryAction) {
-                        Button("刷新", systemImage: "arrow.clockwise") {
+                        Button("envmgr.refresh", systemImage: "arrow.clockwise") {
                             logText = FloeLogger.buffer.renderedText()
                         }
-                        Button("复制", systemImage: "doc.on.doc") {
+                        Button("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = logText
                         }
                     }

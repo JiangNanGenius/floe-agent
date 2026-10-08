@@ -62,6 +62,6 @@ public extension BackgroundExecutionPreference {
 /// together so no user-facing text is added in one language only.
 enum BackgroundExecutionPreferenceText {
     static func t(_ zh: String, _ en: String) -> String {
-        Locale.current.identifier.hasPrefix("zh") ? zh : en
+        FloeL10n.isChinese ? zh : en
     }
 }

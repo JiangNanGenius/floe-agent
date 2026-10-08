@@ -34,7 +34,7 @@ struct HomeOverviewView: View {
     var body: some View {
         List {
             if !runningTasks.isEmpty {
-                Section("运行中") {
+                Section("home.home_overview_view.running") {
                     ForEach(runningTasks) { conversation in
                         overviewRow(conversation, showsState: true)
                     }
@@ -59,30 +59,30 @@ struct HomeOverviewView: View {
                 }
             }
             if !failedTasks.isEmpty {
-                Section("失败或中断") {
+                Section("home.home_overview_view.failed_or_interrupted") {
                     ForEach(failedTasks) { conversation in
                         overviewRow(conversation, showsState: true)
                     }
                 }
             }
             if !completedTasks.isEmpty {
-                Section("已完成") {
+                Section("home.home_overview_view.completed") {
                     ForEach(completedTasks) { conversation in
                         overviewRow(conversation, showsState: true)
                     }
                 }
             }
             if !schedules.isEmpty {
-                Section("已安排") {
+                Section("home.home_overview_view.scheduled") {
                     ForEach(schedules) { schedule in
                         VStack(alignment: .leading, spacing: 4) {
                             Label(schedule.title, systemImage: "calendar.badge.clock")
                             if let expected = schedule.nextExpectedAt {
-                                Text("预计 \(expected.formatted(date: .abbreviated, time: .shortened))")
+                                Text(FloeL10n.l("home.home_overview_view.estimated", expected.formatted(date: .abbreviated, time: .shortened)))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             if let actual = schedule.lastStartedAt {
-                                Text("最近实际 \(actual.formatted(date: .abbreviated, time: .shortened))")
+                                Text(FloeL10n.l("home.home_overview_view.last_actual", actual.formatted(date: .abbreviated, time: .shortened)))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -93,13 +93,13 @@ struct HomeOverviewView: View {
                                         .delete(id: schedule.id)
                                     await load()
                                 }
-                            } label: { Label("删除安排", systemImage: "trash") }
+                            } label: { Label("home.home_overview_view.delete_schedule", systemImage: "trash") }
                         }
                     }
                 }
             }
             if !archivedTasks.isEmpty {
-                Section("已归档") {
+                Section("settings.all_workspaces_files_view.archived") {
                     ForEach(archivedTasks) { conversation in
                         HStack {
                             Image(systemName: selectedArchivedIDs.contains(conversation.id)
@@ -108,7 +108,7 @@ struct HomeOverviewView: View {
                             Text(conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title)
                                 .lineLimit(1)
                             Spacer()
-                            Button("恢复") {
+                            Button("canvas.drawingHistory.restore") {
                                 Task {
                                     try? await center.restoreConversation(id: conversation.id)
                                     await load()
@@ -139,7 +139,7 @@ struct HomeOverviewView: View {
             }
         }
         .navigationTitle("tab.workbench")
-        .searchable(text: $searchText, prompt: "搜索任务")
+        .searchable(text: $searchText, prompt: "home.home_overview_view.search_tasks")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -148,11 +148,11 @@ struct HomeOverviewView: View {
                     Image(systemName: "calendar.badge.plus")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("安排任务")
+                .accessibilityLabel("home.home_overview_view.schedule_task")
             }
             if !selectedArchivedIDs.isEmpty {
                 ToolbarItem(placement: .bottomBar) {
-                    Button("恢复所选") {
+                    Button("home.home_overview_view.restore_selection") {
                         Task {
                             for id in selectedArchivedIDs { try? await center.restoreConversation(id: id) }
                             selectedArchivedIDs.removeAll()
@@ -161,7 +161,7 @@ struct HomeOverviewView: View {
                     }
                 }
                 ToolbarItem(placement: .bottomBar) {
-                    Button("删除所选", role: .destructive) { confirmingArchiveDeletion = true }
+                    Button("home.home_overview_view.delete_selection", role: .destructive) { confirmingArchiveDeletion = true }
                 }
             }
             ToolbarItem(placement: .primaryAction) {
@@ -183,9 +183,9 @@ struct HomeOverviewView: View {
         .sheet(isPresented: $showingSchedule) {
             TaskScheduleSheet { await load() }
         }
-        .alert("永久删除归档任务？", isPresented: $confirmingArchiveDeletion) {
-            Button("取消", role: .cancel) {}
-            Button("删除", role: .destructive) {
+        .alert("home.home_overview_view.permanently_delete_archived_tasks", isPresented: $confirmingArchiveDeletion) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                 Task {
                     for id in selectedArchivedIDs { try? await center.deleteConversation(id: id) }
                     selectedArchivedIDs.removeAll()
@@ -193,7 +193,7 @@ struct HomeOverviewView: View {
                 }
             }
         } message: {
-            Text("所选任务及其私有数据将被永久删除。")
+            Text("home.home_overview_view.the_selected_tasks_and_their_private")
         }
     }
 
@@ -273,7 +273,7 @@ struct HomeOverviewView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("选择多个", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
+            Button("home.home_overview_view.select_multiple", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
                 .accessibilityIdentifier("workbench.selectMultiple")
         }
         .frame(minHeight: FloeTheme.minimumTarget)

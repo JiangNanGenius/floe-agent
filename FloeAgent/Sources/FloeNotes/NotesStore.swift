@@ -3,6 +3,7 @@ import Foundation
 import GRDB
 import Crypto
 
+import FloeCore
 /// A long-lived database independent from conversations and task workspaces.
 /// All mutations, revisions, history and resource references commit in one SQLite transaction.
 public actor NotesStore {
@@ -70,7 +71,7 @@ public actor NotesStore {
 
     @discardableResult public func createNotebook(title: String) throws -> Notebook {
         defer { publishChange() }
-        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NoteError.invalidOperation("请输入笔记本名称。") }
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.enter_a_notebook_name")) }
         let book = Notebook(title: title)
         try database.write { db in try db.execute(sql: "INSERT INTO notebooks VALUES (?, ?)", arguments: [book.id.uuidString, try encoder.encode(book)]) }
         return book
@@ -78,7 +79,7 @@ public actor NotesStore {
 
     public func renameNotebook(_ id: UUID, title: String) throws {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty, title.utf8.count <= 4096 else { throw NoteError.invalidOperation("笔记本名称为空或过长。") }
+        guard !title.isEmpty, title.utf8.count <= 4096 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_notebook_name_is_empty_or")) }
         try database.write { db in
             guard let body = try Data.fetchOne(db, sql: "SELECT body FROM notebooks WHERE id=?", arguments: [id.uuidString]) else { throw NoteError.notFound }
             var book = try decoder.decode(Notebook.self, from: body)
@@ -96,9 +97,9 @@ public actor NotesStore {
     }
 
     public func markOpened(_ id: UUID, at date: Date = Date()) throws {
-        guard date.timeIntervalSince1970.isFinite else { throw NoteError.invalidOperation("打开时间无效。") }
+        guard date.timeIntervalSince1970.isFinite else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.invalid_open_time")) }
         try database.write { db in
-            guard try read(id, db: db).deletedAt == nil else { throw NoteError.invalidOperation("请先恢复资料。") }
+            guard try read(id, db: db).deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_material_first")) }
             try db.execute(sql: "INSERT INTO document_visits VALUES(?,?) ON CONFLICT(document_id) DO UPDATE SET opened=excluded.opened",
                            arguments: [id.uuidString, date.timeIntervalSince1970])
         }
@@ -106,7 +107,7 @@ public actor NotesStore {
     }
 
     public func recentDocuments(limit: Int = 50) throws -> [NoteDocument] {
-        guard (1...200).contains(limit) else { throw NoteError.invalidOperation("最近列表数量无效。") }
+        guard (1...200).contains(limit) else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.invalid_recent_list_count")) }
         return try database.read { db in
             try Data.fetchAll(db, sql: """
                 SELECT d.body FROM documents d LEFT JOIN document_visits v ON v.document_id=d.id
@@ -128,7 +129,7 @@ public actor NotesStore {
             for link in root.linkedMindMaps ?? [] {
                 let map = try read(link.documentID, db: db)
                 guard map.kind == .mindMap, map.deletedAt == nil else {
-                    throw NoteError.invalidOperation("关联导图已移入回收站；请恢复或解除关联后再导出。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_linked_mind_map_was_moved"))
                 }
                 documents.append(map)
             }
@@ -144,7 +145,7 @@ public actor NotesStore {
     /// Atomically imports a root and its independent linked maps. No partial library entries.
     @discardableResult public func createBundle(_ documents: [NoteDocument]) throws -> [NoteDocument] {
         guard !documents.isEmpty, documents.count <= 101,
-              Set(documents.map(\.id)).count == documents.count else { throw NoteError.invalidDocument("导入文档数量或标识无效。") }
+              Set(documents.map(\.id)).count == documents.count else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_store.the_import_document_count_or_identifier")) }
         let values = documents.map { document in
             var value = document
             value.revision = 1; value.createdAt = Date(); value.updatedAt = value.createdAt; value.deletedAt = nil
@@ -182,7 +183,7 @@ public actor NotesStore {
             try updateReferencesAndSearch(map, db: db)
             let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [before.id.uuidString]) ?? 0
             try db.execute(sql: "DELETE FROM history WHERE document_id=? AND position>?", arguments: [before.id.uuidString, cursor])
-            try db.execute(sql: "INSERT INTO history VALUES(?,?,?,?,?)", arguments: [before.id.uuidString, cursor + 1, "关联新导图", try encoder.encode(before), try encoder.encode(after)])
+            try db.execute(sql: "INSERT INTO history VALUES(?,?,?,?,?)", arguments: [before.id.uuidString, cursor + 1, FloeL10n.l("notes.notes_store.link_new_mind_map"), try encoder.encode(before), try encoder.encode(after)])
             try persist(after, cursor: cursor + 1, db: db)
             return map
         }
@@ -192,13 +193,13 @@ public actor NotesStore {
 
     @discardableResult public func apply(_ batch: NoteEditBatch, authorizedConversationID: UUID? = nil, reviewedRecovery: (id: UUID, revision: Int)? = nil, resolvingConflictID: UUID? = nil) throws -> NoteDocument {
         defer { publishChange() }
-        guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else { throw NoteError.invalidOperation("编辑批次为空或过大。") }
+        guard !batch.edits.isEmpty, batch.edits.count <= 10_000 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_edit_batch_is_empty_or")) }
         return try database.write { db in
             // Recheck tool authority inside the same write transaction as its edits.
             // A native revoke while the Agent prepares a batch must win at commit.
             if let conversation = authorizedConversationID {
                 guard try Bool.fetchOne(db, sql: "SELECT can_edit FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversation.uuidString, batch.documentID.uuidString]) == true else {
-                    throw NoteError.invalidOperation("此对话已没有修改该资料的授权。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.this_conversation_is_no_longer_authorized"))
                 }
             }
             if let request = batch.requestID,
@@ -217,20 +218,20 @@ public actor NotesStore {
             if let reviewedRecovery {
                 let copy = try read(reviewedRecovery.id, db: db)
                 guard copy.revision == reviewedRecovery.revision, copy.deletedAt == nil else {
-                    throw NoteError.invalidOperation("恢复副本已有新的修改；请保留两个版本，在副本中继续。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_recovery_copy_already_has_newer"))
                 }
             }
             let before = try read(batch.documentID, db: db)
-            guard before.deletedAt == nil else { throw NoteError.invalidOperation("请先从回收站恢复内容。") }
+            guard before.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_content_from_trash_first")) }
             guard before.revision == batch.expectedRevision else { throw NoteError.conflict }
             var after = before
             for edit in batch.edits { try edit.apply(to: &after) }
             for link in after.linkedMindMaps ?? [] where !(before.linkedMindMaps ?? []).contains(link) {
                 let target = try read(link.documentID, db: db)
-                guard target.kind == .mindMap, target.deletedAt == nil else { throw NoteError.invalidOperation("关联目标不是可用的思维导图。") }
+                guard target.kind == .mindMap, target.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_link_target_is_not_a")) }
                 if let conversation = authorizedConversationID {
                     guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM assistant_scopes WHERE conversation_id=? AND document_id=?)", arguments: [conversation.uuidString, target.id.uuidString]) == true else {
-                        throw NoteError.invalidOperation("请先把要关联的导图加入此对话的资料范围。")
+                        throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.add_the_mind_map_to_link"))
                     }
                 }
             }
@@ -314,11 +315,11 @@ public actor NotesStore {
         return try database.write { db in
             let current = try read(id, db: db)
             guard current.revision == expectedRevision else { throw NoteError.conflict }
-            guard current.deletedAt == nil else { throw NoteError.invalidOperation("请先恢复内容。") }
+            guard current.deletedAt == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.restore_the_content_first")) }
             let cursor = try Int.fetchOne(db, sql: "SELECT cursor FROM documents WHERE id=?", arguments: [id.uuidString]) ?? 0
             let position = redo ? cursor + 1 : cursor
             guard let data = try Data.fetchOne(db, sql: "SELECT \(redo ? "after" : "before") FROM history WHERE document_id=? AND position=?", arguments: [id.uuidString, position]) else {
-                throw NoteError.invalidOperation(redo ? "没有可重做的编辑。" : "没有可撤销的编辑。")
+                throw NoteError.invalidOperation(redo ? FloeL10n.l("notes.notes_store.no_edits_to_redo") : FloeL10n.l("notes.notes_store.no_edits_to_undo"))
             }
             var value = try decoder.decode(NoteDocument.self, from: data)
             // History restores content, never rewinds the monotonically increasing revision.
@@ -348,7 +349,7 @@ public actor NotesStore {
         try database.write { db in
             let value = try read(id, db: db)
             guard value.revision == expectedRevision else { throw NoteError.conflict }
-            guard value.deletedAt != nil else { throw NoteError.invalidOperation("请先将内容移到回收站。") }
+            guard value.deletedAt != nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.move_the_content_to_trash_first")) }
             var candidates = value.resourceIDs
             for body in try Data.fetchAll(db, sql: "SELECT before FROM history WHERE document_id=? UNION ALL SELECT after FROM history WHERE document_id=? UNION ALL SELECT body FROM edit_receipts WHERE document_id=?", arguments: [id.uuidString, id.uuidString, id.uuidString]) {
                 candidates.formUnion(try decoder.decode(NoteDocument.self, from: body).resourceIDs)
@@ -456,8 +457,8 @@ public actor NotesStore {
     public func importResource(from source: URL, mediaType: String) throws -> UUID {
         let source = source.standardizedFileURL.resolvingSymlinksInPath()
         let info = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard info.isRegularFile == true else { throw NoteError.invalidOperation("只能导入普通文件。") }
-        guard (info.fileSize ?? 0) <= 536_870_912 else { throw NoteError.invalidOperation("单个手记资源不能超过 512 MB。") }
+        guard info.isRegularFile == true else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.only_regular_files_can_be_imported")) }
+        guard (info.fileSize ?? 0) <= 536_870_912 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.a_single_note_resource_cannot_exceed")) }
         let staging = resources.appendingPathComponent(".import-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: staging) }
         try FileManager.default.copyItem(at: source, to: staging)
@@ -466,7 +467,7 @@ public actor NotesStore {
         var hasher = SHA256(); var count = 0
         while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
             count += chunk.count
-            guard count <= 536_870_912 else { throw NoteError.invalidOperation("资源超过导入上限。") }
+            guard count <= 536_870_912 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_resource_exceeds_the_import_limit")) }
             hasher.update(data: chunk)
         }
         let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
@@ -597,10 +598,10 @@ public actor NotesStore {
     }
 
     public func authorize(conversationID: UUID?, documentID: UUID, editing: Bool) throws {
-        guard let conversationID else { throw NoteError.invalidOperation("此任务没有已选择的手记资料。") }
+        guard let conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.this_task_has_no_selected_note")) }
         try database.read { db in
             guard let canEdit = try Bool.fetchOne(db, sql: "SELECT can_edit FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [conversationID.uuidString, documentID.uuidString]),
-                  !editing || canEdit else { throw NoteError.invalidOperation("请先在手记中选择此文档并打开助手。") }
+                  !editing || canEdit else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.select_this_document_in_notes_and")) }
             guard try read(documentID, db: db).deletedAt == nil else { throw NoteError.notFound }
         }
     }
@@ -624,10 +625,10 @@ public actor NotesStore {
     private func validateResources(_ value: NoteDocument, db: Database) throws {
         if let book = value.notebookID,
            try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM notebooks WHERE id=?)", arguments: [book.uuidString]) != true {
-            throw NoteError.invalidOperation("目标笔记本不存在。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.the_target_notebook_does_not_exist"))
         }
         for link in value.linkedMindMaps ?? [] {
-            guard try read(link.documentID, db: db).kind == .mindMap else { throw NoteError.invalidDocument("关联目标不是思维导图。") }
+            guard try read(link.documentID, db: db).kind == .mindMap else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_store.the_link_target_is_not_a_2")) }
         }
         for id in value.resourceIDs {
             guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?)", arguments: [id.uuidString]) == true else { throw NoteError.resourceUnavailable }

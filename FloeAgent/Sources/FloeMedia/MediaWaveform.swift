@@ -17,9 +17,9 @@ public enum MediaWaveformSampler {
 
         public var errorDescription: String? {
             switch self {
-            case .noAudioTrack: return "该素材没有音频轨。"
-            case .unreadable: return "无法解码音频素材。"
-            case .cancelled: return "已取消。"
+            case .noAudioTrack: return FloeL10n.l("media.media_waveform.this_asset_has_no_audio_track")
+            case .unreadable: return FloeL10n.l("media.media_waveform.could_not_decode_the_audio_asset")
+            case .cancelled: return FloeL10n.l("media.media_waveform.canceled")
             }
         }
     }

@@ -117,7 +117,7 @@ enum ModelDiscovery {
             // Auth failures: surface the provider's message directly so the
             // user sees "api key invalid" instead of a bare HTTP status.
             if http.statusCode == 401 || http.statusCode == 403 {
-                throw FloeError.validationFailed("API key 无效或已过期：\(body)")
+                throw FloeError.validationFailed(FloeL10n.l("providers.model_discovery.api_key_is_invalid_or_expired", body))
             }
             throw FloeError.internalError("Model discovery failed (HTTP \(http.statusCode)): \(body)")
         }

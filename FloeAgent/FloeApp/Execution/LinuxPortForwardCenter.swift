@@ -215,9 +215,9 @@ final class LinuxPortForwardCenter: ObservableObject {
     /// Diagnostic line for the settings surface; never a fabricated URL.
     func addressSummary(environmentID: String) -> String {
         guard let address = deviceAddressProvider() else {
-            return "未检测到局域网地址（URL 仅在检测到本机 LAN 地址后显示）"
+            return FloeL10n.l("execution.linux_port_forward_center.no_lan_address_detected_the_url")
         }
-        return "局域网地址 \(address)"
+        return FloeL10n.l("execution.linux_port_forward_center.lan_address", address)
     }
 
     // MARK: - Mutations
@@ -343,7 +343,7 @@ final class LinuxPortForwardCenter: ObservableObject {
                     forward: Self.forward(for: plan)
                 )
                 if plan.wasRemapped, conflict == nil {
-                    conflict = "固定端口 \(plan.rule.requestedHostPort ?? 0) 已被占用，\(plan.rule.label) 已改用 \(plan.hostPort)"
+                    conflict = FloeL10n.l("execution.linux_port_forward_center.fixed_port_is_in_use_switched", plan.rule.requestedHostPort ?? 0, plan.rule.label, plan.hostPort)
                 }
                 applied.append(plan)
                 occupied.insert(Int(plan.hostPort))
@@ -365,7 +365,7 @@ final class LinuxPortForwardCenter: ObservableObject {
                             forward: Self.forward(for: candidate)
                         )
                         if conflict == nil {
-                            conflict = "Host 端口 \(plan.hostPort) 已被占用，\(plan.rule.label) 已改用 \(next)"
+                            conflict = FloeL10n.l("execution.linux_port_forward_center.host_port_is_already_in_use", plan.hostPort, plan.rule.label, next)
                         }
                         applied.append(candidate)
                         occupied.insert(next)
@@ -377,7 +377,7 @@ final class LinuxPortForwardCenter: ObservableObject {
                     }
                 }
                 if !retried {
-                    lastError = "端口转发失败：\(plan.rule.label) → guest \(plan.rule.guestPort) · \(error.localizedDescription)"
+                    lastError = FloeL10n.l("execution.linux_port_forward_center.port_forwarding_failed_guest", plan.rule.label, plan.rule.guestPort, error.localizedDescription)
                     errorsByEnvironment[environmentID] = lastError
                     FloeLogger(category: .app).warning(
                         "linuxPortForwardApplyFailed environment=\(environmentID) rule=\(plan.rule.id.uuidString) port=\(plan.hostPort)"

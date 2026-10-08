@@ -19,13 +19,13 @@ public extension Data {
                 let name = url.lastPathComponent
                 switch error.code {
                 case CocoaError.fileReadCorruptFile.rawValue:
-                    throw FloeError.storageCorrupted("无法读取文件「\(name)」：文件可能已损坏或正在被其他进程占用")
+                    throw FloeError.storageCorrupted(FloeL10n.l("core.data_floe_contents_of.could_not_read_the_file_it", name))
                 case CocoaError.fileReadNoSuchFile.rawValue:
-                    throw FloeError.notFound("文件不存在：\(name)")
+                    throw FloeError.notFound(FloeL10n.l("core.data_floe_contents_of.file_does_not_exist", name))
                 case CocoaError.fileReadNoPermission.rawValue:
-                    throw FloeError.validationFailed("没有权限读取文件「\(name)」")
+                    throw FloeError.validationFailed(FloeL10n.l("core.data_floe_contents_of.no_permission_to_read_the_file", name))
                 default:
-                    throw FloeError.storageCorrupted("读取文件「\(name)」失败：\(error.localizedDescription)")
+                    throw FloeError.storageCorrupted(FloeL10n.l("core.data_floe_contents_of.failed_to_read_the_file", name, error.localizedDescription))
                 }
             }
             throw error

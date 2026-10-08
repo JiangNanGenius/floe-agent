@@ -172,7 +172,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let allowsContinuedProcessing: Bool
         let retainsSurfaceOnFailure: Bool
         let sendsTerminalNotification: Bool
-        var stage: String = "正在运行"
+        var stage: String = FloeL10n.l("platform.background_run_coordinator.running")
         var progress: Int64 = 5
         var stageStartedAt = Date()
         var lastActivityAt = Date()
@@ -195,25 +195,25 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // appears during tool phases and never counts tool output bytes.
             let speed: String
             if isGenerating, let rate = reportedTokensPerSecond, rate.isFinite, rate >= 0, idle < 5 {
-                speed = String(format: " · 模型 %.1f tokens/s", rate)
+                speed = String(format: FloeL10n.l("platform.background_run_coordinator.model_tokens_s"), rate)
             } else if isGenerating, outputCharacters > 0, idle < 5 {
-                speed = String(format: " · %.1f 字符/秒", Double(outputCharacters) / max(1, now.timeIntervalSince(outputWindowStartedAt)))
+                speed = String(format: FloeL10n.l("platform.background_run_coordinator.chars_sec"), Double(outputCharacters) / max(1, now.timeIntervalSince(outputWindowStartedAt)))
             } else { speed = "" }
-            let activity = idle < 3 ? "刚收到活动" : "距上次活动 \(idle) 秒"
+            let activity = idle < 3 ? FloeL10n.l("platform.background_run_coordinator.just_received_activity") : FloeL10n.l("platform.background_run_coordinator.sec_since_last_activity", idle)
             // Bound the step caption so long titles leave room for real activity.
             let step = checklist?.currentStep.map { String($0.title.prefix(20)).replacingOccurrences(of: "\n", with: " ") }
-            let task = checklist.map { "\n\($0.progressSummary)" + (step.map { "\n当前：\($0)" } ?? "") } ?? ""
+            let task = checklist.map { "\n\($0.progressSummary)" + (step.map { FloeL10n.l("chat.thread_detail_view.current", $0) } ?? "") } ?? ""
             var toolLine = ""
             if let pending = pendingApprovalToolName {
-                toolLine = "\n等待审批：\(pending)"
+                toolLine = FloeL10n.l("platform.background_run_coordinator.waiting_for_approval", pending)
             } else if let tool = currentToolName {
-                let failures = toolFailureCount > 0 ? " · 失败 \(toolFailureCount)" : ""
-                toolLine = "\n工具：\(tool) · 第 \(toolCallCount) 次调用\(failures)"
+                let failures = toolFailureCount > 0 ? FloeL10n.l("platform.background_run_coordinator.failed", toolFailureCount) : ""
+                toolLine = FloeL10n.l("platform.background_run_coordinator.tool_call", tool, toolCallCount, failures)
             } else if toolCallCount > 0 {
-                let failures = toolFailureCount > 0 ? " · 失败 \(toolFailureCount)" : ""
-                toolLine = "\n工具调用 \(toolCallCount) 次\(failures)"
+                let failures = toolFailureCount > 0 ? FloeL10n.l("platform.background_run_coordinator.failed", toolFailureCount) : ""
+                toolLine = FloeL10n.plural("platform.background_run_coordinator.tool_calls", count: toolCallCount, failures)
             }
-            return "\(stage)\n本阶段 \(elapsed) 秒\(speed)\n\(activity)\(task)\(toolLine)"
+            return FloeL10n.l("platform.background_run_coordinator.this_stage_sec", stage, elapsed, speed, activity, task, toolLine)
         }
     }
     private var activeRuns: [UUID: ActiveRun] = [:]
@@ -554,7 +554,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         origin: ContinuedProcessingStartOrigin,
         workload: String,
         title: String? = nil,
-        stage: String = "正在运行",
+        stage: String = FloeL10n.l("platform.background_run_coordinator.running"),
         progress: Int64 = 5
     ) -> Bool {
         let preference = effectiveBackgroundExecutionPreference
@@ -682,7 +682,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             conversationID: conversationID,
             startedAt: run.startedAt,
             state: .running,
-            progressText: "正在运行"
+            progressText: FloeL10n.l("platform.background_run_coordinator.running")
         )
         FloeLogger(category: .app).info(
             "backgroundRunStarted run=\(runID.uuidString) conversation=\(conversationID.uuidString) origin=\(origin.rawValue) preference=\(environment.settingsCenter.backgroundExecution.rawValue) activeRuns=\(activeRuns.count)"
@@ -721,7 +721,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             allowsContinuedProcessing: false,
             retainsSurfaceOnFailure: false,
             sendsTerminalNotification: false,
-            stage: "正在生成媒体",
+            stage: FloeL10n.l("platform.background_run_coordinator.generating_media"),
             progress: 10
         )
         FloeLogger(category: .app).info(
@@ -1076,7 +1076,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// do. The durable recovery point is written by ConversationCenter; this
     /// text never claims the run is still working.
     private nonisolated static func failedSurfaceText(for run: ActiveRun, message: String?) -> String {
-        var lines = [run.title, "运行失败 · 打开 Floe 可恢复"]
+        var lines = [run.title, FloeL10n.l("platform.background_run_coordinator.run_failed_open_floe_to_recover")]
         if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             lines.append(String(message.prefix(80)))
         }
@@ -1190,7 +1190,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 message: message
             )
         case .cancelled:
-            text = message ?? "已取消 · 检查点已保留"
+            text = message ?? FloeL10n.l("platform.background_run_coordinator.canceled_checkpoint_kept")
         case .failed:
             text = Self.failedSurfaceText(
                 for: ActiveRun(
@@ -1451,7 +1451,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     var snapshot = existing
                     snapshot.state = .cancelled
                     snapshot.interruption = .none
-                    snapshot.progressText = message ?? "已取消 · 检查点已保留"
+                    snapshot.progressText = message ?? FloeL10n.l("platform.background_run_coordinator.canceled_checkpoint_kept")
                     snapshot.activeCommandCount = 0
                     await BackgroundWorkRegistry.shared.register(snapshot)
                 }
@@ -1528,7 +1528,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 kind: .linuxSession,
                 title: title,
                 state: .running,
-                progressText: "后台允许运行",
+                progressText: FloeL10n.l("platform.background_run_coordinator.allowed_to_run_in_background"),
                 deepLink: deepLink
             )
             Task { await BackgroundWorkRegistry.shared.register(snapshot) }
@@ -1541,7 +1541,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     launchPreferencesLoaded: environment.settingsCenter.launchPreferencesLoaded,
                     hasAggregateForegroundScene: hasAggregateForegroundScene
                 ) {
-                    updateContinuedTask(title: title, stage: "Linux 环境后台运行", progress: 10)
+                    updateContinuedTask(title: title, stage: FloeL10n.l("platform.background_run_coordinator.run_linux_environment_in_background"), progress: 10)
                     BackgroundPolicyRegistry.shared.requestContinuedProcessing()
                 } else {
                     FloeLogger(category: .app).info(
@@ -1631,8 +1631,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         case .retractSurface:
             environment.backgroundVideoService.update(
-                title: "Floe 已回到前台",
-                progress: "Linux 环境继续运行；返回后台时状态画中画会重新出现。"
+                title: FloeL10n.l("platform.background_run_coordinator.floe_returned_to_the_foreground"),
+                progress: FloeL10n.l("platform.background_run_coordinator.the_linux_environment_keeps_running_the")
             )
         }
         for environmentID in linuxBackgroundHold.heldEnvironmentIDs {
@@ -1657,7 +1657,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         linuxSurfacePager.select(environmentID: environmentID)
         // The first frame comes from the unified snapshot; the carousel owns
         // every subsequent frame, so a metric tick can never repage it.
-        let title = linuxSurfacePager.current?.title ?? "Linux 环境"
+        let title = linuxSurfacePager.current?.title ?? FloeL10n.l("exec.linux.env_title")
         let text = linuxEnvironmentRuntimeSnapshot(environmentID: environmentID)
             .map { Self.linuxSurfacePageText(for: $0) } ?? String(localized: "background.linux.surface_running")
         environment.backgroundVideoService.setRunContext(
@@ -1683,7 +1683,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         linuxTerminalCounts.removeValue(forKey: environmentID)
         linuxRuntimeStates.removeValue(forKey: environmentID)
         stopLinuxMetricsSampling(environmentID: environmentID)
-        let title = linuxSurfaceEntries[environmentID]?.title ?? "Linux 环境"
+        let title = linuxSurfaceEntries[environmentID]?.title ?? FloeL10n.l("exec.linux.env_title")
         linuxSurfaceEntries.removeValue(forKey: environmentID)
         linuxUnverifiedMetricsReported.remove(environmentID)
         publishLinuxSurfacePager()
@@ -1884,7 +1884,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             title: title,
             state: .suspended,
             interruption: .checkpointed,
-            progressText: "环境已停止；后台运行偏好保留，重新启动后继续生效",
+            progressText: FloeL10n.l("platform.background_run_coordinator.the_environment_stopped_the_background_run"),
             deepLink: BackgroundWorkDeepLink(kind: .linuxSession, environmentID: environmentID)
         )
         await BackgroundWorkRegistry.shared.register(snapshot)
@@ -1943,7 +1943,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 .guestStatus(environmentID: environmentID).ramMB
             var entry = LinuxBackgroundSurfaceEntry(
                 environmentID: environmentID,
-                title: work?.title ?? existing?.title ?? "Linux 环境",
+                title: work?.title ?? existing?.title ?? FloeL10n.l("exec.linux.env_title"),
                 state: work?.state ?? .running,
                 emulatorCPUFraction: work?.metrics?.emulatorCPUFraction ?? existing?.emulatorCPUFraction,
                 guestCPUFraction: work?.metrics?.guestCPUFraction ?? existing?.guestCPUFraction,
@@ -2029,7 +2029,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 kind: .linuxSession,
                 title: entry.title,
                 state: entry.state,
-                progressText: "后台保持运行",
+                progressText: FloeL10n.l("platform.background_run_coordinator.keep_running_in_background"),
                 startedAt: entry.startedAt ?? Date(),
                 deepLink: BackgroundWorkDeepLink(kind: .linuxSession, environmentID: environmentID)
             )
@@ -2132,7 +2132,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if let title = await BackgroundWorkRegistry.shared.snapshot(id: workID)?.title {
             return title
         }
-        return "Linux 环境"
+        return FloeL10n.l("exec.linux.env_title")
     }
 
     /// Single assembly point for the unified snapshot. Measured values come
@@ -2448,7 +2448,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             surfacedRunID = runID
             environment.backgroundVideoService.setRunContext(
                 title: runTitle,
-                progress: "正在运行",
+                progress: FloeL10n.l("platform.background_run_coordinator.running"),
                 automaticallyStartsFromInline: true
             )
         case .screenShare:
@@ -2465,7 +2465,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             environment.backgroundVideoService.setRunContext(
                 title: runTitle,
                 progress: environment.screenShareCenter.isSharing
-                    ? "正在共享屏幕" : "任务正在运行"
+                    ? FloeL10n.l("platform.background_run_coordinator.sharing_screen") : FloeL10n.l("platform.background_run_coordinator.task_is_running")
             )
             if !environment.screenShareCenter.isSharing {
                 environment.screenShareCenter.requestBroadcast(for: conversationID)
@@ -2610,10 +2610,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard notifiedApprovalRuns.insert(runID).inserted else { return }
         if #available(iOS 26.0, *),
            activeRuns[runID]?.continuedProcessingOrigin.allowsContinuedSubmission == true {
-            updateContinuedTask(title: "Floe Agent", stage: "等待你的审批", progress: 60)
+            updateContinuedTask(title: "Floe Agent", stage: FloeL10n.l("platform.background_run_coordinator.waiting_for_your_approval"), progress: 60)
         }
         if surfacedRunID == runID {
-            environment.backgroundVideoService.update(progress: "等待你的审批")
+            environment.backgroundVideoService.update(progress: FloeL10n.l("platform.background_run_coordinator.waiting_for_your_approval"))
         }
         let taskName = activeRuns[runID]?.title ?? String(localized: "background.task.name_fallback")
         Task { [weak self] in
@@ -2700,7 +2700,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if !continuedEligibility.hasEligibleWork {
             finishContinuedTasks(success: true)
         } else {
-            task.updateTitle("Floe Agent", subtitle: "正在后台继续任务")
+            task.updateTitle("Floe Agent", subtitle: FloeL10n.l("platform.background_run_coordinator.resuming_task_in_background"))
         }
     }
 
@@ -2989,14 +2989,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         for environmentID in enabled {
             let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
             let existing = await BackgroundWorkRegistry.shared.snapshot(id: workID)
-            let title = existing?.title ?? "Linux 环境"
+            let title = existing?.title ?? FloeL10n.l("exec.linux.env_title")
             let snapshot = BackgroundWorkSnapshot(
                 id: workID,
                 kind: .linuxSession,
                 title: title,
                 state: .interrupted,
                 interruption: .terminatedBySystem,
-                progressText: "应用已退出，Linux 环境已停止；打开后可重新启动并继续",
+                progressText: FloeL10n.l("platform.background_run_coordinator.the_app_exited_and_the_linux"),
                 deepLink: BackgroundWorkDeepLink(
                     kind: .linuxSession,
                     environmentID: environmentID
@@ -3039,7 +3039,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             for job in stale where !Task.isCancelled {
                 _ = try? await store.transition(id: job.id, to: .failed) {
                     $0.nextPollAt = nil
-                    $0.lastError = "提交在保存供应商任务 ID 之前中断；供应商是否已受理未知。不会自动重复提交，请核对供应商控制台后再决定是否重试。"
+                    $0.lastError = FloeL10n.l("platform.background_run_coordinator.submission_was_interrupted_before_the_provider")
                 }
             }
         }
@@ -3480,12 +3480,11 @@ enum MediaGenerationImageBatchContract {
     ) throws -> [Data] {
         let expected = max(1, min(requestedOutputCount, 4))
         guard images.count == expected else {
-            throw FloeError.validationFailed(
-                "图片服务应返回 \(expected) 张图片，但实际返回 \(images.count) 张；本次没有保存部分结果，请从配置节点重试。"
+            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_image_service_should_return_images", expected, images.count)
             )
         }
         guard images.allSatisfy({ $0.count <= maximumImageBytes }) else {
-            throw FloeError.validationFailed("生成图片超过 24 MiB。")
+            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_generated_image_exceeds_24_mib"))
         }
         return images
     }
@@ -3743,8 +3742,8 @@ final class MediaGenerationService {
               adapter.supports(operation, for: provider) else {
             throw FloeError.invalidConfiguration(
                 operation == .generate
-                    ? "请先在辅助模型中选择可用的生图模型。"
-                    : "所选模型或服务商不支持参考图编辑。"
+                    ? FloeL10n.l("platform.background_run_coordinator.choose_a_usable_image_generation_model")
+                    : FloeL10n.l("platform.background_run_coordinator.the_selected_model_or_provider_does")
             )
         }
         let traceID = UUID()
@@ -3755,8 +3754,7 @@ final class MediaGenerationService {
                 model: model
             )
         guard sourceImages.count <= maximumReferences else {
-            throw FloeError.validationFailed(
-                "所选图片模型最多支持 \(maximumReferences) 张参考图；当前有 \(sourceImages.count) 张。请减少连接到生成节点的参考图，或改用支持更多参考图的模型。"
+            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_selected_image_model_supports_up", maximumReferences, sourceImages.count)
             )
         }
         let requestedOutputCount = max(1, min(options.count, 4))
@@ -3771,8 +3769,7 @@ final class MediaGenerationService {
             modelRemoteID: model.remoteModelID
         ))
         guard requestedOutputCount <= maximumOutputs else {
-            throw FloeError.validationFailed(
-                "所选图片模型单次最多生成 \(maximumOutputs) 张图片；当前请求 \(requestedOutputCount) 张。请减少生成数量，或改用支持多图输出的模型。"
+            throw FloeError.validationFailed(FloeL10n.l("platform.background_run_coordinator.the_selected_image_model_can_generate", maximumOutputs, requestedOutputCount)
             )
         }
         let qualityLooksLikeResolution = options.quality.map {
@@ -3893,11 +3890,11 @@ final class MediaGenerationService {
                     contentHash: prepared.contentHash,
                     kind: .image,
                     displayName: result.images.count > 1
-                        ? "生成图片 \(prepared.index + 1)" : "生成图片",
+                        ? FloeL10n.l("platform.background_run_coordinator.generate_image", prepared.index + 1) : FloeL10n.l("files.files_view.generate_image"),
                     mimeType: prepared.isPNG ? "image/png" : "image/jpeg",
                     localRelativePath: prepared.candidateRelativePath,
                     byteCount: Int64(prepared.data.count),
-                    tags: ["生成内容"],
+                    tags: [FloeL10n.l("platform.background_run_coordinator.generate_content")],
                     referenceCount: 0
                 ))
                 if canonical.id == prepared.candidateID {
@@ -4225,8 +4222,7 @@ final class MediaGenerationService {
                     taskID: submission.providerTaskID, provider: provider,
                     credentials: ProviderCredentials(apiKey: key)
                 )
-                throw RemoteVideoError.requestFailed(
-                    "任务在供应商确认前已被取消，已尝试取消供应商任务。"
+                throw RemoteVideoError.requestFailed(FloeL10n.l("platform.background_run_coordinator.the_task_was_canceled_before_provider")
                 )
             }
             if let resultURL = updated.resultURL {
@@ -4338,7 +4334,7 @@ final class MediaGenerationService {
             if let expiry = job.resultURLExpiresAt, expiry <= now {
                 _ = try await store.transition(id: job.id, to: .expired) {
                     $0.lastPolledAt = now
-                    $0.lastError = "结果下载地址已在有效期（24 小时）后过期，请重新生成。"
+                    $0.lastError = FloeL10n.l("platform.background_run_coordinator.the_result_download_link_has_expired")
                     $0.nextPollAt = nil
                 }
                 return
@@ -4357,7 +4353,7 @@ final class MediaGenerationService {
                 guard let resultURL = status.resultURL else {
                     _ = try await store.transition(id: job.id, to: .failed) {
                         $0.lastPolledAt = now
-                        $0.lastError = "供应商报告完成，但没有返回可下载的视频地址。"
+                        $0.lastError = FloeL10n.l("platform.background_run_coordinator.the_provider_reported_completion_but_returned")
                         $0.nextPollAt = nil
                     }
                     return
@@ -4410,8 +4406,7 @@ final class MediaGenerationService {
         }
         let job = owned.job
         guard !job.state.isTerminal else {
-            throw RemoteVideoError.invalidRequest(
-                "该任务已结束（\(job.state.rawValue)），无法取消。使用 video.status 查看最终状态。"
+            throw RemoteVideoError.invalidRequest(FloeL10n.l("platform.background_run_coordinator.the_task_already_ended_and_cannot", job.state.rawValue)
             )
         }
         guard let taskID = job.providerTaskID else {
@@ -4419,7 +4414,7 @@ final class MediaGenerationService {
             // remote cancellation; close the durable job honestly.
             _ = try await store.transition(id: jobID, to: .cancelled) {
                 $0.nextPollAt = nil
-                $0.lastError = "取消时尚未保存供应商任务 ID；供应商是否已受理未知，请在需要时核对供应商控制台。"
+                $0.lastError = FloeL10n.l("platform.background_run_coordinator.the_provider_task_id_was_not")
             }
             return
         }
@@ -4458,7 +4453,7 @@ final class MediaGenerationService {
                             provider: provider, credential: key
                         )
                     }
-                    throw RemoteVideoError.requestFailed("任务在取消前已完成，结果正在下载。")
+                    throw RemoteVideoError.requestFailed(FloeL10n.l("platform.background_run_coordinator.the_task_completed_before_it_was"))
                 case .failed, .cancelled, .expired:
                     _ = try await store.transition(id: jobID, to: status.state) {
                         $0.lastError = status.error ?? error.localizedDescription
@@ -4471,7 +4466,7 @@ final class MediaGenerationService {
             }
             _ = try await store.transition(id: jobID, to: job.state) {
                 $0.retryCount += 1
-                $0.lastError = "取消失败：\(error.localizedDescription)"
+                $0.lastError = FloeL10n.l("platform.background_run_coordinator.cancellation_failed", error.localizedDescription)
                 $0.nextPollAt = Date().addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
             }
             throw error
@@ -4512,12 +4507,12 @@ final class MediaGenerationService {
         // or failed job can never be announced as a finished video.
         guard let owned = try? await store.ownedJob(id: jobID),
               owned.job.state == .ready else { return }
-        var detail = "生成结果已保存到素材库，并会在画布中恢复。"
+        var detail = FloeL10n.l("platform.background_run_coordinator.the_generation_result_was_saved_to")
         if owned.owner.kind == .conversation {
             detail = await deliverConversationResult(owned)
         }
         let content = UNMutableNotificationContent()
-        content.title = "视频已准备好"
+        content.title = FloeL10n.l("platform.background_run_coordinator.video_is_ready")
         content.body = detail
         content.sound = .default
         content.userInfo = ["mediaJobID": jobID.uuidString]
@@ -4530,7 +4525,7 @@ final class MediaGenerationService {
         guard let localAssetID = owned.job.localAssetID,
               let asset = try? await environment.creativeAssetStore.asset(id: localAssetID),
               let relative = asset.localRelativePath else {
-            return "生成结果已保存到素材库（jobID \(owned.job.id.uuidString)）。"
+            return FloeL10n.l("platform.background_run_coordinator.the_generation_result_was_saved_to_2", owned.job.id.uuidString)
         }
         let support = try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
@@ -4539,7 +4534,7 @@ final class MediaGenerationService {
         guard let source = support?.appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent(relative),
               FileManager.default.fileExists(atPath: source.path) else {
-            return "生成结果已保存到素材库（\(relative)）。"
+            return FloeL10n.l("platform.background_run_coordinator.the_generation_result_was_saved_to_3", relative)
         }
         var delivered: String?
         var note: String?
@@ -4567,19 +4562,19 @@ final class MediaGenerationService {
                 }
                 delivered = "GeneratedMedia/\(destination.lastPathComponent)"
             } catch {
-                note = "对话工作区写入失败：\(error.localizedDescription)；结果保留在素材库（\(relative)）。"
+                note = FloeL10n.l("platform.background_run_coordinator.writing_to_the_conversation_workspace_failed", error.localizedDescription, relative)
                 FloeLogger(category: .app).warning(
                     "mediaJobWorkspaceDeliveryFailed job=\(owned.job.id.uuidString)"
                 )
             }
         } else {
-            note = "对话工作区当前不可用；结果保留在素材库（\(relative)）。"
+            note = FloeL10n.l("platform.background_run_coordinator.the_conversation_workspace_is_currently_unavailable", relative)
         }
         let location = delivered ?? relative
         if note == nil {
-            note = "已保存到对话工作区：\(location)"
+            note = FloeL10n.l("platform.background_run_coordinator.saved_to_the_conversation_workspace", location)
         }
-        let content = "视频已生成并保存到 \(location)（jobID \(owned.job.id.uuidString)）。 \(note ?? "")"
+        let content = FloeL10n.l("platform.background_run_coordinator.the_video_was_generated_and_saved", location, owned.job.id.uuidString, note ?? "")
         // A live run receives the result as a steer. Otherwise the message is
         // queued and stays visible without auto-launching a new agent turn.
         let activeOriginRun = owned.originRunID.flatMap { runID in
@@ -4597,7 +4592,7 @@ final class MediaGenerationService {
             executionMode: .agent,
             attachments: []
         )
-        return note ?? "已保存到对话工作区：\(location)"
+        return note ?? FloeL10n.l("platform.background_run_coordinator.saved_to_the_conversation_workspace", location)
     }
 }
 
@@ -4631,7 +4626,7 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
         guard remoteURL.scheme?.lowercased() == "https",
               remoteURL.user == nil, remoteURL.password == nil,
               remoteURL.host != nil, !remoteURL.isLocalOrPrivateNetwork else {
-            await fail(jobID: jobID, message: "供应商返回了不安全的下载地址。")
+            await fail(jobID: jobID, message: FloeL10n.l("platform.background_run_coordinator.the_provider_returned_an_insecure_download"))
             return
         }
         let tasks = await session.allTasks
@@ -4733,17 +4728,17 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
         let size = (try? staging.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
         guard size > 0 else {
             try? fileManager.removeItem(at: staging)
-            await fail(jobID: jobID, message: "供应商下载结果为空文件。")
+            await fail(jobID: jobID, message: FloeL10n.l("platform.background_run_coordinator.the_provider_download_result_was_an"))
             return
         }
         guard size <= Self.maximumDownloadBytes else {
             try? fileManager.removeItem(at: staging)
-            await fail(jobID: jobID, message: "下载结果超过 \(Self.maximumDownloadBytes) 字节上限。")
+            await fail(jobID: jobID, message: FloeL10n.l("platform.background_run_coordinator.the_download_exceeds_the_byte_limit", Self.maximumDownloadBytes))
             return
         }
         if statusCode != 0, !(200..<300).contains(statusCode) {
             try? fileManager.removeItem(at: staging)
-            await fail(jobID: jobID, message: "下载返回 HTTP \(statusCode)")
+            await fail(jobID: jobID, message: FloeL10n.l("platform.background_run_coordinator.download_returned_http", statusCode))
             return
         }
         do {
@@ -4779,7 +4774,7 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
                 localRelativePath: "Materials/\(destination.lastPathComponent)",
                 cloudRecordName: nil, byteCount: size,
                 sourceURL: sourceURL,
-                license: nil, tags: ["生成内容"], referenceCount: 0,
+                license: nil, tags: [FloeL10n.l("platform.background_run_coordinator.generate_content")], referenceCount: 0,
                 createdAt: Date(), updatedAt: Date()
             ))
             // The job may have been cancelled while the download was in

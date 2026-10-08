@@ -45,7 +45,7 @@ enum OfficeNativeSaveValidation {
     }
 
     private static func invalidChart() -> FloeError {
-        .validationFailed("幻灯片图表的数据未完整保存，已保留编辑副本，原文件未被覆盖。")
+        .validationFailed(FloeL10n.l("documents.office_native_save_validation.the_slide_chart_data_was_not"))
     }
 
     private static func read(_ entry: Entry, from archive: Archive) throws -> Data {

@@ -116,6 +116,7 @@
 		4144F3019B808B95513380EF /* ImageEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */; };
 		41F8F5B12F2A29237D33FEEC /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = E235AA51EFF99AA0DEA509BD /* libz.tbd */; };
 		42924454C7187541E75FE29D /* MoreViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B429A0789887E0740567D60 /* MoreViewModel.swift */; };
+		433840CBA72D479DED1C5B5B /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 5244A3F2A1C28B6169AB9718 /* Localizable.xcstrings */; };
 		436FDD6DD750FD77FF840D91 /* WebSearchSettingsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F4735140291FC5F3FC031CE /* WebSearchSettingsCenter.swift */; };
 		4439885B5FEC7EBB773C2D97 /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79C8C2B8701925AEC218168 /* BrowserView.swift */; };
 		448125A55DDC627D8D972046 /* HomeChatSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */; };
@@ -606,6 +607,7 @@
 		50D3F739AE81623062A9C5C9 /* ConversationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationCenter.swift; sourceTree = "<group>"; };
 		515EFE93A7878B464ECA3848 /* FeedbackUploadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackUploadService.swift; sourceTree = "<group>"; };
 		51E3758CCEC79AE4FCA6D6B4 /* NotesRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesRepository.swift; sourceTree = "<group>"; };
+		5244A3F2A1C28B6169AB9718 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChatSeparationTests.swift; sourceTree = "<group>"; };
 		52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyTrustSheet.swift; sourceTree = "<group>"; };
 		531772E03835546E29F3B7DF /* TerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewModel.swift; sourceTree = "<group>"; };
@@ -981,6 +983,7 @@
 				F2C540C2E6BB473445CBC494 /* FloeWidgets.entitlements */,
 				D60E0C3869A0B7A80FC9EE97 /* FloeWidgets.swift */,
 				A9A791AA53691DDDBA9E92CB /* Info.plist */,
+				5244A3F2A1C28B6169AB9718 /* Localizable.xcstrings */,
 			);
 			path = FloeWidgets;
 			sourceTree = "<group>";
@@ -1884,6 +1887,7 @@
 			buildConfigurationList = A51ECC245BFF4BB0BF48276C /* Build configuration list for PBXNativeTarget "FloeWidgets" */;
 			buildPhases = (
 				A3FEB0CF4E9341FD0165FC7D /* Sources */,
+				86A9FA8561BD7CA6F70F2A12 /* Resources */,
 				D336EFDD888E10EF0C582D42 /* Frameworks */,
 			);
 			buildRules = (
@@ -1987,6 +1991,14 @@
 				F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */,
 				44F125A88372998BD75A01C9 /* uuid.min.js in Resources */,
 				9B0C36D962598923D5B259A1 /* zod.min.js in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		86A9FA8561BD7CA6F70F2A12 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				433840CBA72D479DED1C5B5B /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

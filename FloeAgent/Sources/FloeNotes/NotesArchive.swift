@@ -3,6 +3,7 @@ import Foundation
 import Crypto
 import ZIPFoundation
 
+import FloeCore
 /// Portable editable document, not a database backup. Import always creates a new document;
 /// assistant grants, conversations, deleted data and undo history are deliberately not imported.
 public enum NotesArchive {
@@ -25,7 +26,7 @@ public enum NotesArchive {
     public static func export(document: NoteDocument, store: NotesStore, to destination: URL) async throws {
         try document.validate()
         guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw NoteError.invalidOperation("导出目标已经存在。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_archive.the_export_destination_already_exists"))
         }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".notes-\(UUID().uuidString).partial")
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -44,7 +45,7 @@ public enum NotesArchive {
                 let (hash, size) = try digest(url)
                 guard hash == url.lastPathComponent else { throw NoteError.resourceUnavailable }
                 total += size
-                guard total <= maximumTotal else { throw NoteError.invalidOperation("手记归档超过 2 GB，请拆分导出。") }
+                guard total <= maximumTotal else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_archive.the_note_archive_exceeds_2_gb")) }
                 let resource = Resource(id: id, hash: hash, size: size)
                 let file = try FileHandle(forReadingFrom: url)
                 defer { try? file.close() }
@@ -56,7 +57,7 @@ public enum NotesArchive {
                 resources.append(resource)
             }
             let manifest = try JSONEncoder().encode(Manifest(document: document, linkedDocuments: linkedSnapshot, resources: resources))
-            guard manifest.count <= maximumManifest else { throw NoteError.invalidOperation("手记结构过大，请拆分导出。") }
+            guard manifest.count <= maximumManifest else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_archive.the_note_structure_is_too_large")) }
             try archive.addEntry(with: "manifest.json", type: .file, uncompressedSize: Int64(manifest.count), compressionMethod: .deflate) { position, size in
                 manifest.subdata(in: Int(position)..<(Int(position) + size))
             }
@@ -68,7 +69,7 @@ public enum NotesArchive {
 
     public static func importDocument(from source: URL, notebookID: UUID?, store: NotesStore) async throws -> NoteDocument {
         let documents = try await importDocuments(from: source, notebookID: notebookID, store: store)
-        guard documents.count == 1 else { throw NoteError.invalidOperation("此归档包含关联导图，请从手记资料列表导入。") }
+        guard documents.count == 1 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_archive.this_archive_contains_linked_mind_maps")) }
         return documents[0]
     }
 
@@ -82,16 +83,16 @@ public enum NotesArchive {
             for entry in archive {
                 count += 1
                 guard count <= 20_001, entry.type == .file, paths.insert(entry.path).inserted else {
-                    throw NoteError.invalidDocument("归档包含重复或不支持的条目。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_archive_contains_duplicate_or_unsupported"))
                 }
             }
             guard let entry = archive["manifest.json"], entry.uncompressedSize <= maximumManifest else {
-                throw NoteError.invalidDocument("归档清单缺失或过大。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_archive_manifest_is_missing_or"))
             }
             var data = Data()
             _ = try archive.extract(entry) { chunk in
                 try Task.checkCancellation()
-                guard data.count + chunk.count <= maximumManifest else { throw NoteError.invalidDocument("归档清单过大。") }
+                guard data.count + chunk.count <= maximumManifest else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_archive_manifest_is_too_large")) }
                 data.append(chunk)
             }
             let manifest = try JSONDecoder().decode(Manifest.self, from: data)
@@ -107,7 +108,7 @@ public enum NotesArchive {
                   Set(manifest.resources.map(\.id)).count == manifest.resources.count,
                   Set(manifest.resources.map(\.path)).count == manifest.resources.count,
                   paths == Set(["manifest.json"] + manifest.resources.map(\.path)) else {
-                throw NoteError.invalidDocument("手记版本或资源清单无效。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_note_version_or_resource_manifest"))
             }
             for document in documents { try document.validate() }
             var total: Int64 = 0
@@ -116,10 +117,10 @@ public enum NotesArchive {
                 guard resource.hash.count == 64, resource.hash.allSatisfy({ "0123456789abcdef".contains($0) }),
                       resource.size >= 0, resource.size <= maximumResource,
                       let entry = archive[resource.path], entry.uncompressedSize == resource.size else {
-                    throw NoteError.invalidDocument("归档资源声明无效。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_archive_resource_declaration_is_invalid"))
                 }
                 total += resource.size
-                guard total <= maximumTotal else { throw NoteError.invalidDocument("归档展开后超过 2 GB。") }
+                guard total <= maximumTotal else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_archive_exceeds_2_gb_when")) }
                 // Destination is generated from a validated digest, never from archive path text.
                 let url = directory.appendingPathComponent(resource.hash)
                 guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw NoteError.resourceUnavailable }
@@ -129,10 +130,10 @@ public enum NotesArchive {
                 _ = try archive.extract(entry) { chunk in
                     try Task.checkCancellation()
                     size += Int64(chunk.count)
-                    guard size <= resource.size else { throw NoteError.invalidDocument("归档资源超过声明长度。") }
+                    guard size <= resource.size else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_archive_resource_exceeds_its_declared")) }
                     hash.update(data: chunk); try file.write(contentsOf: chunk)
                 }
-                guard size == resource.size, hex(hash.finalize()) == resource.hash else { throw NoteError.invalidDocument("归档资源校验失败。") }
+                guard size == resource.size, hex(hash.finalize()) == resource.hash else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_archive.the_archive_resource_failed_verification")) }
             }
             return manifest
         }
@@ -187,7 +188,7 @@ public enum NotesArchive {
         var hash = SHA256(); var size: Int64 = 0
         while let chunk = try file.read(upToCount: 1_048_576), !chunk.isEmpty {
             try Task.checkCancellation(); size += Int64(chunk.count)
-            guard size <= maximumResource else { throw NoteError.invalidOperation("单个手记资源超过 512 MB。") }
+            guard size <= maximumResource else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_archive.a_note_resource_exceeds_512_mb")) }
             hash.update(data: chunk)
         }
         return (hex(hash.finalize()), size)

@@ -36,10 +36,10 @@ struct ProviderEditorView: View {
 
     var body: some View {
         Form {
-            Section("服务用途") {
+            Section("providers.provider_editor_view.service_purpose") {
                 Label(viewModel.serviceRole.title, systemImage: viewModel.serviceRole.icon)
                 if viewModel.serviceRole == .video {
-                    Text("视频模型是创意模式的可选增强；创意模式只强制要求图片生成模型。")
+                    Text("providers.provider_editor_view.video_models_are_an_optional_enhancement")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                 }
@@ -191,7 +191,7 @@ struct ProviderEditorView: View {
                     Image(systemName: viewModel.showingAPIKey ? "eye.slash" : "eye")
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(viewModel.showingAPIKey ? "隐藏 API key" : "显示 API key")
+                .accessibilityLabel(viewModel.showingAPIKey ? "providers.provider_editor_view.hide_api_key" : "providers.provider_editor_view.show_api_key")
             }
             if viewModel.secretStatus == .waitingForSecret {
                 Label("providers.waiting_secret.hint", systemImage: "key.fill")

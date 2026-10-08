@@ -15,6 +15,8 @@
 // exercised by SwiftPM tests without an App or simulator.
 
 import Foundation
+import FloeCore
+import FloeCore
 import Observation
 
 /// Why a path may not use the native editor by default.
@@ -128,9 +130,9 @@ public struct IDENativeTextOpenRefusal: Equatable, Sendable {
     public var zhMessage: String {
         switch reason {
         case .bufferBudgetReached(let maximum):
-            return "已打开 \(maximum) 个缓冲区且全部有未保存的修改，无法打开「\(relativePath)」。请先保存全部或关闭一个缓冲区；当前草稿均已保留。"
+            return FloeL10n.l("workspace.i_d_e_native_text_workspace.buffers_are_open_and_all_have", maximum, relativePath)
         case .invalidPath:
-            return "无法打开「\(relativePath)」：路径无效。"
+            return FloeL10n.l("workspace.i_d_e_native_text_workspace.could_not_open_invalid_path", relativePath)
         }
     }
 
@@ -465,6 +467,6 @@ public final class IDENativeTextWorkspace {
 /// so no user-facing text is ever added in one language only.
 enum IDENativeTextText {
     static func t(_ zh: String, _ en: String) -> String {
-        Locale.current.identifier.hasPrefix("zh") ? zh : en
+        FloeL10n.isChinese ? zh : en
     }
 }

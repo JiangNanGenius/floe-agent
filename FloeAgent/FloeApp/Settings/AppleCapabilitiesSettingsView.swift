@@ -3,6 +3,7 @@ import Foundation
 import SwiftUI
 import FloeTools
 
+import FloeCore
 /// Device-local feature gates for public Apple-framework integrations. The
 /// switch controls whether a tool is advertised to the model; the operating
 /// system remains the final authority and prompts only on first real use.
@@ -12,20 +13,20 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .calendar: "日历"
-        case .reminders: "提醒事项"
-        case .home: "家庭"
-        case .maps: "地图"
+        case .calendar: FloeL10n.l("settings.apple_capabilities_settings_view.calendar")
+        case .reminders: FloeL10n.l("settings.apple_capabilities_settings_view.reminders")
+        case .home: FloeL10n.l("settings.apple_capabilities_settings_view.home")
+        case .maps: FloeL10n.l("settings.apple_capabilities_settings_view.maps")
         case .web: "Web"
         case .watch: "Apple Watch"
-        case .vision: "视觉识别"
-        case .mail: "邮件撰写"
-        case .documents: "文档与 PDF"
-        case .camera: "相机"
-        case .location: "位置"
+        case .vision: FloeL10n.l("settings.apple_capabilities_settings_view.visual_recognition")
+        case .mail: FloeL10n.l("settings.apple_capabilities_settings_view.email_composition")
+        case .documents: FloeL10n.l("settings.apple_capabilities_settings_view.documents_pdf")
+        case .camera: FloeL10n.l("settings.apple_capabilities_settings_view.camera")
+        case .location: FloeL10n.l("settings.apple_capabilities_settings_view.position")
         case .shortcuts: "Shortcuts"
-        case .automation: "自动任务"
-        case .clipboard: "剪贴板"
+        case .automation: FloeL10n.l("settings.apple_capabilities_settings_view.automation")
+        case .clipboard: FloeL10n.l("settings.apple_capabilities_settings_view.clipboard")
         }
     }
     var icon: String {
@@ -48,20 +49,20 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
     }
     var detail: String {
         switch self {
-        case .calendar: "查找、新建和修改日历事件；首次使用由系统询问权限。"
-        case .reminders: "查找、新建、完成和修改提醒事项。"
-        case .home: "读取家庭结构并控制已授权的 HomeKit 配件。"
-        case .maps: "地点搜索、路线规划和在 Apple 地图中打开结果。"
-        case .web: "结构化浏览网页；信息不足时才使用截图视觉。"
-        case .watch: "向配对的 Watch 发送任务状态与接收快捷操作。"
-        case .vision: "Apple Vision OCR、条码与辅助视觉模型语义读图。"
-        case .mail: "填充系统邮件撰写页；发送始终由用户确认。"
-        case .documents: "读取、编辑和验证工作区文档与 PDF。"
-        case .camera: "打开系统相机并把用户拍摄的照片加入任务。"
-        case .location: "在系统授权后读取一次当前位置。"
-        case .shortcuts: "按名称运行你的快捷指令；执行与确认由快捷指令 App 控制。"
-        case .automation: "创建和管理系统尽力调度的 Floe 自动任务。"
-        case .clipboard: "读取或写入系统剪贴板文本；读取时系统会提示。"
+        case .calendar: FloeL10n.l("settings.apple_capabilities_settings_view.find_create_and_modify_calendar_events")
+        case .reminders: FloeL10n.l("settings.apple_capabilities_settings_view.find_create_complete_and_modify_reminders")
+        case .home: FloeL10n.l("settings.apple_capabilities_settings_view.read_home_structure_and_control_authorized")
+        case .maps: FloeL10n.l("settings.apple_capabilities_settings_view.search_places_plan_routes_and_open")
+        case .web: FloeL10n.l("settings.apple_capabilities_settings_view.browse_the_web_structurally_use_screenshot")
+        case .watch: FloeL10n.l("settings.apple_capabilities_settings_view.send_task_status_to_the_paired")
+        case .vision: FloeL10n.l("settings.apple_capabilities_settings_view.apple_vision_ocr_barcodes_and_the")
+        case .mail: FloeL10n.l("settings.apple_capabilities_settings_view.fills_the_system_mail_composer_sending")
+        case .documents: FloeL10n.l("settings.apple_capabilities_settings_view.read_edit_and_verify_workspace_documents")
+        case .camera: FloeL10n.l("settings.apple_capabilities_settings_view.open_the_system_camera_and_add")
+        case .location: FloeL10n.l("settings.apple_capabilities_settings_view.reads_the_current_location_once_after")
+        case .shortcuts: FloeL10n.l("settings.apple_capabilities_settings_view.runs_your_shortcut_by_name_execution")
+        case .automation: FloeL10n.l("settings.apple_capabilities_settings_view.create_and_manage_floe_automations_that")
+        case .clipboard: FloeL10n.l("settings.apple_capabilities_settings_view.read_or_write_system_clipboard_text")
         }
     }
     var toolPrefixes: [String] {
@@ -152,12 +153,12 @@ struct AppleCapabilitiesSettingsView: View {
                     .accessibilityIdentifier("settings.apple.\(capability.rawValue)")
                 }
             } header: {
-                Text("可供 Agent 使用的系统能力")
+                Text("settings.apple_capabilities_settings_view.system_capabilities_available_to_the_agent")
             } footer: {
-                Text("这里的开关只决定 Floe 是否向模型提供能力，不会替代 iOS 权限。系统权限、本机路径、Face ID 和 Home 数据不会跨设备同步。")
+                Text("settings.apple_capabilities_settings_view.the_switches_here_only_decide_whether")
             }
         }
-        .navigationTitle("Apple 能力")
+        .navigationTitle(FloeL10n.l("settings.apple_capabilities_settings_view.apple_capabilities"))
     }
 }
 #endif

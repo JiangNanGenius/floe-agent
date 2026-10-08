@@ -62,7 +62,7 @@ struct Canvas3DDirectorView: View {
             Button {
                 closeWithoutSaving()
             } label: {
-                Label("退出 3D 导演台", systemImage: "xmark")
+                Label("workspace.canvas3_d_director_view.exit_3d_director", systemImage: "xmark")
                     .labelStyle(.iconOnly)
                     .font(.headline)
                     .frame(width: 36, height: 36)
@@ -71,16 +71,16 @@ struct Canvas3DDirectorView: View {
             .buttonBorderShape(.circle)
             .padding(.leading, 12)
             .padding(.top, 8)
-            .accessibilityHint("不保存本次修改并返回画布")
+            .accessibilityHint("workspace.canvas3_d_director_view.discard_this_edit_and_return_to")
             .accessibilityIdentifier("canvas.3d.exit")
         }
         .sheet(isPresented: $showsInspector) {
             NavigationStack {
                 inspector
-                    .navigationTitle("场景属性")
+                    .navigationTitle("workspace.canvas3_d_director_view.scene_properties")
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("完成") { showsInspector = false }
+                            Button("workspace.workspace_canvas_view.done") { showsInspector = false }
                         }
                     }
             }
@@ -95,20 +95,20 @@ struct Canvas3DDirectorView: View {
                     Label(object.name, systemImage: icon(for: object.kind))
                         .tag(object.id)
                         .contextMenu {
-                            Button("复制", systemImage: "doc.on.doc") { duplicate(object.id) }
-                            Button("删除", systemImage: "trash", role: .destructive) {
+                            Button("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc") { duplicate(object.id) }
+                            Button("workspace.workspace_canvas_view.delete", systemImage: "trash", role: .destructive) {
                                 delete(object.id)
                             }
                         }
                 }
             } header: {
-                Text("场景对象")
+                Text("workspace.canvas3_d_director_view.scene_objects")
             } footer: {
-                Text("选择对象后在属性栏调整位置、旋转、尺寸与材质。")
+                Text("workspace.canvas3_d_director_view.after_selecting_an_object_adjust_position")
             }
 
-            Section("舞台") {
-                Picker("背景", selection: Binding(
+            Section("workspace.canvas3_d_director_view.stage") {
+                Picker("workspace.canvas3_d_director_view.background", selection: Binding(
                     get: { scene.background },
                     set: { value in mutateScene { $0.background = value } }
                 )) {
@@ -116,7 +116,7 @@ struct Canvas3DDirectorView: View {
                         Text(title(for: background)).tag(background)
                     }
                 }
-                Toggle("显示地面网格", isOn: Binding(
+                Toggle("workspace.canvas3_d_director_view.show_ground_grid", isOn: Binding(
                     get: { scene.showsGrid },
                     set: { value in mutateScene { $0.showsGrid = value } }
                 ))
@@ -133,7 +133,7 @@ struct Canvas3DDirectorView: View {
                         }
                     }
                 } label: {
-                    Label("添加对象", systemImage: "plus")
+                    Label("workspace.canvas3_d_director_view.add_object", systemImage: "plus")
                 }
             }
         }
@@ -149,9 +149,9 @@ struct Canvas3DDirectorView: View {
             .ignoresSafeArea(edges: .bottom)
 
             HStack(spacing: 8) {
-                Label("拖动旋转视角", systemImage: "rotate.3d")
+                Label("workspace.canvas3_d_director_view.drag_to_rotate_the_view", systemImage: "rotate.3d")
                 Divider().frame(height: 14)
-                Label("双指缩放", systemImage: "arrow.up.left.and.arrow.down.right")
+                Label("workspace.canvas3_d_director_view.pinch_to_zoom", systemImage: "arrow.up.left.and.arrow.down.right")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -201,15 +201,15 @@ struct Canvas3DDirectorView: View {
     private var inspector: some View {
         if let index = selectedObjectIndex {
             Form {
-                Section("对象") {
-                    TextField("名称", text: objectBinding(index, \.name))
-                    Toggle("隐藏", isOn: objectBinding(index, \.isHidden))
+                Section("workspace.canvas3_d_director_view.object") {
+                    TextField("notes.notes_root_view.name", text: objectBinding(index, \.name))
+                    Toggle("workspace.canvas3_d_director_view.hide", isOn: objectBinding(index, \.isHidden))
                 }
-                vectorSection("位置", index: index, keyPath: \.position, range: -10...10, step: 0.05)
-                vectorSection("旋转", index: index, keyPath: \.rotation, range: -180...180, step: 1)
-                vectorSection("缩放", index: index, keyPath: \.scale, range: 0.05...8, step: 0.05)
+                vectorSection(FloeL10n.l("settings.apple_capabilities_settings_view.position"), index: index, keyPath: \.position, range: -10...10, step: 0.05)
+                vectorSection(FloeL10n.l("editor.rotate"), index: index, keyPath: \.rotation, range: -180...180, step: 1)
+                vectorSection(FloeL10n.l("workspace.canvas3_d_director_view.scale"), index: index, keyPath: \.scale, range: 0.05...8, step: 0.05)
 
-                Section("材质") {
+                Section("workspace.canvas3_d_director_view.material") {
                     HStack {
                         ForEach(Self.palette, id: \.self) { hex in
                             Button {
@@ -228,28 +228,27 @@ struct Canvas3DDirectorView: View {
                                     }
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("材质颜色 \(hex)")
+                            .accessibilityLabel(FloeL10n.l("workspace.canvas3_d_director_view.material_color", hex))
                         }
                     }
-                    LabeledContent("粗糙度", value: scene.objects[index].roughness.formatted(.number.precision(.fractionLength(2))))
+                    LabeledContent("workspace.canvas3_d_director_view.roughness", value: scene.objects[index].roughness.formatted(.number.precision(.fractionLength(2))))
                     Slider(value: objectBinding(index, \.roughness), in: 0...1)
-                    Toggle("金属材质", isOn: objectBinding(index, \.metallic))
+                    Toggle("workspace.canvas3_d_director_view.metal_material", isOn: objectBinding(index, \.metallic))
                 }
 
                 Section {
-                    Button("复制对象", systemImage: "doc.on.doc") {
+                    Button("workspace.canvas3_d_director_view.duplicate_object", systemImage: "doc.on.doc") {
                         duplicate(scene.objects[index].id)
                     }
-                    Button("删除对象", systemImage: "trash", role: .destructive) {
+                    Button("workspace.canvas3_d_director_view.delete_object", systemImage: "trash", role: .destructive) {
                         delete(scene.objects[index].id)
                     }
                 }
             }
         } else {
-            ContentUnavailableView(
-                "选择一个对象",
+            ContentUnavailableView("workspace.canvas3_d_director_view.select_an_object",
                 systemImage: "cube.transparent",
-                description: Text("从左侧选择对象，或添加新的几何体。")
+                description: Text("workspace.canvas3_d_director_view.select_an_object_on_the_left")
             )
         }
     }
@@ -257,23 +256,23 @@ struct Canvas3DDirectorView: View {
     @ToolbarContentBuilder
     private var directorToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarLeading) {
-            Button("撤销", systemImage: "arrow.uturn.backward") { undo() }
+            Button("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward") { undo() }
                 .disabled(undoStack.isEmpty)
                 .keyboardShortcut("z", modifiers: .command)
-            Button("重做", systemImage: "arrow.uturn.forward") { redo() }
+            Button("composer.editor.redo", systemImage: "arrow.uturn.forward") { redo() }
                 .disabled(redoStack.isEmpty)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button("重置视角", systemImage: "viewfinder") {
+            Button("workspace.canvas3_d_director_view.reset_view", systemImage: "viewfinder") {
                 checkpoint()
                 scene.camera = .init()
                 scene.updatedAt = Date()
             }
             if horizontalSizeClass != .regular {
-                Button("属性", systemImage: "slider.horizontal.3") { showsInspector = true }
+                Button("workspace.workspace_canvas_view.properties", systemImage: "slider.horizontal.3") { showsInspector = true }
             }
-            Button("保存") {
+            Button("workspace.workspace_canvas_view.save") {
                 scene.updatedAt = Date()
                 onSave(scene)
                 dismiss()
@@ -310,7 +309,7 @@ struct Canvas3DDirectorView: View {
         checkpoint()
         var copy = original
         copy.id = UUID()
-        copy.name += " 副本"
+        copy.name += FloeL10n.l("workspace.canvas3_d_director_view.copy")
         copy.position.x += 0.45
         copy.position.z += 0.35
         scene.objects.append(copy)
@@ -408,11 +407,11 @@ struct Canvas3DDirectorView: View {
 
     private func title(for kind: CanvasSceneObjectKind) -> String {
         switch kind {
-        case .box: "立方体"
-        case .sphere: "球体"
-        case .cylinder: "圆柱体"
-        case .cone: "圆锥体"
-        case .plane: "平面"
+        case .box: FloeL10n.l("workspace.canvas3_d_director_view.cube")
+        case .sphere: FloeL10n.l("workspace.canvas3_d_director_view.sphere")
+        case .cylinder: FloeL10n.l("workspace.canvas3_d_director_view.cylinder")
+        case .cone: FloeL10n.l("workspace.canvas3_d_director_view.cone")
+        case .plane: FloeL10n.l("workspace.canvas3_d_director_view.plane")
         }
     }
 
@@ -428,10 +427,10 @@ struct Canvas3DDirectorView: View {
 
     private func title(for background: CanvasSceneBackground) -> String {
         switch background {
-        case .studio: "摄影棚"
-        case .graphite: "石墨灰"
-        case .midnight: "午夜蓝"
-        case .chromaGreen: "绿幕"
+        case .studio: FloeL10n.l("workspace.canvas3_d_director_view.studio")
+        case .graphite: FloeL10n.l("workspace.canvas3_d_director_view.graphite_gray")
+        case .midnight: FloeL10n.l("workspace.canvas3_d_director_view.midnight_blue")
+        case .chromaGreen: FloeL10n.l("workspace.canvas3_d_director_view.green_screen")
         }
     }
 

@@ -73,7 +73,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
                 if !self.isSharing,
                    Date().timeIntervalSince(startedAt) > 20,
                    self.sharingError == nil {
-                    self.sharingError = "尚未收到系统广播画面。请确认已在系统列表中选择 Floe Agent 并点“开始直播”。"
+                    self.sharingError = FloeL10n.l("screenshare.screen_share_center.no_broadcast_footage_has_been_received")
                     FloeLogger(category: .app).warning(
                         "screenShareFrameTimeout seconds=20"
                     )
@@ -162,7 +162,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            self.sharingError = "无法发起系统屏幕共享确认，请重新开始任务后再试。"
+            self.sharingError = FloeL10n.l("screenshare.screen_share_center.could_not_request_system_screen_sharing")
             self.lifecycleState = .failed
             FloeLogger(category: .app).warning(
                 "screenShareSystemConfirmationUnavailable conversation=\(conversationID.uuidString) attempts=40"
@@ -206,7 +206,7 @@ final class ScreenShareCenter: NSObject, ObservableObject {
     }
 
     var analysisDestinationName: String {
-        conversationCenter.screenAnalysisDestinationName() ?? "配置的视觉模型服务商"
+        conversationCenter.screenAnalysisDestinationName() ?? FloeL10n.l("screenshare.screen_share_center.configured_vision_model_provider")
     }
 
     var hasScreenAnalysisConsent: Bool {

@@ -66,7 +66,7 @@ struct HomeLaunchpadView: View {
             // available height (rotation, split, dynamic type).
             .environment(\.composerHeightBudget, proxy.size.height)
         }
-        .navigationTitle("新建任务")
+        .navigationTitle("workbench.new_task")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await viewModel.load()

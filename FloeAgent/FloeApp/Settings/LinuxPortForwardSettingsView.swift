@@ -247,7 +247,7 @@ struct LinuxPortForwardSection: View {
                         .foregroundStyle(FloeTheme.destructive)
                 }
             }
-            .navigationTitle("portforward.add_title")
+            .navigationTitle(FloeL10n.l("portforward.add_title"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("action.cancel") { showingAdd = false }
@@ -326,7 +326,7 @@ struct LinuxPortManagementView: View {
                     guestRunning: choices.first(where: { $0.id == id })?.running == true)
             }
             if let error { Text(error).foregroundStyle(.red) }
-        }.navigationTitle("portforward.title")
+        }.navigationTitle(FloeL10n.l("portforward.title"))
         .task {
             do {
                 let reports = try await FloePlatformServices.shared.environmentReports()

@@ -240,7 +240,7 @@ public struct CanvasScene3D: Sendable, Codable, Identifiable, Hashable {
 
     public init(
         id: UUID = UUID(),
-        name: String = "3D 场景",
+        name: String = FloeL10n.l("canvas.node.scene_3d"),
         objects: [CanvasSceneObject] = [],
         camera: CanvasSceneCamera = .init(),
         lighting: CanvasSceneLighting = .init(),
@@ -261,7 +261,7 @@ public struct CanvasScene3D: Sendable, Codable, Identifiable, Hashable {
     public static func starter() -> CanvasScene3D {
         CanvasScene3D(objects: [
             CanvasSceneObject(
-                name: "主体",
+                name: FloeL10n.l("core.canvas_project_models.subject"),
                 kind: .box,
                 position: CanvasVector3(x: 0, y: 0.6, z: 0),
                 scale: CanvasVector3(x: 1.4, y: 1.2, z: 1.4)
@@ -447,17 +447,17 @@ public extension CanvasNode {
         zIndex: Int = 0
     ) -> CanvasNode {
         let defaults: (text: String, size: CanvasSize) = switch kind {
-        case .text: ("新建文本", .init(width: 260, height: 150))
-        case .stickyNote: ("新建便签", .init(width: 260, height: 180))
-        case .card: ("新建卡片", .init(width: 300, height: 200))
+        case .text: (FloeL10n.l("workspace.workspace_canvas_view.new_text"), .init(width: 260, height: 150))
+        case .stickyNote: (FloeL10n.l("workspace.workspace_canvas_view.new_sticky_note"), .init(width: 260, height: 180))
+        case .card: (FloeL10n.l("workspace.workspace_canvas_view.new_card"), .init(width: 300, height: 200))
         case .shape: ("", .init(width: 220, height: 140))
-        case .image: ("图片", .init(width: 320, height: 260))
-        case .video: ("视频", .init(width: 320, height: 220))
-        case .audio: ("音频", .init(width: 320, height: 170))
-        case .file: ("文件", .init(width: 320, height: 170))
-        case .group: ("新建分组", .init(width: 420, height: 280))
-        case .generationTask: ("生成配置", .init(width: 340, height: 210))
-        case .scene3D: ("3D 场景", .init(width: 420, height: 300))
+        case .image: (FloeL10n.l("workspace.workspace_canvas_view.image"), .init(width: 320, height: 260))
+        case .video: (FloeL10n.l("workspace.workspace_canvas_view.video"), .init(width: 320, height: 220))
+        case .audio: (FloeL10n.l("workspace.workspace_canvas_view.audio"), .init(width: 320, height: 170))
+        case .file: (FloeL10n.l("core.layout_display.files"), .init(width: 320, height: 170))
+        case .group: (FloeL10n.l("workspace.workspace_canvas_view.new_group"), .init(width: 420, height: 280))
+        case .generationTask: (FloeL10n.l("core.canvas_project_models.generation_configuration"), .init(width: 340, height: 210))
+        case .scene3D: (FloeL10n.l("canvas.node.scene_3d"), .init(width: 420, height: 300))
         }
         return CanvasNode(
             kind: kind,
@@ -785,7 +785,7 @@ public struct CanvasDocument: Sendable, Codable, Identifiable, Hashable {
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        name = try values.decodeIfPresent(String.self, forKey: .name) ?? "画布"
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? FloeL10n.l("settings.settings_root_view.canvas")
         nodes = try values.decodeIfPresent([CanvasNode].self, forKey: .nodes) ?? []
         connections = try values.decodeIfPresent([CanvasConnection].self, forKey: .connections) ?? []
         strokes = try values.decodeIfPresent([CanvasStroke].self, forKey: .strokes) ?? []
@@ -972,7 +972,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         workspaceID = try values.decodeIfPresent(UUID.self, forKey: .workspaceID)
-        name = try values.decodeIfPresent(String.self, forKey: .name) ?? "画布"
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? FloeL10n.l("settings.settings_root_view.canvas")
         documents = try values.decodeIfPresent([CanvasDocument].self, forKey: .documents) ?? []
         selectedDocumentID = try values.decodeIfPresent(UUID.self, forKey: .selectedDocumentID)
             ?? documents.first?.id ?? UUID()
@@ -980,7 +980,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         assistantSessions = try values.decodeIfPresent(
             [CanvasAssistantSession].self, forKey: .assistantSessions
         ) ?? agentConversationID.map {
-            [CanvasAssistantSession(conversationID: $0, title: "画布助手")]
+            [CanvasAssistantSession(conversationID: $0, title: FloeL10n.l("workspace.workspace_canvas_view.canvas_assistant"))]
         } ?? []
         selectedAssistantSessionID = try values.decodeIfPresent(
             UUID.self, forKey: .selectedAssistantSessionID

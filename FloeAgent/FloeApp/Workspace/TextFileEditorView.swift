@@ -13,6 +13,7 @@ import FloeWorkspace
 import FloeMarkdown
 import FloeTools
 
+import FloeCore
 /// Edits one workspace text file. Save goes through the guarded service
 /// with optimistic-concurrency checks. Markdown files gain a live preview
 /// toggle and a formatting toolbar.
@@ -126,7 +127,7 @@ struct TextFileEditorView: View {
                     Button {
                         showsFind.toggle()
                     } label: {
-                        Label("查找替换", systemImage: "magnifyingglass")
+                        Label("workspace.text_file_editor_view.find_and_replace", systemImage: "magnifyingglass")
                     }
                     .keyboardShortcut("f", modifiers: .command)
                     Menu {
@@ -134,27 +135,27 @@ struct TextFileEditorView: View {
                             Button(symbol.label) { select(offset: symbol.offset) }
                         }
                     } label: {
-                        Label("符号", systemImage: "list.bullet.indent")
+                        Label("workspace.text_file_editor_view.symbols", systemImage: "list.bullet.indent")
                     }
                     .disabled(codeSymbols(language).isEmpty)
                     Button {
                         editorCommand.send(.undo)
                     } label: {
-                        Label("撤销", systemImage: "arrow.uturn.backward")
+                        Label("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward")
                     }
                     Button {
                         editorCommand.send(.redo)
                     } label: {
-                        Label("重做", systemImage: "arrow.uturn.forward")
+                        Label("composer.editor.redo", systemImage: "arrow.uturn.forward")
                     }
                     if language.runnableToolName != nil {
                         if isRunning {
-                            Button("停止") { runCancellation?.cancel() }
+                            Button("action.stop") { runCancellation?.cancel() }
                         }
                         Button {
                             Task { await run(language) }
                         } label: {
-                            if isRunning { ProgressView() } else { Label("运行", systemImage: "play.fill") }
+                            if isRunning { ProgressView() } else { Label("workspace.text_file_editor_view.run", systemImage: "play.fill") }
                         }
                         .disabled(isRunning || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
@@ -189,7 +190,7 @@ struct TextFileEditorView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("完成") { runOutput = nil }
+                        Button("workspace.workspace_canvas_view.done") { runOutput = nil }
                     }
                 }
             }
@@ -217,16 +218,16 @@ struct TextFileEditorView: View {
     private var findReplaceBar: some View {
         VStack(spacing: 6) {
             HStack {
-                TextField("查找", text: $findText)
+                TextField("composer.editor.find", text: $findText)
                     .textFieldStyle(.roundedBorder)
-                Button("上一个") { find(backwards: true) }.disabled(findText.isEmpty)
-                Button("下一个") { find(backwards: false) }.disabled(findText.isEmpty)
+                Button("workspace.text_file_editor_view.previous") { find(backwards: true) }.disabled(findText.isEmpty)
+                Button("workspace.text_file_editor_view.next") { find(backwards: false) }.disabled(findText.isEmpty)
             }
             HStack {
-                TextField("替换为", text: $replacementText)
+                TextField("workspace.text_file_editor_view.replace_with", text: $replacementText)
                     .textFieldStyle(.roundedBorder)
-                Button("替换") { replaceCurrent() }.disabled(findText.isEmpty)
-                Button("全部替换") { replaceAll() }.disabled(findText.isEmpty)
+                Button("workspace.text_file_editor_view.replace") { replaceCurrent() }.disabled(findText.isEmpty)
+                Button("workspace.text_file_editor_view.replace_all") { replaceAll() }.disabled(findText.isEmpty)
             }
         }
         .padding(.horizontal, 12)
@@ -240,10 +241,10 @@ struct TextFileEditorView: View {
             Text(cursorDescription)
             Spacer()
             if isDirty {
-                Label("未保存", systemImage: "circle.fill")
+                Label("providers.auxiliary_models_view.unsaved", systemImage: "circle.fill")
                     .foregroundStyle(FloeTheme.pending)
             } else {
-                Label("已保存", systemImage: "checkmark.circle")
+                Label("workspace.text_file_editor_view.saved", systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
             }
         }
@@ -256,7 +257,7 @@ struct TextFileEditorView: View {
     private var cursorDescription: String {
         let prefix = (text as NSString).substring(to: min(selectedRange.location, (text as NSString).length))
         let lines = prefix.components(separatedBy: "\n")
-        return "行 \(lines.count)，列 \((lines.last?.utf16.count ?? 0) + 1)"
+        return FloeL10n.l("workspace.text_file_editor_view.row_column", lines.count, (lines.last?.utf16.count ?? 0) + 1)
     }
 
     private func select(offset: Int) {
@@ -305,12 +306,12 @@ struct TextFileEditorView: View {
         defer { isRunning = false; runCancellation = nil }
         guard let toolName = language.runnableToolName else { return }
         guard let runner = ToolRunnerRegistry.shared.runner(named: toolName) else {
-            runOutput = CodeRunOutput(title: "无法运行", text: "此构建未包含 \(language.displayName) 运行时。")
+            runOutput = CodeRunOutput(title: FloeL10n.l("workspace.text_file_editor_view.cannot_run"), text: FloeL10n.l("workspace.text_file_editor_view.this_build_does_not_include_the", language.displayName))
             return
         }
         do {
             if toolName == "exec.shell", (relativePath as NSString).pathExtension.lowercased() != "sh" {
-                runOutput = CodeRunOutput(title: "不支持的 Shell 方言", text: "本地运行使用 POSIX sh；bash、zsh、fish 脚本请先转换，或在远程主机运行。")
+                runOutput = CodeRunOutput(title: FloeL10n.l("workspace.text_file_editor_view.unsupported_shell_dialect"), text: FloeL10n.l("workspace.text_file_editor_view.local_execution_uses_posix_sh_convert"))
                 return
             }
             var values: [String: Any] = ["script": text, "timeout": 30, "maxOutputBytes": 262_144]
@@ -330,11 +331,11 @@ struct TextFileEditorView: View {
             )
             let output = try await runner.execute(argumentsJSON: arguments, context: context)
             runOutput = CodeRunOutput(
-                title: output.exitStatus == 0 ? "运行完成" : "运行失败",
+                title: output.exitStatus == 0 ? FloeL10n.l("workspace.text_file_editor_view.run_complete") : FloeL10n.l("workspace.text_file_editor_view.failed"),
                 text: output.summary
             )
         } catch {
-            runOutput = CodeRunOutput(title: "运行失败", text: error.localizedDescription)
+            runOutput = CodeRunOutput(title: FloeL10n.l("workspace.text_file_editor_view.failed"), text: error.localizedDescription)
         }
     }
 

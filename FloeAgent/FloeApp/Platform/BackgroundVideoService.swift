@@ -277,13 +277,13 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
         var localizedDescription: String {
             switch self {
-            case .idle: "等待任务启动"
-            case .renderingContent: "正在准备画中画内容"
-            case .waitingForMedia: "正在等待 AVKit 就绪"
-            case .prepared: "画中画已就绪"
-            case .starting: "正在启动画中画"
-            case .active: "正在显示"
-            case .failed: "画中画准备失败"
+            case .idle: FloeL10n.l("platform.background_video_service.waiting_for_the_task_to_start")
+            case .renderingContent: FloeL10n.l("platform.background_video_service.preparing_picture_in_picture_content")
+            case .waitingForMedia: FloeL10n.l("platform.background_video_service.waiting_for_avkit_to_be_ready")
+            case .prepared: FloeL10n.l("platform.background_video_service.picture_in_picture_ready")
+            case .starting: FloeL10n.l("platform.background_video_service.starting_picture_in_picture")
+            case .active: FloeL10n.l("platform.background_video_service.displaying")
+            case .failed: FloeL10n.l("platform.background_video_service.picture_in_picture_preparation_failed")
             }
         }
 
@@ -392,10 +392,10 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
     var manualControlTitle: String {
         switch resolvedManualAction {
-        case .prepare: "准备画中画"
-        case .start: "启动画中画"
-        case .stop: "关闭画中画"
-        case .retryPreparation: "重新准备画中画"
+        case .prepare: FloeL10n.l("platform.background_video_service.preparing_picture_in_picture")
+        case .start: FloeL10n.l("platform.background_video_service.start_picture_in_picture")
+        case .stop: FloeL10n.l("platform.background_video_service.close_picture_in_picture")
+        case .retryPreparation: FloeL10n.l("platform.background_video_service.prepare_picture_in_picture_again")
         case .none: preparationState.localizedDescription
         }
     }
@@ -627,7 +627,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         }
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
             preparationState = .failed
-            lastError = "当前设备不支持画中画"
+            lastError = FloeL10n.l("platform.background_video_service.this_device_does_not_support_picture")
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=unsupported generation=\(generation)"
             )
@@ -641,7 +641,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
 
         guard let hostView = availableSourceHost() else {
             preparationState = .failed
-            lastError = "画中画来源尚未连接到应用窗口，请保持应用在前台后重试"
+            lastError = FloeL10n.l("platform.background_video_service.the_picture_in_picture_source_is")
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=inlineSourceHost generation=\(generation)"
             )
@@ -657,7 +657,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         layer.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.065, alpha: 1).cgColor
         guard configurePlaybackTimeline(for: layer) else {
             preparationState = .failed
-            lastError = "无法创建画中画播放时间线"
+            lastError = FloeL10n.l("platform.background_video_service.could_not_create_the_picture_in")
             FloeLogger(category: .app).error(
                 "pictureInPicturePrepareFailed stage=timebase generation=\(generation)"
             )
@@ -671,7 +671,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             guidanceHints: []
         ) else {
             preparationState = .failed
-            lastError = "无法创建画中画进度画面"
+            lastError = FloeL10n.l("platform.background_video_service.could_not_create_the_picture_in_2")
             FloeLogger(category: .app).error(
                 "pictureInPicturePrepareFailed stage=frameRender generation=\(generation)"
             )
@@ -707,14 +707,14 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         guard generation == startGeneration else { return }
         guard controller.isPictureInPicturePossible, layer.isReadyForDisplay else {
             preparationState = .failed
-            lastError = "AVKit 尚未允许画中画，请稍后从任务工具栏重试"
+            lastError = FloeL10n.l("platform.background_video_service.avkit_has_not_enabled_picture_in")
             let rendererError = layer.sampleBufferRenderer.error as NSError?
             FloeLogger(category: .app).warning(
                 "pictureInPicturePrepareFailed stage=readinessTimeout generation=\(generation) possible=\(controller.isPictureInPicturePossible) readyForDisplay=\(layer.isReadyForDisplay) renderStatus=\(String(describing: layer.sampleBufferRenderer.status)) errorDomain=\(rendererError?.domain ?? "none") errorCode=\(rendererError?.code ?? 0)"
             )
             stopPiPInternal(origin: .controllerReplacement)
             preparationState = .failed
-            lastError = "AVKit 尚未允许画中画，请稍后从任务工具栏重试"
+            lastError = FloeL10n.l("platform.background_video_service.avkit_has_not_enabled_picture_in")
             return
         }
         let avKitAlreadyPromotingSource = preparationState == .starting
@@ -789,7 +789,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
               activeSourceHostView.sampleBufferDisplayLayer === sampleBufferLayer else {
             stopPiPInternal(origin: .controllerReplacement)
             preparationState = .failed
-            lastError = "画中画内容已失效，请从工具栏重试"
+            lastError = FloeL10n.l("platform.background_video_service.the_picture_in_picture_content_is")
             FloeLogger(category: .app).warning(
                 "pictureInPictureManualStartUnavailable reason=missingPreparedSource generation=\(startGeneration)"
             )
@@ -805,12 +805,12 @@ final class BackgroundVideoService: NSObject, ObservableObject {
             )
             stopPiPInternal(origin: .controllerReplacement)
             preparationState = .failed
-            lastError = "画中画内容需要重新准备，请从工具栏重试"
+            lastError = FloeL10n.l("platform.background_video_service.the_picture_in_picture_content_needs")
             return
         }
         guard controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else {
-            lastError = "当前系统暂时不能启动画中画，请稍后重试"
+            lastError = FloeL10n.l("platform.background_video_service.the_system_cannot_start_picture_in")
             FloeLogger(category: .app).warning(
                 "pictureInPictureManualStartUnavailable generation=\(startGeneration)"
             )
@@ -827,7 +827,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
         scheduleStartTimeout(
             controller: controller,
             generation: startGeneration,
-            message: "系统没有完成画中画启动，请再次点击重试"
+            message: FloeL10n.l("platform.background_video_service.the_system_did_not_finish_starting")
         )
     }
 
@@ -1349,7 +1349,7 @@ final class BackgroundVideoService: NSObject, ObservableObject {
                     .foregroundColor: UIColor.white
                 ]
             )
-            let liveLabel = "任务状态" as NSString
+            let liveLabel = FloeL10n.l("platform.background_video_service.task_status") as NSString
             liveLabel.draw(
                 at: CGPoint(x: 440, y: 58),
                 withAttributes: [
@@ -1606,7 +1606,7 @@ extension BackgroundVideoService: AVPictureInPictureControllerDelegate {
             FloeLogger(category: .app).error(
                 "pictureInPictureStartFailed domain=\(nsError.domain) code=\(nsError.code) attempt=\(self.manualStartTracker.attemptSerial)"
             )
-            self.lastError = "画中画启动失败：\(error.localizedDescription)"
+            self.lastError = FloeL10n.l("platform.background_video_service.picture_in_picture_failed_to_start", error.localizedDescription)
             // Keep the content source prepared. A later retry can only come
             // from a new explicit button press.
             self.isPiPActive = false

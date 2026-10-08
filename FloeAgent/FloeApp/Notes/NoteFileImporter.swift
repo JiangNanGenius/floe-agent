@@ -11,6 +11,7 @@ import FloeWorkspace
 import PencilKit
 import Vision
 
+import FloeCore
 enum NoteFileImporter {
     static func visualSearchText(page: NotePage, store: NotesStore) async throws -> String {
         let background = try await background(page: page, store: store)
@@ -49,7 +50,7 @@ enum NoteFileImporter {
             for field in snapshot.fields {
                 try Task.checkCancellation()
                 let remaining = 2_000_000 - text.count
-                guard remaining > 0 else { throw NoteError.invalidOperation("Office 正文超过索引上限，请拆分文档后重试。") }
+                guard remaining > 0 else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_file_importer.the_office_body_text_exceeds_the")) }
                 text += String(field.text.prefix(remaining)) + "\n"
             }
             return text
@@ -61,7 +62,7 @@ enum NoteFileImporter {
         return try await images(resourceIDs: ids, store: store)
     }
     static func images(resourceIDs ids: Set<UUID>, store: NotesStore) async throws -> [UUID: Data] {
-        guard ids.count <= 64 else { throw NoteError.invalidOperation("单页或导图最多显示 64 张图片，请拆分内容。") }
+        guard ids.count <= 64 else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_file_importer.a_page_or_mind_map_shows")) }
         // Share a 16-megapixel decoded-image budget across the current page.
         let maximum = min(2048, max(128, Int(sqrt(16_777_216 / Double(max(1, ids.count))))))
         var result: [UUID: Data] = [:]
@@ -83,7 +84,7 @@ enum NoteFileImporter {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let values = try url.resourceValues(forKeys: [.contentTypeKey, .isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true, let size = values.fileSize, size <= 536_870_912 else {
-            throw NoteError.invalidOperation("请选择不超过 512 MB 的单个文件。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.note_file_importer.choose_a_single_file_no_larger"))
         }
         let type = values.contentType ?? .data
         let kind: MindMapAttachment.Kind
@@ -109,7 +110,7 @@ enum NoteFileImporter {
         let type = try url.resourceValues(forKeys: [.contentTypeKey]).contentType
         if type?.conforms(to: .plainText) == true || ["txt", "md", "markdown", "csv", "json"].contains(url.pathExtension.lowercased()) {
             let count = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard count <= 2_000_000 else { throw NoteError.invalidOperation("文本文件超过 2 MB，请拆分后导入。") }
+            guard count <= 2_000_000 else { throw NoteError.invalidOperation(FloeL10n.l("notes.note_file_importer.the_text_file_exceeds_2_mb")) }
             let text = try String(contentsOf: url, encoding: .utf8)
             let resource = try await store.importResource(from: url, mediaType: type?.preferredMIMEType ?? "text/plain")
             var value = NoteDocument(title: url.deletingPathExtension().lastPathComponent)
@@ -137,7 +138,7 @@ enum NoteFileImporter {
         let engineeringName = url.lastPathComponent
         if let engineeringKind = EngineeringPreviewKind.identify(engineeringName) {
             guard engineeringKind != .unsupported else {
-                throw NoteError.invalidOperation("暂不支持预览此工程图格式，请导出为 DXF、DWG、STL 或 STEP 后重试。")
+                throw NoteError.invalidOperation(FloeL10n.l("notes.note_file_importer.previewing_this_engineering_drawing_format_is"))
             }
             let resourceID = try await store.importResource(from: url, mediaType: type?.preferredMIMEType ?? "application/octet-stream")
             var document = NoteDocument(kind: .engineering, notebookID: notebookID, title: url.deletingPathExtension().lastPathComponent)
@@ -154,17 +155,17 @@ enum NoteFileImporter {
                 return try PDFKitGate.run {
                     try withPDFExceptionGuard {
                         guard let pdf = PDFDocument(url: local), !pdf.isLocked, pdf.pageCount > 0 else {
-                            throw NoteError.invalidDocument("PDF 已加密、损坏或没有页面。")
+                            throw NoteError.invalidDocument(FloeL10n.l("notes.note_file_importer.the_pdf_is_encrypted_damaged_or"))
                         }
-                        guard pdf.pageCount <= 5_000 else { throw NoteError.invalidDocument("PDF 超过 5000 页，请先拆分。") }
+                        guard pdf.pageCount <= 5_000 else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_file_importer.the_pdf_exceeds_5_000_pages")) }
                         var remainingText = 2_000_000
                         return try (0..<pdf.pageCount).map { index in
-                            guard let page = pdf.page(at: index) else { throw NoteError.invalidDocument("PDF 页面无法读取。") }
+                            guard let page = pdf.page(at: index) else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_file_importer.the_pdf_page_could_not_be")) }
                             let bounds = page.bounds(for: .cropBox)
                             let rotated = abs(page.rotation % 180) == 90
                             let width = rotated ? bounds.height : bounds.width
                             let height = rotated ? bounds.width : bounds.height
-                            guard width > 0, height > 0 else { throw NoteError.invalidDocument("PDF 页面尺寸无效。") }
+                            guard width > 0, height > 0 else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_file_importer.the_pdf_page_size_is_invalid")) }
                             let text = page.string ?? ""
                             let extracted = String(text.prefix(min(65_536, remainingText)))
                             remainingText -= extracted.count
@@ -179,7 +180,7 @@ enum NoteFileImporter {
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
                   let width = properties[kCGImagePropertyPixelWidth] as? Double,
                   let height = properties[kCGImagePropertyPixelHeight] as? Double, width > 0, height > 0 else {
-                throw NoteError.invalidDocument("图片无法读取。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_file_importer.the_image_could_not_be_read"))
             }
             let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
             let rotated = (5...8).contains(orientation)

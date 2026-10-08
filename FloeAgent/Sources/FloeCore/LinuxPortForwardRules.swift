@@ -84,7 +84,7 @@ public struct LinuxPortForwardRule: Sendable, Codable, Hashable, Identifiable {
     /// True when the rule asks for a fixed host port. The *applied* port lives
     /// in `LinuxPortForwardPlan`, which may differ after conflict handling.
     public var requestedHostPortText: String {
-        requestedHostPort.map(String.init) ?? "动态"
+        requestedHostPort.map(String.init) ?? FloeL10n.l("portforward.dynamic")
     }
 }
 

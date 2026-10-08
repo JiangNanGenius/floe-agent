@@ -136,7 +136,7 @@ public extension ProviderPreset {
         // keys and reading the image API documentation. Keep the persisted
         // enum case for database compatibility, but use the recognizable API
         // product name in the UI.
-        displayName: "DashScope（阿里云百炼）",
+        displayName: FloeL10n.l("providers.provider_adapter_factory.dashscope_alibaba_cloud_bailian"),
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!,

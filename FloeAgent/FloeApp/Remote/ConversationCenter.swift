@@ -198,12 +198,12 @@ final class ConversationCenter: ObservableObject {
         guard !compactingConversations.contains(conversationID),
               launchCount == 0,
               !activeRuns.values.contains(where: { $0.conversationID == conversationID }) else {
-            throw FloeError.validationFailed("当前任务正在运行或压缩，请在任务空闲时执行 /compact。")
+            throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_current_task_is_running_or"))
         }
         compactingConversations.insert(conversationID)
         defer { compactingConversations.remove(conversationID) }
         guard let run = try await environment.runStore.runs(conversationID: conversationID).first else {
-            return "当前没有需要压缩的历史。"
+            return FloeL10n.l("remote.conversation_center.there_is_currently_no_history_to")
         }
         let raw = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
         let history = try await environment.intelligenceStore.applyingCompactions(raw, conversationID: conversationID)
@@ -216,14 +216,14 @@ final class ConversationCenter: ObservableObject {
         let current = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
         guard raw.map({ $0.role + ":" + $0.content }) == current.map({ $0.role + ":" + $0.content }),
               !activeRuns.values.contains(where: { $0.conversationID == conversationID }) else {
-            throw FloeError.validationFailed("压缩期间历史发生变化，未应用旧摘要，请重试。")
+            throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_history_changed_during_compaction_so"))
         }
         guard !result.record.sourceMessageIDs.isEmpty,
               let summary = result.messages.first(where: { $0.content.contains("Historical summary:") })?.content else {
-            return "历史较短，无需压缩；原始记录未改变。"
+            return FloeL10n.l("remote.conversation_center.the_history_is_short_enough_no")
         }
         try await environment.intelligenceStore.saveCompaction(runID: run.id, record: result.record, summary: "[Manual context snapshot]\n" + summary)
-        return "上下文已压缩：约 \(result.record.beforeEstimatedTokens) → \(result.record.afterEstimatedTokens) tokens。完整会话与工具记录仍保留。"
+        return FloeL10n.l("remote.conversation_center.context_compacted_about_tokens_the_full", result.record.beforeEstimatedTokens, result.record.afterEstimatedTokens)
     }
 
     private func consumeManualCompaction(conversationID: UUID) -> Bool {
@@ -298,7 +298,7 @@ final class ConversationCenter: ObservableObject {
                 try Task.checkCancellation()
                 let page = try await environment.runStore.events(runID: run.id, afterSequence: cursor, limit: 200)
                     .filter { $0.sequence <= watermark }
-                guard !page.isEmpty else { throw FloeError.validationFailed("导出期间事件记录发生变化，请重试。") }
+                guard !page.isEmpty else { throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_event_record_changed_during_export")) }
                 for event in page {
                     let payload = (try? JSONSerialization.jsonObject(with: Data(event.payloadJSON.utf8))) ?? event.payloadJSON
                     try write(["type": "event", "runID": run.id.uuidString, "id": event.id.uuidString,
@@ -498,7 +498,7 @@ final class ConversationCenter: ObservableObject {
            let checkpoint = try await environment.checkpointStore.load(runID: runID),
            case .checkpointed(let reference) = checkpoint.state {
             let reason = (reference.reason ?? "").lowercased()
-            waitingForBrowser = reason.contains("browser") || reason.contains("浏览器")
+            waitingForBrowser = reason.contains("browser") || reason.contains(FloeL10n.l("browser.title"))
         } else { waitingForBrowser = false }
         if (runServices[runID] == nil || waitingForBrowser), shouldContinue || waitingForBrowser {
             _ = try await retry(runID: runID, startOrigin: .explicitUserAction)
@@ -1387,7 +1387,7 @@ final class ConversationCenter: ObservableObject {
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
         guard !compactingConversations.contains(conversationID) else {
-            throw FloeError.validationFailed("上下文正在压缩，请完成后再发送；输入内容未丢弃。")
+            throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_context_is_being_compacted_send"))
         }
         let ingress = SecretIngressScanner.scan(goal)
         let trimmed = ingress.sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1662,7 +1662,7 @@ final class ConversationCenter: ObservableObject {
             try? service.createDirectory(directory)
             _ = try service.createFile(
                 path,
-                content: "# 附件视觉证据\n\n\(String(evidence.prefix(16_000)))\n"
+                content: FloeL10n.l("remote.conversation_center.attachment_visual_evidence", String(evidence.prefix(16_000)))
             )
             FloeLogger(category: .app).info(
                 "visualEvidenceWorkspaceFileCreated run=\(runID.uuidString) path=\(path) characters=\(evidence.count)"
@@ -1833,7 +1833,7 @@ final class ConversationCenter: ObservableObject {
                 kind = .sshPassword
             } else if lower.contains("api") {
                 kind = .providerAPIKey
-            } else if lower.contains("password") || lower.contains("密码") {
+            } else if lower.contains("password") || lower.contains(FloeL10n.l("hosts.auth.password")) {
                 kind = .websitePassword
             } else {
                 kind = .genericToken
@@ -1998,7 +1998,7 @@ final class ConversationCenter: ObservableObject {
         guard !description.isEmpty else {
             if let ocr = await onDeviceOCRContext(images) {
                 FloeLogger(category: .app).info("visualEvidenceReady trace=\(traceID) route=onDeviceOCRAfterAuxiliary")
-                let reason = firstFailure?.userMessage ?? "辅助视觉模型没有返回可用内容"
+                let reason = firstFailure?.userMessage ?? FloeL10n.l("remote.conversation_center.the_auxiliary_vision_model_returned_no")
                 return ([], [ConversationMessage(
                     role: "system",
                     content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nSemantic image analysis was unavailable (\(reason)); the app safely fell back to on-device OCR.\n\(ocr)"
@@ -2007,7 +2007,7 @@ final class ConversationCenter: ObservableObject {
             FloeLogger(category: .app).warning(
                 "visualEvidenceUnavailable trace=\(traceID) reason=auxiliaryEmpty model=\(model.id.uuidString)"
             )
-            let reason = firstFailure?.userMessage ?? "辅助视觉模型没有返回可用内容"
+            let reason = firstFailure?.userMessage ?? FloeL10n.l("remote.conversation_center.the_auxiliary_vision_model_returned_no")
             return ([], [ConversationMessage(
                 role: "system",
                 content: "\(FloeAgentRuntime.visualEvidenceSystemPrefix)\nThe selected model is text-only. Automatic auxiliary visual analysis failed (\(reason)), and on-device OCR found no usable text. Tell the user this exact limitation. Do not claim to see the image and do not call browser, Python, image.inspect, or directory-search tools to retry the same unavailable route."
@@ -2132,7 +2132,7 @@ final class ConversationCenter: ObservableObject {
         guard input.status == .steerPending else { return }
         if let runID = input.targetRunID, let service = runServices[runID] {
             guard await service.withdrawSteer(id: input.id) else {
-                throw FloeError.validationFailed("这条引导已开始发送，无法撤回。请发送新的更正消息。")
+                throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.this_steer_has_already_started_sending"))
             }
         }
         // Preserve withdrawn content as an ordinary queued message first.
@@ -2398,7 +2398,7 @@ final class ConversationCenter: ObservableObject {
             if !images.isEmpty {
                 self.environment.backgroundRunCoordinator.didUpdateProgress(
                     runID: runID,
-                    stage: model.capabilities.contains(.vision) ? "正在准备图片" : "正在理解图片",
+                    stage: model.capabilities.contains(.vision) ? FloeL10n.l("remote.conversation_center.preparing_image") : FloeL10n.l("remote.conversation_center.understanding_image"),
                     progress: 16
                 )
             }
@@ -2416,7 +2416,7 @@ final class ConversationCenter: ObservableObject {
                 )
                 self.environment.backgroundRunCoordinator.didUpdateProgress(
                     runID: runID,
-                    stage: "正在加载本地模型",
+                    stage: FloeL10n.l("remote.conversation_center.loading_local_model"),
                     progress: 24
                 )
                 do {
@@ -2635,7 +2635,7 @@ final class ConversationCenter: ObservableObject {
             environment.backgroundRunCoordinator.didSuspend(
                 runID: runID,
                 message: (await service.snapshot()).checkpointReason
-                    ?? "任务已保存，等待你继续"
+                    ?? FloeL10n.l("remote.conversation_center.task_saved_waiting_for_you_to")
             )
         case (_, .success):
             environment.backgroundRunCoordinator.didFinish(
@@ -3261,7 +3261,7 @@ final class ConversationCenter: ObservableObject {
         await environment.workspaceCenter.reload()
         await reload()
         if cleanupFailures > 0 {
-            throw FloeError.validationFailed("任务已删除，\(cleanupFailures) 个私有工作区尚未清理，将在下次启动时重试。")
+            throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_task_was_deleted_private_workspaces", cleanupFailures))
         }
         return (records.count, runCount)
     }
@@ -3302,7 +3302,7 @@ final class ConversationCenter: ObservableObject {
 
         for id in conversationIDs {
             let ownerLabel = try await environment.conversationStore.conversation(id: id)?.title
-                ?? "已删除任务"
+                ?? FloeL10n.l("remote.conversation_center.deleted_tasks")
             try await environment.intelligenceStore.preserveMemoriesBeforeConversationDeletion(
                 conversationID: id,
                 ownerLabel: ownerLabel
@@ -3383,7 +3383,7 @@ final class ConversationCenter: ObservableObject {
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
         guard !compactingConversations.contains(record.conversationID) else {
-            throw FloeError.validationFailed("上下文正在压缩，请完成后再继续任务。")
+            throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_context_is_compacting_continue_the"))
         }
         beginLaunch()
         defer { finishLaunch() }
@@ -3564,7 +3564,7 @@ final class ConversationCenter: ObservableObject {
         if suspended {
             environment.backgroundRunCoordinator.didSuspend(
                 runID: service.runID,
-                message: snapshot.checkpointReason ?? "任务已保存，等待你继续"
+                message: snapshot.checkpointReason ?? FloeL10n.l("remote.conversation_center.task_saved_waiting_for_you_to")
             )
         } else {
             environment.backgroundRunCoordinator.didFinish(
@@ -3780,7 +3780,7 @@ final class ConversationCenter: ObservableObject {
     }
 
     var generalAuxiliaryModelLabel: String {
-        guard let (provider, model) = generalAuxiliaryProviderAndModel() else { return "未配置可用的文本模型" }
+        guard let (provider, model) = generalAuxiliaryProviderAndModel() else { return FloeL10n.l("remote.conversation_center.no_usable_text_model_configured") }
         return "\(model.displayName) · \(provider.displayName ?? provider.kind.rawValue)"
     }
 
@@ -3843,13 +3843,13 @@ final class ConversationCenter: ObservableObject {
         var userMessage: String {
             switch self {
             case .noConfiguredModel:
-                return "未配置可用的辅助视觉模型"
+                return FloeL10n.l("remote.conversation_center.no_usable_auxiliary_vision_model_configured")
             case .provider(_, let code, let message):
-                return "辅助视觉模型请求失败（\(code)）：\(message)"
+                return FloeL10n.l("remote.conversation_center.the_auxiliary_vision_model_request_failed", code, message)
             case .emptyResponse:
-                return "辅助视觉模型返回了空响应"
+                return FloeL10n.l("remote.conversation_center.the_auxiliary_vision_model_returned_an")
             case .timedOut(let seconds):
-                return "辅助视觉模型在 \(seconds) 秒内没有完成响应"
+                return FloeL10n.l("remote.conversation_center.the_auxiliary_vision_model_did_not", seconds)
             }
         }
     }
@@ -4370,19 +4370,19 @@ final class ConversationCenter: ObservableObject {
             )
         }
         let progress: (stage: String, value: Int64) = switch snapshot.stateName {
-        case "preparing": ("正在准备", 8)
-        case "streamingModel": ("模型正在处理", 30)
-        case "reconnecting": ("正在重新连接模型", 34)
-        case "executingTool": ("正在调用工具", 50)
-        case "committingResults": ("正在提交工具结果", 66)
-        case "waitingApproval": ("等待你的审批", 60)
-        case "compacting": ("正在整理上下文", 72)
-        case "verifying": ("正在复核答案", 88)
-        case "completed": ("本轮已结束", 100)
-        case "failed": ("运行失败", 100)
-        case "recoveryFailed": ("恢复失败，可安全继续", 100)
-        case "checkpointed": (snapshot.checkpointReason ?? "任务已暂停", 70)
-        default: ("正在运行", 20)
+        case "preparing": (FloeL10n.l("remote.conversation_center.preparing"), 8)
+        case "streamingModel": (FloeL10n.l("remote.conversation_center.the_model_is_processing"), 30)
+        case "reconnecting": (FloeL10n.l("remote.conversation_center.reconnecting_to_the_model"), 34)
+        case "executingTool": (FloeL10n.l("state.executing_tool"), 50)
+        case "committingResults": (FloeL10n.l("state.committing_results"), 66)
+        case "waitingApproval": (FloeL10n.l("platform.background_run_coordinator.waiting_for_your_approval"), 60)
+        case "compacting": (FloeL10n.l("remote.conversation_center.organizing_context"), 72)
+        case "verifying": (FloeL10n.l("remote.conversation_center.reviewing_the_answer"), 88)
+        case "completed": (FloeL10n.l("state.round_ended"), 100)
+        case "failed": (FloeL10n.l("workspace.text_file_editor_view.failed"), 100)
+        case "recoveryFailed": (FloeL10n.l("remote.conversation_center.recovery_failed_safe_to_continue"), 100)
+        case "checkpointed": (snapshot.checkpointReason ?? FloeL10n.l("remote.conversation_center.task_paused"), 70)
+        default: (FloeL10n.l("platform.background_run_coordinator.running"), 20)
         }
         environment.backgroundRunCoordinator.didReceiveActivity(
             runID: snapshot.runID, at: snapshot.liveness.lastProgressAt

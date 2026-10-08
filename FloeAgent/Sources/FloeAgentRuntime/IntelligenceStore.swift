@@ -552,7 +552,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 kind: .exactDuplicate,
                 memoryIDs: ordered.map(\.id),
                 preferredMemoryID: ordered.first?.id,
-                reason: "内容完全相同；跨范围删除仍需确认。",
+                reason: FloeL10n.l("runtime.intelligence_store.the_content_is_identical_cross_scope"),
                 canApplyAutomatically: Set(ordered.map(\.scope)).count == 1
             ))
         }
@@ -567,14 +567,14 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 memoryIDs: ordered.map(\.id),
                 preferredMemoryID: ordered.first?.id,
                 reason: staysWithinOneScope
-                    ? "同一范围的事实槽位存在多个当前值，应保留最新值。"
-                    : "同一事实槽位跨多个范围存在不同值，需要确认后再整理。",
+                    ? FloeL10n.l("runtime.intelligence_store.a_fact_slot_in_the_same")
+                    : FloeL10n.l("runtime.intelligence_store.the_same_fact_slot_has_different"),
                 canApplyAutomatically: staysWithinOneScope
             ))
         }
         for entry in entries where entry.expiresAt.map({ $0 <= Date() }) == true {
             suggestions.append(MemoryOrganizationSuggestion(
-                kind: .expired, memoryIDs: [entry.id], reason: "记忆已超过有效期。",
+                kind: .expired, memoryIDs: [entry.id], reason: FloeL10n.l("runtime.intelligence_store.the_memory_has_passed_its_validity"),
                 canApplyAutomatically: false
             ))
         }

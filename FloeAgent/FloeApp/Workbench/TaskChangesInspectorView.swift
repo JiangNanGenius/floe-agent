@@ -96,10 +96,10 @@ private final class TaskChangesInspectorModel: ObservableObject {
 
     private static func parse(summary: String, tool: String?) -> (path: String, action: String, added: Int, removed: Int)? {
         let candidates = [
-            ("patched=", "修改", " hunks="),
-            ("written=", "写入", " bytes="),
-            ("created=", "新建", " bytes="),
-            ("deleted=", "删除", " ")
+            ("patched=", FloeL10n.l("workbench.task_changes_inspector_view.changed"), " hunks="),
+            ("written=", FloeL10n.l("workbench.task_changes_inspector_view.write"), " bytes="),
+            ("created=", FloeL10n.l("chat.thread_detail_view_model.new"), " bytes="),
+            ("deleted=", FloeL10n.l("workbench.task_changes_inspector_view.delete"), " ")
         ]
         guard tool?.hasPrefix("workspace.") != false else { return nil }
         for (prefix, action, delimiter) in candidates where summary.hasPrefix(prefix) {
@@ -140,7 +140,7 @@ struct TaskChangesInspectorView: View {
                             self.selected = nil
                             self.selectedDiff = nil
                         } label: {
-                            Label("返回", systemImage: "chevron.left")
+                            Label("settings.document_recovery_list_view.back", systemImage: "chevron.left")
                         }
                         Spacer()
                         Text(selected.path).lineLimit(1)
@@ -167,10 +167,9 @@ struct TaskChangesInspectorView: View {
             if model.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.changes.isEmpty {
-                ContentUnavailableView(
-                    "暂无文件变更",
+                ContentUnavailableView("workbench.task_changes_inspector_view.no_file_changes",
                     systemImage: "plusminus",
-                    description: Text("当前任务修改文件后，变更和可验证 diff 会显示在这里。")
+                    description: Text("workbench.task_changes_inspector_view.after_the_current_task_modifies_files")
                 )
             } else {
                 List(model.changes) { change in
@@ -195,7 +194,7 @@ struct TaskChangesInspectorView: View {
                     .buttonStyle(.plain)
                     .disabled(change.artifact == nil)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("打开文件") { openFile(change.path) }
+                        Button("files.open") { openFile(change.path) }
                     }
                 }
                 .listStyle(.plain)
@@ -206,8 +205,8 @@ struct TaskChangesInspectorView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("变更").font(.headline)
-                Text("\(model.changes.count) 个文件操作")
+                Text("chat.thread_detail_view.changes").font(.headline)
+                Text(FloeL10n.l("workbench.task_changes_inspector_view.file_operations", model.changes.count))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -215,7 +214,7 @@ struct TaskChangesInspectorView: View {
                 Image(systemName: "xmark")
                     .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
             }
-            .accessibilityLabel("关闭检查器")
+            .accessibilityLabel("inspector.close")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

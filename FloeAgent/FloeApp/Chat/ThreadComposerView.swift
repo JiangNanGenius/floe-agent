@@ -632,7 +632,7 @@ struct ThreadComposerView: View {
                 .map {
                     SlashAction(
                         id: "skill:\($0.id)", title: $0.name,
-                        subtitle: "在下一条请求中指定 $\($0.id)",
+                        subtitle: FloeL10n.l("chat.thread_composer_view.specify_in_next_request", "$", $0.id),
                         systemImage: "puzzlepiece.extension",
                         kind: .skill(id: $0.id, name: $0.name)
                     )
@@ -641,29 +641,29 @@ struct ThreadComposerView: View {
 
         var actions: [SlashAction] = [
             SlashAction(
-                id: "skills", title: "管理 Skills", subtitle: "打开已安装 Skill 与权限",
+                id: "skills", title: FloeL10n.l("chat.thread_composer_view.manage_skills"), subtitle: FloeL10n.l("chat.thread_composer_view.open_installed_skills_and_permissions"),
                 systemImage: "puzzlepiece.extension", kind: .openSkills
             ),
             SlashAction(
-                id: "agent", title: "Agent 模式", subtitle: "允许调用已授权工具",
+                id: "agent", title: FloeL10n.l("chat.thread_composer_view.agent_mode"), subtitle: FloeL10n.l("chat.thread_composer_view.allow_calling_authorized_tools"),
                 systemImage: "wand.and.sparkles", kind: .mode(.agent)
             ),
             SlashAction(
-                id: "chat", title: "聊天模式", subtitle: "不调用工具",
+                id: "chat", title: FloeL10n.l("chat.thread_composer_view.chat_mode"), subtitle: FloeL10n.l("chat.thread_composer_view.no_tool_calls"),
                 systemImage: "text.bubble", kind: .mode(.chat)
             ),
             SlashAction(
-                id: "plan", title: "计划模式", subtitle: "只读分析并生成计划",
+                id: "plan", title: FloeL10n.l("chat.thread_composer_view.plan_mode"), subtitle: FloeL10n.l("chat.thread_composer_view.read_only_analysis_that_produces_a"),
                 systemImage: "list.bullet.clipboard", kind: .mode(.plan)
             ),
             SlashAction(
-                id: "goal", title: "目标模式", subtitle: "持续执行到满足验收条件",
+                id: "goal", title: FloeL10n.l("chat.thread_composer_view.goal_mode"), subtitle: FloeL10n.l("chat.thread_composer_view.keeps_executing_until_the_acceptance_criteria"),
                 systemImage: "target", kind: .mode(.goal)
             )
         ]
         if onManualCompact != nil {
             actions.insert(SlashAction(
-                id: "compact", title: "压缩上下文", subtitle: "下次模型请求前压缩当前会话历史",
+                id: "compact", title: FloeL10n.l("chat.thread_composer_view.compact_context"), subtitle: FloeL10n.l("chat.thread_composer_view.compact_this_conversation_s_history_before"),
                 systemImage: "arrow.down.right.and.arrow.up.left", kind: .compact
             ), at: 0)
         }
@@ -714,7 +714,7 @@ struct ThreadComposerView: View {
         case .mode(let mode):
             agentMode = mode
             draft = ""
-            slashNotice = "已切换到\(mode.localizedTitle)。"
+            slashNotice = FloeL10n.l("chat.thread_composer_view.switched_to", mode.localizedTitle)
         case .skill(let id, _):
             draft = "Use $\(id) "
         }
@@ -767,7 +767,7 @@ struct ThreadComposerView: View {
                     }
                 }
                 if contextID != nil || notesDraftID != nil {
-                    Button("手记资料", systemImage: "book.pages") { isNotesPickerPresented = true }
+                    Button("chat.thread_composer_view.notes_sources", systemImage: "book.pages") { isNotesPickerPresented = true }
                 }
                 Button {
                     isPickerPresented = true
@@ -931,7 +931,7 @@ struct ThreadComposerView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                 Text(voiceInput.transcript.isEmpty
-                     ? (voiceInput.isListening ? "正在聆听…" : "请稍候…")
+                     ? (voiceInput.isListening ? "chat.thread_composer_view.listening" : "chat.thread_composer_view.please_wait")
                      : voiceInput.transcript)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -967,11 +967,11 @@ struct ThreadComposerView: View {
 
     private var voiceCaptureTitle: LocalizedStringKey {
         switch voiceInput.state {
-        case .requestingPermission: "正在请求语音权限…"
-        case .preparing: "正在准备语音识别…"
-        case .listening: "正在听你说话"
-        case .stopping: "正在完成转写…"
-        case .idle, .unavailable, .failed: "语音输入"
+        case .requestingPermission: "chat.thread_composer_view.requesting_microphone_permission"
+        case .preparing: "chat.thread_composer_view.preparing_speech_recognition"
+        case .listening: "chat.thread_composer_view.listening_to_you"
+        case .stopping: "chat.thread_composer_view.finishing_transcription"
+        case .idle, .unavailable, .failed: "settings.general_settings_view.voice_input"
         }
     }
 
@@ -992,23 +992,23 @@ struct ThreadComposerView: View {
                         Button {
                             runningInputMode.wrappedValue = .queue
                         } label: {
-                            Label("加入消息队列", systemImage: runningInputMode.wrappedValue == .queue
+                            Label("chat.thread_composer_view.add_to_message_queue", systemImage: runningInputMode.wrappedValue == .queue
                                   ? "checkmark" : "text.badge.plus")
                         }
                         Button {
                             runningInputMode.wrappedValue = .steer
                         } label: {
-                            Label("引导当前运行", systemImage: runningInputMode.wrappedValue == .steer
+                            Label("chat.thread_composer_view.steer_the_current_run", systemImage: runningInputMode.wrappedValue == .steer
                                   ? "checkmark" : "arrow.triangle.turn.up.right.diamond")
                         }
                     } label: {
                         composerChip(
-                            title: runningInputMode.wrappedValue == .queue ? "排队" : "引导",
+                            title: runningInputMode.wrappedValue == .queue ? FloeL10n.l("chat.thread_composer_view.queue") : FloeL10n.l("chat.thread_composer_view.steer"),
                             systemImage: runningInputMode.wrappedValue == .queue
                                 ? "text.badge.plus" : "arrow.triangle.turn.up.right.diamond"
                         )
                     }
-                    .accessibilityLabel("运行中发送方式")
+                    .accessibilityLabel("chat.thread_composer_view.send_method_while_running")
                 }
                 if !documentAssistant {
                     Button { onPermissions() } label: {
@@ -1025,9 +1025,9 @@ struct ThreadComposerView: View {
 
     private var approvalModeTitle: String {
         switch approvalMode {
-        case .ask: "询问"
-        case .automatic: "自动审批"
-        case .fullAccess: "完全访问"
+        case .ask: FloeL10n.l("settings.agent_permissions_view.ask")
+        case .automatic: FloeL10n.l("settings.agent_permissions_view.auto_approve")
+        case .fullAccess: FloeL10n.l("settings.agent_permissions_view.full_access")
         }
     }
 
@@ -1042,7 +1042,7 @@ struct ThreadComposerView: View {
         guard isRunning, let mode = runningInputMode?.wrappedValue else {
             return String(localized: "thread.send")
         }
-        return mode == .queue ? "加入消息队列" : "引导当前运行"
+        return mode == .queue ? FloeL10n.l("chat.thread_composer_view.add_to_message_queue") : FloeL10n.l("chat.thread_composer_view.steer_the_current_run")
     }
 
     private var modelPicker: some View {
@@ -1344,7 +1344,7 @@ struct ThreadComposerView: View {
         do {
             try await environment.conversationCenter.saveModel(updated)
         } catch {
-            attachmentError = presentableComposerError(error, operation: "保存模型设置")
+            attachmentError = presentableComposerError(error, operation: FloeL10n.l("chat.thread_composer_view.save_model_settings"))
         }
     }
 
@@ -1415,7 +1415,7 @@ struct ThreadComposerView: View {
             try await environment.workspaceCenter.openWorkspace(id: id)
             attachmentError = nil
         } catch {
-            attachmentError = presentableComposerError(error, operation: "打开工作区")
+            attachmentError = presentableComposerError(error, operation: FloeL10n.l("chat.thread_composer_view.open_workspace"))
         }
     }
 
@@ -1555,7 +1555,7 @@ struct ThreadComposerView: View {
             attachments.append(attachment)
             attachmentError = nil
         } catch {
-            attachmentError = presentableComposerError(error, operation: "导入附件")
+            attachmentError = presentableComposerError(error, operation: FloeL10n.l("chat.thread_composer_view.import_attachment"))
         }
     }
 
@@ -1597,7 +1597,7 @@ struct ThreadComposerView: View {
 
     private func registerCapturedImage(_ image: UIImage) {
         guard let data = image.jpegData(compressionQuality: 0.9) else {
-            attachmentError = "无法处理拍摄的照片。"
+            attachmentError = FloeL10n.l("chat.thread_composer_view.could_not_process_the_captured_photo")
             return
         }
         do {
@@ -1611,7 +1611,7 @@ struct ThreadComposerView: View {
                 "cameraCaptureFinished attachment=\(attachment.id.uuidString) bytes=\(attachment.byteCount)"
             )
         } catch {
-            attachmentError = presentableComposerError(error, operation: "导入相机照片")
+            attachmentError = presentableComposerError(error, operation: FloeL10n.l("chat.thread_composer_view.import_camera_photo"))
         }
     }
 

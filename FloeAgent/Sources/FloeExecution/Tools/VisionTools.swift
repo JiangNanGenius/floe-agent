@@ -143,7 +143,7 @@ public struct OCRTool: AgentTool {
             try handler.perform([request])
             let observations = request.results ?? []
             if observations.isEmpty {
-                return Self.output("未识别到文字", exitStatus: 0)
+                return Self.output(FloeL10n.l("execution.vision_tools.no_text_recognized"), exitStatus: 0)
             }
             var lines: [String] = []
             for observation in observations {
@@ -151,9 +151,9 @@ public struct OCRTool: AgentTool {
                 let box = observation.boundingBox
                 lines.append("\(candidate.string) [\(Int(box.origin.x * 100)),\(Int(box.origin.y * 100)) \(Int(box.width * 100))x\(Int(box.height * 100))]")
             }
-            return Self.output("识别到 \(observations.count) 行文字：\n" + lines.joined(separator: "\n"), exitStatus: 0)
+            return Self.output(FloeL10n.l("execution.vision_tools.recognized_lines_of_text", observations.count) + lines.joined(separator: "\n"), exitStatus: 0)
         } catch {
-            return Self.output("OCR 失败：\(error.localizedDescription)", exitStatus: 2)
+            return Self.output(FloeL10n.l("execution.vision_tools.ocr_failed", error.localizedDescription), exitStatus: 2)
         }
         #else
         return Self.output("status=error error=Vision framework not available", exitStatus: 2)
@@ -223,17 +223,17 @@ public struct BarcodeScanTool: AgentTool {
             try handler.perform([request])
             let observations = request.results ?? []
             if observations.isEmpty {
-                return Self.output("未识别到条码/二维码", exitStatus: 0)
+                return Self.output(FloeL10n.l("execution.vision_tools.no_barcode_qr_code_recognized"), exitStatus: 0)
             }
             var lines: [String] = []
             for observation in observations {
-                let content = observation.payloadStringValue ?? "(无法解码)"
+                let content = observation.payloadStringValue ?? FloeL10n.l("execution.vision_tools.cannot_decode")
                 let type = observation.symbology.rawValue
                 lines.append("- [\(type)] \(content)")
             }
-            return Self.output("识别到 \(observations.count) 个条码/二维码：\n" + lines.joined(separator: "\n"), exitStatus: 0)
+            return Self.output(FloeL10n.l("execution.vision_tools.recognized_barcodes_qr_codes", observations.count) + lines.joined(separator: "\n"), exitStatus: 0)
         } catch {
-            return Self.output("扫描失败：\(error.localizedDescription)", exitStatus: 2)
+            return Self.output(FloeL10n.l("execution.network_scan_l_a_n_tool.scan_failed", error.localizedDescription), exitStatus: 2)
         }
         #else
         return Self.output("status=error error=Vision framework not available", exitStatus: 2)

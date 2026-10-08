@@ -38,7 +38,7 @@ public actor GitHubService {
     ) async throws -> GitHubDeviceAuthorization {
         let clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientID.isEmpty else {
-            throw FloeError.invalidConfiguration("GitHub 登录尚未配置 OAuth Client ID")
+            throw FloeError.invalidConfiguration(FloeL10n.l("git.git_hub_service.github_sign_in_has_no_oauth"))
         }
         let scope = includeWorkflows ? Self.workflowOAuthScope : Self.defaultOAuthScope
         let payload: DeviceCodePayload = try await oauthFormRequest(
@@ -63,7 +63,7 @@ public actor GitHubService {
     ) async throws -> String {
         let clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientID.isEmpty else {
-            throw FloeError.invalidConfiguration("GitHub 登录尚未配置 OAuth Client ID")
+            throw FloeError.invalidConfiguration(FloeL10n.l("git.git_hub_service.github_sign_in_has_no_oauth"))
         }
         var interval = authorization.interval
         while Date() < authorization.expiresAt {
@@ -86,15 +86,15 @@ public actor GitHubService {
             case "access_denied":
                 throw FloeError.cancelled
             case "expired_token":
-                throw FloeError.syncUnavailable("GitHub 登录验证码已过期，请重新登录")
+                throw FloeError.syncUnavailable(FloeL10n.l("git.git_hub_service.the_github_sign_in_code_has"))
             case "device_flow_disabled":
-                throw FloeError.invalidConfiguration("GitHub 应用尚未启用 Device Flow")
+                throw FloeError.invalidConfiguration(FloeL10n.l("git.git_hub_service.the_github_app_has_not_enabled"))
             default:
                 let message = payload.errorDescription ?? payload.error ?? "unknown OAuth response"
                 throw FloeError.syncUnavailable("GitHub login failed: \(SecretRedactor.redact(message))")
             }
         }
-        throw FloeError.syncUnavailable("GitHub 登录验证码已过期，请重新登录")
+        throw FloeError.syncUnavailable(FloeL10n.l("git.git_hub_service.the_github_sign_in_code_has"))
     }
 
     public func account(token: String) async throws -> GitHubAccount {

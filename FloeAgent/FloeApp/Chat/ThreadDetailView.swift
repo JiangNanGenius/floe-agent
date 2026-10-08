@@ -170,7 +170,7 @@ struct ThreadDetailView: View {
                     )
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("完成") { selectedImportantFile = nil }
+                            Button("workspace.workspace_canvas_view.done") { selectedImportantFile = nil }
                         }
                     }
                 }
@@ -201,7 +201,7 @@ struct ThreadDetailView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(checklist.title).lineLimit(1)
                     if let step = checklist.currentStep {
-                        Text("当前：\(step.title)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(FloeL10n.l("chat.thread_detail_view.current", step.title)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
                 Spacer()
@@ -226,10 +226,10 @@ struct ThreadDetailView: View {
     private var importantFilesStrip: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Label("本轮重点文件", systemImage: "doc.text.magnifyingglass")
+                Label("chat.thread_detail_view.key_files", systemImage: "doc.text.magnifyingglass")
                     .font(FloeTheme.Typography.metadata.weight(.semibold))
                 Spacer()
-                Button("全部文件") { router.showInspector(.workspaceFiles) }
+                Button("chat.thread_detail_view.all_files") { router.showInspector(.workspaceFiles) }
                     .font(FloeTheme.Typography.metadata)
             }
             .padding(.horizontal, 12)
@@ -256,8 +256,8 @@ struct ThreadDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
-                            Button("打开", systemImage: "doc.text") { selectedImportantFile = file }
-                            Button("复制路径", systemImage: "doc.on.doc") {
+                            Button("chat.thread_detail_view.open", systemImage: "doc.text") { selectedImportantFile = file }
+                            Button("chat.thread_detail_view.copy_path", systemImage: "doc.on.doc") {
                                 UIPasteboard.general.string = file.path
                             }
                         }
@@ -295,7 +295,7 @@ struct ThreadDetailView: View {
                 Text(plan.title).font(.subheadline).lineLimit(2)
                 if let recommendation = plan.executionRecommendation {
                     Label(
-                        recommendation == .goal ? "建议转为 Goal" : "建议普通执行",
+                        recommendation == .goal ? "chat.thread_detail_view.suggest_converting_to_goal" : "chat.thread_detail_view.recommend_normal_execution",
                         systemImage: recommendation == .goal ? "target" : "play.circle"
                     )
                     .font(.caption)
@@ -306,11 +306,11 @@ struct ThreadDetailView: View {
                 }
                 if plan.status == .ready && plan.isDecisionComplete {
                     HStack {
-                        Button("按普通计划执行") {
+                        Button("chat.thread_detail_view.execute_on_the_normal_plan") {
                             Task { await viewModel.acceptLatestPlan(as: .normal) }
                         }
                         .buttonStyle(.borderedProminent)
-                        Button("转为 Goal") {
+                        Button("chat.thread_detail_view.convert_to_goal") {
                             Task { await viewModel.acceptLatestPlan(as: .goal) }
                         }
                         .buttonStyle(.bordered)
@@ -349,13 +349,13 @@ struct ThreadDetailView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                     if viewModel.hasEarlierMessages {
-                        Button("加载更早消息", systemImage: "arrow.up.circle") {
+                        Button("chat.thread_detail_view.load_earlier_messages", systemImage: "arrow.up.circle") {
                             Task { await viewModel.loadEarlierMessages() }
                         }
                         .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
                         .disabled(viewModel.loadingEarlierMessages)
-                        .accessibilityHint("每次加载更早的三十条消息")
+                        .accessibilityHint("chat.thread_detail_view.load_thirty_more_older_messages_each")
                     }
                     // The unified timeline: user goal → run events in stored
                     // sequence → live tail → approvals → terminal last.
@@ -424,8 +424,8 @@ struct ThreadDetailView: View {
                     .buttonBorderShape(.circle)
                     .padding(.trailing, 14)
                     .padding(.bottom, 12)
-                    .accessibilityLabel("回到最新消息")
-                    .accessibilityHint("滚动到对话的最新消息")
+                    .accessibilityLabel("chat.thread_detail_view.jump_to_latest")
+                    .accessibilityHint("chat.thread_detail_view.scroll_to_the_latest_message_in")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -451,7 +451,7 @@ struct ThreadDetailView: View {
     private func timelineRow(_ item: ThreadTimelineItem) -> some View {
         switch item {
         case .earlierEvents(let runID):
-            Button("查看更早的工具记录", systemImage: "clock.arrow.circlepath") {
+            Button("chat.thread_detail_view.show_earlier_tool_activity", systemImage: "clock.arrow.circlepath") {
                 Task { await viewModel.loadEarlierEvents(runID: runID) }
             }
             .disabled(viewModel.loadingEventRunIDs.contains(runID))
@@ -519,10 +519,10 @@ struct ThreadDetailView: View {
     private var exportMarkdown: String? {
         let messages = viewModel.messages
         guard !messages.isEmpty else { return nil }
-        let title = viewModel.taskTitle.isEmpty ? "对话" : viewModel.taskTitle
+        let title = viewModel.taskTitle.isEmpty ? FloeL10n.l("tab.chat") : viewModel.taskTitle
         var lines: [String] = ["# \(title)", ""]
         for message in messages {
-            let role = message.role == "user" ? "用户" : "助手"
+            let role = message.role == "user" ? FloeL10n.l("hosts.user") : FloeL10n.l("chat.thread_detail_view.assistant")
             lines.append("## \(role)")
             lines.append("")
             lines.append(message.content)
@@ -535,9 +535,9 @@ struct ThreadDetailView: View {
     private var exportText: String? {
         let messages = viewModel.messages
         guard !messages.isEmpty else { return nil }
-        let title = viewModel.taskTitle.isEmpty ? "对话" : viewModel.taskTitle
+        let title = viewModel.taskTitle.isEmpty ? FloeL10n.l("tab.chat") : viewModel.taskTitle
         let body = messages
-            .map { "\($0.role == "user" ? "用户" : "助手"): \($0.content)" }
+            .map { "\($0.role == "user" ? FloeL10n.l("hosts.user") : FloeL10n.l("chat.thread_detail_view.assistant")): \($0.content)" }
             .joined(separator: "\n\n")
         return "\(title)\n\n\(body)"
     }
@@ -549,7 +549,7 @@ struct ThreadDetailView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Button(refreshingMediaJobs ? "正在刷新媒体任务…" : "刷新媒体任务状态", systemImage: "arrow.clockwise") {
+                Button(refreshingMediaJobs ? "chat.thread_detail_view.refreshing_media_tasks" : "chat.thread_detail_view.refresh_media_task_status", systemImage: "arrow.clockwise") {
                     refreshingMediaJobs = true
                     Task {
                         defer { refreshingMediaJobs = false }
@@ -557,10 +557,10 @@ struct ThreadDetailView: View {
                     }
                 }
                 .disabled(refreshingMediaJobs)
-                Button("直接设置 Goal", systemImage: "target") {
+                Button("chat.thread_detail_view.set_goal_directly", systemImage: "target") {
                     showingGoalBuilder = true
                 }
-                Button(exporting ? "正在导出…" : "导出完整任务（含工具结果）", systemImage: "doc.badge.gearshape") {
+                Button(exporting ? "chat.thread_detail_view.exporting" : "chat.thread_detail_view.export_full_task_including_tool_results", systemImage: "doc.badge.gearshape") {
                     exporting = true
                     Task {
                         defer { exporting = false }
@@ -571,24 +571,24 @@ struct ThreadDetailView: View {
                 }.disabled(exporting)
                 if let exportText {
                     ShareLink(item: exportText) {
-                        Label("导出对话（文本）", systemImage: "square.and.arrow.up")
+                        Label("chat.thread_detail_view.export_conversation_text", systemImage: "square.and.arrow.up")
                     }
                 }
                 if let exportMarkdown {
                     ShareLink(item: exportMarkdown) {
-                        Label("导出对话（Markdown）", systemImage: "doc.richtext")
+                        Label("chat.thread_detail_view.export_conversation_markdown", systemImage: "doc.richtext")
                     }
                 }
                 Divider()
-                inspectorButton("变更", icon: "arrow.triangle.2.circlepath", content: .changes)
-                inspectorButton("文件", icon: "folder", content: .workspaceFiles)
-                inspectorButton("浏览器", icon: "safari", content: .browser)
-                inspectorButton("终端/主机", icon: "terminal", content: .terminal)
-                inspectorButton("进度", icon: "chart.bar", content: .progress)
-                inspectorButton("子 Agent", icon: "person.2", content: .childAgents)
+                inspectorButton("chat.thread_detail_view.changes", icon: "arrow.triangle.2.circlepath", content: .changes)
+                inspectorButton("tab.files", icon: "folder", content: .workspaceFiles)
+                inspectorButton("browser.title", icon: "safari", content: .browser)
+                inspectorButton("chat.thread_detail_view.terminal_host", icon: "terminal", content: .terminal)
+                inspectorButton("chat.thread_detail_view.progress", icon: "chart.bar", content: .progress)
+                inspectorButton("chat.thread_detail_view.subagents", icon: "person.2", content: .childAgents)
                 if router.inspectorVisible {
                     Divider()
-                    Button("收起检查器", systemImage: "sidebar.right") { router.hideInspector() }
+                    Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.right") { router.hideInspector() }
                 }
             } label: {
                 Label("inspector.files", systemImage: "sidebar.right")
@@ -617,7 +617,7 @@ struct ThreadDetailView: View {
                 Button {
                     Task { await viewModel.retry() }
                 } label: {
-                    Label("继续", systemImage: "play.fill")
+                    Label("chat.thread_detail_view.continue", systemImage: "play.fill")
                 }
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityLabel("action.retry")
@@ -665,7 +665,7 @@ struct ThreadDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("查看上下文用量")
+                .accessibilityLabel("chat.thread_detail_view.view_context_usage")
                 .accessibilityValue(
                     usage.contextTokens > 0
                         ? "\(TokenUnitFormatter.string(usage.contextTokens)) / \(TokenUnitFormatter.string(usage.contextWindowTokens))"
@@ -704,7 +704,7 @@ struct ThreadDetailView: View {
     }
 
     private func inspectorButton(
-        _ title: String,
+        _ title: LocalizedStringKey,
         icon: String,
         content: AppRouter.InspectorContent
     ) -> some View {
@@ -729,7 +729,7 @@ struct ThreadDetailView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(FloeTheme.destructive)
-            .accessibilityLabel("关闭错误")
+            .accessibilityLabel("chat.thread_detail_view.dismiss_error")
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
@@ -752,7 +752,7 @@ struct ThreadDetailView: View {
             Button {
                 Task { await viewModel.retry() }
             } label: {
-                Label("继续", systemImage: "play.fill")
+                Label("chat.thread_detail_view.continue", systemImage: "play.fill")
             }
             .buttonStyle(.borderedProminent)
         }
@@ -854,24 +854,24 @@ private struct ThreadUsageFooter: View {
             HStack(spacing: 12) {
                 Label("\(formatted(summary.inputTokens))", systemImage: "arrow.up")
                 Label("\(formatted(summary.outputTokens))", systemImage: "arrow.down")
-                Text("合计 \(formatted(summary.totalTokens))")
+                Text(FloeL10n.l("chat.thread_detail_view.total", formatted(summary.totalTokens)))
                 if summary.isEstimatedLive {
-                    Text("实时估算")
+                    Text("chat.thread_detail_view.live_estimate")
                         .foregroundStyle(.tertiary)
                 }
             }
             .font(FloeTheme.Typography.metadata)
             .foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                Text("上下文复用 \(reported(summary.cacheReadTokens))")
-                Text("思考用量 \(reported(summary.reasoningTokens))")
+                Text(FloeL10n.l("chat.thread_detail_view.context_reuse", reported(summary.cacheReadTokens)))
+                Text(FloeL10n.l("chat.thread_detail_view.reasoning_usage", reported(summary.reasoningTokens)))
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
             HStack(spacing: 12) {
-                Text("上下文复用率 \(percent(summary.cacheHitRate))")
-                Text("生成速度 \(speed(summary.tokensPerSecond))")
-                Text("开始响应 \(duration(summary.timeToFirstTokenMs))")
+                Text(FloeL10n.l("chat.thread_detail_view.context_reuse_rate", percent(summary.cacheHitRate)))
+                Text(FloeL10n.l("chat.thread_detail_view.generation_speed", speed(summary.tokensPerSecond)))
+                Text(FloeL10n.l("chat.thread_detail_view.first_response", duration(summary.timeToFirstTokenMs)))
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
@@ -886,21 +886,21 @@ private struct ThreadUsageFooter: View {
     }
 
     private func reported(_ value: Int?) -> String {
-        value.map(formatted) ?? "未报告"
+        value.map(formatted) ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 
     private func percent(_ value: Double?) -> String {
-        value.map { $0.formatted(.percent.precision(.fractionLength(1))) } ?? "未报告"
+        value.map { $0.formatted(.percent.precision(.fractionLength(1))) } ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 
     private func speed(_ value: Double?) -> String {
-        value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) 片段/秒" } ?? "未报告"
+        value.map { FloeL10n.plural("settings.usage_statistics_view.fragments_sec", count: Int($0.rounded()), $0.formatted(.number.precision(.fractionLength(1)))) } ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 
     private func duration(_ value: Int?) -> String {
         value.map {
             "\((Double($0) / 1_000).formatted(.number.precision(.fractionLength(2))))s"
-        } ?? "未报告"
+        } ?? FloeL10n.l("settings.usage_statistics_view.not_reported")
     }
 }
 
@@ -929,14 +929,14 @@ private struct ContextUsageDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("上下文窗口", systemImage: "circle.dotted")
+            Label("chat.thread_detail_view.context_window", systemImage: "circle.dotted")
                 .font(.headline)
             Text("\(summary.contextTokens > 0 ? TokenUnitFormatter.string(summary.contextTokens) : "—") / \(TokenUnitFormatter.string(summary.contextWindowTokens))")
                 .font(.title3.monospacedDigit().weight(.semibold))
             if summary.contextTokens > 0 {
                 ProgressView(value: summary.contextFraction)
                     .tint(summary.contextFraction > 0.85 ? FloeTheme.pending : FloeTheme.primary)
-                Text("本轮输入 \(TokenUnitFormatter.string(summary.inputTokens)) · 输出 \(TokenUnitFormatter.string(summary.outputTokens))")
+                Text(FloeL10n.l("chat.thread_detail_view.this_turn_input_output", TokenUnitFormatter.string(summary.inputTokens), TokenUnitFormatter.string(summary.outputTokens)))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             } else {
@@ -986,7 +986,7 @@ private struct PendingInputQueueView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("消息队列", systemImage: "text.badge.plus")
+                Label("chat.thread_detail_view.message_queue", systemImage: "text.badge.plus")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("\(inputs.count)")
@@ -1012,22 +1012,22 @@ private struct PendingInputQueueView: View {
                     } else if input.status == .queued || input.status == .steerPending {
                         let queuedIndex = queuedInputs.firstIndex(where: { $0.id == input.id })
                         Menu {
-                            Button("编辑", systemImage: "pencil") { onEdit(input) }
-                            Button("上移", systemImage: "arrow.up") { onMove(input, -1) }
+                            Button("workspace.workspace_canvas_view.edit", systemImage: "pencil") { onEdit(input) }
+                            Button("chat.thread_detail_view.move_up", systemImage: "arrow.up") { onMove(input, -1) }
                                 .disabled(queuedIndex == nil || queuedIndex == queuedInputs.startIndex)
-                            Button("下移", systemImage: "arrow.down") { onMove(input, 1) }
+                            Button("chat.thread_detail_view.move_down", systemImage: "arrow.down") { onMove(input, 1) }
                                 .disabled(queuedIndex == nil || queuedIndex == queuedInputs.indices.last)
-                            Button("转为引导", systemImage: "arrow.triangle.turn.up.right.diamond") {
+                            Button("chat.thread_detail_view.convert_to_steer", systemImage: "arrow.triangle.turn.up.right.diamond") {
                                 onSteer(input)
                             }
                             .disabled(!canSteer || input.status != .queued)
                             Divider()
-                            Button("删除", systemImage: "trash", role: .destructive) { onDelete(input) }
+                            Button("workspace.workspace_canvas_view.delete", systemImage: "trash", role: .destructive) { onDelete(input) }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                         }
-                        .accessibilityLabel("队列消息操作")
+                        .accessibilityLabel("chat.thread_detail_view.queue_message_action")
                     } else {
                         ProgressView().controlSize(.small)
                     }
@@ -1048,11 +1048,11 @@ private struct PendingInputQueueView: View {
 
     private func statusTitle(_ status: PendingUserInputStatus) -> String {
         switch status {
-        case .queued: "等待当前运行结束"
-        case .promoting: "正在转为引导"
-        case .steerPending: "等待安全插入点"
-        case .consumed: "已发送"
-        case .cancelled: "已取消"
+        case .queued: FloeL10n.l("chat.thread_detail_view.wait_for_the_current_run_to")
+        case .promoting: FloeL10n.l("chat.thread_detail_view.converting_to_steer")
+        case .steerPending: FloeL10n.l("chat.thread_detail_view.waiting_for_a_safe_insertion_point")
+        case .consumed: FloeL10n.l("chat.thread_detail_view.sent")
+        case .cancelled: FloeL10n.l("chat.thread_detail_view.cancelled")
         }
     }
 }
@@ -1068,26 +1068,26 @@ private struct GoalBuilderSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("最终目标") {
+                Section("chat.thread_detail_view.final_goal") {
                     TextEditor(text: $objective).frame(minHeight: 90)
                 }
-                Section("验收标准（每行一条）") {
+                Section("chat.thread_detail_view.acceptance_criteria_one_per_line") {
                     TextEditor(text: $criteria).frame(minHeight: 80)
                 }
-                Section("阻断条件（每行一条）") {
+                Section("chat.thread_detail_view.blocking_conditions_one_per_line") {
                     TextEditor(text: $blockers).frame(minHeight: 80)
                 }
-                Section("停止条件（每行一条）") {
+                Section("chat.thread_detail_view.stop_conditions_one_per_line") {
                     TextEditor(text: $stops).frame(minHeight: 80)
                 }
             }
-            .navigationTitle("设置 Goal")
+            .navigationTitle("chat.thread_detail_view.set_goal")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("workspace.workspace_canvas_view.cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("创建并开始") {
+                    Button("chat.thread_detail_view.create_and_start") {
                         onCreate(objective, lines(criteria), lines(blockers), lines(stops))
                         dismiss()
                     }
@@ -1119,16 +1119,16 @@ private struct PendingInputEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("队列消息", text: $text, axis: .vertical)
+                TextField("chat.thread_detail_view.queue_message", text: $text, axis: .vertical)
                     .lineLimit(3...10)
             }
-            .navigationTitle("编辑队列消息")
+            .navigationTitle("chat.thread_detail_view.edit_queue_message")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("workspace.workspace_canvas_view.cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
+                    Button("workspace.workspace_canvas_view.save") {
                         onSave(text.trimmingCharacters(in: .whitespacesAndNewlines))
                         dismiss()
                     }

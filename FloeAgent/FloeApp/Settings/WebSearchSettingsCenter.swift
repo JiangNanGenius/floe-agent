@@ -229,7 +229,7 @@ struct WebSearchSettingsView: View {
             } header: { Text("websearch.providers") }
               footer: { Text("websearch.providers.footer") }
         }
-        .navigationTitle("websearch.title")
+        .navigationTitle(FloeL10n.l("websearch.title"))
         .sheet(item: $editing) { configuration in
             WebSearchProviderEditor(center: center, configuration: configuration)
         }
@@ -270,7 +270,7 @@ private struct WebSearchProviderEditor: View {
                 }
                 if configuration.kind == .googleProgrammable { TextField("Search Engine ID", text: $engineID) }
                 if configuration.kind == .bochaWeb {
-                    Text("保存后会同时向模型提供 web.search（普通网页结果）和 web.searchAI（Bocha AI 摘要）两个工具，不需要在设置中切换。两者共用此 API Key 和 Base URL。")
+                    Text("settings.web_search_settings_center.when_saved_the_model_gets_both")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -312,7 +312,7 @@ private struct WebSearchProviderEditor: View {
                 Image(systemName: revealed.wrappedValue ? "eye.slash" : "eye")
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(revealed.wrappedValue ? "隐藏凭据" : "显示凭据")
+            .accessibilityLabel(revealed.wrappedValue ? "settings.web_search_settings_center.hide_credentials" : "settings.web_search_settings_center.show_credentials")
         }
     }
 
@@ -320,7 +320,7 @@ private struct WebSearchProviderEditor: View {
     private func revealCredential(_ revealed: Binding<Bool>) async {
         do {
             guard try await DeviceOwnerAuthenticator.authenticate(
-                reason: "查看已保存的联网搜索凭据"
+                reason: FloeL10n.l("settings.web_search_settings_center.view_saved_web_search_credentials")
             ) else { return }
             authenticationError = nil
             revealed.wrappedValue = true

@@ -51,16 +51,16 @@ struct RemoteSettingsView: View {
                 Button { showsHostManager = true } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("管理主机")
+                            Text("settings.remote_settings_view.manage_hosts")
                             Text(center.remoteHostCount == 0
                                  ? String(localized: "settings.remote.hosts.empty")
-                                 : "\(center.remoteHostCount) 台已配置")
+                                 : FloeL10n.l("settings.remote_settings_view.configured", center.remoteHostCount))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         if center.activeRemoteSessionCount > 0 {
-                            Text("\(center.activeRemoteSessionCount) 个活跃")
+                            Text(FloeL10n.l("settings.remote_settings_view.active", center.activeRemoteSessionCount))
                                 .font(FloeTheme.Typography.metadata)
                                 .foregroundStyle(FloeTheme.success)
                         }
@@ -74,7 +74,7 @@ struct RemoteSettingsView: View {
                 Text("settings.remote.hosts.footer")
             }
         }
-        .navigationTitle("settings.section.remote")
+        .navigationTitle(FloeL10n.l("settings.section.remote"))
         .task { await center.load() }
         .sheet(isPresented: $showsHostManager) {
             NavigationStack {

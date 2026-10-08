@@ -2,6 +2,7 @@
 import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
+import FloeCore
 @preconcurrency import ZLImageEditor
 
 /// Shared local image workbench. The host owns asset registration and canvas placement.
@@ -30,15 +31,15 @@ struct FloeImageEditorView: View {
                 .allowsHitTesting(!saving)
             } else {
                 ContentUnavailableView {
-                    Label("图像工作台", systemImage: "photo")
+                    Label("media.floe_image_editor_view.image_workbench", systemImage: "photo")
                 } description: {
-                    Text(error ?? "正在读取本机素材…")
+                    Text(error ?? "media.floe_image_editor_view.reading_on_device_assets")
                 } actions: {
-                    Button("关闭") { dismiss() }
+                    Button("media.media_editor_view.close") { dismiss() }
                 }
             }
             if saving {
-                ProgressView("正在保存副本…")
+                ProgressView("media.floe_image_editor_view.saving_copy")
                     .padding(24)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
@@ -51,13 +52,13 @@ struct FloeImageEditorView: View {
                 original = try ImageEditorFiles.load(sourceURL)
             } catch { self.error = error.localizedDescription }
         }
-        .alert("图片处理未完成", isPresented: Binding(
+        .alert("media.floe_image_editor_view.image_processing_did_not_finish", isPresented: Binding(
             get: { error != nil }, set: { if !$0 { error = nil } }
         )) {
             if edited != nil {
-                Button("重试保存") { Task { await save() } }
+                Button("notes.notes_document_editor.retry_save") { Task { await save() } }
             }
-            Button("返回", role: .cancel) { error = nil }
+            Button("settings.document_recovery_list_view.back", role: .cancel) { error = nil }
         } message: { Text(error ?? "") }
     }
 
@@ -102,10 +103,10 @@ enum ImageEditorFileError: LocalizedError {
     case missingSource, invalidImage, tooLarge, invalidOutput
     var errorDescription: String? {
         switch self {
-        case .missingSource: "素材尚未下载到本机。"
-        case .invalidImage: "无法读取这份图片。"
-        case .tooLarge: "图片超过当前编辑上限（2400 万像素或单边 16384 像素），请先缩小副本。"
-        case .invalidOutput: "导出的图片未通过重新读取校验，请重试。"
+        case .missingSource: FloeL10n.l("media.floe_image_editor_view.the_asset_has_not_been_downloaded")
+        case .invalidImage: FloeL10n.l("media.floe_image_editor_view.could_not_read_this_image")
+        case .tooLarge: FloeL10n.l("media.floe_image_editor_view.the_image_exceeds_the_current_editing")
+        case .invalidOutput: FloeL10n.l("media.floe_image_editor_view.the_exported_image_failed_re_read")
         }
     }
 }

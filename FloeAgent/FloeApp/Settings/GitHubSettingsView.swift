@@ -2,6 +2,7 @@
 import SwiftUI
 import FloeGit
 
+import FloeCore
 struct GitHubSettingsView: View {
     @ObservedObject var center: SourceControlCenter
     @Environment(\.openURL) private var openURL
@@ -15,35 +16,35 @@ struct GitHubSettingsView: View {
 
     var body: some View {
         Form {
-            Section("GitHub 连接") {
+            Section("settings.git_hub_settings_view.github_connection") {
                 if let account = center.account {
-                    LabeledContent("账户") {
+                    LabeledContent("settings.git_hub_settings_view.account") {
                         Label(account.login, systemImage: "checkmark.seal.fill")
                             .foregroundStyle(FloeTheme.success)
                     }
                     .fixedSize(horizontal: false, vertical: true)
-                    Button("断开连接", role: .destructive) {
+                    Button("action.disconnect", role: .destructive) {
                         do { try center.disconnect() }
                         catch { center.errorMessage = error.localizedDescription }
                     }
                 } else {
                     if let authorization = center.deviceAuthorization {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("在 GitHub 输入验证码")
+                            Text("settings.git_hub_settings_view.enter_the_code_on_github")
                                 .font(.headline)
                             Text(authorization.userCode)
                                 .font(.system(.title2, design: .monospaced).weight(.bold))
                                 .textSelection(.enabled)
                             HStack {
-                                Button("打开 GitHub 授权页") {
+                                Button("settings.git_hub_settings_view.open_github_authorization_page") {
                                     openURL(authorization.verificationURL)
                                 }
                                 .buttonStyle(.borderedProminent)
-                                Button("取消", role: .cancel) {
+                                Button("workspace.workspace_canvas_view.cancel", role: .cancel) {
                                     center.cancelDeviceLogin()
                                 }
                             }
-                            Text("授权后会自动完成连接；Floe 按 GitHub 返回的间隔检查状态。")
+                            Text("settings.git_hub_settings_view.the_connection_completes_automatically_after_authorization")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -58,21 +59,21 @@ struct GitHubSettingsView: View {
                         Button {
                             Task { await center.startDeviceLogin(includeWorkflows: includeWorkflows) }
                         } label: {
-                            Label("登录 GitHub", systemImage: "person.crop.circle.badge.checkmark")
+                            Label("settings.git_hub_settings_view.sign_in_to_github", systemImage: "person.crop.circle.badge.checkmark")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(center.isBusy)
                     }
-                    DisclosureGroup("使用访问令牌（高级）") {
-                    Text("访问令牌")
+                    DisclosureGroup(FloeL10n.l("settings.git_hub_settings_view.use_access_token_advanced")) {
+                    Text("settings.git_hub_settings_view.access_token")
                         .font(.subheadline.weight(.medium))
-                    SecureField("GitHub 细粒度访问令牌", text: $token)
+                    SecureField("settings.git_hub_settings_view.github_fine_grained_access_token", text: $token)
                         .textFieldStyle(.roundedBorder)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .privacySensitive()
                         .disabled(center.isDeviceLoginPending)
-                    Button("验证并连接") {
+                    Button("settings.git_hub_settings_view.verify_and_connect") {
                         let value = token
                         Task {
                             do {
@@ -91,7 +92,7 @@ struct GitHubSettingsView: View {
                     )
                     }
                 }
-                Text("登录凭据只保存在本机钥匙串。Floe 不会把令牌写入仓库、远程地址、日志或模型上下文。")
+                Text("settings.git_hub_settings_view.sign_in_credentials_are_kept_only")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             }
@@ -99,18 +100,18 @@ struct GitHubSettingsView: View {
             if center.isGitHubConnected {
                 Section {
                     Button { showCreateRepository = true } label: {
-                        Label("新建 GitHub 仓库", systemImage: "plus.square.on.square")
+                        Label("settings.git_hub_settings_view.new_github_repository", systemImage: "plus.square.on.square")
                     }
                     Button {
                         Task { await center.loadConnection() }
                     } label: {
-                        Label("刷新仓库列表", systemImage: "arrow.clockwise")
+                        Label("settings.git_hub_settings_view.refresh_repository_list", systemImage: "arrow.clockwise")
                     }
                 }
 
-                Section("云端仓库") {
+                Section("settings.git_hub_settings_view.cloud_repository") {
                     if center.repositories.isEmpty {
-                        Text("当前账户没有可访问的仓库").foregroundStyle(.secondary)
+                        Text("settings.git_hub_settings_view.the_current_account_has_no_accessible").foregroundStyle(.secondary)
                     }
                     ForEach(center.repositories) { repository in
                         Button { cloneTarget = repository } label: {
@@ -118,14 +119,14 @@ struct GitHubSettingsView: View {
                                 HStack {
                                     Text(repository.fullName).lineLimit(1)
                                     Spacer()
-                                    Text(repository.isPrivate ? "私有" : "公开")
+                                    Text(repository.isPrivate ? "settings.git_hub_settings_view.private" : "settings.git_hub_settings_view.public")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 HStack {
                                     Label(repository.defaultBranch, systemImage: "arrow.triangle.branch")
                                     Spacer()
-                                    Text("克隆到当前工作区")
+                                    Text("settings.git_hub_settings_view.clone_into_current_workspace")
                                 }
                                 .font(.caption)
                                 .foregroundStyle(FloeTheme.primary)
@@ -136,30 +137,29 @@ struct GitHubSettingsView: View {
                 }
             }
         }
-        .navigationTitle("GitHub 与源码管理")
+        .navigationTitle(FloeL10n.l("settings.git_hub_settings_view.github_source_control"))
         .task { await center.loadConnection() }
         .overlay { if center.isBusy { ProgressView().controlSize(.large) } }
-        .alert("GitHub 连接错误", isPresented: Binding(
+        .alert("settings.git_hub_settings_view.github_connection_error", isPresented: Binding(
             get: { center.errorMessage != nil },
             set: { if !$0 { center.errorMessage = nil } }
         )) {
-            Button("好", role: .cancel) { center.errorMessage = nil }
+            Button("workspace.office_document_editor_view.ok", role: .cancel) { center.errorMessage = nil }
         } message: {
             Text(center.errorMessage ?? "")
         }
-        .confirmationDialog(
-            "克隆仓库",
+        .confirmationDialog("settings.git_hub_settings_view.clone_repository",
             isPresented: Binding(get: { cloneTarget != nil }, set: { if !$0 { cloneTarget = nil } }),
             titleVisibility: .visible
         ) {
-            Button("克隆到当前工作区") {
+            Button("settings.git_hub_settings_view.clone_into_current_workspace") {
                 guard let repository = cloneTarget else { return }
                 cloneTarget = nil
                 Task { await center.perform { try await center.clone(repository) } }
             }
-            Button("取消", role: .cancel) { cloneTarget = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { cloneTarget = nil }
         } message: {
-            Text(cloneTarget.map { "将创建子文件夹 \($0.name)" } ?? "")
+            Text(cloneTarget.map { FloeL10n.l("settings.git_hub_settings_view.will_create_subfolder", $0.name) } ?? "")
         }
         .sheet(isPresented: $showCreateRepository) { createRepositorySheet }
     }
@@ -167,17 +167,17 @@ struct GitHubSettingsView: View {
     private var createRepositorySheet: some View {
         NavigationStack {
             Form {
-                TextField("仓库名称", text: $repositoryName)
+                TextField("settings.git_hub_settings_view.repository_name", text: $repositoryName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                TextField("说明（可选）", text: $repositoryDescription, axis: .vertical)
-                Toggle("私有仓库", isOn: $repositoryIsPrivate)
+                TextField("settings.git_hub_settings_view.description_optional", text: $repositoryDescription, axis: .vertical)
+                Toggle("settings.git_hub_settings_view.private_repository", isOn: $repositoryIsPrivate)
             }
-            .navigationTitle("新建 GitHub 仓库")
+            .navigationTitle(FloeL10n.l("settings.git_hub_settings_view.new_github_repository"))
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("取消") { showCreateRepository = false } }
+                ToolbarItem(placement: .topBarLeading) { Button("workspace.workspace_canvas_view.cancel") { showCreateRepository = false } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("创建") {
+                    Button("settings.git_hub_settings_view.create") {
                         let name = repositoryName
                         let description = repositoryDescription
                         let isPrivate = repositoryIsPrivate

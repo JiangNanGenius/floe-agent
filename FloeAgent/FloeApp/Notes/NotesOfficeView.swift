@@ -55,16 +55,16 @@ struct NotesOfficeView: View {
             // traps the reader with no way back to the library.
             if !OfficeFileSession.available { unavailableHeader }
             if !recoveries.isEmpty {
-                Button("发现 \(recoveries.count) 份 Office 恢复副本", systemImage: "clock.arrow.circlepath") { showingRecoveries = true }
+                Button(FloeL10n.l("notes.notes_office_view.found_office_recovery_copies", recoveries.count), systemImage: "clock.arrow.circlepath") { showingRecoveries = true }
                     .padding().frame(maxWidth: .infinity, alignment: .leading)
             }
             if let message {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(message).font(.callout)
                     HStack {
-                        if canRetryOpen { Button("重试打开") { Task { await prepare(force: true) } }.disabled(committing) }
-                        if pendingCommit { Button("重试保存到手记") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
-                        if let recoveryURL { ShareLink("导出恢复副本", item: recoveryURL) }
+                        if canRetryOpen { Button("notes.notes_office_view.retry_opening") { Task { await prepare(force: true) } }.disabled(committing) }
+                        if pendingCommit { Button("notes.notes_office_view.retry_saving_to_notes") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
+                        if let recoveryURL { ShareLink("notes.office.externalUpdate.exportCopy", item: recoveryURL) }
                     }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
             }
@@ -111,8 +111,8 @@ struct NotesOfficeView: View {
                     HStack(spacing: 4) {
                         NotesDocumentTabs(session: session)
                         Menu {
-                            Button("Floe 助手", systemImage: FloeTheme.assistantSymbol, action: onAssistant)
-                            Button("思维导图", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
+                            Button("notes.notes_linked_mind_maps.floe_assistant", systemImage: FloeTheme.assistantSymbol, action: onAssistant)
+                            Button("notes.notes_office_view.mind_map", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
                         } label: {
                             Image(systemName: FloeTheme.assistantSymbol)
                                 .frame(width: 44, height: 44)
@@ -131,7 +131,7 @@ struct NotesOfficeView: View {
             session.registerLeaveGuard(for: document.id) {
                 guard !committing else {
                     recordStage("notes.exit.refused.committing")
-                    session.errorMessage = "正在保存 Office 文档，请稍后切换。"
+                    session.errorMessage = FloeL10n.l("notes.notes_office_view.saving_the_office_document_switch_again")
                     return false
                 }
                 if !OfficeFileSession.available {
@@ -144,13 +144,13 @@ struct NotesOfficeView: View {
                 }
                 guard office.canAct else {
                     recordStage("notes.exit.refused.operating")
-                    session.errorMessage = "Office 正在打开或保存，请稍后切换。"
+                    session.errorMessage = FloeL10n.l("notes.notes_office_view.office_is_opening_or_saving_switch")
                     return false
                 }
                 if !office.readOnly {
                     guard await office.saveInPlace() else {
                         recordStage("notes.exit.saveFailed")
-                        session.errorMessage = office.error ?? "Office 保存未完成，编辑副本已保留。"
+                        session.errorMessage = office.error ?? FloeL10n.l("notes.notes_office_view.the_office_save_did_not_finish")
                         return false
                     }
                     pendingCommit = true
@@ -158,7 +158,7 @@ struct NotesOfficeView: View {
                 if pendingCommit { await commit() }
                 if pendingCommit {
                     recordStage("notes.exit.commitFailed")
-                    session.errorMessage = message ?? "未能保存到手记，请重试。"
+                    session.errorMessage = message ?? FloeL10n.l("notes.notes_office_view.could_not_save_to_notes_please")
                     return false
                 }
                 recordStage("notes.exit.ok")
@@ -186,23 +186,23 @@ struct NotesOfficeView: View {
                         Text(recovery.url.lastPathComponent).font(.headline)
                         Text(recovery.date, style: .date).font(.caption).foregroundStyle(.secondary)
                         HStack {
-                            Button("恢复为独立文档") {
+                            Button("notes.notes_office_view.restore_as_a_standalone_document") {
                                 Task {
                                     do {
                                         guard let store = session.store else { return }
                                         var restored = try await NoteFileImporter.importFile(recovery.url, notebookID: document.notebookID, store: store)
-                                        restored.title = document.title + " · 恢复副本"
+                                        restored.title = document.title + FloeL10n.l("notes.notes_office_view.recovery_copy")
                                         session.importDocument(restored)
                                         showingRecoveries = false
                                     } catch { message = error.localizedDescription }
                                 }
                             }
-                            ShareLink("导出", item: recovery.url)
+                            ShareLink("files.export", item: recovery.url)
                         }
                     }.padding(.vertical, 6)
                 }
-                .navigationTitle("Office 恢复")
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showingRecoveries = false } } }
+                .navigationTitle("notes.notes_office_view.office_recovery")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("workspace.workspace_canvas_view.done") { showingRecoveries = false } } }
             }
         }
         .onDisappear {
@@ -230,8 +230,8 @@ struct NotesOfficeView: View {
             NotesDocumentTabs(session: session)
             Spacer(minLength: 0)
             Menu {
-                Button("Floe 助手", systemImage: FloeTheme.assistantSymbol, action: onAssistant)
-                Button("思维导图", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
+                Button("notes.notes_linked_mind_maps.floe_assistant", systemImage: FloeTheme.assistantSymbol, action: onAssistant)
+                Button("notes.notes_office_view.mind_map", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
             } label: {
                 Image(systemName: FloeTheme.assistantSymbol)
                     .frame(width: 44, height: 44)
@@ -599,10 +599,10 @@ struct NotesOfficeView: View {
             recordStage("notes.commit.ok", ["revision": String(updated.revision)])
             do {
                 try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: url.deletingLastPathComponent().appendingPathComponent("recovery.json"), options: .atomic)
-            } catch { message = "文档已保存，但恢复记录未能更新：\(error.localizedDescription)" }
+            } catch { message = FloeL10n.l("notes.notes_office_view.the_document_was_saved_but_the", error.localizedDescription) }
         } catch {
             recordStage("notes.commit.failed", ["domain": (error as NSError).domain])
-            message = "未能保存到手记：\(error.localizedDescription) Office 编辑副本已保留，可重试或导出。"
+            message = FloeL10n.l("notes.notes_office_view.could_not_save_to_notes_the", error.localizedDescription)
             recoveryURL = url
         }
     }

@@ -79,9 +79,9 @@ struct ImageEditorView: View {
     private var controls: some View {
         VStack(spacing: 8) {
             HStack {
-                TextField("描述希望如何修改图片", text: $remotePrompt)
+                TextField("files.image_editor_view.describe_how_you_want_the_image", text: $remotePrompt)
                     .textFieldStyle(.roundedBorder)
-                Button("AI 编辑") {
+                Button("files.image_editor_view.ai_edit") {
                     Task {
                         isRemoteEditing = true
                         await viewModel.remoteEdit(prompt: remotePrompt)

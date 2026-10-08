@@ -145,11 +145,11 @@ struct ModelEditorView: View {
             capabilityToggle("model.capability.vision", capability: .vision)
             capabilityToggle("model.capability.tools", capability: .tools)
         case .image:
-            capabilityToggle("图片生成", capability: .imageGeneration)
-            capabilityToggle("图片编辑", capability: .imageEditing)
+            capabilityToggle("auxiliary.generation", capability: .imageGeneration)
+            capabilityToggle("auxiliary.editing", capability: .imageEditing)
         case .video:
-            Label("视频生成", systemImage: "video.badge.plus")
-            capabilityToggle("支持参考图片", capability: .vision)
+            Label("core.canvas_operations.video_generation", systemImage: "video.badge.plus")
+            capabilityToggle("providers.model_editor_view.supports_reference_images", capability: .vision)
         }
     }
 
@@ -169,32 +169,32 @@ struct ModelEditorView: View {
         Section {
             if let descriptor {
                 if !descriptor.supportedAspectRatios.isEmpty {
-                    LabeledContent("支持比例", value: descriptor.supportedAspectRatios.joined(separator: "、"))
+                    LabeledContent("providers.model_editor_view.supported_ratios", value: descriptor.supportedAspectRatios.joined(separator: "、"))
                 }
                 if !descriptor.supportedResolutions.isEmpty {
-                    LabeledContent("分辨率", value: descriptor.supportedResolutions.joined(separator: "、"))
+                    LabeledContent("providers.model_editor_view.resolution", value: descriptor.supportedResolutions.joined(separator: "、"))
                 }
                 if !descriptor.supportedDurations.isEmpty {
-                    LabeledContent("支持时长", value: descriptor.supportedDurations.map { "\($0) 秒" }.joined(separator: "、"))
+                    LabeledContent("providers.model_editor_view.supported_duration", value: descriptor.supportedDurations.map { FloeL10n.l("providers.model_editor_view.sec", $0) }.joined(separator: "、"))
                 }
                 if !descriptor.supportedQualities.isEmpty {
-                    LabeledContent("生成质量", value: descriptor.supportedQualities.joined(separator: "、"))
+                    LabeledContent("providers.model_editor_view.generation_quality", value: descriptor.supportedQualities.joined(separator: "、"))
                 }
                 if descriptor.maximumReferenceAssets > 0 {
-                    LabeledContent("参考素材", value: "最多 \(descriptor.maximumReferenceAssets) 个")
+                    LabeledContent("providers.model_editor_view.reference", value: FloeL10n.l("providers.model_editor_view.up_to", descriptor.maximumReferenceAssets))
                 }
-                if descriptor.supportsAudio { Label("支持音频", systemImage: "speaker.wave.2") }
-                if descriptor.supportsWatermark { Label("支持水印设置", systemImage: "seal") }
-                if descriptor.supportsSeed { Label("支持随机种子", systemImage: "dice") }
-                if descriptor.supportsPromptOptimization { Label("支持提示词优化", systemImage: "wand.and.stars") }
+                if descriptor.supportsAudio { Label("providers.model_editor_view.audio_supported", systemImage: "speaker.wave.2") }
+                if descriptor.supportsWatermark { Label("providers.model_editor_view.supports_watermark_settings", systemImage: "seal") }
+                if descriptor.supportsSeed { Label("providers.model_editor_view.supports_random_seed", systemImage: "dice") }
+                if descriptor.supportsPromptOptimization { Label("providers.model_editor_view.supports_prompt_refinement", systemImage: "wand.and.stars") }
             } else {
-                Text("这是高级自定义媒体模型。尺寸、比例、时长和质量会在生成时按端点实际能力填写。")
+                Text("providers.model_editor_view.this_is_an_advanced_custom_media")
                     .foregroundStyle(.secondary)
             }
         } header: {
-            Text(serviceRole == .video ? "视频能力" : "图片能力")
+            Text(serviceRole == .video ? "providers.model_editor_view.video_capabilities" : "providers.model_editor_view.image_capabilities")
         } footer: {
-            Text("媒体模型按官方接口能力配置，不使用对话上下文或输出 Token 设置。")
+            Text("providers.model_editor_view.media_models_are_configured_by_official")
         }
     }
 

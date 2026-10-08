@@ -3,6 +3,7 @@
 import SwiftUI
 import FloeNotes
 
+import FloeCore
 /// Only the active document mounts an editor. Other tabs retain lightweight navigation state.
 struct NotesDocumentTabs: View {
     let session: NotesSession
@@ -30,12 +31,12 @@ struct NotesDocumentTabs: View {
                                         .padding(.leading, 10)
                                 }
                                 .accessibilityIdentifier("notes.tab.\(document.id.uuidString)")
-                                .accessibilityValue(session.unsavedDocumentIDs.contains(document.id) ? "尚有未保存修改" : session.pendingWrites > 0 && session.document?.id == document.id ? "正在保存" : "已保存到本机")
+                                .accessibilityValue(session.unsavedDocumentIDs.contains(document.id) ? FloeL10n.l("notes.notes_document_tabs.there_are_unsaved_changes") : session.pendingWrites > 0 && session.document?.id == document.id ? FloeL10n.l("notes.notes_document_tabs.saving") : FloeL10n.l("notes.notes_document_tabs.saved_to_this_device"))
                                 .accessibilityAddTraits(session.document?.id == document.id ? .isSelected : [])
                                 Button {
                                     Task { await session.closeTab(document.id) }
                                 } label: { Image(systemName: "xmark").font(.caption).frame(width: 44, height: 44) }
-                                    .accessibilityLabel("关闭标签：\(document.title)")
+                                    .accessibilityLabel(FloeL10n.l("notes.notes_document_tabs.close_tab", document.title))
                                     .accessibilityIdentifier("notes.tab.close.\(document.id.uuidString)")
                             }
                             .background(session.document?.id == document.id ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
@@ -49,7 +50,7 @@ struct NotesDocumentTabs: View {
             }
             Button { choosingDocument = true } label: {
                 Image(systemName: "plus").frame(width: 44, height: 44)
-            }.accessibilityLabel("打开其他文档").accessibilityIdentifier("notes.tabs.open")
+            }.accessibilityLabel("notes.notes_document_tabs.open_another_document").accessibilityIdentifier("notes.tabs.open")
         }
         .buttonStyle(NotesToolbarButtonStyle())
         .disabled(session.isSwitchingDocument)
@@ -71,9 +72,9 @@ struct NotesDocumentTabs: View {
                         }.accessibilityIdentifier("notes.tabs.choose.\(document.id.uuidString)")
                     }
                 }
-                .searchable(text: $query, prompt: "搜索文档名称与内容")
-                .navigationTitle("打开文档")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { choosingDocument = false } } }
+                .searchable(text: $query, prompt: "notes.notes_document_tabs.search_document_names_and_content")
+                .navigationTitle("notes.notes_document_tabs.open_document")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { choosingDocument = false } } }
             }
         }
     }

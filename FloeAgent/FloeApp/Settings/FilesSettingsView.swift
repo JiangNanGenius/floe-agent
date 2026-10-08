@@ -21,12 +21,12 @@ struct FilesSettingsView: View {
                 NavigationLink {
                     AllWorkspacesFilesView(environment: center.environment)
                 } label: {
-                    Label("浏览与管理文件", systemImage: "folder")
+                    Label("settings.files_settings_view.browse_and_manage_files", systemImage: "folder")
                 }.accessibilityIdentifier("settings.files.manage")
             } header: {
-                Text("文件管理")
+                Text("settings.files_settings_view.files")
             } footer: {
-                Text("按项目或聊天查找所有工作区，浏览、预览和管理其中的文件，包含已归档聊天。")
+                Text("settings.files_settings_view.find_all_workspaces_by_project_or")
             }
 
             Section("settings.files.workspaces") {
@@ -58,14 +58,14 @@ struct FilesSettingsView: View {
                             Button(role: .destructive) {
                                 workspacePendingDeletion = workspace
                             } label: {
-                                Label("移除", systemImage: "trash")
+                                Label("localmodels.remove", systemImage: "trash")
                             }
                         }
                         .contextMenu {
                             Button(role: .destructive) {
                                 workspacePendingDeletion = workspace
                             } label: {
-                                Label("移除工作区", systemImage: "trash")
+                                Label("settings.files_settings_view.remove_workspace", systemImage: "trash")
                             }
                         }
                     }
@@ -79,17 +79,16 @@ struct FilesSettingsView: View {
             }
 
         }
-        .navigationTitle("settings.section.files")
+        .navigationTitle(FloeL10n.l("settings.section.files"))
         .task { await center.load() }
-        .confirmationDialog(
-            "移除工作区？",
+        .confirmationDialog("settings.files_settings_view.remove_workspace_2",
             isPresented: Binding(
                 get: { workspacePendingDeletion != nil },
                 set: { if !$0 { workspacePendingDeletion = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("移除", role: .destructive) {
+            Button("localmodels.remove", role: .destructive) {
                 guard let workspace = workspacePendingDeletion else { return }
                 workspacePendingDeletion = nil
                 Task {
@@ -97,9 +96,9 @@ struct FilesSettingsView: View {
                     await center.load()
                 }
             }
-            Button("取消", role: .cancel) { workspacePendingDeletion = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { workspacePendingDeletion = nil }
         } message: {
-            Text("只移除工作区记录，不会删除外部文件夹或其中内容。")
+            Text("settings.files_settings_view.only_the_workspace_record_is_removed")
         }
     }
 

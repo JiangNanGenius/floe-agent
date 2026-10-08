@@ -498,7 +498,7 @@ let package = Package(
 
         .target(
             name: "FloeNotes",
-            dependencies: [.product(name: "GRDB", package: "GRDB.swift"), .product(name: "Crypto", package: "swift-crypto"), .product(name: "ZIPFoundation", package: "ZIPFoundation")],
+            dependencies: ["FloeCore", .product(name: "GRDB", package: "GRDB.swift"), .product(name: "Crypto", package: "swift-crypto"), .product(name: "ZIPFoundation", package: "ZIPFoundation")],
             path: "Sources/FloeNotes",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

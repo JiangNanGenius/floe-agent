@@ -122,7 +122,7 @@ enum ToolDiscovery {
             let shell = descriptors.filter { $0.name == "exec.shell" }
             return lifecycle + shell
         }
-        if ["port", "forward", "端口", "转发"].contains(where: query.contains),
+        if ["port", "forward", FloeL10n.l("runtime.tool_discovery.port"), FloeL10n.l("runtime.tool_discovery.forward")].contains(where: query.contains),
            let ports = descriptors.first(where: { $0.name == "linux.port" }) {
             return [ports] + descriptors.filter { $0.name == "environment.linuxStatus" || $0.name == "exec.localService" }
         }

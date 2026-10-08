@@ -140,8 +140,8 @@ final class ComposerDraftStore: ObservableObject {
                 // Never discard the user's unreadable input: keep a copy for
                 // recovery, start from an empty map and report the failure.
                 let preserved = Self.preserveCorruptFile(at: fileURL)
-                let preservedName = preserved?.lastPathComponent ?? "未保留"
-                loadFailure = "草稿文件无法读取（已保留副本 \(preservedName)）：\(error.localizedDescription)"
+                let preservedName = preserved?.lastPathComponent ?? FloeL10n.l("chat.composer_draft_store.not_kept")
+                loadFailure = FloeL10n.l("chat.composer_draft_store.the_draft_file_could_not_be", preservedName, error.localizedDescription)
                 FloeLogger(category: .app).error(
                     "composerDraftStoreDecodeFailed preserved=\(preservedName) error=\(error.localizedDescription)"
                 )
@@ -436,7 +436,7 @@ final class ComposerDraftStore: ObservableObject {
                 throw DecodingError.dataCorrupted(
                     DecodingError.Context(
                         codingPath: [],
-                        debugDescription: "草稿键不是会话 UUID：\(key)"
+                        debugDescription: FloeL10n.l("chat.composer_draft_store.the_draft_key_is_not_a", key)
                     )
                 )
             }

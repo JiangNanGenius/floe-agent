@@ -357,14 +357,14 @@ final class WorkspaceCenter: ObservableObject {
     func deleteWorkspace(id: UUID) async throws {
         let deleting = try await store.workspace(id: id)
         if deleting?.kind == .privateTask, !(try await store.conversations(workspaceID: id)).isEmpty {
-            throw FloeError.validationFailed("请先删除或移出这个工作区中的任务")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_center.delete_or_move_out_the_tasks"))
         }
         if currentWorkspace?.id == id {
             closeCurrentWorkspace()
         }
         try await environment.intelligenceStore.preserveMemoriesBeforeWorkspaceDeletion(
             workspaceID: id,
-            ownerLabel: deleting?.name ?? "已删除工作区"
+            ownerLabel: deleting?.name ?? FloeL10n.l("workspace.workspace_center.deleted_workspaces")
         )
         try await store.deleteWorkspace(id: id)
         if let deleting, deleting.kind == .privateTask {
@@ -403,7 +403,7 @@ final class WorkspaceCenter: ObservableObject {
                 } catch { failures[pending.workspaceID] = error.localizedDescription }
             }
         } catch { actionError = error.localizedDescription }
-        if !failures.isEmpty { actionError = "部分任务文件尚未清理，将在下次启动时重试。" }
+        if !failures.isEmpty { actionError = FloeL10n.l("workspace.workspace_center.some_task_files_are_not_cleaned") }
         return failures
     }
 
@@ -1480,8 +1480,7 @@ final class WorkspaceCenter: ObservableObject {
 struct ExternalWorkspaceAccessError: Error, LocalizedError, Sendable {
     let path: String
 
-    var errorDescription: String? {
-        "无法重新访问外部工作区（安全作用域授权失败）：\(path) / Cannot re-open the external workspace (security-scoped access failed): \(path)"
+    var errorDescription: String? {FloeL10n.l("workspace.workspace_center.cannot_re_open_the_external_workspace", path, path)
     }
 }
 #endif

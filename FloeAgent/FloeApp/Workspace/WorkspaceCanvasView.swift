@@ -83,7 +83,7 @@ struct CreativeModeHubView: View {
     @State private var renameValue = ""
     @State private var importsCanvasPackage = false
     @State private var exportedCanvas: CanvasBinaryDocument?
-    @State private var exportedCanvasFilename = "Floe 画布"
+    @State private var exportedCanvasFilename = FloeL10n.l("workspace.workspace_canvas_view.floe_canvas")
     @State private var exportedCanvasTempURL: URL?
 
     private struct CanvasPresentation: Identifiable {
@@ -94,17 +94,17 @@ struct CreativeModeHubView: View {
 
     var body: some View {
         canvasList
-        .navigationTitle("创意模式")
-        .searchable(text: $searchText, prompt: "搜索画布名称、文字与节点内容")
+        .navigationTitle("app.floe_agent_app.creative")
+        .searchable(text: $searchText, prompt: "workspace.workspace_canvas_view.search_canvas_names_text_and_node")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button("新建文件夹", systemImage: "folder.badge.plus") {
+                Button("workspace.file_tree_view.new_folder", systemImage: "folder.badge.plus") {
                     editingFolder = nil; folderName = ""; showsFolderName = true
                 }
-                Button("导入画布", systemImage: "square.and.arrow.down") {
+                Button("workspace.workspace_canvas_view.import_canvas", systemImage: "square.and.arrow.down") {
                     importsCanvasPackage = true
                 }
-                Button("添加工作区", systemImage: "folder.badge.plus") {
+                Button("workspace.add", systemImage: "folder.badge.plus") {
                     showsWorkspacePicker = true
                 }
             }
@@ -130,7 +130,7 @@ struct CreativeModeHubView: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("完成") { showsWorkspacePicker = false }
+                        Button("workspace.workspace_canvas_view.done") { showsWorkspacePicker = false }
                     }
                 }
             }
@@ -156,7 +156,7 @@ struct CreativeModeHubView: View {
                     }.value
                     let summary = WorkspaceCanvasRegistry.summaries().first { $0.id == id }
                     presentation = CanvasPresentation(
-                        id: id, name: summary?.name ?? "导入画布", workspace: nil
+                        id: id, name: summary?.name ?? FloeL10n.l("workspace.workspace_canvas_view.import_canvas"), workspace: nil
                     )
                     listRevision += 1
                 } catch {
@@ -187,26 +187,26 @@ struct CreativeModeHubView: View {
                 workspace: item.workspace
             )
         }
-        .alert(editingFolder == nil ? "新建文件夹" : "重命名文件夹", isPresented: $showsFolderName) {
-            TextField("文件夹名称", text: $folderName)
-            Button("取消", role: .cancel) {}
-            Button("保存") {
+        .alert(editingFolder == nil ? "workspace.file_tree_view.new_folder" : "workspace.workspace_canvas_view.rename_folder", isPresented: $showsFolderName) {
+            TextField("workspace.file_tree_view.folder_name", text: $folderName)
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+            Button("workspace.workspace_canvas_view.save") {
                 updateOrganization { value in
                     let name = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !name.isEmpty else { throw FloeError.validationFailed("请输入文件夹名称。") }
+                    guard !name.isEmpty else { throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.enter_a_folder_name")) }
                     if let id = editingFolder, let index = value.folders.firstIndex(where: { $0.id == id }) {
                         value.folders[index].name = name
                     } else { value.folders.append(.init(id: UUID(), name: name)) }
                 }
             }
         }
-        .alert("重命名画布", isPresented: Binding(
+        .alert("workspace.workspace_canvas_view.rename_canvas", isPresented: Binding(
             get: { renamingCanvas != nil },
             set: { if !$0 { renamingCanvas = nil } }
         )) {
-            TextField("画布名称", text: $renameValue)
-            Button("取消", role: .cancel) { renamingCanvas = nil }
-            Button("保存") {
+            TextField("workspace.workspace_canvas_view.canvas_name", text: $renameValue)
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { renamingCanvas = nil }
+            Button("workspace.workspace_canvas_view.save") {
                 if let summary = renamingCanvas {
                     try? WorkspaceCanvasRegistry.rename(canvasID: summary.id, to: renameValue)
                     listRevision += 1
@@ -226,9 +226,9 @@ struct CreativeModeHubView: View {
                         Image(systemName: "rectangle.and.pencil.and.ellipsis")
                             .foregroundStyle(FloeTheme.primary)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("新建画布")
+                            Text("workspace.workspace_canvas_view.new_canvas")
                                 .foregroundStyle(.primary)
-                            Text("创建不绑定工作区的私人画布")
+                            Text("workspace.workspace_canvas_view.create_a_private_canvas_outside_a")
                                 .font(FloeTheme.Typography.metadata)
                                 .foregroundStyle(.secondary)
                         }
@@ -245,7 +245,7 @@ struct CreativeModeHubView: View {
                 Button {
                     showsMaterialLibrary = true
                 } label: {
-                    Label("素材库", systemImage: "photo.on.rectangle.angled")
+                    Label("workspace.workspace_canvas_view.asset_library", systemImage: "photo.on.rectangle.angled")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
@@ -253,30 +253,30 @@ struct CreativeModeHubView: View {
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("canvas.home.materials")
             } header: {
-                Text("快速开始")
+                Text("workspace.workspace_canvas_view.quick_start")
             } footer: {
-                Text("私人画布独立保存；素材可稍后移动到工作区或导出。")
+                Text("workspace.workspace_canvas_view.private_canvases_are_saved_independently_move")
             }
 
             if !imageGenerationReady {
                 Section {
                     if hasImageGenerationModel {
-                        NavigationLink("设置图片生成") {
+                        NavigationLink("workspace.workspace_canvas_view.image_generation_settings") {
                             AuxiliaryModelsView(center: environment.conversationCenter)
                         }
                     } else {
-                        NavigationLink("添加生图模型") {
+                        NavigationLink("workspace.workspace_canvas_view.add_image_generation_model") {
                             ProviderListView(center: environment.conversationCenter)
                         }
                     }
                 } footer: {
-                    Text("配置模型后即可在画布中生成图片。")
+                    Text("workspace.workspace_canvas_view.configure_a_model_to_generate_images")
                 }
             }
 
             if !organization.folders.isEmpty {
-                Section("文件夹") {
-                    Button("全部画布", systemImage: "square.grid.2x2") { selectedFolder = nil }
+                Section("workspace.workspace_canvas_view.folder") {
+                    Button("workspace.workspace_canvas_view.all_canvases", systemImage: "square.grid.2x2") { selectedFolder = nil }
                     ForEach(organization.folders) { folder in
                         Button { selectedFolder = folder.id } label: {
                             HStack {
@@ -286,10 +286,10 @@ struct CreativeModeHubView: View {
                             }
                         }
                         .contextMenu {
-                            Button("重命名", systemImage: "pencil") {
+                            Button("workspace.file_tree_view.rename", systemImage: "pencil") {
                                 editingFolder = folder.id; folderName = folder.name; showsFolderName = true
                             }
-                            Button("解散文件夹", systemImage: "folder.badge.minus") {
+                            Button("workspace.workspace_canvas_view.dissolve_folder", systemImage: "folder.badge.minus") {
                                 updateOrganization { value in
                                     value.folders.removeAll { $0.id == folder.id }
                                     value.assignments = value.assignments.filter { $0.value != folder.id }
@@ -306,18 +306,18 @@ struct CreativeModeHubView: View {
                 (search.isEmpty ? (selectedFolder == nil || organization.assignments[$0.id] == selectedFolder) : $0.searchableText.localizedStandardContains(search))
             }.sorted { $0.updatedAt > $1.updatedAt }
             if search.isEmpty && selectedFolder == nil, let recent = summaries.max(by: { $0.updatedAt < $1.updatedAt }) {
-                Section("最近使用") { canvasSummaryRow(recent) }
+                Section("workspace.workspace_canvas_view.recent") { canvasSummaryRow(recent) }
             }
-            Section(search.isEmpty ? (selectedFolder == nil ? "私人画布" : "文件夹内的画布") : "搜索结果") {
+            Section(search.isEmpty ? (selectedFolder == nil ? "workspace.workspace_canvas_view.private_canvases" : "workspace.workspace_canvas_view.canvases_in_folder") : "workspace.workspace_canvas_view.search_results") {
                 let visible = matches.filter { !search.isEmpty || selectedFolder != nil || $0.workspaceID == nil }
                 ForEach(visible) { summary in canvasSummaryRow(summary) }
                 if visible.isEmpty {
-                    Text(search.isEmpty ? "这里还没有画布" : "没有匹配的画布内容").foregroundStyle(.secondary)
+                    Text(search.isEmpty ? "workspace.workspace_canvas_view.no_canvases_here_yet" : "workspace.workspace_canvas_view.no_matching_canvas_content").foregroundStyle(.secondary)
                 }
             }
 
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedFolder == nil && !environment.workspaceCenter.projectWorkspaces.isEmpty {
-                Section("工作区画布") {
+                Section("workspace.workspace_canvas_view.workspace_canvases") {
                     ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                     Button {
                         openCanvas(for: workspace)
@@ -330,7 +330,7 @@ struct CreativeModeHubView: View {
                                 Text(workspace.name)
                                     .foregroundStyle(.primary)
                                 Text(WorkspaceCanvasRegistry.exists(workspaceID: workspace.id)
-                                     ? "继续画布" : "创建无限画布")
+                                     ? "workspace.workspace_canvas_view.resume_canvas" : "workspace.workspace_canvas_view.create_infinite_canvas")
                                     .font(FloeTheme.Typography.metadata)
                                     .foregroundStyle(.secondary)
                             }
@@ -367,9 +367,9 @@ struct CreativeModeHubView: View {
                     }
                     HStack(spacing: 6) {
                         Text(summary.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                        if summary.syncEnabled { Label("同步", systemImage: "icloud") }
+                        if summary.syncEnabled { Label("workspace.workspace_canvas_view.sync", systemImage: "icloud") }
                         if summary.pendingMediaJobs > 0 {
-                            Label("\(summary.pendingMediaJobs) 个任务", systemImage: "hourglass")
+                            Label(FloeL10n.plural("workspace.workspace_canvas_view.tasks", count: summary.pendingMediaJobs), systemImage: "hourglass")
                         }
                     }
                     .font(FloeTheme.Typography.metadata)
@@ -381,25 +381,25 @@ struct CreativeModeHubView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Menu("移到文件夹", systemImage: "folder") {
-                Button("未分类") { updateOrganization { $0.assignments[summary.id] = nil } }
+            Menu("workspace.workspace_canvas_view.move_to_folder", systemImage: "folder") {
+                Button("workspace.workspace_canvas_view.uncategorized") { updateOrganization { $0.assignments[summary.id] = nil } }
                 ForEach(organization.folders) { folder in
                     Button(folder.name) { updateOrganization { $0.assignments[summary.id] = folder.id } }
                 }
             }
-            Button("重命名", systemImage: "pencil") {
+            Button("workspace.file_tree_view.rename", systemImage: "pencil") {
                 renamingCanvas = summary
                 renameValue = summary.name
             }
-            Button("复制", systemImage: "doc.on.doc") {
+            Button("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc") {
                 _ = try? WorkspaceCanvasRegistry.duplicate(canvasID: summary.id)
                 listRevision += 1
             }
-            Button("导出可编辑画布包", systemImage: "square.and.arrow.up") {
+            Button("workspace.workspace_canvas_view.export_editable_canvas_package", systemImage: "square.and.arrow.up") {
                 exportCanvasPackage(summary)
             }
             if !environment.workspaceCenter.projectWorkspaces.isEmpty {
-                Menu("移动到工作区", systemImage: "folder") {
+                Menu("workspace.workspace_canvas_view.move_to_workspace", systemImage: "folder") {
                     ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                         Button(workspace.name) {
                             try? WorkspaceCanvasRegistry.move(
@@ -410,7 +410,7 @@ struct CreativeModeHubView: View {
                     }
                 }
             }
-            Button("删除", systemImage: "trash", role: .destructive) {
+            Button("workspace.workspace_canvas_view.delete", systemImage: "trash", role: .destructive) {
                 Task { @MainActor in
                     do {
                         let project = try WorkspaceCanvasRegistry.project(canvasID: summary.id)
@@ -474,8 +474,7 @@ struct CreativeModeHubView: View {
             }
             try? FileManager.default.removeItem(at: directory)
         } catch {
-            environment.workspaceCenter.actionError =
-                "导出临时文件未能清理，已保留：\(tempURL.path)"
+            environment.workspaceCenter.actionError = FloeL10n.l("workspace.workspace_canvas_view.temporary_export_files_could_not_be", tempURL.path)
         }
     }
 
@@ -503,12 +502,12 @@ struct CreativeModeHubView: View {
             let id = UUID()
             try WorkspaceCanvasRegistry.createIfNeeded(
                 canvasID: id,
-                name: "未命名画布",
+                name: FloeL10n.l("workspace.workspace_canvas_view.untitled_canvas"),
                 workspaceID: nil
             )
             presentation = CanvasPresentation(
                 id: id,
-                name: "未命名画布",
+                name: FloeL10n.l("workspace.workspace_canvas_view.untitled_canvas"),
                 workspace: nil
             )
         } catch {
@@ -554,11 +553,11 @@ private enum CanvasInkOutputPreference: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .automatic: "自动判断"
-        case .cleanText: "整理文字"
-        case .cards: "便签卡片"
-        case .diagram: "流程／思维图"
-        case .wireframe: "界面草图"
+        case .automatic: FloeL10n.l("settings.settings_root_view.automatic")
+        case .cleanText: FloeL10n.l("workspace.workspace_canvas_view.organize_text")
+        case .cards: FloeL10n.l("workspace.workspace_canvas_view.sticky_note_card")
+        case .diagram: FloeL10n.l("workspace.workspace_canvas_view.flow_mind_map")
+        case .wireframe: FloeL10n.l("workspace.workspace_canvas_view.interface_sketch")
         }
     }
 
@@ -598,7 +597,7 @@ private struct CanvasInkInterpretation: Codable, Hashable, Identifiable {
     var nodes: [CanvasInkPlanNode]
     var connections: [CanvasInkPlanConnection]
     var sourceBounds: CGRect = .zero
-    var routeDescription: String = "辅助视觉模型"
+    var routeDescription: String = FloeL10n.l("workspace.workspace_canvas_view.auxiliary_vision_model")
 
     private enum CodingKeys: String, CodingKey {
         case summary, layout, confidence, nodes, connections
@@ -927,7 +926,7 @@ enum WorkspaceCanvasRegistry {
         let copyID = UUID()
         project.id = copyID
         project.workspaceID = nil
-        project.name += " 副本"
+        project.name += FloeL10n.l("workspace.canvas3_d_director_view.copy")
         project.agentConversationID = nil
         project.assistantSessions = []
         project.selectedAssistantSessionID = nil
@@ -942,7 +941,7 @@ enum WorkspaceCanvasRegistry {
         let source = try projectURL(canvasID: canvasID, createDirectory: false)
         let destination = try projectURL(canvasID: workspace.id, createDirectory: true)
         guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw FloeError.validationFailed("这个工作区已有画布。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.this_workspace_already_has_a_canvas"))
         }
         var project = try decodeProject(at: source)
         project.id = workspace.id
@@ -1089,7 +1088,7 @@ enum WorkspaceCanvasRegistry {
             .filter { !$0.isEmpty }
             .joined(separator: "-")
         let base = String(cleaned.prefix(80))
-        return "\(base.isEmpty ? "Floe 画布" : base).floeCanvas"
+        return "\(base.isEmpty ? FloeL10n.l("workspace.workspace_canvas_view.floe_canvas") : base).floeCanvas"
     }
 
     @discardableResult
@@ -1103,12 +1102,12 @@ enum WorkspaceCanvasRegistry {
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
         let size = (attributes[.size] as? Int64) ?? 0
         guard size <= CanvasBackupPackage.maximumInMemoryBytes else {
-            throw FloeError.validationFailed("这个画布文件超过 64 MB 的导入限制。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.this_canvas_file_exceeds_the_64"))
         }
         var project = try decodeProject(at: source)
         guard !project.documents.isEmpty,
               (1...CanvasProject.currentSchemaVersion).contains(project.schemaVersion) else {
-            throw FloeError.validationFailed("这不是受支持的 Floe 画布包。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.this_is_not_a_supported_floe"))
         }
         let id = UUID()
         project.id = id
@@ -1118,7 +1117,7 @@ enum WorkspaceCanvasRegistry {
         project.selectedAssistantSessionID = nil
         project.agentConversationIDsByDocument = [:]
         project.name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if project.name.isEmpty { project.name = "导入画布" }
+        if project.name.isEmpty { project.name = FloeL10n.l("workspace.workspace_canvas_view.import_canvas") }
         project.updatedAt = Date()
         try encodeProject(project, to: projectURL(canvasID: id, createDirectory: true))
         return id
@@ -1140,7 +1139,7 @@ enum WorkspaceCanvasRegistry {
             registeredID = project.id
         }
         guard let id = registeredID else {
-            throw FloeError.validationFailed("画布备份注册失败。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.canvas_backup_registration_failed"))
         }
         return id
     }
@@ -1154,7 +1153,7 @@ enum WorkspaceCanvasRegistry {
     static func createIfNeeded(canvasID: UUID, name: String, workspaceID: UUID?) throws {
         let url = try projectURL(canvasID: canvasID, createDirectory: true)
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
-        let initial = FloeCanvasDocument(name: "画布 1")
+        let initial = FloeCanvasDocument(name: FloeL10n.l("workspace.workspace_canvas_view.canvas_1"))
         let project = FloeCanvasProject(
             id: canvasID,
             workspaceID: workspaceID,
@@ -1341,7 +1340,7 @@ enum CanvasConnectionCommandPlanner {
             sourceNodeID: sourceNodeID,
             destinationNodeID: destinationNodeID,
             kind: kind,
-            label: kind == .source ? "生成输入" : nil,
+            label: kind == .source ? FloeL10n.l("core.canvas_operations.generation_input") : nil,
             sourcePort: sourcePort,
             destinationPort: destinationPort
         )
@@ -1454,14 +1453,14 @@ enum CanvasGenerationReferenceLimitPolicy {
             to: destinationNodeID,
             document: document
         ), count > maximumReferenceImages else { return nil }
-        return "\(modelName) 最多支持 \(maximumReferenceImages) 张参考图；这条连线会形成 \(count) 张参考图输入。请先移除其他参考图连线，或更换支持更多参考图的模型。"
+        return FloeL10n.l("workspace.workspace_canvas_view.supports_up_to_reference_images_this", modelName, maximumReferenceImages, count)
     }
 }
 
 /// Bilingual helper for canvas messages added in Build265; existing canvases
 /// keep their historical Chinese literals.
 func canvasLocalized(_ zh: String, _ en: String) -> String {
-    Locale.current.identifier.hasPrefix("zh") ? zh : en
+    FloeL10n.isChinese ? zh : en
 }
 
 @MainActor
@@ -1488,7 +1487,7 @@ private final class CanvasDocumentStore: ObservableObject {
     var canRedo: Bool { !redoStack.isEmpty }
 
     init(canvasID: UUID, workspaceID: UUID?, canvasName: String) {
-        let initial = FloeCanvasDocument(name: "画布 1")
+        let initial = FloeCanvasDocument(name: FloeL10n.l("workspace.workspace_canvas_view.canvas_1"))
         let fallback = FloeCanvasProject(
             id: canvasID,
             workspaceID: workspaceID,
@@ -1543,7 +1542,7 @@ private final class CanvasDocumentStore: ObservableObject {
                     requireRevisionAdvance: true
                 )
                 if replaced {
-                    saveError = "原画布无法迁移，已保留只读备份：\(backup.lastPathComponent)"
+                    saveError = FloeL10n.l("workspace.workspace_canvas_view.the_original_canvas_could_not_be", backup.lastPathComponent)
                 }
             }
         } catch {
@@ -1557,7 +1556,7 @@ private final class CanvasDocumentStore: ObservableObject {
                     allowReplacingUnreadableFile: true
                 )
                 if replaced {
-                    saveError = "原画布无法读取，已保留只读备份：\(backup.lastPathComponent)"
+                    saveError = FloeL10n.l("workspace.workspace_canvas_view.the_original_canvas_could_not_be_2", backup.lastPathComponent)
                 }
             } catch {
                 project = fallback
@@ -1734,7 +1733,7 @@ private final class CanvasDocumentStore: ObservableObject {
             if CanvasProjectFileWriter.isRevisionConflict(error) {
                 _ = reloadAuthoritativeProject(after: error)
             } else {
-                saveError = "同步画布失败：\(error.localizedDescription)"
+                saveError = FloeL10n.l("workspace.workspace_canvas_view.canvas_sync_failed", error.localizedDescription)
             }
         }
     }
@@ -1785,7 +1784,7 @@ private final class CanvasDocumentStore: ObservableObject {
             project = incoming
             saveError = nil
         } catch {
-            saveError = "重新载入画布失败：\(error.localizedDescription)"
+            saveError = FloeL10n.l("workspace.workspace_canvas_view.failed_to_reload_the_canvas", error.localizedDescription)
         }
     }
 
@@ -1811,7 +1810,7 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func addDocument() {
-        let document = FloeCanvasDocument(name: "画布 \(project.documents.count + 1)")
+        let document = FloeCanvasDocument(name: FloeL10n.l("workspace.workspace_canvas_view.canvas", project.documents.count + 1))
         project.documents.append(document)
         project.selectedDocumentID = document.id
         project.agentConversationID = nil
@@ -1845,25 +1844,25 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     @discardableResult
-    func addNote(at point: CGPoint, text: String = "新建文本") -> UUID {
+    func addNote(at point: CGPoint, text: String = FloeL10n.l("workspace.workspace_canvas_view.new_text")) -> UUID {
         let id = addPlaceholder(kind: .text, at: point)
-        if text != "新建文本" { updateNode(id, text: text) }
+        if text != FloeL10n.l("workspace.workspace_canvas_view.new_text") { updateNode(id, text: text) }
         return id
     }
 
     /// Creates a real sticky-note node. Keeping it distinct from a structured
     /// card lets every creation entry point expose both concepts honestly.
     @discardableResult
-    func addStickyNote(at point: CGPoint, text: String = "新建便签") -> UUID {
+    func addStickyNote(at point: CGPoint, text: String = FloeL10n.l("workspace.workspace_canvas_view.new_sticky_note")) -> UUID {
         let id = addPlaceholder(kind: .stickyNote, at: point)
-        if text != "新建便签" { updateNode(id, text: text) }
+        if text != FloeL10n.l("workspace.workspace_canvas_view.new_sticky_note") { updateNode(id, text: text) }
         return id
     }
 
     @discardableResult
-    func addCard(at point: CGPoint, text: String = "新建卡片") -> UUID {
+    func addCard(at point: CGPoint, text: String = FloeL10n.l("workspace.workspace_canvas_view.new_card")) -> UUID {
         let id = addPlaceholder(kind: .card, at: point)
-        if text != "新建卡片" { updateNode(id, text: text) }
+        if text != FloeL10n.l("workspace.workspace_canvas_view.new_card") { updateNode(id, text: text) }
         return id
     }
 
@@ -1875,9 +1874,9 @@ private final class CanvasDocumentStore: ObservableObject {
     /// Creates an empty container that can receive nodes through grouping or
     /// drag/drop.
     @discardableResult
-    func addGroup(at point: CGPoint, text: String = "新建分组") -> UUID {
+    func addGroup(at point: CGPoint, text: String = FloeL10n.l("workspace.workspace_canvas_view.new_group")) -> UUID {
         let id = addPlaceholder(kind: .group, at: point)
-        if text != "新建分组" { updateNode(id, text: text) }
+        if text != FloeL10n.l("workspace.workspace_canvas_view.new_group") { updateNode(id, text: text) }
         return id
     }
 
@@ -2022,7 +2021,7 @@ private final class CanvasDocumentStore: ObservableObject {
                 kind: .create, nodeID: id, nodeKind: kind,
                 text: displayName
                     ?? asset.localRelativePath?.split(separator: "/").last.map(String.init)
-                    ?? "素材",
+                    ?? FloeL10n.l("workspace.workspace_canvas_view.assets"),
                 position: CanvasPoint(point),
                 size: .init(width: 320, height: kind == .video ? 220 : 260),
                 asset: asset,
@@ -2106,10 +2105,10 @@ private final class CanvasDocumentStore: ObservableObject {
         let kind: CanvasNodeKind = pluginID == "panorama3D" ? .image : .card
         let id = addPlaceholder(kind: kind, at: point)
         let defaults: [String: String] = [
-            "markdown": "# Markdown\n\n双击编辑内容。",
+            "markdown": FloeL10n.l("canvas.builtin.markdown_default"),
             "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 180\"><rect width=\"320\" height=\"180\" rx=\"24\" fill=\"#5B8DEF\"/><text x=\"160\" y=\"100\" text-anchor=\"middle\" fill=\"white\" font-size=\"28\">SVG</text></svg>",
-            "html": "<h2>HTML 节点</h2><p>双击编辑安全的静态 HTML。</p>",
-            "panorama3D": "3D 全景"
+            "html": FloeL10n.l("workspace.workspace_canvas_view.h2_html_node_h2_p_double"),
+            "panorama3D": FloeL10n.l("canvas.node.panorama_3d")
         ]
         updateNode(id, text: defaults[pluginID] ?? pluginID)
         updateNodeMetadata(id, values: ["builtinPlugin": pluginID])
@@ -2267,7 +2266,7 @@ private final class CanvasDocumentStore: ObservableObject {
                 }
             }
         }
-        saveError = "画布写入重试次数已用尽。"
+        saveError = FloeL10n.l("workspace.workspace_canvas_view.canvas_write_retries_are_exhausted")
         return false
     }
 
@@ -2582,11 +2581,11 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func clipboardData(for ids: Set<UUID>) throws -> Data {
         guard let document = selectedDocument else {
-            throw FloeError.validationFailed("当前没有可复制的画布。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.there_is_currently_no_canvas_to"))
         }
         let nodes = document.nodes.filter { ids.contains($0.id) }
         guard !nodes.isEmpty else {
-            throw FloeError.validationFailed("请先选择节点。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.select_a_node_first"))
         }
         let connections = document.connections.filter {
             ids.contains($0.sourceNodeID) && ids.contains($0.destinationNodeID)
@@ -2699,7 +2698,7 @@ private final class CanvasDocumentStore: ObservableObject {
             ))
             document.connections.append(CanvasConnection(
                 sourceNodeID: sourceNodeID, destinationNodeID: id,
-                kind: .generatedFrom, label: "AI 结果",
+                kind: .generatedFrom, label: FloeL10n.l("workspace.workspace_canvas_view.ai_result"),
                 sourcePort: .trailing, destinationPort: .leading
             ))
             resultID = id
@@ -2974,18 +2973,18 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func inkCapture(strokeIDs: Set<UUID>) throws -> CanvasInkCapture {
         guard let document = selectedDocument else {
-            throw FloeError.validationFailed("当前没有画布。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.there_is_currently_no_canvas"))
         }
         let strokes = document.strokes.filter { strokeIDs.contains($0.id) && $0.points.count > 1 }
         guard !strokes.isEmpty else {
-            throw FloeError.validationFailed("请先画一些内容，或框选已有笔迹。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.draw_something_first_or_select_existing"))
         }
         let points = strokes.flatMap(\.points).map(\.cgPoint)
         let rawBounds = points.reduce(CGRect.null) {
             $0.union(CGRect(x: $1.x, y: $1.y, width: 1, height: 1))
         }
         guard !rawBounds.isNull else {
-            throw FloeError.validationFailed("所选笔迹没有可识别内容。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.the_selected_strokes_contain_no_recognizable"))
         }
         let canvasBounds = rawBounds.insetBy(dx: -32, dy: -32)
         let maximumDimension = 2_048.0
@@ -3020,7 +3019,7 @@ private final class CanvasDocumentStore: ObservableObject {
             context.restoreGState()
         }
         guard let data = image.pngData() else {
-            throw FloeError.internalError("无法生成笔迹预览。")
+            throw FloeError.internalError(FloeL10n.l("workspace.workspace_canvas_view.could_not_generate_the_stroke_preview"))
         }
         return CanvasInkCapture(
             imageData: data,
@@ -3034,13 +3033,13 @@ private final class CanvasDocumentStore: ObservableObject {
         guard let data = selectedDocument?.pencilDrawingData,
               let drawing = try? PKDrawing(data: data),
               !drawing.strokes.isEmpty else {
-            throw FloeError.validationFailed("请先用 Apple Pencil 画一些内容。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.draw_something_with_apple_pencil_first"))
         }
         let bounds = drawing.bounds.insetBy(dx: -32, dy: -32)
         let scale = min(4, max(1.5, 2_048 / max(bounds.width, bounds.height)))
         let image = drawing.image(from: bounds, scale: scale)
         guard let imageData = image.pngData() else {
-            throw FloeError.internalError("无法生成 PencilKit 笔迹预览。")
+            throw FloeError.internalError(FloeL10n.l("workspace.workspace_canvas_view.could_not_generate_the_pencilkit_stroke"))
         }
         return CanvasInkCapture(
             imageData: imageData,
@@ -3128,18 +3127,18 @@ private final class CanvasDocumentStore: ObservableObject {
         case .package:
             // The editable package is a file-backed archive (child projects +
             // assets), never assembled in memory here.
-            throw FloeError.validationFailed("可编辑画布包通过文件导出路径生成。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.editable_canvas_packages_are_produced_through"))
         case .png:
             guard let image = renderCurrentDocument() else {
-                throw FloeError.validationFailed("当前画布没有可导出的内容。")
+                throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.the_current_canvas_has_nothing_to"))
             }
             guard let data = image.pngData() else {
-                throw FloeError.validationFailed("无法生成 PNG。")
+                throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.could_not_generate_the_png"))
             }
             return data
         case .pdf:
             guard let image = renderCurrentDocument() else {
-                throw FloeError.validationFailed("当前画布没有可导出的内容。")
+                throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.the_current_canvas_has_nothing_to"))
             }
             let bounds = CGRect(origin: .zero, size: image.size)
             return UIGraphicsPDFRenderer(bounds: bounds).pdfData { context in
@@ -3282,7 +3281,7 @@ private final class CanvasDocumentStore: ObservableObject {
                 }
             }
         }
-        saveError = "画布写入重试次数已用尽。"
+        saveError = FloeL10n.l("workspace.workspace_canvas_view.canvas_write_retries_are_exhausted")
         return nil
     }
 
@@ -3377,10 +3376,10 @@ private final class CanvasDocumentStore: ObservableObject {
             )
             undoStack.removeAll()
             redoStack.removeAll()
-            saveError = "画布已被另一项操作更新，已重新载入最新内容。"
+            saveError = FloeL10n.l("workspace.workspace_canvas_view.the_canvas_was_updated_by_another")
             return true
         } catch let reloadError {
-            saveError = "\(error.localizedDescription)；重新载入失败："
+            saveError = FloeL10n.l("workspace.workspace_canvas_view.reload_failed", error.localizedDescription)
                 + reloadError.localizedDescription
             return false
         }
@@ -3681,7 +3680,7 @@ private struct CanvasVideoChildProjectSheet: View {
                        projectRevision: revision,
                        renderedAsset: reference,
                        sourceAssetHash: presentation.sourceAssetHash,
-                       reason: store.saveError ?? "画布写入失败") {
+                       reason: store.saveError ?? FloeL10n.l("workspace.workspace_canvas_view.canvas_write_failed")) {
                     store.commitNodeAssetPatch(
                         marker, documentID: presentation.documentID, previousAssetID: nil)
                 }
@@ -5110,9 +5109,9 @@ private struct CanvasDrawingEditorSheet: View {
             let mimeType = entry.fileExtension == "dwg" ? "image/vnd.dwg" : "image/vnd.dxf"
             try await environment.creativeAssetStore.save(CreativeAssetRecord(
                 id: assetID, contentHash: hash, kind: .document,
-                displayName: "\(node.text.isEmpty ? "画布图纸" : node.text) 分支",
+                displayName: FloeL10n.l("workspace.workspace_canvas_view.branches", node.text.isEmpty ? FloeL10n.l("workspace.workspace_canvas_view.canvas_drawings"): node.text),
                 mimeType: mimeType, localRelativePath: "Materials/\(filename)",
-                byteCount: Int64(data.count), tags: ["画布图纸"], referenceCount: 0))
+                byteCount: Int64(data.count), tags: [FloeL10n.l("workspace.workspace_canvas_view.canvas_drawings")], referenceCount: 0))
             writtenTarget = nil
             let reference = CanvasAssetReference(
                 id: assetID, contentHash: hash,
@@ -5330,7 +5329,7 @@ struct WorkspaceCanvasView: View {
     @State private var marqueeCurrent: CGPoint?
     @State private var exportDocument: CanvasBinaryDocument?
     @State private var exportContentType: UTType = .floeCanvasPackage
-    @State private var exportFilename = "Floe 画布"
+    @State private var exportFilename = FloeL10n.l("workspace.workspace_canvas_view.floe_canvas")
     @State private var exportTempURL: URL?
     @State private var nodeCreationPoint: CGPoint?
     @State private var lastCanvasPointerPoint: CGPoint?
@@ -5347,10 +5346,10 @@ struct WorkspaceCanvasView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .select: "选择与移动"
-            case .pencil: "画笔"
-            case .eraser: "橡皮"
-            case .connector: "连接线"
+            case .select: FloeL10n.l("app.floe_agent_app.select_and_move")
+            case .pencil: FloeL10n.l("workspace.workspace_canvas_view.pen")
+            case .eraser: FloeL10n.l("workspace.workspace_canvas_view.eraser")
+            case .connector: FloeL10n.l("workspace.workspace_canvas_view.connector")
             }
         }
         var icon: String {
@@ -5363,14 +5362,10 @@ struct WorkspaceCanvasView: View {
         }
         var interactionHint: String {
             switch self {
-            case .select:
-                "单指点选或拖动节点，拖动空白处移动画布；双指可随时移动或缩放"
-            case .pencil:
-                "使用 Pencil 或单指绘制；双指移动或缩放画布"
-            case .eraser:
-                "擦除笔迹；双指移动或缩放画布"
-            case .connector:
-                "点按连接点创建关系；双指移动或缩放画布"
+            case .select:FloeL10n.l("workspace.workspace_canvas_view.tap_or_drag_nodes_with_one")
+            case .pencil:FloeL10n.l("workspace.workspace_canvas_view.draw_with_pencil_or_one_finger")
+            case .eraser:FloeL10n.l("workspace.workspace_canvas_view.erase_strokes_move_or_zoom_the")
+            case .connector:FloeL10n.l("workspace.workspace_canvas_view.tap_connection_points_to_create_relationships")
             }
         }
     }
@@ -5398,26 +5393,26 @@ struct WorkspaceCanvasView: View {
                 : appAppearance == "light" ? .light
                 : appAppearance == "dark" ? .dark : nil
         )
-        .alert("画布无法保存", isPresented: Binding(
+        .alert("workspace.workspace_canvas_view.the_canvas_could_not_be_saved", isPresented: Binding(
             get: { store.saveError != nil },
             set: { if !$0 { store.saveError = nil } }
         )) {
-            Button("完成", role: .cancel) { store.saveError = nil }
+            Button("workspace.workspace_canvas_view.done", role: .cancel) { store.saveError = nil }
         } message: {
             Text(store.saveError ?? "")
         }
-        .alert("画布已在其他设备删除", isPresented: $store.wasDeletedRemotely) {
-            Button("返回创意模式") { dismiss() }
+        .alert("workspace.workspace_canvas_view.the_canvas_was_deleted_on_another", isPresented: $store.wasDeletedRemotely) {
+            Button("workspace.workspace_canvas_view.back_to_creative") { dismiss() }
         } message: {
-            Text("云端删除已经确认。当前设备不会重新上传这份旧画布。")
+            Text("workspace.workspace_canvas_view.the_cloud_deletion_was_confirmed_this")
         }
         .alert(item: $pendingCanvasDeletion) { request in
             Alert(
-                title: Text(request.deletesProject ? "删除整个画布项目？" : "删除画布？"),
+                title: Text(request.deletesProject ? "workspace.workspace_canvas_view.delete_the_entire_canvas_project" : "workspace.workspace_canvas_view.delete_canvas"),
                 message: Text(request.deletesProject
-                    ? "“\(request.name)”是最后一张画布。继续将删除整个画布项目、关联的画布助手会话和未完成媒体任务。绑定的工作区不会被删除。"
-                    : "将删除“\(request.name)”及其画布助手会话。此操作无法撤销。"),
-                primaryButton: .destructive(Text("删除")) {
+                    ? FloeL10n.l("workspace.workspace_canvas_view.is_the_last_canvas_continuing_deletes", request.name)
+                    : FloeL10n.l("workspace.workspace_canvas_view.and_its_canvas_assistant_conversations_will", request.name)),
+                primaryButton: .destructive(Text("workspace.workspace_canvas_view.delete")) {
                     Task { await performDeletion(request) }
                 },
                 secondaryButton: .cancel()
@@ -5673,13 +5668,13 @@ struct WorkspaceCanvasView: View {
         }
         .onChange(of: canvasPreferences) { _, value in value.save() }
         .focusedValue(\.canvasKeyboardActions, keyboardActions)
-        .alert("无法整理笔迹", isPresented: Binding(
+        .alert("workspace.workspace_canvas_view.could_not_organize_the_handwriting", isPresented: Binding(
             get: { inkInterpretationError != nil },
             set: { if !$0 { inkInterpretationError = nil } }
         )) {
-            Button("完成", role: .cancel) { inkInterpretationError = nil }
+            Button("workspace.workspace_canvas_view.done", role: .cancel) { inkInterpretationError = nil }
         } message: {
-            Text(inkInterpretationError ?? "未知错误")
+            Text(inkInterpretationError ?? "common.unknown_error")
         }
     }
 
@@ -5689,14 +5684,14 @@ struct WorkspaceCanvasView: View {
                 documentSidebarRow(document)
             }
         }
-        .navigationTitle("画布")
+        .navigationTitle("settings.settings_root_view.canvas")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     store.addDocument()
                     preferredCompactColumn = .detail
                 } label: {
-                    Label("新建画布", systemImage: "plus")
+                    Label("workspace.workspace_canvas_view.new_canvas", systemImage: "plus")
                 }
                 .disabled(isDeletingCanvas)
             }
@@ -5726,7 +5721,7 @@ struct WorkspaceCanvasView: View {
             }
             .buttonStyle(.plain)
             Menu {
-                Button("删除画布", systemImage: "trash", role: .destructive) {
+                Button("workspace.workspace_canvas_view.delete_canvas_2", systemImage: "trash", role: .destructive) {
                     requestDeletion(document)
                 }
             } label: {
@@ -5734,14 +5729,14 @@ struct WorkspaceCanvasView: View {
                     .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(document.name)操作")
+            .accessibilityLabel(FloeL10n.l("workspace.workspace_canvas_view.action", document.name))
         }
         .disabled(isDeletingCanvas)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("删除", role: .destructive) { requestDeletion(document) }
+            Button("workspace.workspace_canvas_view.delete", role: .destructive) { requestDeletion(document) }
         }
         .contextMenu {
-            Button("删除画布", systemImage: "trash", role: .destructive) {
+            Button("workspace.workspace_canvas_view.delete_canvas_2", systemImage: "trash", role: .destructive) {
                 requestDeletion(document)
             }
         }
@@ -5780,7 +5775,7 @@ struct WorkspaceCanvasView: View {
         } catch is CancellationError {
             return
         } catch {
-            store.saveError = "删除失败：\(error.localizedDescription)"
+            store.saveError = FloeL10n.l("workspace.workspace_canvas_view.deletion_failed", error.localizedDescription)
         }
     }
 
@@ -5847,12 +5842,12 @@ struct WorkspaceCanvasView: View {
                     Button {
                         selectedNodeIDs = [store.addCard(
                             at: canvasPoint(CGPoint(x: bounds.midX, y: bounds.midY)),
-                            text: "新建卡片"
+                            text: FloeL10n.l("workspace.workspace_canvas_view.new_card")
                         )]
                         withAnimation(.snappy) { closedShapeSuggestion = nil }
                         mode = .select
                     } label: {
-                        Label("转为卡片", systemImage: "note.text.badge.plus")
+                        Label("workspace.workspace_canvas_view.convert_to_card", systemImage: "note.text.badge.plus")
                     }
                     .buttonStyle(.borderedProminent)
                     .position(
@@ -5940,8 +5935,8 @@ struct WorkspaceCanvasView: View {
                     HStack(spacing: 10) {
                         ProgressView()
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("正在理解笔迹").font(.headline)
-                            Text("先识别内容与关系，再生成可编辑节点")
+                            Text("workspace.workspace_canvas_view.understanding_handwriting").font(.headline)
+                            Text("workspace.workspace_canvas_view.recognize_content_and_relationships_first_then")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -5978,7 +5973,7 @@ struct WorkspaceCanvasView: View {
                     case .createCard:
                         selectedNodeIDs = [store.addCard(at: canvasPoint(
                             CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                        ), text: "新建卡片")]
+                        ), text: FloeL10n.l("workspace.workspace_canvas_view.new_card"))]
                         mode = .select
                     }
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -6042,20 +6037,20 @@ struct WorkspaceCanvasView: View {
                     }
                 }
             }
-            .navigationTitle(store.selectedDocument?.name ?? "画布")
+            .navigationTitle(store.selectedDocument?.name ?? "settings.settings_root_view.canvas")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if compactCanvas(size: geometry.size) {
                         HStack {
                             if editingNodeID != nil {
-                                Button("完成编辑", systemImage: "checkmark") { editingNodeID = nil }
+                                Button("workspace.workspace_canvas_view.done_editing", systemImage: "checkmark") { editingNodeID = nil }
                                     .accessibilityIdentifier("canvas.node.finishEditing")
                             }
                             Menu {
                                 canvasToolbarActions
                             } label: {
-                                Label("画布操作", systemImage: "ellipsis.circle")
+                                Label("workspace.workspace_canvas_view.canvas_actions", systemImage: "ellipsis.circle")
                             }
                             .accessibilityIdentifier("canvas.actions")
                         }
@@ -6094,9 +6089,9 @@ struct WorkspaceCanvasView: View {
             Label(String(localized: "canvas.node.create"), systemImage: "plus")
         }
         .accessibilityIdentifier("canvas.node.create")
-        Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
+        Button("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward") { store.undo() }
             .disabled(!store.canUndo)
-        Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
+        Button("composer.editor.redo", systemImage: "arrow.uturn.forward") { store.redo() }
             .disabled(!store.canRedo)
         Button {
             withAnimation(.snappy) {
@@ -6104,19 +6099,19 @@ struct WorkspaceCanvasView: View {
                 isAgentCollapsed = false
             }
         } label: {
-            Label("画布助手", systemImage: FloeTheme.assistantSymbol)
+            Label("workspace.workspace_canvas_view.canvas_assistant", systemImage: FloeTheme.assistantSymbol)
         }
         Button {
             materialTargetNodeID = nil
             materialKindFilter = nil
             showsMaterials = true
         } label: {
-            Label("素材库", systemImage: "photo.on.rectangle.angled")
+            Label("workspace.workspace_canvas_view.asset_library", systemImage: "photo.on.rectangle.angled")
         }
         Button {
             showsPromptLibrary = true
         } label: {
-            Label("提示词库", systemImage: "books.vertical")
+            Label("workspace.workspace_canvas_view.prompt_library", systemImage: "books.vertical")
         }
         Button {
             generationSourceNodeIDs = selectedNodeIDs
@@ -6124,12 +6119,12 @@ struct WorkspaceCanvasView: View {
             generationResultPoint = canvasPoint(visibleCanvasCenter)
             showsGeneration = true
         } label: {
-            Label("生成", systemImage: "wand.and.stars")
+            Label("canvas.artifact.action.generate", systemImage: "wand.and.stars")
         }
         Button {
             showsMediaJobs = true
         } label: {
-            Label("媒体任务", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+            Label("workspace.workspace_canvas_view.media_tasks", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
         }
         .badge(canvasJobs.filter { !$0.state.isTerminal }.count)
         Button {
@@ -6142,14 +6137,14 @@ struct WorkspaceCanvasView: View {
             selectedNodeIDs = [nodeID]
             directorPresentation = Canvas3DDirectorPresentation(nodeID: nodeID)
         } label: {
-            Label("3D 导演台", systemImage: "cube.transparent")
+            Label("workspace.workspace_canvas_view.3d_director", systemImage: "cube.transparent")
         }
         Menu {
-            Toggle("同步此画布", isOn: Binding(
+            Toggle("workspace.workspace_canvas_view.sync_this_canvas", isOn: Binding(
                 get: { store.project.sync.isEnabled },
                 set: { store.setSyncEnabled($0) }
             ))
-            Menu("画布背景") {
+            Menu("workspace.workspace_canvas_view.canvas_background") {
                 ForEach(CanvasBackgroundStyle.allCases, id: \.self) { style in
                     Button {
                         store.setBackgroundStyle(style)
@@ -6162,13 +6157,13 @@ struct WorkspaceCanvasView: View {
                     }
                 }
             }
-            Menu("外观") {
+            Menu("settings.general.appearance") {
                 ForEach(["system", "light", "dark"], id: \.self) { value in
                     Button {
                         canvasAppearance = value
                     } label: {
-                        let title = value == "system" ? "跟随系统"
-                            : value == "light" ? "浅色" : "深色"
+                        let title = value == "system" ? FloeL10n.l("workspace.workspace_canvas_view.system")
+                            : value == "light" ? FloeL10n.l("settings.general.appearance.light") : FloeL10n.l("settings.general.appearance.dark")
                         if canvasAppearance == value {
                             Label(title, systemImage: "checkmark")
                         } else {
@@ -6177,25 +6172,25 @@ struct WorkspaceCanvasView: View {
                     }
                 }
             }
-            Toggle("显示缩略导航", isOn: $showsMiniMap)
+            Toggle("workspace.workspace_canvas_view.show_minimap", isOn: $showsMiniMap)
             Button("canvas.onboarding.replay", systemImage: "questionmark.circle") {
                 showsCanvasOnboarding = true
             }
             Button(
-                selectedNodeIDs.count > 1 ? "自动整理所选节点" : "自动整理关系图",
+                selectedNodeIDs.count > 1 ? "workspace.workspace_canvas_view.auto_organize_selected_nodes" : "workspace.workspace_canvas_view.auto_organize_relationship_graph",
                 systemImage: "rectangle.3.group"
             ) {
                 store.autoArrange(selectedNodeIDs)
             }
             .disabled((store.selectedDocument?.nodes.count ?? 0) < 2)
             if !selectedNodeIDs.isEmpty {
-                Button("属性") { showsInspector = true }
+                Button("workspace.workspace_canvas_view.properties") { showsInspector = true }
                 if selectedNodeIDs.count == 1,
                    let selected = store.selectedDocument?.nodes.first(where: {
                        selectedNodeIDs.contains($0.id)
                            && $0.kind == .image && $0.asset != nil
                    }) {
-                    Button("编辑图片", systemImage: "slider.horizontal.3") {
+                    Button("files.edit_image", systemImage: "slider.horizontal.3") {
                         imageEditorPresentation = CanvasImageEditorPresentation(
                             id: selected.id, documentID: store.project.selectedDocumentID,
                             bindingState: selected.childProjectBindingState,
@@ -6208,7 +6203,7 @@ struct WorkspaceCanvasView: View {
                        selectedNodeIDs.contains($0.id)
                            && CanvasDrawingNodePlanner.isDrawingNode($0)
                    }) {
-                    Button("打开图纸/CAD 编辑", systemImage: "ruler") {
+                    Button("workspace.workspace_canvas_view.open_drawing_cad_editor", systemImage: "ruler") {
                         openDrawingEditor(selected)
                     }
                 }
@@ -6217,61 +6212,61 @@ struct WorkspaceCanvasView: View {
                    let selected = document.nodes.first(where: {
                        selectedNodeIDs.contains($0.id) && $0.kind == .video
                    }), let source = CanvasAssetNodeContent.localURL(for: selected) {
-                    Button("剪辑与字幕", systemImage: "film") {
+                    Button("workspace.workspace_canvas_view.clip_and_subtitles", systemImage: "film") {
                         videoEditorPresentation = .init(
                             id: selected.id, documentID: document.id, source: source,
                             sourceAssetHash: selected.asset?.contentHash)
                     }
                 }
-                Button("复制到剪贴板", action: copySelection)
-                Button("复制副本") { selectedNodeIDs = duplicateSelection(selectedNodeIDs) }
+                Button("workspace.workspace_canvas_view.copy_to_clipboard", action: copySelection)
+                Button("app.floe_agent_app.duplicate") { selectedNodeIDs = duplicateSelection(selectedNodeIDs) }
                 if selectedNodeIDs.count > 1 {
-                    Button("分组") { store.group(selectedNodeIDs) }
+                    Button("canvas.node.group") { store.group(selectedNodeIDs) }
                 }
                 if canUngroupSelection {
-                    Button("取消分组") { store.ungroup(selectedNodeIDs) }
+                    Button("workspace.workspace_canvas_view.ungroup") { store.ungroup(selectedNodeIDs) }
                 }
-                Button("锁定") { store.setLocked(selectedNodeIDs, locked: true) }
-                Button("解锁") { store.setLocked(selectedNodeIDs, locked: false) }
+                Button("workspace.workspace_canvas_view.lock") { store.setLocked(selectedNodeIDs, locked: true) }
+                Button("pdf.reader.unlock") { store.setLocked(selectedNodeIDs, locked: false) }
                 if selectedNodeIDs.count > 1 {
-                    Menu("对齐") {
-                        Button("左对齐") { store.align(selectedNodeIDs, to: .leading) }
-                        Button("水平居中") { store.align(selectedNodeIDs, to: .horizontalCenter) }
-                        Button("右对齐") { store.align(selectedNodeIDs, to: .trailing) }
-                        Button("顶部对齐") { store.align(selectedNodeIDs, to: .top) }
-                        Button("垂直居中") { store.align(selectedNodeIDs, to: .verticalCenter) }
-                        Button("底部对齐") { store.align(selectedNodeIDs, to: .bottom) }
+                    Menu("workspace.workspace_canvas_view.align") {
+                        Button("workspace.workspace_canvas_view.align_left") { store.align(selectedNodeIDs, to: .leading) }
+                        Button("workspace.workspace_canvas_view.center_horizontally") { store.align(selectedNodeIDs, to: .horizontalCenter) }
+                        Button("workspace.workspace_canvas_view.align_right") { store.align(selectedNodeIDs, to: .trailing) }
+                        Button("workspace.workspace_canvas_view.align_top") { store.align(selectedNodeIDs, to: .top) }
+                        Button("workspace.workspace_canvas_view.center_vertically") { store.align(selectedNodeIDs, to: .verticalCenter) }
+                        Button("workspace.workspace_canvas_view.align_bottom") { store.align(selectedNodeIDs, to: .bottom) }
                     }
                 }
                 if selectedNodeIDs.count > 2 {
-                    Menu("分布") {
-                        Button("水平等距") { store.distribute(selectedNodeIDs, horizontally: true) }
-                        Button("垂直等距") { store.distribute(selectedNodeIDs, horizontally: false) }
+                    Menu("workspace.workspace_canvas_view.distribute") {
+                        Button("workspace.workspace_canvas_view.horizontal_isometric") { store.distribute(selectedNodeIDs, horizontally: true) }
+                        Button("workspace.workspace_canvas_view.vertical_isometric") { store.distribute(selectedNodeIDs, horizontally: false) }
                     }
                 }
-                Menu("层级") {
-                    Button("移到最前") { store.changeLayer(selectedNodeIDs, bringToFront: true) }
-                    Button("移到最后") { store.changeLayer(selectedNodeIDs, bringToFront: false) }
+                Menu("workspace.workspace_canvas_view.hierarchy") {
+                    Button("workspace.workspace_canvas_view.bring_to_front") { store.changeLayer(selectedNodeIDs, bringToFront: true) }
+                    Button("workspace.workspace_canvas_view.send_to_back") { store.changeLayer(selectedNodeIDs, bringToFront: false) }
                 }
-                Button("删除所选节点", role: .destructive, action: deleteSelection)
+                Button("workspace.workspace_canvas_view.delete_selected_nodes", role: .destructive, action: deleteSelection)
             }
             if !selectedStrokeIDs.isEmpty {
-                Button("整理所选笔迹", systemImage: "wand.and.rays", action: interpretSelectedInk)
-                Button("删除所选笔迹", role: .destructive) {
+                Button("workspace.workspace_canvas_view.organize_selected_strokes", systemImage: "wand.and.rays", action: interpretSelectedInk)
+                Button("workspace.workspace_canvas_view.delete_selected_strokes", role: .destructive) {
                     store.removeStrokes(selectedStrokeIDs)
                     selectedStrokeIDs.removeAll()
                 }
             }
-            Menu("导出") {
-                Button("可编辑 Floe 画布包") { prepareExport(.package) }
-                Button("画布 JSON（不含素材）") { prepareExport(.json) }
-                Button("PNG 图片") { prepareExport(.png) }
+            Menu("files.export") {
+                Button("workspace.workspace_canvas_view.editable_floe_canvas_package") { prepareExport(.package) }
+                Button("workspace.workspace_canvas_view.canvas_json_without_assets") { prepareExport(.json) }
+                Button("workspace.workspace_canvas_view.png_image") { prepareExport(.png) }
                 Button("PDF") { prepareExport(.pdf) }
             }
         } label: {
             Image(systemName: "ellipsis.circle")
         }
-        Button("完成") { dismiss() }
+        Button("workspace.workspace_canvas_view.done") { dismiss() }
     }
 
     private func createNode(_ factory: (CGPoint) -> UUID) {
@@ -6333,10 +6328,7 @@ struct WorkspaceCanvasView: View {
                     throw CreativeAssetIngestionError.missingLocalFile
                 }
                 let type = item.supportedContentTypes.first
-                let stem = String(
-                    format: String(localized: "canvas.artifact.photo_name.format"),
-                    String(index + 1)
-                )
+                let stem = FloeL10n.l("canvas.artifact.photo_name.format", index + 1)
                 let name = "\(stem).\(type?.preferredFilenameExtension ?? "bin")"
                 let record = try await ingestion.importPhotoData(
                     data,
@@ -6350,9 +6342,9 @@ struct WorkspaceCanvasView: View {
         }
         insertImportedArtifacts(imported)
         if failureCount > 0 {
-            store.saveError = String(
-                format: String(localized: "canvas.artifact.import.photos_partial.format"),
-                String(imported.count),
+            store.saveError = FloeL10n.plural(
+                "canvas.artifact.import.photos_partial.format",
+                count: imported.count,
                 String(failureCount)
             )
         }
@@ -6366,7 +6358,7 @@ struct WorkspaceCanvasView: View {
             let record = try await ingestion.importLocalFile(url)
             guard store.selectedDocument?.id == presentation.documentID,
                   let source = store.selectedDocument?.nodes.first(where: { $0.id == presentation.id }) else {
-                store.saveError = "视频已保存到素材库；原画布已切换，请从素材库插入。"
+                store.saveError = FloeL10n.l("workspace.workspace_canvas_view.the_video_was_saved_to_the")
                 return
             }
             let reference = CanvasAssetReference(
@@ -6379,14 +6371,14 @@ struct WorkspaceCanvasView: View {
                 displayName: record.displayName,
                 metadata: ["derivedFromNodeID": source.id.uuidString, "artifactOrigin": "video-editor"])
             guard store.selectedDocument?.nodes.contains(where: { $0.id == id }) == true else {
-                store.saveError = "视频已保存到素材库，但未能加入画布。请从素材库重新插入。"
+                store.saveError = FloeL10n.l("workspace.workspace_canvas_view.the_video_was_saved_to_the_2")
                 return
             }
             store.connect(source.id, to: id, kind: .generatedFrom)
             selectedNodeIDs = [id]
         } catch {
             importedVideoExports.remove(url)
-            store.saveError = "视频已导出，但加入画布失败：" + error.localizedDescription
+            store.saveError = FloeL10n.l("workspace.workspace_canvas_view.the_video_was_exported_but_could") + error.localizedDescription
         }
     }
 
@@ -6497,9 +6489,9 @@ struct WorkspaceCanvasView: View {
         let text: String
         switch kind {
         case .text:
-            nodeKind = .text; text = "新建文本"
+            nodeKind = .text; text = FloeL10n.l("workspace.workspace_canvas_view.new_text")
         case .card:
-            nodeKind = .card; text = "新建卡片"
+            nodeKind = .card; text = FloeL10n.l("workspace.workspace_canvas_view.new_card")
         case .generationTask:
             cancelConnectionCreation()
             generationSourceNodeIDs = [draft.sourceNodeID]
@@ -6531,7 +6523,7 @@ struct WorkspaceCanvasView: View {
         selectedNodeIDs = [draft.sourceNodeID]
         pendingAgentRequest = CanvasAgentRequest(
             nodeID: draft.sourceNodeID,
-            prompt: "基于当前节点以及它的上游画布上下文，提出最多 3 个可以继续展开的不同方向。每个方向只输出一行简洁文本，不要调用工具，不要修改画布，也不要输出序号或额外说明。",
+            prompt: FloeL10n.l("workspace.workspace_canvas_view.based_on_the_current_node_and"),
             mode: .association,
             documentID: draft.documentID,
             sourcePort: draft.sourcePort,
@@ -6600,9 +6592,9 @@ struct WorkspaceCanvasView: View {
 
     private func backgroundTitle(_ style: CanvasBackgroundStyle) -> String {
         switch style {
-        case .blank: "空白"
-        case .grid: "网格"
-        case .dots: "点阵"
+        case .blank: FloeL10n.l("workspace.workspace_canvas_view.blank")
+        case .grid: FloeL10n.l("workspace.workspace_canvas_view.grid")
+        case .dots: FloeL10n.l("workspace.workspace_canvas_view.dotted")
         }
     }
 
@@ -6780,8 +6772,8 @@ struct WorkspaceCanvasView: View {
                             selectedStrokeIDs.removeAll()
                             editingNodeID = nil
                         }
-                        .accessibilityLabel("连接线")
-                        .accessibilityHint("点按后可反向或删除")
+                        .accessibilityLabel("workspace.workspace_canvas_view.connector")
+                        .accessibilityHint("workspace.workspace_canvas_view.tap_to_reverse_or_delete")
                         .accessibilityIdentifier("canvas.connection.\(connection.id.uuidString)")
                 }
             }
@@ -7145,7 +7137,7 @@ struct WorkspaceCanvasView: View {
         try Task.checkCancellation()
         guard store.selectedDocument?.id == document.id,
               store.project.revision == expectedRevision else {
-            throw FloeError.validationFailed("画布已发生变化，请根据最新内容重试。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.the_canvas_changed_retry_with_the"))
         }
         var metadata: [String: String?] = [:]
         var replacementText: String?
@@ -7243,7 +7235,7 @@ struct WorkspaceCanvasView: View {
         let executionToken = UUID()
         activeGenerationTokens[task.id] = executionToken
         let mediaTitle = task.metadata["generationKind"] == MediaKind.video.rawValue
-            ? "画布视频生成" : "画布图片生成"
+            ? FloeL10n.l("workspace.workspace_canvas_view.canvas_video_generation") : FloeL10n.l("workspace.workspace_canvas_view.canvas_image_generation")
         environment.backgroundRunCoordinator.didStartMediaGeneration(
             workID: executionToken,
             title: mediaTitle
@@ -7267,14 +7259,14 @@ struct WorkspaceCanvasView: View {
                     taskNodeID: task.id, store: store, environment: environment
                 )
                 succeeded = true
-                terminalMessage = "媒体生成已完成"
+                terminalMessage = FloeL10n.l("workspace.workspace_canvas_view.media_generation_complete")
             } catch is CancellationError {
                 // Cancellation state is applied by the executor/cancel action.
-                terminalMessage = "媒体生成已取消"
+                terminalMessage = FloeL10n.l("workspace.workspace_canvas_view.media_generation_canceled")
             } catch CanvasGenerationExecutionError.superseded {
                 // A newer saved configuration owns the task now. The provider
                 // response from this execution is intentionally discarded.
-                terminalMessage = "媒体生成已被新的配置取代"
+                terminalMessage = FloeL10n.l("workspace.workspace_canvas_view.media_generation_was_superseded_by_a")
             } catch {
                 let message = CanvasGenerationErrorPresentation.message(for: error)
                 terminalMessage = message
@@ -7420,7 +7412,7 @@ struct WorkspaceCanvasView: View {
            let modelID = configuration.modelID {
             guard let (provider, model) = environment.conversationCenter
                 .mediaProviderAndModel(modelID: modelID) else {
-                store.saveError = "这个生成节点选择的图片模型当前不可用，请先打开节点配置并重新选择模型。"
+                store.saveError = FloeL10n.l("workspace.workspace_canvas_view.the_image_model_chosen_by_this")
                 UINotificationFeedbackGenerator().notificationOccurred(.warning)
                 return false
             }
@@ -7712,13 +7704,13 @@ struct WorkspaceCanvasView: View {
                     createNode(kind, at: canvasPoint(point))
                 }
                 Divider()
-                Button("粘贴", systemImage: "doc.on.clipboard", action: pasteFromClipboard)
-                Button("从素材库导入", systemImage: "photo.on.rectangle.angled") {
+                Button("workspace.workspace_canvas_view.paste", systemImage: "doc.on.clipboard", action: pasteFromClipboard)
+                Button("workspace.workspace_canvas_view.import_from_asset_library", systemImage: "photo.on.rectangle.angled") {
                     materialTargetNodeID = nil
                     materialKindFilter = nil
                     showsMaterials = true
                 }
-                Button("适配画布", systemImage: "arrow.up.left.and.arrow.down.right") {
+                Button("workspace.workspace_canvas_view.fit_canvas", systemImage: "arrow.up.left.and.arrow.down.right") {
                     scale = 1
                     scaleStart = 1
                     pan = .zero
@@ -7786,23 +7778,23 @@ struct WorkspaceCanvasView: View {
                    let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }),
                    node.supportsInlineEditing,
                    !node.isLocked {
-                    Button("编辑", systemImage: "pencil") {
+                    Button("workspace.workspace_canvas_view.edit", systemImage: "pencil") {
                         editingNodeID = nodeID
                         pencilContextPoint = nil
                     }
                 }
-                Button("复制", systemImage: "plus.square.on.square") {
+                Button("workspace.workspace_canvas_view.copy", systemImage: "plus.square.on.square") {
                     selectedNodeIDs = duplicateSelection(selectedNodeIDs)
                     pencilContextPoint = nil
                 }
-                Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
+                Button("workspace.workspace_canvas_view.connection", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
                     connectionStartID = selectedNodeIDs.first
                     mode = .connector
                     pencilContextPoint = nil
                 }
-                Menu("更多", systemImage: "ellipsis.circle") {
+                Menu("workspace.workspace_canvas_view.more", systemImage: "ellipsis.circle") {
                     if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
-                        Button("节点内提问", systemImage: FloeTheme.assistantSymbol) {
+                        Button("workspace.workspace_canvas_view.ask_about_node", systemImage: FloeTheme.assistantSymbol) {
                             pendingAgentRequest = CanvasAgentRequest(nodeID: nodeID, prompt: "")
                             showsAgent = true
                             isAgentCollapsed = false
@@ -7812,35 +7804,35 @@ struct WorkspaceCanvasView: View {
                     if let selectedNode = store.selectedDocument?.nodes.first(where: {
                         selectedNodeIDs.contains($0.id)
                     }) {
-                        Button(selectedNode.isLocked ? "解锁" : "锁定",
+                        Button(selectedNode.isLocked ? "pdf.reader.unlock" : "workspace.workspace_canvas_view.lock",
                                systemImage: selectedNode.isLocked ? "lock.open" : "lock") {
                             store.setLocked(selectedNodeIDs, locked: !selectedNode.isLocked)
                             pencilContextPoint = nil
                         }
                     }
-                    Button("移到最前", systemImage: "arrow.up.to.line") {
+                    Button("workspace.workspace_canvas_view.bring_to_front", systemImage: "arrow.up.to.line") {
                         store.changeLayer(selectedNodeIDs, bringToFront: true)
                         pencilContextPoint = nil
                     }
-                    Button("移到最后", systemImage: "arrow.down.to.line") {
+                    Button("workspace.workspace_canvas_view.send_to_back", systemImage: "arrow.down.to.line") {
                         store.changeLayer(selectedNodeIDs, bringToFront: false)
                         pencilContextPoint = nil
                     }
                     if selectedNodeIDs.count > 1 {
-                        Button("分组", systemImage: "square.3.layers.3d") {
+                        Button("canvas.node.group", systemImage: "square.3.layers.3d") {
                             store.group(selectedNodeIDs)
                             pencilContextPoint = nil
                         }
                     } else if let selectedNode = store.selectedDocument?.nodes.first(where: {
                         selectedNodeIDs.contains($0.id)
                     }), selectedNode.groupID != nil {
-                        Button("解除分组", systemImage: "square.2.layers.3d") {
+                        Button("workspace.workspace_canvas_view.ungroup_2", systemImage: "square.2.layers.3d") {
                             store.ungroup(selectedNodeIDs)
                             pencilContextPoint = nil
                         }
                     }
                 }
-                Button("删除", systemImage: "trash", role: .destructive) {
+                Button("workspace.workspace_canvas_view.delete", systemImage: "trash", role: .destructive) {
                     deleteSelection()
                     pencilContextPoint = nil
                 }
@@ -7852,15 +7844,15 @@ struct WorkspaceCanvasView: View {
             .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
         } else if !selectedStrokeIDs.isEmpty || store.hasNativeInk {
             HStack(spacing: 5) {
-                Button("整理笔迹", systemImage: "wand.and.rays") {
+                Button("workspace.workspace_canvas_view.organize_handwriting", systemImage: "wand.and.rays") {
                     interpretSelectedInk()
                     pencilContextPoint = nil
                 }
-                Button("橡皮", systemImage: "eraser") {
+                Button("workspace.workspace_canvas_view.eraser", systemImage: "eraser") {
                     mode = .eraser
                     pencilContextPoint = nil
                 }
-                Button("新建卡片", systemImage: "note.text.badge.plus") {
+                Button("workspace.workspace_canvas_view.new_card", systemImage: "note.text.badge.plus") {
                     createNode(.card, at: canvasPoint(pencilContextPoint ?? CGPoint(
                         x: size.width / 2, y: size.height / 2
                     )))
@@ -7874,24 +7866,24 @@ struct WorkspaceCanvasView: View {
             .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
         } else {
             HStack(spacing: 5) {
-                Button("画笔", systemImage: "pencil.tip") {
+                Button("workspace.workspace_canvas_view.pen", systemImage: "pencil.tip") {
                     mode = .pencil
                     showsPencilPalette = true
                     pencilContextPoint = nil
                 }
-                Button("卡片", systemImage: "note.text.badge.plus") {
+                Button("canvas.node.card", systemImage: "note.text.badge.plus") {
                     createNode(.card, at: canvasPoint(pencilContextPoint ?? CGPoint(
                         x: size.width / 2, y: size.height / 2
                     )))
                     pencilContextPoint = nil
                 }
-                Button("文本", systemImage: "textformat") {
+                Button("canvas.node.text", systemImage: "textformat") {
                     createNode(.text, at: canvasPoint(pencilContextPoint ?? CGPoint(
                         x: size.width / 2, y: size.height / 2
                     )))
                     pencilContextPoint = nil
                 }
-                Button("更多节点", systemImage: "plus") {
+                Button("workspace.workspace_canvas_view.more_nodes", systemImage: "plus") {
                     nodeCreationPoint = pencilContextPoint
                     pencilContextPoint = nil
                 }
@@ -7946,7 +7938,7 @@ struct WorkspaceCanvasView: View {
                     )))
                 }
                 Divider()
-                Button("从素材库添加…", systemImage: "photo.on.rectangle.angled") {
+                Button("workspace.workspace_canvas_view.add_from_asset_library", systemImage: "photo.on.rectangle.angled") {
                     materialTargetNodeID = nil
                     materialKindFilter = [.image, .video, .audio, .file]
                     showsMaterials = true
@@ -7955,18 +7947,18 @@ struct WorkspaceCanvasView: View {
                 Image(systemName: "plus")
                     .frame(width: 44, height: 44)
             }
-            .accessibilityLabel("添加节点")
-            .accessibilityHint("显示全部可用节点类型")
+            .accessibilityLabel("workspace.workspace_canvas_view.add_node")
+            .accessibilityHint("workspace.workspace_canvas_view.show_all_available_node_types")
             .accessibilityIdentifier("canvas.node.create.bottom")
 
             Menu {
-                Picker("整理方式", selection: $inkOutputPreference) {
+                Picker("memory.memory_view.arrange", selection: $inkOutputPreference) {
                     ForEach(CanvasInkOutputPreference.allCases) { value in
                         Text(value.title).tag(value)
                     }
                 }
                 if mode == .eraser {
-                    Button("清除全部笔迹", systemImage: "trash", role: .destructive) {
+                    Button("workspace.workspace_canvas_view.clear_all_ink", systemImage: "trash", role: .destructive) {
                         store.clearDrawing()
                         selectedStrokeIDs.removeAll()
                     }
@@ -7975,7 +7967,7 @@ struct WorkspaceCanvasView: View {
                 Image(systemName: "slider.horizontal.3")
                     .frame(width: 44, height: 44)
             }
-            .accessibilityLabel("笔迹整理方式：\(inkOutputPreference.title)")
+            .accessibilityLabel(FloeL10n.l("workspace.workspace_canvas_view.handwriting_organization", inkOutputPreference.title))
 
             Button(action: interpretSelectedInk) {
                 Image(systemName: "wand.and.rays")
@@ -7991,7 +7983,7 @@ struct WorkspaceCanvasView: View {
                         }
                     }
             }
-            .accessibilityLabel(selectedStrokeIDs.isEmpty ? "整理笔迹" : "整理所选笔迹")
+            .accessibilityLabel(selectedStrokeIDs.isEmpty ? "workspace.workspace_canvas_view.organize_handwriting" : "workspace.workspace_canvas_view.organize_selected_strokes")
             .disabled((selectedStrokeIDs.isEmpty && !store.hasNativeInk) || isInterpretingInk)
         }
         .padding(5)
@@ -8004,7 +7996,7 @@ struct WorkspaceCanvasView: View {
                 onCreateCard: {
                     selectedNodeIDs = [store.addCard(
                         at: canvasPoint(CGPoint(x: size.width / 2, y: size.height / 2)),
-                        text: "新建卡片"
+                        text: FloeL10n.l("workspace.workspace_canvas_view.new_card")
                     )]
                     showsPencilPalette = false
                     mode = .select
@@ -8036,10 +8028,10 @@ struct WorkspaceCanvasView: View {
     private var selectionToolbar: some View {
         if let connectionID = selectedConnectionID, mode == .select {
             HStack(spacing: 4) {
-                Button("反向", systemImage: "arrow.left.arrow.right") {
+                Button("workspace.workspace_canvas_view.reverse", systemImage: "arrow.left.arrow.right") {
                     store.reverseConnection(connectionID)
                 }
-                Button("删除连接", systemImage: "trash", role: .destructive) {
+                Button("workspace.workspace_canvas_view.delete_connection", systemImage: "trash", role: .destructive) {
                     store.deleteConnection(connectionID)
                     selectedConnectionID = nil
                 }
@@ -8051,7 +8043,7 @@ struct WorkspaceCanvasView: View {
             .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
             .accessibilityIdentifier("canvas.connection.toolbar")
         } else if editingNodeID != nil, mode == .select {
-            Button("完成编辑", systemImage: "checkmark") {
+            Button("workspace.workspace_canvas_view.done_editing", systemImage: "checkmark") {
                 editingNodeID = nil
             }
             .buttonStyle(.borderedProminent)
@@ -8073,39 +8065,39 @@ struct WorkspaceCanvasView: View {
                             .disabled(taskNode.generationTaskState.isRunning)
                             .accessibilityIdentifier("canvas.generation.configure")
                         } else if node.supportsInlineEditing, !node.isLocked {
-                            Button("编辑", systemImage: "pencil") { editingNodeID = nodeID }
+                            Button("workspace.workspace_canvas_view.edit", systemImage: "pencil") { editingNodeID = nodeID }
                         }
                     }
                 }
-                Button("复制", systemImage: "plus.square.on.square") {
+                Button("workspace.workspace_canvas_view.copy", systemImage: "plus.square.on.square") {
                     selectedNodeIDs = duplicateSelection(selectedNodeIDs)
                     editingNodeID = nil
                 }
-                Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
+                Button("workspace.workspace_canvas_view.connection", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
                     connectionStartID = selectedNodeIDs.first
                     editingNodeID = nil
                     mode = .connector
                 }
                 if let selectedGroupID, enteredGroupID != selectedGroupID {
-                    Button("进入分组", systemImage: "rectangle.inset.filled") {
+                    Button("workspace.workspace_canvas_view.enter_group", systemImage: "rectangle.inset.filled") {
                         enteredGroupID = selectedGroupID
                         if let first = selectedNodeIDs.first { selectedNodeIDs = [first] }
                         editingNodeID = nil
                     }
                 } else if enteredGroupID != nil {
-                    Button("退出分组", systemImage: "rectangle.portrait.and.arrow.right") {
+                    Button("workspace.workspace_canvas_view.exit_group", systemImage: "rectangle.portrait.and.arrow.right") {
                         enteredGroupID = nil
                         editingNodeID = nil
                     }
                 } else if selectedNodeIDs.count > 1 {
-                    Button("分组", systemImage: "square.3.layers.3d") {
+                    Button("canvas.node.group", systemImage: "square.3.layers.3d") {
                         store.group(selectedNodeIDs)
                         editingNodeID = nil
                     }
                 }
                 if let attachable = selectedAttachableNode {
                     Button(
-                        attachable.asset == nil ? "选择素材" : "替换素材",
+                        attachable.asset == nil ? "workspace.workspace_canvas_view.select_asset" : "workspace.workspace_canvas_view.replace_asset",
                         systemImage: "photo.badge.plus"
                     ) {
                         materialTargetNodeID = attachable.id
@@ -8113,9 +8105,9 @@ struct WorkspaceCanvasView: View {
                         showsMaterials = true
                     }
                 }
-                Button("属性", systemImage: "slider.horizontal.3") { showsInspector = true }
+                Button("workspace.workspace_canvas_view.properties", systemImage: "slider.horizontal.3") { showsInspector = true }
                 if selectedGenerationNode == nil {
-                    Button("生成", systemImage: "wand.and.stars") {
+                    Button("canvas.artifact.action.generate", systemImage: "wand.and.stars") {
                         generationSourceNodeIDs = selectedNodeIDs
                         generationRequestedSourceNodeIDs = selectedNodeIDs
                         generationResultPoint = store.selectedDocument?.nodes
@@ -8124,7 +8116,7 @@ struct WorkspaceCanvasView: View {
                         showsGeneration = true
                     }
                 }
-                Button("删除", systemImage: "trash", role: .destructive) { deleteSelection() }
+                Button("workspace.workspace_canvas_view.delete", systemImage: "trash", role: .destructive) { deleteSelection() }
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.bordered)
@@ -8227,7 +8219,7 @@ struct WorkspaceCanvasView: View {
             } label: {
                 Image(systemName: "scope")
             }
-            .accessibilityLabel("重置画布视图")
+            .accessibilityLabel("workspace.workspace_canvas_view.reset_canvas_view")
         }
         .buttonStyle(.bordered)
         .padding(10)
@@ -8327,7 +8319,7 @@ struct WorkspaceCanvasView: View {
             }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } catch {
-            store.saveError = "无法粘贴：\(error.localizedDescription)"
+            store.saveError = FloeL10n.l("workspace.workspace_canvas_view.could_not_paste", error.localizedDescription)
         }
     }
 
@@ -8347,7 +8339,7 @@ struct WorkspaceCanvasView: View {
     private func interpretSelectedInk() {
         guard (!selectedStrokeIDs.isEmpty || store.hasNativeInk), !isInterpretingInk else {
             if selectedStrokeIDs.isEmpty && !store.hasNativeInk {
-                inkInterpretationError = "请用 Apple Pencil 画出内容，或切到“选择”后框选已有笔迹。"
+                inkInterpretationError = FloeL10n.l("workspace.workspace_canvas_view.draw_content_with_apple_pencil_or")
             }
             return
         }
@@ -8391,7 +8383,7 @@ struct WorkspaceCanvasView: View {
                     do {
                         interpretation = try Self.decodeInkInterpretation(response)
                         interpretation.routeDescription = environment.conversationCenter
-                            .canvasVisionDestinationName() ?? "画面理解模型"
+                            .canvasVisionDestinationName() ?? FloeL10n.l("settings.settings_root_view.screen_understanding_model")
                     } catch {
                         guard !ocrText.isEmpty else { throw error }
                         interpretation = Self.ocrFallbackInterpretation(ocrText)
@@ -8451,7 +8443,7 @@ struct WorkspaceCanvasView: View {
     private static func decodeInkInterpretation(_ response: String) throws -> CanvasInkInterpretation {
         guard let start = response.firstIndex(of: "{"),
               let end = response.lastIndex(of: "}"), start <= end else {
-            throw FloeError.validationFailed("笔迹模型没有返回可用的结构。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.the_handwriting_model_returned_no_usable"))
         }
         let data = Data(response[start...end].utf8)
         var value = try JSONDecoder().decode(CanvasInkInterpretation.self, from: data)
@@ -8466,17 +8458,17 @@ struct WorkspaceCanvasView: View {
             ids.contains($0.from) && ids.contains($0.to) && $0.from != $0.to
         }.prefix(60))
         guard !value.nodes.isEmpty else {
-            throw FloeError.validationFailed("笔迹模型没有生成可编辑节点。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.the_handwriting_model_generated_no_editable"))
         }
         if value.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            value.summary = "已把所选笔迹整理成 \(value.nodes.count) 个可编辑节点。"
+            value.summary = FloeL10n.l("workspace.workspace_canvas_view.the_selected_strokes_were_organized_into", value.nodes.count)
         }
         return value
     }
 
     private static func ocrFallbackInterpretation(_ text: String) -> CanvasInkInterpretation {
         CanvasInkInterpretation(
-            summary: "辅助视觉不可用，已用本机文字识别整理可辨认内容。",
+            summary: FloeL10n.l("workspace.workspace_canvas_view.auxiliary_vision_is_unavailable_on_device"),
             layout: "text",
             confidence: 0.55,
             nodes: [CanvasInkPlanNode(
@@ -8489,7 +8481,7 @@ struct WorkspaceCanvasView: View {
                 height: 0.72
             )],
             connections: [],
-            routeDescription: "Apple Vision 本机文字识别"
+            routeDescription: FloeL10n.l("workspace.workspace_canvas_view.apple_vision_on_device_text_recognition")
         )
     }
 
@@ -8526,7 +8518,7 @@ struct WorkspaceCanvasView: View {
         }
         do {
             let data = try store.exportData(format)
-            let base = store.project.name.isEmpty ? "Floe 画布" : store.project.name
+            let base = store.project.name.isEmpty ? FloeL10n.l("workspace.workspace_canvas_view.floe_canvas") : store.project.name
             switch format {
             case .json:
                 exportContentType = .json
@@ -8586,7 +8578,7 @@ struct WorkspaceCanvasView: View {
             }
             try? FileManager.default.removeItem(at: directory)
         } catch {
-            store.saveError = "导出临时文件未能清理，已保留：\(tempURL.path)"
+            store.saveError = FloeL10n.l("workspace.workspace_canvas_view.temporary_export_files_could_not_be", tempURL.path)
         }
     }
 
@@ -8677,8 +8669,8 @@ private struct CanvasInkInterpretationPanel: View {
                     .font(.title2)
                     .foregroundStyle(FloeTheme.primary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("笔迹整理预览").font(.headline)
-                    Text("\(interpretation.layout) · 置信度 \(Int(interpretation.confidence * 100))%")
+                    Text("workspace.workspace_canvas_view.handwriting_organization_preview").font(.headline)
+                    Text(FloeL10n.l("workspace.workspace_canvas_view.confidence", interpretation.layout, Int(interpretation.confidence * 100)))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -8687,7 +8679,7 @@ private struct CanvasInkInterpretationPanel: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("关闭笔迹整理预览")
+                .accessibilityLabel("workspace.workspace_canvas_view.close_handwriting_organization_preview")
             }
 
             Text(interpretation.summary)
@@ -8699,34 +8691,34 @@ private struct CanvasInkInterpretationPanel: View {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: node.kind == "shape" ? "square.on.circle" : "note.text")
                             .foregroundStyle(.secondary)
-                        Text(node.text.isEmpty ? "未命名图形" : node.text)
+                        Text(node.text.isEmpty ? "workspace.workspace_canvas_view.untitled_shape" : node.text)
                             .font(.caption)
                             .lineLimit(2)
                     }
                 }
                 if interpretation.nodes.count > 5 {
-                    Text("另有 \(interpretation.nodes.count - 5) 个节点")
+                    Text(FloeL10n.l("workspace.workspace_canvas_view.more_nodes_2", interpretation.nodes.count - 5))
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
 
-            Toggle("保留原始笔迹", isOn: $preservesOriginal)
+            Toggle("workspace.workspace_canvas_view.keep_original_handwriting", isOn: $preservesOriginal)
                 .font(.subheadline)
             Text(preservesOriginal
-                 ? "格式化内容会放在原稿旁边，原笔迹保持可编辑。"
-                 : "格式化内容会替换所选笔迹；应用后仍可撤销。")
+                 ? "workspace.workspace_canvas_view.the_formatted_content_is_placed_beside"
+                 : "workspace.workspace_canvas_view.the_formatted_content_replaces_the_selected")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
             HStack {
-                Button("重新理解", action: onRetry)
+                Button("workspace.workspace_canvas_view.re_understand", action: onRetry)
                     .buttonStyle(.bordered)
                 Spacer()
-                Button("应用到画布", action: onApply)
+                Button("workspace.workspace_canvas_view.apply_to_canvas", action: onApply)
                     .buttonStyle(.borderedProminent)
             }
 
-            Label("识别路径：\(interpretation.routeDescription)", systemImage: "eye")
+            Label(FloeL10n.l("workspace.workspace_canvas_view.recognized_path", interpretation.routeDescription), systemImage: "eye")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -8854,7 +8846,7 @@ private struct CanvasPencilPalette: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("画笔").font(.headline)
+            Text("workspace.workspace_canvas_view.pen").font(.headline)
             HStack(spacing: 14) {
                 ForEach(["black", "blue", "red", "green"], id: \.self) { name in
                     Button { colorName = name } label: {
@@ -8871,17 +8863,17 @@ private struct CanvasPencilPalette: View {
                     .accessibilityLabel(colorLabel(name))
                 }
             }
-            LabeledContent("粗细") {
+            LabeledContent("workspace.workspace_canvas_view.width") {
                 Slider(value: $width, in: 1...18, step: 0.5)
                     .frame(width: 190)
             }
-            Toggle("允许手指绘画", isOn: $fingerDrawingEnabled)
+            Toggle("settings.settings_root_view.allow_finger_drawing", isOn: $fingerDrawingEnabled)
             Divider()
-            Text("快速创建").font(.subheadline.weight(.semibold))
+            Text("workspace.workspace_canvas_view.quick_create").font(.subheadline.weight(.semibold))
             HStack {
-                Button("卡片", systemImage: "note.text", action: onCreateCard)
-                Button("文本", systemImage: "textformat", action: onCreateText)
-                Button("形状", systemImage: "square.on.circle", action: onCreateShape)
+                Button("canvas.node.card", systemImage: "note.text", action: onCreateCard)
+                Button("canvas.node.text", systemImage: "textformat", action: onCreateText)
+                Button("canvas.node.shape", systemImage: "square.on.circle", action: onCreateShape)
             }
             .buttonStyle(.bordered)
         }
@@ -8900,10 +8892,10 @@ private struct CanvasPencilPalette: View {
 
     private func colorLabel(_ name: String) -> String {
         switch name {
-        case "blue": "蓝色"
-        case "red": "红色"
-        case "green": "绿色"
-        default: "黑色"
+        case "blue": FloeL10n.l("workspace.workspace_canvas_view.blue")
+        case "red": FloeL10n.l("workspace.workspace_canvas_view.red")
+        case "green": FloeL10n.l("workspace.workspace_canvas_view.green")
+        default: FloeL10n.l("workspace.workspace_canvas_view.black")
         }
     }
 }
@@ -9206,12 +9198,12 @@ private struct CanvasMediaJobCenter: View {
         NavigationStack {
             List {
                 if jobs.isEmpty {
-                    ContentUnavailableView("没有媒体任务", systemImage: "film.stack")
+                    ContentUnavailableView("workspace.workspace_canvas_view.no_media_tasks", systemImage: "film.stack")
                 } else {
                     ForEach(jobs) { job in
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Label(job.mediaKind == .video ? "视频生成" : "媒体生成", systemImage: "film")
+                                Label(job.mediaKind == .video ? "core.canvas_operations.video_generation" : "workspace.workspace_canvas_view.media_generation", systemImage: "film")
                                     .font(.headline)
                                 Spacer()
                                 Text(title(for: job.state))
@@ -9223,11 +9215,11 @@ private struct CanvasMediaJobCenter: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                             if let estimate = job.estimatedCompletionAt, !job.state.isTerminal {
-                                LabeledContent("预计完成", value: estimate.formatted(date: .abbreviated, time: .shortened))
+                                LabeledContent("workspace.workspace_canvas_view.estimated_completion", value: estimate.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption)
                             }
                             if let expiry = job.resultURLExpiresAt ?? job.resultRetentionExpiresAt {
-                                LabeledContent("结果保留至", value: expiry.formatted(date: .abbreviated, time: .shortened))
+                                LabeledContent("workspace.workspace_canvas_view.result_kept_until", value: expiry.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption)
                             }
                             if let error = job.lastError, !error.isEmpty {
@@ -9238,16 +9230,16 @@ private struct CanvasMediaJobCenter: View {
                             } else if !job.state.isTerminal {
                                 Button("action.cancel_task", role: .destructive) { pendingCancellation = job }
                             } else if [.failed, .expired, .cancelled].contains(job.state) {
-                                Button("重新生成") { pendingRetry = job }
+                                Button("workspace.workspace_canvas_view.generate_again") { pendingRetry = job }
                             }
                         }
                         .padding(.vertical, 4)
                     }
                 }
             }
-            .navigationTitle("媒体任务")
+            .navigationTitle("workspace.workspace_canvas_view.media_tasks")
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("workspace.workspace_canvas_view.done") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isRefreshing = true
@@ -9259,15 +9251,15 @@ private struct CanvasMediaJobCenter: View {
                         if isRefreshing {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("刷新状态", systemImage: "arrow.clockwise")
+                            Label("workspace.workspace_canvas_view.refresh_status", systemImage: "arrow.clockwise")
                         }
                     }
                     .disabled(isRefreshing || jobs.isEmpty)
-                    .accessibilityLabel("刷新媒体任务状态")
+                    .accessibilityLabel("chat.thread_detail_view.refresh_media_task_status")
                 }
             }
         }
-        .confirmationDialog("取消这个供应商任务？", isPresented: Binding(
+        .confirmationDialog("workspace.workspace_canvas_view.cancel_this_provider_task", isPresented: Binding(
             get: { pendingCancellation != nil },
             set: { if !$0 { pendingCancellation = nil } }
         )) {
@@ -9276,26 +9268,26 @@ private struct CanvasMediaJobCenter: View {
                 pendingCancellation = nil
                 run(job, action: onCancel)
             }
-            Button("保留任务", role: .cancel) { pendingCancellation = nil }
+            Button("workspace.workspace_canvas_view.keep_task", role: .cancel) { pendingCancellation = nil }
         }
-        .confirmationDialog("重新生成可能再次计费", isPresented: Binding(
+        .confirmationDialog("workspace.workspace_canvas_view.regenerating_may_be_billed_again", isPresented: Binding(
             get: { pendingRetry != nil },
             set: { if !$0 { pendingRetry = nil } }
         )) {
-            Button("确认重新生成") {
+            Button("workspace.workspace_canvas_view.confirm_regeneration") {
                 guard let job = pendingRetry else { return }
                 pendingRetry = nil
                 run(job, action: onRetry)
             }
-            Button("取消", role: .cancel) { pendingRetry = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingRetry = nil }
         } message: {
-            Text("这会提交一个新的供应商任务。原任务记录和参数会保留用于审计。")
+            Text("workspace.workspace_canvas_view.this_submits_a_new_provider_task")
         }
-        .alert("媒体任务无法更新", isPresented: Binding(
+        .alert("workspace.workspace_canvas_view.the_media_task_could_not_be", isPresented: Binding(
             get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
         )) {
-            Button("好") { errorMessage = nil }
-        } message: { Text(errorMessage ?? "未知错误") }
+            Button("workspace.office_document_editor_view.ok") { errorMessage = nil }
+        } message: { Text(errorMessage ?? "common.unknown_error") }
     }
 
     private func run(
@@ -9311,15 +9303,15 @@ private struct CanvasMediaJobCenter: View {
 
     private func title(for state: MediaGenerationJobState) -> String {
         switch state {
-        case .preparing: "准备中"
-        case .submitted: "等待开始"
-        case .running: "生成中"
-        case .completed: "准备下载"
-        case .downloading: "下载中"
-        case .ready: "已保存"
-        case .failed: "失败"
-        case .cancelled: "已取消"
-        case .expired: "可能已过期"
+        case .preparing: FloeL10n.l("canvas.generation.state.preparing")
+        case .submitted: FloeL10n.l("workspace.workspace_canvas_view.waiting_to_start")
+        case .running: FloeL10n.l("canvas.generation.state.running")
+        case .completed: FloeL10n.l("workspace.workspace_canvas_view.preparing_download")
+        case .downloading: FloeL10n.l("canvas.generation.state.downloading")
+        case .ready: FloeL10n.l("workspace.text_file_editor_view.saved")
+        case .failed: FloeL10n.l("workspace.workspace_canvas_view.failed")
+        case .cancelled: FloeL10n.l("chat.thread_detail_view.cancelled")
+        case .expired: FloeL10n.l("workspace.workspace_canvas_view.may_have_expired")
         }
     }
 
@@ -9491,9 +9483,9 @@ private struct CanvasLocalImageEditor: View {
             let hash = FloeDigest.sha256Hex(data)
             try await environment.creativeAssetStore.save(CreativeAssetRecord(
                 id: assetID, contentHash: hash, kind: .image,
-                displayName: "\(node.text.isEmpty ? "画布图片" : node.text) 编辑",
+                displayName: FloeL10n.l("workspace.workspace_canvas_view.edit_2", node.text.isEmpty ? FloeL10n.l("workspace.workspace_canvas_view.canvas_images"): node.text),
                 mimeType: "image/png", localRelativePath: "Materials/\(filename)",
-                byteCount: Int64(data.count), tags: ["画布编辑"], referenceCount: 0
+                byteCount: Int64(data.count), tags: [FloeL10n.l("workspace.workspace_canvas_view.canvas_editing")], referenceCount: 0
             ))
             // A registered asset remains recoverable in the library if the canvas changes.
             writtenTarget = nil
@@ -9541,7 +9533,7 @@ private struct CanvasLocalImageEditor: View {
                            projectRevision: revision,
                            renderedAsset: reference,
                            sourceAssetHash: sourceAssetHash,
-                           reason: store.saveError ?? "画布写入失败") {
+                           reason: store.saveError ?? FloeL10n.l("workspace.workspace_canvas_view.canvas_write_failed")) {
                         store.commitNodeAssetPatch(
                             marker, documentID: documentID, previousAssetID: nil)
                     }
@@ -9645,49 +9637,49 @@ private struct CanvasNodeInspector: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("尺寸") {
-                    LabeledContent("宽度") {
-                        TextField("宽度", value: $width, format: .number)
+                Section("workspace.workspace_canvas_view.size") {
+                    LabeledContent("workspace.workspace_canvas_view.width_2") {
+                        TextField("workspace.workspace_canvas_view.width_2", value: $width, format: .number)
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                     }
-                    LabeledContent("高度") {
-                        TextField("高度", value: $height, format: .number)
+                    LabeledContent("workspace.workspace_canvas_view.height") {
+                        TextField("workspace.workspace_canvas_view.height", value: $height, format: .number)
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                     }
-                    Button("应用尺寸") {
+                    Button("workspace.workspace_canvas_view.apply_size") {
                         store.resizeNode(node.id, width: width, height: height)
                     }
                     .disabled(node.isLocked)
                 }
 
-                Section("旋转") {
+                Section("editor.rotate") {
                     Slider(value: $rotation, in: -180...180, step: 1)
-                    LabeledContent("角度", value: "\(Int(rotation))°")
-                    Button(selectedIDs.count > 1 ? "应用到所选节点" : "应用旋转") {
+                    LabeledContent("workspace.workspace_canvas_view.angle", value: "\(Int(rotation))°")
+                    Button(selectedIDs.count > 1 ? "workspace.workspace_canvas_view.apply_to_selected_nodes" : "workspace.workspace_canvas_view.apply_rotation") {
                         store.rotateNodes(selectedIDs.isEmpty ? [node.id] : selectedIDs, degrees: rotation)
                     }
                 }
 
-                Section("排列") {
-                    Toggle("锁定", isOn: Binding(
+                Section("workspace.workspace_canvas_view.arrange") {
+                    Toggle("workspace.workspace_canvas_view.lock", isOn: Binding(
                         get: { node.isLocked },
                         set: { store.setLocked(selectedIDs.isEmpty ? [node.id] : selectedIDs, locked: $0) }
                     ))
-                    Button("移到最前") {
+                    Button("workspace.workspace_canvas_view.bring_to_front") {
                         store.changeLayer(selectedIDs.isEmpty ? [node.id] : selectedIDs, bringToFront: true)
                     }
-                    Button("移到最后") {
+                    Button("workspace.workspace_canvas_view.send_to_back") {
                         store.changeLayer(selectedIDs.isEmpty ? [node.id] : selectedIDs, bringToFront: false)
                     }
                 }
             }
-            .navigationTitle("节点属性")
+            .navigationTitle("workspace.workspace_canvas_view.node_properties")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("workspace.workspace_canvas_view.done") { dismiss() }
                 }
             }
         }
@@ -9743,7 +9735,7 @@ private struct CanvasNodeCard: View {
                 Divider()
                 HStack(spacing: 6) {
                     Image(systemName: "link")
-                    Text("来源 \(sourceURLs.count)")
+                    Text(FloeL10n.l("workspace.workspace_canvas_view.source", sourceURLs.count))
                     if let licenseStatus {
                         Text("· \(licenseStatus)")
                     }
@@ -9763,43 +9755,43 @@ private struct CanvasNodeCard: View {
         .contextMenu {
             if let onConfigureGeneration {
                 Button(
-                    node.metadata["generationState"] == "failed" ? "重试生成" : "配置生成",
+                    node.metadata["generationState"] == "failed" ? "workspace.workspace_canvas_view.retry_generation" : "workspace.workspace_canvas_view.generation_configuration",
                     systemImage: node.metadata["generationState"] == "failed"
                         ? "arrow.clockwise" : "slider.horizontal.3",
                     action: onConfigureGeneration
                 )
             } else if node.supportsInlineEditing, !node.isLocked {
-                Button("编辑", systemImage: "pencil", action: onBeginEditing)
+                Button("workspace.workspace_canvas_view.edit", systemImage: "pencil", action: onBeginEditing)
             }
-            Button("节点内提问", systemImage: FloeTheme.assistantSymbol, action: onAskAI)
+            Button("workspace.workspace_canvas_view.ask_about_node", systemImage: FloeTheme.assistantSymbol, action: onAskAI)
             Button(
                 String(localized: "canvas.connection.ai_associate"),
                 systemImage: FloeTheme.assistantSymbol,
                 action: onAssociate
             )
-            Button("复制", systemImage: "plus.square.on.square", action: onDuplicate)
-            Button("连接", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
+            Button("workspace.workspace_canvas_view.copy", systemImage: "plus.square.on.square", action: onDuplicate)
+            Button("workspace.workspace_canvas_view.connection", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onConnect)
             if let onOpen3D {
-                Button("打开 3D 导演台", systemImage: "cube.transparent", action: onOpen3D)
+                Button("workspace.workspace_canvas_view.open_3d_director", systemImage: "cube.transparent", action: onOpen3D)
             }
             Divider()
-            Button(node.isLocked ? "解锁" : "锁定", systemImage: node.isLocked ? "lock.open" : "lock", action: onToggleLock)
-            Button("移到最前", systemImage: "arrow.up.to.line", action: onBringToFront)
-            Button("移到最后", systemImage: "arrow.down.to.line", action: onSendToBack)
+            Button(node.isLocked ? "pdf.reader.unlock" : "workspace.workspace_canvas_view.lock", systemImage: node.isLocked ? "lock.open" : "lock", action: onToggleLock)
+            Button("workspace.workspace_canvas_view.bring_to_front", systemImage: "arrow.up.to.line", action: onBringToFront)
+            Button("workspace.workspace_canvas_view.send_to_back", systemImage: "arrow.down.to.line", action: onSendToBack)
             if node.kind == .group || node.groupID != nil {
-                Button("解除分组", systemImage: "square.2.layers.3d", action: onUngroup)
+                Button("workspace.workspace_canvas_view.ungroup_2", systemImage: "square.2.layers.3d", action: onUngroup)
             } else if canGroup {
-                Button("分组", systemImage: "square.3.layers.3d", action: onGroup)
+                Button("canvas.node.group", systemImage: "square.3.layers.3d", action: onGroup)
             }
             Divider()
-            Button("删除节点", role: .destructive, action: onDelete)
+            Button("workspace.workspace_canvas_view.delete_node", role: .destructive, action: onDelete)
         }
         .accessibilityIdentifier("canvas.node.\(node.id.uuidString)")
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 if isEditing {
                     Spacer()
-                    Button("完成", action: finishEditing)
+                    Button("workspace.workspace_canvas_view.done", action: finishEditing)
                 }
             }
         }
@@ -9846,7 +9838,7 @@ private struct CanvasNodeCard: View {
                     .focused($editorFocused)
                     .accessibilityIdentifier("canvas.node.editor")
             } else {
-                Text(text.isEmpty ? (node.kind == .stickyNote ? "便签" : "文本") : text)
+                Text(text.isEmpty ? (node.kind == .stickyNote ? "canvas.node.sticky_note" : "canvas.node.text") : text)
                     .font(.body)
                     .foregroundStyle(text.isEmpty ? .secondary : .primary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -9855,7 +9847,7 @@ private struct CanvasNodeCard: View {
             }
         case .card:
             VStack(alignment: .leading, spacing: 8) {
-                Label("基础卡片", systemImage: "rectangle.and.text.magnifyingglass")
+                Label("canvas.node.basic_card", systemImage: "rectangle.and.text.magnifyingglass")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Divider()
@@ -9866,7 +9858,7 @@ private struct CanvasNodeCard: View {
                         .focused($editorFocused)
                         .accessibilityIdentifier("canvas.node.editor")
                 } else {
-                    Text(text.isEmpty ? "卡片内容" : text)
+                    Text(text.isEmpty ? "workspace.workspace_canvas_view.card_content" : text)
                         .font(.body)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .contentShape(Rectangle())
@@ -9877,7 +9869,7 @@ private struct CanvasNodeCard: View {
             ZStack {
                 CanvasNodeShapeView(shape: node.shape ?? .roundedRectangle)
                 if isEditing {
-                    TextField("形状文字", text: $draftText, axis: .vertical)
+                    TextField("workspace.workspace_canvas_view.shape_text", text: $draftText, axis: .vertical)
                         .multilineTextAlignment(.center)
                         .padding()
                         .focused($editorFocused)
@@ -9889,23 +9881,23 @@ private struct CanvasNodeCard: View {
                 }
             }
         case .image:
-            editableAssetContent(icon: "photo", fallbackTitle: "图片")
+            editableAssetContent(icon: "photo", fallbackTitle: FloeL10n.l("workspace.workspace_canvas_view.image"))
         case .video:
-            editableAssetContent(icon: "play.rectangle.fill", fallbackTitle: "视频")
+            editableAssetContent(icon: "play.rectangle.fill", fallbackTitle: FloeL10n.l("workspace.workspace_canvas_view.video"))
         case .audio:
-            editableAssetContent(icon: "waveform", fallbackTitle: "音频")
+            editableAssetContent(icon: "waveform", fallbackTitle: FloeL10n.l("workspace.workspace_canvas_view.audio"))
         case .file:
-            editableAssetContent(icon: "doc", fallbackTitle: "文件")
+            editableAssetContent(icon: "doc", fallbackTitle: FloeL10n.l("app.floe_agent_app.files"))
         case .group:
             VStack(alignment: .leading) {
                 if isEditing {
-                    TextField("分组名称", text: $draftText)
+                    TextField("workspace.workspace_canvas_view.group_name", text: $draftText)
                         .textFieldStyle(.roundedBorder)
                         .focused($editorFocused)
                         .onSubmit(finishEditing)
                         .accessibilityIdentifier("canvas.node.editor")
                 } else {
-                    Label(text.isEmpty ? "分组" : text, systemImage: "square.3.layers.3d")
+                    Label(text.isEmpty ? "canvas.node.group" : text, systemImage: "square.3.layers.3d")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(FloeTheme.primary)
                         .padding(.horizontal, 10)
@@ -9957,7 +9949,7 @@ private struct CanvasNodeCard: View {
                         Button {
                             UIPasteboard.general.string = diagnosticID
                         } label: {
-                            Label("复制诊断编号 \(diagnosticID.prefix(8))", systemImage: "doc.on.doc")
+                            Label(FloeL10n.l("workspace.workspace_canvas_view.copy_diagnostic_id", diagnosticID.prefix(8)), systemImage: "doc.on.doc")
                                 .font(.caption2)
                         }
                         .buttonStyle(.plain)
@@ -9965,7 +9957,7 @@ private struct CanvasNodeCard: View {
                         .accessibilityIdentifier("canvas.generation.copyDiagnostic")
                     }
                 } else {
-                    Text("选中此节点可查看配置或重新生成")
+                    Text("workspace.workspace_canvas_view.select_this_node_to_view_its")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -9987,17 +9979,17 @@ private struct CanvasNodeCard: View {
                 Canvas3DScenePreview(scene: node.scene3D ?? .starter())
                 VStack(alignment: .leading, spacing: 3) {
                     if isEditing {
-                        TextField("3D 场景名称", text: $draftText)
+                        TextField("workspace.workspace_canvas_view.3d_scene_name", text: $draftText)
                             .textFieldStyle(.roundedBorder)
                             .focused($editorFocused)
                             .onSubmit(finishEditing)
                             .accessibilityIdentifier("canvas.node.editor")
                     } else {
-                        Label(text.isEmpty ? "3D 场景" : text, systemImage: "cube.transparent")
+                        Label(text.isEmpty ? "canvas.node.scene_3d" : text, systemImage: "cube.transparent")
                             .font(.headline)
                     }
                     if let onOpen3D {
-                        Button("打开导演台", systemImage: "arrow.up.left.and.arrow.down.right") {
+                        Button("workspace.workspace_canvas_view.open_director", systemImage: "arrow.up.left.and.arrow.down.right") {
                             onOpen3D()
                         }
                         .font(.caption)
@@ -10123,7 +10115,7 @@ private struct CanvasNodeCard: View {
         case "panorama3D":
             CanvasPanoramaNode(assetURL: CanvasAssetNodeContent.localURL(for: node))
         default:
-            Label("不支持的内置节点", systemImage: "exclamationmark.triangle")
+            Label("workspace.workspace_canvas_view.unsupported_built_in_node", systemImage: "exclamationmark.triangle")
         }
     }
 
@@ -10136,7 +10128,7 @@ private struct CanvasNodeCard: View {
                 onRetryDownload: onRetryAsset
             )
             if isEditing {
-                TextField("节点名称", text: $draftText)
+                TextField("workspace.workspace_canvas_view.node_name", text: $draftText)
                     .textFieldStyle(.roundedBorder)
                     .focused($editorFocused)
                     .onSubmit(finishEditing)
@@ -10513,7 +10505,7 @@ private enum CanvasNodeRefinementService {
             throw FloeError.invalidConfiguration(String(localized: "canvas.node_ai.no_model"))
         }
         guard node.text.utf8.count <= 96 * 1_024 else {
-            throw FloeError.validationFailed("节点内容过大，请在文件编辑器中分段修改。")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.the_node_content_is_too_large"))
         }
         let format = node.metadata["builtinPlugin"] ?? node.kind.rawValue
         var referenceLines = references.prefix(8).map { reference in
@@ -10644,7 +10636,7 @@ private struct CanvasConnectionPortsOverlay: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: port.alignment)
                 .offset(port.outwardOffset)
-                .accessibilityLabel("从节点\(port.accessibilityName)连接")
+                .accessibilityLabel(FloeL10n.l("workspace.workspace_canvas_view.connect_from_node", port.accessibilityName))
                 .accessibilityIdentifier("canvas.connection.port.\(port.rawValue)")
             }
         }
@@ -10685,10 +10677,10 @@ private extension CanvasConnectionPort {
 
     var accessibilityName: String {
         switch self {
-        case .top: "上方"
-        case .trailing: "右侧"
-        case .bottom: "下方"
-        case .leading: "左侧"
+        case .top: FloeL10n.l("workspace.workspace_canvas_view.top")
+        case .trailing: FloeL10n.l("workspace.workspace_canvas_view.right")
+        case .bottom: FloeL10n.l("workspace.workspace_canvas_view.bottom")
+        case .leading: FloeL10n.l("workspace.workspace_canvas_view.left")
         }
     }
 }
@@ -10735,10 +10727,10 @@ private struct CanvasNodeInlineAIComposer: View {
                         .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("引用节点")
+                .accessibilityLabel("workspace.workspace_canvas_view.reference_node")
             }
             TextField(
-                nodeTitle.isEmpty ? "让 AI 处理这个节点" : "让 AI 处理“\(nodeTitle.prefix(18))”",
+                nodeTitle.isEmpty ? "workspace.workspace_canvas_view.have_ai_process_this_node" : FloeL10n.l("workspace.workspace_canvas_view.have_ai_process", nodeTitle.prefix(18)),
                 text: $prompt
             )
             .textFieldStyle(.plain)
@@ -10879,8 +10871,8 @@ private struct CanvasMiniMap: View {
         .frame(width: 180, height: 112)
         .overlay { RoundedRectangle(cornerRadius: 10).stroke(.separator.opacity(0.5), lineWidth: 0.5) }
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
-        .accessibilityLabel("画布缩略导航")
-        .accessibilityHint("点按或拖动以移动当前画布视口")
+        .accessibilityLabel("workspace.workspace_canvas_view.canvas_minimap")
+        .accessibilityHint("workspace.workspace_canvas_view.tap_or_drag_to_move_the")
     }
 }
 
@@ -10953,7 +10945,7 @@ private struct CanvasNodeSelectionChrome: View {
                 .overlay { Circle().stroke(FloeTheme.primary, lineWidth: 1.5) }
                 .offset(y: -node.height / 2 - 30)
                 .gesture(rotationGesture)
-                .accessibilityLabel("旋转节点")
+                .accessibilityLabel("workspace.workspace_canvas_view.rotate_node")
         }
     }
 
@@ -11121,7 +11113,7 @@ private struct CanvasAgentFloatingPanel: View {
                     .id(activeConversationID)
                 } else {
                     ContentUnavailableView(
-                        setupError == nil ? "正在准备画布助手…" : "无法准备画布助手",
+                        setupError == nil ? "workspace.workspace_canvas_view.preparing_canvas_assistant" : "workspace.workspace_canvas_view.could_not_prepare_the_canvas_assistant",
                         systemImage: setupError == nil ? FloeTheme.assistantSymbol : "exclamationmark.triangle",
                         description: setupError.map(Text.init)
                     )
@@ -11155,10 +11147,10 @@ private struct CanvasAgentFloatingPanel: View {
                 .frame(width: 30, height: 30)
                 .background(FloeTheme.primary.opacity(0.12), in: Circle())
             VStack(alignment: .leading, spacing: 1) {
-                Text("画布助手")
+                Text("workspace.workspace_canvas_view.canvas_assistant")
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                Text(isRunning ? "任务进行中" : "连接当前画布")
+                Text(isRunning ? "workspace.workspace_canvas_view.task_in_progress" : "workspace.workspace_canvas_view.connect_current_canvas")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -11171,13 +11163,13 @@ private struct CanvasAgentFloatingPanel: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isCollapsed ? "展开画布助手" : "收起画布助手")
+            .accessibilityLabel(isCollapsed ? "workspace.workspace_canvas_view.expand_canvas_assistant" : "workspace.workspace_canvas_view.collapse_canvas_assistant")
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("关闭画布助手")
+            .accessibilityLabel("workspace.workspace_canvas_view.close_canvas_assistant")
         }
         .padding(.horizontal, 12)
         .frame(height: 56)
@@ -11235,7 +11227,7 @@ private struct CanvasAgentFloatingPanel: View {
         await center.reload()
         guard !Task.isCancelled, store.project.selectedDocumentID == documentID else { return }
         if toolCapableModels.isEmpty {
-            setupError = "请先启用一个支持工具调用的模型。"
+            setupError = FloeL10n.l("workspace.workspace_canvas_view.enable_a_model_that_supports_tool")
             return
         }
         do {
@@ -11260,7 +11252,7 @@ private struct CanvasAgentFloatingPanel: View {
             let id = UUID()
             let now = Date()
             let documentName = store.project.documents.first(where: { $0.id == documentID })?.name
-                ?? "画布"
+                ?? FloeL10n.l("settings.settings_root_view.canvas")
             do {
                 try await environment.conversationStore.saveConversation(ConversationRecord(
                     id: id,
@@ -11281,7 +11273,7 @@ private struct CanvasAgentFloatingPanel: View {
                     // assistant conversation; it is not a project binding.
                     _ = try await workspaceStore.ensureWorkspace(
                         conversationID: id,
-                        title: "画布助手 · \(store.project.name) · \(documentName)"
+                        title: FloeL10n.l("workspace.workspace_canvas_view.canvas_assistant_2", store.project.name, documentName)
                     )
                 }
                 store.setAgentConversationID(id, for: documentID)
@@ -11304,7 +11296,7 @@ private struct CanvasAgentFloatingPanel: View {
             } else {
                 _ = try await workspaceStore.ensureWorkspace(
                     conversationID: conversationID,
-                    title: "画布助手 · \(store.project.name)"
+                    title: FloeL10n.l("workspace.workspace_canvas_view.canvas_assistant_3", store.project.name)
                 )
             }
         }
@@ -11424,21 +11416,21 @@ private struct SharedCanvasAgentConversation: View {
                         Image(systemName: FloeTheme.assistantSymbol)
                             .font(.title2)
                             .foregroundStyle(FloeTheme.primary)
-                        Text("从一个想法开始")
+                        Text("workspace.workspace_canvas_view.start_with_an_idea")
                             .font(.headline)
-                        Text("搜索资料、整理选中内容，或直接生成图片和视频。提示词、配置与结果会留在画布上。")
+                        Text("workspace.workspace_canvas_view.search_for_material_organize_the_selection")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         HStack(spacing: 8) {
-                            suggestion("整理选中内容")
-                            suggestion("生成一张配图")
+                            suggestion(FloeL10n.l("workspace.workspace_canvas_view.organize_the_selection"))
+                            suggestion(FloeL10n.l("workspace.workspace_canvas_view.generate_an_illustration"))
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 18)
                 }
                 if viewModel.timeline.count > visibleTimelineCount {
-                    Button("查看更早的对话", systemImage: "clock.arrow.circlepath") {
+                    Button("workspace.workspace_canvas_view.view_earlier_conversations", systemImage: "clock.arrow.circlepath") {
                         visibleTimelineCount += 30
                     }
                     .font(.caption)
@@ -11466,7 +11458,7 @@ private struct SharedCanvasAgentConversation: View {
                 HStack {
                     Label(attachment.displayName, systemImage: "doc").lineLimit(1)
                     Spacer()
-                    Button("移除", systemImage: "xmark.circle") {
+                    Button("localmodels.remove", systemImage: "xmark.circle") {
                         viewModel.attachments.removeAll { $0.id == attachment.id }
                     }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                 }.font(.caption)
@@ -11481,7 +11473,7 @@ private struct SharedCanvasAgentConversation: View {
                     if case .failed(let reason) = voiceInput.state,
                        [.microphonePermissionDenied, .speechPermissionDenied].contains(reason),
                        let settingsURL = URL(string: UIApplication.openSettingsURLString) {
-                        Button("设置") { UIApplication.shared.open(settingsURL) }
+                        Button("app.floe_agent_app.settings") { UIApplication.shared.open(settingsURL) }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                     }
@@ -11497,7 +11489,7 @@ private struct SharedCanvasAgentConversation: View {
                     // the previous `.submitLabel(.send)` surface did.
                     ComposerReturnField(
                         text: $prompt,
-                        placeholder: "描述要查找、整理或生成的内容",
+                        placeholder: FloeL10n.l("workspace.workspace_canvas_view.describe_what_to_find_organize_or"),
                         canSend: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             && viewModel.selectedModelID != nil,
                         softwareReturnSends: true,
@@ -11508,20 +11500,20 @@ private struct SharedCanvasAgentConversation: View {
                         .padding(.top, 12)
                         .accessibilityIdentifier("canvas.agent.input")
                     HStack(spacing: 4) {
-                        Button("添加手记资料", systemImage: "plus") { isNotesPickerPresented = true }
+                        Button("workspace.workspace_canvas_view.add_note_material", systemImage: "plus") { isNotesPickerPresented = true }
                             .labelStyle(.iconOnly)
                             .frame(width: 44, height: 44)
                             .accessibilityIdentifier("canvas.agent.notes")
                         if !availableModels.isEmpty {
                             Menu {
-                                Picker("画布助手模型", selection: $viewModel.selectedModelID) {
+                                Picker("settings.settings_root_view.canvas_assistant_model", selection: $viewModel.selectedModelID) {
                                     ForEach(availableModels) { model in
                                         Text(model.displayName).tag(Optional(model.id))
                                     }
                                 }
                             } label: {
                                 HStack(spacing: 4) {
-                                    Text(availableModels.first(where: { $0.id == viewModel.selectedModelID })?.displayName ?? "选择模型")
+                                    Text(availableModels.first(where: { $0.id == viewModel.selectedModelID })?.displayName ?? "setup.step.models")
                                         .lineLimit(1).truncationMode(.middle)
                                     Image(systemName: "chevron.down").font(.caption2)
                                 }
@@ -11541,7 +11533,7 @@ private struct SharedCanvasAgentConversation: View {
                                 .frame(width: 44, height: 44)
                         }
                         .disabled(voiceInput.state == .requestingPermission || voiceInput.state == .preparing || voiceInput.state == .stopping)
-                        .accessibilityLabel("语音输入")
+                        .accessibilityLabel("settings.general_settings_view.voice_input")
                         .accessibilityIdentifier("canvas.agent.voice")
                         Button { Task { await submit() } } label: {
                             Image(systemName: "arrow.up")
@@ -11551,7 +11543,7 @@ private struct SharedCanvasAgentConversation: View {
                                 .background(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.selectedModelID == nil ? Color.secondary : FloeTheme.primary, in: Circle())
                                 .frame(width: 44, height: 44)
                         }
-                        .accessibilityLabel("发送到画布助手")
+                        .accessibilityLabel("workspace.workspace_canvas_view.send_to_canvas_assistant")
                         .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.selectedModelID == nil)
                     }
                     .buttonStyle(.plain)
@@ -11562,24 +11554,24 @@ private struct SharedCanvasAgentConversation: View {
             }
             HStack {
                 if viewModel.isRunning {
-                    Picker("运行中输入", selection: $viewModel.runningInputMode) {
-                        Text("排队").tag(RunningInputMode.queue)
-                        Text("引导当前任务").tag(RunningInputMode.steer)
+                    Picker("settings.general_settings_view.input_while_running", selection: $viewModel.runningInputMode) {
+                        Text("chat.thread_composer_view.queue").tag(RunningInputMode.queue)
+                        Text("workspace.workspace_canvas_view.steer_the_current_task").tag(RunningInputMode.steer)
                     }
                     .pickerStyle(.menu)
-                    Button("停止", systemImage: "stop.fill") {
+                    Button("action.stop", systemImage: "stop.fill") {
                         Task { await viewModel.cancel() }
                     }
                     .buttonStyle(.bordered)
                 } else if viewModel.canContinue {
-                    Button("继续", systemImage: "arrow.clockwise") {
+                    Button("chat.thread_detail_view.continue", systemImage: "arrow.clockwise") {
                         Task { await viewModel.retry() }
                     }
                     .buttonStyle(.bordered)
                 }
                 Spacer()
                 if !viewModel.isRunning {
-                    Text("Return 发送 · Shift+Return 换行")
+                    Text("workspace.workspace_canvas_view.return_to_send_shift_return_for")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.tertiary)
                 }
@@ -11599,9 +11591,9 @@ private struct SharedCanvasAgentConversation: View {
                 .frame(width: 72, height: 32)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(voiceInput.isListening ? "正在听你说话" : "正在准备语音输入…")
+                Text(voiceInput.isListening ? "chat.thread_composer_view.listening_to_you" : "workspace.workspace_canvas_view.preparing_voice_input")
                     .font(.subheadline.weight(.semibold))
-                Text(voiceInput.transcript.isEmpty ? "说完后点停止" : voiceInput.transcript)
+                Text(voiceInput.transcript.isEmpty ? "workspace.workspace_canvas_view.tap_stop_when_you_finish_speaking" : voiceInput.transcript)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -11615,7 +11607,7 @@ private struct SharedCanvasAgentConversation: View {
                     .foregroundStyle(FloeTheme.destructive)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("停止语音输入")
+            .accessibilityLabel("voice.stop")
             .accessibilityIdentifier("canvas.agent.voice.stop")
         }
         .padding(.horizontal, 12)
@@ -11625,16 +11617,12 @@ private struct SharedCanvasAgentConversation: View {
 
     private var canvasVoiceError: String? {
         switch voiceInput.state {
-        case .unavailable:
-            "当前设备无法使用语音输入。"
+        case .unavailable:FloeL10n.l("workspace.workspace_canvas_view.voice_input_is_unavailable_on_this")
         case .failed(let reason):
             switch reason {
-            case .microphonePermissionDenied, .speechPermissionDenied:
-                "需要麦克风和语音识别权限。"
-            case .noAudioInput:
-                "没有检测到可用的音频输入。"
-            default:
-                "语音输入失败，请稍后重试。"
+            case .microphonePermissionDenied, .speechPermissionDenied:FloeL10n.l("workspace.workspace_canvas_view.microphone_and_speech_recognition_permissions_are")
+            case .noAudioInput:FloeL10n.l("workspace.workspace_canvas_view.no_usable_audio_input_detected")
+            default:FloeL10n.l("workspace.workspace_canvas_view.voice_input_failed_please_try_again")
             }
         default:
             nil
@@ -11645,14 +11633,14 @@ private struct SharedCanvasAgentConversation: View {
     private func timelineRow(_ item: ThreadTimelineItem) -> some View {
         switch item {
         case .earlierEvents(let runID):
-            Button("查看更早的工具记录", systemImage: "clock.arrow.circlepath") {
+            Button("chat.thread_detail_view.show_earlier_tool_activity", systemImage: "clock.arrow.circlepath") {
                 Task { await viewModel.loadEarlierEvents(runID: runID) }
             }
             .disabled(viewModel.loadingEventRunIDs.contains(runID))
         case .userMessage(let message):
-            messageBubble(title: "你", text: displayContent(message), isUser: true)
+            messageBubble(title: FloeL10n.l("workspace.workspace_canvas_view.you"), text: displayContent(message), isUser: true)
         case .assistantMessage(let text, _):
-            messageBubble(title: "画布助手", text: text, isUser: false)
+            messageBubble(title: FloeL10n.l("workspace.workspace_canvas_view.canvas_assistant"), text: text, isUser: false)
         case .stepGroup(let events, let isLatest):
             StepGroupView(
                 events: events,
@@ -11672,7 +11660,7 @@ private struct SharedCanvasAgentConversation: View {
         case .terminal(let event):
             TerminalEventRow(event: event)
         case .missingFinalMessage:
-            Label("模型未返回最终文本", systemImage: "exclamationmark.triangle")
+            Label("workspace.workspace_canvas_view.the_model_returned_no_final_text", systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
         case .liveReasoning:
             ReasoningBlockView(text: viewModel.liveReasoningText, isStreaming: true)
@@ -11750,7 +11738,7 @@ private struct SharedCanvasAgentConversation: View {
         guard let request = pendingRequest else { return }
         prompt = request.prompt
         if !request.referenceNodeIDs.isEmpty {
-            prompt += "\n\n引用节点：" + request.referenceNodeIDs
+            prompt += FloeL10n.l("workspace.workspace_canvas_view.referenced_nodes") + request.referenceNodeIDs
                 .map { "@node:\($0.uuidString)" }
                 .joined(separator: " ")
         }
@@ -11848,17 +11836,17 @@ private struct SharedCanvasAgentConversation: View {
     /// the same asset with tools. Raw image bytes never enter the main prompt.
     @MainActor
     private func selectedVisualEvidence(for request: String) async -> String {
-        guard let document = store.selectedDocument else { return "（无）" }
+        guard let document = store.selectedDocument else { return FloeL10n.l("workspace.workspace_canvas_view.none_2") }
         let images = document.nodes.filter {
             selectedNodeIDs.contains($0.id) && $0.kind == .image && $0.asset != nil
         }.prefix(3)
-        guard !images.isEmpty else { return "（无）" }
+        guard !images.isEmpty else { return FloeL10n.l("workspace.workspace_canvas_view.none_2") }
 
         var descriptions: [String] = []
         for (index, node) in images.enumerated() {
             guard !Task.isCancelled else { break }
             guard let payload = CanvasVisionPayloadBuilder.payload(for: node) else {
-                descriptions.append("图片 \(index + 1)：本地文件不可读取。")
+                descriptions.append(FloeL10n.l("workspace.workspace_canvas_view.image_the_local_file_cannot_be", index + 1))
                 continue
             }
             let result = await center.describeCanvasImageResult(
@@ -11872,12 +11860,12 @@ private struct SharedCanvasAgentConversation: View {
             )
             switch result {
             case .success(let value):
-                descriptions.append("图片 \(index + 1)：\(String(value.prefix(4_000)))")
+                descriptions.append(FloeL10n.l("workspace.workspace_canvas_view.image_2", index + 1, String(value.prefix(4_000))))
             case .failure(let failure):
-                descriptions.append("图片 \(index + 1)：无法理解图片（\(failure.userMessage)）。不要重试视觉读取；直接告诉用户如何配置兼容的画布视觉模型。")
+                descriptions.append(FloeL10n.l("workspace.workspace_canvas_view.image_the_image_could_not_be", index + 1, failure.userMessage))
             }
         }
-        return descriptions.isEmpty ? "（无）" : descriptions.joined(separator: "\n\n")
+        return descriptions.isEmpty ? FloeL10n.l("workspace.workspace_canvas_view.none_2") : descriptions.joined(separator: "\n\n")
     }
 
 }
@@ -11905,7 +11893,7 @@ private struct CanvasPromptRecord: Codable, Identifiable, Hashable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
         sourceId = try values.decodeIfPresent(String.self, forKey: .sourceId) ?? "unknown"
-        title = try values.decodeIfPresent(String.self, forKey: .title) ?? "未命名提示词"
+        title = try values.decodeIfPresent(String.self, forKey: .title) ?? FloeL10n.l("workspace.workspace_canvas_view.untitled_prompt")
         prompt = try values.decode(String.self, forKey: .prompt)
         description = try values.decodeIfPresent(String.self, forKey: .description)
         coverUrl = try values.decodeIfPresent(String.self, forKey: .coverUrl)
@@ -11949,7 +11937,7 @@ private final class CanvasPromptLibraryStore: ObservableObject {
                 throw URLError(.badServerResponse)
             }
             guard data.count <= Self.maximumPayloadBytes else {
-                throw FloeError.invalidConfiguration("提示词数据超过 32 MB 安全上限。")
+                throw FloeError.invalidConfiguration(FloeL10n.l("workspace.workspace_canvas_view.prompt_data_exceeds_the_32_mb"))
             }
             let decoded = try Self.decode(data)
             try FileManager.default.createDirectory(
@@ -11962,8 +11950,8 @@ private final class CanvasPromptLibraryStore: ObservableObject {
             notice = nil
         } catch {
             notice = records.isEmpty
-                ? "提示词库暂时无法载入：\(error.localizedDescription)"
-                : "网络刷新失败，正在使用本机缓存。"
+                ? FloeL10n.l("workspace.workspace_canvas_view.the_prompt_library_could_not_load", error.localizedDescription)
+                : FloeL10n.l("workspace.workspace_canvas_view.network_refresh_failed_using_the_on")
         }
     }
 
@@ -12022,12 +12010,12 @@ private struct CanvasPromptLibraryView: View {
             }
             if !sources.isEmpty {
                 Section {
-                    Picker("来源", selection: $selectedSource) {
-                        Text("全部来源").tag("")
+                    Picker("skills.review.source", selection: $selectedSource) {
+                        Text("workspace.workspace_canvas_view.all_sources").tag("")
                         ForEach(sources, id: \.self) { Text($0).tag($0) }
                     }
-                    Picker("标签", selection: $selectedTag) {
-                        Text("全部标签").tag("")
+                    Picker("workspace.workspace_canvas_view.tags", selection: $selectedTag) {
+                        Text("workspace.workspace_canvas_view.all_tags").tag("")
                         ForEach(tags, id: \.self) { Text($0).tag($0) }
                     }
                 }
@@ -12059,24 +12047,24 @@ private struct CanvasPromptLibraryView: View {
                     .buttonStyle(.plain)
                 }
             } header: {
-                Text("\(filtered.count) 条提示词")
+                Text(FloeL10n.plural("workspace.workspace_canvas_view.prompts", count: filtered.count))
             }
         }
         .overlay {
             if store.isLoading && store.records.isEmpty {
-                ProgressView("正在载入提示词库…")
+                ProgressView("workspace.workspace_canvas_view.loading_prompt_library")
             } else if !store.isLoading && filtered.isEmpty {
                 ContentUnavailableView.search(text: search)
             }
         }
-        .searchable(text: $search, prompt: "搜索标题、提示词、作者或标签")
-        .navigationTitle("提示词库")
+        .searchable(text: $search, prompt: "workspace.workspace_canvas_view.search_titles_prompts_authors_or_tags")
+        .navigationTitle("workspace.workspace_canvas_view.prompt_library")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("完成") { dismiss() }
+                Button("workspace.workspace_canvas_view.done") { dismiss() }
             }
             ToolbarItem(placement: .primaryAction) {
-                Button("刷新", systemImage: "arrow.clockwise") {
+                Button("envmgr.refresh", systemImage: "arrow.clockwise") {
                     Task { await store.load() }
                 }
                 .disabled(store.isLoading)
@@ -12106,25 +12094,25 @@ private struct CanvasPromptLibraryView: View {
                                 .foregroundStyle(FloeTheme.primary)
                         }
                         if let model = record.imageModel, !model.isEmpty {
-                            LabeledContent("参考模型", value: model)
+                            LabeledContent("workspace.workspace_canvas_view.reference_model", value: model)
                         }
                         if let source = record.sourceUrl, let url = URL(string: source) {
-                            Link("查看原始来源", destination: url)
+                            Link("workspace.workspace_canvas_view.view_original_source", destination: url)
                         }
                     }
                     .padding()
                 }
-                .navigationTitle("提示词详情")
+                .navigationTitle("workspace.workspace_canvas_view.prompt_details")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("返回") { detail = nil }
+                        Button("settings.document_recovery_list_view.back") { detail = nil }
                     }
                     ToolbarItemGroup(placement: .primaryAction) {
-                        Button("复制", systemImage: "doc.on.doc") {
+                        Button("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = record.prompt
                         }
-                        Button("插入画布", systemImage: "plus.rectangle.on.rectangle") {
+                        Button("workspace.workspace_canvas_view.insert_into_canvas", systemImage: "plus.rectangle.on.rectangle") {
                             detail = nil
                             onChoose(record)
                         }
@@ -12668,58 +12656,58 @@ private struct CanvasMediaGenerationView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Picker("类型", selection: $kind) {
-                    Text("图片").tag(MediaKind.image)
-                    Text("视频").tag(MediaKind.video)
+                Picker("envdetail.type", selection: $kind) {
+                    Text("workspace.workspace_canvas_view.image").tag(MediaKind.image)
+                    Text("workspace.workspace_canvas_view.video").tag(MediaKind.video)
                 }
                 .pickerStyle(.segmented)
 
-                Section("创作内容") {
-                    Button("从提示词库选择", systemImage: "books.vertical") {
+                Section("workspace.workspace_canvas_view.prompt") {
+                    Button("workspace.workspace_canvas_view.choose_from_prompt_library", systemImage: "books.vertical") {
                         showsPromptLibrary = true
                     }
-                    TextField("描述希望生成的内容", text: $prompt, axis: .vertical)
+                    TextField("workspace.workspace_canvas_view.describe_what_you_want_generated", text: $prompt, axis: .vertical)
                         .lineLimit(4...10)
-                    Picker("画面比例", selection: $aspectRatio) {
+                    Picker("workspace.workspace_canvas_view.aspect_ratio", selection: $aspectRatio) {
                         ForEach(availableRatios, id: \.self) { Text($0).tag($0) }
                     }
                     if kind == .image {
-                        Picker("图片模型", selection: $selectedImageModelID) {
+                        Picker("auxiliary.image_model", selection: $selectedImageModelID) {
                             ForEach(imageModels) { model in
                                 Text(model.displayName).tag(Optional(model.id))
                             }
                         }
                         if let maximumReferenceImages {
-                            Text("此模型最多接收 \(maximumReferenceImages) 张参考图。")
+                            Text(FloeL10n.l("workspace.workspace_canvas_view.this_model_accepts_at_most_reference", maximumReferenceImages))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         if !availableResolutions.isEmpty {
-                            Picker("分辨率", selection: $resolution) {
+                            Picker("providers.model_editor_view.resolution", selection: $resolution) {
                                 ForEach(availableResolutions, id: \.self) { Text($0).tag($0) }
                             }
                         }
                         if !availableQualities.isEmpty {
-                            Picker("质量", selection: $quality) {
+                            Picker("workspace.workspace_canvas_view.quality", selection: $quality) {
                                 ForEach(availableQualities, id: \.self) { Text($0).tag($0) }
                             }
                         }
-                        Stepper("生成数量：\(count)", value: $count, in: 1...4)
+                        Stepper(FloeL10n.l("workspace.workspace_canvas_view.generation_count", count), value: $count, in: 1...4)
                     }
                     if kind == .video {
-                        Picker("视频模型", selection: $selectedVideoModelID) {
-                            Text("请选择").tag(Optional<UUID>.none)
+                        Picker("workspace.workspace_canvas_view.video_model", selection: $selectedVideoModelID) {
+                            Text("edit.conflict.choose").tag(Optional<UUID>.none)
                             ForEach(videoModels) { model in
                                 Text(model.displayName).tag(Optional(model.id))
                             }
                         }
                         if !availableDurations.isEmpty {
-                            Picker("时长", selection: $duration) {
-                                ForEach(availableDurations, id: \.self) { Text("\($0) 秒").tag($0) }
+                            Picker("workspace.workspace_canvas_view.duration", selection: $duration) {
+                                ForEach(availableDurations, id: \.self) { Text(FloeL10n.l("providers.model_editor_view.sec", $0)).tag($0) }
                             }
                         }
                         if !availableQualities.isEmpty {
-                            Picker("质量", selection: $quality) {
+                            Picker("workspace.workspace_canvas_view.quality", selection: $quality) {
                                 ForEach(availableQualities, id: \.self) { Text($0).tag($0) }
                             }
                         }
@@ -12728,22 +12716,22 @@ private struct CanvasMediaGenerationView: View {
 
                 let sources = selectedReferenceNodes
                 if !sources.isEmpty {
-                    Section("引用输入") {
+                    Section("workspace.workspace_canvas_view.reference_inputs") {
                         ForEach(sources) { node in
                             Label(
                                 node.text.isEmpty ? node.kind.rawValue : String(node.text.prefix(52)),
                                 systemImage: sourceIcon(node.kind)
                             )
                         }
-                        Text("会按画布连接顺序读取所选节点及其上游节点；原节点始终保留。")
+                        Text("workspace.workspace_canvas_view.reads_the_selected_nodes_and_their")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if kind == .image, let maximumReferenceImages {
-                            Text("参考图：\(selectedReferenceImageCount) / \(maximumReferenceImages)")
+                            Text(FloeL10n.l("workspace.workspace_canvas_view.reference_images", selectedReferenceImageCount, maximumReferenceImages))
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(exceedsReferenceImageLimit ? .red : .secondary)
                             if exceedsReferenceImageLimit {
-                                Text("参考图数量超过所选模型能力。请移除多余输入，或更换支持更多参考图的模型。")
+                                Text("workspace.workspace_canvas_view.the_number_of_reference_images_exceeds")
                                     .font(.caption)
                                     .foregroundStyle(.red)
                             }
@@ -12767,7 +12755,7 @@ private struct CanvasMediaGenerationView: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { dismiss() } }
             }
             .task {
                 guard !didBootstrap else { return }
@@ -12785,7 +12773,7 @@ private struct CanvasMediaGenerationView: View {
             .onChange(of: kind) { _, _ in normalizeOptions() }
             .alert("canvas.generation.cannot_complete", isPresented: Binding(
                 get: { error != nil }, set: { if !$0 { error = nil } }
-            )) { Button("完成", role: .cancel) {} } message: { Text(error ?? "") }
+            )) { Button("workspace.workspace_canvas_view.done", role: .cancel) {} } message: { Text(error ?? "") }
             .sheet(isPresented: $showsPromptLibrary) {
                 NavigationStack {
                     CanvasPromptLibraryView { record in
@@ -12845,7 +12833,7 @@ private struct CanvasMediaGenerationView: View {
         if kind == .image,
            let maximumReferenceImages,
            sources.filter({ $0.kind == .image }).count > maximumReferenceImages {
-            error = "所选图片模型最多支持 \(maximumReferenceImages) 张参考图；当前上下文包含 \(sources.filter { $0.kind == .image }.count) 张。请移除多余输入，或更换模型。"
+            error = FloeL10n.l("workspace.workspace_canvas_view.the_selected_image_model_supports_up", maximumReferenceImages, sources.filter { $0.kind == .image }.count)
             return
         }
         let configurationPoint: CGPoint = if let existingConfiguration {
@@ -13051,7 +13039,7 @@ private final class CanvasMaterialLibraryStore: ObservableObject {
     func importFiles(_ urls: [URL]) async {
         do {
             guard let ingestion else {
-                throw FloeError.invalidConfiguration("素材数据库尚未就绪。")
+                throw FloeError.invalidConfiguration(FloeL10n.l("workspace.workspace_canvas_view.the_asset_database_is_not_ready"))
             }
             for source in urls {
                 _ = try await ingestion.importLocalFile(source)
@@ -13063,7 +13051,7 @@ private final class CanvasMaterialLibraryStore: ObservableObject {
     func delete(_ ids: Set<UUID>) async {
         do {
             guard let assetStore else {
-                throw FloeError.invalidConfiguration("素材数据库尚未就绪。")
+                throw FloeError.invalidConfiguration(FloeL10n.l("workspace.workspace_canvas_view.the_asset_database_is_not_ready"))
             }
             for item in items where ids.contains(item.id) {
                 let path = try await assetStore.requestPermanentDeletion(assetID: item.id)
@@ -13131,7 +13119,7 @@ private struct CanvasMaterialThumbnail: View {
                 Image(systemName: placeholder).font(.title2).foregroundStyle(.secondary)
             }
         }
-        .accessibilityLabel(thumbnail == nil ? "素材预览暂不可用" : "素材缩略图")
+        .accessibilityLabel(thumbnail == nil ? "workspace.workspace_canvas_view.asset_preview_is_temporarily_unavailable" : "workspace.workspace_canvas_view.asset_thumbnail")
         .accessibilityIdentifier(thumbnail == nil ? "canvas.material.thumbnail.pending" : "canvas.material.thumbnail.ready")
         .task(id: key) {
             let requestedKey = key
@@ -13243,16 +13231,16 @@ private struct CanvasMaterialLibraryView: View {
                 .buttonStyle(.plain)
                 .contextMenu {
                     ShareLink(item: item.url) {
-                        Label("共享或保存文件", systemImage: "square.and.arrow.up")
+                        Label("workspace.workspace_canvas_view.share_or_save_file", systemImage: "square.and.arrow.up")
                     }
-                    Button("编辑信息", systemImage: "info.circle") { editingItem = item }
+                    Button("workspace.workspace_canvas_view.edit_info", systemImage: "info.circle") { editingItem = item }
                     if item.cloudRecordName != nil {
-                        Button("删除云端副本，保留本机", systemImage: "icloud.slash", role: .destructive) {
+                        Button("workspace.workspace_canvas_view.delete_the_cloud_copy_keep_on", systemImage: "icloud.slash", role: .destructive) {
                             Task { await store.deleteCloudCopy(item) }
                         }
                     }
                     if item.referenceCount > 0 {
-                        Text("被 \(item.referenceCount) 个画布节点引用")
+                        Text(FloeL10n.plural("workspace.workspace_canvas_view.referenced_by_canvas_nodes", count: item.referenceCount))
                     }
                 }
             }
@@ -13261,26 +13249,26 @@ private struct CanvasMaterialLibraryView: View {
         }
         .overlay {
             if filtered.isEmpty {
-                ContentUnavailableView("素材库为空", systemImage: "photo.on.rectangle.angled", description: Text("导入图片、视频、音频或文档；所有画布都可重复使用。"))
+                ContentUnavailableView("workspace.workspace_canvas_view.the_asset_library_is_empty", systemImage: "photo.on.rectangle.angled", description: Text("workspace.workspace_canvas_view.import_images_videos_audio_or_documents"))
             }
         }
-        .searchable(text: $search, prompt: "搜索素材")
-        .navigationTitle("素材库")
+        .searchable(text: $search, prompt: "workspace.workspace_canvas_view.search_assets")
+        .navigationTitle("workspace.workspace_canvas_view.asset_library")
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
+            ToolbarItem(placement: .topBarLeading) { Button("workspace.workspace_canvas_view.done") { dismiss() } }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button(posterLayout ? "列表" : "海报墙", systemImage: posterLayout ? "list.bullet" : "square.grid.2x2") {
+                Button(posterLayout ? "workspace.workspace_canvas_view.list" : "workspace.workspace_canvas_view.poster_wall", systemImage: posterLayout ? "list.bullet" : "square.grid.2x2") {
                     posterLayout.toggle()
                 }
                 .accessibilityIdentifier("canvas.materials.layout")
                 if !selection.isEmpty {
-                    Button("删除", role: .destructive) {
+                    Button("workspace.workspace_canvas_view.delete", role: .destructive) {
                         let ids = selection
                         selection.removeAll()
                         Task { await store.delete(ids) }
                     }
                 }
-                Button("导入", systemImage: "plus") { importsFiles = true }
+                Button("canvas.artifact.origin.imported", systemImage: "plus") { importsFiles = true }
             }
         }
         .fileImporter(
@@ -13293,9 +13281,9 @@ private struct CanvasMaterialLibraryView: View {
             case .failure(let error): store.error = error.localizedDescription
             }
         }
-        .alert("素材操作失败", isPresented: Binding(
+        .alert("workspace.workspace_canvas_view.asset_action_failed", isPresented: Binding(
             get: { store.error != nil }, set: { if !$0 { store.error = nil } }
-        )) { Button("完成", role: .cancel) {} } message: { Text(store.error ?? "") }
+        )) { Button("workspace.workspace_canvas_view.done", role: .cancel) {} } message: { Text(store.error ?? "") }
         .sheet(item: $editingItem) { item in
             CanvasMaterialMetadataEditor(item: item) { name, tags, sourceURL, license in
                 Task { await store.update(item, name: name, tags: tags, sourceURL: sourceURL, license: license) }
@@ -13342,17 +13330,17 @@ private struct CanvasMaterialMetadataEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("名称", text: $name)
-                TextField("标签（逗号分隔）", text: $tags)
-                TextField("来源网址", text: $source, axis: .vertical)
+                TextField("notes.notes_root_view.name", text: $name)
+                TextField("workspace.workspace_canvas_view.tags_comma_separated", text: $tags)
+                TextField("workspace.workspace_canvas_view.source_url", text: $source, axis: .vertical)
                     .textInputAutocapitalization(.never)
-                TextField("授权信息", text: $license, axis: .vertical)
+                TextField("workspace.workspace_canvas_view.authorization_info", text: $license, axis: .vertical)
             }
-            .navigationTitle("素材信息")
+            .navigationTitle("workspace.workspace_canvas_view.asset_info")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
+                    Button("workspace.workspace_canvas_view.save") {
                         let values = tags.split(separator: ",")
                             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                             .filter { !$0.isEmpty }

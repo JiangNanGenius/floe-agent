@@ -11,6 +11,7 @@ import SwiftUI
 import FloeModels
 import FloeSSH
 
+import FloeCore
 /// The Hosts tab root.
 struct HostListView: View {
     @StateObject private var viewModel: HostListViewModel
@@ -64,43 +65,40 @@ struct HostListView: View {
         .navigationDestination(item: $activeVNCSession) { sessionID in
             VNCView(sessionID: sessionID, center: center)
         }
-        .confirmationDialog(
-            "更新 Floe 守护程序？",
+        .confirmationDialog("hosts.host_list_view.update_the_floe_daemon",
             isPresented: Binding(
                 get: { agentUpdateCandidate != nil },
                 set: { if !$0 { agentUpdateCandidate = nil } }
             ),
             presenting: agentUpdateCandidate
         ) { host in
-            Button("更新 \(host.displayName.isEmpty ? host.address : host.displayName)") {
+            Button(FloeL10n.l("hosts.host_list_view.update", host.displayName.isEmpty ? host.address : host.displayName)) {
                 agentUpdateCandidate = nil
                 Task { await viewModel.updateRemoteAgent(on: host) }
             }
-            Button("取消", role: .cancel) { agentUpdateCandidate = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { agentUpdateCandidate = nil }
         } message: { _ in
-            Text("将通过已验证的 SSH 安装与当前 Floe 版本配套的守护程序；更新失败会自动回滚。")
+            Text("hosts.host_list_view.installs_the_daemon_matching_the_current")
         }
-        .confirmationDialog(
-            "为本设备建立高级链路？",
+        .confirmationDialog("hosts.host_list_view.set_up_an_advanced_link_for",
             isPresented: Binding(get: { advancedLinkCandidate != nil }, set: { if !$0 { advancedLinkCandidate = nil } }),
             presenting: advancedLinkCandidate
         ) { host in
-            Button("配对 \(host.displayName.isEmpty ? host.address : host.displayName)") {
+            Button(FloeL10n.l("hosts.host_list_view.pair", host.displayName.isEmpty ? host.address : host.displayName)) {
                 advancedLinkCandidate = nil
                 Task { await viewModel.pairAdvancedLink(on: host) }
             }
-            Button("取消", role: .cancel) { advancedLinkCandidate = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { advancedLinkCandidate = nil }
         } message: { _ in
-            Text("通过已验证 SSH 创建本设备专属证书；私钥只保存在本设备。之后日常任务走 mTLS，SSH 仅用于救援。")
+            Text("hosts.host_list_view.creates_a_device_specific_certificate_over")
         }
-        .alert(
-            "主机操作",
+        .alert("hosts.host_list_view.host_actions",
             isPresented: Binding(
                 get: { viewModel.errorMessage != nil || viewModel.statusMessage != nil },
                 set: { if !$0 { viewModel.errorMessage = nil; viewModel.statusMessage = nil } }
             )
         ) {
-            Button("好") {
+            Button("workspace.office_document_editor_view.ok") {
                 viewModel.errorMessage = nil
                 viewModel.statusMessage = nil
             }
@@ -188,8 +186,8 @@ private struct HostRow: View {
                         .font(.headline)
                         .lineLimit(1)
                     Text(host.hasSSHConnection
-                        ? "SSH · \(host.user)@\(host.address):\(host.port)"
-                        : "未配置 SSH")
+                        ? FloeL10n.l("hosts.host_list_view.ssh", host.user, host.address, host.port)
+                        : "hosts.host_list_view.ssh_not_configured")
                         .font(FloeTheme.Typography.evidence)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -213,7 +211,7 @@ private struct HostRow: View {
                 NavigationLink {
                     HostEditorView(center: center, existing: host)
                 } label: {
-                    actionLabel("编辑", systemImage: "pencil")
+                    actionLabel("workspace.workspace_canvas_view.edit", systemImage: "pencil")
                 }
                 .buttonStyle(.bordered)
 
@@ -249,11 +247,11 @@ private struct HostRow: View {
                     Menu {
                         if host.isRemoteExecutionEnvironment {
                             Button(action: onUpdateAgent) {
-                                Label("更新 Floe 守护程序", systemImage: "arrow.triangle.2.circlepath")
+                                Label("hosts.host_list_view.update_floe_daemon", systemImage: "arrow.triangle.2.circlepath")
                             }
                         }
                         Button(action: onPairAdvancedLink) {
-                            Label("配对高级链路", systemImage: "lock.shield")
+                            Label("hosts.host_list_view.pair_advanced_link", systemImage: "lock.shield")
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -262,7 +260,7 @@ private struct HostRow: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(isConnecting || isUpdatingAgent || isPairingAgent)
-                    .accessibilityLabel("更多主机操作")
+                    .accessibilityLabel("hosts.host_list_view.more_host_actions")
                 }
             }
         }
@@ -301,12 +299,12 @@ private struct HostRow: View {
         case .mac: "Mac"
         case .windows: "Windows"
         case .nas: "NAS"
-        case .router: "路由器"
-        case .switchDevice: "交换机"
-        case .appliance: "网络设备"
-        case .other: "其他设备"
+        case .router: FloeL10n.l("hosts.host_editor_view.router")
+        case .switchDevice: FloeL10n.l("hosts.host_editor_view.switch")
+        case .appliance: FloeL10n.l("hosts.host_editor_view.network_device")
+        case .other: FloeL10n.l("hosts.host_editor_view.other_devices")
         }
-        let role = host.isRemoteExecutionEnvironment ? "远端执行环境" : "调试目标"
+        let role = host.isRemoteExecutionEnvironment ? FloeL10n.l("hosts.host_list_view.remote_execution_environment") : FloeL10n.l("hosts.host_list_view.debug_target")
         let extra = host.auxiliaryConnections.map { $0.kind.rawValue }.joined(separator: " · ")
         return [type, role, extra].filter { !$0.isEmpty }.joined(separator: " · ")
     }

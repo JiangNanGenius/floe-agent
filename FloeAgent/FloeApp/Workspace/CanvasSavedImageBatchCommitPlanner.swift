@@ -84,7 +84,7 @@ enum CanvasSavedImageBatchCommitPlanner {
                 kind: .update,
                 nodeID: resultNodeID,
                 nodeKind: .image,
-                text: assets.count > 1 ? "生成图片 \(index + 1)" : "生成图片",
+                text: assets.count > 1 ? FloeL10n.l("platform.background_run_coordinator.generate_image", index + 1) : FloeL10n.l("files.files_view.generate_image"),
                 asset: asset,
                 metadata: metadata
             ))

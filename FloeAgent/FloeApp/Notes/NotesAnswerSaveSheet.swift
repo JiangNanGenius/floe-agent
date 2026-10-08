@@ -16,19 +16,19 @@ struct NotesAnswerSaveSheet: View {
         NavigationStack {
             Form {
                 if canInsert {
-                    Picker("保存位置", selection: $insert) {
-                        Text("当前页面或导图").tag(true)
-                        Text("新的整理手记").tag(false)
+                    Picker("notes.notes_answer_save_sheet.save_location", selection: $insert) {
+                        Text("notes.notes_answer_save_sheet.current_page_or_mind_map").tag(true)
+                        Text("notes.notes_answer_save_sheet.new_organized_note").tag(false)
                     }
                 }
-                Section("回答内容") { TextEditor(text: $text).frame(minHeight: 280) }
-                Section { Text("保留 AI 来源与原资料引用。插入内容可以撤销；新建的整理手记可以移到回收站。").font(.footnote).foregroundStyle(.secondary) }
+                Section("notes.notes_answer_save_sheet.response") { TextEditor(text: $text).frame(minHeight: 280) }
+                Section { Text("notes.notes_answer_save_sheet.keeps_ai_source_and_original_material").font(.footnote).foregroundStyle(.secondary) }
             }
-            .navigationTitle("保存回答")
+            .navigationTitle("notes.notes_answer_save_sheet.save_response")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { save(text, insert) }
+                    Button("workspace.workspace_canvas_view.save") { save(text, insert) }
                         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || text.utf8.count > 65_536)
                 }
             }

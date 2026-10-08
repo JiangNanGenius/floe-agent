@@ -32,8 +32,8 @@ public struct TaskChecklist: Codable, Sendable, Equatable {
     public var cancelledCount: Int { steps.filter { $0.status == .cancelled }.count }
     /// Never counts cancelled work as completed or invents an active step.
     public var progressSummary: String {
-        let cancelled = cancelledCount > 0 ? " · 已取消 \(cancelledCount) 项" : ""
-        return "已完成 \(completedCount)/\(steps.count) 项\(cancelled)"
+        let cancelled = cancelledCount > 0 ? FloeL10n.plural("runtime.task_checklist_store.items_canceled", count: cancelledCount) : ""
+        return FloeL10n.l("runtime.task_checklist_store.items_complete", completedCount, steps.count, cancelled)
     }
     public var currentStep: Step? { steps.first { $0.status == .inProgress } }
     /// Tells the model exactly what the next updatePlan is allowed to do, so

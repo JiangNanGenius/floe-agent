@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import SwiftUI
 
+import FloeCore
 extension View {
     func notesPencilPalette<Palette: View>(
         isPresented: Binding<Bool>, point: CGPoint,
@@ -48,6 +49,25 @@ struct NotesToolbarButtonStyle: ButtonStyle {
 
 enum NotesInkTool: String, CaseIterable {
     case pen = "笔", marker = "荧光笔", eraser = "橡皮", lasso = "套索", region = "AI 选区"
+    /// Localized UI label. The raw value is persisted and stays stable.
+    var localizedTitle: LocalizedStringKey {
+        switch self {
+        case .pen: "notes.ink.tool.pen"
+        case .marker: "notes.ink.tool.marker"
+        case .eraser: "notes.ink.tool.eraser"
+        case .lasso: "notes.ink.tool.lasso"
+        case .region: "notes.ink.tool.ai_selection"
+        }
+    }
+    var localizedAccessibilityTitle: String {
+        switch self {
+        case .pen: FloeL10n.l("notes.ink.tool.pen")
+        case .marker: FloeL10n.l("notes.ink.tool.marker")
+        case .eraser: FloeL10n.l("notes.ink.tool.eraser")
+        case .lasso: FloeL10n.l("notes.ink.tool.lasso")
+        case .region: FloeL10n.l("notes.ink.tool.ai_selection")
+        }
+    }
     var icon: String {
         switch self {
         case .pen: "pencil.tip"
@@ -66,9 +86,9 @@ enum NotesPencilArcPlacement: String, CaseIterable {
     static let preferenceKey = "notes.pencil.arcPlacement"
     var title: String {
         switch self {
-        case .above: "正上方"
-        case .upperLeft: "左上方"
-        case .upperRight: "右上方"
+        case .above: FloeL10n.l("notes.notes_palette_presentation.top_center")
+        case .upperLeft: FloeL10n.l("notes.notes_palette_presentation.top_left")
+        case .upperRight: FloeL10n.l("notes.notes_palette_presentation.top_right")
         }
     }
     var startAngle: Double {
@@ -110,7 +130,7 @@ struct NotesPencilToolWheel: View {
                 // The open center stays visually empty and behaves like other
                 // blank page space; it remains a named close action for VoiceOver.
                 Color.clear.frame(width: 44, height: 44)
-            }.accessibilityLabel("关闭工具环，继续书写")
+            }.accessibilityLabel("notes.notes_palette_presentation.close_the_tool_ring_and_continue")
                 .accessibilityIdentifier("notes.pencil.quickMenu.close")
             Text(preview == .pen ? inkPreferences.selectedPen.title : preview?.rawValue ?? "")
                 .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
@@ -149,7 +169,7 @@ struct NotesPencilToolWheel: View {
         let highlightOpacity: Double = isSelected ? 0.16 : (isPreviewed ? 0.08 : 0)
         let foreground: Color = isSelected || isPreviewed ? .accentColor : .primary
         let icon = value == .pen ? inkPreferences.selectedPen.icon : value.icon
-        let title = value == .pen ? inkPreferences.selectedPen.title : value.rawValue
+        let title = value == .pen ? inkPreferences.selectedPen.title : value.localizedAccessibilityTitle
         return Button { select(value) } label: {
             Image(systemName: icon)
                 .font(.system(size: 21, weight: .medium))
@@ -163,7 +183,7 @@ struct NotesPencilToolWheel: View {
         }
         .accessibilityLabel(title)
         .accessibilityIdentifier("notes.pencil.quickMenu.\(value.icon)")
-        .accessibilityValue(isPreviewed ? "预览，轻触选择" : "")
+        .accessibilityValue(isPreviewed ? FloeL10n.l("notes.ink.tool.preview_tap_to_choose") : "")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
