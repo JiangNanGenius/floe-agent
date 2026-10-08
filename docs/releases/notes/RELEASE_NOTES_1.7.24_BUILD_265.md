@@ -205,6 +205,12 @@ Not verified this round and not claimed:
   进入全屏可恢复同一草稿。图纸助手弹窗延迟到退出全屏才显示，真实 CAD 工具
   调用尚未完成。这些问题正在修复，阻止本候选分发；前述历史验证不替代新入口
   的复验。
+- Follow-up simulator UI verification passed clean and dirty full-screen
+  return, draft save, and immediate Drawing Assistant presentation. The
+  assistant's navigation-bar Send action remained unresponsive; its actual
+  query/measure/propose run is still blocked and is not claimed as passed.
+- 后续模拟器实际操作已通过普通及未保存状态的全屏返回、草稿保存和立即打开
+  图纸助手。助手导航栏“发送”仍未响应，真实查询／测量／提案流程仍待修复验证。
 
 The release preflight (`scripts/release_preflight.sh`) requires this file and
 `docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_265.json` to exist in
