@@ -1,17 +1,28 @@
 # Floe 1.7.24 (265) creative tool contracts and format capability table
 
-Status (2026-10-08): source validated locally on branch
-`codex/build265-creative-cad`; version fields read 1.7.24 (265). **No tag,
-TestFlight upload or public release has happened in this documentation pass.**
-This document describes what the code actually implements, the tests that ran,
-and what still needs a physical device / real model. Where this page and an
-earlier candidate note disagree, the dated sections here are current and the
-older note is historical evidence, not a promise.
+Status (2026-10-08): implementation merged into `main`; immutable tag `v1.7.24`
+pins `246d6c038f0a3f7ec7d7d9f7e19d074f13601bec`; version fields read 1.7.24 (265).
+The exact local Xcode 27A266a / iphoneos27.0 Release device artifact was signed
+and uploaded without an App rebuild ([run
+37763059515](https://github.com/JiangNanGenius/floe-agent/actions/runs/37763059515));
+Apple reports VALID, unexpired and the existing internal Floe QA group
+IN_BETA_TESTING. Build 265 was submitted to the existing external publictest1
+group on 2026-10-08 and is waiting for review; independent readback is recorded
+in [CURRENT_STATUS](CURRENT_STATUS.md). This document describes what the code
+actually implements, the tests that ran, and what still needs a physical device /
+real model. Where this page and an earlier candidate note disagree, the dated
+sections here are current and the older note is historical evidence, not a
+promise.
 
-状态（2026-10-08）：分支 `codex/build265-creative-cad` 上的本地源码验证，版本号为
-1.7.24（265）。**本次文档工作未打标签、未上传 TestFlight、未公开发布。** 本页描述代码
-实际实现的能力、已执行的测试，以及仍需真机／真实模型的部分。若本页与早期候选说明冲突，
-以本页带日期的小节为准，旧说明仅作历史证据，不是承诺。
+状态（2026-10-08）：实现已合并 `main`；不可变标签 `v1.7.24` 固定
+`246d6c038f0a3f7ec7d7d9f7e19d074f13601bec`；版本号为 1.7.24（265）。本地
+Xcode 27A266a / iphoneos27.0 Release 设备产物已在不重新编译 App 的情况下完成签名上传
+（[运行 37763059515](https://github.com/JiangNanGenius/floe-agent/actions/runs/37763059515)）；
+Apple 显示 VALID、未过期，现有内部 Floe QA 组为 IN_BETA_TESTING。Build 265 已于
+2026-10-08 提交至现有外部 publictest1 组，正在等待审核；独立回读记录见
+[CURRENT_STATUS](CURRENT_STATUS.md)。本页描述代码实际实现的能力、已执行的测试，
+以及仍需真机／真实模型的部分。若本页与早期候选说明冲突，以本页带日期的小节为准，
+旧说明仅作历史证据，不是承诺。
 
 ## 1. Evidence vocabulary / 证据分级
 

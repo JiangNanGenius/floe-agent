@@ -1,8 +1,16 @@
 # 1.7.24 (265) — 2D CAD, Drawing Assistant, Office/Notes shared AI, Canvas
 
-Distribution status: see [current status](../../CURRENT_STATUS.md). Build 265 is a
-candidate under validation on branch `codex/build265-creative-cad`; no tag,
-TestFlight upload or public release has been made by this documentation pass.
+Distribution status: see [current status](../../CURRENT_STATUS.md). The
+development branch `codex/build265-creative-cad` was merged into `main` and
+deleted; immutable tag `v1.7.24` pins
+`246d6c038f0a3f7ec7d7d9f7e19d074f13601bec`. The exact local Xcode 27 device
+artifact was signed and uploaded to TestFlight without an App rebuild
+([run 37763059515](https://github.com/JiangNanGenius/floe-agent/actions/runs/37763059515));
+Apple reports VALID, unexpired and existing internal Floe QA IN_BETA_TESTING.
+Build 265 was submitted to the existing publictest1 external group on
+2026-10-08 and is waiting for review
+([independent readback](https://github.com/JiangNanGenius/floe-agent/actions/runs/37766370762));
+external approval remains pending.
 
 ## English
 
@@ -99,8 +107,9 @@ TestFlight upload or public release has been made by this documentation pass.
 
 ## Verification
 
-Local, source-level verification on branch `codex/build265-creative-cad`
-(version 1.7.24, build 265; Xcode 27, 27A266a):
+Local, source-level verification on the development branch
+`codex/build265-creative-cad` (since merged into `main` and deleted;
+version 1.7.24, build 265; Xcode 27, 27A266a):
 
 - Full simulator App build succeeded after project regeneration
   (`app-build-265-final6.log`); 19 focused App tests across four suites passed on
@@ -253,14 +262,25 @@ Apple availability remain pending.
 模型空间仍有九个图元。真机及其他供应商待验。应用成功提示仍在修补；
 最终设备构建、上传与 Apple 可用性待完成。
 
-### Frozen local build / 本地构建固定
+### Frozen local build and signed distribution / 本地构建固定与签名分发
 
 Tag v1.7.24 fixes 246d6c038f0a3f7ec7d7d9f7e19d074f13601bec. The final
 Xcode 27A266a iphoneos27.0 Release build passed; matching App/dSYM and hashed
 recovery transport are retained. Post-apply outcome feedback is fixed and
-compiled. Signing/upload and Apple availability remain pending. This expedited
-route uses local focused qualification, not a full cloud CI claim.
+compiled. The exact local artifact was signed and uploaded to TestFlight without
+an App rebuild ([run
+37763059515](https://github.com/JiangNanGenius/floe-agent/actions/runs/37763059515)):
+Apple reports VALID, unexpired and existing internal Floe QA IN_BETA_TESTING.
+Build 265 was submitted to the existing publictest1 external group and is
+waiting for review ([independent readback
+37766370762](https://github.com/JiangNanGenius/floe-agent/actions/runs/37766370762));
+external approval is pending. This expedited route uses local focused
+qualification, not a full cloud CI claim.
 
 最终本地设备构建通过，成功提示已修复并编译验证；匹配设备包、符号和哈希已留存。
-标签固定，签名上传及 Apple 可用状态待核验。本轮采用本地定向验证快速分发，
-不宣称完整云端 CI 或真机验收。
+本地产物已在不重新编译 App 的前提下完成签名并上传 TestFlight
+（[运行 37763059515](https://github.com/JiangNanGenius/floe-agent/actions/runs/37763059515)）：
+Apple 显示 VALID、未过期、现有内部 Floe QA 为 IN_BETA_TESTING；Build 265 已提交至
+现有 publictest1 外部组并等待审核（[独立回读
+37766370762](https://github.com/JiangNanGenius/floe-agent/actions/runs/37766370762)），
+外部批准尚未完成。本轮采用本地定向验证快速分发，不宣称完整云端 CI 或真机验收。
