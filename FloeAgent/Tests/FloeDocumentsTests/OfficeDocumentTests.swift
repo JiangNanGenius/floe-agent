@@ -199,16 +199,37 @@ struct OfficeCapabilityToolTests {
             formats.first { $0["format"] as? String == format }.flatMap { $0["operations"] as? [[String: Any]] } ?? []
         }
         #expect(ops("docx").contains { $0["name"] as? String == "inspect" && $0["tier"] as? String == "verified" })
-        #expect(ops("xlsx").contains { $0["name"] as? String == "formulaErrorLocation" && $0["tier"] as? String == "unavailable" })
+        // Error-cell location now has a real OOXML readback path, so it is
+        // verified rather than unavailable.
+        #expect(ops("xlsx").contains { $0["name"] as? String == "formulaErrorLocation" && $0["tier"] as? String == "verified" })
         #expect(ops("pptx").contains { $0["name"] as? String == "present" })
+        // The engine-tier list is derived from the dispatch catalog, so every
+        // catalog command is reported with its exact UNO dispatch.
+        for format in [OfficeDocumentFormat.docx, .xlsx, .pptx] {
+            let names = Set(ops(format.rawValue).map { $0["name"] as? String ?? "" })
+            for command in OfficeEngineCommandCatalog.engineCommands(format) {
+                #expect(names.contains(command.id), "\(format.rawValue) is missing \(command.id)")
+                let op = ops(format.rawValue).first { $0["name"] as? String == command.id }
+                let detail = op?["detail"] as? String ?? ""
+                #expect(detail.contains(".uno:") || detail.contains("setPart("))
+            }
+        }
+        // No .uno:ChangePicture exists in the pinned bundle: the engine path is
+        // honestly unavailable while the package path is verified.
+        #expect(ops("pptx").contains { $0["name"] as? String == "imageReplaceEngine" && $0["tier"] as? String == "unavailable" })
+        #expect(ops("pptx").contains { $0["name"] as? String == "replaceImage" && $0["tier"] as? String == "verified" })
         // Nothing engine-tier may claim verified.
         for format in formats {
             for op in format["operations"] as? [[String: Any]] ?? [] {
                 #expect(op["tier"] as? String == "verified"
                         || op["tier"] as? String == "engine"
                         || op["tier"] as? String == "unavailable")
+                #expect((op["path"] as? String)?.isEmpty == false)
             }
         }
+        // Without the engine every engine-tier operation reports unavailable.
+        let absent = OfficeCapabilityTool.capabilitiesJSON(enginePresent: false)
+        #expect(!absent.contains("\"tier\":\"engine\""))
     }
 
     @Test("tool validates format filter and returns JSON")

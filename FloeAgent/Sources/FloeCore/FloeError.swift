@@ -13,6 +13,19 @@ public enum FloeError: Error, Sendable, Hashable {
     case syncUnavailable(String)
     case cancelled
     case internalError(String)
+
+    /// Machine-readable reason carried by the associated value (empty for
+    /// reasonless cases). Never includes user content.
+    public var reason: String {
+        switch self {
+        case .invalidConfiguration(let detail), .validationFailed(let detail),
+             .notFound(let detail), .storageCorrupted(let detail),
+             .syncUnavailable(let detail), .internalError(let detail):
+            detail
+        case .unauthorized: "unauthorized"
+        case .cancelled: "cancelled"
+        }
+    }
 }
 
 extension FloeError: LocalizedError {

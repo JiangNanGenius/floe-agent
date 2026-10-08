@@ -103,7 +103,14 @@ struct ModelPickerView: View {
                 } header: {
                     Text("providers.manual_entry")
                 } footer: {
-                    Text("providers.manual_fallback.hint")
+                    // Only call this "not supported" when discovery is
+                    // actually unavailable; when models were discovered, the
+                    // manual row is an additional fallback, not the only path.
+                    if !viewModel.supportsDiscovery {
+                        Text("providers.manual_fallback.hint")
+                    } else {
+                        Text("providers.manual_entry.hint")
+                    }
                 }
             }
             .searchable(text: $searchText, prompt: Text("providers.search_models"))

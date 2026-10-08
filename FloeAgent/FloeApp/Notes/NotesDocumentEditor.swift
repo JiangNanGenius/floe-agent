@@ -53,6 +53,11 @@ struct NotesDocumentEditor: View {
     @State private var exportArtifact: NotesExport.Artifact?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportProgress = ""
+    @State private var pencilFocus: NotesSession.NoteSearchFocus?
+    @State private var lastAppliedFocusRequestID: UUID?
+    @State private var focusNotice: String?
+    @State private var pendingProposals: [NoteProposal] = []
+    @State private var acceptingProposalID: UUID?
     @EnvironmentObject private var environment: AppEnvironment
     @AppStorage(NotesPencilArcPlacement.preferenceKey) private var pencilArcPlacement: NotesPencilArcPlacement = .above
     @AppStorage("notes.fingerDrawing.enabled") private var fingerDrawing = false
@@ -103,6 +108,16 @@ struct NotesDocumentEditor: View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 editorContent
+                    .overlay(alignment: .top) {
+                        if let focusNotice {
+                            Text(focusNotice)
+                                .font(.footnote)
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(.thinMaterial, in: Capsule())
+                                .padding(8)
+                                .accessibilityIdentifier("notes.search.focus.notice")
+                        }
+                    }
                 if showAssistant, usesAssistantColumn(width: geometry.size.width), let store = session.store {
                     Divider()
                     NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, pageID: page?.id, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
@@ -129,6 +144,10 @@ struct NotesDocumentEditor: View {
 
     private var editorContent: some View {
         VStack(spacing: 0) {
+            if !pendingProposals.isEmpty {
+                proposalBanner
+                Divider()
+            }
             if !headerCollapsed, document.kind != .office {
                 header
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
@@ -186,6 +205,13 @@ struct NotesDocumentEditor: View {
                         var state = session.editorState(for: document.id)
                         state.viewports[page.id] = viewport
                         session.rememberEditor(state, for: document.id)
+                    },
+                                   focus: pencilFocus,
+                                   onFocusApplied: { requestID in
+                        Task { @MainActor in
+                            lastAppliedFocusRequestID = requestID
+                            if pencilFocus?.requestID == requestID { pencilFocus = nil }
+                        }
                     })
                         .notesPencilPalette(isPresented: $showingPencilMenu, point: pencilMenuPoint) {
                             pencilQuickMenu
@@ -232,6 +258,22 @@ struct NotesDocumentEditor: View {
             if let value, document.pages.contains(where: { $0.id == value }) {
                 pageID = value; session.requestedPageID = nil
             }
+        }
+        .onChange(of: session.searchFocus, initial: true) { _, value in
+            consumeSearchFocus(value)
+        }
+        .task(id: document.id) {
+            // Install the runtime transport and recover any decision intents
+            // that a crash left pending: editor open is the app's recovery
+            // point after a restart.
+            NotesProposalCenter.configure(inputs: environment.runningInputStore,
+                                          messages: environment.conversationStore)
+            await reloadProposals()
+            await NotesProposalCenter.flush(store: session.store)
+            await reloadProposals()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NotesProposalCenter.didChange)) { _ in
+            Task { await reloadProposals() }
         }
         .task(id: mapImageIDs) {
             guard document.kind == .mindMap, let store = session.store else { return }
@@ -381,6 +423,120 @@ struct NotesDocumentEditor: View {
                     } message: { Text(textSaveError ?? "") }
             }.presentationDetents([.medium, .large]).interactiveDismissDisabled(savingText)
         }
+    }
+
+    /// Consumes a typed search focus: switches to the exact page, hands the
+    /// element geometry to the pencil canvas, selects the map topic, and states
+    /// honestly when the match has no per-run geometry (flat page text).
+    private func consumeSearchFocus(_ focus: NotesSession.NoteSearchFocus?) {
+        guard let focus, focus.documentID == document.id else { return }
+        guard focus.requestID != lastAppliedFocusRequestID else { return }
+        if document.kind == .mindMap {
+            if let nodeID = focus.nodeID, document.nodes.contains(where: { $0.id == nodeID }) {
+                selectedMapNodeID = nodeID
+            }
+            return
+        }
+        guard let targetPageID = focus.pageID, document.pages.contains(where: { $0.id == targetPageID }) else {
+            showFocusNotice("该匹配位于 Office 正文或已删除页面，无法在页面中定位。")
+            return
+        }
+        pageID = targetPageID
+        pencilFocus = focus
+        if focus.elementID != nil {
+            focusNotice = nil
+        } else {
+            let index = (document.pages.firstIndex(where: { $0.id == targetPageID }) ?? 0) + 1
+            showFocusNotice("已定位到第 \(index) 页；该匹配来自页面文本层，无法显示精确高亮。")
+        }
+    }
+
+    private func showFocusNotice(_ text: String) {
+        focusNotice = text
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if focusNotice == text { focusNotice = nil }
+        }
+    }
+
+    private func reloadProposals() async {
+        guard case .success(let storage) = NotesProposalCenter.storage() else {
+            pendingProposals = []
+            return
+        }
+        pendingProposals = await storage.proposals.pending(documentID: document.id)
+    }
+
+    private func acceptProposal(_ proposal: NoteProposal) {
+        guard let store = session.store, acceptingProposalID == nil else { return }
+        let storage: NotesProposalCenter.Storage
+        do { storage = try NotesProposalCenter.requireStorage() }
+        catch { session.errorMessage = error.localizedDescription; return }
+        acceptingProposalID = proposal.id
+        Task {
+            defer { acceptingProposalID = nil }
+            do {
+                // The user's tap mints the single-use grant; the apply path
+                // persists the accepted decision intent BEFORE the document
+                // commit, then re-checks revision + fingerprint and reuses
+                // store.apply with the same idempotency receipt as the tool.
+                let grantID = await NotesProposalCenter.grants.issueGrant(proposal: proposal)
+                _ = try await NoteProposalService.apply(
+                    proposalID: proposal.id, grantID: grantID, store: store,
+                    proposals: storage.proposals,
+                    outbox: storage.outbox,
+                    grants: NotesProposalCenter.grants)
+                try await session.reload()
+            } catch NoteError.conflict {
+                // The service already persisted a durable invalidation intent
+                // for the origin; flush delivers it.
+                session.errorMessage = "提案已过期（文档已有新版本），未应用。"
+            } catch { session.errorMessage = error.localizedDescription }
+            await NotesProposalCenter.flush(store: session.store)
+            await reloadProposals()
+        }
+    }
+
+    private func discardProposal(_ proposal: NoteProposal) {
+        let storage: NotesProposalCenter.Storage
+        do { storage = try NotesProposalCenter.requireStorage() }
+        catch { session.errorMessage = error.localizedDescription; return }
+        Task {
+            do {
+                // Rejection writes its durable intent before the proposal is
+                // resolved, so a crash in either gap cannot lose the decision.
+                _ = try await NoteProposalService.resolve(
+                    proposalID: proposal.id, decision: .rejected,
+                    proposals: storage.proposals,
+                    outbox: storage.outbox)
+            } catch { session.errorMessage = error.localizedDescription }
+            await NotesProposalCenter.flush(store: session.store)
+            await reloadProposals()
+        }
+    }
+
+    private var proposalBanner: some View {
+        VStack(spacing: 0) {
+            ForEach(pendingProposals) { proposal in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "sparkles").foregroundStyle(.tint).padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("助手提案 · \(proposal.title)").font(.subheadline.weight(.semibold))
+                        Text(proposal.summary).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                    Spacer(minLength: 0)
+                    Button("接受") { acceptProposal(proposal) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(acceptingProposalID != nil)
+                        .accessibilityIdentifier("notes.proposal.accept")
+                    Button("忽略", role: .destructive) { discardProposal(proposal) }
+                        .accessibilityIdentifier("notes.proposal.discard")
+                }.padding(10)
+                if proposal.id != pendingProposals.last?.id { Divider() }
+            }
+        }
+        .background(.thinMaterial)
+        .accessibilityIdentifier("notes.proposals.banner")
     }
 
     private func exportDocument(editable: Bool = false) {

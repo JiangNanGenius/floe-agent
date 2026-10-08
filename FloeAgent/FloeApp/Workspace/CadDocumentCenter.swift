@@ -59,6 +59,14 @@ actor CadDocumentCenter: CadDocumentHost {
     private var documentGates: [String: CadDocumentGate] = [:]
     private let maximumCachedSessions = 3
     private let maximumDocumentBytes = 10 * 1024 * 1024
+    /// Test-only interleaving seam: runs immediately before the final commit
+    /// boundary so a test can simulate a manual edit landing during the engine
+    /// transaction. Never set outside tests.
+    var testHookBeforeFinalCommit: (@Sendable () async -> Void)?
+
+    func setTestHook(_ hook: (@Sendable () async -> Void)?) {
+        testHookBeforeFinalCommit = hook
+    }
 
     private func gate(for key: String) -> CadDocumentGate {
         if let existing = documentGates[key] { return existing }
@@ -202,118 +210,239 @@ actor CadDocumentCenter: CadDocumentHost {
                              revision: revision, sha256: sha256)
     }
 
+    /// The committed receipt for a proposal, from this process's tombstone or
+    /// the write-ahead journal. Used by the decision outbox to recover an
+    /// "applied" event whose post-commit upgrade was interrupted. A prepared
+    /// journal entry only becomes an applied receipt when the file on disk
+    /// currently has the exact expected SHA — ordering alone is never proof.
+    func committedReceipt(proposalID: UUID, access: CadDocumentAccess? = nil) async -> CadDocumentReceipt? {
+        if let outcome = proposalOutcomes[proposalID] { return outcome.receipt }
+        guard let entry = await MainActor.run(body: {
+            CadAppliedReceiptJournal.shared.entry(proposalID: proposalID)
+        }) else { return nil }
+        if let receipt = entry.completedReceipt { return receipt }
+        guard let access,
+              let resolved = try? resolve(documentID: entry.pendingReceipt.documentID, access: access) else {
+            return nil
+        }
+        let url = resolved.root.appendingPathComponent(resolved.id)
+        guard let current = try? FloeDigest.sha256Hex(ofFileAt: url),
+              current.lowercased() == entry.expectedSHA256.lowercased() else {
+            return nil
+        }
+        var receipt = entry.pendingReceipt
+        receipt.saved = true
+        receipt.note = "recovered from the prepared write-ahead record"
+        await MainActor.run {
+            try? CadAppliedReceiptJournal.shared.complete(proposalID: proposalID, receipt: receipt)
+        }
+        return receipt
+    }
+
+    /// Takes the central live-draft lease for this document. Throws when the
+    /// registered editor already holds unsaved edits; the suspension is
+    /// document-level, so a viewer that opens during the transaction starts
+    /// suspended until the lease ends.
+    private func beginLiveDraftLease(_ resolved: Resolved) async throws -> CadLiveDraftRegistry.Lease {
+        do {
+            return try await MainActor.run {
+                try CadLiveDraftRegistry.shared.beginLease(rootPath: resolved.root.path,
+                                                           relativePath: resolved.id)
+            }
+        } catch let error as CadLiveDraftRegistry.LiveDraftError {
+            throw FloeError.validationFailed(error.errorDescription ?? "Unsaved drawing edits")
+        }
+    }
+
+    private func endLiveDraftLease(_ lease: CadLiveDraftRegistry.Lease?) async {
+        guard lease != nil else { return }
+        await MainActor.run { CadLiveDraftRegistry.shared.endLease(lease) }
+    }
+
     func apply(proposal: CadProposal, grantID: String, requestID: String,
                access: CadDocumentAccess) async throws -> CadDocumentReceipt {
         // Resolve and authenticate before any replay lookup so a receipt can
         // never be replayed across owners, environments or workspaces.
         let resolved = try resolve(documentID: proposal.documentID, access: access)
-        return try await withDocumentGate(resolved.key) {
-            let key = replayKey(action: "apply", access: access, documentID: resolved.id,
-                                requestID: requestID,
-                                payload: proposal.baseSHA256 + "|" + proposal.operationsJSON)
-            if let replay = appliedReceipts[key] {
-                return replayReceipt(replay, requestID: requestID)
-            }
-            // A request id is bound to its payload: reusing it with different
-            // content is a conflict, never a silent rerun.
-            try noteRequestPayload(action: "apply", access: access, documentID: resolved.id,
-                                   requestID: requestID,
-                                   payload: proposal.baseSHA256 + "|" + proposal.operationsJSON)
-            let session = try await refreshSession(resolved)
-            guard session.sha256.lowercased() == proposal.baseSHA256.lowercased(),
-                  session.revision == proposal.baseRevision else {
-                throw FloeError.validationFailed(
-                    "The drawing changed after the proposal was created (revision \(session.revision), sha \(session.sha256.prefix(12))…); regenerate the proposal.")
-            }
-            // Cancellation gates: a tool call cancelled while queued (or just
-            // before mutating) must not later edit or commit.
-            if Task.isCancelled { throw FloeError.cancelled }
-            switch await grants.reserve(grantID: grantID, proposalID: proposal.id,
-                                        documentID: resolved.id, revision: proposal.baseRevision,
-                                        sha256: proposal.baseSHA256) {
-            case .reserved:
-                break
-            case .unknownGrant, .documentMismatch:
-                throw FloeError.unauthorized
-            case .expired:
-                throw FloeError.validationFailed("The confirmation grant expired; ask the user to confirm again.")
-            case .alreadyConsumed, .alreadyReserved:
-                throw FloeError.validationFailed("The confirmation grant was already used.")
-            case .revisionMismatch(let expected, let actual):
-                throw FloeError.validationFailed("The document revision changed (expected \(expected), actual \(actual)); regenerate the proposal.")
-            case .shaMismatch(let expected, let actual):
-                throw FloeError.validationFailed("The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
-            }
-
-            var draftApplied = false
-            if Task.isCancelled {
-                await grants.releaseReservation(grantID: grantID)
-                throw FloeError.cancelled
-            }
+        return try await withDocumentGate(resolved.key) { [self] in
+            // The lease is held INSIDE the serialized document gate: two queued
+            // transactions can never both hold one (the first completion would
+            // otherwise restore interaction while the second is still running).
+            let lease = try await beginLiveDraftLease(resolved)
             do {
-                let request = try batchRequest(from: proposal.operationsJSON)
-                let editSummary = try await session.engine.edit(request)
-                draftApplied = true
-                let created = parseCreated(from: editSummary)
-                let bytes = try await session.engine.save()
-                let receipt = try commit(session: session, bytes: bytes,
-                                         expectedSHA256: proposal.baseSHA256,
-                                         created: created, service: resolved.service,
-                                         relativePath: resolved.id)
-                _ = await grants.commitReservation(grantID: grantID)
-                // Keep the proposal as an applied tombstone: a tool retry with
-                // the same request id must replay the original receipt instead
-                // of failing to load a deleted proposal.
-                proposalOutcomes[proposal.id] = (access: access, requestID: requestID, receipt: receipt)
-                appliedReceipts[key] = receipt
-                return receipt
-            } catch {
-                if draftApplied {
-                    // The edit was applied but a later step failed. Roll the
-                    // draft back; if that is not certain, drop the session so
-                    // the next use reloads from the last committed bytes.
-                    do {
-                        _ = try await session.engine.undo()
-                    } catch {
-                        await invalidateSession(resolved.key)
-                        await grants.releaseReservation(grantID: grantID)
-                        throw FloeError.validationFailed(
-                            "The drawing engine could not be rolled back after a failed save; the session was reloaded from the last saved bytes. Retry the confirmed proposal.")
-                    }
-                    await grants.releaseReservation(grantID: grantID)
-                    throw error
+                let key = replayKey(action: "apply", access: access, documentID: resolved.id,
+                                    requestID: requestID,
+                                    payload: proposal.baseSHA256 + "|" + proposal.operationsJSON)
+                if let replay = appliedReceipts[key] {
+                    return replayReceipt(replay, requestID: requestID)
                 }
-                // The edit request itself failed; the engine mutation outcome
-                // is unknown (e.g. a timeout), so never reuse the session.
-                await invalidateSession(resolved.key)
-                await grants.releaseReservation(grantID: grantID)
-                throw FloeError.validationFailed(
-                    "The edit outcome was uncertain, so the drawing engine was reloaded from the last saved bytes. Retry the confirmed proposal.")
+                // A request id is bound to its payload: reusing it with different
+                // content is a conflict, never a silent rerun.
+                try noteRequestPayload(action: "apply", access: access, documentID: resolved.id,
+                                       requestID: requestID,
+                                       payload: proposal.baseSHA256 + "|" + proposal.operationsJSON)
+                let session = try await refreshSession(resolved)
+                guard session.sha256.lowercased() == proposal.baseSHA256.lowercased(),
+                      session.revision == proposal.baseRevision else {
+                    throw FloeError.validationFailed(
+                        "The drawing changed after the proposal was created (revision \(session.revision), sha \(session.sha256.prefix(12))…); regenerate the proposal.")
+                }
+                // Cancellation gates: a tool call cancelled while queued (or just
+                // before mutating) must not later edit or commit.
+                if Task.isCancelled { throw FloeError.cancelled }
+                switch await grants.reserve(grantID: grantID, proposalID: proposal.id,
+                                            documentID: resolved.id, revision: proposal.baseRevision,
+                                            sha256: proposal.baseSHA256) {
+                case .reserved:
+                    break
+                case .unknownGrant, .documentMismatch:
+                    throw FloeError.unauthorized
+                case .expired:
+                    throw FloeError.validationFailed("The confirmation grant expired; ask the user to confirm again.")
+                case .alreadyConsumed, .alreadyReserved:
+                    throw FloeError.validationFailed("The confirmation grant was already used.")
+                case .revisionMismatch(let expected, let actual):
+                    throw FloeError.validationFailed("The document revision changed (expected \(expected), actual \(actual)); regenerate the proposal.")
+                case .shaMismatch(let expected, let actual):
+                    throw FloeError.validationFailed("The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
+                }
+
+                var draftApplied = false
+                if Task.isCancelled {
+                    await grants.releaseReservation(grantID: grantID)
+                    throw FloeError.cancelled
+                }
+                do {
+                    let request = try batchRequest(from: proposal.operationsJSON)
+                    let editSummary = try await session.engine.edit(request)
+                    draftApplied = true
+                    let created = parseCreated(from: editSummary)
+                    let bytes = try await session.engine.save()
+                    // FINAL COMMIT BOUNDARY. An edit that landed in the live
+                    // viewer while this transaction awaited (queued JS input,
+                    // second window, scripted change) must abort the commit and
+                    // preserve the user's draft; interaction has been suspended
+                    // since the lease began, so this covers events already in
+                    // flight.
+                    if let testHookBeforeFinalCommit { await testHookBeforeFinalCommit() }
+                    try await Self.assertLeaseUnchanged(lease)
+                    // Write-ahead the expected result BEFORE touching the file.
+                    // A journal failure refuses the commit (no unrecoverable gap).
+                    let expectedSHA = FloeDigest.sha256Hex(bytes)
+                    let pending = CadDocumentReceipt(documentID: session.documentID,
+                                                     revision: session.revision + 1,
+                                                     sha256: expectedSHA, created: created, saved: false,
+                                                     note: "prepared write-ahead record")
+                    do {
+                        try CadAppliedReceiptJournal.shared.prepare(proposalID: proposal.id,
+                                                                    expectedSHA256: expectedSHA,
+                                                                    pendingReceipt: pending)
+                    } catch {
+                        // Single rollback: the outer catch sees draftApplied and
+                        // undoes the engine edit exactly once; this path only
+                        // releases the reservation and refuses the commit.
+                        await grants.releaseReservation(grantID: grantID)
+                        throw FloeError.storageCorrupted(
+                            "The apply receipt could not be journaled before the commit; the drawing was not changed and the draft was rolled back.")
+                    }
+                    let receipt = try commit(session: session, bytes: bytes,
+                                             expectedSHA256: proposal.baseSHA256,
+                                             created: created, service: resolved.service,
+                                             relativePath: resolved.id)
+                    var completed = receipt
+                    if (try? CadAppliedReceiptJournal.shared.complete(proposalID: proposal.id, receipt: receipt)) == nil {
+                        // The prepared entry remains and reconciliation validates
+                        // it against the file SHA; the receipt states that the
+                        // completion write failed rather than claiming otherwise.
+                        completed.note = "receipt completion journal failed; recovery reconciles from the prepared SHA"
+                    }
+                    _ = await grants.commitReservation(grantID: grantID)
+                    // Keep the proposal as an applied tombstone: a tool retry with
+                    // the same request id must replay the original receipt instead
+                    // of failing to load a deleted proposal.
+                    proposalOutcomes[proposal.id] = (access: access, requestID: requestID, receipt: completed)
+                    appliedReceipts[key] = completed
+                    await endLiveDraftLease(lease)
+                    return completed
+                } catch {
+                    if draftApplied {
+                        // The edit was applied but a later step failed. Roll the
+                        // draft back; if that is not certain, drop the session so
+                        // the next use reloads from the last committed bytes.
+                        do {
+                            _ = try await session.engine.undo()
+                        } catch {
+                            await invalidateSession(resolved.key)
+                            await grants.releaseReservation(grantID: grantID)
+                            throw FloeError.validationFailed(
+                                "The drawing engine could not be rolled back after a failed save; the session was reloaded from the last saved bytes. Retry the confirmed proposal.")
+                        }
+                        await grants.releaseReservation(grantID: grantID)
+                        throw error
+                    }
+                    // The edit request itself failed; the engine mutation outcome
+                    // is unknown (e.g. a timeout), so never reuse the session.
+                    await invalidateSession(resolved.key)
+                    await grants.releaseReservation(grantID: grantID)
+                    throw FloeError.validationFailed(
+                        "The edit outcome was uncertain, so the drawing engine was reloaded from the last saved bytes. Retry the confirmed proposal.")
+                }
+            } catch {
+                await endLiveDraftLease(lease)
+                throw error
             }
+        }
+    }
+
+    /// The shared lease validation: `.dirty`/`.baselineChanged` aborts the
+    /// commit (the caller's rollback then undoes the engine draft) so the
+    /// user's unsaved work is preserved and the confirmed change can be retried
+    /// after saving.
+    private static func assertLeaseUnchanged(_ lease: CadLiveDraftRegistry.Lease?) async throws {
+        guard let lease else { return }
+        let validation = await MainActor.run { CadLiveDraftRegistry.shared.validateLease(lease) }
+        switch validation {
+        case .clean, .sessionGone:
+            return
+        case .dirty, .baselineChanged:
+            throw FloeError.validationFailed(
+                "A manual edit was made in the open drawing while the confirmed change was being applied; "
+                    + "the engine draft was rolled back and your unsaved work is preserved. Save or discard it, then retry the proposal.")
         }
     }
 
     func save(documentID: String, expectedSHA256: String, requestID: String,
               access: CadDocumentAccess) async throws -> CadDocumentReceipt {
         let resolved = try resolve(documentID: documentID, access: access)
-        return try await withDocumentGate(resolved.key) {
-            let key = replayKey(action: "save", access: access, documentID: resolved.id,
-                                requestID: requestID, payload: expectedSHA256)
-            if let replay = appliedReceipts[key] {
-                return replayReceipt(replay, requestID: requestID)
+        return try await withDocumentGate(resolved.key) { [self] in
+            // The lease is held INSIDE the serialized document gate; see apply.
+            let lease = try await beginLiveDraftLease(resolved)
+            do {
+                let key = replayKey(action: "save", access: access, documentID: resolved.id,
+                                    requestID: requestID, payload: expectedSHA256)
+                if let replay = appliedReceipts[key] {
+                    await endLiveDraftLease(lease)
+                    return replayReceipt(replay, requestID: requestID)
+                }
+                try noteRequestPayload(action: "save", access: access, documentID: resolved.id,
+                                       requestID: requestID, payload: expectedSHA256)
+                let session = try await refreshSession(resolved)
+                guard session.sha256.lowercased() == expectedSHA256.lowercased() else {
+                    throw FloeError.validationFailed("The drawing changed on disk; save refused. Draft remains in the editor.")
+                }
+                if Task.isCancelled { throw FloeError.cancelled }
+                let bytes = try await session.engine.save()
+                if let testHookBeforeFinalCommit { await testHookBeforeFinalCommit() }
+                try await Self.assertLeaseUnchanged(lease)
+                let receipt = try commit(session: session, bytes: bytes, expectedSHA256: expectedSHA256,
+                                         created: [], service: resolved.service, relativePath: resolved.id)
+                appliedReceipts[key] = receipt
+                await endLiveDraftLease(lease)
+                return receipt
+            } catch {
+                await endLiveDraftLease(lease)
+                throw error
             }
-            try noteRequestPayload(action: "save", access: access, documentID: resolved.id,
-                                   requestID: requestID, payload: expectedSHA256)
-            let session = try await refreshSession(resolved)
-            guard session.sha256.lowercased() == expectedSHA256.lowercased() else {
-                throw FloeError.validationFailed("The drawing changed on disk; save refused. Draft remains in the editor.")
-            }
-            if Task.isCancelled { throw FloeError.cancelled }
-            let bytes = try await session.engine.save()
-            let receipt = try commit(session: session, bytes: bytes, expectedSHA256: expectedSHA256,
-                                     created: [], service: resolved.service, relativePath: resolved.id)
-            appliedReceipts[key] = receipt
-            return receipt
         }
     }
 
@@ -623,6 +752,70 @@ actor CadDocumentCenter: CadDocumentHost {
             if let session = sessions.removeValue(forKey: victim) {
                 await session.engine.shutdown()
             }
+        }
+    }
+
+    // MARK: - Revision validation for Canvas restore
+
+    /// Opens the immutable bytes for `revision` in a SCRATCH engine session
+    /// and proves they parse as the recorded revision with matching size and
+    /// SHA-256, and that the descriptor belongs to `node`. Nothing is
+    /// written, and the node/session are not mutated. A tampered, truncated,
+    /// unparseable or foreign revision throws before the Canvas may restore.
+    func validateHistoryRevision(
+        _ revision: CanvasDrawingRevision, node: CanvasNode
+    ) async throws {
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false) else {
+            throw FloeError.invalidConfiguration("historyUnavailable")
+        }
+        let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
+        let candidate = floeRoot.appendingPathComponent(revision.relativePath)
+        let resolved = candidate.standardizedFileURL.resolvingSymlinksInPath()
+        guard resolved.path.hasPrefix(floeRoot.standardizedFileURL.path + "/") else {
+            throw FloeError.invalidConfiguration("historyPathUnsafe")
+        }
+        if revision.relativePath.hasPrefix("Materials/") {
+            let name = String(revision.relativePath.dropFirst("Materials/".count))
+            guard !name.isEmpty, !name.contains("/") else {
+                throw FloeError.invalidConfiguration("historyPathUnsafe")
+            }
+        } else if revision.relativePath.hasPrefix("WorkbenchRoot/") {
+            // valid prefix only; exact resolution checked by engine open
+        } else {
+            throw FloeError.invalidConfiguration("historyPathUnsafe")
+        }
+        guard FileManager.default.fileExists(atPath: resolved.path) else {
+            throw FloeError.invalidConfiguration("historyMissing")
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: resolved.path)
+        let size = (attributes[.size] as? Int64) ?? 0
+        guard size == revision.byteCount, size > 0,
+              size <= maximumDocumentBytes else {
+            throw FloeError.invalidConfiguration("historySize")
+        }
+        let data = try Data(contentsOf: resolved, options: .mappedIfSafe)
+        guard FloeDigest.sha256Hex(data) == revision.contentHash else {
+            throw FloeError.invalidConfiguration("historyHash")
+        }
+        // Real engine parse on a throwaway session. open() throws for any
+        // format/version/content the CAD Worker cannot load.
+        let engine = await CadWebEngineSession()
+        try await engine.start()
+        do {
+            let format = (revision.relativePath as NSString).pathExtension.lowercased()
+            _ = try await engine.open(bytes: data, format: format)
+        } catch {
+            await engine.shutdown()
+            throw FloeError.invalidConfiguration("historyUnparseable")
+        }
+        await engine.shutdown()
+
+        // Membership: the node must itself list this exact revision record.
+        guard case .usable(let revisions) = CanvasDrawingRevisionHistory.read(from: node),
+              revisions.contains(where: { $0 == revision }) else {
+            throw FloeError.invalidConfiguration("historyMembership")
         }
     }
 

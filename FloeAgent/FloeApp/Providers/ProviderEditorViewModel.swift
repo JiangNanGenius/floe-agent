@@ -18,6 +18,28 @@ import FloeSync
 import FloeSyncCore
 import FloeSecurity
 
+/// Secret-free save-phase diagnostics for the provider editor. Records only
+/// the fixed lifecycle stages of a Save tap (button activation → store
+/// stages → completion/failure). Never logs the endpoint URL, API key, model
+/// names, prompts or request/response bodies.
+enum ProviderSavePhaseLogger {
+    enum Phase: String {
+        case entered
+        case setSync = "set_sync"
+        case writeSecret = "write_secret"
+        case buildProfile = "build_profile"
+        case bundleSave = "bundle_save"
+        case readback
+        case readbackFailed = "readback_failed"
+        case completed
+        case failed
+    }
+
+    static func log(_ phase: Phase) {
+        FloeLogger(category: .providerSave).info("provider save phase \(phase.rawValue)")
+    }
+}
+
 /// View model for adding or editing one provider.
 @MainActor
 final class ProviderEditorViewModel: ObservableObject {
@@ -64,6 +86,10 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published private(set) var isSaving = false
     @Published private(set) var nativeToolStatusByModelID: [UUID: NativeToolCapabilityStatus] = [:]
     @Published var errorMessage: String?
+    /// Drives the save-failure alert ONLY. Connection-test and model-discovery
+    /// failures keep their own inline context (`errorMessage` / `testState`)
+    /// instead of being relabeled as a save failure.
+    @Published var saveErrorMessage: String?
 
     let center: ConversationCenter
     /// The provider being edited, or nil when adding a new one.
@@ -485,18 +511,37 @@ final class ProviderEditorViewModel: ObservableObject {
     /// applies the iCloud Keychain sync preference.
     @discardableResult
     func save() async -> Bool {
+        // Reentrancy guard: a second Save (double tap / repeated presses
+        // during an in-flight write) must never run a second bundle save.
+        guard !isSaving else { return false }
         isSaving = true
         defer { isSaving = false }
         errorMessage = nil
+        saveErrorMessage = nil
+        ProviderSavePhaseLogger.log(.entered)
         do {
+            ProviderSavePhaseLogger.log(.setSync)
             try await secretStore.setSyncEnabled(syncEnabled, for: providerID)
+            ProviderSavePhaseLogger.log(.writeSecret)
             try await persistSecretIfNeeded()
+            ProviderSavePhaseLogger.log(.buildProfile)
             let profile = try buildProfile()
+            ProviderSavePhaseLogger.log(.bundleSave)
             let saved = try await center.saveProviderBundle(
                 provider: profile,
                 models: selectedModels,
                 managedCapabilities: serviceRole.managedCapabilities
             )
+            ProviderSavePhaseLogger.log(.readback)
+            // Persisted readback BEFORE reporting success: re-read the provider
+            // and selected models from the store and fail visibly if the bytes
+            // on disk do not match what the user just entered.
+            if let reason = await center.verifyProviderPersisted(
+                provider: profile, selectedModels: selectedModels) {
+                ProviderSavePhaseLogger.log(.readbackFailed)
+                throw FloeError.invalidConfiguration(reason)
+            }
+            ProviderSavePhaseLogger.log(.completed)
             // Auxiliary-model routing is owned by AuxiliaryModelsView. Saving
             // an image/video provider must not rewrite the conversation-model
             // preference and create a cross-device last-writer-wins conflict.
@@ -527,7 +572,10 @@ final class ProviderEditorViewModel: ObservableObject {
             }
             return true
         } catch {
-            errorMessage = SecretRedactor.redact(error.localizedDescription)
+            ProviderSavePhaseLogger.log(.failed)
+            let message = SecretRedactor.redact(error.localizedDescription)
+            errorMessage = message
+            saveErrorMessage = message
             return false
         }
     }

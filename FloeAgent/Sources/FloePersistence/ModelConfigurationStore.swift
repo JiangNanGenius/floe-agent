@@ -49,15 +49,37 @@ public actor ModelConfigurationStore {
         }
     }
 
+    /// Result of a provider bundle save.
+    public struct ProviderBundleResult: Sendable, Equatable {
+        /// Models that now belong to the saved selected set.
+        public var saved: [ModelProfile]
+        /// Model rows that were actually deleted (unreferenced stale rows).
+        public var deletedModelIDs: [UUID]
+        /// Stale model rows that could not be deleted because durable history
+        /// (media jobs) still references them; they were disabled instead.
+        public var disabledModelIDs: [UUID]
+
+        public init(saved: [ModelProfile], deletedModelIDs: [UUID], disabledModelIDs: [UUID]) {
+            self.saved = saved
+            self.deletedModelIDs = deletedModelIDs
+            self.disabledModelIDs = disabledModelIDs
+        }
+    }
+
     /// Saves a provider and a user-selected set of models in one SQLite
     /// transaction. Existing rows are merged by provider + remote model ID,
     /// preserving their stable local UUIDs and user preferences.
+    ///
+    /// Stale rows outside the selected set are removed, BUT a row still
+    /// referenced by durable history (`media_generation_jobs`, FK RESTRICT)
+    /// is never deleted: it is disabled in place so historical jobs keep
+    /// their model link while the row disappears from every runtime picker.
     @discardableResult
     public func saveProviderBundle(
         provider: ProviderProfile,
         models: [ModelProfile],
         managedCapabilities: ModelCapabilities = .text
-    ) async throws -> [ModelProfile] {
+    ) async throws -> ProviderBundleResult {
         try provider.validate()
         for model in models { try ConfigurationCodec.validate(model) }
         return try await database.writer { db in
@@ -72,14 +94,115 @@ public actor ModelConfigurationStore {
                 sql: "SELECT id FROM models WHERE provider_id = ? AND (capabilities & ?) != 0",
                 arguments: [provider.id.uuidString, managedCapabilities.rawValue]
             )
+            // Build the set of columns whose foreign key RESTRICTs deletion
+            // of a model row, from the live schema. This covers every
+            // referencing table (current and future) without triggering a
+            // constraint failure to discover them.
+            let restrictedModelReferences = try Self.restrictedForeignKeys(
+                referencing: "models", in: db)
+            var deletedIDs: [UUID] = []
+            var disabledIDs: [UUID] = []
             for staleID in existingManagedIDs where !keptIDs.contains(staleID) {
-                try db.execute(
-                    sql: "DELETE FROM models WHERE id = ?",
-                    arguments: [staleID]
-                )
+                guard let id = UUID(uuidString: staleID) else {
+                    throw FloeError.storageCorrupted("Invalid stale model identifier")
+                }
+                let referenced = try Self.isRow(
+                    staleID, referencedByAnyOf: restrictedModelReferences, in: db)
+                if referenced {
+                    // Preserve the historical link: disable the row in place
+                    // so it is excluded from every runtime picker but durable
+                    // history keeps a valid model link.
+                    try db.execute(
+                        sql: "UPDATE models SET is_enabled = 0 WHERE id = ?",
+                        arguments: [staleID]
+                    )
+                    disabledIDs.append(id)
+                } else {
+                    try db.execute(
+                        sql: "DELETE FROM models WHERE id = ?",
+                        arguments: [staleID]
+                    )
+                    deletedIDs.append(id)
+                }
             }
-            return saved
+            return ProviderBundleResult(
+                saved: saved,
+                deletedModelIDs: deletedIDs,
+                disabledModelIDs: disabledIDs)
         }
+    }
+
+    /// One column that blocks deletion of rows in its referenced table
+    /// (ON DELETE RESTRICT, NO ACTION, or the unspecified default).
+    private struct RestrictedReference: Equatable {
+        var table: String
+        var column: String
+    }
+
+    /// Discovers, from the live schema, every table/column whose foreign key
+    /// references `targetTable` with semantics that block deletion (RESTRICT /
+    /// NO ACTION). Introspection replaces trial-and-error deletion so a
+    /// blocked delete never fires (and logs) a constraint failure.
+    private static func restrictedForeignKeys(
+        referencing targetTable: String,
+        in db: Database
+    ) throws -> [RestrictedReference] {
+        let tableNames = try String.fetchAll(
+            db,
+            sql: """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND substr(name, 1, 7) <> 'sqlite_'
+                """
+        )
+        var result: [RestrictedReference] = []
+        for table in tableNames {
+            // PRAGMA foreign_key_list takes no bound parameter; the name is
+            // DB-derived (sqlite_master) and quoted, so interpolation is safe.
+            let quotedName = Self.quotedIdentifier(table)
+            let foreignKeys = try Row.fetchAll(
+                db, sql: "PRAGMA foreign_key_list(\(quotedName))")
+            for foreignKey in foreignKeys {
+                let referencedTable: String? = foreignKey["table"]
+                let onDelete: String? = foreignKey["on_delete"]
+                let fromColumn: String? = foreignKey["from"]
+                guard referencedTable == targetTable,
+                      let column = fromColumn else { continue }
+                // Empty/NO ACTION (the SQLite default) blocks the delete too.
+                let action = (onDelete ?? "").uppercased()
+                guard action.isEmpty || action == "RESTRICT" || action == "NO ACTION" else {
+                    continue
+                }
+                result.append(.init(table: table, column: column))
+            }
+        }
+        return result
+    }
+
+    /// True when `rowID` appears in any column that RESTRICTs its deletion.
+    private static func isRow(
+        _ rowID: String,
+        referencedByAnyOf references: [RestrictedReference],
+        in db: Database
+    ) throws -> Bool {
+        for reference in references {
+            let quotedTable = Self.quotedIdentifier(reference.table)
+            let quotedColumn = Self.quotedIdentifier(reference.column)
+            let exists = try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM \(quotedTable) WHERE \(quotedColumn) = ?
+                    )
+                    """,
+                arguments: [rowID]
+            ) ?? false
+            if exists { return true }
+        }
+        return false
+    }
+
+    private static func quotedIdentifier(_ identifier: String) -> String {
+        "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     /// Reconciles a provider whose catalog is owned by this device. Missing

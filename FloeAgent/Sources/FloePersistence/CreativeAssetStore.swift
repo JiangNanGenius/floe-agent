@@ -169,8 +169,62 @@ public struct GeneratedAssetReservationAbandonment: Sendable, Hashable {
 }
 
 public actor CreativeAssetStore {
+    /// Authoritative reachability backstop. When installed, every
+    /// prune/delete path refuses to remove bytes that any persisted canvas
+    /// project still reaches (current node assets AND typed CAD revision
+    /// history), even when `reference_count` bookkeeping crashed mid-
+    /// reconciliation or a journal write failed: counts may lag the
+    /// authoritative project files, and this guard is what makes lagging
+    /// bookkeeping safe instead of merely believed-correct. The decision
+    /// fails closed: `.unknown` (enumeration/decode failure, newer-schema
+    /// project, in-flight reconciliation op) retains the bytes and surfaces
+    /// a recoverable maintenance error. Wired by the app environment; nil
+    /// in module tests that exercise the store alone.
+    public let reachabilityGuard: (@Sendable (UUID) -> CanvasAssetReachability)?
+
+    /// The fail-closed reachability decision for one asset.
+    private func reachability(of assetID: UUID) -> CanvasAssetReachability {
+        reachabilityGuard?(assetID) ?? .notReachable
+    }
+
+    /// Applies one reachable-reference reconciliation delta EXACTLY once.
+    /// The op receipt and the `reference_count` update land in the SAME
+    /// SQLite transaction: a crash either applies both or neither, and a
+    /// replayed op id is a recorded no-op instead of double-applying its
+    /// delta (a replayed decrement would otherwise under-count and let later
+    /// pruning collect still-referenced bytes). This — not the caller's
+    /// on-disk journal — is the source of truth for what was applied.
+    public func applyReferenceOp(opID: String, assetID: UUID, delta: Int, now: Date = Date()) async throws {
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO asset_reference_receipts (op_id, asset_id, delta, applied_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(op_id) DO NOTHING
+                """, arguments: [opID, assetID.uuidString, delta, Self.timestamp(now)])
+            guard db.changesCount == 1 else { return }
+            try db.execute(sql: """
+                UPDATE creative_assets SET reference_count = MAX(0, reference_count + ?),
+                    updated_at = ? WHERE id = ?
+                """, arguments: [delta, now, assetID.uuidString])
+            guard db.changesCount == 1 else {
+                throw FloeError.storageCorrupted(
+                    "Creative asset reference target does not exist"
+                )
+            }
+        }
+    }
+
+    private static func timestamp(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
     private let database: DatabaseManager
-    public init(database: DatabaseManager) { self.database = database }
+    public init(
+        database: DatabaseManager,
+        reachabilityGuard: (@Sendable (UUID) -> CanvasAssetReachability)? = nil
+    ) {
+        self.database = database
+        self.reachabilityGuard = reachabilityGuard
+    }
 
     /// Persists the complete owner/slot set before the first generated file is
     /// written. A later process can therefore locate both unbound candidate
@@ -412,7 +466,10 @@ public actor CreativeAssetStore {
         id: UUID,
         now: Date = Date()
     ) async throws -> GeneratedAssetReservationAbandonment {
-        try await database.writer { db in
+        // Capture the sync guard outside the writer so the @Sendable closure
+        // never touches actor-isolated state.
+        let reachabilityGuard = reachabilityGuard
+        return try await database.writer { db in
             guard let stateText = try String.fetchOne(
                 db,
                 sql: "SELECT state FROM generated_asset_reservation_batches WHERE id = ?",
@@ -478,6 +535,12 @@ public actor CreativeAssetStore {
             let canonicalIDs = Set(slots.compactMap(\.canonicalAssetID))
                 .sorted { $0.uuidString < $1.uuidString }
             for assetID in canonicalIDs {
+                // Authoritative reachability backstop, failing closed: a
+                // reservation-only asset is never auto-deleted while a
+                // persisted canvas project reaches it OR the reachability
+                // scan cannot prove it unreferenced.
+                guard reachabilityGuard?(assetID) != .reachable,
+                      reachabilityGuard?(assetID) != .unknown else { continue }
                 guard let row = try Row.fetchOne(
                     db,
                     sql: "SELECT * FROM creative_assets WHERE id = ?",
@@ -790,7 +853,22 @@ public actor CreativeAssetStore {
     /// local path is returned only when that row was actually deleted; cloud
     /// releases retain the local copy until their asynchronous confirmation.
     public func requestPermanentDeletion(assetID: UUID) async throws -> String? {
-        try await database.writer { db in
+        // Authoritative reachability backstop, failing closed: never delete
+        // bytes a persisted canvas project still reaches — and never delete
+        // on incomplete knowledge (unreadable index) either.
+        switch reachability(of: assetID) {
+        case .notReachable:
+            break
+        case .reachable:
+            throw FloeError.validationFailed(
+                "这个素材仍被画布中的节点或图纸版本历史引用，不能删除。"
+            )
+        case .unknown:
+            throw FloeError.validationFailed(
+                "画布索引暂时不可读，为避免误删已保留该素材；请稍后重试。"
+            )
+        }
+        return try await database.writer { db -> String? in
             guard let row = try Row.fetchOne(
                 db,
                 sql: "SELECT * FROM creative_assets WHERE id = ?",
@@ -928,7 +1006,10 @@ public actor CreativeAssetStore {
         deleteLocalAfterRelease: Bool,
         deleteLocalFile: @escaping @Sendable (String) throws -> Void
     ) async throws -> String? {
-        try await database.writer { db in
+        // Capture the sync guard outside the writer so the @Sendable closure
+        // never touches actor-isolated state.
+        let reachabilityGuard = reachabilityGuard
+        return try await database.writer { db in
             guard let releaseRow = try Row.fetchOne(
                 db,
                 sql: """
@@ -964,6 +1045,23 @@ public actor CreativeAssetStore {
 
             var authorizedLocalPath: String?
             if deleteLocalAfterRelease {
+                // Authoritative reachability backstop, failing closed: a
+                // confirmed cloud release never deletes local bytes a
+                // persisted canvas project reaches — and an unreadable
+                // canvas index retains the local copy with a recoverable
+                // error rather than gambling on incomplete knowledge.
+                switch reachabilityGuard?(assetID) ?? .notReachable {
+                case .notReachable:
+                    break
+                case .reachable:
+                    throw FloeError.validationFailed(
+                        "这个素材仍被画布中的节点或图纸版本历史引用，不能删除。"
+                    )
+                case .unknown:
+                    throw FloeError.validationFailed(
+                        "画布索引暂时不可读，为避免误删已保留该素材；请稍后重试。"
+                    )
+                }
                 try db.execute(sql: """
                     DELETE FROM creative_assets
                     WHERE id = ? AND reference_count = 0

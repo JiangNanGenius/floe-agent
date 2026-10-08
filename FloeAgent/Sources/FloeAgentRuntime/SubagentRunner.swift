@@ -185,6 +185,7 @@ public struct SubagentRunner: Sendable {
                             activeSkillIDs: parentContext.activeSkillIDs,
                             allowedToolNames: parentContext.allowedToolNames,
                             workspaceRootURL: parentContext.workspaceRootURL,
+                            canvasStagedDocument: parentContext.canvasStagedDocument,
                             allowedWorkspacePaths: parentContext.allowedWorkspacePaths,
                             cancellation: token,
                             environmentID: parentContext.environmentID,

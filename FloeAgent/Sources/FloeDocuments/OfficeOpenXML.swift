@@ -253,7 +253,7 @@ public enum OfficeDocumentService {
 
 }
 
-private struct OfficeArchive {
+struct OfficeArchive {
     let url: URL
     let archive: Archive
     let paths: [String]
@@ -570,7 +570,7 @@ private enum XLSXCellCodec {
     }
 }
 
-private enum SharedStringTable {
+enum SharedStringTable {
     static func load(from package: OfficeArchive, limit: UInt32) throws -> [String] {
         guard package.paths.contains("xl/sharedStrings.xml") else { return [] }
         let xml = try package.xml(path: "xl/sharedStrings.xml", limit: limit)

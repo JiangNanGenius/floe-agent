@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 import Combine
 import WebKit
 import FloeDocuments
+import FloeCore
 #if canImport(FloeOfficeNative)
 import FloeOfficeNative
 #endif
@@ -300,6 +301,20 @@ final class OfficeFileSession: ObservableObject {
     /// `open`; the session refuses editing and the UI shows the
     /// download-to-local hint instead of any edit affordance.
     @Published var isRemoteSnapshot = false
+    /// Snapshot of the pre-batch working copy, kept with the exact expected
+    /// post-commit SHA. The pinned bundle has no undo-group command, so a
+    /// whole-batch revert restores these bytes with a CAS instead of guessing
+    /// an engine undo depth. Cleared when the document changes or closes.
+    private var engineBatchSnapshotURL: URL?
+    private var engineBatchCommittedSHA: String?
+    private var engineBatchJournalID: String?
+    /// True while a committed batch can still be reverted: the file SHA is the
+    /// batch's committed SHA and no later edit/commit happened.
+    @Published private(set) var canRevertLastEngineBatch = false
+    /// Set when a failed command batch could not be proven restored; the
+    /// working copy is quarantined and manual save refuses until the document
+    /// is reloaded from the committed bytes or the edits are discarded.
+    @Published private(set) var engineBatchRestoreFailed = false
     private var workspace: SecurityScopedDocumentWorkspace?
     private var session: DocumentSession?
     private var requestedURL: URL?
@@ -1365,6 +1380,15 @@ final class OfficeFileSession: ObservableObject {
                                          "permitsSave": (renderGate?.permitsSave ?? true) ? "true" : "false"])
             return false
         }
+        guard !engineBatchRestoreFailed else {
+            // A partial batch left an unverified working copy; committing it
+            // would silently publish an unverified engine state.
+            error = OfficeInkText.t(
+                "上一次批量编辑未能恢复，已暂停保存以保护文档。请重新打开文档（丢弃未验证的编辑副本）后再试。",
+                "A previous command batch could not be restored, so saving is paused to protect the document. Reopen the document to discard the unverified working copy, then retry.")
+            recordStage("save.refused.unverifiedBatch")
+            return false
+        }
         operating = true
         defer { finishOperation() }
         phase = .saving
@@ -1447,6 +1471,366 @@ final class OfficeFileSession: ObservableObject {
         }
     }
 
+    /// Flushes the engine's working copy and reports the saved package's
+    /// formula-error cells (cell + error text). Read-only; the source file is
+    /// never touched.
+    func formulaErrorCells() async throws -> [OfficeErrorCell] {
+        #if canImport(FloeOfficeNative)
+        guard canAct, let workspace, let session, let controller else {
+            throw FloeError.validationFailed("The document is not ready")
+        }
+        guard let native = controller as? FloeOfficeNativeViewController else {
+            throw CocoaError(.featureUnsupported)
+        }
+        if !readOnly {
+            native.view.isUserInteractionEnabled = false
+            defer { native.view.isUserInteractionEnabled = true }
+            try await Self.saveWorkingCopy(native)
+        }
+        _ = workspace
+        let snapshot = try OfficeOutputSnapshot.capture(url: session.workingURL)
+        return snapshot.errorCells
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
+    }
+
+    // MARK: - Shared engine command surface (UI + document.office.edit)
+
+    /// Workspace-relative identity of the open document and its owner,
+    /// installed by the owning surface so the shared command center can bind
+    /// tool calls to this exact live session (and refuse another task).
+    private(set) var liveDocumentID: String?
+    private(set) var liveWorkspaceRoot: URL?
+    private(set) var liveOwnerConversationID: UUID?
+
+    /// True when this session can dispatch engine commands and commit their
+    /// verified output (editable, rendered, controller mounted).
+    var commandReady: Bool {
+        canAct && !readOnly && controller != nil && phase == .ready
+            && (renderGate?.permitsSave ?? true)
+    }
+
+    func registerLiveDocument(relativePath: String, root: URL?, conversationID: UUID?) {
+        liveDocumentID = relativePath
+        liveWorkspaceRoot = root
+        liveOwnerConversationID = conversationID
+        OfficeLiveSessionRegistry.shared.register(session: self, root: root, relativePath: relativePath)
+    }
+
+    private func unregisterLiveDocument() {
+        guard let liveDocumentID else { return }
+        OfficeLiveSessionRegistry.shared.unregister(session: self, root: liveWorkspaceRoot,
+                                                    relativePath: liveDocumentID)
+        self.liveDocumentID = nil
+        self.liveWorkspaceRoot = nil
+        self.liveOwnerConversationID = nil
+    }
+
+    struct OfficeLiveEngineStatus {
+        var sha256: String
+        var readOnly: Bool
+        var editable: Bool
+        var unsavedChanges: Bool
+        var unavailableReason: String?
+    }
+
+    /// Live status for the shared command center: the exact committed SHA the
+    /// proposal must bind, the engine's read-only/edit state and whether the
+    /// session holds unsaved edits.
+    func liveEngineStatus() async throws -> OfficeLiveEngineStatus {
+        guard let session else {
+            throw FloeError.validationFailed("The Office document is not open")
+        }
+        let sha = try FloeDigest.sha256Hex(ofFileAt: session.originalURL)
+        let unsaved = await hasLocalEditsToProtect()
+        return OfficeLiveEngineStatus(sha256: sha,
+                                      readOnly: readOnly,
+                                      editable: commandReady,
+                                      unsavedChanges: unsaved,
+                                      unavailableReason: editUnavailableReason)
+    }
+
+    /// The engine's opaque selection/cursor identity for this session, or nil
+    /// when the page exposes none. Proposals for selection-relative commands
+    /// bind this value; apply refuses a changed selection.
+    func liveSelectionFingerprint() async -> String? {
+        guard let controller else { return nil }
+        return await OfficeCommandBridge.selectionFingerprint(controller: controller)
+    }
+
+    struct OfficeEngineApplyResult {
+        var facts: [String]
+        var freshStateCommands: Set<String>
+        var sha256: String
+    }
+
+    /// Dispatches one validated command batch through the live engine, flushes
+    /// the working copy, verifies the SAVED package against the promises, then
+    /// commits the original with the workspace CAS. Any failure before the
+    /// commit leaves the original untouched and the working copy preserved.
+    /// `expectedSelectionFingerprint` re-checks the live selection after
+    /// interaction is suspended, so a selection-relative command cannot be
+    /// redirected to a different paragraph/cell/object.
+    func applyEngineCommands(_ commands: [OfficeEngineCommand],
+                             expectedSelectionFingerprint: String? = nil,
+                             batchID: String? = nil) async throws -> OfficeEngineApplyResult {
+        #if canImport(FloeOfficeNative)
+        guard commandReady, !readOnly, let workspace, let session, let controller else {
+            throw FloeError.validationFailed(
+                "The document is not ready for engine edits (preview, read-only or still opening)")
+        }
+        guard !commands.isEmpty else {
+            throw FloeError.validationFailed("No commands were supplied")
+        }
+        // The operation guard is taken BEFORE any await: a second operation
+        // started from the UI or a tool while this one is between awaits must
+        // be rejected, not interleaved.
+        guard !operating else {
+            throw FloeError.validationFailed("Another document operation is in progress; retry when it finishes")
+        }
+        operating = true
+        phase = .saving
+        error = nil
+        defer { phase = runtimeFailed || self.controller == nil ? .failed : .ready; finishOperation() }
+        // A command batch starts from the committed revision: an uncommitted
+        // working copy would make the OOXML expectations ambiguous and could
+        // silently include unrelated edits in the commit.
+        if try await workspace.hasUncommittedWorkingCopy(session) {
+            throw FloeError.validationFailed(
+                "The editor already has uncommitted changes; save or discard them before applying a proposal")
+        }
+        guard let native = controller as? FloeOfficeNativeViewController else {
+            throw CocoaError(.featureUnsupported)
+        }
+        native.view.isUserInteractionEnabled = false
+        defer { native.view.isUserInteractionEnabled = true }
+
+        // The selection is frozen from here: re-read the engine's opaque
+        // identity and refuse a proposal whose target changed.
+        if let expectedSelectionFingerprint {
+            let current = await OfficeCommandBridge.selectionFingerprint(controller: native)
+            guard let current, current == expectedSelectionFingerprint else {
+                throw FloeError.validationFailed(
+                    "The document selection changed after the proposal was created, so it was not applied. "
+                        + "Select the target again and ask for a fresh proposal.")
+            }
+        }
+
+        // Baseline from the committed working copy (== original bytes). A
+        // failure after dispatch restores exactly these bytes.
+        let before = try OfficeOutputSnapshot.capture(url: session.workingURL)
+        // Persisted pre-batch snapshot: the pinned bundle has no undo-group
+        // command, so the only honest whole-batch revert is restoring these
+        // exact bytes with a CAS — never a guessed count of engine undos. The
+        // snapshot must be copied AND hashed successfully BEFORE any dispatch;
+        // a batch with no way back is refused, and the previous recoverable
+        // snapshot state is left intact until this batch actually commits.
+        let snapshotDirectory = session.workingURL.deletingLastPathComponent()
+            .appendingPathComponent("batch-snapshots", isDirectory: true)
+        let journalBatchID = batchID ?? UUID().uuidString
+        let snapshotURL = snapshotDirectory
+            .appendingPathComponent("\(journalBatchID).\(session.workingURL.pathExtension)")
+        do {
+            try FileManager.default.createDirectory(at: snapshotDirectory, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: snapshotURL)
+            try FileManager.default.copyItem(at: session.workingURL, to: snapshotURL)
+            let copied = try FloeDigest.sha256Hex(ofFileAt: snapshotURL)
+            guard copied == before.sha256 else {
+                throw FloeError.validationFailed("the copied snapshot does not match the committed bytes")
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: snapshotURL)
+            throw FloeError.validationFailed(
+                "A verified pre-batch snapshot could not be created, so the command batch was not started: \(error.localizedDescription)")
+        }
+        let snapshotSHA = before.sha256
+        do {
+            let outcome = try await OfficeCommandBridge.dispatch(commands, controller: native)
+            try await Self.saveWorkingCopy(native)
+            // The engine's private copy is now flushed into workingURL; reopen it.
+            let after = try OfficeOutputSnapshot.capture(url: session.workingURL)
+            var expectations: [OfficeOutputExpectation] = []
+            for command in commands {
+                expectations.append(contentsOf: OfficeOutputExpectation.forCommand(command, before: before))
+            }
+            let facts = try OfficeOutputValidator.verify(before: before, after: after, expectations: expectations)
+            let fresh = await OfficeCommandBridge.freshStateCommands(token: outcome.token, controller: native)
+            // The verified post-edit bytes are the expected commit result.
+            let expectedSHA = after.sha256
+            // COMMIT BOUNDARY: the write-ahead entry is PREPARED before the
+            // file commit with the canonical document identity and the
+            // verified expected SHA. A prepare failure refuses the commit.
+            let prepared = OfficeCommittedBatchJournal.Entry(
+                batchID: journalBatchID,
+                documentID: liveDocumentID ?? session.originalURL.lastPathComponent,
+                workspacePath: liveWorkspaceRoot?.path,
+                operationID: batchID ?? journalBatchID,
+                expectedSHA256: expectedSHA,
+                snapshotPath: snapshotURL.path,
+                snapshotSHA256: snapshotSHA,
+                commands: commands.map(\.id),
+                preparedAt: Date(), committedAt: nil, note: nil)
+            do {
+                try OfficeCommittedBatchJournal.shared.prepare(prepared)
+            } catch {
+                try? FileManager.default.removeItem(at: snapshotURL)
+                throw FloeError.storageCorrupted(
+                    "The batch could not be journaled before the commit, so it was not applied: \(error.localizedDescription)")
+            }
+            // Commit only after verification. The workspace save re-checks the
+            // original digest and preserves a conflicting/unguarded copy.
+            try await workspace.save(session)
+            // A lost completion marker is recoverable: reconciliation compares
+            // the file SHA with the prepared expected SHA.
+            try? OfficeCommittedBatchJournal.shared.complete(batchID: journalBatchID)
+            // Adopt the new revert point only after the commit; the previous
+            // recoverable snapshot is retired only now.
+            if let previous = engineBatchSnapshotURL, previous != snapshotURL {
+                try? FileManager.default.removeItem(at: previous)
+            }
+            engineBatchSnapshotURL = snapshotURL
+            engineBatchCommittedSHA = expectedSHA
+            engineBatchJournalID = journalBatchID
+            canRevertLastEngineBatch = true
+            // Post-commit bookkeeping is best-effort only; the committed SHA is
+            // the verified post-edit SHA, never the pre-batch one.
+            hasUncommittedChanges = (try? await workspace.hasUncommittedWorkingCopy(session)) ?? false
+            if !hasUncommittedChanges { await OfficeExplicitSaveBridge.didCommit(controller: native) }
+            onCommitted?()
+            recordStage("engine.commands.ok", ["count": "\(commands.count)"])
+            return OfficeEngineApplyResult(facts: facts, freshStateCommands: fresh, sha256: expectedSHA)
+        } catch {
+            // The pre-batch snapshot is the validated way back. Restoration
+            // rebuilds the working copy from the committed original (verified
+            // against the baseline SHA) — never a guessed count of engine
+            // undos, which could reverse unrelated earlier user edits.
+            let restored = await restoreFailedEngineBatch(session: session, baseline: before)
+            if restored {
+                try? FileManager.default.removeItem(at: snapshotURL)
+            } else {
+                // Keep the snapshot: it is the recoverable pre-batch state.
+                engineBatchRestoreFailed = true
+                hasUncommittedChanges = true
+                canRevertLastEngineBatch = false
+                throw FloeError.validationFailed(
+                    "The command batch failed and the document could NOT be restored automatically; the unverified working copy was quarantined and saving is paused. The recoverable pre-batch snapshot was preserved. Reopen the document to recover: \(error.localizedDescription)")
+            }
+            throw FloeError.validationFailed(
+                "The command batch failed and the document was restored to the committed revision: \(error.localizedDescription)")
+        }
+        #else
+        throw CocoaError(.featureUnsupported)
+        #endif
+    }
+
+    private func clearEngineBatchSnapshot() {
+        if let engineBatchSnapshotURL { try? FileManager.default.removeItem(at: engineBatchSnapshotURL) }
+        engineBatchSnapshotURL = nil
+        engineBatchCommittedSHA = nil
+        engineBatchJournalID = nil
+        canRevertLastEngineBatch = false
+    }
+
+    /// Restores after a failed engine batch. The original was never committed
+    /// on this path, so the validated recovery is: verify the original still
+    /// has the pre-batch bytes, then rebuild the working copy from it. If the
+    /// original changed externally, fail closed and keep the snapshot.
+    private func restoreFailedEngineBatch(session: DocumentSession,
+                                          baseline: OfficeOutputSnapshot) async -> Bool {
+        guard let current = try? FloeDigest.sha256Hex(ofFileAt: session.originalURL),
+              current == baseline.sha256 else { return false }
+        do {
+            try await replaceWithExternalVersion(url: session.originalURL, readOnly: false)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Reloads the mounted editor from the committed bytes after a confirmed
+    /// engine apply (including panel-driven proposals). The proposal flow
+    /// refuses a dirty editor, so there is no unsaved work to discard; the
+    /// reload keeps the visible editor on the new revision instead of stale
+    /// pre-apply content.
+    func reloadAfterEngineApply() async throws {
+        guard let session, !readOnly else { return }
+        let url = session.originalURL
+        guard beginExternalRefresh() else { return }
+        defer { endExternalRefresh() }
+        try await replaceWithExternalVersion(url: url, readOnly: false)
+    }
+
+    /// Reverts the last committed command batch by restoring the persisted
+    /// pre-batch bytes with a CAS. This is deliberately NOT a guessed number of
+    /// engine undos: the pinned bundle has no undo-group command, and any
+    /// later user edit would make N undos reverse unrelated work. It refuses
+    /// unless the file still has the batch's exact committed SHA and the live
+    /// editor has no unsaved edits.
+    @discardableResult
+    func revertLastEngineBatch() async -> Bool {
+        #if canImport(FloeOfficeNative)
+        guard !operating, let workspace, let session, let controller,
+              controller is FloeOfficeNativeViewController else { return false }
+        // The revert point survives a restart: fall back to the durable
+        // committed journal entry for this document when the in-memory state
+        // was lost.
+        let documentKey = liveDocumentID ?? session.originalURL.lastPathComponent
+        let resolved: (snapshot: URL, committedSHA: String, batchID: String)?
+        if let snapshotURL = engineBatchSnapshotURL, let committedSHA = engineBatchCommittedSHA {
+            resolved = (snapshotURL, committedSHA, engineBatchJournalID ?? documentKey)
+        } else if let entry = OfficeCommittedBatchJournal.shared.latestCommitted(documentID: documentKey),
+                  let path = entry.snapshotPath {
+            resolved = (URL(fileURLWithPath: path), entry.expectedSHA256, entry.batchID)
+        } else {
+            resolved = nil
+        }
+        guard let resolved else { return false }
+        let snapshotURL = resolved.snapshot
+        let committedSHA = resolved.committedSHA
+        operating = true
+        phase = .saving
+        error = nil
+        defer { phase = runtimeFailed || self.controller == nil ? .failed : .ready; finishOperation() }
+        do {
+            guard FileManager.default.fileExists(atPath: snapshotURL.path) else {
+                error = OfficeInkText.t("批次前快照已不可用。", "The pre-batch snapshot is no longer available.")
+                return false
+            }
+            let currentSHA = try FloeDigest.sha256Hex(ofFileAt: session.originalURL)
+            guard currentSHA.lowercased() == committedSHA.lowercased() else {
+                error = OfficeInkText.t(
+                    "文档在该批次之后又发生了变化，未自动撤销以避免覆盖后续编辑。",
+                    "The document changed after this batch, so it was not reverted automatically to avoid overwriting later work.")
+                return false
+            }
+            guard await !hasLocalEditsToProtect() else {
+                error = OfficeInkText.t(
+                    "编辑器有未保存的修改，无法撤销该批次；请先保存或放弃这些修改。",
+                    "The editor has unsaved changes; save or discard them before reverting the batch.")
+                return false
+            }
+            let staged = session.workingURL.deletingLastPathComponent()
+                .appendingPathComponent(".floe-batch-revert-\(UUID().uuidString).\(session.workingURL.pathExtension)")
+            defer { try? FileManager.default.removeItem(at: staged) }
+            try FileManager.default.copyItem(at: snapshotURL, to: staged)
+            _ = try FileManager.default.replaceItemAt(session.workingURL, withItemAt: staged)
+            try await workspace.save(session)
+            OfficeCommittedBatchJournal.shared.remove(batchID: resolved.batchID)
+            try? FileManager.default.removeItem(at: snapshotURL)
+            clearEngineBatchSnapshot()
+            try? await replaceWithExternalVersion(url: session.originalURL, readOnly: false)
+            recordStage("engine.batch.reverted")
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+        #else
+        return false
+        #endif
+    }
+
     /// Closes the current controller/working copy and reopens `url` while the
     /// caller still holds `beginExternalRefresh()`. On failure the editor is
     /// left in a recoverable failed state instead of silently discarding work.
@@ -1465,6 +1849,8 @@ final class OfficeFileSession: ObservableObject {
             workspace = files
             session = opened
             try await activate(readOnly: readOnly)
+            engineBatchRestoreFailed = false
+            clearEngineBatchSnapshot()
         } catch {
             self.readOnly = true
             fail(error)
@@ -1511,6 +1897,8 @@ final class OfficeFileSession: ObservableObject {
             await workspace.discardChangesAndClose(session)
             self.session = try await workspace.open(securityScopedURL: session.originalURL)
             hasUncommittedChanges = false
+            engineBatchRestoreFailed = false
+            clearEngineBatchSnapshot()
             readOnly = true
             phase = .idle
             recordStage("exit.discard.ok")
@@ -1646,6 +2034,7 @@ final class OfficeFileSession: ObservableObject {
         // Terminal from here on: a queued/replayed intent must never re-open
         // a working copy on this session.
         released = true
+        unregisterLiveDocument()
         recordStage("session.release")
         renderUnverified = false
         openingPolicy = nil
@@ -2450,6 +2839,7 @@ struct OfficeDocumentEditorView: View {
     @State private var exportSucceeded = false
     @State private var choosingAttachment = false
     @State private var choosingWorkspaceAttachment = false
+    @State private var showingCommandPanel = false
     @State private var showingAttachments = false
     @State private var showingInkControls = false
     @State private var attachmentError: String?
@@ -2513,6 +2903,13 @@ struct OfficeDocumentEditorView: View {
                     stableIdentity: stableInkIdentity,
                     workspaceIdentity: environment.workspaceCenter.currentWorkspace?.id.uuidString,
                     documentKey: relativePath)
+                // Register the live document for the shared Office command
+                // center (document.office.edit), so proposals/apply target this
+                // exact workspace file and owner.
+                session.registerLiveDocument(
+                    relativePath: relativePath,
+                    root: environment.workspaceCenter.fileService?.guardResolver.rootURL,
+                    conversationID: nil)
                 // Queued intent: a tap that lands while the document is still
                 // opening is replayed instead of being dropped by `operating`.
                 if requestsEditingOnAppear { await session.requestEditing() }
@@ -2551,6 +2948,12 @@ struct OfficeDocumentEditorView: View {
             .sheet(isPresented: $choosingWorkspaceAttachment) {
                 OfficeWorkspaceAttachmentPicker(environment: environment) { url in
                     try await session.insertAttachment(url)
+                }
+            }
+            .sheet(isPresented: $showingCommandPanel) {
+                if let format = OfficeDocumentFormat(fileExtension: (relativePath as NSString).pathExtension) {
+                    OfficeCommandPanel(documentID: relativePath, format: format, session: session)
+                        .environmentObject(environment)
                 }
             }
             .sheet(isPresented: $showingAttachments) { OfficeAttachmentListView(session: session) }
@@ -2694,6 +3097,16 @@ struct OfficeDocumentEditorView: View {
                 OfficeInkControlPanel(session: session, ink: session.inkPreferences)
                     .presentationCompactAdaptation(.popover)
             }
+        }
+        if OfficeDocumentFormat(fileExtension: (relativePath as NSString).pathExtension) != nil {
+            Button {
+                showingCommandPanel = true
+            } label: {
+                Label(OfficeInkText.t("文档命令", "Commands"), systemImage: "wand.and.stars")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .disabled(!session.canAct)
+            .accessibilityIdentifier("office.commands.open")
         }
         if session.supportsPresentation {
             Button {

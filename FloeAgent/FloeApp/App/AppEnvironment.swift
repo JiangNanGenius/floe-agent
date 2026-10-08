@@ -163,7 +163,18 @@ final class AppEnvironment: ObservableObject {
     private lazy var _speechService = SpeechService()
     private lazy var _backgroundRunCoordinator = BackgroundRunCoordinator(environment: self)
     private lazy var _mediaGenerationService = MediaGenerationService(environment: self)
-    private lazy var _creativeAssetStore = CreativeAssetStore(database: database)
+    private lazy var _creativeAssetStore: CreativeAssetStore = {
+        CreativeAssetStore(
+            database: database,
+            reachabilityGuard: { assetID in
+                // Authoritative reachability backstop for every prune/delete
+                // path. Fails closed: reference counts may lag a crashed
+                // reconciliation, and an unreadable/newer-schema canvas
+                // index retains the bytes with a recoverable error instead
+                // of allowing destructive pruning on incomplete knowledge.
+                WorkspaceCanvasRegistry.reachability(of: assetID)
+            })
+    }()
     private lazy var _canvasSyncOperationStore = CanvasSyncOperationStore(database: database)
     private lazy var _canvasCloudAssetService: CanvasCloudAssetService = {
         #if targetEnvironment(simulator)
@@ -183,6 +194,9 @@ final class AppEnvironment: ObservableObject {
     /// Single mutation/commit authority for CAD documents (visible editor and
     /// agent tools share it).
     private lazy var _cadDocumentCenter = CadDocumentCenter()
+    /// Single authority for engine-level Office edits (document.office.edit);
+    /// routes through the live editor session registered per document.
+    private lazy var _officeCommandCenter = OfficeCommandCenter()
 
     var conversationCenter: ConversationCenter { _conversationCenter }
     /// Set during tool registration; used at launch to reconcile interrupted
@@ -205,6 +219,7 @@ final class AppEnvironment: ObservableObject {
     var creativeAssetStore: CreativeAssetStore { _creativeAssetStore }
     var workbenchCenter: WorkbenchCenter { _workbenchCenter }
     var cadDocumentCenter: CadDocumentCenter { _cadDocumentCenter }
+    var officeCommandCenter: OfficeCommandCenter { _officeCommandCenter }
     var canvasSyncOperationStore: CanvasSyncOperationStore { _canvasSyncOperationStore }
     var canvasCloudAssetService: CanvasCloudAssetService { _canvasCloudAssetService }
     var screenShareCenter: ScreenShareCenter {
@@ -779,6 +794,10 @@ final class AppEnvironment: ObservableObject {
         // CAD drawings: cad.document read/propose/apply/save/export through the
         // native Rust WASM engine, with a UI-minted confirmation grant.
         registerCadDocumentTools(center: cadDocumentCenter)
+        // Office engine edits: document.office.edit propose/apply/export
+        // through the live pinned Office editor session, with a UI-minted
+        // confirmation grant and saved-package verification.
+        registerOfficeEditTools(center: officeCommandCenter)
         // Public Apple-framework integrations. Device-local settings filter
         // these descriptors before each provider request.
         registerAppleSystemTools(database: database)

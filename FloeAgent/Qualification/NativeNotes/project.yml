@@ -88,8 +88,9 @@ targets:
         product: FloeTools
       - package: FloeAgent
         product: FloeWorkspace
+      - package: FloeAgent
+        product: FloeWorkbench
       - package: WhisperKit
-        product: WhisperKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.notes.qualification

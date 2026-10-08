@@ -4,10 +4,32 @@ import Foundation
 import FloeCore
 import FloeModels
 
+/// Explicitly authorized Canvas staged CAD document for one run.
+///
+/// Seeded ONLY by the launch path that verified the durable Drawing
+/// Assistant binding (review sheet → conversation → binding store). The
+/// cad.document tool derives its `CadDocumentAccess` from this value, never
+/// from prompt/drawing text: a model quoting a path gains no authority.
+/// The staged bytes are the editable draft; the canvas node changes only
+/// when the user explicitly Finishes, so assistant proposals stay draft.
+public struct CanvasStagedDocumentAccess: Sendable, Hashable {
+    /// Canvas project that owns the staged draft.
+    public var canvasID: UUID
+    /// App-owned canvas draft root (the CAD workspace root).
+    public var draftRootPath: String
+    /// The exact staged document, relative to the draft root.
+    public var stagedRelativePath: String
+
+    public init(canvasID: UUID, draftRootPath: String, stagedRelativePath: String) {
+        self.canvasID = canvasID
+        self.draftRootPath = draftRootPath
+        self.stagedRelativePath = stagedRelativePath
+    }
+}
+
 /// Per-execution context handed to every tool.
 public struct ToolContext: Sendable {
-    public var runID: UUID
-    /// Container/environment the run executes in. Tools that install or
+    public var runID: UUID    /// Container/environment the run executes in. Tools that install or
     /// execute packages (exec.shell, apt, pip, npm) resolve their writable
     /// layer from this identifier; nil means the default project container.
     public var environmentID: String?
@@ -29,6 +51,11 @@ public struct ToolContext: Sendable {
     /// Root assigned to this task. Workspace tools must prefer this over any
     /// UI-global workspace so concurrent tasks cannot leak into one another.
     public var workspaceRootURL: URL?
+    /// Exact Canvas staged CAD document this run may touch through
+    /// cad.document, or nil for runs without that verified binding. This is
+    /// authority: it is seeded from the durable assistant binding at launch,
+    /// never inferred from document text or model output.
+    public var canvasStagedDocument: CanvasStagedDocumentAccess?
     /// Optional workspace-relative file ceiling. An empty collection means
     /// the whole task workspace; entries authorize the path and descendants.
     public var allowedWorkspacePaths: [String]
@@ -44,6 +71,7 @@ public struct ToolContext: Sendable {
         activeSkillIDs: Set<String> = [],
         allowedToolNames: Set<String>? = nil,
         workspaceRootURL: URL? = nil,
+        canvasStagedDocument: CanvasStagedDocumentAccess? = nil,
         allowedWorkspacePaths: [String] = [],
         cancellation: CancellationToken,
         childBudget: ChildBudgetContext? = nil,
@@ -61,6 +89,7 @@ public struct ToolContext: Sendable {
         self.activeSkillIDs = activeSkillIDs
         self.allowedToolNames = allowedToolNames
         self.workspaceRootURL = workspaceRootURL
+        self.canvasStagedDocument = canvasStagedDocument
         self.allowedWorkspacePaths = allowedWorkspacePaths
         self.cancellation = cancellation
         self.childBudget = childBudget

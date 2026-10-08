@@ -389,6 +389,106 @@ struct ModelConfigurationStoreTests {
         #expect(Set(models.map(\.remoteModelID)) == ["chat", "kept-image", "video"])
     }
 
+    @Test("A deselected model referenced by a media job is disabled, not deleted, and readback matches")
+    func providerBundlePreservesReferencedModel() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let store = ModelConfigurationStore(database: database)
+        let provider = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://api.deepseek.com"))
+        )
+        let kept = ModelProfile(
+            providerID: provider.id, remoteModelID: "deepseek-flash", displayName: "Flash",
+            limits: ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192),
+            capabilities: [.text]
+        )
+        let referencedStale = ModelProfile(
+            providerID: provider.id, remoteModelID: "old-compatible", displayName: "Old",
+            limits: ModelLimits(contextTokens: 4_096, maxOutputTokens: 1_024),
+            capabilities: [.text]
+        )
+        let unreferencedStale = ModelProfile(
+            providerID: provider.id, remoteModelID: "gone", displayName: "Gone",
+            limits: ModelLimits(contextTokens: 4_096, maxOutputTokens: 1_024),
+            capabilities: [.text]
+        )
+        try await store.saveProvider(provider)
+        for model in [kept, referencedStale, unreferencedStale] {
+            try await store.saveModel(model)
+        }
+        let emptyJSON = Data("[]".utf8)
+        // A durable media job still references the old model (FK RESTRICT).
+        try await database.writer { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO media_generation_jobs (
+                        id, provider_task_id, provider_id, model_id, media_kind,
+                        canvas_id, source_node_ids_json, result_node_id,
+                        request_json, asset_references_json, state,
+                        created_at, updated_at, owner_kind, owner_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    UUID().uuidString, "task-1", provider.id.uuidString,
+                    referencedStale.id.uuidString, "image",
+                    UUID().uuidString, emptyJSON, "",
+                    emptyJSON, emptyJSON, "ready",
+                    Date(), Date(), "canvas", UUID().uuidString
+                ]
+            )
+        }
+
+        let result = try await store.saveProviderBundle(
+            provider: provider, models: [kept])
+
+        // Reopen the store truth: referenced row survives disabled; the
+        // unreferenced stale row is gone; the kept row stays enabled.
+        let models = try await store.models(providerID: provider.id)
+        let byRemote = Dictionary(
+            uniqueKeysWithValues: models.map { ($0.remoteModelID, $0) }
+        )
+        #expect(Set(byRemote.keys) == ["deepseek-flash", "old-compatible"])
+        let preserved = try #require(byRemote["old-compatible"])
+        #expect(preserved.id == referencedStale.id)
+        #expect(preserved.isEnabled == false)
+        #expect(try #require(byRemote["deepseek-flash"]).isEnabled)
+        #expect(result.saved.map(\.remoteModelID) == ["deepseek-flash"])
+        #expect(result.disabledModelIDs == [referencedStale.id])
+        #expect(result.deletedModelIDs == [unreferencedStale.id])
+        // The job row is intact and still points at the preserved model.
+        let jobModelID = try await database.reader { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT model_id FROM media_generation_jobs WHERE provider_task_id = 'task-1'"
+            )
+        }
+        #expect(jobModelID == referencedStale.id.uuidString)
+
+        // Reselecting the history-retained model (stable local UUID merge)
+        // and enabling it again must flip the SAME row back to enabled in a
+        // second bundle save, without deleting or duplicating anything.
+        var reselected = ModelProfile(
+            providerID: provider.id, remoteModelID: referencedStale.remoteModelID,
+            displayName: referencedStale.displayName,
+            limits: referencedStale.limits, capabilities: referencedStale.capabilities
+        )
+        reselected.isEnabled = true
+        let secondResult = try await store.saveProviderBundle(
+            provider: provider, models: [kept, reselected])
+        let modelsAfterReselect = try await store.models(providerID: provider.id)
+        let byRemoteAfter = Dictionary(
+            uniqueKeysWithValues: modelsAfterReselect.map { ($0.remoteModelID, $0) }
+        )
+        #expect(Set(byRemoteAfter.keys) == ["deepseek-flash", "old-compatible"])
+        let reenabledRow = try #require(byRemoteAfter["old-compatible"])
+        #expect(reenabledRow.id == referencedStale.id)
+        #expect(reenabledRow.isEnabled == true)
+        #expect(secondResult.disabledModelIDs.isEmpty)
+        #expect(secondResult.deletedModelIDs.isEmpty)
+    }
+
     @Test("Preferences enforce role capabilities and clear deleted references")
     func modelPreferences() async throws {
         let store = try await makeStore()

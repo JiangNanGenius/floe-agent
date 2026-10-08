@@ -657,6 +657,55 @@ fn dimensions_and_leader_roundtrip_in_dwg() {
     assert!(measurements.iter().any(|m| (m - 12.0).abs() < 1e-9), "{measurements:?}");
 }
 
+/// Focused DXF counterpart of `dimensions_and_leader_roundtrip_in_dwg`. The
+/// pinned acadrust 0.5.5 DXF reader reconstructs a Radius dimension's base
+/// definition point from the group-10 centre (it deliberately skips
+/// `set_definition_point`) and leaves a Leader's DWG-only `origin` at its
+/// zero default, so the engine mirrors those fields for DXF sessions. This
+/// test proves all five dimension kinds plus a leader save and reopen in DXF
+/// across the supported versions while the strict round-trip gate stays on.
+#[test]
+fn dimensions_and_leader_roundtrip_in_dxf() {
+    for version in [DxfVersion::AC1024, DxfVersion::AC1027, DxfVersion::AC1032] {
+        let mut session = session(version, "dxf");
+        let base = session.document.entity_count();
+        edit_ok(&mut session, json!({"operation":"addDimension","kind":"linear","points":[[0,0,0],[10,0,0]],"layer":"Dimensions","offset":5}));
+        edit_ok(&mut session, json!({"operation":"addDimension","kind":"aligned","points":[[0,0,0],[8,6,0]],"layer":"Dimensions","offset":3}));
+        edit_ok(&mut session, json!({"operation":"addDimension","kind":"angular","points":[[0,0,0],[10,0,0],[0,10,0]],"layer":"Dimensions"}));
+        edit_ok(&mut session, json!({"operation":"addDimension","kind":"radius","points":[[40,30,0],[52,30,0]],"layer":"Dimensions"}));
+        edit_ok(&mut session, json!({"operation":"addDimension","kind":"diameter","points":[[28,30,0],[52,30,0]],"layer":"Dimensions"}));
+        edit_ok(&mut session, json!({"operation":"addLeader","points":[[60,60,0],[70,70,0],[80,70,0]],"layer":"Dimensions"}));
+        assert_eq!(session.document.entity_count(), base + 6);
+        let before = entity_images(&session);
+        let output = session
+            .save()
+            .unwrap_or_else(|e| panic!("{version:?} DXF must save radius/diameter dimensions and the leader: {e}"));
+        let reopened = read(&output, "dxf").unwrap();
+        let after: Vec<Value> = reopened.entities().map(entity_image).collect();
+        assert_eq!(before, after, "{version:?}: dimension/leader entities must round-trip in DXF");
+        let measurements: Vec<f64> = reopened
+            .entities()
+            .filter_map(|e| match e {
+                EntityType::Dimension(d) => Some(d.measurement()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(measurements.len(), 5, "{version:?}: {measurements:?}");
+        assert!(measurements.iter().any(|m| (m - 12.0).abs() < 1e-9), "{version:?} radius measurement: {measurements:?}");
+        assert!(measurements.iter().any(|m| (m - 24.0).abs() < 1e-9), "{version:?} diameter measurement: {measurements:?}");
+        assert!(measurements.iter().any(|m| (m - 10.0).abs() < 1e-9), "{version:?} linear/aligned measurement: {measurements:?}");
+        assert!(measurements.iter().any(|m| (m - 90.0).abs() < 1e-9), "{version:?} angular measurement: {measurements:?}");
+        let leader_vertices: Vec<[f64; 3]> = reopened
+            .entities()
+            .find_map(|e| match e {
+                EntityType::Leader(l) => Some(l.vertices.iter().map(|v| [v.x, v.y, v.z]).collect()),
+                _ => None,
+            })
+            .expect("leader must survive the DXF round-trip");
+        assert_eq!(leader_vertices, vec![[60., 60., 0.], [70., 70., 0.], [80., 70., 0.]]);
+    }
+}
+
 #[test]
 fn dimension_rejects_bad_arity_and_kinds() {
     let mut session = session(DxfVersion::AC1032, "dxf");
@@ -943,5 +992,189 @@ fn active_layer_is_session_state_not_file_state() {
     let reopened = CadSession::new(&output, "dxf").unwrap();
     let drawing: Value = serde_json::from_str(&reopened.query(r#"{"operation":"drawing"}"#).unwrap()).unwrap();
     assert_eq!(drawing["activeLayer"], "0", "active layer must not persist into the drawing");
+}
+
+// ---------------------------------------------------------------------------
+// Independent-reader evidence fixtures. This test creates the engine's own
+// saved DWG/DXF bytes for a representative drawing (LINE/CIRCLE/TEXT controls
+// plus ARC, open+closed LWPOLYLINE and all five dimension kinds) so a
+// third-party reader (LibreDWG) can verify the actual output. It also
+// reparses the saved bytes through the engine and records a same-reader
+// summary, so external evidence can be told apart from the engine's own gate.
+// Artifacts go to `$FLOE_CAD_EVIDENCE_DIR` when set, otherwise to
+// `Local/Scratch/build265/cad-reader-evidence` relative to the repository.
+// ---------------------------------------------------------------------------
+
+/// Boundary evidence for block references and unknown/proxy content. The
+/// crate's own gate currently preserves a constructed block definition and
+/// INSERT only in the DXF projection, while unknown entities/objects block
+/// saving through read diagnostics. Both boundaries are recorded so the
+/// independent-reader report does not overstate block/proxy support; the
+/// fixture never weakens the gate.
+#[test]
+fn block_reference_and_unknown_boundary_evidence() {
+    let dir = evidence_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let block_document = || {
+        let mut doc = CadDocument::new();
+        doc.version = DxfVersion::AC1032;
+        let mut br = acadrust::tables::BlockRecord::new("FLOE_BLOCK");
+        br.set_handle(doc.allocate_handle());
+        br.block_entity_handle = doc.allocate_handle();
+        br.block_end_handle = doc.allocate_handle();
+        let (br_handle, block_handle, end_handle) = (br.handle, br.block_entity_handle, br.block_end_handle);
+        doc.block_records.add(br).unwrap();
+        let mut line = Line::from_coords(0., 0., 0., 10., 0., 0.);
+        line.common.handle = doc.allocate_handle();
+        line.common.owner_handle = br_handle;
+        doc.add_entity(EntityType::Line(line)).unwrap();
+        let mut block = acadrust::entities::Block::new("FLOE_BLOCK", Vector3::new(0., 0., 0.));
+        block.common.handle = block_handle;
+        block.common.owner_handle = br_handle;
+        doc.add_entity(EntityType::Block(block)).unwrap();
+        let mut block_end = acadrust::entities::BlockEnd::new();
+        block_end.common.handle = end_handle;
+        block_end.common.owner_handle = br_handle;
+        doc.add_entity(EntityType::BlockEnd(block_end)).unwrap();
+        let insert = acadrust::entities::Insert::new("FLOE_BLOCK", Vector3::new(50., 50., 0.));
+        doc.add_entity(EntityType::Insert(insert)).unwrap();
+        doc
+    };
+
+    let dxf_session = CadSession { document: block_document(), format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let dxf_bytes = dxf_session.save().expect("block reference must save in DXF");
+    let path = dir.join("block-reference-AC1032.dxf");
+    std::fs::write(&path, &dxf_bytes).unwrap();
+    let reopened = read(&dxf_bytes, "dxf").unwrap();
+    let dwg_session = CadSession { document: block_document(), format: "dwg".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let dwg_error = dwg_session.save().err();
+
+    let mut unknown_entity = acadrust::entities::UnknownEntity::new("FLOE_PROXY_ENTITY");
+    let mut doc = CadDocument::new();
+    doc.version = DxfVersion::AC1032;
+    unknown_entity.common.handle = doc.allocate_handle();
+    unknown_entity.raw_dxf_codes = Some(vec![(1, "floe-payload".into()), (70, "7".into())]);
+    doc.add_entity(EntityType::Unknown(unknown_entity)).unwrap();
+    let unknown_entity_error = CadSession { document: doc, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() }.save().err();
+
+    let mut doc = CadDocument::new();
+    doc.version = DxfVersion::AC1032;
+    let handle = doc.allocate_handle();
+    doc.objects.insert(handle, ObjectType::Unknown {
+        type_name: "FLOE_PROXY_OBJECT".into(),
+        handle,
+        owner: Handle::NULL,
+        raw_dxf_codes: Some(vec![(1, "floe-object".into())]),
+        raw_dwg_data: None,
+        raw_dwg_handle_bits: 0,
+        raw_dwg_version: None,
+    });
+    let unknown_object_error = CadSession { document: doc, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() }.save().err();
+
+    std::fs::write(
+        dir.join("block-reference-summary.json"),
+        serde_json::to_string_pretty(&json!({
+            "artifact": path.file_name().unwrap().to_string_lossy(),
+            "engineEntityTypes": entity_type_counts(&reopened),
+            "engineEntityCount": reopened.entity_count(),
+            "dwgSaveError": dwg_error,
+            "unknownEntitySaveError": unknown_entity_error,
+            "unknownObjectSaveError": unknown_object_error,
+        })).unwrap(),
+    ).unwrap();
+}
+
+fn evidence_dir() -> std::path::PathBuf {
+    std::env::var_os("FLOE_CAD_EVIDENCE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("../../../Local/Scratch/build265/cad-reader-evidence"))
+}
+
+fn entity_type_counts(document: &CadDocument) -> std::collections::BTreeMap<String, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    for entity in document.entities() {
+        *counts.entry(entity_kind(entity).to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn evidence_session(version: DxfVersion, format: &str, include_radius: bool, include_leader: bool) -> CadSession {
+    let mut document = CadDocument::new();
+    document.version = version;
+    document.header.insertion_units = 4; // millimeters
+    let seed = encode(&document, format).unwrap();
+    let mut session = CadSession::new(&seed, format).unwrap();
+    for request in [
+        json!({"operation":"addLayer","name":"FLOE_LINES","color":1,"lineType":"Continuous","lineWeight":25}),
+        json!({"operation":"addLayer","name":"FLOE_CIRCLES","color":3,"lineType":"Continuous","lineWeight":25}),
+        json!({"operation":"addLayer","name":"FLOE_ARCS","color":5,"lineType":"Continuous","lineWeight":25}),
+        json!({"operation":"addLayer","name":"FLOE_POLYLINES","color":2,"lineType":"Continuous","lineWeight":25}),
+        json!({"operation":"addLayer","name":"FLOE_TEXT","color":4,"lineType":"Continuous","lineWeight":25}),
+        json!({"operation":"addLayer","name":"FLOE_DIMS","color":6,"lineType":"Continuous","lineWeight":25}),
+    ] {
+        edit_ok(&mut session, request);
+    }
+    for request in [
+        json!({"operation":"addLine","start":[0,0,0],"end":[100,50,0],"layer":"FLOE_LINES"}),
+        json!({"operation":"addCircle","center":[40,30,0],"radius":12,"layer":"FLOE_CIRCLES"}),
+        json!({"operation":"addText","position":[5,8,0],"text":"尺寸 / CAD reader evidence","height":2.5,"layer":"FLOE_TEXT"}),
+        json!({"operation":"addArc","center":[0,0,0],"radius":10,"startAngle":0,"endAngle":1.5707963267948966,"layer":"FLOE_ARCS"}),
+        json!({"operation":"addLwPolyline","points":[[120,0],[140,0],[150,20]],"closed":false,"layer":"FLOE_POLYLINES"}),
+        json!({"operation":"addLwPolyline","points":[[120,40],[150,40],[150,70],[120,70]],"closed":true,"layer":"FLOE_POLYLINES"}),
+        json!({"operation":"addDimension","kind":"linear","points":[[0,0,0],[10,0,0]],"layer":"FLOE_DIMS","offset":5}),
+        json!({"operation":"addDimension","kind":"aligned","points":[[0,20,0],[8,26,0]],"layer":"FLOE_DIMS","offset":3}),
+        json!({"operation":"addDimension","kind":"angular","points":[[0,40,0],[10,40,0],[0,50,0]],"layer":"FLOE_DIMS"}),
+        json!({"operation":"addDimension","kind":"diameter","points":[[28,30,0],[52,30,0]],"layer":"FLOE_DIMS"}),
+    ] {
+        edit_ok(&mut session, request);
+    }
+    if include_radius {
+        edit_ok(&mut session, json!({"operation":"addDimension","kind":"radius","points":[[40,30,0],[52,30,0]],"layer":"FLOE_DIMS"}));
+    }
+    if include_leader {
+        edit_ok(&mut session, json!({"operation":"addLeader","points":[[60,60,0],[70,70,0],[80,70,0]],"layer":"FLOE_DIMS"}));
+    }
+    session
+}
+
+#[test]
+fn independent_reader_evidence_entities() {
+    let dir = evidence_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut summary: Vec<Value> = Vec::new();
+    for version in [DxfVersion::AC1024, DxfVersion::AC1027, DxfVersion::AC1032] {
+        for format in ["dwg", "dxf"] {
+            // The full representative set must save in both formats. The DXF
+            // session mirrors the two fields the pinned DXF reader cannot
+            // reconstruct (a Radius dimension's base definition point and a
+            // Leader's DWG-only origin), so a failure here is a regression,
+            // never an accepted limitation.
+            let output = evidence_session(version, format, true, true)
+                .save()
+                .unwrap_or_else(|e| panic!("{format} {version:?} must save the full representative set: {e}"));
+            let path = dir.join(format!("entities-{version:?}.{format}"));
+            std::fs::write(&path, &output).unwrap();
+            let reopened = read(&output, format).unwrap_or_else(|e| panic!("{format} {version:?} reparse failed: {e}"));
+            let layers: Vec<Value> = reopened
+                .layers
+                .iter()
+                .map(|layer| json!({"name": layer.name, "color": format!("{:?}", layer.color)}))
+                .collect();
+            summary.push(json!({
+                "artifact": path.file_name().unwrap().to_string_lossy(),
+                "format": format,
+                "version": format!("{version:?}"),
+                "radiusDimension": "saved",
+                "leader": "saved",
+                "engineEntityTypes": entity_type_counts(&reopened),
+                "engineEntityCount": reopened.entity_count(),
+                "engineInsertionUnits": reopened.header.insertion_units,
+                "engineUnit": unit_name(&reopened),
+                "engineLayers": layers,
+            }));
+        }
+    }
+    std::fs::write(dir.join("engine-reparse-summary.json"), serde_json::to_string_pretty(&summary).unwrap()).unwrap();
 }
 

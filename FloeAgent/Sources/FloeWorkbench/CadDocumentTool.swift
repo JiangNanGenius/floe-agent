@@ -625,13 +625,40 @@ public struct CadDocumentTool: AgentTool {
         }
     }
 
-    public func execute(_ args: CadDocumentArguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        let access = CadDocumentAccess(
+    /// The document access for one execution. A verified Canvas staged
+    /// document (seeded from the Drawing Assistant binding at launch, never
+    /// from prompt text) authorizes exactly that staged draft under canvas
+    /// ownership; everything else uses the ordinary workspace/chat identity.
+    public static func access(for context: ToolContext) -> CadDocumentAccess {
+        if let staged = context.canvasStagedDocument {
+            return CadDocumentAccess(
+                environmentID: context.environmentID,
+                workspacePath: staged.draftRootPath,
+                ownerKind: "canvas",
+                ownerID: staged.canvasID)
+        }
+        return CadDocumentAccess(
             environmentID: context.environmentID,
             workspacePath: context.workspaceRootURL?.path,
             ownerKind: context.conversationID == nil ? "workspace" : "chat",
-            ownerID: context.conversationID
-        )
+            ownerID: context.conversationID)
+    }
+
+    /// When a staged document is authorized, the tool may touch ONLY that
+    /// exact staged path: quoting another path (under the draft root or
+    /// elsewhere) grants nothing. A nil path only reaches `capabilities`
+    /// (every document action validates a non-empty path upstream), so nil
+    /// is not an escape hatch and needs no staged check.
+    public static func authorizeDocumentPath(_ path: String?, context: ToolContext) throws {
+        guard let staged = context.canvasStagedDocument, let path else { return }
+        guard path == staged.stagedRelativePath else {
+            throw FloeError.unauthorized
+        }
+    }
+
+    public func execute(_ args: CadDocumentArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let access = Self.access(for: context)
+        try Self.authorizeDocumentPath(args.path, context: context)
         try await host.authorizeAccess(access: access)
         let requestID = args.requestID ?? context.toolCallID ?? context.runID.uuidString
 

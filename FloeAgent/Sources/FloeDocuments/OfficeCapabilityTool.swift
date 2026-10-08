@@ -2,61 +2,82 @@
 //
 // Tiers:
 //   verified   — implemented in this module and covered by unit tests
-//                (pure OOXML read/create/updateText/readSheet paths).
-//   engine     — available through the packaged Collabora engine's UNO
-//                command surface, but NOT yet qualified on a physical device;
-//                callers must not advertise these as accepted.
+//                (pure OOXML read/create/updateText, saved-package verification
+//                and same-format image replacement).
+//   engine     — implemented as validated UNO dispatches through the live
+//                pinned engine (encodings re-checked against the pinned bundle),
+//                but NOT yet qualified with physical-device receipts; callers
+//                must not advertise these as device-accepted.
 //   unavailable— no faithful implementation exists (never faked).
+//
+// The engine-tier list is derived from `OfficeEngineCommandCatalog`, so a
+// command cannot be advertised unless the same catalog can dispatch and verify
+// it.
 
 import Foundation
 import FloeCore
 import FloeTools
 
 public enum OfficeCapabilityTool {
-    /// Stable capability matrix consumed by agents and the UI. Static on
-    /// purpose: nothing here is inferred from unimplemented UI.
+    /// Stable capability matrix consumed by agents and the UI.
     public static func capabilitiesJSON(enginePresent: Bool) -> String {
-        struct Op: Codable { var name: String; var tier: String; var detail: String }
+        struct Op: Codable { var name: String; var tier: String; var path: String; var detail: String }
         struct Format: Codable { var format: String; var read: Bool; var operations: [Op] }
         struct Root: Codable { var enginePresent: Bool; var qualification: String; var formats: [Format] }
 
         let verified = "verified", engine = "engine", unavailable = "unavailable"
+
+        func engineOps(_ format: OfficeDocumentFormat) -> [Op] {
+            OfficeEngineCommandCatalog.engineCommands(format).map { command in
+                let dispatch = command.plan.steps.map { step -> String in
+                    switch step {
+                    case .uno(let name, _): return name
+                    case .socket(let payload): return payload
+                    case .selectPart(let index): return "setPart(\(index))"
+                    }
+                }.joined(separator: " + ")
+                return Op(name: command.id,
+                          tier: enginePresent ? engine : unavailable,
+                          path: "engine-uno",
+                          detail: "\(dispatch); saved-package verified after flush"
+                              + (enginePresent ? "" : " (engine not present in this build)"))
+            }
+        }
+
+        let docx: [Op] = [
+            Op(name: "inspect", tier: verified, path: "ooxml", detail: "document.office.inspect: paragraphs, headers/footers"),
+            Op(name: "updateText", tier: verified, path: "ooxml", detail: "paragraph find/replace via document.office.updateText with expectedSHA256 CAS"),
+            Op(name: "createWord", tier: verified, path: "ooxml", detail: "document.createWord"),
+            Op(name: "replaceImage", tier: verified, path: "package", detail: "same-format picture bytes replaced in place, atomic reopen-verified"),
+            Op(name: "images", tier: enginePresent ? engine : unavailable, path: "native-host",
+               detail: "native insertAttachment(fromFileURL:) at the cursor; live-editor only"),
+        ] + engineOps(.docx)
+        let xlsx: [Op] = [
+            Op(name: "inspect", tier: verified, path: "ooxml", detail: "cells via shared-string table"),
+            Op(name: "readSheet", tier: verified, path: "ooxml", detail: "document.readSheet cached values"),
+            Op(name: "updateText", tier: verified, path: "ooxml", detail: "cell values and formulas via expectedSHA256 CAS"),
+            Op(name: "createWorkbook", tier: verified, path: "ooxml", detail: "document.createWorkbook"),
+            Op(name: "formulaErrorLocation", tier: verified, path: "ooxml",
+               detail: "document.office.edit action=errors reads t=\"e\" cells with codes from the saved package"),
+            Op(name: "replaceImage", tier: verified, path: "package", detail: "same-format picture bytes replaced in place, atomic reopen-verified"),
+        ] + engineOps(.xlsx)
+        let pptx: [Op] = [
+            Op(name: "inspect", tier: verified, path: "ooxml", detail: "slide + notes text"),
+            Op(name: "createDeck", tier: verified, path: "ooxml", detail: "document.presentation.createDeck incl. charts/images"),
+            Op(name: "updateText", tier: verified, path: "ooxml", detail: "slide text fields via expectedSHA256 CAS"),
+            Op(name: "replaceImage", tier: verified, path: "package", detail: "same-format picture bytes replaced in place, atomic reopen-verified"),
+            Op(name: "present", tier: enginePresent ? engine : unavailable, path: "native-host",
+               detail: "native startPresentation; live-editor only"),
+            Op(name: "imageReplaceEngine", tier: unavailable, path: "engine-uno",
+               detail: "no .uno:ChangePicture in the pinned bundle; use action=replaceImage (package path) instead"),
+        ] + engineOps(.pptx)
         let formats: [Format] = [
-            Format(format: "docx", read: true, operations: [
-                Op(name: "inspect", tier: verified, detail: "document.office.inspect: paragraphs, headers/footers"),
-                Op(name: "updateText", tier: verified, detail: "document.office.updateText with expectedSHA256 CAS"),
-                Op(name: "createWord", tier: verified, detail: "document.createWord"),
-                Op(name: "styles", tier: engine, detail: ".uno:StyleApply via engine UNO bridge (unqualified)"),
-                Op(name: "lists", tier: engine, detail: ".uno:DefaultBullet/.uno:DefaultNumbering (unqualified)"),
-                Op(name: "alignment", tier: engine, detail: ".uno:CommonAlignLeft/Center/Right/Justified (unqualified)"),
-                Op(name: "images", tier: engine, detail: "native insertAttachmentFromFileURL at cursor (unqualified)"),
-                Op(name: "tables", tier: engine, detail: ".uno:InsertTable dialog-driven (unqualified)"),
-            ]),
-            Format(format: "xlsx", read: true, operations: [
-                Op(name: "inspect", tier: verified, detail: "cells via shared-string table"),
-                Op(name: "readSheet", tier: verified, detail: "document.readSheet cached values"),
-                Op(name: "updateText", tier: verified, detail: "cell values; '=' written as formulas"),
-                Op(name: "createWorkbook", tier: verified, detail: "document.createWorkbook"),
-                Op(name: "format", tier: engine, detail: ".uno:NumberFormat/.uno:FormatCellDialog (unqualified)"),
-                Op(name: "rowsColumns", tier: engine, detail: "insert/delete/height/width UNO commands (unqualified)"),
-                Op(name: "freeze", tier: engine, detail: ".uno:FreezePanes (unqualified)"),
-                Op(name: "sortFilter", tier: engine, detail: ".uno:SortAscending/.uno:DataFilterAutoFilter (unqualified)"),
-                Op(name: "formulaErrorLocation", tier: unavailable,
-                   detail: "no faithful error-cell readout bridge exists; formulas evaluate but error cells are not yet locatable"),
-            ]),
-            Format(format: "pptx", read: true, operations: [
-                Op(name: "inspect", tier: verified, detail: "slide + notes text"),
-                Op(name: "createDeck", tier: verified, detail: "document.presentation.createDeck incl. charts/images"),
-                Op(name: "present", tier: engine, detail: "native startPresentation (implemented; device-qualified flag pending)"),
-                Op(name: "duplicateSlide", tier: engine, detail: ".uno:DuplicatePage (unqualified)"),
-                Op(name: "reorder", tier: engine, detail: "slide-sorter moveSlide JS path (unqualified)"),
-                Op(name: "align", tier: engine, detail: ".uno:Align*/.uno:ObjectAlign* (unqualified)"),
-                Op(name: "imageReplace", tier: unavailable,
-                   detail: "no .uno:ChangePicture in the pinned bundle; faithful replace needs delete+insert (not yet wired)"),
-            ])
+            Format(format: "docx", read: true, operations: docx),
+            Format(format: "xlsx", read: true, operations: xlsx),
+            Format(format: "pptx", read: true, operations: pptx),
         ]
         let root = Root(enginePresent: enginePresent,
-                        qualification: "engine-tier operations require device receipts (qualify_office_device_capabilities.py) before release claims",
+                        qualification: "engine commands are pinned-bundle-encoded and locally structural-tested; physical-device qualification receipts (qualify_office_device_capabilities.py) are still required before release claims",
                         formats: formats)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

@@ -21,6 +21,7 @@
 import Foundation
 import Testing
 @testable import FloeApp
+import FloeDocuments
 
 @Suite("FloeApp.OfficeEditEntryAck")
 @MainActor
@@ -342,5 +343,192 @@ struct IDEOfficeLoadTriggerTests {
     @Test("No active tab yields the empty identity")
     func noActiveTabIsEmpty() {
         #expect(IDEOfficeLoadTrigger.identity(activeTab: nil) == "")
+    }
+}
+
+// MARK: - Office command center path/ownership boundaries
+
+/// The document.office.edit center resolves every model-supplied path through
+/// the same workspace guard as any other tool and enforces task ownership; a
+/// path or an access context can never redefine workspace authority.
+@Suite("Office command center path and ownership", .serialized)
+@MainActor
+struct OfficeCommandCenterSecurityTests {
+    private func workspace() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-office-security-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func access(_ root: URL, conversation: UUID? = nil) -> OfficeCommandAccess {
+        OfficeCommandAccess(environmentID: nil, workspacePath: root.path,
+                            ownerKind: conversation == nil ? "workspace" : "chat",
+                            ownerID: conversation, conversationID: conversation)
+    }
+
+    @Test("traversal and absolute escapes are refused before any read")
+    func traversalRefused() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try OfficeDocumentBuilder.createWord(at: root.appendingPathComponent("inside.docx"),
+                                             title: "T", paragraphs: ["P"])
+        let outside = root.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString).docx")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try OfficeDocumentBuilder.createWord(at: outside, title: "Outside", paragraphs: ["P"])
+
+        let center = OfficeCommandCenter()
+        let context = access(root)
+        await #expect(throws: (any Error).self) {
+            _ = try await center.status(documentID: "../\(outside.lastPathComponent)", access: context)
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await center.status(documentID: outside.path, access: context)
+        }
+        // The legitimate file still resolves.
+        let status = try await center.status(documentID: "inside.docx", access: context)
+        #expect(status.documentID == "inside.docx")
+    }
+
+    @Test("a symlink inside the root cannot escape to an outside document")
+    func symlinkEscapeRefused() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outsideDirectory = try workspace()
+        defer { try? FileManager.default.removeItem(at: outsideDirectory) }
+        let outside = outsideDirectory.appendingPathComponent("secret.docx")
+        try OfficeDocumentBuilder.createWord(at: outside, title: "Outside", paragraphs: ["P"])
+        let link = root.appendingPathComponent("alias.docx")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        let center = OfficeCommandCenter()
+        await #expect(throws: (any Error).self) {
+            _ = try await center.status(documentID: "alias.docx", access: access(root))
+        }
+    }
+
+    @Test("chat-origin callers must present their task identity")
+    func missingTaskOwnershipRefused() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = OfficeCommandCenter()
+        let anonymousChat = OfficeCommandAccess(environmentID: nil, workspacePath: root.path,
+                                                ownerKind: "chat", ownerID: nil, conversationID: nil)
+        await #expect(throws: (any Error).self) {
+            try await center.authorizeAccess(anonymousChat)
+        }
+        try await center.authorizeAccess(access(root))
+    }
+
+    @Test("a proposal made by one task is unreachable from another")
+    func crossOwnerDenied() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try OfficeDocumentBuilder.createWord(at: root.appendingPathComponent("plan.docx"),
+                                             title: "T", paragraphs: ["P"])
+        let owner = UUID()
+        let other = UUID()
+        let session = OfficeFileSession()
+        session.registerLiveDocument(relativePath: "plan.docx", root: root, conversationID: owner)
+        defer { Task { await session.release() } }
+
+        let center = OfficeCommandCenter()
+        let ownerAccess = access(root, conversation: owner)
+        let foreignAccess = access(root, conversation: other)
+        // The owner's status resolves (the session is registered); it is not
+        // "live" until a working document is actually opened in the editor.
+        let snapshot = try await center.status(documentID: "plan.docx", access: ownerAccess)
+        #expect(snapshot.documentID == "plan.docx")
+
+        // The foreign task is refused before prepareProposal can even see the
+        // live session.
+        await #expect(throws: (any Error).self) {
+            _ = try await center.prepareProposal(
+                documentID: "plan.docx", baseSHA256: snapshot.revisionSHA256,
+                summary: "insert table",
+                commandsJSON: #"[{"id":"word.insertTable","arguments":{"rows":"2","columns":"2"}}]"#,
+                access: foreignAccess)
+        }
+        // A workspace-only caller (no conversation) is also refused when the
+        // session belongs to a task.
+        let workspaceOnly = access(root, conversation: nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await center.status(documentID: "plan.docx", access: workspaceOnly)
+        }
+    }
+
+    @Test("an unowned live session is reachable by same-workspace callers")
+    func workspaceSessionReachable() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try OfficeDocumentBuilder.createWord(at: root.appendingPathComponent("plan.docx"),
+                                             title: "T", paragraphs: ["P"])
+        let session = OfficeFileSession()
+        session.registerLiveDocument(relativePath: "plan.docx", root: root, conversationID: nil)
+        defer { Task { await session.release() } }
+        let center = OfficeCommandCenter()
+        // Same-workspace callers are not refused; without an opened working
+        // document the status is file-only rather than claiming a live editor.
+        let snapshot = try await center.status(documentID: "plan.docx", access: access(root))
+        #expect(snapshot.documentID == "plan.docx")
+        #expect(snapshot.liveSession == false)
+    }
+}
+
+// MARK: - Office committed-batch journal / WAL reconciliation
+
+/// The Office batch journal is the crash-window contract: a prepared entry is
+/// reconciled against the exact expected file SHA before anything is treated
+/// as committed, and a lost completion marker is recoverable while an uncertain
+/// state fails closed.
+@Suite("Office committed batch journal", .serialized)
+@MainActor
+struct OfficeBatchJournalTests {
+    private func entry(batchID: String, documentID: String, expected: String,
+                       snapshot: String = "/tmp/office-snapshot.docx") -> OfficeCommittedBatchJournal.Entry {
+        OfficeCommittedBatchJournal.Entry(
+            batchID: batchID, documentID: documentID, workspacePath: "/tmp/ws",
+            operationID: "op-\(batchID)", expectedSHA256: expected,
+            snapshotPath: snapshot, snapshotSHA256: String(repeating: "e", count: 64),
+            commands: ["word.insertTable"], preparedAt: Date(), committedAt: nil, note: nil)
+    }
+
+    @Test("reconciliation trusts only the exact expected SHA")
+    func reconciliationMatrix() {
+        let expected = String(repeating: "a", count: 64)
+        let prepared = entry(batchID: "b1", documentID: "doc.docx", expected: expected)
+        // Exact bytes on disk prove the commit even without the marker.
+        #expect(OfficeBatchReconciliation.decide(entry: prepared, currentFileSHA: expected) == .committed)
+        // Different bytes: the commit did not land.
+        #expect(OfficeBatchReconciliation.decide(entry: prepared,
+                                                 currentFileSHA: String(repeating: "b", count: 64)) == .preparedNotCommitted)
+        // Unknown/unreadable file fails closed.
+        #expect(OfficeBatchReconciliation.decide(entry: prepared, currentFileSHA: nil) == .unknown)
+        // A completed marker with different bytes is an uncertain state.
+        var completed = prepared
+        completed.committedAt = Date()
+        #expect(OfficeBatchReconciliation.decide(entry: completed,
+                                                 currentFileSHA: String(repeating: "c", count: 64)) == .unknown)
+    }
+
+    @Test("prepare, complete, latest committed and remove round-trip durably")
+    func journalLifecycle() throws {
+        let id = "journal-test-\(UUID().uuidString)"
+        let document = "journal-test-\(UUID().uuidString).docx"
+        let prepared = entry(batchID: id, documentID: document, expected: String(repeating: "d", count: 64))
+        try OfficeCommittedBatchJournal.shared.prepare(prepared)
+        #expect(OfficeCommittedBatchJournal.shared.entry(batchID: id)?.isCommitted == false)
+        #expect(OfficeCommittedBatchJournal.shared.latestCommitted(documentID: document) == nil,
+                "a prepared-only entry is never offered as a revert point")
+
+        try OfficeCommittedBatchJournal.shared.complete(batchID: id)
+        #expect(OfficeCommittedBatchJournal.shared.entry(batchID: id)?.isCommitted == true)
+        #expect(OfficeCommittedBatchJournal.shared.latestCommitted(documentID: document)?.batchID == id)
+        #expect(OfficeCommittedBatchJournal.shared.latestCommitted(documentID: document)?.expectedSHA256
+                == prepared.expectedSHA256)
+
+        OfficeCommittedBatchJournal.shared.remove(batchID: id)
+        #expect(OfficeCommittedBatchJournal.shared.entry(batchID: id) == nil)
+        #expect(OfficeCommittedBatchJournal.shared.latestCommitted(documentID: document) == nil)
     }
 }

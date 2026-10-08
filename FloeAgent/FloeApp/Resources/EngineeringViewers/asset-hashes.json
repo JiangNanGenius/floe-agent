@@ -16,7 +16,7 @@
   "dxf.js": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
   "dxf.js.LEGAL.txt": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
   "floe_cad_engine.js": "313d9879c0a46abda1edf70f5ec27b9298f4dbd092d2a9f2f5860a13cd51701a",
-  "floe_cad_engine_bg.wasm": "99d21e40175c6d86a4f14c2bcd03fc4909a066a3269a4585afe2fe4a1d095bfa",
+  "floe_cad_engine_bg.wasm": "25aa1f3a395b26629bdf0e46994ec6fddc60a84508aacf749c872596d33ba92d",
   "gerber-to-svg.min.js": "8f16104893ab462f0bc1513ac2c6508fce59fcb10fab648848dddcfa7aafb76c",
   "gerber-to-svg.min.js.LICENSE.txt": "a41d4ce5d77ff2e5a5c511d8287e8752530ceb955fd04c1f48855a8d9796708a",
   "gerber-worker.js": "c34ebdcca12d59a0339cbe962d459edb6fbd118ab5e965f30ae3502d1d3c270b",
@@ -31,5 +31,5 @@
   "sample-editable.dwg": "67c70f76a8cd634b528be3f8de7160409704f68f2450d03749aa85cc3775bfdb",
   "sample-plate.dxf": "76d7580228e8732bb91decb98668f4ee12499b3483825f35d7fa8d3aef016c7d",
   "viewer.css": "44904ef039130a3d8350b55b5a0f177f41215b4aa5894d6897ebe67fc58ffa2f",
-  "viewer.js": "357d292bf274e92d4613cafcf00969772dde959c6289da3ff0aaa1777406017a"
+  "viewer.js": "f892d4eab3cda4f1c29fcda14b8c91beae7c5bce178869386fc86a778b4cbb69"
 }

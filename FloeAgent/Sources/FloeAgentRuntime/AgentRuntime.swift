@@ -272,6 +272,9 @@ public actor FloeAgentRuntime {
         public var preapprovedPythonPackages: Set<String>
         /// Canonical task workspace, independent of the currently visible UI.
         public var workspaceRootURL: URL?
+        /// Verified Canvas staged CAD document (Drawing Assistant binding)
+        /// this run may touch through cad.document; nil for other runs.
+        public var canvasStagedDocument: CanvasStagedDocumentAccess?
         /// Persisted task-relative file scope; empty means the full root.
         public var allowedWorkspacePaths: [String]
         /// Chat-only runs can disable the compiled catalog entirely.
@@ -326,6 +329,7 @@ public actor FloeAgentRuntime {
             preapprovedPythonScriptSHA256: Set<String> = [],
             preapprovedPythonPackages: Set<String> = [],
             workspaceRootURL: URL? = nil,
+            canvasStagedDocument: CanvasStagedDocumentAccess? = nil,
             allowedWorkspacePaths: [String] = [],
             toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
@@ -352,6 +356,7 @@ public actor FloeAgentRuntime {
             self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
             self.preapprovedPythonPackages = preapprovedPythonPackages
             self.workspaceRootURL = workspaceRootURL
+            self.canvasStagedDocument = canvasStagedDocument
             self.allowedWorkspacePaths = allowedWorkspacePaths
             self.toolsEnabled = toolsEnabled
             self.pauseTimeout = pauseTimeout
@@ -2625,6 +2630,7 @@ public actor FloeAgentRuntime {
             activeSkillIDs: configuration.activeSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
             workspaceRootURL: configuration.workspaceRootURL,
+            canvasStagedDocument: configuration.canvasStagedDocument,
             allowedWorkspacePaths: configuration.allowedWorkspacePaths,
             cancellation: cancellationToken,
             childBudget: childBudget,
@@ -3178,6 +3184,7 @@ public actor FloeAgentRuntime {
                 activeSkillIDs: configuration.activeSkillIDs,
                 allowedToolNames: configuration.allowedToolNames,
                 workspaceRootURL: configuration.workspaceRootURL,
+                canvasStagedDocument: configuration.canvasStagedDocument,
                 allowedWorkspacePaths: configuration.allowedWorkspacePaths,
                 cancellation: cancellationToken,
                 childBudget: childBudget,

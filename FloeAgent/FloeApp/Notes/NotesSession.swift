@@ -52,6 +52,53 @@ final class NotesSession {
     /// remembered entry count (preview on the first entry, editor from the
     /// second).
     @ObservationIgnored private var editorOnNextOpen: Set<UUID> = []
+    /// A typed, one-shot navigation request produced by a search result. It
+    /// carries the exact page/element/node and UTF-16 range; the editor consumes
+    /// it (scroll + highlight), and `requestedPageID` remains only for the
+    /// source-reference path.
+    struct NoteSearchFocus: Equatable {
+        let documentID: UUID
+        let pageID: UUID?
+        let elementID: UUID?
+        let nodeID: UUID?
+        let utf16Offset: Int?
+        let utf16Length: Int?
+        let sourceKind: String
+        /// Distinguishes repeated requests for the same range so the editor can
+        /// re-run the scroll exactly once per tap.
+        let requestID: UUID
+
+        init(match: NoteTextSearch.Match, requestID: UUID = UUID()) {
+            self.documentID = match.documentID
+            self.pageID = match.pageID
+            self.elementID = match.elementID
+            self.nodeID = match.nodeID
+            self.utf16Offset = match.utf16Offset
+            self.utf16Length = match.utf16Length
+            self.sourceKind = match.sourceKind
+            self.requestID = requestID
+        }
+    }
+
+    @ObservationIgnored private var searchFocusRequestID = UUID()
+    var searchFocus: NoteSearchFocus?
+
+    /// Resolves the first exact match for `query` in `document` through the
+    /// same pure helper `notes.search` uses and publishes it for the editor.
+    /// Returns false when the query only matches the title/tags or nothing.
+    @discardableResult
+    func requestSearchFocus(in document: NoteDocument, query: String) -> Bool {
+        guard let match = NoteTextSearch.firstMatch(in: document, query: query) else {
+            searchFocus = nil
+            return false
+        }
+        searchFocusRequestID = UUID()
+        searchFocus = NoteSearchFocus(match: match, requestID: searchFocusRequestID)
+        return true
+    }
+
+    func clearSearchFocus() { searchFocus = nil }
+
     var requestedPageID: UUID?
     var errorMessage: String?
     var editConflicts: [NoteEditConflict] = []

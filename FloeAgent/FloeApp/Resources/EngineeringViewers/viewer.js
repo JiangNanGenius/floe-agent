@@ -102,6 +102,18 @@ async function load(pkg){
    window.floeCadLocate=handle=>{try{return cadEditor?.locate(handle)??false;}catch{return false;}};
    window.floeCadOverlay=payload=>{try{cadEditor?.showDiff(payload?.entries??[]);}catch{}};
    window.floeCadClearOverlay=()=>{try{cadEditor?.clearDiff();}catch{}};
+   // Deterministic draft serialization bridge for external owners (Canvas):
+   // invokes the EXACT handler bound to the visible save control, so the
+   // save path (engine serialization -> native onSave receipt) is identical
+   // to a user tapping Save. It does not depend on the panel/button lifecycle
+   // or enabled state; it returns false when no editor/save handler exists.
+   window.floeCadRequestSave=()=>{
+    if(!cadEditor)return false;
+    const button=document.getElementById('cadSave');
+    const handler=button&&button.onclick;
+    if(typeof handler!=='function')return false;
+    try{void handler.call(button);return true;}catch{return false;}
+   };
    // Reconcile the visible editor after a Drawing Assistant apply committed
    // new bytes through the tool engine: re-open THIS engine with the
    // committed bytes, re-render, and reset stale selection/dirty state.

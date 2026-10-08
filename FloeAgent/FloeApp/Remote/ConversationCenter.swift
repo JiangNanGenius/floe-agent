@@ -1067,6 +1067,21 @@ final class ConversationCenter: ObservableObject {
         }
         let credentials = resolveCredentials(for: provider)
         let forceInitialCompaction = consumeManualCompaction(conversationID: conversationID)
+        // Canvas Drawing Assistant binding: when this conversation is the
+        // bound assistant for a staged canvas draft, the run receives the
+        // exact authorized staged identity so cad.document resolves the SAME
+        // document the review sheet presents. Authority comes from the
+        // durable binding (verified at bind time), never from prompt text.
+        let canvasStagedDocument: CanvasStagedDocumentAccess? = {
+            guard let bound = DrawingAssistantConversationStore.shared
+                .stagedDocument(conversationID: conversationID),
+                  let rootPath = CanvasDrawingNodePlanner.canonicalDraftRoot()?.path
+            else { return nil }
+            return CanvasStagedDocumentAccess(
+                canvasID: bound.canvasID,
+                draftRootPath: rootPath,
+                stagedRelativePath: bound.stagedRelativePath)
+        }()
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
@@ -1078,6 +1093,7 @@ final class ConversationCenter: ObservableObject {
             preapprovedPythonScriptSHA256: skills.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: skills.preapprovedPythonPackages,
             workspaceRootURL: runWorkspaceRoot,
+            canvasStagedDocument: canvasStagedDocument,
             allowedWorkspacePaths: taskPolicy.filePaths,
             toolsEnabled: executionMode.toolsEnabled,
             // Use the runtime's unbounded default. Progress/timeout guards,
@@ -4040,30 +4056,76 @@ final class ConversationCenter: ObservableObject {
         await reload()
     }
 
+    /// Verifies via a fresh store read that the provider and every selected
+    /// model were actually persisted as requested. Returns a user-facing,
+    /// secret-free failure reason, or nil on success. This is the persisted
+    /// readback the Save action uses so a silent write failure can never look
+    /// like a successful save.
+    func verifyProviderPersisted(
+        provider: ProviderProfile,
+        selectedModels models: [ModelProfile]
+    ) async -> String? {
+        guard let stored = try? await environment.configurationStore.provider(id: provider.id) else {
+            return String(localized: "providers.readback.failed")
+        }
+        guard stored.kind == provider.kind,
+              stored.wireProtocol == provider.wireProtocol,
+              stored.baseURL == provider.baseURL,
+              stored.isEnabled == provider.isEnabled else {
+            return String(localized: "providers.readback.mismatch")
+        }
+        if stored.secretRef?.keychainAccount != provider.secretRef?.keychainAccount {
+            return String(localized: "providers.readback.secret")
+        }
+        let storedModels: [ModelProfile]
+        do {
+            storedModels = try await environment.configurationStore.models(providerID: provider.id)
+        } catch {
+            return String(localized: "providers.readback.failed")
+        }
+        let byRemoteID = Dictionary(
+            storedModels.map { ($0.remoteModelID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for expected in models {
+            guard let row = byRemoteID[expected.remoteModelID] else {
+                return String(localized: "providers.readback.model.\(expected.displayName)")
+            }
+            guard row.isEnabled == expected.isEnabled else {
+                return String(localized: "providers.readback.model.enabled.\(expected.displayName)")
+            }
+        }
+        return nil
+    }
+
     @discardableResult
     func saveProviderBundle(
         provider: ProviderProfile,
         models: [ModelProfile],
         managedCapabilities: ModelCapabilities = .text
     ) async throws -> [ModelProfile] {
-        let previousManagedIDs = Set((configuredModelsByProvider[provider.id] ?? [])
-            .filter { !$0.capabilities.intersection(managedCapabilities).isEmpty }
-            .map(\.id))
-        let saved = try await environment.configurationStore.saveProviderBundle(
+        let result = try await environment.configurationStore.saveProviderBundle(
             provider: provider,
             models: models,
             managedCapabilities: managedCapabilities
         )
         try await environment.configurationSync.saveProvider(provider)
-        for model in saved {
+        for model in result.saved {
             try await environment.configurationSync.saveModel(model)
         }
-        let savedIDs = Set(saved.map(\.id))
-        for removedID in previousManagedIDs.subtracting(savedIDs) {
+        // Disabled-in-place models keep their row and must propagate the
+        // disabled state, never a remote deletion (their job history link
+        // must survive across devices).
+        for disabledID in result.disabledModelIDs {
+            if let disabled = try await environment.configurationStore.model(id: disabledID) {
+                try await environment.configurationSync.saveModel(disabled)
+            }
+        }
+        for removedID in result.deletedModelIDs {
             try await environment.configurationSync.deleteModel(id: removedID)
         }
         await reload()
-        return saved
+        return result.saved
     }
 
     func saveModelPreferences(_ preferences: ModelSelectionPreferences) async throws {

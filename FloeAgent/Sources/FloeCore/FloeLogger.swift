@@ -29,6 +29,8 @@ public struct FloeLogger: Sendable {
     }
     public enum Category: String, Sendable {
         case core, providers, runtime, tools, persistence, security, sync, ssh, vnc, app
+        /// Save lifecycle of the provider editor (fixed stages only).
+        case providerSave = "provider_save"
     }
 
     /// One buffered log entry for the diagnostics view / export.

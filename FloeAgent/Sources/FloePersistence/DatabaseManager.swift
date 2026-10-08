@@ -83,6 +83,7 @@ public actor DatabaseManager {
         V42MediaJobOwners.register(into: &migrator)
         V43MediaJobIdempotency.register(into: &migrator)
         V44ConversationSearchIndexRepair.register(into: &migrator)
+        V45AssetReferenceOps.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {
@@ -144,5 +145,13 @@ public actor DatabaseManager {
         try await reader { db in
             try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
         }
+    }
+
+    /// Closes the underlying pool/queue so the database file can be removed
+    /// without an open SQLite connection. Tests that unlink a file-backed
+    /// store must call this first; after it, the manager is unusable.
+    public func close() async throws {
+        if let pool { try await pool.close() }
+        if let queue { try queue.close() }
     }
 }

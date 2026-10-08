@@ -31,17 +31,32 @@ private extension UTType {
 
 private struct CanvasBinaryDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.floeCanvasPackage, .json, .png, .pdf] }
-    var data: Data
+    var data: Data?
+    /// File-backed exports hand the exporter a URL instead of assembled
+    /// bytes; the owner deletes the task-owned temporary file after the
+    /// export/share completes (success or cancel).
+    var fileURL: URL?
 
-    init(data: Data = Data()) { self.data = data }
+    init(data: Data = Data()) {
+        self.data = data
+        self.fileURL = nil
+    }
+    init(fileURL: URL) {
+        self.data = nil
+        self.fileURL = fileURL
+    }
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else {
             throw CocoaError(.fileReadCorruptFile)
         }
         self.data = data
+        self.fileURL = nil
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
+        if let fileURL {
+            return try FileWrapper(url: fileURL, options: [])
+        }
+        return FileWrapper(regularFileWithContents: data ?? Data())
     }
 }
 
@@ -69,6 +84,7 @@ struct CreativeModeHubView: View {
     @State private var importsCanvasPackage = false
     @State private var exportedCanvas: CanvasBinaryDocument?
     @State private var exportedCanvasFilename = "Floe 画布"
+    @State private var exportedCanvasTempURL: URL?
 
     private struct CanvasPresentation: Identifiable {
         let id: UUID
@@ -127,18 +143,25 @@ struct CreativeModeHubView: View {
             allowedContentTypes: [.floeCanvasPackage, .json],
             allowsMultipleSelection: false
         ) { result in
-            do {
-                guard let source = try result.get().first else { return }
-                let accessed = source.startAccessingSecurityScopedResource()
+            guard case .success(let urls) = result, let source = urls.first else { return }
+            let accessed = source.startAccessingSecurityScopedResource()
+            Task { @MainActor in
                 defer { if accessed { source.stopAccessingSecurityScopedResource() } }
-                let id = try WorkspaceCanvasRegistry.importPackage(from: source)
-                let summary = WorkspaceCanvasRegistry.summaries().first { $0.id == id }
-                presentation = CanvasPresentation(
-                    id: id, name: summary?.name ?? "导入画布", workspace: nil
-                )
-                listRevision += 1
-            } catch {
-                environment.workspaceCenter.actionError = error.localizedDescription
+                do {
+                    // Whole-package work (ZIP detection, staged verified
+                    // restore) runs off the main actor; the file is never
+                    // assembled into one in-memory Data.
+                    let id = try await Task.detached(priority: .userInitiated) {
+                        try WorkspaceCanvasRegistry.importPackage(from: source)
+                    }.value
+                    let summary = WorkspaceCanvasRegistry.summaries().first { $0.id == id }
+                    presentation = CanvasPresentation(
+                        id: id, name: summary?.name ?? "导入画布", workspace: nil
+                    )
+                    listRevision += 1
+                } catch {
+                    environment.workspaceCenter.actionError = error.localizedDescription
+                }
             }
         }
         .fileExporter(
@@ -150,10 +173,12 @@ struct CreativeModeHubView: View {
             contentType: .floeCanvasPackage,
             defaultFilename: exportedCanvasFilename
         ) { result in
-            if case .failure(let error) = result {
+            if case .failure(let error) = result,
+               (error as NSError).code != NSUserCancelledError {
                 environment.workspaceCenter.actionError = error.localizedDescription
             }
             exportedCanvas = nil
+            cleanupExportedCanvasFile()
         }
         .fullScreenCover(item: $presentation, onDismiss: { listRevision += 1 }) { item in
             WorkspaceCanvasView(
@@ -371,14 +396,7 @@ struct CreativeModeHubView: View {
                 listRevision += 1
             }
             Button("导出可编辑画布包", systemImage: "square.and.arrow.up") {
-                do {
-                    exportedCanvas = CanvasBinaryDocument(
-                        data: try WorkspaceCanvasRegistry.packageData(canvasID: summary.id)
-                    )
-                    exportedCanvasFilename = summary.name
-                } catch {
-                    environment.workspaceCenter.actionError = error.localizedDescription
-                }
+                exportCanvasPackage(summary)
             }
             if !environment.workspaceCenter.projectWorkspaces.isEmpty {
                 Menu("移动到工作区", systemImage: "folder") {
@@ -416,6 +434,49 @@ struct CreativeModeHubView: View {
             try candidate.save()
             organization = candidate
         } catch { environment.workspaceCenter.actionError = error.localizedDescription }
+    }
+
+    /// File-backed package export for sharing: the zip is built off the main
+    /// actor at a task-owned temporary URL and deleted after the export
+    /// completes or is cancelled. Any file that cannot be cleaned is reported
+    /// with its exact path instead of being silently retained.
+    private func exportCanvasPackage(_ summary: WorkspaceCanvasRegistry.CanvasSummary) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("canvas-export-\(UUID().uuidString)", isDirectory: true)
+        let filename = WorkspaceCanvasRegistry.sanitizedPackageFilename(summary.name)
+        let destination = directory.appendingPathComponent(filename)
+        let canvasID = summary.id
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(
+                        at: directory, withIntermediateDirectories: true)
+                    try WorkspaceCanvasRegistry.exportPackage(canvasID: canvasID, to: destination)
+                }.value
+                cleanupExportedCanvasFile()
+                exportedCanvasTempURL = destination
+                exportedCanvasFilename = filename
+                exportedCanvas = CanvasBinaryDocument(fileURL: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: directory)
+                environment.workspaceCenter.actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func cleanupExportedCanvasFile() {
+        guard let tempURL = exportedCanvasTempURL else { return }
+        exportedCanvasTempURL = nil
+        let directory = tempURL.deletingLastPathComponent()
+        do {
+            if FileManager.default.fileExists(atPath: tempURL.path) {
+                try FileManager.default.removeItem(at: tempURL)
+            }
+            try? FileManager.default.removeItem(at: directory)
+        } catch {
+            environment.workspaceCenter.actionError =
+                "导出临时文件未能清理，已保留：\(tempURL.path)"
+        }
     }
 
     @MainActor
@@ -903,38 +964,125 @@ enum WorkspaceCanvasRegistry {
         try decodeProject(at: projectURL(canvasID: canvasID, createDirectory: false))
     }
 
-    static func packageData(canvasID: UUID) throws -> Data {
-        // Full backup package: canvas + bound child media projects (with the
-        // assets those projects reference) + referenced Materials assets,
-        // hash-verified on import.
+    /// Authoritative reachability for creative-asset prune protection.
+    /// FAILS CLOSED: an enumeration failure, an unreadable/corrupt project,
+    /// or a newer-schema project this build cannot read yields `.unknown`
+    /// (retain), never `.notReachable`, so destructive pruning can never
+    /// proceed on incomplete knowledge. A pending reconciliation op for the
+    /// asset is conservative count protection: reference bookkeeping is
+    /// mid-flight, so the bytes are retained until the op drains.
+    static func reachability(of assetID: UUID) -> CanvasAssetReachability {
+        guard let directory = try? projectURL(
+            canvasID: privateCanvasID, createDirectory: false
+        ).deletingLastPathComponent() else {
+            return .unknown
+        }
+        var isDirectory: ObjCBool = false
+        let directoryExists = FileManager.default.fileExists(
+            atPath: directory.path, isDirectory: &isDirectory)
+        guard directoryExists, isDirectory.boolValue else { return .notReachable }
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil) else {
+            FloeLogger(category: .persistence).warning(
+                "canvasReachabilityEnumerationFailed asset=\(assetID.uuidString)")
+            return .unknown
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        for url in urls where url.pathExtension == "json" {
+            let name = url.deletingPathExtension().lastPathComponent
+            // Reconciliation journals share the directory; only canvas
+            // project files are named <UUID>.json.
+            guard UUID(uuidString: name) != nil else { continue }
+            guard let data = try? Data(contentsOf: url) else {
+                FloeLogger(category: .persistence).warning(
+                    "canvasReachabilityUnreadable file=\(url.lastPathComponent) asset=\(assetID.uuidString)")
+                return .unknown
+            }
+            do {
+                let project = try CanvasProjectCodec.decode(
+                    data, fallbackID: UUID(uuidString: name), decoder: decoder)
+                if CanvasDrawingRevisionHistory.reachableAssetReferences(in: project)
+                    .contains(assetID) {
+                    return .reachable
+                }
+            } catch {
+                // Corrupt or newer-schema project: this build cannot prove
+                // the asset unreferenced, so it retains.
+                FloeLogger(category: .persistence).warning(
+                    "canvasReachabilityDecodeFailed file=\(url.lastPathComponent) asset=\(assetID.uuidString)")
+                return .unknown
+            }
+        }
+        // Conservative count protection: in-flight reconciliation ops mean
+        // reference bookkeeping has not converged; retain until drained.
+        for url in urls
+        where url.lastPathComponent.hasPrefix("asset-reconciliation-")
+            && url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let record = try? JSONDecoder().decode(
+                      CanvasAssetReconciliation.Record.self, from: data) else { continue }
+            if record.ops.contains(where: { $0.assetID == assetID }) {
+                return .reachable
+            }
+        }
+        return .notReachable
+    }
+
+    /// Backward-compatible predicate form: every non-`.notReachable` decision
+    /// (reachable OR unknown) is treated as still reachable — pruning fails
+    /// closed.
+    static func anyProjectReaches(assetID: UUID) -> Bool {
+        reachability(of: assetID) != .notReachable
+    }
+
+    /// Production file-backed export: builds the backup zip at `destination`
+    /// with each child project's recorded media root and a full source
+    /// preflight (regular files, no symlink escapes, bounded sizes) before
+    /// anything is written. Runs off the main actor at the call site; the
+    /// destination temp file is owned by the caller and deleted after the
+    /// share/export completes.
+    static func exportPackage(canvasID: UUID, to destination: URL) throws {
         let project = try decodeProject(at: projectURL(canvasID: canvasID, createDirectory: false))
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false)
         let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
-        let projectsRoot = floeRoot.appendingPathComponent("MediaProjects", isDirectory: true)
-        let mediaRoot = WorkbenchPaths.mediaRoot(for: nil, current: nil)
-        return try CanvasBackupPackage.make(
-            project: project,
-            childProjectData: { id in
-                let url = projectsRoot.appendingPathComponent(MediaProjectStore.projectFileName(id: id))
-                return try? Data(contentsOf: url)
-            },
-            materialData: { fileName in
-                try? Data(contentsOf: floeRoot.appendingPathComponent("Materials/\(fileName)"))
-            },
-            assetData: { relative in
-                try? Data(contentsOf: mediaRoot.appendingPathComponent(relative))
-            })
+        let layout = CanvasBackupPackage.ExportLayout(
+            projectsRoot: floeRoot.appendingPathComponent("MediaProjects", isDirectory: true),
+            materialsRoot: floeRoot.appendingPathComponent("Materials", isDirectory: true),
+            fallbackMediaRoot: WorkbenchPaths.fallbackRoot(),
+            cadDraftsRoot: floeRoot.appendingPathComponent(
+                CanvasDrawingNodePlanner.draftRootDirectoryName, isDirectory: true))
+        try CanvasBackupPackage.exportToURL(
+            project: project, destination: destination, layout: layout)
+    }
+
+    /// Safe package file name for the exported document (no path separators,
+    /// bounded length, always the canvas-package extension).
+    static func sanitizedPackageFilename(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalid = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+        let cleaned = trimmed.components(separatedBy: invalid)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let base = String(cleaned.prefix(80))
+        return "\(base.isEmpty ? "Floe 画布" : base).floeCanvas"
     }
 
     @discardableResult
     static func importPackage(from source: URL) throws -> UUID {
-        let data = try Data(contentsOf: source)
-        if data.starts(with: [0x50, 0x4B]) {
-            return try importBackupPackage(data: data)
+        // ZIP detection reads only the leading bytes; the package itself is
+        // streamed by the staged restore and never assembled in memory.
+        if try CanvasBackupPackage.looksLikeZipArchive(at: source) {
+            return try importBackupPackage(fileURL: source)
         }
-        // Legacy plain-canvas-JSON package (Build265 and earlier).
+        // Legacy plain-canvas-JSON package (Build265 and earlier), bounded.
+        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        let size = (attributes[.size] as? Int64) ?? 0
+        guard size <= CanvasBackupPackage.maximumInMemoryBytes else {
+            throw FloeError.validationFailed("这个画布文件超过 64 MB 的导入限制。")
+        }
         var project = try decodeProject(at: source)
         guard !project.documents.isEmpty,
               (1...CanvasProject.currentSchemaVersion).contains(project.schemaVersion) else {
@@ -958,13 +1106,13 @@ enum WorkspaceCanvasRegistry {
     /// child projects and their assets are only committed after every hash
     /// and path validates, so a bad package changes nothing on disk; the
     /// registry write is the finalize step and a failure rolls files back.
-    private static func importBackupPackage(data: Data) throws -> UUID {
+    private static func importBackupPackage(fileURL: URL) throws -> UUID {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true)
         let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
         var registeredID: UUID?
-        let restored = try CanvasBackupPackage.restore(data: data, floeRoot: floeRoot) { project in
+        let restored = try CanvasBackupPackage.restore(fileURL: fileURL, floeRoot: floeRoot) { project in
             try encodeProject(project,
                               to: projectURL(canvasID: project.id, createDirectory: true))
             registeredID = project.id
@@ -1099,8 +1247,17 @@ private enum CanvasLifecycleService {
         )
         try await environment.canvasSyncOperationStore.enqueue(operation)
         try WorkspaceCanvasRegistry.delete(canvasID: project.id)
-        for assetID in project.documents.flatMap(\.nodes).compactMap(\.asset?.id) {
-            try? await environment.creativeAssetStore.adjustReference(assetID: assetID, by: -1)
+        // Release every reachable reference (current assets PLUS CAD
+        // revision history). An asset referenced twice is decremented twice.
+        var perAsset: [UUID: Int] = [:]
+        for id in CanvasDrawingRevisionHistory.reachableAssetReferences(in: project) {
+            perAsset[id, default: 0] += 1
+        }
+        for (assetID, count) in perAsset {
+            for _ in 0..<count {
+                try? await environment.creativeAssetStore.adjustReference(
+                    assetID: assetID, by: -1)
+            }
         }
     }
 
@@ -1303,7 +1460,7 @@ private final class CanvasDocumentStore: ObservableObject {
     private var lastExternalModificationDate: Date?
     private var lastExternalFileSize: Int?
 
-    enum ExportFormat { case package, png, pdf }
+    enum ExportFormat { case package, json, png, pdf }
 
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
@@ -1406,6 +1563,99 @@ private final class CanvasDocumentStore: ObservableObject {
             ?? project.documents.first
     }
 
+    /// Advisory, crash-resumable journal of pending reconciliation ops.
+    /// The authoritative "what was applied" record lives in
+    /// `asset_reference_receipts` (same transaction as each count update),
+    /// so a lost/stale journal can never double-apply: replays are no-ops.
+    /// The journal still closes the scheduling gap: ops are durably recorded
+    /// before the drain runs, and a crash resumes exactly the unapplied set.
+    private var reconciliation = CanvasAssetReconciliation()
+    private var reconciliationInFlight = false
+    private var loadedPendingReconciliation = false
+    /// User-visible warning set when the op journal cannot be written;
+    /// the drain still runs (receipts make replays safe) but the lost
+    /// durability is surfaced, never swallowed.
+    @Published private(set) var reconciliationNotice: String?
+
+    private var pendingReconciliationURL: URL {
+        fileURL.deletingLastPathComponent()
+            .appendingPathComponent("asset-reconciliation-\(project.id.uuidString).json")
+    }
+
+    private func loadPendingReconciliation() {
+        guard !loadedPendingReconciliation else { return }
+        loadedPendingReconciliation = true
+        guard let data = try? Data(contentsOf: pendingReconciliationURL),
+              let record = try? JSONDecoder().decode(
+                  CanvasAssetReconciliation.Record.self, from: data) else { return }
+        reconciliation = CanvasAssetReconciliation(record: record)
+    }
+
+    /// Atomic write of the tiny pending-op journal. A failure is surfaced
+    /// in the maintenance notice instead of being swallowed: the drain can
+    /// still run (op receipts make replays safe), but the user-visible
+    /// warning keeps the loss of durability from being silent.
+    @discardableResult
+    private func persistPendingReconciliation() -> Bool {
+        let url = pendingReconciliationURL
+        guard !reconciliation.isEmpty else {
+            try? FileManager.default.removeItem(at: url)
+            return true
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(reconciliation.record) else { return false }
+        do {
+            try data.write(to: url, options: .atomic)
+            reconciliationNotice = nil
+            return true
+        } catch {
+            reconciliationNotice = canvasLocalized(
+                "素材引用对账记录暂时无法写入磁盘，对账仍会继续，但本次进度不会被持久保存：\(error.localizedDescription)",
+                "The asset-reference reconciliation journal could not be written; reconciliation continues, but this progress will not survive a restart: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func scheduleReachableReconciliation(deltas: [UUID: Int]) {
+        guard !deltas.isEmpty else { return }
+        reconciliation.schedule(deltas)
+        // Precommit intent: durably record the ops before any pass so a
+        // crash mid-drain resumes exactly the unapplied set.
+        persistPendingReconciliation()
+        startReconciliationDrainIfNeeded()
+    }
+
+    private func startReconciliationDrainIfNeeded() {
+        guard !reconciliationInFlight, !reconciliation.isEmpty else { return }
+        reconciliationInFlight = true
+        let assetStore = creativeAssetStore
+        Task { @MainActor in
+            defer { reconciliationInFlight = false }
+            // The drain loops only across fully successful passes; a failed
+            // pass retains its ops (memory + journal) and stops, so a
+            // persistent store failure can never spin a retry loop.
+            guard let assetStore else { return }
+            while !reconciliation.isEmpty {
+                // Local copy: a mutating async pass cannot run directly on
+                // the actor-isolated property from inside a closure. Only
+                // APPLIED ops leave the authoritative pending set (removed
+                // by op id), so ops scheduled mid-pass survive.
+                var pass = reconciliation
+                let outcome = await pass.runPass { op in
+                    try await assetStore.applyReferenceOp(
+                        opID: op.id, assetID: op.assetID, delta: op.delta)
+                }
+                reconciliation.markApplied(Set(outcome.applied))
+                // Checkpoint progress (or the retained failure); a crash
+                // resumes exactly this unapplied set, and replays are
+                // receipt-idempotent in the database.
+                persistPendingReconciliation()
+                if !outcome.completed { break }
+            }
+        }
+    }
+
     func configureSync(
         store: CanvasSyncOperationStore,
         assetStore: CreativeAssetStore? = nil,
@@ -1414,6 +1664,10 @@ private final class CanvasDocumentStore: ObservableObject {
         syncOperationStore = store
         if let assetStore { creativeAssetStore = assetStore }
         globalSyncEnabled = globalEnabled
+        // Resume deltas recorded before a crash/termination (the project
+        // file already CAS'd them; the counts must converge to it).
+        loadPendingReconciliation()
+        startReconciliationDrainIfNeeded()
     }
 
     func synchronizeFromCloud(_ service: CanvasCloudAssetService) async {
@@ -1465,22 +1719,27 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func undo() {
         guard let previous = undoStack.popLast() else { return }
+        // Snapshot BEFORE restoring: undo swaps whole-project state, so the
+        // reachable-reference deltas must be computed against the state the
+        // user actually saw, not the restored one.
+        let beforeMutation = project
         let currentRevision = project.revision
         redoStack.append(project)
         project = previous
         project.revision = currentRevision
         project.updatedAt = Date()
-        persist()
+        persist(reconcilingFrom: beforeMutation)
     }
 
     func redo() {
         guard let next = redoStack.popLast() else { return }
+        let beforeMutation = project
         let currentRevision = project.revision
         undoStack.append(project)
         project = next
         project.revision = currentRevision
         project.updatedAt = Date()
-        persist()
+        persist(reconcilingFrom: beforeMutation)
     }
 
     func reloadExternalChange(force: Bool = true) {
@@ -1540,7 +1799,11 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func deleteDocument(_ id: UUID) {
         guard project.documents.count > 1 else { return }
-        let assetIDs = project.documents.first(where: { $0.id == id })?.nodes.compactMap(\.asset?.id) ?? []
+        // Capture BEFORE mutation: persist() reconciles reachable references
+        // from `previousProject` to the candidate, and using the
+        // already-mutated project as "previous" would compute empty deltas
+        // and leak every asset/history reference the document owned.
+        let beforeMutation = project
         project.documents.removeAll { $0.id == id }
         project.viewports[id] = nil
         project.agentConversationIDsByDocument[id] = nil
@@ -1549,10 +1812,10 @@ private final class CanvasDocumentStore: ObservableObject {
         }
         project.agentConversationID = project.agentConversationIDsByDocument[project.selectedDocumentID]
         project.updatedAt = Date()
-        persist()
-        for assetID in assetIDs {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: -1) }
-        }
+        // Central reconciliation in persist() releases the removed
+        // document's assets, conservatively retaining any still reachable via
+        // other nodes' CAD history.
+        persist(reconcilingFrom: beforeMutation)
     }
 
     func renameDocument(_ id: UUID, name: String) {
@@ -1689,6 +1952,8 @@ private final class CanvasDocumentStore: ObservableObject {
         to nodeID: UUID
     ) {
         guard [.image, .video, .audio, .file].contains(kind) else { return }
+        // Reference counts are reconciled centrally in writeCandidate via
+        // complete reachable (current + CAD history) deltas.
         let previousAssetID = selectedDocument?.nodes.first(where: { $0.id == nodeID })?.asset?.id
         let displayName = asset.localRelativePath?.split(separator: "/").last.map(String.init)
         guard applyCommand([
@@ -1697,12 +1962,28 @@ private final class CanvasDocumentStore: ObservableObject {
                 text: displayName, asset: asset
             )
         ]) != nil else { return }
-        if let previousAssetID, previousAssetID != asset.id {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: previousAssetID, by: -1) }
-        }
-        if previousAssetID != asset.id {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: asset.id, by: 1) }
-        }
+    }
+
+    /// One atomic patch that replaces a node's asset together with any typed
+    /// binding/metadata it carries (child-project migration, CAD drawing
+    /// apply, video/image update). The whole operation commits as ONE
+    /// revision, so a crash can never leave an asset without its binding.
+    /// Keeps the creative asset reference counts in sync.
+    @discardableResult
+    func commitNodeAssetPatch(
+        _ operation: CanvasPatchOperation,
+        documentID: UUID,
+        previousAssetID: UUID?
+    ) -> Bool {
+        guard applyCommand([operation], documentID: documentID) != nil else { return false }
+        return true
+    }
+    /// One atomic patch for an explicit variant: create the new node and its
+    /// edge in a single revision.
+    @discardableResult
+    func commitVariantPatch(_ operations: [CanvasPatchOperation], documentID: UUID) -> Bool {
+        guard applyCommand(operations, documentID: documentID) != nil else { return false }
+        return true
     }
 
     @discardableResult
@@ -1726,7 +2007,6 @@ private final class CanvasDocumentStore: ObservableObject {
                 metadata: metadata
             )
         ]) != nil else { return id }
-        Task { try? await creativeAssetStore?.adjustReference(assetID: asset.id, by: 1) }
         return id
     }
 
@@ -1836,14 +2116,6 @@ private final class CanvasDocumentStore: ObservableObject {
         }
     }
 
-    /// Persists the typed child-project binding inside node metadata.
-    func setChildProjectBinding(_ binding: CanvasChildProjectBinding?, for nodeID: UUID) {
-        mutateSelectedDocument { document in
-            guard let index = document.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-            document.nodes[index].childProjectBinding = binding
-        }
-    }
-
     // MARK: Copied-node child-project forks (fixed-document, crash safe)
 
     /// Forks independent editable projects for duplicated/pasted nodes.
@@ -1875,8 +2147,10 @@ private final class CanvasDocumentStore: ObservableObject {
         }
     }
 
-    /// Retries a node whose fork previously failed (or was interrupted into a
-    /// pending marker), capturing the current document afresh.
+    /// Retries a node whose fork or first-edit migration previously failed (or
+    /// was interrupted into a pending marker), capturing the current document
+    /// afresh. A migration marker carries its rendered asset and commits the
+    /// exact binding again; a fork marker forks the parent project.
     @MainActor
     func retryCopiedFork(nodeID: UUID, environment: AppEnvironment) {
         let documentID = project.selectedDocumentID
@@ -1887,6 +2161,10 @@ private final class CanvasDocumentStore: ObservableObject {
         case .failed(let p, _): pending = p
         case .pending(let p): pending = p
         default: return
+        }
+        if pending.renderedAsset != nil {
+            retryChildProjectMigration(nodeID: nodeID, pending: pending, documentID: documentID)
+            return
         }
         // Reset to a pending marker synchronously, then fork.
         mutateDocument(documentID) { doc in
@@ -1903,6 +2181,33 @@ private final class CanvasDocumentStore: ObservableObject {
                 resolution = .failed(reason: error.localizedDescription)
             }
             commitForkResolutions(documentID: documentID, resolutions: [nodeID: resolution])
+        }
+    }
+
+    /// Commits the binding a failed first-edit migration already exported, in
+    /// one atomic patch, against the live node. Never mutates the original
+    /// asset before the commit succeeds.
+    @MainActor
+    private func retryChildProjectMigration(
+        nodeID: UUID,
+        pending: CanvasChildProjectPending,
+        documentID: UUID
+    ) {
+        let document = project.documents.first { $0.id == documentID }
+        let liveNode = document?.nodes.first { $0.id == nodeID }
+        let extraMetadata: [String: String] = [
+            "editor": "media-workbench",
+            "editFormat": liveNode?.kind == .video ? "video-mp4" : "flattened-png",
+            "appliedRevision": String(pending.appliedRevision ?? 0)
+        ]
+        do {
+            let operation = try CanvasChildProjectMigrationPlanner.retryPatch(
+                liveNode: liveNode, pending: pending, extraMetadata: extraMetadata)
+            guard commitNodeAssetPatch(
+                operation, documentID: documentID, previousAssetID: liveNode?.asset?.id)
+            else { return }
+        } catch {
+            saveError = error.localizedDescription
         }
     }
 
@@ -1928,7 +2233,8 @@ private final class CanvasDocumentStore: ObservableObject {
             candidate.documents[index] = document
             candidate = projectPreparedForPersistence(candidate, incrementRevision: true)
             do {
-                try writeCandidate(candidate, expectedRevision: current.revision)
+                try writeCandidate(candidate, expectedRevision: current.revision,
+                                   reconcilingFrom: current)
                 return true
             } catch {
                 guard CanvasProjectFileWriter.isRevisionConflict(error),
@@ -2117,7 +2423,8 @@ private final class CanvasDocumentStore: ObservableObject {
                 )
                 try writeCandidate(
                     candidate,
-                    expectedRevision: current.revision
+                    expectedRevision: current.revision,
+                    reconcilingFrom: current
                 )
                 recordHistory(current)
                 return plan.resultNodeIDs
@@ -2134,8 +2441,8 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func applyMediaJobs(_ jobs: [MediaGenerationJob]) {
+        let beforePoll = project
         var changed = false
-        var newlyReferencedAssets: [UUID] = []
         for documentIndex in project.documents.indices {
             for nodeIndex in project.documents[documentIndex].nodes.indices {
                 guard let jobID = project.documents[documentIndex].nodes[nodeIndex].generationJobID,
@@ -2187,17 +2494,13 @@ private final class CanvasDocumentStore: ObservableObject {
                         id: assetID, localRelativePath: relativePath,
                         mimeType: "video/mp4"
                     )
-                    newlyReferencedAssets.append(assetID)
                     changed = true
                 }
             }
         }
         if changed {
             project.updatedAt = Date()
-            persist()
-        }
-        for assetID in newlyReferencedAssets {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: 1) }
+            persist(reconcilingFrom: beforePoll)
         }
     }
 
@@ -2237,7 +2540,6 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func duplicateNodes(_ ids: Set<UUID>) -> Set<UUID> {
         var created = Set<UUID>()
-        var duplicatedAssetIDs: [UUID] = []
         mutateSelectedDocument { document in
             let originals = document.nodes.filter { ids.contains($0.id) }
             var newIDs: [UUID] = []
@@ -2248,14 +2550,10 @@ private final class CanvasDocumentStore: ObservableObject {
                 newIDs.append(copy.id)
                 document.nodes.append(copy)
                 created.insert(copy.id)
-                if let assetID = copy.asset?.id { duplicatedAssetIDs.append(assetID) }
             }
             // Before the copies are visible they must never share the parent's
             // mutable project: mark them pending a fork in the same mutation.
             CanvasCopyForkPlanner.markCopiesPending(nodes: &document.nodes, copyNodeIDs: newIDs)
-        }
-        for assetID in duplicatedAssetIDs {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: 1) }
         }
         return created
     }
@@ -2282,7 +2580,6 @@ private final class CanvasDocumentStore: ObservableObject {
         guard !clipboard.nodes.isEmpty else { return [] }
         var mapping: [UUID: UUID] = [:]
         var created = Set<UUID>()
-        var referencedAssets: [UUID] = []
         mutateSelectedDocument { document in
             var newIDs: [UUID] = []
             for var node in clipboard.nodes {
@@ -2294,7 +2591,6 @@ private final class CanvasDocumentStore: ObservableObject {
                 mapping[oldID] = node.id
                 newIDs.append(node.id)
                 created.insert(node.id)
-                if let assetID = node.asset?.id { referencedAssets.append(assetID) }
                 document.nodes.append(node)
             }
             CanvasCopyForkPlanner.markCopiesPending(nodes: &document.nodes, copyNodeIDs: newIDs)
@@ -2311,22 +2607,13 @@ private final class CanvasDocumentStore: ObservableObject {
             }
             document.connections = connections
         }
-        for assetID in referencedAssets {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: 1) }
-        }
         return created
     }
 
     func deleteNodes(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
-        let assetIDs = selectedDocument?.nodes
-            .filter { ids.contains($0.id) }
-            .compactMap(\.asset?.id) ?? []
         guard applyCommand([CanvasPatchOperation(kind: .delete, nodeIDs: Array(ids))]) != nil else {
             return
-        }
-        for assetID in assetIDs {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: -1) }
         }
     }
 
@@ -2477,12 +2764,8 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func deleteNode(_ id: UUID) {
-        let assetID = selectedDocument?.nodes.first(where: { $0.id == id })?.asset?.id
         guard applyCommand([CanvasPatchOperation(kind: .delete, nodeID: id)]) != nil else {
             return
-        }
-        if let assetID {
-            Task { try? await creativeAssetStore?.adjustReference(assetID: assetID, by: -1) }
         }
     }
 
@@ -2815,11 +3098,15 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func exportData(_ format: ExportFormat) throws -> Data {
         switch format {
-        case .package:
+        case .json:
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
             return try CanvasProjectCodec.encode(project, encoder: encoder)
+        case .package:
+            // The editable package is a file-backed archive (child projects +
+            // assets), never assembled in memory here.
+            throw FloeError.validationFailed("可编辑画布包通过文件导出路径生成。")
         case .png:
             guard let image = renderCurrentDocument() else {
                 throw FloeError.validationFailed("当前画布没有可导出的内容。")
@@ -2959,7 +3246,8 @@ private final class CanvasDocumentStore: ObservableObject {
                 )
                 try writeCandidate(
                     candidate,
-                    expectedRevision: current.revision
+                    expectedRevision: current.revision,
+                    reconcilingFrom: current
                 )
                 recordHistory(current)
                 return result
@@ -2989,11 +3277,12 @@ private final class CanvasDocumentStore: ObservableObject {
         _ mutation: (inout FloeCanvasDocument) -> Void
     ) {
         guard let index = project.documents.firstIndex(where: { $0.id == id }) else { return }
+        let beforeMutation = project
         if persistAfter { recordHistory() }
         mutation(&project.documents[index])
         project.documents[index].updatedAt = Date()
         project.updatedAt = Date()
-        if persistAfter { persist() }
+        if persistAfter { persist(reconcilingFrom: beforeMutation) }
     }
 
     private func recordHistory(_ snapshot: FloeCanvasProject? = nil) {
@@ -3020,7 +3309,8 @@ private final class CanvasDocumentStore: ObservableObject {
         expectedRevision: Int64,
         requireRevisionAdvance: Bool = true,
         allowCreateIfMissing: Bool = false,
-        allowReplacingUnreadableFile: Bool = false
+        allowReplacingUnreadableFile: Bool = false,
+        reconcilingFrom previousProject: FloeCanvasProject? = nil
     ) throws {
         let data = try CanvasProjectFileWriter.shared.compareAndSwap(
             candidate,
@@ -3032,6 +3322,16 @@ private final class CanvasDocumentStore: ObservableObject {
         )
         project = candidate
         saveError = nil
+        // Reconcile complete reachable ownership (current assets PLUS typed
+        // CAD revision history). Increments are applied before decrements so
+        // an asset that remains reachable via history can never hit
+        // reference_count 0 and be pruned, even if this bookkeeping is
+        // interrupted by app termination.
+        if let previousProject {
+            let deltas = CanvasDrawingRevisionHistory.reachableDeltas(
+                from: previousProject, to: candidate)
+            scheduleReachableReconciliation(deltas: deltas)
+        }
         guard let syncOperationStore, globalSyncEnabled,
               candidate.sync.isEnabled else { return }
         let canvasID = candidate.id
@@ -3070,7 +3370,8 @@ private final class CanvasDocumentStore: ObservableObject {
         expectedRevision explicitExpectedRevision: Int64? = nil,
         requireRevisionAdvance explicitRequireRevisionAdvance: Bool? = nil,
         allowCreateIfMissing: Bool = false,
-        allowReplacingUnreadableFile: Bool = false
+        allowReplacingUnreadableFile: Bool = false,
+        reconcilingFrom explicitPreviousProject: FloeCanvasProject? = nil
     ) -> Bool {
         let source = project
         let expectedRevision = explicitExpectedRevision ?? source.revision
@@ -3085,7 +3386,8 @@ private final class CanvasDocumentStore: ObservableObject {
                 requireRevisionAdvance: explicitRequireRevisionAdvance
                     ?? incrementRevision,
                 allowCreateIfMissing: allowCreateIfMissing,
-                allowReplacingUnreadableFile: allowReplacingUnreadableFile
+                allowReplacingUnreadableFile: allowReplacingUnreadableFile,
+                reconcilingFrom: explicitPreviousProject ?? source
             )
             return true
         } catch {
@@ -3157,13 +3459,19 @@ private struct CanvasVideoEditorPresentation: Identifiable {
     let id: UUID
     let documentID: UUID
     let source: URL
+    /// Content hash of the flattened node asset captured when the editor
+    /// opened; the first-edit migration records it as `sourceAssetHash`.
+    var sourceAssetHash: String?
 }
 
 /// Canvas video node editor bound to a durable child project: reopening the
 /// node resumes the same project/draft, and completing updates the ORIGINAL
-/// node while recording the applied revision and rendered asset.
+/// node in ONE atomic patch while recording the applied revision and rendered
+/// asset. A preserved unknown/newer raw binding is never overwritten: "start
+/// from this video" creates a NEW variant node instead.
 private struct CanvasVideoChildProjectSheet: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: CanvasDocumentStore
     let presentation: CanvasVideoEditorPresentation
     @State private var applying = false
@@ -3180,7 +3488,12 @@ private struct CanvasVideoChildProjectSheet: View {
     }
 
     var body: some View {
-        Group {
+        switch bindingState {
+        case .pending:
+            pendingBody
+        case .failed(_, let reason):
+            failedBody(reason: reason)
+        default:
             if bindingState.isRecoverable, !startFresh {
                 recoveryBody
             } else {
@@ -3189,16 +3502,48 @@ private struct CanvasVideoChildProjectSheet: View {
         }
     }
 
+    private var pendingBody: some View {
+        ContentUnavailableView {
+            Label(canvasLocalized("正在准备独立可编辑副本", "Preparing an independent editable copy"),
+                  systemImage: "arrow.triangle.2.circlepath")
+        } description: {
+            Text(canvasLocalized(
+                "正在为该节点创建独立工程，完成前不会共享原视频的编辑状态。",
+                "A separate project is being prepared for this node; it does not share the original's editable state until ready."))
+        }
+        .accessibilityIdentifier("canvas.videoEditor.pending")
+    }
+
+    private func failedBody(reason: String) -> some View {
+        ContentUnavailableView {
+            Label(canvasLocalized("应用回画布失败", "Applying back to the canvas failed"),
+                  systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(canvasLocalized(
+                "导出结果仍在素材库中，原节点未被修改。可重试。\n\(reason)",
+                "The export is still in the material library and the original node was not changed. You can retry.\n\(reason)"))
+        } actions: {
+            Button(canvasLocalized("重试", "Retry")) {
+                store.retryCopiedFork(nodeID: presentation.id, environment: environment)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("canvas.videoEditor.retry")
+            Button(canvasLocalized("取消", "Cancel")) { dismiss() }
+                .frame(minHeight: 44)
+        }
+        .accessibilityIdentifier("canvas.videoEditor.failed")
+    }
+
     private var recoveryBody: some View {
         ContentUnavailableView {
             Label(canvasLocalized("工程绑定来自更新版本", "Edit binding is from a newer version"),
                   systemImage: "exclamationmark.triangle")
         } description: {
             Text(canvasLocalized(
-                "已保留原始绑定数据，不会用新工程覆盖。可从此原视频开始一个新的编辑会话。",
-                "The original binding is preserved and will not be overwritten. You can start a new session from this video."))
+                "已保留原始绑定数据，不会用新工程覆盖。将从此原视频新建一个分支节点。",
+                "The original binding is preserved and will not be overwritten. A new variant node will be created from this video."))
         } actions: {
-            Button(canvasLocalized("从此原视频开始", "Start from this video")) { startFresh = true }
+            Button(canvasLocalized("从此原视频新建分支", "Create variant from this video")) { startFresh = true }
                 .frame(minHeight: 44)
         }
     }
@@ -3213,8 +3558,8 @@ private struct CanvasVideoChildProjectSheet: View {
                 urls: [presentation.source],
                 owner: WorkbenchCenter.Owner(kind: .canvas, id: presentation.documentID, environmentID: nil),
                 onExported: { url in Task { await applyExportedVideo(url) } },
-                allowsResume: true,
-                resumeProjectID: binding?.projectID)
+                allowsResume: !startFresh,
+                resumeProjectID: startFresh ? nil : binding?.projectID)
             if applying {
                 ProgressView().padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             }
@@ -3231,15 +3576,16 @@ private struct CanvasVideoChildProjectSheet: View {
         }
     }
 
-    /// Verified export → immutable asset → ORIGINAL node (identity preserved) →
-    /// persisted child binding with applied revision and rendered asset.
+    /// Verified export → immutable asset → ONE atomic patch. A regular edit
+    /// updates the ORIGINAL node (asset + binding + pending cleanup together);
+    /// a recoverable raw binding or explicit start-fresh creates a NEW variant
+    /// node so the preserved metadata is untouched.
     @MainActor
     private func applyExportedVideo(_ url: URL) async {
         guard !applying else { return }
         applying = true
         defer { applying = false }
-        guard store.selectedDocument?.id == presentation.documentID,
-              store.selectedDocument?.nodes.contains(where: { $0.id == presentation.id }) == true else {
+        guard liveNode != nil else {
             errorMessage = canvasLocalized("视频已导出；原画布或节点已改变，请从素材库插入。",
                                            "The video was exported; the canvas or node changed, so insert it from the material library.")
             return
@@ -3247,8 +3593,9 @@ private struct CanvasVideoChildProjectSheet: View {
         do {
             let ingestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
             let record = try await ingestion.importLocalFile(url)
-            guard store.selectedDocument?.id == presentation.documentID,
-                  store.selectedDocument?.nodes.contains(where: { $0.id == presentation.id }) == true else {
+            // Re-read the live node after the await; the presentation-time
+            // capture never commits.
+            guard let liveNodeAtCommit = liveNode else {
                 errorMessage = canvasLocalized("视频已保存到素材库；原节点已改变，请从素材库插入。",
                                                "The video was saved to the material library; the node changed, so insert it from there.")
                 return
@@ -3257,29 +3604,1588 @@ private struct CanvasVideoChildProjectSheet: View {
                 id: record.id, contentHash: record.contentHash,
                 localRelativePath: record.localRelativePath,
                 mimeType: record.mimeType, byteCount: record.byteCount)
-            // Update the ORIGINAL node: identity, name, position and edges kept.
-            store.attachAsset(reference, kind: .video, to: presentation.id)
-            let center = environment.workbenchCenter
-            let projectID = center.project?.id ?? bindingState.binding?.projectID
-            let revision = center.project?.revision
-            if let projectID {
-                store.setChildProjectBinding(CanvasChildProjectBinding(
+            let projectID = environment.workbenchCenter.project?.id
+                ?? liveNodeAtCommit.childProjectBinding?.projectID
+            let revision = environment.workbenchCenter.project?.revision
+                ?? liveNodeAtCommit.childProjectBinding?.appliedRevision ?? 0
+            if startFresh || liveNodeAtCommit.childProjectBindingState.isRecoverable {
+                guard let projectID else {
+                    errorMessage = canvasLocalized(
+                        "视频已保存到素材库；没有可绑定的新工程，未修改原节点。",
+                        "The video was saved to the library; there is no new project to bind, so the original node was not changed.")
+                    return
+                }
+                let (_, operations) = try CanvasChildProjectMigrationPlanner.variantPatch(
+                    sourceNodeID: presentation.id,
+                    kind: .video,
+                    position: CanvasPoint(
+                        x: liveNodeAtCommit.x + liveNodeAtCommit.width + 100,
+                        y: liveNodeAtCommit.y),
+                    size: liveNodeAtCommit.size,
+                    renderedAsset: reference,
                     projectID: projectID,
-                    appliedRevision: revision ?? bindingState.binding?.appliedRevision ?? 0,
-                    draftRevision: revision ?? bindingState.binding?.draftRevision,
-                    renderedAssetID: record.id,
-                    sourceNodeID: bindingState.binding?.sourceNodeID ?? presentation.id,
-                    sourceAssetHash: record.contentHash
-                ), for: presentation.id)
+                    projectRevision: revision,
+                    sourceAssetHash: presentation.sourceAssetHash,
+                    extraMetadata: [
+                        "editor": "media-workbench", "editFormat": "video-mp4",
+                        "variant": "true", "appliedRevision": String(revision)
+                    ])
+                guard store.commitVariantPatch(operations, documentID: presentation.documentID) else {
+                    errorMessage = canvasLocalized(
+                        "视频已保存到素材库；画布写入失败，原节点未修改。",
+                        "The video was saved to the library; the canvas write failed and the original node was not changed.")
+                    return
+                }
+                return
             }
-            store.updateNodeMetadata(presentation.id, values: [
-                "editor": "media-workbench", "editFormat": "video-mp4",
-                "appliedRevision": String(revision ?? 0)
-            ])
+            let operation = try CanvasChildProjectMigrationPlanner.applyPatch(
+                liveNode: liveNodeAtCommit,
+                capturedSourceAssetHash: presentation.sourceAssetHash,
+                renderedAsset: reference,
+                projectID: projectID,
+                projectRevision: revision,
+                extraMetadata: [
+                    "editor": "media-workbench", "editFormat": "video-mp4",
+                    "appliedRevision": String(revision)
+                ])
+            guard store.commitNodeAssetPatch(
+                operation, documentID: presentation.documentID,
+                previousAssetID: liveNodeAtCommit.asset?.id)
+            else {
+                if liveNodeAtCommit.childProjectBindingState == .absent, let projectID,
+                   let marker = try? CanvasChildProjectMigrationPlanner.failedMarkerPatch(
+                       liveNode: liveNodeAtCommit,
+                       projectID: projectID,
+                       projectRevision: revision,
+                       renderedAsset: reference,
+                       sourceAssetHash: presentation.sourceAssetHash,
+                       reason: store.saveError ?? "画布写入失败") {
+                    store.commitNodeAssetPatch(
+                        marker, documentID: presentation.documentID, previousAssetID: nil)
+                }
+                errorMessage = canvasLocalized(
+                    "视频已保存到素材库；应用回画布失败，可重试。",
+                    "The video was saved to the library; applying it back failed and can be retried.")
+                return
+            }
         } catch {
             errorMessage = canvasLocalized("视频已导出，但应用回画布失败：", "The video was exported but applying it back failed: ")
                 + error.localizedDescription
         }
+    }
+
+    private var liveNode: CanvasNode? {
+        store.project.documents.first { $0.id == presentation.documentID }?
+            .nodes.first { $0.id == presentation.id }
+    }
+}
+
+// MARK: - Canvas CAD/drawing editor
+
+private struct CanvasDrawingEditorPresentation: Identifiable {
+    let id: UUID
+    let documentID: UUID
+}
+
+/// One live CAD editing session per canvas drawing node. Sessions survive the
+/// editor sheet closing so unsaved drafts are never discarded and reopening
+/// resumes the same live `EngineeringWebSession`; they are torn down when a
+/// node disappears or the canvas closes, so a closed node never leaks a web
+/// view or local server. The editable copy is staged under the app-owned
+/// `CanvasDrafts/` workspace root, so `WorkspaceFileService.commitBinaryEdit`
+/// (SHA CAS) is the only writer and the original node asset is never touched
+/// before an explicit apply.
+@MainActor
+private final class CanvasDrawingSessionRegistry: ObservableObject {
+    struct Entry {
+        var nodeID: UUID
+        var canvasID: UUID
+        var stagedRelativePath: String
+        var sourceRelativePath: String
+        var sourceContentHash: String?
+        var fileExtension: String
+        var rootURL: URL
+        var service: WorkspaceFileService
+        var identity: String
+        var session: EngineeringWebSession
+        var appliedContentHash: String?
+        var appliedAssetID: UUID?
+        /// Hash of the staged file after the last durable save. Diverges from
+        /// `appliedContentHash` once the user saves unapplied edits.
+        var stagedContentHash: String?
+        /// Monotonic per-node descriptor write generation (CAS): a delayed
+        /// saved-draft marker can never overwrite a newer adopted baseline.
+        var descriptorGeneration: Int64 = 0
+        var descriptorWritePending = false
+        var lastUsedAt: Date
+    }
+
+    struct Prepared {
+        var entry: Entry
+        /// Set when an existing draft was preserved because the node changed
+        /// externally (or its live edits could not be serialized); always
+        /// surfaced to the user, never silent.
+        var notice: String?
+    }
+
+    @Published private(set) var maintenanceNotice: String?
+    private static let maximumRetainedSessions = 4
+    private var entries: [UUID: Entry] = [:]
+    private var maintenanceTask: Task<Void, Never>?
+    private var pendingMaintenanceProject: CanvasProject?
+
+    /// Stages a fresh editable copy without registering it as the live
+    /// session (pre-commit preview for a restore).
+    func entry(for nodeID: UUID) -> Entry? { entries[nodeID] }
+
+    /// Stages an unregistered editable copy for `node` (pre-commit preview).
+    func previewStage(
+        canvasID: UUID, node: CanvasNode
+    ) async throws -> Prepared {
+        let entry = try await stageFreshEntry(
+            canvasID: canvasID, node: node, register: false)
+        return Prepared(entry: entry, notice: nil)
+    }
+
+    /// Removes an unowned preview entry and its staged bytes.
+    func discardPreviewEntry(_ entry: Entry) {
+        let directory = entry.rootURL.appendingPathComponent(
+            (entry.stagedRelativePath as NSString)
+                .deletingLastPathComponent, isDirectory: true)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// Removes an unowned preview entry and its staged bytes (static form).
+    static func discardPreview(_ entry: Entry) {
+        try? FileManager.default.removeItem(
+            at: entry.rootURL.appendingPathComponent(
+                (entry.stagedRelativePath as NSString)
+                    .deletingLastPathComponent, isDirectory: true))
+    }
+
+    /// Adopts a pre-staged preview as the live session for `nodeID`,
+    /// replacing any previous entry for that node.
+    func adoptPreview(
+        _ entry: Entry, replacingNode nodeID: UUID
+    ) {
+        if let previous = entries[nodeID] {
+            previous.session.tearDown()
+            entries[nodeID] = nil
+        }
+        var adopted = entry
+        adopted.nodeID = nodeID
+        entries[nodeID] = adopted
+        touch(nodeID: nodeID)
+    }
+
+    /// Prepares (or resumes) the editable copy for a drawing node.
+    ///
+    /// A draft is resumed only when its captured source revision still matches
+    /// the node. When the node changed externally, a dirty session is FIRST
+    /// serialized to its durable staged draft, the old draft is preserved on
+    /// disk, and a fresh editable copy is staged for the new revision. When
+    /// serialization fails, the existing session is left untouched (its edits
+    /// remain in Web memory) and a notice is returned instead of discarding.
+    func prepare(canvasID: UUID, node: CanvasNode) async throws -> Prepared {
+        if let existing = entries[node.id], existing.canvasID == canvasID {
+            let decision = CanvasDrawingDraftContinuity.resumeDecision(
+                existingSourceHash: existing.sourceContentHash,
+                liveSourceHash: node.asset?.contentHash,
+                sessionDirty: existing.session.isCADDirty)
+            switch decision {
+            case .resume:
+                touch(nodeID: node.id)
+                return Prepared(entry: existing, notice: nil)
+            case .replacePreservingDraft(let serializeFirst):
+                if serializeFirst, !(await serializeLiveDraft(nodeID: node.id)) {
+                    touch(nodeID: node.id)
+                    return Prepared(entry: existing, notice: canvasLocalized(
+                        "图纸在编辑期间已被外部修改；当前未保存的编辑还未能写入本地草稿，请先在编辑器中保存。原草稿不会被删除。",
+                        "The drawing changed externally while you were editing; the unsaved edits could not be written to the local draft yet. Save in the editor first; the old draft is preserved."))
+                }
+                let preserved = existing.stagedRelativePath
+                existing.session.tearDown()
+                entries[node.id] = nil
+                let fresh = try await stageFresh(canvasID: canvasID, node: node)
+                return Prepared(entry: fresh, notice: canvasLocalized(
+                    "图纸在编辑期间已被外部修改；旧草稿已保留（\(preserved)），已为最新版本新建编辑副本。",
+                    "The drawing changed externally; the previous draft was preserved (\(preserved)) and a fresh editable copy was staged for the latest revision."))
+            case .fresh:
+                break
+            }
+        } else if let stale = entries[node.id] {
+            // Same node id under another canvas: flush first, then release.
+            // A failed flush is retained by the recovery center instead of
+            // being torn down (and its files are kept).
+            if stale.session.isCADDirty {
+                let flushed = await serializeLiveDraft(nodeID: node.id)
+                guard CanvasDrawingDraftContinuity.sessionRetentionDecision(
+                    flushSucceeded: flushed) == .release else {
+                    CanvasDrawingDraftRecoveryCenter.shared.hold(entry: stale)
+                    entries[node.id] = nil
+                    return Prepared(entry: try await stageFresh(canvasID: canvasID, node: node),
+                                    notice: canvasLocalized(
+                                        "上一条编辑会话尚未保存成功，已在后台保留并会重试；草稿文件未删除。",
+                                        "The previous edit session could not be saved yet; it is retained in the background for retry and its draft files are kept."))
+                }
+            }
+            stale.session.tearDown()
+            entries[node.id] = nil
+        }
+        return Prepared(entry: try await stageFresh(canvasID: canvasID, node: node), notice: nil)
+    }
+
+    /// Serializes the live Web editor state into the durable staged draft
+    /// through `EngineeringWebSession.requestSave()`, which invokes the page's
+    /// exact save handler (the same one bound to the visible save control) and
+    /// waits for the native `onSave`/`commitBinaryEdit` receipt. Returns false
+    /// when the editor is dirty and the save did not complete: callers must
+    /// then KEEP the session (retain it for retry) and never tear it down.
+    func serializeLiveDraft(nodeID: UUID, timeout: Duration = .seconds(10)) async -> Bool {
+        guard let entry = entries[nodeID] else { return true }
+        switch CanvasDrawingDraftContinuity.serializationPlan(
+            isDirty: entry.session.isCADDirty,
+            supportsRequestSave: entry.session.web != nil) {
+        case .noop:
+            return true
+        case .unavailable:
+            return false
+        case .requestSave:
+            return await entry.session.requestSave(timeout: timeout)
+        }
+    }
+
+    /// Records a durable JS/native save of the staged draft (which may still
+    /// be unapplied) and AWAITS the descriptor marker. Keeps the staged-byte
+    /// hash so LRU eviction can never mistake saved-but-unapplied work for an
+    /// applied draft.
+    @discardableResult
+    func noteDraftSaved(nodeID: UUID, contentHash: String) async -> Bool {
+        guard var entry = entries[nodeID], !contentHash.isEmpty else { return false }
+        entry.stagedContentHash = contentHash
+        entry.lastUsedAt = Date()
+        entries[nodeID] = entry
+        return await persistDescriptor(nodeID: nodeID)
+    }
+
+    /// Records a successful apply. The in-memory baseline always updates first
+    /// (so apply → edit → apply uses the fresh revision); the descriptor is
+    /// then written durably and awaited with a new generation so a delayed
+    /// saved-draft write can never regress it. A failed durable write keeps
+    /// the entry marked pending with bounded retries instead of silently
+    /// claiming the record persisted.
+    @discardableResult
+    func markApplied(nodeID: UUID, contentHash: String, assetID: UUID) async -> Bool {
+        guard var entry = entries[nodeID] else { return false }
+        entry.sourceContentHash = contentHash
+        entry.appliedContentHash = contentHash
+        entry.appliedAssetID = assetID
+        entry.stagedContentHash = contentHash
+        entry.lastUsedAt = Date()
+        entries[nodeID] = entry
+        return await persistDescriptor(nodeID: nodeID)
+    }
+
+    /// Writes the current entry state to its durable descriptor under a NEW
+    /// generation. Writes are serialized by `CanvasDrawingDescriptorWriter`
+    /// and CAS-merged, so an older in-flight write cannot overwrite a newer
+    /// adopted baseline (it is reported as already durable instead).
+    @discardableResult
+    func persistDescriptor(nodeID: UUID) async -> Bool {
+        guard var entry = entries[nodeID] else { return false }
+        entry.descriptorGeneration += 1
+        let generation = entry.descriptorGeneration
+        entries[nodeID] = entry
+        let descriptor = CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor(
+            canvasID: entry.canvasID, nodeID: nodeID,
+            sourceAssetID: nil,
+            sourceContentHash: entry.sourceContentHash,
+            sourceRelativePath: entry.sourceRelativePath,
+            stagedRelativePath: entry.stagedRelativePath,
+            appliedContentHash: entry.appliedContentHash,
+            appliedAssetID: entry.appliedAssetID,
+            stagedContentHash: entry.stagedContentHash,
+            generation: generation)
+        let durable = await CanvasDrawingDescriptorWriter.shared.write(
+            descriptor: descriptor,
+            stagedRelativePath: entry.stagedRelativePath, rootURL: entry.rootURL)
+        if durable {
+            entries[nodeID]?.descriptorWritePending = false
+        } else {
+            entries[nodeID]?.descriptorWritePending = true
+            scheduleDescriptorRetry(nodeID: nodeID)
+        }
+        updateMaintenanceNotice()
+        return durable
+    }
+
+    /// Explicit user discard: the only path that deletes a staged draft.
+    func discard(nodeID: UUID) {
+        guard let entry = entries.removeValue(forKey: nodeID) else { return }
+        entry.session.tearDown()
+        try? FileManager.default.removeItem(at: draftDirectory(for: entry))
+        updateMaintenanceNotice()
+    }
+
+    /// Reconciles sessions with the live project: unsaved edits on deleted
+    /// nodes are serialized before release (their draft files are KEPT), and
+    /// the LRU cap releases only clean sessions. A staged draft is deleted
+    /// only when the descriptor proves it was applied and the node still
+    /// carries exactly those bytes; unapplied drafts are never auto-deleted,
+    /// and exceeding the draft budget is reported instead.
+    func scheduleMaintain(project: CanvasProject) {
+        pendingMaintenanceProject = project
+        guard maintenanceTask == nil else { return }
+        maintenanceTask = Task { [weak self] in
+            guard let self else { return }
+            // Coalesce bursts of project changes: each run takes the latest
+            // snapshot, and a run is never cancelled mid-serialization (which
+            // could drop a dirty session's durable flush).
+            while let next = self.pendingMaintenanceProject {
+                self.pendingMaintenanceProject = nil
+                await self.maintain(project: next)
+            }
+            self.maintenanceTask = nil
+        }
+    }
+
+    /// Canvas view went away: flush every dirty session to its durable staged
+    /// draft, then release the web view/server. A session whose flush failed
+    /// is NEVER torn down: it is handed to `CanvasDrawingDraftRecoveryCenter`,
+    /// which outlives the view and retries the deterministic save later. Draft
+    /// files are never deleted here.
+    func releaseAllDurably() async {
+        for (id, entry) in entries {
+            if entry.session.isCADDirty {
+                let flushed = await serializeLiveDraft(nodeID: id)
+                guard CanvasDrawingDraftContinuity.sessionRetentionDecision(
+                    flushSucceeded: flushed) == .release else {
+                    CanvasDrawingDraftRecoveryCenter.shared.hold(entry: entry)
+                    entries[id] = nil
+                    continue
+                }
+            }
+            if entries[id]?.descriptorWritePending == true {
+                _ = await persistDescriptor(nodeID: id)
+            }
+            entry.session.tearDown()
+            entries[id] = nil
+        }
+        updateMaintenanceNotice()
+    }
+
+    private func maintain(project: CanvasProject) async {
+        var nodes: [UUID: CanvasNode] = [:]
+        for document in project.documents {
+            for node in document.nodes { nodes[node.id] = node }
+        }
+        for (id, entry) in entries where nodes[id] == nil {
+            if entry.session.isCADDirty {
+                let flushed = await serializeLiveDraft(nodeID: id)
+                guard CanvasDrawingDraftContinuity.sessionRetentionDecision(
+                    flushSucceeded: flushed) == .release else {
+                    // The node is gone but the user's edits are not: retain
+                    // the live session in the recovery center for retry.
+                    CanvasDrawingDraftRecoveryCenter.shared.hold(entry: entry)
+                    entries[id] = nil
+                    continue
+                }
+            }
+            if entries[id]?.descriptorWritePending == true {
+                _ = await persistDescriptor(nodeID: id)
+            }
+            entry.session.tearDown()
+            entries[id] = nil
+        }
+        while entries.count > Self.maximumRetainedSessions {
+            let clean = entries.values.filter { !$0.session.isCADDirty }
+            guard let victim = clean.min(by: { $0.lastUsedAt < $1.lastUsedAt }) else { break }
+            victim.session.tearDown()
+            if CanvasDrawingDraftContinuity.isProvablyApplied(
+                appliedContentHash: victim.appliedContentHash,
+                stagedContentHash: victim.stagedContentHash,
+                liveSourceHash: nodes[victim.nodeID]?.asset?.contentHash) {
+                try? FileManager.default.removeItem(at: draftDirectory(for: victim))
+            }
+            entries[victim.nodeID] = nil
+        }
+        updateMaintenanceNotice()
+    }
+
+    private func scheduleDescriptorRetry(nodeID: UUID) {
+        Task { [weak self] in
+            guard let self else { return }
+            for _ in 0..<3 {
+                try? await Task.sleep(for: .seconds(2))
+                guard let entry = self.entries[nodeID],
+                      entry.descriptorWritePending else { return }
+                if await self.persistDescriptor(nodeID: nodeID) { return }
+            }
+        }
+    }
+
+    private func stageFresh(canvasID: UUID, node: CanvasNode) async throws -> Entry {
+        try await stageFreshEntry(canvasID: canvasID, node: node, register: true)
+    }
+
+    /// Stages an editable copy for `node` without registering it as the live
+    /// session. Used by the restore flow to prepare the target revision BEFORE
+    /// the node commit; `register` false returns an unowned "preview" entry
+    /// the caller either adopts or discards explicitly.
+    fileprivate func stageFreshEntry(
+        canvasID: UUID, node: CanvasNode, register: Bool
+    ) async throws -> Entry {
+        let plan = try CanvasDrawingNodePlanner.openPlan(node: node, canvasID: canvasID)
+        guard let draftRoot = CanvasDrawingNodePlanner.canonicalDraftRoot() else {
+            throw FloeError.invalidConfiguration("canvasDraftRootUnavailable")
+        }
+        let staged = try await Task.detached(priority: .userInitiated) {
+            try Self.stageDraft(plan: plan, floeRoot: draftRoot.deletingLastPathComponent(), draftRoot: draftRoot)
+        }.value
+        let liveHash = node.asset?.contentHash
+        let stagedHash = await Task.detached(priority: .utility) {
+            Self.stagedFileHash(stagedRelativePath: staged, rootURL: draftRoot)
+        }.value
+        let adoptedAppliedHash: String?
+        if register {
+            adoptedAppliedHash = await Task.detached(priority: .utility) {
+                Self.adoptedAppliedHash(
+                    stagedRelativePath: staged, rootURL: draftRoot,
+                    stagedContentHash: stagedHash, liveSourceHash: liveHash)
+            }.value
+        } else {
+            // A pre-commit preview is never the node's applied session.
+            adoptedAppliedHash = nil
+        }
+        let service = WorkspaceFileService(guard: WorkspacePathGuard(
+            rootURL: draftRoot,
+            maxReadBytes: Int(CanvasDrawingNodePlanner.maximumDrawingBytes),
+            maxWriteBytes: Int(CanvasDrawingNodePlanner.maximumDrawingBytes)))
+        let entry = Entry(
+            nodeID: node.id, canvasID: canvasID,
+            stagedRelativePath: staged,
+            sourceRelativePath: plan.sourceRelativePath,
+            sourceContentHash: plan.sourceContentHash,
+            fileExtension: plan.fileExtension,
+            rootURL: draftRoot,
+            service: service,
+            identity: EngineeringWebSession.documentKey(
+                rootPath: draftRoot.path, relativePath: staged),
+            session: EngineeringWebSession(),
+            appliedContentHash: adoptedAppliedHash,
+            appliedAssetID: nil,
+            stagedContentHash: stagedHash,
+            lastUsedAt: Date())
+        if register {
+            entries[node.id] = entry
+            updateMaintenanceNotice()
+        }
+        return entry
+    }
+
+    private func touch(nodeID: UUID) {
+        entries[nodeID]?.lastUsedAt = Date()
+    }
+
+    private func draftDirectory(for entry: Entry) -> URL {
+        entry.rootURL.appendingPathComponent(
+            (entry.stagedRelativePath as NSString).deletingLastPathComponent,
+            isDirectory: true)
+    }
+
+    private func updateMaintenanceNotice() {
+        guard let root = try? Self.applicationFloeRoot().appendingPathComponent(
+            CanvasDrawingNodePlanner.draftRootDirectoryName, isDirectory: true) else { return }
+        let usage = Self.draftUsage(at: root)
+        maintenanceNotice = CanvasDrawingDraftContinuity.maintenanceNotice(
+            draftCount: usage.count, totalBytes: usage.bytes)
+    }
+
+    private nonisolated static func draftUsage(at root: URL) -> (count: Int, bytes: Int64) {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]) else { return (0, 0) }
+        var drafts = 0
+        var bytes: Int64 = 0
+        for case let url as URL in enumerator {
+            guard drafts < 2000 else { break }
+            guard let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .fileSizeKey]),
+                values.isRegularFile == true else { continue }
+            bytes += Int64(values.fileSize ?? 0)
+            if !url.lastPathComponent.hasSuffix(".draft.json") { drafts += 1 }
+        }
+        return (drafts, bytes)
+    }
+
+    private static func applicationFloeRoot() throws -> URL {
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true)
+        return support.appendingPathComponent("FloeAgent", isDirectory: true)
+    }
+
+    private nonisolated static func stageDraft(
+        plan: CanvasDrawingNodePlanner.OpenPlan,
+        floeRoot: URL,
+        draftRoot: URL
+    ) throws -> String {
+        guard !plan.sourceRelativePath.hasPrefix("/"),
+              !plan.sourceRelativePath.contains("..") else {
+            throw CanvasDrawingNodePlanner.Refusal.missingAsset
+        }
+        let canonicalRoot = floeRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let sourceURL = canonicalRoot.appendingPathComponent(plan.sourceRelativePath)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard sourceURL.path.hasPrefix(canonicalRoot.path + "/"),
+              let values = try? sourceURL.resourceValues(
+                  forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              let fileSize = values.fileSize,
+              Int64(fileSize) > 0,
+              Int64(fileSize) <= CanvasDrawingNodePlanner.maximumDrawingBytes else {
+            throw CanvasDrawingNodePlanner.Refusal.missingAsset
+        }
+        let manager = FileManager.default
+        var staged = plan.stagedRelativePath
+        if manager.fileExists(atPath: draftRoot.appendingPathComponent(staged).path) {
+            if CanvasDrawingNodePlanner.shouldResumeDraft(
+                readDescriptor(stagedRelativePath: staged, rootURL: draftRoot),
+                liveSourceHash: plan.sourceContentHash) {
+                return staged
+            }
+            staged = CanvasDrawingNodePlanner.alternateStagedRelativePath(
+                plan, contentHash: plan.sourceContentHash)
+            if manager.fileExists(atPath: draftRoot.appendingPathComponent(staged).path),
+               CanvasDrawingNodePlanner.shouldResumeDraft(
+                   readDescriptor(stagedRelativePath: staged, rootURL: draftRoot),
+                   liveSourceHash: plan.sourceContentHash) {
+                return staged
+            }
+        }
+        let data = try Data(contentsOf: sourceURL, options: .mappedIfSafe)
+        guard Int64(data.count) <= CanvasDrawingNodePlanner.maximumDrawingBytes else {
+            throw CanvasDrawingNodePlanner.Refusal.emptyDrawing
+        }
+        let destination = draftRoot.appendingPathComponent(staged)
+        try manager.createDirectory(at: destination.deletingLastPathComponent(),
+                                    withIntermediateDirectories: true)
+        try data.write(to: destination, options: .atomic)
+        var descriptor = plan.descriptor
+        descriptor.stagedRelativePath = staged
+        try JSONEncoder().encode(descriptor).write(
+            to: descriptorURL(forStaged: staged, rootURL: draftRoot), options: .atomic)
+        return staged
+    }
+
+    /// SHA of the current staged file bytes (bounded by the drawing cap).
+    fileprivate nonisolated static func stagedFileHash(
+        stagedRelativePath: String, rootURL: URL
+    ) -> String? {
+        guard let stagedURL = try? WorkspacePathGuard(rootURL: rootURL)
+            .resolve(stagedRelativePath),
+              let data = try? Data(contentsOf: stagedURL, options: .mappedIfSafe) else { return nil }
+        return FloeDigest.sha256Hex(data)
+    }
+
+    /// The ONLY adoption path for an existing draft as "applied": the durable
+    /// descriptor already records these exact staged bytes as applied to this
+    /// exact node revision (e.g. crash after the canvas commit, before the
+    /// in-memory baseline update). A staged copy that merely equals the node
+    /// bytes without an applied record is unapplied work and is never adopted.
+    private nonisolated static func adoptedAppliedHash(
+        stagedRelativePath: String, rootURL: URL,
+        stagedContentHash: String?, liveSourceHash: String?
+    ) -> String? {
+        guard let stagedContentHash, !stagedContentHash.isEmpty,
+              let liveSourceHash, !liveSourceHash.isEmpty,
+              stagedContentHash == liveSourceHash,
+              let descriptor = readDescriptor(
+                  stagedRelativePath: stagedRelativePath, rootURL: rootURL),
+              descriptor.appliedContentHash == liveSourceHash else { return nil }
+        return liveSourceHash
+    }
+
+    fileprivate nonisolated static func descriptorURL(
+        forStaged staged: String, rootURL: URL
+    ) -> URL {
+        let url = rootURL.appendingPathComponent(staged)
+        let stem = url.deletingPathExtension().lastPathComponent
+        return url.deletingLastPathComponent()
+            .appendingPathComponent("\(stem).draft.json")
+    }
+
+    fileprivate nonisolated static func readDescriptor(
+        stagedRelativePath: String, rootURL: URL
+    ) -> CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor? {
+        let url = descriptorURL(forStaged: stagedRelativePath, rootURL: rootURL)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(
+            CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor.self, from: data)
+    }
+}
+
+/// Serializes descriptor writes per node and CAS-merges them against the
+/// on-disk generation, so an older in-flight write (e.g. a delayed
+/// saved-draft marker) can NEVER overwrite a newer adopted applied baseline.
+/// A rejected stale write is reported as durable because the newer state is
+/// already on disk.
+private actor CanvasDrawingDescriptorWriter {
+    static let shared = CanvasDrawingDescriptorWriter()
+
+    func write(
+        descriptor: CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor,
+        stagedRelativePath: String, rootURL: URL
+    ) -> Bool {
+        let url = CanvasDrawingSessionRegistry.descriptorURL(
+            forStaged: stagedRelativePath, rootURL: rootURL)
+        let current = CanvasDrawingSessionRegistry.readDescriptor(
+            stagedRelativePath: stagedRelativePath, rootURL: rootURL)
+        guard let merged = CanvasDrawingDraftContinuity.mergedDescriptor(
+            current: current, incoming: descriptor) else {
+            // A newer generation already landed: nothing to do, never regress.
+            return true
+        }
+        guard let data = try? JSONEncoder().encode(merged) else { return false }
+        do {
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
+/// Owns CAD sessions whose durable flush failed and whose canvas view is
+/// going away. Holding them here keeps the live Web memory (and the staged
+/// draft files) alive so a deterministic retry can land the edits later; a
+/// failed session is never silently torn down. Bounded retries and an
+/// explicit pending notice are surfaced by the Canvas editor.
+@MainActor
+private final class CanvasDrawingDraftRecoveryCenter: ObservableObject {
+    static let shared = CanvasDrawingDraftRecoveryCenter()
+
+    @Published private(set) var pendingCount = 0
+    private var held: [UUID: CanvasDrawingSessionRegistry.Entry] = [:]
+    private var retrying = false
+
+    var notice: String? {
+        guard pendingCount > 0 else { return nil }
+        return canvasLocalized(
+            "有 \(pendingCount) 份图纸草稿尚未写入本地；编辑会话已保留并会自动重试。",
+            "\(pendingCount) drawing draft(s) have not been written locally yet; the edit session is retained and will retry.")
+    }
+
+    func hold(entry: CanvasDrawingSessionRegistry.Entry) {
+        held[entry.nodeID] = entry
+        pendingCount = held.count
+    }
+
+    func release(nodeID: UUID) {
+        guard let entry = held.removeValue(forKey: nodeID) else { return }
+        entry.session.tearDown()
+        pendingCount = held.count
+    }
+
+    /// Deterministic retry of every held session. Successful sessions are
+    /// released (their staged files stay for resume) and the descriptor
+    /// records the newly saved staged hash; failures stay held.
+    func retryAll() async {
+        guard !retrying else { return }
+        retrying = true
+        defer { retrying = false }
+        for (id, entry) in held {
+            guard await entry.session.requestSave() else { continue }
+            if let stagedHash = CanvasDrawingSessionRegistry.stagedFileHash(
+                stagedRelativePath: entry.stagedRelativePath, rootURL: entry.rootURL) {
+                let descriptor = CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor(
+                    canvasID: entry.canvasID, nodeID: id, sourceAssetID: nil,
+                    sourceContentHash: entry.sourceContentHash,
+                    sourceRelativePath: entry.sourceRelativePath,
+                    stagedRelativePath: entry.stagedRelativePath,
+                    appliedContentHash: entry.appliedContentHash,
+                    appliedAssetID: entry.appliedAssetID,
+                    stagedContentHash: stagedHash,
+                    generation: entry.descriptorGeneration + 1)
+                _ = await CanvasDrawingDescriptorWriter.shared.write(
+                    descriptor: descriptor,
+                    stagedRelativePath: entry.stagedRelativePath,
+                    rootURL: entry.rootURL)
+            }
+            held.removeValue(forKey: id)?.session.tearDown()
+            pendingCount = held.count
+        }
+    }
+}
+
+/// CAD drawing editor sheet: the drawing is opened from a staged editable copy
+/// in the EXISTING `EngineeringFilePreview` (same session identity scheme) and
+/// "Apply to canvas" replaces the ORIGINAL node asset in one atomic patch. The
+/// original asset, node identity, position, size and edges are preserved; the
+/// node never becomes an image. A dirty session is never discarded by closing.
+private struct CanvasDrawingEditorSheet: View {
+    @EnvironmentObject private var environment: AppEnvironment
+    @ObservedObject var store: CanvasDocumentStore
+    let presentation: CanvasDrawingEditorPresentation
+    @ObservedObject var sessions: CanvasDrawingSessionRegistry
+    @ObservedObject private var recoveryCenter = CanvasDrawingDraftRecoveryCenter.shared
+    let onFinish: (UUID?) -> Void
+
+    @State private var entry: CanvasDrawingSessionRegistry.Entry?
+    @State private var package: EngineeringPreviewPackage?
+    @State private var errorMessage: String?
+    @State private var cadDirty = false
+    @State private var confirmDiscard = false
+    @State private var isPreparing = false
+    @State private var isWorking = false
+    @State private var statusMessage: String?
+    @State private var showHistory = false
+    @State private var isFullScreenEditor = false
+    @State private var reviewCapture: EngineeringReviewCapture?
+
+    private var liveNode: CanvasNode? {
+        store.project.documents.first { $0.id == presentation.documentID }?
+            .nodes.first { $0.id == presentation.id }
+    }
+
+    /// The exact staged-document identity the Drawing Assistant binds to:
+    /// the app-owned canvas draft root + this node's staged copy, owned by
+    /// the canvas project. Proposals therefore target the staged DRAFT and
+    /// never mutate the canvas node until the user explicitly Finishes.
+    private func stagedReviewDocument(for entry: CanvasDrawingSessionRegistry.Entry)
+        -> CanvasStagedReviewDocument {
+        CanvasStagedReviewDocument(
+            canvasID: store.project.id,
+            draftRootPath: entry.rootURL.path,
+            stagedRelativePath: entry.stagedRelativePath)
+    }
+
+    /// The CAD center ownership for the staged draft: identical to the
+    /// identity the review sheet presents, so tool/UI access checks and the
+    /// live-draft lease resolve to the same canonical document.
+    private func stagedDocumentAccess(for entry: CanvasDrawingSessionRegistry.Entry)
+        -> CadDocumentAccess {
+        CadDocumentAccess(environmentID: nil,
+                          workspacePath: entry.rootURL.path,
+                          ownerKind: "canvas",
+                          ownerID: store.project.id)
+    }
+
+    /// Durable Drawing Assistant conversation bound to this exact staged
+    /// document (canvas project namespace), if one exists and still lives.
+    private func boundReviewConversationID(for entry: CanvasDrawingSessionRegistry.Entry)
+        -> UUID? {
+        let staged = stagedReviewDocument(for: entry)
+        guard let stored = DrawingAssistantConversationStore.shared
+            .conversationID(workspaceID: staged.canvasID,
+                            relativePath: staged.stagedRelativePath) else { return nil }
+        return stored
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let errorMessage {
+                    ContentUnavailableView {
+                        Label(canvasLocalized("无法打开图纸", "Could not open the drawing"),
+                              systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(errorMessage)
+                    } actions: {
+                        Button(canvasLocalized("关闭", "Close")) { onFinish(nil) }
+                            .frame(minHeight: 44)
+                    }
+                    .accessibilityIdentifier("canvas.drawingEditor.unavailable")
+                } else if let entry, let package {
+                    editorPreview(entry: entry, package: package)
+                } else {
+                    ProgressView(canvasLocalized("正在准备图纸编辑…", "Preparing the drawing…"))
+                        .task { await prepareIfNeeded() }
+                }
+            }
+            .navigationTitle(drawingTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(canvasLocalized("关闭", "Close")) { requestClose() }
+                        .accessibilityIdentifier("canvas.drawingEditor.close")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(canvasLocalized("完成", "Finish")) {
+                        Task { await finishAndApply() }
+                    }
+                    .disabled(isWorking || entry == nil)
+                    .accessibilityIdentifier("canvas.drawingEditor.finish")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    HStack(spacing: 2) {
+                        if entry != nil, package != nil {
+                            Button {
+                                isFullScreenEditor = true
+                            } label: {
+                                Label(canvasLocalized("全屏", "Fullscreen"),
+                                      systemImage: "arrow.up.left.and.arrow.down.right")
+                            }
+                            .accessibilityIdentifier("canvas.drawingEditor.fullscreen")
+                        }
+                        Menu {
+                            Button {
+                                showHistory = true
+                            } label: {
+                                Label(canvasLocalized("版本历史", "Version history"),
+                                      systemImage: "clock.arrow.circlepath")
+                            }
+                            .disabled(isWorking)
+                            Button {
+                                Task { await makeVariant() }
+                            } label: {
+                                Label(canvasLocalized("创建变体", "Make variant"),
+                                      systemImage: "plus.square.on.square")
+                            }
+                            .disabled(isWorking)
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityIdentifier("canvas.drawingEditor.actions")
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if cadDirty {
+                    Label(canvasLocalized(
+                        "图纸有未保存修改；点“完成”会先写入本地草稿，再应用回画布。",
+                        "The drawing has unsaved edits: Finish writes them to the local draft first, then applies to the canvas."),
+                          systemImage: "pencil.and.outline")
+                        .font(.footnote)
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                } else if let note = statusMessage
+                    ?? store.reconciliationNotice
+                    ?? recoveryCenter.notice
+                    ?? sessions.maintenanceNotice {
+                    Text(note)
+                        .font(.footnote)
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                }
+            }
+        }
+        .interactiveDismissDisabled(cadDirty)
+        .confirmationDialog(
+            canvasLocalized("图纸有未保存的修改", "The drawing has unsaved edits"),
+            isPresented: $confirmDiscard, titleVisibility: .visible
+        ) {
+            Button(canvasLocalized("保留草稿并关闭", "Keep draft and close")) {
+                Task { @MainActor in
+                    if await sessions.serializeLiveDraft(nodeID: presentation.id) {
+                        onFinish(nil)
+                    } else {
+                        statusMessage = canvasLocalized(
+                            "未保存的图纸修改未能写入本地草稿；请在编辑器中保存后重试，画布不会丢失草稿。",
+                            "The unsaved drawing edits could not be written to the local draft; save in the editor and retry. Nothing is discarded.")
+                    }
+                }
+            }
+            Button(canvasLocalized("放弃未保存修改", "Discard unsaved edits"), role: .destructive) {
+                sessions.discard(nodeID: presentation.id)
+                cadDirty = false
+                onFinish(nil)
+            }
+            Button(canvasLocalized("继续编辑", "Keep editing"), role: .cancel) {}
+        }
+        .sheet(isPresented: $showHistory) {
+            if let node = liveNode {
+                CanvasDrawingHistorySheet(
+                    node: node,
+                    isWorking: isWorking,
+                    onRestore: { revision in
+                        Task { await restoreRevision(revision) }
+                    })
+            }
+        }
+        // Fullscreen is a SIZING transition of the SAME live editing
+        // session: the shared EngineeringWebSession re-parents its web view
+        // (no reload), so unsaved edits, undo history and the save baseline
+        // survive in both directions. Done never confronts a dirty drawing
+        // with a discard choice — the session persists in the sheet body.
+        .fullScreenCover(isPresented: $isFullScreenEditor) {
+            if let entry, let package {
+                NavigationStack {
+                    editorPreview(entry: entry, package: package)
+                        .navigationTitle(drawingTitle)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button(canvasLocalized("完成", "Done")) {
+                                    isFullScreenEditor = false
+                                }
+                                .accessibilityIdentifier("canvas.drawingEditor.fullscreen.done")
+                            }
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button(canvasLocalized("应用", "Finish")) {
+                                    isFullScreenEditor = false
+                                    Task { await finishAndApply() }
+                                }
+                                .disabled(isWorking)
+                                .accessibilityIdentifier("canvas.drawingEditor.fullscreen.finish")
+                            }
+                        }
+                }
+                .interactiveDismissDisabled(cadDirty)
+            }
+        }
+        // Drawing Assistant: the existing EngineeringReviewSheet bound to
+        // this node's EXACT staged draft identity (canvas draft root +
+        // staged path + canvas ownership), the durable conversation bound to
+        // that staged document, and the SAME live viewer session for handle
+        // locate and colored proposal overlays. Proposals stay draft edits
+        // of the staged copy until the user explicitly Finishes.
+        .sheet(item: $reviewCapture) { capture in
+            if let entry {
+                EngineeringReviewSheet(
+                    capture: capture,
+                    conversationID: boundReviewConversationID(for: entry),
+                    center: environment.workspaceCenter,
+                    webSession: entry.session)
+            }
+        }
+    }
+
+    private var drawingTitle: String {
+        if let text = liveNode?.text, !text.isEmpty { return text }
+        return canvasLocalized("图纸", "Drawing")
+    }
+
+    private func requestClose() {
+        if cadDirty { confirmDiscard = true } else { onFinish(nil) }
+    }
+
+    @MainActor
+    private func prepareIfNeeded() async {
+        guard entry == nil, !isPreparing else { return }
+        isPreparing = true
+        defer { isPreparing = false }
+        guard let node = liveNode else {
+            errorMessage = canvasLocalized("原画布或图纸节点已被删除。",
+                                           "The original canvas or drawing node was deleted.")
+            return
+        }
+        do {
+            let prepared = try await sessions.prepare(canvasID: store.project.id, node: node)
+            let relative = prepared.entry.stagedRelativePath
+            let service = prepared.entry.service
+            let loaded = try await Task.detached(priority: .userInitiated) {
+                try EngineeringPreviewPackage.load(path: relative, service: service)
+            }.value
+            guard liveNode != nil else {
+                errorMessage = canvasLocalized("原画布或图纸节点已被删除。",
+                                               "The original canvas or drawing node was deleted.")
+                return
+            }
+            entry = prepared.entry
+            package = loaded
+            if let notice = prepared.notice {
+                statusMessage = notice
+            } else if let recovery = recoveryCenter.notice {
+                statusMessage = recovery
+            } else if let maintenance = sessions.maintenanceNotice {
+                statusMessage = maintenance
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func saveDraft(
+        _ data: Data, baseline: String,
+        entry: CanvasDrawingSessionRegistry.Entry
+    ) async throws -> String {
+        let service = entry.service
+        let path = entry.stagedRelativePath
+        let outcome = try await Task.detached(priority: .userInitiated) {
+            try service.commitBinaryEdit(path: path, data: data, expectedSHA256: baseline)
+        }.value
+        // Record the staged bytes (awaited) so LRU eviction never treats saved
+        // but unapplied work as an applied draft.
+        _ = await sessions.noteDraftSaved(
+            nodeID: presentation.id, contentHash: outcome.write.sha256)
+        // The visible editor committed through the shared staged file service;
+        // tell the CAD mutation authority so its engine session for this
+        // staged draft re-opens and proposals bound to the old SHA stop
+        // matching. The canvas node itself is untouched until Finish.
+        await environment.cadDocumentCenter.registerEditorCommit(
+            documentID: path,
+            access: stagedDocumentAccess(for: entry),
+            sha256: outcome.write.sha256)
+        self.entry = sessions.entry(for: presentation.id) ?? entry
+        statusMessage = canvasLocalized("草稿已保存。", "Draft saved.")
+        return outcome.write.sha256
+    }
+
+    /// The live CAD editor, shared between the embedded sheet body and the
+    /// fullscreen presentation. Both use the SAME `EngineeringWebSession`
+    /// (and canonical identity), so the fullscreen transition re-parents the
+    /// web view instead of reloading: unsaved edits, undo history and the
+    /// save baseline survive. The Drawing Assistant review callback binds to
+    /// this node's exact staged draft identity.
+    @ViewBuilder
+    private func editorPreview(
+        entry: CanvasDrawingSessionRegistry.Entry,
+        package: EngineeringPreviewPackage
+    ) -> some View {
+        EngineeringFilePreview(
+            package: package,
+            onReview: { capture in
+                let staged = stagedReviewDocument(for: entry)
+                let nodeName = liveNode?.text ?? presentation.id.uuidString
+                var context = "Canvas drawing node: \(nodeName) (\(presentation.id.uuidString))\n"
+                    + "Staged document root: \(staged.draftRootPath)\n"
+                    + "Staged document path: \(staged.stagedRelativePath)\n"
+                    + "Canvas: \(staged.canvasID.uuidString)\n"
+                    + capture.context
+                if staged.stagedRelativePath.hasSuffix(".dwg") || staged.stagedRelativePath.hasSuffix(".dxf") {
+                    context += "\nStaged CAD document: propose changes with cad.document against the staged path above; they stay draft until the user Finishes."
+                }
+                reviewCapture = EngineeringReviewCapture(
+                    context: context,
+                    image: capture.image,
+                    documentID: staged.stagedRelativePath,
+                    workspaceRoot: entry.rootURL,
+                    canvasStagedDocument: staged)
+            },
+            onSave: { data, baseline in
+                try await saveDraft(data, baseline: baseline, entry: entry)
+            },
+            onDirty: { cadDirty = $0 },
+            session: entry.session,
+            identity: entry.identity)
+    }
+
+    /// Finish: serialize the live editor into the durable staged draft,
+    /// verify the bytes, then replace the ORIGINAL node asset in ONE atomic
+    /// patch and close. A failed serialization, commit, or unpersisted
+    /// baseline keeps the sheet (and the draft) open; it never claims the
+    /// node was updated on failure.
+    /// Adopts an older revision's immutable bytes as the node's current
+    /// asset, recording the move as a NEW `.restore` revision (history is
+    /// append-only). Same patch, same CAS: the original revision bytes and
+    /// its history entry are never rewritten.
+    /// Locates the immutable file for a history revision under the live
+    /// floe root, validating path containment. Returns nil when missing,
+    /// outside the app-owned roots, or when the descriptor does not belong
+    /// to `node`. No bytes are read here.
+    static func readableHistoryFile(
+        _ revision: CanvasDrawingRevision,
+        under node: CanvasNode
+    ) -> URL? {
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false) else { return nil }
+        let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
+        let candidate = floeRoot.appendingPathComponent(revision.relativePath)
+        let resolved = candidate.standardizedFileURL.resolvingSymlinksInPath()
+        // Must stay inside the floe root.
+        guard resolved.path.hasPrefix(floeRoot.standardizedFileURL.path + "/") else {
+            return nil
+        }
+        if revision.relativePath.hasPrefix("Materials/") {
+            let fileName = String(revision.relativePath.dropFirst("Materials/".count))
+            guard !fileName.isEmpty, !fileName.contains("/"),
+                  resolved.path == floeRoot.appendingPathComponent(
+                    "Materials/\(fileName)").standardizedFileURL.path else {
+                return nil
+            }
+        } else if revision.relativePath.hasPrefix("WorkbenchRoot/") {
+            let fallback = WorkbenchPaths.fallbackRoot()
+            let suffix = String(revision.relativePath.dropFirst("WorkbenchRoot/".count))
+            let expected = fallback.appendingPathComponent(suffix)
+                .standardizedFileURL.resolvingSymlinksInPath()
+            guard resolved.path == expected.path else { return nil }
+        } else {
+            return nil
+        }
+        guard FileManager.default.fileExists(atPath: resolved.path) else { return nil }
+        return resolved
+    }
+
+    /// Reads history bytes in bounded chunks and proves size + SHA-256 match
+    /// the revision descriptor. Throws on truncation, oversize or hash
+    /// mismatch. Never trusts the file merely for existing.
+    private static func verifyHistoryBytes(
+        _ revision: CanvasDrawingRevision,
+        fileURL: URL,
+        in environment: AppEnvironment
+    ) throws -> URL {
+        let manager = FileManager.default
+        let attributes = try manager.attributesOfItem(atPath: fileURL.path)
+        let size = (attributes[.size] as? Int64) ?? 0
+        guard size == revision.byteCount, size > 0,
+              size <= CanvasDrawingNodePlanner.maximumDrawingBytes else {
+            throw FloeError.invalidConfiguration("invalidRevisionSize")
+        }
+        let readHandle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? readHandle.close() }
+        var hasher = CryptoKit.SHA256()
+        var read: Int64 = 0
+        while true {
+            let chunk = try readHandle.read(upToCount: 2 * 1024 * 1024) ?? Data()
+            guard !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+            read += Int64(chunk.count)
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard read == size, digest == revision.contentHash else {
+            throw FloeError.invalidConfiguration("invalidRevisionHash")
+        }
+        return fileURL
+    }
+
+    @MainActor
+    private func restoreRevision(_ chosen: CanvasDrawingRevision) async {
+        guard !isWorking, let live = liveNode else { return }
+        guard live.asset?.contentHash != chosen.contentHash else {
+            showHistory = false
+            return
+        }
+        // STRICT PRE-GUARD (no serialize-then-discard): refuse when the open
+        // editor has unflushed edits OR a saved-but-unapplied draft exists on
+        // disk. The user must first Finish (adopt) or explicitly make a
+        // variant/discard; restore never silently consumes that work.
+        if let activeEntry = sessions.entry(for: presentation.id) {
+            if activeEntry.session.isCADDirty {
+                statusMessage = canvasLocalized(
+                    "当前图纸有未保存的修改；请先点“完成”应用，或先放弃修改后再恢复历史版本。",
+                    "The drawing has unsaved edits: Finish to apply them, or discard them first, then restore a historical version.")
+                return
+            }
+            if CanvasDrawingDraftContinuity.hasUnappliedDraft(
+                stagedContentHash: activeEntry.stagedContentHash,
+                appliedContentHash: activeEntry.appliedContentHash,
+                sourceContentHash: activeEntry.sourceContentHash) {
+                statusMessage = canvasLocalized(
+                    "当前图纸的草稿尚未应用到画布；请先点“完成”应用，或创建变体保留后再恢复历史版本。",
+                    "The saved draft has not been applied to the canvas: Finish to apply it, or keep it via a variant first, then restore.")
+                return
+            }
+        }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            // Verify the chosen history descriptor and immutable bytes BEFORE
+            // any node mutation, via the restricted CAD Worker path: the
+            // file is opened by the same engine that edits it, so success
+            // means "parses as the recorded revision", not merely that the
+            // bytes hash-match. Descriptor membership is re-checked after
+            // every await below.
+            try await environment.cadDocumentCenter.validateHistoryRevision(
+                chosen, node: live)
+
+            // Re-read live state AFTER the await: node, asset baseline and
+            // history must still match the captured intent before the CAS.
+            guard let reRead = liveNode else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "节点在恢复前已被删除；未做任何修改。",
+                    "The node was removed before restore; nothing was changed."))
+            }
+            guard reRead.asset?.contentHash == live.asset?.contentHash else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "图纸在恢复准备期间已变化；已重新载入，请再次选择历史版本。",
+                    "The drawing changed while preparing the restore; reloaded, please choose the historical version again."))
+            }
+            let restoredReference = CanvasAssetReference(
+                id: chosen.assetID,
+                contentHash: chosen.contentHash,
+                localRelativePath: chosen.relativePath,
+                mimeType: live.asset?.mimeType,
+                byteCount: chosen.byteCount)
+            let restoreRevisionEntry = CanvasDrawingRevision(
+                assetID: chosen.assetID,
+                contentHash: chosen.contentHash,
+                relativePath: chosen.relativePath,
+                byteCount: chosen.byteCount,
+                kind: .restore,
+                sourceRevisionID: chosen.id)
+            let metadata: [String: String]
+            switch CanvasDrawingRevisionHistory.read(from: reRead) {
+            case .absent:
+                throw FloeError.invalidConfiguration("unsupportedCADHistory")
+            case .usable(let revisions):
+                guard revisions.contains(where: { $0.id == chosen.id }) else {
+                    throw FloeError.invalidConfiguration("invalidRestoreReference")
+                }
+                let updated = try CanvasDrawingRevisionHistory.appending(
+                    restoreRevisionEntry, to: revisions)
+                metadata = try CanvasDrawingRevisionHistory.metadata(updated)
+            case .unsupported:
+                throw FloeError.invalidConfiguration("unsupportedCADHistory")
+            }
+
+            // PREPARE THE RESTORED EDITOR BEFORE THE COMMIT: stage a fresh
+            // editable copy from the target revision and load its package
+            // while the node still carries the old revision. If this fails the
+            // node and the current entry are untouched.
+            var stagedPrepared: CanvasDrawingSessionRegistry.Prepared?
+            var stagedPackage: EngineeringPreviewPackage?
+            do {
+                // A temporary node value describing the restored asset lets
+                // the planner stage from the target revision.
+                var targetNode = reRead
+                targetNode.asset = restoredReference
+                let staged = try await sessions.previewStage(
+                    canvasID: store.project.id, node: targetNode)
+                do {
+                    // Package bytes; note: this base64 wrap is not a DWG
+                    // parse. Real parse validation already happened via the
+                    // CAD Worker and is re-proven in the final CAS below.
+                    let loaded = try await Task.detached(priority: .userInitiated) {
+                        try EngineeringPreviewPackage.load(
+                            path: staged.entry.stagedRelativePath,
+                            service: staged.entry.service)
+                    }.value
+                    stagedPrepared = staged
+                    stagedPackage = loaded
+                } catch {
+                    // Package load failed after staging: dispose the staged
+                    // preview so it cannot leak, then surface the failure.
+                    sessions.discardPreviewEntry(staged.entry)
+                    throw error
+                }
+            } catch {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "无法打开所选历史版本；当前图纸未修改。",
+                    "The historical version could not be opened; the current drawing is unchanged."))
+            }
+
+            // FINAL CAS AFTER THE LAST AWAIT: nothing may have changed the
+            // node, its asset baseline, its complete history list, or the
+            // current (uncommitted) session draft between capture and
+            // commit. Compare full records, not only identifiers/hashes.
+            guard let finalNode = liveNode,
+                  finalNode == reRead,
+                  case .usable(let finalRevisions) = CanvasDrawingRevisionHistory.read(from: finalNode),
+                  finalRevisions == CanvasDrawingRevisionHistory.revisions(from: reRead) else {
+                if let stagedPrepared { sessions.discardPreviewEntry(stagedPrepared.entry) }
+                throw FloeError.validationFailed(canvasLocalized(
+                    "图纸在恢复准备期间已变化；当前内容未修改，请重新选择历史版本。",
+                    "The drawing changed while preparing the restore; the current content is unchanged, please choose a historical version again."))
+            }
+            // A still-present live session must be clean and applied: refuse
+            // concurrent dirty/unapplied edits. A missing session is fine,
+            // because eviction itself requires a provably-applied draft.
+            if let currentSession = sessions.entry(for: presentation.id) {
+                let sessionDrifted =
+                    currentSession.session.isCADDirty
+                    || CanvasDrawingDraftContinuity.hasUnappliedDraft(
+                        stagedContentHash: currentSession.stagedContentHash,
+                        appliedContentHash: currentSession.appliedContentHash,
+                        sourceContentHash: currentSession.sourceContentHash)
+                    || currentSession.sourceContentHash != reRead.asset?.contentHash
+                if sessionDrifted {
+                    sessions.discardPreviewEntry(stagedPrepared!.entry)
+                    throw FloeError.validationFailed(canvasLocalized(
+                        "图纸在恢复准备期间出现了未应用的修改；当前内容未修改，请先处理该修改后再恢复。",
+                        "Unapplied edits appeared while preparing the restore; the current content is unchanged, please handle them first, then restore."))
+                }
+            }
+
+            // Keep metadata coherent with the restored asset: the node now
+            // carries the target revision, so drawingContentHash must match it
+            // (drawingSourceHash stays the immutable original-source record).
+            var coherentMetadata = metadata
+            coherentMetadata["drawingContentHash"] = chosen.contentHash
+
+            let operation = CanvasPatchOperation(
+                kind: .update, nodeID: reRead.id, asset: restoredReference,
+                metadata: coherentMetadata)
+            guard store.commitNodeAssetPatch(
+                operation, documentID: presentation.documentID,
+                previousAssetID: reRead.asset?.id) else {
+                // Commit rejected: remove the staged-preview draft (never
+                // visible/owned) and leave the current entry intact.
+                sessions.discardPreviewEntry(stagedPrepared!.entry)
+                throw FloeError.validationFailed(canvasLocalized(
+                    "恢复历史版本失败；请重试。", "Restoring the historical version failed; please try again."))
+            }
+
+            // Commit succeeded: adopt the already-prepared restored editor as
+            // the live session atomically.
+            sessions.adoptPreview(
+                stagedPrepared!.entry,
+                replacingNode: presentation.id)
+            entry = stagedPrepared!.entry
+            package = stagedPackage
+            cadDirty = false
+            showHistory = false
+            statusMessage = canvasLocalized(
+                "已恢复所选历史版本；原版本仍保留在历史中。编辑器已载入恢复后的版本。",
+                "The selected historical version is now current; the previous version remains in history, and the editor now shows the restored revision.")
+        } catch {
+            statusMessage = canvasLocalized(
+                "恢复历史版本失败：\(error.localizedDescription)",
+                "Could not restore the historical version: \(error.localizedDescription)")
+        }
+    }
+
+    /// Builds the node metadata entry for typed CAD revision history after
+    /// adopting `record`: seeds the immutable original on the first adopt,
+    /// otherwise appends to the existing list. Refuses when the node carries
+    /// raw metadata this build cannot close.
+    private static func appendedHistoryMetadata(
+        liveNode: CanvasNode,
+        adoptedRecord record: CreativeAssetRecord
+    ) throws -> [String: String] {
+        let adopted = CanvasDrawingRevision(
+            assetID: record.id,
+            contentHash: record.contentHash,
+            relativePath: record.localRelativePath ?? "Materials/\(record.id.uuidString).bin",
+            byteCount: record.byteCount,
+            kind: .adopt)
+        switch CanvasDrawingRevisionHistory.read(from: liveNode) {
+        case .absent:
+            guard let original = CanvasDrawingRevisionHistory.seedOriginal(for: liveNode) else {
+                throw FloeError.validationFailed("original CAD asset could not be recorded")
+            }
+            let updated = try CanvasDrawingRevisionHistory.appending(
+                adopted, to: [original])
+            return try CanvasDrawingRevisionHistory.metadata(updated)
+        case .usable(let revisions):
+            let updated = try CanvasDrawingRevisionHistory.appending(
+                adopted, to: revisions)
+            return try CanvasDrawingRevisionHistory.metadata(updated)
+        case .unsupported:
+            throw FloeError.invalidConfiguration("unsupportedCADHistory")
+        }
+    }
+
+    @MainActor
+    private func finishAndApply() async {
+        guard !isWorking, sessions.entry(for: presentation.id) != nil else { return }
+        if cadDirty, !(await sessions.serializeLiveDraft(nodeID: presentation.id)) {
+            statusMessage = canvasLocalized(
+                "未保存的图纸修改未能写入本地草稿；请在编辑器中保存后重试，草稿不会丢失。",
+                "The unsaved drawing edits could not be written to the local draft; save in the editor and retry. Nothing is discarded.")
+            return
+        }
+        guard let entry = sessions.entry(for: presentation.id) else { return }
+        self.entry = entry
+        cadDirty = entry.session.isCADDirty
+        guard !cadDirty else { return }
+        isWorking = true
+        defer { isWorking = false }
+        let stagedURL = entry.rootURL.appendingPathComponent(entry.stagedRelativePath)
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: stagedURL.path)
+            let size = (attributes[.size] as? Int64) ?? 0
+            guard size > 0, size <= CanvasDrawingNodePlanner.maximumDrawingBytes else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "图纸为空或超过大小限制。", "The drawing is empty or exceeds the size limit."))
+            }
+            let ingestion = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
+            let record = try await ingestion.importLocalFile(stagedURL)
+            guard let live = liveNode else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "原画布或图纸节点已被删除。", "The original canvas or drawing node was deleted."))
+            }
+            let reference = CanvasAssetReference(
+                id: record.id, contentHash: record.contentHash,
+                localRelativePath: record.localRelativePath,
+                mimeType: record.mimeType, byteCount: record.byteCount)
+            // Build the typed revision history in the SAME patch: seed the
+            // immutable original on the first adopt, then append the adopted
+            // revision. Raw/unsupported history blocks the adopt instead of
+            // being overwritten.
+            let historyMetadata = try Self.appendedHistoryMetadata(
+                liveNode: live, adoptedRecord: record)
+            let operation = try CanvasDrawingNodePlanner.applyPatch(
+                liveNode: live,
+                capturedSourceAssetHash: entry.sourceContentHash,
+                renderedAsset: reference,
+                extraMetadata: historyMetadata.merging(
+                    ["editor": "cad", "cadFormat": entry.fileExtension]) { current, _ in current })
+            guard store.commitNodeAssetPatch(
+                operation, documentID: presentation.documentID,
+                previousAssetID: live.asset?.id) else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "图纸已保存到素材库；应用回画布失败，草稿已保留。",
+                    "The drawing was saved to the library; applying it back failed and the draft is preserved."))
+            }
+            let recorded = await sessions.markApplied(
+                nodeID: presentation.id, contentHash: record.contentHash, assetID: record.id)
+            self.entry = sessions.entry(for: presentation.id) ?? entry
+            if recorded {
+                onFinish(presentation.id)
+            } else {
+                statusMessage = canvasLocalized(
+                    "已更新画布节点，但草稿记录暂未写入；已保留并会自动重试。",
+                    "The canvas node was updated, but the draft record could not be persisted yet; it is kept and will be retried.")
+            }
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    /// Explicit variant: a NEW `.file` node plus `generatedFrom` edge as one
+    /// patch, owning a physical copy of the saved drawing. The original node
+    /// is untouched. Dirty edits are serialized first so the copied drawing is
+    /// the user's latest saved state, never a silent pre-edit version.
+    @MainActor
+    private func makeVariant() async {
+        guard !isWorking, liveNode != nil else { return }
+        if cadDirty, !(await sessions.serializeLiveDraft(nodeID: presentation.id)) {
+            statusMessage = canvasLocalized(
+                "未保存的图纸修改未能写入本地草稿；请在编辑器中保存后重试，草稿不会丢失。",
+                "The unsaved drawing edits could not be written to the local draft; save in the editor and retry. Nothing is discarded.")
+            return
+        }
+        guard let entry = sessions.entry(for: presentation.id) ?? entry,
+              let node = liveNode else { return }
+        self.entry = entry
+        cadDirty = entry.session.isCADDirty
+        guard !cadDirty else { return }
+        isWorking = true
+        defer { isWorking = false }
+        let stagedURL = entry.rootURL.appendingPathComponent(entry.stagedRelativePath)
+        var writtenTarget: URL?
+        do {
+            let data = try Data(contentsOf: stagedURL, options: .mappedIfSafe)
+            guard !data.isEmpty, Int64(data.count) <= CanvasDrawingNodePlanner.maximumDrawingBytes else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "图纸为空或超过大小限制。", "The drawing is empty or exceeds the size limit."))
+            }
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true)
+            let directory = support.appendingPathComponent(
+                "FloeAgent/Materials", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let assetID = UUID()
+            let filename = "\(assetID.uuidString)-canvas-drawing.\(entry.fileExtension)"
+            let target = directory.appendingPathComponent(filename)
+            try data.write(to: target, options: .atomic)
+            writtenTarget = target
+            let hash = FloeDigest.sha256Hex(data)
+            let mimeType = entry.fileExtension == "dwg" ? "image/vnd.dwg" : "image/vnd.dxf"
+            try await environment.creativeAssetStore.save(CreativeAssetRecord(
+                id: assetID, contentHash: hash, kind: .document,
+                displayName: "\(node.text.isEmpty ? "画布图纸" : node.text) 分支",
+                mimeType: mimeType, localRelativePath: "Materials/\(filename)",
+                byteCount: Int64(data.count), tags: ["画布图纸"], referenceCount: 0))
+            writtenTarget = nil
+            let reference = CanvasAssetReference(
+                id: assetID, contentHash: hash,
+                localRelativePath: "Materials/\(filename)",
+                mimeType: mimeType, byteCount: Int64(data.count))
+            let (newID, operations) = try CanvasDrawingNodePlanner.variantPatch(
+                sourceNodeID: node.id,
+                drawingAsset: reference,
+                position: CanvasPoint(x: node.x + node.width + 100, y: node.y),
+                size: node.size,
+                sourceAssetHash: entry.sourceContentHash,
+                extraMetadata: ["editor": "cad", "cadFormat": entry.fileExtension])
+            guard store.commitVariantPatch(operations, documentID: presentation.documentID) else {
+                throw FloeError.validationFailed(canvasLocalized(
+                    "图纸已保存到素材库；创建变体失败，原节点未修改。",
+                    "The drawing was saved to the library; creating the variant failed and the original node is unchanged."))
+            }
+            onFinish(newID)
+        } catch {
+            if let writtenTarget { try? FileManager.default.removeItem(at: writtenTarget) }
+            statusMessage = error.localizedDescription
+        }
+    }
+}
+
+/// Lists a drawing node's adopted CAD revisions and restores a chosen one.
+private struct CanvasDrawingHistorySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let node: CanvasNode
+    let isWorking: Bool
+    let onRestore: (CanvasDrawingRevision) -> Void
+
+    private var revisions: [CanvasDrawingRevision] {
+        CanvasDrawingRevisionHistory.revisions(from: node)
+    }
+
+    private var currentHash: String? { node.asset?.contentHash }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                let items = Array(revisions.enumerated().reversed())
+                ForEach(items, id: \.element.id) { _, revision in
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(title(for: revision))
+                                .font(.subheadline.weight(.semibold))
+                            Text((revision.relativePath as NSString).lastPathComponent)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(revision.createdAt, format: .dateTime
+                                .year().month().day().hour().minute())
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                        if revision.contentHash == currentHash {
+                            // Explicit current-version wording, not a generic
+                            // "default" label.
+                            Text("canvas.drawingHistory.current")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(FloeTheme.primary)
+                        } else {
+                            // Visible 44pt restore action in every non-current
+                            // row (not only a hidden long-press menu).
+                            Button {
+                                onRestore(revision)
+                            } label: {
+                                Text("canvas.drawingHistory.restore")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .frame(minHeight: 44)
+                            .disabled(isWorking)
+                            .accessibilityIdentifier("canvas.drawingHistory.restoreButton")
+                        }
+                    }
+                    .accessibilityIdentifier("canvas.drawingHistory.row")
+                }
+            }
+            .navigationTitle(canvasLocalized("版本历史", "Version history"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("action.close") { dismiss() }
+                }
+            }
+            .overlay {
+                if revisions.isEmpty {
+                    ContentUnavailableView(canvasLocalized(
+                        "暂无版本记录", "No recorded versions"),
+                        systemImage: "clock.arrow.circlepath")
+                }
+            }
+        }
+    }
+
+    private func title(for revision: CanvasDrawingRevision) -> String {
+        let index = revisions.firstIndex { $0.id == revision.id }.map { $0 + 1 } ?? 0
+        let base: String
+        switch revision.kind {
+        case .original:
+            base = canvasLocalized("原始版本", "Original")
+        case .adopt:
+            base = canvasLocalized("编辑版本", "Edited")
+        case .restore:
+            base = canvasLocalized("恢复的版本", "Restored")
+        case .variant:
+            base = canvasLocalized("变体版本", "Variant")
+        }
+        return "\(index) · \(base)"
     }
 }
 
@@ -3375,6 +5281,8 @@ struct WorkspaceCanvasView: View {
     @State private var showsInspector = false
     @State private var imageEditorPresentation: CanvasImageEditorPresentation?
     @State private var videoEditorPresentation: CanvasVideoEditorPresentation?
+    @State private var drawingEditorPresentation: CanvasDrawingEditorPresentation?
+    @StateObject private var drawingSessions = CanvasDrawingSessionRegistry()
     @State private var importedVideoExports = Set<URL>()
     @State private var showsMediaJobs = false
     @State private var directorPresentation: Canvas3DDirectorPresentation?
@@ -3384,6 +5292,7 @@ struct WorkspaceCanvasView: View {
     @State private var exportDocument: CanvasBinaryDocument?
     @State private var exportContentType: UTType = .floeCanvasPackage
     @State private var exportFilename = "Floe 画布"
+    @State private var exportTempURL: URL?
     @State private var nodeCreationPoint: CGPoint?
     @State private var lastCanvasPointerPoint: CGPoint?
     @State private var pencilContextPoint: CGPoint?
@@ -3533,7 +5442,8 @@ struct WorkspaceCanvasView: View {
                }) {
                 CanvasLocalImageEditor(store: store, node: node,
                                        documentID: presentation.documentID,
-                                       bindingState: presentation.bindingState) { resultID in
+                                       bindingState: presentation.bindingState,
+                                       sourceAssetHash: presentation.sourceAssetHash) { resultID in
                     selectedNodeIDs = [resultID]
                     imageEditorPresentation = nil
                 }
@@ -3554,6 +5464,18 @@ struct WorkspaceCanvasView: View {
         }
         .sheet(item: $videoEditorPresentation) { presentation in
             CanvasVideoChildProjectSheet(store: store, presentation: presentation)
+        }
+        .sheet(item: $drawingEditorPresentation) { presentation in
+            CanvasDrawingEditorSheet(
+                store: store,
+                presentation: presentation,
+                sessions: drawingSessions,
+                onFinish: { resultID in
+                    if let resultID { selectedNodeIDs = [resultID] }
+                    drawingEditorPresentation = nil
+                }
+            )
+            .environmentObject(environment)
         }
         .sheet(isPresented: $showsMediaJobs) {
             CanvasMediaJobCenter(
@@ -3586,8 +5508,12 @@ struct WorkspaceCanvasView: View {
             contentType: exportContentType,
             defaultFilename: exportFilename
         ) { result in
-            if case .failure(let error) = result { store.saveError = error.localizedDescription }
+            if case .failure(let error) = result,
+               (error as NSError).code != NSUserCancelledError {
+                store.saveError = error.localizedDescription
+            }
             exportDocument = nil
+            cleanupExportTempFile()
         }
         .fileImporter(
             isPresented: $showsFileImporter,
@@ -3624,6 +5550,9 @@ struct WorkspaceCanvasView: View {
         }
         .task {
             if canvasOnboardingVersion < 1 { showsCanvasOnboarding = true }
+            // Retry CAD drafts whose durable flush failed on a previous view:
+            // the recovery center owns those live sessions until they land.
+            await CanvasDrawingDraftRecoveryCenter.shared.retryAll()
             store.configureSync(
                 store: environment.canvasSyncOperationStore,
                 assetStore: environment.creativeAssetStore,
@@ -3644,9 +5573,20 @@ struct WorkspaceCanvasView: View {
                 do { try await Task.sleep(for: .seconds(2)) } catch { break }
             }
         }
+        .onDisappear {
+            // The canvas is going away: flush unsaved CAD edits to their
+            // durable staged drafts, then release every web view/server.
+            // Draft files stay on disk so a future open can resume them.
+            Task { await drawingSessions.releaseAllDurably() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .floeCanvasProjectDidChange)) { note in
             guard note.userInfo?["canvasID"] as? UUID == store.project.id else { return }
             store.reloadExternalChange()
+        }
+        .onReceive(store.$project) { project in
+            // Deleted nodes release their CAD session (after flushing unsaved
+            // edits); LRU eviction never deletes an unapplied draft.
+            drawingSessions.scheduleMaintain(project: project)
         }
         .onChange(of: globalCanvasSyncEnabled) { _, enabled in
             store.configureSync(
@@ -4225,12 +6165,23 @@ struct WorkspaceCanvasView: View {
                     }
                 }
                 if selectedNodeIDs.count == 1,
+                   let selected = store.selectedDocument?.nodes.first(where: {
+                       selectedNodeIDs.contains($0.id)
+                           && CanvasDrawingNodePlanner.isDrawingNode($0)
+                   }) {
+                    Button("打开图纸/CAD 编辑", systemImage: "ruler") {
+                        openDrawingEditor(selected)
+                    }
+                }
+                if selectedNodeIDs.count == 1,
                    let document = store.selectedDocument,
                    let selected = document.nodes.first(where: {
                        selectedNodeIDs.contains($0.id) && $0.kind == .video
                    }), let source = CanvasAssetNodeContent.localURL(for: selected) {
                     Button("剪辑与字幕", systemImage: "film") {
-                        videoEditorPresentation = .init(id: selected.id, documentID: document.id, source: source)
+                        videoEditorPresentation = .init(
+                            id: selected.id, documentID: document.id, source: source,
+                            sourceAssetHash: selected.asset?.contentHash)
                     }
                 }
                 Button("复制到剪贴板", action: copySelection)
@@ -4274,6 +6225,7 @@ struct WorkspaceCanvasView: View {
             }
             Menu("导出") {
                 Button("可编辑 Floe 画布包") { prepareExport(.package) }
+                Button("画布 JSON（不含素材）") { prepareExport(.json) }
                 Button("PNG 图片") { prepareExport(.png) }
                 Button("PDF") { prepareExport(.pdf) }
             }
@@ -5064,7 +7016,10 @@ struct WorkspaceCanvasView: View {
             .onTapGesture(count: 2) {
                 guard mode == .select else { return }
                 selectedConnectionID = nil
-                if node.kind == .generationTask
+                if CanvasDrawingNodePlanner.isDrawingNode(node), !node.isLocked {
+                    selectedNodeIDs = [node.id]
+                    openDrawingEditor(node)
+                } else if node.kind == .generationTask
                     || node.metadata["generationState"] == "failed" {
                     openGenerationConfiguration(for: node)
                 } else if node.kind == .group {
@@ -6526,12 +8481,16 @@ struct WorkspaceCanvasView: View {
     }
 
     private func prepareExport(_ format: CanvasDocumentStore.ExportFormat) {
+        if format == .package {
+            exportCanvasPackageFile()
+            return
+        }
         do {
             let data = try store.exportData(format)
             let base = store.project.name.isEmpty ? "Floe 画布" : store.project.name
             switch format {
-            case .package:
-                exportContentType = .floeCanvasPackage
+            case .json:
+                exportContentType = .json
                 exportFilename = base
             case .png:
                 exportContentType = .png
@@ -6539,11 +8498,77 @@ struct WorkspaceCanvasView: View {
             case .pdf:
                 exportContentType = .pdf
                 exportFilename = base
+            case .package:
+                break
             }
             exportDocument = CanvasBinaryDocument(data: data)
         } catch {
             store.saveError = error.localizedDescription
         }
+    }
+
+    /// File-backed package export for the in-canvas menu: the zip (canvas +
+    /// child projects + assets) is built off the main actor at a task-owned
+    /// temporary URL, then cleaned after export/cancel with any retained file
+    /// reported by exact path.
+    @MainActor
+    private func exportCanvasPackageFile() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("canvas-export-\(UUID().uuidString)", isDirectory: true)
+        let filename = WorkspaceCanvasRegistry.sanitizedPackageFilename(store.project.name)
+        let destination = directory.appendingPathComponent(filename)
+        let canvasID = store.project.id
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(
+                        at: directory, withIntermediateDirectories: true)
+                    try WorkspaceCanvasRegistry.exportPackage(canvasID: canvasID, to: destination)
+                }.value
+                cleanupExportTempFile()
+                exportTempURL = destination
+                exportContentType = .floeCanvasPackage
+                exportFilename = filename
+                exportDocument = CanvasBinaryDocument(fileURL: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: directory)
+                store.saveError = error.localizedDescription
+            }
+        }
+    }
+
+    private func cleanupExportTempFile() {
+        guard let tempURL = exportTempURL else { return }
+        exportTempURL = nil
+        let directory = tempURL.deletingLastPathComponent()
+        do {
+            if FileManager.default.fileExists(atPath: tempURL.path) {
+                try FileManager.default.removeItem(at: tempURL)
+            }
+            try? FileManager.default.removeItem(at: directory)
+        } catch {
+            store.saveError = "导出临时文件未能清理，已保留：\(tempURL.path)"
+        }
+    }
+
+    /// Opens the CAD editor for a single selected drawing node. The node's
+    /// local asset URL is resolved through the same `CanvasAssetNodeContent`
+    /// path used for rendering; a missing/unsafe asset is reported instead of
+    /// opening an empty editor. Live sessions (including unsaved drafts) are
+    /// reused so reopen resumes the same drawing document; stale sessions are
+    /// reconciled by the registry's maintenance pass.
+    private func openDrawingEditor(_ node: FloeCanvasNode) {
+        guard CanvasDrawingNodePlanner.isDrawingNode(node) else { return }
+        guard case .file = CanvasAssetNodeContent.resolveLocal(for: node) else {
+            store.saveError = canvasLocalized(
+                "图纸文件不在本机素材库中；请重新导入后再编辑。",
+                "The drawing file is not in the local material library; re-import it before editing.")
+            return
+        }
+        drawingSessions.scheduleMaintain(project: store.project)
+        Task { await CanvasDrawingDraftRecoveryCenter.shared.retryAll() }
+        drawingEditorPresentation = CanvasDrawingEditorPresentation(
+            id: node.id, documentID: store.project.selectedDocumentID)
     }
 
     @MainActor
@@ -7278,6 +9303,10 @@ private struct CanvasLocalImageEditor: View {
     /// malformed bindings stay read-only/recovery instead of silently starting
     /// a new edit that would orphan the saved project.
     let bindingState: CanvasChildProjectBindingState
+    /// Content hash of the ORIGINAL flattened node asset captured when the
+    /// sheet opened. First-edit migration records it in `sourceAssetHash`
+    /// (never the rendered hash) and re-checks it against the live node.
+    let sourceAssetHash: String?
     let onSave: (UUID) -> Void
 
     @State private var startFreshVariant = false
@@ -7287,9 +9316,13 @@ private struct CanvasLocalImageEditor: View {
     /// Live binding state from the store so a forked/retry resolution
     /// re-renders this sheet; falls back to the presentation-time capture.
     private var liveState: CanvasChildProjectBindingState {
+        liveNode?.childProjectBindingState ?? bindingState
+    }
+
+    /// The live node at commit time (never the presentation-time capture).
+    private var liveNode: CanvasNode? {
         store.project.documents.first { $0.id == documentID }?
-            .nodes.first { $0.id == node.id }?
-            .childProjectBindingState ?? bindingState
+            .nodes.first { $0.id == node.id }
     }
 
     var body: some View {
@@ -7383,15 +9416,19 @@ private struct CanvasLocalImageEditor: View {
     }
 
     /// Persists verified export bytes as an immutable asset first (so a canvas
-    /// change can never lose the result), then either updates the original node
-    /// in place or creates an explicit variant node bound to a persisted fork.
+    /// change can never lose the result), then commits ONE atomic patch that
+    /// either updates the original node (asset + typed binding + pending
+    /// cleanup together, preserving the original flatten hash in
+    /// `sourceAssetHash`) or creates an explicit variant node. A failed commit
+    /// leaves the original node untouched and records a retryable marker for
+    /// legacy first edits.
     @MainActor
     private func applyEditedImage(_ data: Data, projectRevision: Int64?, choice: ApplyChoice) async throws {
         guard !data.isEmpty else {
             throw FloeError.validationFailed(canvasLocalized("导出为空，未应用到画布。",
                                                              "The export was empty; nothing was applied to the canvas."))
         }
-        guard nodeStillExists else {
+        guard liveNode != nil else {
             throw FloeError.validationFailed(canvasLocalized("原画布或素材已改变，请重新打开图片编辑器。",
                                                              "The original canvas or asset changed; reopen the image editor."))
         }
@@ -7421,7 +9458,7 @@ private struct CanvasLocalImageEditor: View {
             ))
             // A registered asset remains recoverable in the library if the canvas changes.
             writtenTarget = nil
-            guard nodeStillExists else {
+            guard let liveNodeAtCommit = liveNode else {
                 throw FloeError.validationFailed(canvasLocalized(
                     "图片已保存到素材库；原画布已改变，请从素材库插入。",
                     "The image was saved to the material library; the canvas changed, so insert it from there."))
@@ -7433,66 +9470,117 @@ private struct CanvasLocalImageEditor: View {
             )
             switch choice {
             case .updateOriginal:
-                // Preserve node identity, name, position, size and edges.
-                store.attachAsset(reference, kind: .image, to: node.id)
-                guard nodeStillExists else {
+                // Live node + live binding; no random project-id fallback.
+                let projectID = liveNodeAtCommit.childProjectBinding?.projectID
+                    ?? environment.workbenchCenter.project?.id
+                guard let projectID else {
                     throw FloeError.validationFailed(canvasLocalized(
-                        "图片已保存到素材库；原节点已改变，请从素材库插入。",
-                        "The image was saved to the material library; the node changed, so insert it from there."))
+                        "图片已保存到素材库；没有可绑定的编辑工程，原节点未修改。",
+                        "The image was saved to the library; there is no edit project to bind, so the original node was not changed."))
                 }
-                let applied = CanvasChildProjectBinding(
-                    projectID: bindingState.binding?.projectID ?? environment.workbenchCenter.project?.id ?? UUID(),
-                    appliedRevision: projectRevision ?? bindingState.binding?.appliedRevision ?? 0,
-                    draftRevision: projectRevision ?? bindingState.binding?.draftRevision,
-                    renderedAssetID: reference.id,
-                    sourceNodeID: bindingState.binding?.sourceNodeID ?? node.id,
-                    sourceAssetHash: reference.contentHash
-                )
-                store.setChildProjectBinding(applied, for: node.id)
-                store.updateNodeMetadata(node.id, values: [
-                    "editor": "media-workbench", "editFormat": "flattened-png",
-                    "appliedRevision": String(applied.appliedRevision)
-                ])
+                let revision = projectRevision
+                    ?? environment.workbenchCenter.project?.revision
+                    ?? liveNodeAtCommit.childProjectBinding?.appliedRevision ?? 0
+                let operation = try CanvasChildProjectMigrationPlanner.applyPatch(
+                    liveNode: liveNodeAtCommit,
+                    capturedSourceAssetHash: sourceAssetHash,
+                    renderedAsset: reference,
+                    projectID: projectID,
+                    projectRevision: revision,
+                    extraMetadata: [
+                        "editor": "media-workbench", "editFormat": "flattened-png",
+                        "appliedRevision": String(revision)
+                    ])
+                guard store.commitNodeAssetPatch(
+                    operation, documentID: documentID,
+                    previousAssetID: liveNodeAtCommit.asset?.id)
+                else {
+                    if liveNodeAtCommit.childProjectBindingState == .absent,
+                       let marker = try? CanvasChildProjectMigrationPlanner.failedMarkerPatch(
+                           liveNode: liveNodeAtCommit,
+                           projectID: projectID,
+                           projectRevision: revision,
+                           renderedAsset: reference,
+                           sourceAssetHash: sourceAssetHash,
+                           reason: store.saveError ?? "画布写入失败") {
+                        store.commitNodeAssetPatch(
+                            marker, documentID: documentID, previousAssetID: nil)
+                    }
+                    throw FloeError.validationFailed(canvasLocalized(
+                        "图片已保存到素材库；应用回画布失败，可重试。",
+                        "The image was saved to the library; applying it back failed and can be retried."))
+                }
                 onSave(node.id)
             case .makeVariant:
                 // Only an explicit "make variant" creates a new node + edge,
-                // bound to a persisted fork of the edit project.
-                let parentID = bindingState.binding?.projectID ?? environment.workbenchCenter.project?.id
-                guard let parentID,
-                      let forked = await environment.workbenchCenter.forkProjectForVariant(parentID: parentID) else {
-                    throw FloeError.validationFailed(canvasLocalized(
-                        "无法创建分支工程；原图未改变。",
-                        "Could not create the variant project; the original is unchanged."))
+                // as ONE patch (create + connect = one revision).
+                let liveBinding = liveNodeAtCommit.childProjectBinding
+                let resultID: UUID
+                if let parentID = liveBinding?.projectID {
+                    guard let forked = await environment.workbenchCenter
+                        .forkProjectForVariant(parentID: parentID) else {
+                        throw FloeError.validationFailed(canvasLocalized(
+                            "无法创建分支工程；原图未改变。",
+                            "Could not create the variant project; the original is unchanged."))
+                    }
+                    let (newID, operations) = try CanvasChildProjectMigrationPlanner.variantPatch(
+                        sourceNodeID: node.id,
+                        kind: .image,
+                        position: CanvasPoint(
+                            x: liveNodeAtCommit.x + liveNodeAtCommit.width + 100,
+                            y: liveNodeAtCommit.y),
+                        size: liveNodeAtCommit.size,
+                        renderedAsset: reference,
+                        projectID: forked.id,
+                        projectRevision: forked.revision,
+                        sourceAssetHash: liveBinding?.sourceAssetHash ?? sourceAssetHash,
+                        extraMetadata: [
+                            "editor": "media-workbench", "editFormat": "flattened-png",
+                            "variant": "true"
+                        ])
+                    guard store.commitVariantPatch(operations, documentID: documentID) else {
+                        throw FloeError.validationFailed(canvasLocalized(
+                            "图片已保存到素材库；画布写入失败，原图未改变。",
+                            "The image was saved to the library; the canvas write failed and the original is unchanged."))
+                    }
+                    resultID = newID
+                } else {
+                    // Legacy/recoverable node: the fresh editor project IS the
+                    // variant; no fork of a just-created session.
+                    guard let projectID = environment.workbenchCenter.project?.id else {
+                        throw FloeError.validationFailed(canvasLocalized(
+                            "图片已保存到素材库；没有可绑定的新工程，原节点未修改。",
+                            "The image was saved to the library; there is no new project to bind, so the original node was not changed."))
+                    }
+                    let revision = environment.workbenchCenter.project?.revision ?? 0
+                    let (newID, operations) = try CanvasChildProjectMigrationPlanner.variantPatch(
+                        sourceNodeID: node.id,
+                        kind: .image,
+                        position: CanvasPoint(
+                            x: liveNodeAtCommit.x + liveNodeAtCommit.width + 100,
+                            y: liveNodeAtCommit.y),
+                        size: liveNodeAtCommit.size,
+                        renderedAsset: reference,
+                        projectID: projectID,
+                        projectRevision: revision,
+                        sourceAssetHash: sourceAssetHash,
+                        extraMetadata: [
+                            "editor": "media-workbench", "editFormat": "flattened-png",
+                            "variant": "true", "appliedRevision": String(revision)
+                        ])
+                    guard store.commitVariantPatch(operations, documentID: documentID) else {
+                        throw FloeError.validationFailed(canvasLocalized(
+                            "图片已保存到素材库；画布写入失败，原图未改变。",
+                            "The image was saved to the library; the canvas write failed and the original is unchanged."))
+                    }
+                    resultID = newID
                 }
-                let resultID = store.addAsset(
-                    reference, kind: .image,
-                    at: CGPoint(x: node.x + node.width + 100, y: node.y)
-                )
-                store.updateNodeMetadata(resultID, values: [
-                    "derivedFromNodeID": node.id.uuidString,
-                    "editor": "media-workbench", "editFormat": "flattened-png",
-                    "variant": "true"
-                ])
-                store.setChildProjectBinding(CanvasChildProjectBinding(
-                    projectID: forked.id,
-                    appliedRevision: forked.revision,
-                    draftRevision: forked.revision,
-                    renderedAssetID: reference.id,
-                    sourceNodeID: node.id,
-                    sourceAssetHash: reference.contentHash
-                ), for: resultID)
-                store.connect(node.id, to: resultID, kind: .generatedFrom)
                 onSave(resultID)
             }
         } catch {
             if let writtenTarget { try? FileManager.default.removeItem(at: writtenTarget) }
             throw error
         }
-    }
-
-    private var nodeStillExists: Bool {
-        store.project.documents.first(where: { $0.id == documentID })?
-            .nodes.contains(where: { $0.id == node.id }) == true
     }
 }
 

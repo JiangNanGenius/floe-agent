@@ -14,7 +14,7 @@ public enum CanvasAgentToolPolicy {
     public static let nativeToolNames: Set<String> = [
         "web.search", "web.fetch",
         // Notes tools enforce a separate native picker grant per conversation.
-        "notes.read", "notes.search", "notes.edit", "notes.attachFile",
+        "notes.read", "notes.search", "notes.edit", "notes.attachFile", "notes.export",
         // Read-only video candidate catalog. Canvas video execution stays on
         // canvas.generate so results bind to canvas nodes; video.models lets
         // the canvas model choose a public candidate itself instead of asking

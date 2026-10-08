@@ -236,11 +236,12 @@ struct NotesRootView: View {
                     Button {
                         Task {
                             await session.select(document)
-                            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                session.requestedPageID = document.pages.first { page in
-                                    ((page.extractedText ?? "") + "\n" + (page.indexedVisualText ?? "") + "\n" + page.elements.map(\.text).joined(separator: "\n"))
-                                        .localizedStandardContains(query.trimmingCharacters(in: .whitespacesAndNewlines))
-                                }?.id
+                            let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !search.isEmpty {
+                                // The same pure helper the agent uses resolves
+                                // page/element and UTF-16 range; the session
+                                // publishes it for the editor to scroll/highlight.
+                                session.requestSearchFocus(in: document, query: search)
                             }
                         }
                     } label: {

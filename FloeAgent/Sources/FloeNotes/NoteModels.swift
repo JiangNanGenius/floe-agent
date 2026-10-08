@@ -3,13 +3,14 @@ import Foundation
 import Crypto
 
 public enum NoteError: Error, LocalizedError, Sendable {
-    case notFound, conflict, invalidDocument(String), invalidOperation(String), resourceUnavailable
+    case notFound, conflict, invalidDocument(String), invalidOperation(String), resourceUnavailable, storageUnavailable(String)
     public var errorDescription: String? {
         switch self {
         case .notFound: "手记内容不存在。"
         case .conflict: "内容已被修改，请重新载入后再试。"
         case .invalidDocument(let reason), .invalidOperation(let reason): reason
         case .resourceUnavailable: "资料尚未下载或已经不可用。"
+        case .storageUnavailable(let reason): reason
         }
     }
 }

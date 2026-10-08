@@ -24,6 +24,14 @@ struct NotePencilView: UIViewRepresentable {
 
     var initialViewport: NoteWorkspaceTabs.Viewport? = nil
     var onViewportChanged: (NoteWorkspaceTabs.Viewport) -> Void = { _ in }
+    /// One-shot search focus: the editor passes the matched element so this
+    /// page can centre it and draw a visible highlight without persisting the
+    /// search viewport as the user's reading position.
+    var focus: NotesSession.NoteSearchFocus? = nil
+    /// Reports the requestID after the scroll/highlight was applied so the
+    /// editor can drop the one-shot focus instead of re-jumping on page
+    /// re-entry.
+    var onFocusApplied: (UUID) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
     func makeUIView(context: Context) -> PKCanvasView {
@@ -56,6 +64,13 @@ struct NotePencilView: UIViewRepresentable {
         canvas.insertSubview(backdrop, at: 0)
         context.coordinator.backdrop = backdrop
         canvas.pageBackdrop = backdrop
+        let highlight = context.coordinator.focusHighlightLayer
+        highlight.name = "notes.search.highlight"
+        highlight.fillColor = UIColor.systemYellow.withAlphaComponent(0.28).cgColor
+        highlight.strokeColor = UIColor.systemOrange.cgColor
+        highlight.lineWidth = 2
+        highlight.isHidden = true
+        backdrop.layer.addSublayer(highlight)
         let selection = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.selectRegion(_:)))
         selection.maximumNumberOfTouches = 1
         selection.isEnabled = regionSelection
@@ -125,6 +140,22 @@ struct NotePencilView: UIViewRepresentable {
                 NotePageRenderer.draw(page, background: background.flatMap { UIImage(data: $0) }, images: elementImages.compactMapValues { UIImage(data: $0) })
             }
         }
+        if let focus, focus.pageID == page.id, coordinator.handledFocusRequest != focus.requestID {
+            coordinator.handledFocusRequest = focus.requestID
+            if let elementID = focus.elementID,
+               let element = page.elements.first(where: { $0.id == elementID }) {
+                let rect = CGRect(x: element.frame.x, y: element.frame.y, width: element.frame.width, height: element.frame.height)
+                coordinator.showHighlight(rect, zoom: canvas.zoomScale)
+                (canvas as? NotesPKCanvasView)?.applySearchFocus(pageRect: rect)
+            } else {
+                coordinator.clearHighlight()
+                (canvas as? NotesPKCanvasView)?.applySearchFocus(pageRect: nil)
+            }
+            let requestID = focus.requestID
+            DispatchQueue.main.async { [weak coordinator] in
+                coordinator?.parent.onFocusApplied(requestID)
+            }
+        }
     }
     final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
@@ -154,6 +185,9 @@ struct NotePencilView: UIViewRepresentable {
         var isApplying = false
         var handledDeleteRequest: UUID?
         var handledCaptureRequest: UUID?
+        var handledFocusRequest: UUID?
+        var focusHighlightRect: CGRect?
+        let focusHighlightLayer = CAShapeLayer()
         var isUsingTool = false
         var pendingDrawing: Data?
         weak var regionGesture: UIPanGestureRecognizer?
@@ -187,11 +221,30 @@ struct NotePencilView: UIViewRepresentable {
                 if let data = image.pngData() { parent.onSelectionCapture(bounds, data) }
             }
         }
+        func showHighlight(_ rect: CGRect, zoom: CGFloat) {
+            focusHighlightRect = rect
+            updateHighlightFrame(zoom: zoom)
+            focusHighlightLayer.isHidden = false
+        }
+        func clearHighlight() {
+            focusHighlightRect = nil
+            focusHighlightLayer.path = nil
+            focusHighlightLayer.isHidden = true
+        }
+        /// The highlight is a sublayer of the page backdrop, so it follows the
+        /// same scroll/zoom transform as the rendered paper and the PDF.
+        func updateHighlightFrame(zoom: CGFloat) {
+            focusHighlightLayer.frame = backdrop?.bounds ?? .zero
+            guard let rect = focusHighlightRect, zoom > 0 else { return }
+            let scaled = rect.applying(CGAffineTransform(scaleX: zoom, y: zoom))
+            focusHighlightLayer.path = UIBezierPath(roundedRect: scaled, cornerRadius: 6).cgPath
+        }
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             (scrollView as? NotesPKCanvasView)?.rememberPagePosition()
         }
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             (scrollView as? NotesPKCanvasView)?.alignPageBackdrop()
+            updateHighlightFrame(zoom: scrollView.zoomScale)
         }
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
             gestureBaseline = loadedBaseline
@@ -234,13 +287,58 @@ private final class NotesPKCanvasView: PKCanvasView {
     private var viewportSize = CGSize.zero
     private var pagePosition = CGPoint.zero
     private var updatingViewport = false
+    /// True while a search jump moves the viewport. The jump must not overwrite
+    /// the user's remembered reading position with the search viewport.
+    private(set) var isProgrammaticViewportUpdate = false
+    private var hasPendingSearchFocus = false
+    private var pendingSearchFocusRect: CGRect?
     func rememberPagePosition() {
         // UIKit adjusts offsets while rotating. Retain the last position from
         // the old viewport until layout has restored that page-space anchor.
-        guard !updatingViewport, bounds.size == viewportSize, zoomScale > 0 else { return }
+        guard !updatingViewport, !isProgrammaticViewportUpdate, bounds.size == viewportSize, zoomScale > 0 else { return }
         pagePosition = CGPoint(x: max(0, contentOffset.x) / zoomScale,
                                y: max(0, contentOffset.y) / zoomScale)
         onViewportChanged(.init(x: pagePosition.x, y: pagePosition.y, zoom: zoomScale))
+    }
+
+    /// Centres `pageRect` (page coordinates) in the viewport, or scrolls to the
+    /// page top when nil (flat text without per-run geometry). Zoom is never
+    /// pushed above the user's own zoom, and never below a readable 1.0.
+    /// Applied immediately when laid out, otherwise on the next layout pass.
+    func applySearchFocus(pageRect: CGRect?) {
+        hasPendingSearchFocus = true
+        pendingSearchFocusRect = pageRect
+        applyPendingSearchFocus()
+    }
+
+    private func applyPendingSearchFocus() {
+        guard hasPendingSearchFocus else { return }
+        guard pageSize.width > 0, pageSize.height > 0, bounds.width > 0, bounds.height > 0 else { return }
+        hasPendingSearchFocus = false
+        let pageRect = pendingSearchFocusRect
+        pendingSearchFocusRect = nil
+        let previous = isProgrammaticViewportUpdate
+        isProgrammaticViewportUpdate = true
+        defer { isProgrammaticViewportUpdate = previous }
+        let zoom = min(max(zoomScale, 1), maximumZoomScale)
+        if zoomScale != zoom { zoomScale = zoom }
+        alignPageBackdrop()
+        let horizontal = max(0, (bounds.width - pageSize.width * zoom) / 2)
+        let vertical = max(0, (bounds.height - pageSize.height * zoom) / 2)
+        let maximumX = max(0, pageSize.width * zoom - bounds.width)
+        let maximumY = max(0, pageSize.height * zoom - bounds.height)
+        var offset = contentOffset
+        if horizontal > 0 {
+            offset.x = -horizontal
+        } else if let pageRect {
+            offset.x = min(max(pageRect.midX * zoom - bounds.width / 2, 0), maximumX)
+        } else { offset.x = 0 }
+        if vertical > 0 {
+            offset.y = -vertical
+        } else if let pageRect {
+            offset.y = min(max(pageRect.midY * zoom - bounds.height / 2, 0), maximumY)
+        } else { offset.y = 0 }
+        contentOffset = offset
     }
     override func layoutSubviews() {
         guard !updatingViewport else { super.layoutSubviews(); return }
@@ -266,6 +364,7 @@ private final class NotesPKCanvasView: PKCanvasView {
         alignPageBackdrop()
         updatingViewport = false
         rememberPagePosition()
+        applyPendingSearchFocus()
     }
     func alignPageBackdrop() {
         pageBackdrop?.frame = CGRect(x: 0, y: 0, width: pageSize.width * zoomScale, height: pageSize.height * zoomScale)

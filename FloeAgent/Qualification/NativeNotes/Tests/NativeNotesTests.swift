@@ -5,6 +5,9 @@ import UIKit
 import PencilKit
 import SwiftUI
 import Vision
+import FloeCore
+import FloeModels
+import FloePersistence
 import FloeNotes
 import FloeDocuments
 @testable import FloeNotesNativeQualification
@@ -413,5 +416,282 @@ import FloeDocuments
         XCTAssertTrue(manifest.files.contains { $0.path == "tokenizer/tokenizer.json" })
         XCTAssertTrue(manifest.files.contains { $0.path == "model/AudioEncoder.mlmodelc/weights/weight.bin" })
         XCTAssertTrue(manifest.files.allSatisfy { $0.sha256.count == 64 && $0.url.path.contains("/resolve/") })
+    }
+
+    // MARK: - Build265: exact per-text search focus
+
+    /// Library/agent search resolution reaches the exact element offset, and
+    /// the pencil page scrolls to and highlights it without persisting the
+    /// search viewport.
+    func testSearchFocusNavigatesToExactElementAndHighlightsIt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var document = NoteDocument(title: "定位测试")
+        var second = NotePage()
+        let element = NoteElement(frame: NoteRect(x: 60, y: 700, width: 400, height: 120),
+                                  text: "第一段 普通内容\n第二段 机会成本 target")
+        second.elements = [element]
+        try NoteEdit.insertPage(second, at: 1).apply(to: &document)
+        let created = try await store.create(document)
+        let targetPageID = created.pages[1].id
+
+        let session = NotesSession()
+        await session.open(using: store)
+        await session.select(created)
+        XCTAssertTrue(session.requestSearchFocus(in: created, query: "机会成本"))
+        let focus = try XCTUnwrap(session.searchFocus)
+        XCTAssertEqual(focus.documentID, created.id)
+        XCTAssertEqual(focus.pageID, targetPageID)
+        XCTAssertEqual(focus.elementID, element.id)
+        XCTAssertEqual(focus.utf16Offset, (element.text as NSString).range(of: "机会成本").location)
+        XCTAssertEqual(focus.utf16Length, 4)
+        XCTAssertEqual(focus.sourceKind, "annotation")
+
+        let applied = expectation(description: "pencil view applied the focus")
+        let host = UIHostingController(rootView: NotePencilView(
+            page: created.pages[1], drawing: nil, background: nil, fingerDrawing: false,
+            tool: PKInkingTool(.pen, color: .black, width: 3), onDrawing: { _ in },
+            focus: focus, onFocusApplied: { _ in applied.fulfill() }))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let container = UIViewController()
+        window.rootViewController = container
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKey() }
+        let pageHost = UIView(frame: CGRect(x: 0, y: 0, width: 400, height: 500))
+        container.view.addSubview(pageHost)
+        pageHost.addSubview(host.view)
+        host.view.frame = pageHost.bounds
+        container.view.layoutIfNeeded()
+        await fulfillment(of: [applied], timeout: 5)
+
+        let canvas = try XCTUnwrap(Self.findCanvas(in: host.view))
+        XCTAssertGreaterThan(canvas.contentOffset.y, 0,
+                             "the focused element must be scrolled into view, not left at the page top")
+        XCTAssertNotNil(Self.findLayer(named: "notes.search.highlight", in: canvas.layer),
+                        "the matched element must be visibly highlighted")
+    }
+
+    private static func findCanvas(in view: UIView) -> PKCanvasView? {
+        if let canvas = view as? PKCanvasView { return canvas }
+        for subview in view.subviews {
+            if let found = findCanvas(in: subview) { return found }
+        }
+        return nil
+    }
+
+    private static func findLayer(named name: String, in layer: CALayer?) -> CALayer? {
+        guard let layer else { return nil }
+        if layer.name == name { return layer }
+        for sublayer in layer.sublayers ?? [] {
+            if let found = findLayer(named: name, in: sublayer) { return found }
+        }
+        return nil
+    }
+
+    /// Build265: selected-page PDF export reopens with the exact requested page
+    /// count, and the .floenote verification used by notes.export re-imports
+    /// and validates the archive; corruption fails closed.
+    func testExportSelectionAndArchiveVerification() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var document = NoteDocument(title: "导出验证")
+        document.pages[0].elements = [NoteElement(frame: .init(x: 40, y: 40, width: 400, height: 100), text: "第一页")]
+        var second = NotePage()
+        second.elements = [NoteElement(frame: .init(x: 40, y: 40, width: 400, height: 100), text: "第二页")]
+        try NoteEdit.insertPage(second, at: 1).apply(to: &document)
+        let created = try await store.create(document)
+
+        let selected = try NoteExportSelection.pages(of: created, pageIDs: [created.pages[1].id])
+        XCTAssertEqual(selected.count, 1)
+        let pdf = try await NotesExport.pdf(document: created, pages: selected, store: store) { _, _ in }
+        defer { try? FileManager.default.removeItem(at: pdf.url.deletingLastPathComponent()) }
+        XCTAssertEqual(CGPDFDocument(pdf.url as CFURL)?.numberOfPages, 1,
+                       "selected-page export must reopen with exactly the requested pages")
+
+        let folder = root.appendingPathComponent("archive", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let archive = folder.appendingPathComponent("roundtrip.floenote")
+        try await NotesArchive.export(document: created, store: store, to: archive)
+        let verification = try await NotesExportTool.verifyArchive(archive)
+        XCTAssertTrue(verification.hasPrefix("reimport-verified"), verification)
+        XCTAssertTrue(verification.contains("pages=2"), verification)
+
+        let corrupt = folder.appendingPathComponent("corrupt.floenote")
+        try Data("not a zip".utf8).write(to: corrupt)
+        do {
+            _ = try await NotesExportTool.verifyArchive(corrupt)
+            XCTFail("a corrupt archive must fail verification instead of being advertised")
+        } catch {}
+    }
+
+    /// Build265 durability follow-up: durable decision intents reach only the
+    /// originating conversation exactly once through the live runtime stores,
+    /// replays upsert, and the transport never reports success on a partial
+    /// write (enqueue succeeded, transcript append failed).
+    func testProposalDecisionDeliveryIsExactlyOnceAndOriginScoped() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let database = try DatabaseManager(path: root.appendingPathComponent("floe.sqlite"))
+        try await database.migrate()
+        do {
+            try await runProposalDecisionDeliveryTest(root: root, database: database)
+        } catch {
+            try? await database.close()
+            try? FileManager.default.removeItem(at: root)
+            throw error
+        }
+        try? await database.close()
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func runProposalDecisionDeliveryTest(
+        root: URL, database: DatabaseManager
+    ) async throws {
+        let conversations = SQLiteConversationStore(database: database)
+        let inputs = SQLiteRunningInputStore(database: database)
+        let originConversation = UUID()
+        let uninvolvedConversation = UUID()
+        try await conversations.saveConversation(ConversationRecord(
+            id: originConversation, title: "手记助手", createdAt: Date(), updatedAt: Date()))
+        try await conversations.saveConversation(ConversationRecord(
+            id: uninvolvedConversation, title: "其他会话", createdAt: Date(), updatedAt: Date()))
+
+        let proposals = NoteProposalStore(root: root.appendingPathComponent("Proposals", isDirectory: true))
+        let outbox = NoteProposalOutbox(root: root.appendingPathComponent("Outbox", isDirectory: true))
+        let transport = NotesRuntimeDecisionTransport(
+            writer: LiveNotesDecisionRuntimeWriter(inputs: inputs, messages: conversations))
+        let origin = NoteProposalOrigin(conversationID: originConversation, environmentID: "env")
+
+        // Rejection: the durable intent is written before the proposal resolves.
+        let rejectedProposal = NoteProposal(documentID: UUID(), baseRevision: 2,
+                                            baseSHA256: String(repeating: "a", count: 64), title: "拒绝",
+                                            origin: origin, edits: [.rename("新")], summary: "SECRET-MODEL-TEXT")
+        try await proposals.save(rejectedProposal)
+        _ = try await NoteProposalService.resolve(proposalID: rejectedProposal.id, decision: .rejected,
+                                                  proposals: proposals, outbox: outbox)
+        // Replaying the whole driver must be idempotent through both stores.
+        _ = await NoteProposalDecisionDelivery.deliverPending(
+            transport: transport, outbox: outbox, proposals: proposals)
+        _ = await NoteProposalDecisionDelivery.deliverPending(
+            transport: transport, outbox: outbox, proposals: proposals)
+        let rejectedInputs = try await inputs.pending(conversationID: originConversation)
+        XCTAssertEqual(rejectedInputs.count, 1, "a replay must not duplicate the durable input")
+        let rejectedMessages = try await conversations.messages(conversationID: originConversation)
+        XCTAssertEqual(rejectedMessages.count, 1, "a replay must not duplicate the transcript row")
+        XCTAssertTrue(rejectedMessages[0].content.contains("rejected"))
+        XCTAssertFalse(rejectedMessages[0].content.contains("SECRET-MODEL-TEXT"),
+                       "the structured event never repeats model-authored proposal text")
+
+        // Acceptance through a real NotesStore: intent persisted before commit.
+        let store = try NotesStore(root: root.appendingPathComponent("Library", isDirectory: true))
+        let document = try await store.create(NoteDocument(title: "接受"))
+        let acceptedProposal = try await NoteProposalService.propose(
+            document: document, title: "接受", edits: [.rename("已接受")], origin: origin, store: proposals)
+        let grants = NoteProposalGrantStore(idProvider: { "qualification-grant" })
+        let grantID = await grants.issueGrant(proposal: acceptedProposal)
+        _ = try await NoteProposalService.apply(
+            proposalID: acceptedProposal.id, grantID: grantID, store: store,
+            proposals: proposals, outbox: outbox, grants: grants)
+        _ = await NoteProposalDecisionDelivery.deliverPending(
+            transport: transport, outbox: outbox, proposals: proposals, store: store)
+        let applied = try await store.document(document.id)
+        XCTAssertEqual(applied.title, "已接受")
+        let allMessages = try await conversations.messages(conversationID: originConversation)
+        XCTAssertEqual(allMessages.count, 2)
+        let acceptedMessage = try XCTUnwrap(allMessages.first { $0.content.contains("accepted") })
+        XCTAssertTrue(acceptedMessage.content.contains("revision \(applied.revision)"))
+        let uninvolvedMessages = try await conversations.messages(
+            conversationID: uninvolvedConversation)
+        XCTAssertTrue(uninvolvedMessages.isEmpty,
+                      "decisions are delivered only to the originating conversation")
+
+        // Partial write: enqueue succeeds, transcript append fails. The intent
+        // must stay pending; the retry reuses the input row and appends once.
+        let writer = TestDecisionRuntimeWriter()
+        let partialTransport = NotesRuntimeDecisionTransport(writer: writer)
+        let partialOutbox = NoteProposalOutbox(root: root.appendingPathComponent("Outbox2", isDirectory: true))
+        let invalidatedProposal = NoteProposal(documentID: UUID(), baseRevision: 1,
+                                               baseSHA256: String(repeating: "c", count: 64), title: "失效",
+                                               origin: origin, edits: [.rename("x")], summary: "s")
+        try await proposals.save(invalidatedProposal)
+        _ = try await NoteProposalService.resolve(proposalID: invalidatedProposal.id, decision: .invalidated,
+                                                  proposals: proposals, outbox: partialOutbox)
+        writer.failAppend = true
+        var report = await NoteProposalDecisionDelivery.deliverPending(
+            transport: partialTransport, outbox: partialOutbox, proposals: proposals)
+        XCTAssertEqual(report.failures.count, 1)
+        XCTAssertTrue(report.delivered.isEmpty)
+        XCTAssertEqual(writer.inputs.count, 1, "the enqueue wrote before the append failed")
+        XCTAssertTrue(writer.messages.isEmpty)
+        let stillPending = await partialOutbox.pendingDecisions()
+        XCTAssertEqual(stillPending.count, 1, "a partial delivery must not be marked delivered")
+
+        writer.failAppend = false
+        report = await NoteProposalDecisionDelivery.deliverPending(
+            transport: partialTransport, outbox: partialOutbox, proposals: proposals)
+        XCTAssertEqual(report.delivered.count, 1)
+        XCTAssertEqual(writer.inputs.count, 1, "the retry must reuse the existing input row")
+        XCTAssertEqual(writer.messages.count, 1)
+        let pendingAfterRetry = await partialOutbox.pendingDecisions()
+        XCTAssertTrue(pendingAfterRetry.isEmpty)
+
+        // UI-authored proposals have no origin: no intent, nobody notified.
+        let uiProposal = NoteProposal(documentID: UUID(), baseRevision: 1,
+                                      baseSHA256: String(repeating: "b", count: 64), title: "UI",
+                                      edits: [.rename("x")], summary: "s")
+        XCTAssertNil(NoteProposalDecisions.event(for: uiProposal, decision: .rejected))
+        _ = try await NoteProposalService.resolve(proposalID: uiProposal.id, decision: .rejected,
+                                                  proposals: proposals, outbox: partialOutbox)
+        let pendingAfterUI = await partialOutbox.pendingDecisions()
+        XCTAssertTrue(pendingAfterUI.isEmpty)
+    }
+
+    /// Build265 durability follow-up: the proposal/outbox center never falls
+    /// back to a temporary directory. An unavailable Application Support
+    /// location is reported, tools fail closed, and clearing the override
+    /// rebuilds the durable store.
+    func testProposalStorageNeverFallsBackToTemporaryDirectory() async throws {
+        let unavailable = URL(fileURLWithPath: "/dev/null/floe-unavailable-\(UUID().uuidString)")
+        NotesProposalCenter.setStorageRootOverride(unavailable)
+        defer { NotesProposalCenter.setStorageRootOverride(nil) }
+
+        switch NotesProposalCenter.storage() {
+        case .success:
+            XCTFail("an unavailable storage root must not produce a proposal store")
+        case .failure(let error):
+            XCTAssertTrue(error.localizedDescription.contains("存储不可用"), error.localizedDescription)
+        }
+        do {
+            _ = try NotesProposalCenter.requireStorage()
+            XCTFail("requireStorage must fail closed instead of using a temp dir")
+        } catch {}
+        let report = await NotesProposalCenter.flush(store: nil)
+        XCTAssertNotNil(report.storageFailure)
+        XCTAssertTrue(report.delivered.isEmpty)
+        XCTAssertTrue(report.pending.isEmpty, "no temporary store may report pending intents")
+
+        NotesProposalCenter.setStorageRootOverride(nil)
+        if case .failure(let error) = NotesProposalCenter.storage() {
+            XCTFail("durable storage must be available after clearing the override: \(error)")
+        }
+    }
+}
+
+/// Test double for the two runtime writes, used to inject a transcript failure
+/// after a successful enqueue.
+final class TestDecisionRuntimeWriter: NotesDecisionRuntimeWriting, @unchecked Sendable {
+    var failAppend = false
+    private(set) var inputs: [UUID: PendingUserInput] = [:]
+    private(set) var messages: [UUID: PersistedMessage] = [:]
+
+    func hasRuntimeInput(id: UUID) async throws -> Bool { inputs[id] != nil }
+    func enqueueRuntimeInput(_ input: PendingUserInput) async throws { inputs[input.id] = input }
+    func appendTranscript(_ message: PersistedMessage) async throws {
+        if failAppend { throw NoteError.invalidOperation("injected transcript failure") }
+        messages[message.id] = message
     }
 }

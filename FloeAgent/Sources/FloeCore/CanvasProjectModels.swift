@@ -571,20 +571,37 @@ public enum CanvasChildProjectBindingState: Sendable, Equatable {
     }
 }
 
-/// Persisted "fork in progress / failed" marker for a copied node.
+/// Persisted "fork in progress / failed" marker for a copied node, and for a
+/// failed first-edit migration of a legacy flattened node.
 public struct CanvasChildProjectPending: Sendable, Codable, Equatable {
     public static let currentSchemaVersion = 1
     public var schemaVersion: Int
     public var parentProjectID: UUID
     public var sourceNodeID: UUID?
     public var startedAt: Date
+    /// First-edit migration only: the rendered asset the editor exported and
+    /// the ORIGINAL flattened asset hash captured when the session opened, so
+    /// a retry after a failed commit can write the exact same binding. Fork
+    /// markers leave both nil.
+    public var renderedAsset: CanvasAssetReference?
+    public var sourceAssetHash: String?
+    /// First-edit migration only: the child project revision the binding
+    /// should record (captured at export time, since the project may not be
+    /// open anymore when the user retries).
+    public var appliedRevision: Int64?
 
     public init(schemaVersion: Int = CanvasChildProjectPending.currentSchemaVersion,
-                parentProjectID: UUID, sourceNodeID: UUID? = nil, startedAt: Date = Date()) {
+                parentProjectID: UUID, sourceNodeID: UUID? = nil, startedAt: Date = Date(),
+                renderedAsset: CanvasAssetReference? = nil,
+                sourceAssetHash: String? = nil,
+                appliedRevision: Int64? = nil) {
         self.schemaVersion = schemaVersion
         self.parentProjectID = parentProjectID
         self.sourceNodeID = sourceNodeID
         self.startedAt = startedAt
+        self.renderedAsset = renderedAsset
+        self.sourceAssetHash = sourceAssetHash
+        self.appliedRevision = appliedRevision
     }
 }
 

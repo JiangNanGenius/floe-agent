@@ -199,9 +199,13 @@ struct CanvasBackupPackageTests {
                 _ = try CanvasBackupPackage.restore(data: Data(contentsOf: out), floeRoot: root)
                 Issue.record("hostile path '\(hostile)' was not refused")
             } catch {
-                // Zero changes: nothing may exist outside the root's dirs.
+                // Zero changes: nothing may exist outside the root's owned dirs.
                 let listing = try FileManager.default.contentsOfDirectory(atPath: root.path)
-                    .filter { $0 != "Materials" && $0 != "MediaProjects" && $0 != "WorkbenchRoot" }
+                    .filter {
+                        $0 != "Materials" && $0 != "MediaProjects"
+                            && $0 != "WorkbenchRoot"
+                            && $0 != CanvasDrawingNodePlanner.draftRootDirectoryName
+                    }
                 #expect(listing.isEmpty)
                 #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("evil.png").path) == false)
             }
@@ -347,6 +351,579 @@ struct CanvasBackupPackageTests {
         } catch {
             // expected: explicit, named failure
         }
+    }
+
+    // MARK: - Production file-backed export/import (registry entry points)
+
+    private struct ProductionLayout {
+        var root: URL
+        var projectsRoot: URL
+        var materialsRoot: URL
+        var fallbackMediaRoot: URL
+        var cadDraftsRoot: URL
+
+        var exportLayout: CanvasBackupPackage.ExportLayout {
+            CanvasBackupPackage.ExportLayout(
+                projectsRoot: projectsRoot, materialsRoot: materialsRoot,
+                fallbackMediaRoot: fallbackMediaRoot,
+                cadDraftsRoot: cadDraftsRoot)
+        }
+    }
+
+    private func productionLayout(_ label: String) throws -> ProductionLayout {
+        let root = try tempRoot(label)
+        let projects = root.appendingPathComponent("MediaProjects", isDirectory: true)
+        let materials = root.appendingPathComponent("Materials", isDirectory: true)
+        let fallback = root.appendingPathComponent("WorkbenchRoot", isDirectory: true)
+        let drafts = root.appendingPathComponent(
+            CanvasDrawingNodePlanner.draftRootDirectoryName, isDirectory: true)
+        for url in [projects, materials, fallback, drafts] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return ProductionLayout(
+            root: root, projectsRoot: projects,
+            materialsRoot: materials, fallbackMediaRoot: fallback,
+            cadDraftsRoot: drafts)
+    }
+
+    private func writeChildProject(_ id: UUID, into projectsRoot: URL,
+                                   taskWorkspacePath: String?,
+                                   assetPaths: [String]) throws {
+        var object: [String: Any] = [
+            "id": id.uuidString, "revision": 3, "name": "child",
+            "assets": assetPaths.map { ["relativePath": $0, "originalName": $0] }
+        ]
+        if let taskWorkspacePath { object["taskWorkspacePath"] = taskWorkspacePath }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        try data.write(to: projectsRoot.appendingPathComponent(
+            "media-project-\(id.uuidString.lowercased()).json"))
+    }
+
+    @Test("production export honors each child's recorded media root and restores file-backed")
+    func productionExportHonorsPerChildMediaRoots() throws {
+        let layout = try productionLayout("prod")
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+
+        // Child A records its own task workspace; its asset exists ONLY there.
+        let workspaceA = layout.root.appendingPathComponent("TaskWorkspaceA", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: workspaceA.appendingPathComponent("clips"), withIntermediateDirectories: true)
+        let aBytes = Data("a-video".utf8)
+        try aBytes.write(to: workspaceA.appendingPathComponent("clips/a.mp4"))
+        let childA = UUID()
+        try writeChildProject(childA, into: layout.projectsRoot,
+                              taskWorkspacePath: workspaceA.path,
+                              assetPaths: ["clips/a.mp4"])
+
+        // Child B has no recorded path: falls back to WorkbenchRoot.
+        try FileManager.default.createDirectory(
+            at: layout.fallbackMediaRoot.appendingPathComponent("audio"),
+            withIntermediateDirectories: true)
+        let bBytes = Data("b-audio".utf8)
+        try bBytes.write(to: layout.fallbackMediaRoot.appendingPathComponent("audio/b.wav"))
+        let childB = UUID()
+        try writeChildProject(childB, into: layout.projectsRoot,
+                              taskWorkspacePath: nil, assetPaths: ["audio/b.wav"])
+
+        let materialBytes = Data("mat".utf8)
+        try materialBytes.write(to: layout.materialsRoot.appendingPathComponent("mat.png"))
+
+        var nodeA = makeNode()
+        nodeA.childProjectBinding = CanvasChildProjectBinding(projectID: childA, appliedRevision: 3)
+        var nodeB = CanvasNode.placeholder(kind: .video,
+                                           position: CanvasPoint(x: 30, y: 40), zIndex: 2)
+        nodeB.childProjectBinding = CanvasChildProjectBinding(projectID: childB, appliedRevision: 3)
+        let materialNode = makeNode(assetPath: "Materials/mat.png")
+        let project = makeProject(nodes: [nodeA, nodeB, materialNode])
+
+        let destination = layout.root.appendingPathComponent("export.floeCanvas")
+        try CanvasBackupPackage.exportToURL(
+            project: project, destination: destination, layout: layout.exportLayout)
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(try CanvasBackupPackage.looksLikeZipArchive(at: destination))
+
+        // Plain legacy JSON is not mistaken for a zip (first-bytes detection).
+        let legacyJSON = layout.root.appendingPathComponent("legacy.json")
+        try CanvasProjectCodec.encode(project).write(to: legacyJSON)
+        #expect(try !CanvasBackupPackage.looksLikeZipArchive(at: legacyJSON))
+
+        // No export staging directories are retained by the builder.
+        let leftovers = (try? FileManager.default.contentsOfDirectory(
+            atPath: FileManager.default.temporaryDirectory.path)) ?? []
+        #expect(leftovers.filter { $0.hasPrefix("canvas-backup-") }.isEmpty)
+
+        // Restore through the file-backed production entry point.
+        let restoredRoot = try tempRoot("prod-restored")
+        defer { try? FileManager.default.removeItem(at: restoredRoot) }
+        let restored = try CanvasBackupPackage.restore(
+            fileURL: destination, floeRoot: restoredRoot)
+        #expect(restored.project.id != project.id)
+        #expect(restored.manifest.childProjects.count == 2)
+        #expect(restored.manifest.assets.count == 2)
+        #expect(restored.manifest.materials.count == 1)
+        #expect(restored.manifest.missingChildProjects.isEmpty)
+        #expect(restored.manifest.missingAssets.isEmpty)
+
+        // Restored child projects are app-owned copies: taskWorkspacePath is
+        // cleared so assets resolve from the restored WorkbenchRoot.
+        let childFiles = try FileManager.default.contentsOfDirectory(
+            at: restoredRoot.appendingPathComponent("MediaProjects"),
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "json" }
+        #expect(childFiles.count == 2)
+        for file in childFiles {
+            let object = try #require(
+                JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            #expect(object["taskWorkspacePath"] == nil)
+            #expect((object["assets"] as? [[String: Any]])?.isEmpty == false)
+        }
+
+        // Bytes landed under the restored fallback media root.
+        #expect(try Data(contentsOf: restoredRoot
+            .appendingPathComponent("WorkbenchRoot/clips/a.mp4")) == aBytes)
+        #expect(try Data(contentsOf: restoredRoot
+            .appendingPathComponent("WorkbenchRoot/audio/b.wav")) == bBytes)
+        #expect(try Data(contentsOf: restoredRoot
+            .appendingPathComponent("Materials/mat.png")) == materialBytes)
+
+        // A second canvas restores independently from the same package.
+        let secondRoot = try tempRoot("prod-restored-2")
+        defer { try? FileManager.default.removeItem(at: secondRoot) }
+        let second = try CanvasBackupPackage.restore(
+            fileURL: destination, floeRoot: secondRoot)
+        #expect(second.project.id != restored.project.id)
+        #expect(second.manifest.childProjects.count == 2)
+    }
+
+    @Test("export preflight refuses traversal, symlink escape, oversize and missing material before writing")
+    func exportPreflightRefusesHostileSources() throws {
+        // Traversal in a child asset path.
+        do {
+            let layout = try productionLayout("preflight-traversal")
+            defer { try? FileManager.default.removeItem(at: layout.root) }
+            let child = UUID()
+            try writeChildProject(child, into: layout.projectsRoot,
+                                  taskWorkspacePath: layout.root.path,
+                                  assetPaths: ["../escape.bin"])
+            var node = makeNode()
+            node.childProjectBinding = CanvasChildProjectBinding(projectID: child, appliedRevision: 1)
+            let project = makeProject(nodes: [node])
+            let destination = layout.root.appendingPathComponent("out.floeCanvas")
+            #expect(throws: CanvasBackupPackage.BackupError.self) {
+                try CanvasBackupPackage.exportToURL(
+                    project: project, destination: destination, layout: layout.exportLayout)
+            }
+            #expect(!FileManager.default.fileExists(atPath: destination.path))
+        }
+
+        // Symlink escaping the media root.
+        do {
+            let layout = try productionLayout("preflight-symlink")
+            defer { try? FileManager.default.removeItem(at: layout.root) }
+            let outside = layout.root.appendingPathComponent("outside-secret.bin")
+            try Data("secret".utf8).write(to: outside)
+            let link = layout.fallbackMediaRoot.appendingPathComponent("link.bin")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+            let child = UUID()
+            try writeChildProject(child, into: layout.projectsRoot,
+                                  taskWorkspacePath: nil, assetPaths: ["link.bin"])
+            var node = makeNode()
+            node.childProjectBinding = CanvasChildProjectBinding(projectID: child, appliedRevision: 1)
+            let project = makeProject(nodes: [node])
+            let destination = layout.root.appendingPathComponent("out.floeCanvas")
+            #expect(throws: CanvasBackupPackage.BackupError.self) {
+                try CanvasBackupPackage.exportToURL(
+                    project: project, destination: destination, layout: layout.exportLayout)
+            }
+            #expect(!FileManager.default.fileExists(atPath: destination.path))
+        }
+
+        // Oversize payload (bounded through the layout's caps).
+        do {
+            let layout = try productionLayout("preflight-oversize")
+            defer { try? FileManager.default.removeItem(at: layout.root) }
+            try FileManager.default.createDirectory(
+                at: layout.fallbackMediaRoot.appendingPathComponent("clips"),
+                withIntermediateDirectories: true)
+            try Data(repeating: 0, count: 100).write(
+                to: layout.fallbackMediaRoot.appendingPathComponent("clips/big.mp4"))
+            let child = UUID()
+            try writeChildProject(child, into: layout.projectsRoot,
+                                  taskWorkspacePath: nil, assetPaths: ["clips/big.mp4"])
+            var node = makeNode()
+            node.childProjectBinding = CanvasChildProjectBinding(projectID: child, appliedRevision: 1)
+            let project = makeProject(nodes: [node])
+            let destination = layout.root.appendingPathComponent("out.floeCanvas")
+            let bounded = CanvasBackupPackage.ExportLayout(
+                projectsRoot: layout.projectsRoot, materialsRoot: layout.materialsRoot,
+                fallbackMediaRoot: layout.fallbackMediaRoot, maximumEntryBytes: 16)
+            #expect(throws: CanvasBackupPackage.BackupError.self) {
+                try CanvasBackupPackage.exportToURL(
+                    project: project, destination: destination, layout: bounded)
+            }
+            #expect(!FileManager.default.fileExists(atPath: destination.path))
+        }
+
+        // Missing referenced material.
+        do {
+            let layout = try productionLayout("preflight-material")
+            defer { try? FileManager.default.removeItem(at: layout.root) }
+            let node = makeNode(assetPath: "Materials/gone.png")
+            let project = makeProject(nodes: [node])
+            let destination = layout.root.appendingPathComponent("out.floeCanvas")
+            #expect(throws: CanvasBackupPackage.BackupError.self) {
+                try CanvasBackupPackage.exportToURL(
+                    project: project, destination: destination, layout: layout.exportLayout)
+            }
+            #expect(!FileManager.default.fileExists(atPath: destination.path))
+        }
+    }
+
+    @Test("CAD drawing node in Materials roundtrips through production export/import")
+    func cadDrawingMaterialNodeRoundtrips() throws {
+        let layout = try productionLayout("cad-materials")
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let drawingBytes = Data("dxf-drawing-bytes".utf8)
+        let fileName = "\(UUID().uuidString)-plate.dxf"
+        try drawingBytes.write(to: layout.materialsRoot.appendingPathComponent(fileName))
+        var node = CanvasNode.placeholder(
+            kind: .file, position: CanvasPoint(x: 10, y: 20), zIndex: 1)
+        node.text = "plate.dxf"
+        node.asset = CanvasAssetReference(
+            contentHash: digest(drawingBytes),
+            localRelativePath: "Materials/\(fileName)",
+            mimeType: "image/vnd.dxf", byteCount: Int64(drawingBytes.count))
+        let project = makeProject(nodes: [node])
+
+        let destination = layout.root.appendingPathComponent("cad.floeCanvas")
+        try CanvasBackupPackage.exportToURL(
+            project: project, destination: destination, layout: layout.exportLayout)
+
+        let restoredRoot = try tempRoot("cad-materials-restored")
+        defer { try? FileManager.default.removeItem(at: restoredRoot) }
+        let restored = try CanvasBackupPackage.restore(
+            fileURL: destination, floeRoot: restoredRoot)
+        #expect(restored.manifest.materials.map(\.fileName) == [fileName])
+        #expect(restored.manifest.externalNodeAssets.isEmpty)
+        #expect(try Data(contentsOf: restoredRoot
+            .appendingPathComponent("Materials/\(fileName)")) == drawingBytes)
+        let restoredNode = try #require(restored.project.documents[0].nodes.first)
+        #expect(restoredNode.kind == .file)
+        #expect(restoredNode.asset?.localRelativePath == "Materials/\(fileName)")
+        #expect(restoredNode.asset?.contentHash == digest(drawingBytes))
+    }
+
+    @Test("node asset outside Materials (WorkbenchRoot) is carried and remapped")
+    func externalNodeAssetRoundtrips() throws {
+        let layout = try productionLayout("cad-external")
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let drawingBytes = Data("dwg-drawing-bytes".utf8)
+        try FileManager.default.createDirectory(
+            at: layout.fallbackMediaRoot.appendingPathComponent("drawings"),
+            withIntermediateDirectories: true)
+        try drawingBytes.write(to: layout.fallbackMediaRoot
+            .appendingPathComponent("drawings/plate.dwg"))
+        var node = CanvasNode.placeholder(
+            kind: .file, position: CanvasPoint(x: 0, y: 0), zIndex: 1)
+        node.asset = CanvasAssetReference(
+            contentHash: digest(drawingBytes),
+            localRelativePath: "WorkbenchRoot/drawings/plate.dwg",
+            mimeType: "image/vnd.dwg", byteCount: Int64(drawingBytes.count))
+        let project = makeProject(nodes: [node])
+
+        let destination = layout.root.appendingPathComponent("external.floeCanvas")
+        try CanvasBackupPackage.exportToURL(
+            project: project, destination: destination, layout: layout.exportLayout)
+
+        let restoredRoot = try tempRoot("cad-external-restored")
+        defer { try? FileManager.default.removeItem(at: restoredRoot) }
+        let restored = try CanvasBackupPackage.restore(
+            fileURL: destination, floeRoot: restoredRoot)
+        #expect(restored.manifest.externalNodeAssets.map(\.relativePath)
+            == ["WorkbenchRoot/drawings/plate.dwg"])
+        #expect(restored.manifest.missingExternalNodeAssets.isEmpty)
+        #expect(try Data(contentsOf: restoredRoot
+            .appendingPathComponent("WorkbenchRoot/drawings/plate.dwg")) == drawingBytes)
+        let restoredNode = try #require(restored.project.documents[0].nodes.first)
+        #expect(restoredNode.asset?.localRelativePath == "WorkbenchRoot/drawings/plate.dwg")
+    }
+
+    @Test("node asset outside the packable roots refuses export explicitly")
+    func externalNodeAssetOutsideRootsRefused() throws {
+        let layout = try productionLayout("cad-unsafe")
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        var node = CanvasNode.placeholder(
+            kind: .file, position: CanvasPoint(x: 0, y: 0), zIndex: 1)
+        node.asset = CanvasAssetReference(
+            contentHash: "h", localRelativePath: "Elsewhere/plate.dwg",
+            mimeType: "image/vnd.dwg", byteCount: 3)
+        let project = makeProject(nodes: [node])
+        let destination = layout.root.appendingPathComponent("out.floeCanvas")
+        #expect(throws: CanvasBackupPackage.BackupError.self) {
+            try CanvasBackupPackage.exportToURL(
+                project: project, destination: destination, layout: layout.exportLayout)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test("an unapplied CAD draft is streamed into the package and restored resumable")
+    func unappliedCADDraftRoundTrips() throws {
+        let layout = try productionLayout("cad-draft")
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+
+        // The node still carries the original bytes; the draft on disk is
+        // newer unapplied user work.
+        let originalBytes = Data("original-dwg".utf8)
+        let originalFileName = "\(UUID().uuidString)-plate.dwg"
+        try originalBytes.write(to: layout.materialsRoot.appendingPathComponent(originalFileName))
+        let nodeID = UUID()
+        var node = CanvasNode(
+            id: nodeID, kind: .file, text: "plate.dwg",
+            position: .init(x: 0, y: 0), size: .init(width: 200, height: 120),
+            asset: CanvasAssetReference(
+                contentHash: digest(originalBytes),
+                localRelativePath: "Materials/\(originalFileName)",
+                mimeType: "image/vnd.dwg",
+                byteCount: Int64(originalBytes.count)))
+        let project = makeProject(nodes: [node])
+
+        let draftBytes = Data("edited-dwg-with-new-line".utf8)
+        let nodeDraftDirectory = layout.cadDraftsRoot
+            .appendingPathComponent(project.id.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: nodeDraftDirectory, withIntermediateDirectories: true)
+        try draftBytes.write(to: nodeDraftDirectory.appendingPathComponent("plate.dwg"))
+        let descriptor = CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor(
+            canvasID: project.id, nodeID: nodeID,
+            sourceAssetID: node.asset!.id,
+            sourceContentHash: digest(originalBytes),
+            sourceRelativePath: "Materials/\(originalFileName)",
+            stagedRelativePath: "\(project.id.uuidString.lowercased())/\(nodeID.uuidString.lowercased())/plate.dwg",
+            stagedContentHash: digest(draftBytes))
+        try JSONEncoder().encode(descriptor).write(
+            to: nodeDraftDirectory.appendingPathComponent("plate.draft.json"))
+
+        let destination = layout.root.appendingPathComponent("draft.floeCanvas")
+        try CanvasBackupPackage.exportToURL(
+            project: project, destination: destination, layout: layout.exportLayout)
+        // The manifest truth: exactly one unapplied draft, no missing entries.
+        let exportedArchive = try Archive(url: destination, accessMode: .read)
+        let exportedManifestData = try #require(exportedArchive
+            .first { $0.path == CanvasBackupPackage.manifestEntry })
+        let exportedManifestFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("m-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: exportedManifestFile) }
+        _ = try exportedArchive.extract(
+            exportedManifestData, to: exportedManifestFile)
+        let exportedManifest = try JSONDecoder().decode(
+            CanvasBackupPackage.Manifest.self,
+            from: Data(contentsOf: exportedManifestFile))
+        #expect(exportedManifest.cadDrafts.count == 1)
+        #expect(exportedManifest.cadDrafts.first?.nodeID == nodeID)
+
+        let restoredRoot = try tempRoot("cad-draft-restored")
+        defer { try? FileManager.default.removeItem(at: restoredRoot) }
+        let restored = try CanvasBackupPackage.restore(
+            fileURL: destination, floeRoot: restoredRoot)
+        #expect(restored.restoredDraftNodeIDs == [nodeID])
+
+        // Draft bytes landed under the NEW canvas id, SAME node id. The
+        // package entry basenames are index/owner-derived; read them from
+        // the manifest rather than assuming the source staging basename.
+        let carriedDraft = try #require(restored.manifest.cadDrafts.first)
+        let restoredDrawingName = (carriedDraft.drawingFile as NSString).lastPathComponent
+        let restoredDescriptorName = (carriedDraft.descriptorFile as NSString).lastPathComponent
+        let restoredDraftDirectory = restoredRoot
+            .appendingPathComponent(CanvasDrawingNodePlanner.draftRootDirectoryName, isDirectory: true)
+            .appendingPathComponent(restored.project.id.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent(nodeID.uuidString.lowercased(), isDirectory: true)
+        #expect(try Data(contentsOf: restoredDraftDirectory
+            .appendingPathComponent(restoredDrawingName)) == draftBytes)
+        let restoredDescriptor = try JSONDecoder().decode(
+            CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor.self,
+            from: Data(contentsOf: restoredDraftDirectory
+                .appendingPathComponent(restoredDescriptorName)))
+        #expect(restoredDescriptor.canvasID == restored.project.id)
+        // Baseline semantics preserved: the node still carries the original
+        // hash, so reopening resumes this draft rather than treating it as a
+        // foreign or applied copy.
+        #expect(restoredDescriptor.sourceContentHash == digest(originalBytes))
+        #expect(restoredDescriptor.stagedContentHash == digest(draftBytes))
+        #expect(restoredDescriptor.appliedContentHash == nil)
+        let restoredNode = try #require(restored.project.documents[0].nodes.first)
+        #expect(restoredNode.asset?.contentHash == digest(originalBytes))
+    }
+
+    @Test("CAD revision history bytes are carried, restored, and remapped on collision")
+    func cadRevisionHistoryRoundTrips() throws {
+        // Two scenarios share the fixture builder: clean restore and a
+        // destination collision that must remap history paths.
+        func buildExport(label: String) throws -> (ProductionLayout, URL, CanvasProject, CanvasNode, String) {
+            let layout = try productionLayout(label)
+            let originalBytes = Data("original-dwg".utf8)
+            let v2Bytes = Data("second-version-dwg".utf8)
+            try originalBytes.write(to: layout.materialsRoot.appendingPathComponent("orig.dwg"))
+            try v2Bytes.write(to: layout.materialsRoot.appendingPathComponent("v2.dwg"))
+
+            let nodeID = UUID()
+            var node = CanvasNode(
+                id: nodeID, kind: .file, text: "plate.dwg",
+                position: .init(x: 0, y: 0), size: .init(width: 200, height: 120),
+                asset: CanvasAssetReference(
+                    contentHash: String(repeating: "c", count: 64),
+                    localRelativePath: "Materials/v2.dwg",
+                    mimeType: "image/vnd.dwg",
+                    byteCount: Int64(v2Bytes.count)))
+            let originalRevision = CanvasDrawingRevision(
+                assetID: UUID(),
+                contentHash: digest(originalBytes),
+                relativePath: "Materials/orig.dwg",
+                byteCount: Int64(originalBytes.count), kind: .original)
+            let adoptedRevision = CanvasDrawingRevision(
+                assetID: node.asset!.id,
+                contentHash: digest(v2Bytes),
+                relativePath: "Materials/v2.dwg",
+                byteCount: Int64(v2Bytes.count), kind: .adopt)
+            let historyEntry = try CanvasDrawingRevisionHistory.metadata(
+                [originalRevision, adoptedRevision])
+            node.metadata.merge(historyEntry) { _, new in new }
+            let project = makeProject(nodes: [node])
+            let destination = layout.root.appendingPathComponent("history.floeCanvas")
+            try CanvasBackupPackage.exportToURL(
+                project: project, destination: destination,
+                layout: layout.exportLayout)
+            return (layout, destination, project, node, "Materials/orig.dwg")
+        }
+
+        // Clean: both revision paths restore verbatim.
+        let (layout, destination, _, _, origPath) = try buildExport(label: "cad-history")
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let restoredRoot = try tempRoot("cad-history-restored")
+        defer { try? FileManager.default.removeItem(at: restoredRoot) }
+        let restored = try CanvasBackupPackage.restore(
+            fileURL: destination, floeRoot: restoredRoot)
+        #expect(restored.manifest.cadRevisionAssets.map(\.relativePath) == [origPath])
+        #expect(try Data(contentsOf: restoredRoot
+            .appendingPathComponent("Materials/orig.dwg")) == Data("original-dwg".utf8))
+        let restoredNode = try #require(restored.project.documents[0].nodes.first)
+        let restoredHistory = CanvasDrawingRevisionHistory.revisions(from: restoredNode)
+        #expect(restoredHistory.map(\.relativePath)
+            == ["Materials/orig.dwg", "Materials/v2.dwg"])
+
+        // Collision: pre-existing different bytes at the revision path force
+        // a remap; the node's history is rewritten to the new path.
+        let (layout2, destination2, _, _, _) = try buildExport(label: "cad-history-collision")
+        defer { try? FileManager.default.removeItem(at: layout2.root) }
+        let collidedRoot = try tempRoot("cad-history-collided")
+        defer { try? FileManager.default.removeItem(at: collidedRoot) }
+        let materials = collidedRoot.appendingPathComponent("Materials", isDirectory: true)
+        try FileManager.default.createDirectory(at: materials, withIntermediateDirectories: true)
+        try Data("unrelated-old-original".utf8).write(
+            to: materials.appendingPathComponent("orig.dwg"))
+        let collided = try CanvasBackupPackage.restore(
+            fileURL: destination2, floeRoot: collidedRoot)
+        let remappedPath = try #require(collided.remappedRevisionPaths["Materials/orig.dwg"])
+        #expect(remappedPath != "Materials/orig.dwg")
+        #expect(remappedPath.hasPrefix("Materials/"))
+        #expect(try Data(contentsOf: collidedRoot.appendingPathComponent(remappedPath))
+            == Data("original-dwg".utf8))
+        let collidedHistoryNode = try #require(collided.project.documents[0].nodes.first)
+        let collidedHistory = CanvasDrawingRevisionHistory.revisions(from: collidedHistoryNode)
+        #expect(collidedHistory.map(\.relativePath)
+            == [remappedPath, "Materials/v2.dwg"])
+    }
+
+    @Test("unclosable raw CAD history refuses export without creating the destination")
+    func unclosableHistoryRefused() throws {
+        let layout = try productionLayout("cad-history-raw")
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        var node = CanvasNode(
+            kind: .file, text: "p.dwg",
+            position: .init(x: 0, y: 0), size: .init(width: 200, height: 120),
+            asset: CanvasAssetReference(
+                contentHash: String(repeating: "a", count: 64),
+                localRelativePath: "Materials/p.dwg",
+                mimeType: "image/vnd.dwg", byteCount: 3))
+        node.metadata[CanvasDrawingRevisionHistory.metadataKey] = "{not valid json"
+        try Data("dwg".utf8).write(to: layout.materialsRoot.appendingPathComponent("p.dwg"))
+        let project = makeProject(nodes: [node])
+        let destination = layout.root.appendingPathComponent("out.floeCanvas")
+        #expect(throws: FloeError.self) {
+            try CanvasBackupPackage.exportToURL(
+                project: project, destination: destination,
+                layout: layout.exportLayout)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test("bounded in-memory CAD draft API carries owned drafts and rejects foreign ownership")
+    func inMemoryCADDraftAPI() throws {
+        let draftBytes = Data("draft-dwg".utf8)
+        let originalBytes = Data("original-dwg".utf8)
+        var node = CanvasNode(
+            kind: .file, text: "p.dwg",
+            position: .init(x: 0, y: 0), size: .init(width: 200, height: 120),
+            asset: CanvasAssetReference(
+                contentHash: digest(originalBytes),
+                localRelativePath: "Materials/p.dwg",
+                mimeType: "image/vnd.dwg",
+                byteCount: Int64(originalBytes.count)))
+        let project = makeProject(nodes: [node])
+        let descriptor = CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor(
+            canvasID: project.id, nodeID: node.id,
+            sourceAssetID: node.asset!.id,
+            sourceContentHash: digest(originalBytes),
+            sourceRelativePath: "Materials/p.dwg",
+            stagedRelativePath: "\(project.id.uuidString.lowercased())/\(node.id.uuidString.lowercased())/p.dwg",
+            stagedContentHash: digest(draftBytes))
+        let descriptorJSON = try JSONEncoder().encode(descriptor)
+        let source = CanvasBackupPackage.CADDraftSource(
+            descriptor: descriptor, descriptorJSON: descriptorJSON,
+            drawingData: draftBytes)
+        let zip = try CanvasBackupPackage.make(
+            project: project,
+            childProjectData: { _ in nil },
+            materialData: { _ in originalBytes },
+            assetData: { _ in nil },
+            cadDraftSources: { [source] })
+        let restoredRoot = try tempRoot("cad-inmemory")
+        defer { try? FileManager.default.removeItem(at: restoredRoot) }
+        let restored = try CanvasBackupPackage.restore(data: zip, floeRoot: restoredRoot)
+        #expect(restored.restoredDraftNodeIDs == [node.id])
+
+        // A draft whose descriptor claims a different canvas is refused
+        // instead of being silently exported.
+        var foreignDescriptor = descriptor
+        foreignDescriptor.canvasID = UUID()
+        let foreignSource = CanvasBackupPackage.CADDraftSource(
+            descriptor: foreignDescriptor,
+            descriptorJSON: try JSONEncoder().encode(foreignDescriptor),
+            drawingData: draftBytes)
+        #expect(throws: CanvasBackupPackage.BackupError.self) {
+            _ = try CanvasBackupPackage.make(
+                project: project,
+                childProjectData: { _ in nil },
+                materialData: { _ in originalBytes },
+                assetData: { _ in nil },
+                cadDraftSources: { [foreignSource] })
+        }
+    }
+
+    @Test("manifest written before external node assets decodes with empty lists")
+    func legacyManifestDecodes() throws {
+        let canvasID = UUID()
+        let legacy = """
+        {"formatVersion":1,"canvasID":"\(canvasID.uuidString)","canvasName":"x",
+         "canvasSchemaVersion":7,"exportedAt":0,"canvasByteCount":0,"canvasSHA256":"",
+         "childProjects":[],"materials":[],"assets":[],
+         "missingChildProjects":[],"missingAssets":[]}
+        """
+        let manifest = try JSONDecoder().decode(
+            CanvasBackupPackage.Manifest.self, from: Data(legacy.utf8))
+        #expect(manifest.canvasID == canvasID)
+        #expect(manifest.externalNodeAssets.isEmpty)
+        #expect(manifest.missingExternalNodeAssets.isEmpty)
     }
 }
 

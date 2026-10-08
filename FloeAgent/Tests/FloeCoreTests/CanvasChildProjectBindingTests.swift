@@ -186,4 +186,31 @@ struct CanvasChildProjectBindingTests {
         #expect(failed.parentProjectID == pending.parentProjectID)
         #expect(reason == "disk full")
     }
+
+    @Test("migration markers round-trip their exported asset and stay fork-compatible")
+    func migrationMarkerRoundTrip() throws {
+        let rendered = CanvasAssetReference(
+            contentHash: "rendered", localRelativePath: "Materials/rendered.png",
+            mimeType: "image/png", byteCount: 42)
+        let pending = CanvasChildProjectPending(
+            parentProjectID: UUID(), sourceNodeID: UUID(),
+            renderedAsset: rendered, sourceAssetHash: "flatten", appliedRevision: 9)
+        let wrapper = PendingWrapper(status: "failed", pending: pending, reason: "disk full")
+        let raw = try #require(wrapper.json)
+        let decoded = try #require(
+            try? JSONDecoder().decode(PendingWrapper.self, from: Data(raw.utf8)))
+        #expect(decoded == wrapper)
+
+        // Fork markers written without the migration fields still decode and
+        // encode without inventing the new keys.
+        let forkPending = CanvasChildProjectPending(parentProjectID: UUID())
+        let forkRaw = try #require(
+            PendingWrapper(status: "pending", pending: forkPending, reason: nil).json)
+        #expect(!forkRaw.contains("renderedAsset"))
+        #expect(!forkRaw.contains("sourceAssetHash"))
+        #expect(!forkRaw.contains("appliedRevision"))
+        let decodedFork = try #require(
+            try? JSONDecoder().decode(PendingWrapper.self, from: Data(forkRaw.utf8)))
+        #expect(decodedFork == PendingWrapper(status: "pending", pending: forkPending, reason: nil))
+    }
 }

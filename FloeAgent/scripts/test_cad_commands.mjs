@@ -178,6 +178,41 @@ const edit = request => {
 }
 
 // ---------------------------------------------------------------------------
+// 4. DXF radius dimension and leader through the bundled engine
+//    (regression: the pinned DXF reader reconstructs a radius dimension's
+//    base definition point and a leader's DWG-only origin differently, so the
+//    engine mirrors those fields per format instead of gating the operations)
+// ---------------------------------------------------------------------------
+{
+  const source = new CadSession(fs.readFileSync(path.join(viewers, 'sample-editable.dwg')), 'dwg');
+  const dxfSession = new CadSession(source.display_dxf(), 'dxf');
+  const dxfEdit = req => {
+    try { return { summary: JSON.parse(dxfSession.edit(JSON.stringify(req))), error: null }; }
+    catch (error) { return { summary: null, error: String(error?.message ?? error) }; }
+  };
+  const radius = dxfEdit({ operation: 'addDimension', kind: 'radius', points: [[40, 30, 0], [52, 30, 0]], layer: '0' });
+  check('DXF radius dimension accepted before save', radius.error === null, String(radius.error));
+  const leader = dxfEdit({ operation: 'addLeader', points: [[60, 60, 0], [70, 70, 0], [80, 70, 0]], layer: '0' });
+  check('DXF leader accepted before save', leader.error === null, String(leader.error));
+  let saved = null;
+  try { saved = dxfSession.save(); } catch (error) { saved = null; }
+  check('DXF save with radius dimension and leader returns bytes', saved !== null && saved.length > 0, saved === null ? 'save threw' : '');
+  if (saved) {
+    const reopened = new CadSession(saved, 'dxf');
+    const rows = type => JSON.parse(reopened.query(JSON.stringify({ operation: 'entities', type }))).entities;
+    const radiusBody = rows('Dimension').find(row => row.image?.Dimension?.Radius)?.image?.Dimension?.Radius;
+    check('DXF radius measurement survives the round-trip',
+      Boolean(radiusBody) && Math.abs(radiusBody.base.actual_measurement - 12) < 1e-9,
+      JSON.stringify(radiusBody?.base?.actual_measurement));
+    const leaderRows = rows('Leader');
+    check('DXF leader vertices survive the round-trip',
+      leaderRows.length === 1 && leaderRows[0].image.Leader.vertices.length === 3
+        && Math.abs(leaderRows[0].image.Leader.vertices[0].x - 60) < 1e-9,
+      JSON.stringify(leaderRows.map(row => row.image.Leader.vertices.length)));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Verdict
 // ---------------------------------------------------------------------------
 console.log(`cad-commands: ${passes} passed, ${failures.length} failed`);

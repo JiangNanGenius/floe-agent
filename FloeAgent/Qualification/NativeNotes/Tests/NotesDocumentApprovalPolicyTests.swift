@@ -69,7 +69,7 @@ final class NotesDocumentApprovalPolicyTests: XCTestCase {
             executionConfined: true, networkPermitted: true
         )
         for name in [
-            "notes.read", "notes.search", "notes.attachFile", "notes.stageAttachment",
+            "notes.read", "notes.search", "notes.attachFile", "notes.stageAttachment", "notes.export",
             "workspace.readFile", "workspace.writeFile", "workspace.listDirectory",
             "document.pdf.inspect", "document.office.inspect", "image.ocr",
             "conversation.search", "conversation.read", "conversation.list",
@@ -148,5 +148,41 @@ final class NotesDocumentApprovalPolicyTests: XCTestCase {
             try await policy.decide(action("notes.read", scope: .host(UUID()))),
             "non-local scope never inherits the local document grant"
         )
+    }
+
+    /// Build265: propose/preview inherit the read grant; apply keeps the
+    /// UI-minted assistant ownership check; export inherits the read grant.
+    func testProposeAndExportInheritReadGrantWhileApplyKeepsOwnership() async throws {
+        let (store, root) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let conversationID = UUID()
+        let granted = try await store.create(NoteDocument(kind: .notebook, title: "只读授权"))
+        let stranger = try await store.create(NoteDocument(kind: .notebook, title: "未授权"))
+        try await store.grantAccess(conversationID: conversationID, documentID: granted.id, canEdit: false)
+        let policy = NotesDocumentApprovalPolicy(conversationID: conversationID, store: store)
+
+        let propose = #"{"documentID":"\#(granted.id.uuidString)","action":"propose","expectedRevision":\#(granted.revision),"title":"提案","operations":[{"action":"rename","text":"新"}]}"#
+        assertAllowed(try await policy.decide(action(NotesEditTool.name, argumentsJSON: propose)),
+                      "propose only validates and stores a pending proposal")
+
+        let preview = #"{"documentID":"\#(granted.id.uuidString)","action":"preview","proposalID":"\#(UUID().uuidString)"}"#
+        assertAllowed(try await policy.decide(action(NotesEditTool.name, argumentsJSON: preview)),
+                      "preview only reads the stored proposal")
+
+        let apply = #"{"documentID":"\#(granted.id.uuidString)","expectedRevision":\#(granted.revision),"title":"改","operations":[{"action":"rename","text":"新"}]}"#
+        let denied = try await policy.decide(action(NotesEditTool.name, argumentsJSON: apply))
+        guard case .deny = denied else {
+            return XCTFail("a picker read grant must not edit; got \(denied)")
+        }
+
+        let strangerPropose = #"{"documentID":"\#(stranger.id.uuidString)","action":"propose","expectedRevision":\#(stranger.revision),"title":"提案","operations":[{"action":"rename","text":"新"}]}"#
+        let strangerDenied = try await policy.decide(action(NotesEditTool.name, argumentsJSON: strangerPropose))
+        guard case .deny = strangerDenied else {
+            return XCTFail("propose without any grant must be denied; got \(strangerDenied)")
+        }
+
+        assertAllowed(try await policy.decide(action(NotesExportTool.name,
+                                                     argumentsJSON: #"{"documentID":"\#(granted.id.uuidString)","format":"pdf"}"#)),
+                      "export inherits the conversation read grant")
     }
 }

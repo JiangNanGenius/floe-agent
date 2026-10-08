@@ -70,11 +70,34 @@ struct ProviderEditorView: View {
                     .accessibilityIdentifier("action.cancel")
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("action.save") { save() }
+                Button { save() } label: {
+                    if viewModel.isSaving {
+                        // Visible in-flight state so repeated taps are
+                        // discouraged and the user sees the write running.
+                        ProgressView()
+                    } else {
+                        Text("action.save")
+                    }
+                }
                     .disabled(viewModel.isSaving)
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityIdentifier("action.save")
             }
+        }
+        // A save failure is shown immediately regardless of form scroll
+        // position (the inline section at the bottom could be off-screen).
+        // Only a Save-path error opens this alert; connection-test and
+        // discovery failures keep their inline context.
+        .alert(
+            "providers.save_failed",
+            isPresented: Binding(
+                get: { viewModel.saveErrorMessage != nil },
+                set: { presented in if !presented { viewModel.saveErrorMessage = nil } }
+            )
+        ) {
+            Button("providers.save_failed.ok", role: .cancel) {}
+        } message: {
+            Text(viewModel.saveErrorMessage ?? "")
         }
         .task { await viewModel.load() }
         .sheet(isPresented: $showModelPicker) {
@@ -272,8 +295,13 @@ struct ProviderEditorView: View {
         } header: {
             Text("providers.models_section")
         } footer: {
+            // The "not supported" footer is shown only when the endpoint
+            // genuinely lacks discovery; discovered endpoints get the neutral
+            // manual-add hint instead (model picker keeps both paths).
             if !viewModel.supportsDiscovery {
                 Text("providers.manual_fallback.hint")
+            } else {
+                Text("providers.manual_entry.hint")
             }
         }
     }

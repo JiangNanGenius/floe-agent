@@ -776,7 +776,7 @@ impl CadSession {
         let edit: Edit = serde_json::from_str(request).map_err(|e| e.to_string())?;
         let mut next = self.document.clone();
         let mut created = Vec::new();
-        Self::apply(&mut next, edit, 0, &mut created)?;
+        Self::apply(&mut next, edit, 0, &mut created, &self.format)?;
         if self.undo.len() == HISTORY {
             self.undo.remove(0);
         }
@@ -816,7 +816,7 @@ impl CadSession {
 impl CadSession {
     // ---------------------------------------------------------------- edits
 
-    fn apply(document: &mut CadDocument, edit: Edit, depth: usize, created: &mut Vec<String>) -> Result<(), String> {
+    fn apply(document: &mut CadDocument, edit: Edit, depth: usize, created: &mut Vec<String>, format: &str) -> Result<(), String> {
         match edit {
             Edit::AddLine { start, end, layer } => {
                 let mut e = Line::from_points(planar_vector(start)?, planar_vector(end)?);
@@ -998,7 +998,7 @@ impl CadSession {
                 Self::add(document, copy, created)?;
             }
             Edit::AddDimension { kind, points, layer, offset, rotation } => {
-                let mut entity = build_dimension(&kind, &points, offset, rotation)?;
+                let mut entity = build_dimension(&kind, &points, offset, rotation, format)?;
                 entity.as_entity_mut().set_layer(layer.clone());
                 Self::add(document, entity, created)?;
             }
@@ -1008,9 +1008,16 @@ impl CadSession {
                 }
                 let vertices: Vec<Vector3> = points.iter().map(|p| planar_vector(*p)).collect::<Result<Vec<_>, _>>()?;
                 let mut leader = Leader::from_vertices(vertices.clone());
-                // The writer/reader round-trips the leader origin as the first
-                // vertex; keep the in-memory value consistent with that.
-                leader.origin = vertices[0];
+                // DWG stores a dedicated origin: the pinned writer substitutes
+                // the first vertex when the field is zero and the DWG reader
+                // restores the stored point, so mirror the first vertex here.
+                // DXF has no origin field and the pinned DXF reader leaves
+                // `Leader::new()`'s zero; keeping that zero is what the strict
+                // save gate re-reads, and the first vertex always remains the
+                // semantic arrow/origin point of the path.
+                if format != "dxf" {
+                    leader.origin = vertices[0];
+                }
                 leader.common.layer = layer;
                 Self::add(document, EntityType::Leader(leader), created)?;
             }
@@ -1126,7 +1133,7 @@ impl CadSession {
                     return Err("CAD batches cannot contain addStroke or nested batches".into());
                 }
                 for operation in operations {
-                    Self::apply(document, operation, depth + 1, created)?;
+                    Self::apply(document, operation, depth + 1, created, format)?;
                 }
             }
         }
@@ -2046,7 +2053,7 @@ fn offset_entity(source: &EntityType, distance: f64, side: P) -> Result<EntityTy
     }
 }
 
-fn build_dimension(kind: &str, points: &[[f64; 3]], offset: Option<f64>, rotation: Option<f64>) -> Result<EntityType, String> {
+fn build_dimension(kind: &str, points: &[[f64; 3]], offset: Option<f64>, rotation: Option<f64>, format: &str) -> Result<EntityType, String> {
     let p: Vec<Vector3> = points.iter().map(|v| planar_vector(*v)).collect::<Result<_, _>>()?;
     let offset_value = match offset {
         Some(value) if value.is_finite() && value.abs() <= 1e12 => Some(value),
@@ -2081,12 +2088,21 @@ fn build_dimension(kind: &str, points: &[[f64; 3]], offset: Option<f64>, rotatio
         ("radius" | "diameter", _) => return Err("CAD radial dimension needs two points".into()),
         _ => return Err(format!("Unsupported CAD dimension kind '{kind}'")),
     };
-    // The writer persists the subtype's own definition point as the base
-    // definition point, and the reader restores it into both. Keep the
-    // in-memory base consistent so the round-trip gate stays strict.
-    let definition = dimension_definition_point(&dimension);
-    if let Some(base) = dimension_base_mut(&mut dimension) {
-        base.definition_point = definition;
+    // The DWG writer persists the subtype's own definition point through the
+    // common dimension data and the DWG reader restores it into both the
+    // subtype and the base. The DXF reader calls `set_definition_point` for
+    // the group-10 point for every kind except Radius, whose group 10 is the
+    // centre, not the chord (`section_reader.rs`), and the DXF writer never
+    // persists the base field separately. Mirror the subtype definition point
+    // into the base only where the same-format reader reconstructs it, so the
+    // strict round-trip gate compares equal values instead of the reader's
+    // default.
+    let dxf_radius = format == "dxf" && matches!(dimension, Dimension::Radius(_));
+    if !dxf_radius {
+        let definition = dimension_definition_point(&dimension);
+        if let Some(base) = dimension_base_mut(&mut dimension) {
+            base.definition_point = definition;
+        }
     }
     Ok(EntityType::Dimension(dimension))
 }

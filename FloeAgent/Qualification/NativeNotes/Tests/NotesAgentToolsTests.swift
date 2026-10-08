@@ -668,6 +668,112 @@ final class NotesAgentToolsTests: XCTestCase {
         XCTAssertThrowsError(try tool.validate(try arguments(#"[{"action":"updateOfficeText","fieldID":"\#(field)","text":"x"}]"#, sha: "nothex")))
     }
 
+    // MARK: - Build265: exact search offsets, capabilities, propose contract
+
+    /// The agent hit carries the same UTF-16 range the library tap uses, via
+    /// the shared NoteTextSearch helper.
+    func testSearchHitsCarryExactOffsetsAndElementIdentity() throws {
+        var document = NoteDocument(kind: .notebook, title: "定位")
+        let element = NoteElement(frame: NoteRect(x: 40, y: 700, width: 600, height: 120),
+                                  text: "前文 🙂机会成本 与 opportunity cost")
+        document.pages[0].elements = [element]
+
+        let hits = NotesSearchTool.hits(in: document, query: "机会成本", limit: 50)
+        let hit = try XCTUnwrap(hits.first)
+        XCTAssertEqual(hit.documentID, document.id)
+        XCTAssertEqual(hit.pageID, document.pages[0].id)
+        XCTAssertEqual(hit.elementID, element.id)
+        XCTAssertEqual(hit.sourceKind, "annotation")
+        XCTAssertEqual(hit.matchSource, "elementText")
+        XCTAssertEqual(hit.matchOffset, (element.text as NSString).range(of: "机会成本").location)
+        XCTAssertEqual(hit.matchLength, 4)
+
+        let english = try XCTUnwrap(NotesSearchTool.hits(in: document, query: "OPPORTUNITY", limit: 50).first)
+        XCTAssertEqual(english.elementID, element.id)
+        XCTAssertEqual(english.matchOffset, (element.text as NSString).range(of: "opportunity").location)
+        XCTAssertEqual(english.matchLength, 11)
+    }
+
+    /// The advertised read sections and edit actions come from the same
+    /// capability matrix that `notes.read section=capabilities` reports.
+    func testCapabilityMatrixMatchesPublishedToolSchemas() throws {
+        let readSchema = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(NotesReadTool.parametersJSON.utf8)) as? [String: Any])
+        let readProperties = try XCTUnwrap(readSchema["properties"] as? [String: Any])
+        let sectionSchema = try XCTUnwrap(readProperties["section"] as? [String: Any])
+        let sectionEnum = try XCTUnwrap(sectionSchema["enum"] as? [String])
+        XCTAssertEqual(Set(sectionEnum), Set(NoteCapabilityMatrix.readSections))
+
+        let editSchema = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(NotesEditTool.parametersJSON.utf8)) as? [String: Any])
+        let editProperties = try XCTUnwrap(editSchema["properties"] as? [String: Any])
+        let operationsSchema = try XCTUnwrap(editProperties["operations"] as? [String: Any])
+        let operationItems = try XCTUnwrap(operationsSchema["items"] as? [String: Any])
+        let operationProperties = try XCTUnwrap(operationItems["properties"] as? [String: Any])
+        let actionSchema = try XCTUnwrap(operationProperties["action"] as? [String: Any])
+        let actionEnum = try XCTUnwrap(actionSchema["enum"] as? [String])
+        XCTAssertEqual(Set(actionEnum), Set(NoteCapabilityMatrix.editActions))
+
+        let topActionSchema = try XCTUnwrap(editProperties["action"] as? [String: Any])
+        XCTAssertEqual(Set(try XCTUnwrap(topActionSchema["enum"] as? [String])), Set(NoteCapabilityMatrix.editToolActions))
+
+        let snapshot = NoteCapabilityMatrix.snapshot()
+        XCTAssertTrue(snapshot.capabilities.contains { $0.tool == "notes.export" && $0.tier == .implemented })
+        XCTAssertTrue(snapshot.capabilities.contains { $0.id == "pdfOriginalTextEdit" && $0.tier == .unavailable && $0.tool == nil })
+        let encoded = try JSONEncoder().encode(snapshot)
+        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: encoded))
+    }
+
+    /// propose validates against an in-memory copy (no store mutation) and
+    /// rejects the Office byte-rewrite action it cannot preview.
+    func testProposeValidatesWithoutStoreAndRejectsOfficeRewrite() throws {
+        let tool = NotesEditTool()
+        func arguments(_ operations: String, action: String = "propose") throws -> NotesEditTool.Arguments {
+            let json = #"{"documentID":"\#(UUID().uuidString)","action":"\#(action)","expectedRevision":1,"title":"提案","operations":\#(operations)}"#
+            return try JSONDecoder().decode(NotesEditTool.Arguments.self, from: Data(json.utf8))
+        }
+        let pageID = UUID()
+        XCTAssertNoThrow(try tool.validate(try arguments(#"[{"action":"addText","pageID":"\#(pageID.uuidString)","text":"新段落"}]"#)))
+        XCTAssertThrowsError(try tool.validate(try arguments(#"[{"action":"updateOfficeText","fieldID":"a|p|1","text":"x"}]"#)))
+        // preview/applyProposal argument gates.
+        var preview = try arguments(#"[{"action":"rename","text":"x"}]"#)
+        preview.proposalID = UUID()
+        preview.action = "preview"
+        XCTAssertNoThrow(try tool.validate(preview))
+        preview.action = "applyProposal"
+        preview.grantID = nil
+        XCTAssertThrowsError(try tool.validate(preview))
+        preview.grantID = "grant"
+        XCTAssertNoThrow(try tool.validate(preview))
+    }
+
+    /// buildEdits is the single construction path shared by apply and propose.
+    func testBuildEditsNormalizesReplaceMapAndRejectsUnknownActions() throws {
+        var document = NoteDocument(kind: .mindMap, title: "导图")
+        let rootID = document.nodes[0].id
+        let child = MindMapNode(parentID: rootID, title: "子")
+        var operation = NotesEditTool.Operation(action: "replaceMap")
+        operation.nodes = [document.nodes[0], child]
+        operation.connections = []
+        operation.summaries = []
+        operation.direction = 0
+        let edits = try NotesEditTool.buildEdits([operation], in: &document)
+        XCTAssertEqual(edits.count, 2)
+        XCTAssertEqual(document.nodes.count, 2)
+        XCTAssertThrowsError(try NotesEditTool.buildEdits([NotesEditTool.Operation(action: "nope")], in: &document))
+    }
+
+    /// Follow-up: fingerprint wording states the JSON scope and CAS-pinned
+    /// resources; no claim covers referenced resource bytes.
+    func testEditToolDescriptionNarrowsFingerprintClaims() {
+        let description = NotesEditTool.toolDescription
+        XCTAssertTrue(description.contains("document JSON SHA-256"), description)
+        XCTAssertTrue(description.contains("CAS-pinned separately"), description)
+        XCTAssertTrue(description.contains("originating task"), description)
+        XCTAssertFalse(description.contains("binds documentID + expectedRevision + document SHA-256 and stores"),
+                       "the old unqualified fingerprint claim must be gone")
+    }
+
     // MARK: - helpers
 
     /// `XCTAssertThrowsError` cannot wrap an `async` call, so await inside a

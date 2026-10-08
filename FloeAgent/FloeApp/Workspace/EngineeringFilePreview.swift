@@ -3,7 +3,26 @@
 import SwiftUI
 import WebKit
 import FloeWorkspace
+import FloeWorkbench
 import FloeCore
+
+/// Exact staged-document identity for a Canvas CAD drawing under edit. When
+/// a review capture carries this, the Drawing Assistant binds its durable
+/// conversation and its proposals to THIS staged draft (canvas draft root +
+/// staged path, owned by the canvas project) — never to the global workspace
+/// or whichever task happens to be selected. The canvas node itself only
+/// changes when the user explicitly Finishes; assistant proposals therefore
+/// remain draft edits on the staged copy until then.
+struct CanvasStagedReviewDocument: Equatable {
+    /// Canvas project id: namespace of the durable assistant-conversation
+    /// binding and the CAD document owner id.
+    var canvasID: UUID
+    /// App-owned canvas draft root (becomes `CadDocumentAccess.workspacePath`).
+    var draftRootPath: String
+    /// Staged editable copy path, relative to the draft root (the document
+    /// id the CAD center resolves).
+    var stagedRelativePath: String
+}
 
 struct EngineeringReviewCapture: Identifiable {
     let id = UUID()
@@ -13,6 +32,9 @@ struct EngineeringReviewCapture: Identifiable {
     /// the Drawing Assistant can bind proposals to the exact document.
     var documentID: String? = nil
     var workspaceRoot: URL? = nil
+    /// Set for Canvas CAD staged drafts; takes precedence over the workspace
+    /// identity above for assistant binding and ownership.
+    var canvasStagedDocument: CanvasStagedReviewDocument? = nil
 }
 
 /// Durable binding between one canonical drawing document (workspace id +
@@ -72,6 +94,26 @@ final class DrawingAssistantConversationStore: @unchecked Sendable {
         return UUID(uuidString: raw)
     }
 
+    /// Reverse lookup for the runtime tool context: the staged document
+    /// whose assistant conversation is `conversationID`. Deterministic when
+    /// several bindings exist (sorted keys). This is the ONLY authority for
+    /// seeding `ToolContext.canvasStagedDocument`; model output never is.
+    func stagedDocument(conversationID: UUID) -> CanvasStagedReviewDocument? {
+        lock.lock(); defer { lock.unlock() }
+        loadLocked()
+        let target = conversationID.uuidString
+        for key in bindings.keys.sorted() where bindings[key] == target {
+            guard let separator = key.firstIndex(of: "|") else { continue }
+            guard let canvasID = UUID(uuidString: String(key[..<separator])) else { continue }
+            let stagedRelativePath = String(key[key.index(after: separator)...])
+            guard !stagedRelativePath.isEmpty else { continue }
+            return CanvasStagedReviewDocument(canvasID: canvasID,
+                                              draftRootPath: "",
+                                              stagedRelativePath: stagedRelativePath)
+        }
+        return nil
+    }
+
     /// Persists the newest mapping. The mutation AND the write are serialized
     /// together (writeQueue, re-entrant via lock ordering), so two rapid binds
     /// keep the latest value on disk and a write failure is thrown, never
@@ -93,7 +135,20 @@ final class DrawingAssistantConversationStore: @unchecked Sendable {
 /// Persists Drawing Assistant proposal decisions durably (append-only)
 /// so an enqueue failure or a crash right after apply/discard can never
 /// lose the user's decision; delivery is retried until acknowledged.
+///
+/// A decision is written in two phases. `intent` is recorded BEFORE the
+/// proposal is sent to the engine, so a crash between commit and notify leaves
+/// a recoverable record. `committed` carries the receipt (revision + sha256)
+/// and is written as soon as the center returns it. Recovery can therefore
+/// rebuild the delivered event from the committed receipt
+/// (`CadAppliedReceiptJournal`) instead of claiming delivery from a window that
+/// was never covered.
 final class DrawingAssistantDecisionStore: @unchecked Sendable {
+    enum Phase: String, Codable, Sendable {
+        case intent
+        case committed
+    }
+
     struct Decision: Codable, Sendable {
         var id: String
         var conversationID: UUID
@@ -103,6 +158,36 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
         var sha256: String?
         var recordedAt: Date
         var delivered: Bool
+        var phase: Phase
+
+        // Persisted files from earlier builds have no `phase`; an old record
+        // is a committed decision (its receipt fields were written with it).
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            conversationID = try container.decode(UUID.self, forKey: .conversationID)
+            proposalID = try container.decode(UUID.self, forKey: .proposalID)
+            decision = try container.decode(String.self, forKey: .decision)
+            revision = try container.decodeIfPresent(Int64.self, forKey: .revision)
+            sha256 = try container.decodeIfPresent(String.self, forKey: .sha256)
+            recordedAt = try container.decode(Date.self, forKey: .recordedAt)
+            delivered = try container.decode(Bool.self, forKey: .delivered)
+            phase = try container.decodeIfPresent(Phase.self, forKey: .phase) ?? .committed
+        }
+
+        init(id: String, conversationID: UUID, proposalID: UUID, decision: String,
+             revision: Int64?, sha256: String?, recordedAt: Date, delivered: Bool,
+             phase: Phase) {
+            self.id = id
+            self.conversationID = conversationID
+            self.proposalID = proposalID
+            self.decision = decision
+            self.revision = revision
+            self.sha256 = sha256
+            self.recordedAt = recordedAt
+            self.delivered = delivered
+            self.phase = phase
+        }
     }
 
     /// Write/persistence failure is shared by the local stores; callers
@@ -143,14 +228,18 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
 
         /// Records the decision BEFORE any delivery attempt. Mutation and
         /// write are serialized together; a write failure throws so callers
-        /// never claim durability that did not happen.
+        /// never claim durability that did not happen. `phase` defaults to
+        /// `committed` for the discard/reject path, which has no mutation
+        /// window; an apply records `.intent` first and upgrades the SAME
+        /// record to `.committed` with the receipt after the center returns it.
         func record(conversationID: UUID, proposalID: UUID, decision: String,
-                    revision: Int64?, sha256: String?) throws -> Decision {
+                    revision: Int64?, sha256: String?, phase: Phase = .committed) throws -> Decision {
             guard isDurable else { throw StoreFailure() }
             let entry = Decision(
                 id: "\(conversationID.uuidString)|\(proposalID.uuidString)|\(decision)",
                 conversationID: conversationID, proposalID: proposalID, decision: decision,
-                revision: revision, sha256: sha256, recordedAt: Date(), delivered: false)
+                revision: revision, sha256: sha256, recordedAt: Date(), delivered: false,
+                phase: phase)
             let url = fileURL
             try writeQueue.sync {
                 lock.lock(); defer { lock.unlock() }
@@ -160,6 +249,50 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
                 try Self.persist(decisions, to: url)
             }
             return entry
+        }
+
+        /// Upgrades an intent record to its committed receipt (same id, so the
+        /// write replaces the intent line) and returns the durable record.
+        /// Throws on a persistence failure so the caller can report that the
+        /// receipt was not durably recorded.
+        @discardableResult
+        func markCommitted(id: String, revision: Int64?, sha256: String?) throws -> Decision? {
+            guard isDurable else { throw StoreFailure() }
+            let url = fileURL
+            return try writeQueue.sync {
+                lock.lock(); defer { lock.unlock() }
+                loadLocked()
+                guard let index = decisions.firstIndex(where: { $0.id == id }) else { return nil }
+                decisions[index].phase = .committed
+                decisions[index].revision = revision ?? decisions[index].revision
+                decisions[index].sha256 = sha256 ?? decisions[index].sha256
+                decisions[index].recordedAt = Date()
+                let updated = decisions[index]
+                try Self.persist(decisions, to: url)
+                return updated
+            }
+        }
+
+        /// Records the receipt recovered from the committed journal for an
+        /// intent whose `.committed` upgrade never reached disk (crash between
+        /// commit and notify). No-op when the record is unknown.
+        @discardableResult
+        func recoverCommit(id: String, receiptRevision: Int64?, sha256: String?) throws -> Decision? {
+            guard isDurable else { throw StoreFailure() }
+            let url = fileURL
+            return try writeQueue.sync {
+                lock.lock(); defer { lock.unlock() }
+                loadLocked()
+                guard let index = decisions.firstIndex(where: { $0.id == id }) else { return nil }
+                if decisions[index].phase == .intent {
+                    decisions[index].phase = .committed
+                    decisions[index].revision = receiptRevision ?? decisions[index].revision
+                    decisions[index].sha256 = sha256 ?? decisions[index].sha256
+                }
+                let updated = decisions[index]
+                try Self.persist(decisions, to: url)
+                return updated
+            }
         }
 
         private static func persist(_ decisions: [Decision], to url: URL) throws {
@@ -193,15 +326,252 @@ final class DrawingAssistantDecisionStore: @unchecked Sendable {
         }
     }
 
-/// Owns the single WKWebView used by an engineering preview. The same web
-/// view is re-parented between the embedded preview and the fullscreen
-/// presentation, so an unsaved CAD editing session (JS state, undo history,
-/// camera, ink readiness) survives the transition instead of reloading from
-/// disk. The reload generation lives HERE (not in any view instance), so two
-/// different EngineeringFilePreview instances attaching the same session can
-/// never tear each other down; only an explicit `retry()` reloads the page.
+/// Write-ahead record of a CAD proposal apply, keyed by proposal id. The
+/// decision intent is persisted before the engine mutates; this journal is
+/// prepared with the EXPECTED resulting SHA *before* the file commit and
+/// completed with the receipt after it. A crash between the disk write and the
+/// decision upgrade is reconciled by comparing the current file SHA with the
+/// prepared SHA: only the exact expected bytes reconstruct an "applied"
+/// receipt. A missing completion is therefore recoverable, never a silently
+/// lost event. Writes are atomic; a failed prepare refuses the commit.
+final class CadAppliedReceiptJournal: @unchecked Sendable {
+    struct Entry: Codable, Sendable {
+        var proposalID: UUID
+        var expectedSHA256: String
+        var pendingReceipt: CadDocumentReceipt
+        var completedReceipt: CadDocumentReceipt?
+        var preparedAt: Date
+    }
+
+    static let shared = CadAppliedReceiptJournal()
+
+    private let lock = NSLock()
+    private let writeQueue = DispatchQueue(label: "floe.drawing-assistant.receipts")
+    private let fileURL: URL
+    private var loaded = false
+    private var entries: [String: Entry] = [:]
+    private var testWriteFailure = false
+    private let maximumEntries = 200
+
+    private init() {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?.appendingPathComponent("FloeAgent/DrawingAssistant", isDirectory: true)
+        if let root {
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            fileURL = root.appendingPathComponent("applied-receipts.json")
+        } else {
+            fileURL = URL(fileURLWithPath: "/dev/null")
+        }
+    }
+
+    var isDurable: Bool { fileURL.path != "/dev/null" }
+
+    private func loadLocked() {
+        guard !loaded else { return }
+        loaded = true
+        guard isDurable, let data = try? Data(contentsOf: fileURL),
+              let decoded = try? JSONDecoder().decode([String: Entry].self, from: data) else { return }
+        entries = decoded
+    }
+
+    /// Records the expected result BEFORE the file commit. Throws when the
+    /// durable write fails: the caller must then refuse to commit, because an
+    /// interrupted commit would otherwise be unrecoverable. The in-memory map
+    /// is only swapped after the write succeeds, so a failed write never
+    /// pretends the record was persisted.
+    func prepare(proposalID: UUID, expectedSHA256: String, pendingReceipt: CadDocumentReceipt) throws {
+        let url = fileURL
+        try writeQueue.sync {
+            lock.lock(); defer { lock.unlock() }
+            loadLocked()
+            var staged = entries
+            staged[proposalID.uuidString] = Entry(proposalID: proposalID,
+                                                  expectedSHA256: expectedSHA256.lowercased(),
+                                                  pendingReceipt: pendingReceipt,
+                                                  completedReceipt: nil,
+                                                  preparedAt: Date())
+            if staged.count > maximumEntries {
+                let ordered = staged.sorted { $0.value.preparedAt > $1.value.preparedAt }
+                staged = Dictionary(uniqueKeysWithValues: ordered.prefix(maximumEntries).map { ($0.key, $0.value) })
+            }
+            guard isDurable else { throw StoreFailure() }
+            if testWriteFailure { throw StoreFailure() }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(staged)
+            try data.write(to: url, options: .atomic)
+            entries = staged
+        }
+    }
+
+    /// Attaches the committed receipt. A failure leaves the prepared entry,
+    /// which reconciliation can still validate against the file SHA.
+    func complete(proposalID: UUID, receipt: CadDocumentReceipt) throws {
+        let url = fileURL
+        try writeQueue.sync {
+            lock.lock(); defer { lock.unlock() }
+            loadLocked()
+            guard isDurable else { throw StoreFailure() }
+            guard var entry = entries[proposalID.uuidString] else { return }
+            entry.completedReceipt = receipt
+            var staged = entries
+            staged[proposalID.uuidString] = entry
+            if testWriteFailure { throw StoreFailure() }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(staged)
+            try data.write(to: url, options: .atomic)
+            entries = staged
+        }
+    }
+
+    /// Test-only failure seam for the durable write.
+    func setTestWriteFailure(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        testWriteFailure = value
+    }
+
+    func entry(proposalID: UUID) -> Entry? {
+        lock.lock(); defer { lock.unlock() }
+        loadLocked()
+        return entries[proposalID.uuidString]
+    }
+
+    struct StoreFailure: Error, LocalizedError {
+        var errorDescription: String? { "无法持久化图纸应用回执。" }
+    }
+}
+
+/// Central registry of live (on-screen) CAD editor drafts, keyed by canonical
+/// root + relative path. The visible editor registers its session while the
+/// page is mounted; the mutation authority (`CadDocumentCenter`) consults this
+/// before ANY apply/save so a model-confirmed write can never commit over an
+/// unsaved manual draft held in the open viewer — for UI and tool callers
+/// alike.
+///
+/// A mutation takes a *lease*: it refuses to start while the viewer is dirty,
+/// suspends viewer interaction for the duration of the engine transaction, and
+/// re-validates the draft revision immediately before the file commit. An edit
+/// that landed while the engine transaction was awaiting (possible even with
+/// interaction off, e.g. a queued JS event) therefore aborts the commit and
+/// the engine draft is rolled back — the user's draft is preserved instead of
+/// being overwritten or silently merged. The reference is weak: a closed or
+/// released session cannot block later edits.
 @MainActor
-final class EngineeringWebSession: ObservableObject {
+final class CadLiveDraftRegistry {
+    static let shared = CadLiveDraftRegistry()
+
+    enum LiveDraftError: LocalizedError {
+        case dirty
+
+        var errorDescription: String? {
+            "The open drawing has unsaved manual edits, so the confirmed change was not applied; "
+                + "the draft is preserved. Save or discard those edits first, then retry."
+        }
+    }
+
+    enum LeaseValidation: Equatable {
+        case clean
+        case dirty
+        case baselineChanged
+        case sessionGone
+    }
+
+    struct Lease {
+        let key: String
+        let baselineSHA: String?
+    }
+
+    private struct Entry {
+        weak var session: EngineeringWebSession?
+        /// Document-level suspension: set by a lease and kept while a viewer is
+        /// replaced, so a session that registers mid-transaction starts
+        /// suspended and cannot slip a dirty draft past the commit boundary.
+        var suspended: Bool
+    }
+    private var entries: [String: Entry] = [:]
+
+    static func key(rootPath: String?, relativePath: String) -> String {
+        let root = rootPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } ?? ""
+        return "\(root)|\(relativePath)"
+    }
+
+    func register(key: String, session: EngineeringWebSession) {
+        let suspended = entries[key]?.suspended ?? false
+        entries[key] = Entry(session: session, suspended: suspended)
+        if suspended { session.web?.isUserInteractionEnabled = false }
+    }
+
+    func unregister(key: String, session: EngineeringWebSession) {
+        guard entries[key]?.session === session else { return }
+        // Keep the document-level suspension flag: a replacement viewer must
+        // stay suspended until the lease ends.
+        entries[key] = Entry(session: nil, suspended: entries[key]?.suspended ?? false)
+    }
+
+    /// Whether a live viewer for this document currently holds unsaved manual
+    /// edits. `.none` means no live viewer is registered (no draft to protect).
+    func liveDraftDirty(rootPath: String?, relativePath: String) -> Bool? {
+        guard let session = entries[Self.key(rootPath: rootPath, relativePath: relativePath)]?.session else {
+            return nil
+        }
+        return session.isCADDirty
+    }
+
+    /// Takes a mutation lease for the document, or throws `.dirty` when the
+    /// registered viewer already has unsaved edits. The suspension is
+    /// document-level: it is recorded even when no viewer is open yet, so a
+    /// viewer that registers while the transaction runs starts suspended.
+    func beginLease(rootPath: String?, relativePath: String) throws -> Lease {
+        let key = Self.key(rootPath: rootPath, relativePath: relativePath)
+        var entry = entries[key] ?? Entry(session: nil, suspended: false)
+        if let session = entry.session, session.isCADDirty { throw LiveDraftError.dirty }
+        entry.suspended = true
+        entries[key] = entry
+        entry.session?.web?.isUserInteractionEnabled = false
+        return Lease(key: key, baselineSHA: entry.session?.coordinator?.baselineSHA)
+    }
+
+    /// Re-validates the CURRENT viewer at the final commit boundary (a viewer
+    /// replaced during the transaction is checked too, not bypassed).
+    func validateLease(_ lease: Lease) -> LeaseValidation {
+        guard let entry = entries[lease.key], entry.suspended else { return .sessionGone }
+        guard let session = entry.session else { return .sessionGone }
+        if session.isCADDirty { return .dirty }
+        if session.coordinator?.baselineSHA != lease.baselineSHA { return .baselineChanged }
+        return .clean
+    }
+
+    /// Ends the document lease and restores interaction on whichever session
+    /// currently owns the document.
+    func endLease(_ lease: Lease?) {
+        guard let lease, var entry = entries[lease.key], entry.suspended else { return }
+        entry.suspended = false
+        entries[lease.key] = entry
+        entry.session?.web?.isUserInteractionEnabled = true
+    }
+}
+
+    /// Owns the single WKWebView used by an engineering preview. The same web
+    /// view is re-parented between the embedded preview and the fullscreen
+    /// presentation, so an unsaved CAD editing session (JS state, undo history,
+    /// camera, ink readiness) survives the transition instead of reloading from
+    /// disk. The reload generation lives HERE (not in any view instance), so two
+    /// different EngineeringFilePreview instances attaching the same session can
+    /// never tear each other down; only an explicit `retry()` reloads the page.
+    ///
+    /// Presentation ownership is arbitrated here too. During an embedded ↔
+    /// fullscreen transition UIKit keeps BOTH `EngineeringContainerView`s in the
+    /// window for a moment. If each container adopted the web view from its
+    /// `layoutSubviews`, they would ping-pong (`removeFromSuperview` +
+    /// `addSubview`) and each move invalidates the other's layout, spinning the
+    /// main thread forever. Exactly one container may host the web view:
+    /// ownership is claimed only when a container explicitly enters a window
+    /// (the newest appearance wins) and is released when the owning container
+    /// leaves it. `layoutSubviews` may position the web view only while this
+    /// session still names that container as the host; it never steals it back.
+    @MainActor
+    final class EngineeringWebSession: ObservableObject {
     /// Identity of the currently loaded page; nil while no page is loaded.
     private(set) var generation: UUID?
     /// Full identity of the document the current page was loaded from
@@ -211,11 +581,41 @@ final class EngineeringWebSession: ObservableObject {
     private(set) var loadedCanEdit = false
     /// Set by `retry()`: the next attach rebuilds the web view.
     private var pendingRebuild = false
+    /// Canonical key this session registered with `CadLiveDraftRegistry`, so a
+    /// teardown/document switch removes exactly its own entry.
+    private var registeredDraftKey: String?
     private(set) var web: WKWebView?
     private(set) var coordinator: EngineeringWebView.Coordinator?
     private(set) var server: LocalPreviewServer?
     private(set) var startup: Task<Void, Never>?
     private(set) var watchdog: Task<Void, Never>?
+    /// The one container currently allowed to host the shared web view. Weak,
+    /// so a host that is deallocated without leaving its window cannot block a
+    /// later host from claiming.
+    private(set) weak var presentationHost: EngineeringWebView.EngineeringContainerView?
+
+    /// Claims presentation ownership for `host`. Only a container that is
+    /// entering (or already in) a window may claim; a live newer appearance
+    /// (the fullscreen cover mounting or the embedded view returning on
+    /// dismissal) takes over from the older host, which then stops touching the
+    /// web view. `window` is the window being entered: during
+    /// `willMove(toWindow:)` the view's own `.window` still reports the OLD
+    /// window, so the caller must pass the incoming one. Call only from view
+    /// lifecycle events, never from a layout pass that may race another
+    /// container.
+    @discardableResult
+    func claimPresentationHost(_ host: EngineeringWebView.EngineeringContainerView,
+                               in window: UIWindow?) -> Bool {
+        guard window != nil else { return false }
+        presentationHost = host
+        return true
+    }
+
+    /// Releases ownership only if `host` still holds it. A stale leaving host
+    /// must not clear a newer host's ownership.
+    func releasePresentationHost(_ host: EngineeringWebView.EngineeringContainerView) {
+        if presentationHost === host { presentationHost = nil }
+    }
 
     /// Explicit user retry: tear down now so the next attach reloads.
     func retry() {
@@ -262,6 +662,7 @@ final class EngineeringWebSession: ObservableObject {
         generation = UUID()
         loadedDocumentKey = key
         loadedCanEdit = canEdit
+        registerLiveDraft(key: key)
         let coordinator = EngineeringWebView.Coordinator(package: package, error: error,
                                                          onReview: onReview, onSave: onSave,
                                                          onDirty: onDirty)
@@ -342,6 +743,28 @@ final class EngineeringWebSession: ObservableObject {
         }
     }
 
+    /// Deterministic draft serialization for external owners (Canvas): runs
+    /// the page's exact save handler through `window.floeCadRequestSave` (the
+    /// same handler bound to the visible save control) and waits for the
+    /// native save receipt — `dirty` clears only after `onSave` succeeds.
+    /// Bounded, and independent of panel visibility or button lifecycle.
+    /// Returns true when nothing needed saving or the durable save completed.
+    @MainActor
+    func requestSave(timeout: Duration = .seconds(8)) async -> Bool {
+        if !isCADDirty { return true }
+        guard coordinator != nil, let web else { return false }
+        let invoked = (try? await web.evaluateJavaScript(
+            "(typeof window.floeCadRequestSave === 'function') ? window.floeCadRequestSave() : false;"
+        )) as? Bool ?? false
+        guard invoked else { return false }
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while isCADDirty, ContinuousClock.now < deadline {
+            if Task.isCancelled { break }
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+        return !isCADDirty
+    }
+
     /// Highlights and centers an entity handle in the live viewer session.
     func locateCADHandle(_ handle: String) {        guard let encoded = Self.javaScriptString(handle) else { return }
         web?.evaluateJavaScript("window.floeCadLocate && window.floeCadLocate(\(encoded));",
@@ -372,6 +795,10 @@ final class EngineeringWebSession: ObservableObject {
     /// Full teardown only when the session itself goes away (or an explicit
     /// retry asks for a rebuild). View instances never trigger this.
     func tearDown() {
+        if let registeredDraftKey {
+            CadLiveDraftRegistry.shared.unregister(key: registeredDraftKey, session: self)
+            self.registeredDraftKey = nil
+        }
         startup?.cancel(); watchdog?.cancel()
         server?.stop(); server = nil
         web?.stopLoading(); web?.navigationDelegate = nil
@@ -380,6 +807,32 @@ final class EngineeringWebSession: ObservableObject {
         loadedDocumentKey = nil
         loadedCanEdit = false
         startup = nil; watchdog = nil
+        presentationHost = nil
+    }
+
+    /// Registers the live session with the central draft registry under the
+    /// canonical document key (standardized root + relative path), so
+    /// `CadDocumentCenter` can refuse a tool/UI apply or save while this
+    /// viewer holds unsaved manual edits.
+    private func registerLiveDraft(key: String) {
+        let canonical = Self.canonicalDraftKey(key)
+        if registeredDraftKey != canonical, let previous = registeredDraftKey {
+            CadLiveDraftRegistry.shared.unregister(key: previous, session: self)
+        }
+        registeredDraftKey = canonical
+        CadLiveDraftRegistry.shared.register(key: canonical, session: self)
+    }
+
+    /// Turns a `root|relative` or bare identity into the registry's canonical
+    /// key (standardized root). A bare name has no root and therefore no
+    /// document binding; the center never queries it.
+    static func canonicalDraftKey(_ key: String) -> String {
+        guard let separator = key.firstIndex(of: "|") else {
+            return CadLiveDraftRegistry.key(rootPath: nil, relativePath: key)
+        }
+        let root = String(key[..<separator])
+        let relative = String(key[key.index(after: separator)...])
+        return CadLiveDraftRegistry.key(rootPath: root, relativePath: relative)
     }
 }
 
@@ -466,17 +919,48 @@ struct EngineeringWebView: UIViewRepresentable {
     /// Intentionally does NOT dismantle the session: the same web view is
     /// re-adopted by whichever container is on screen, and the session is
     /// released (and torn down) by its owner when the preview truly goes away.
-    static func dismantleUIView(_ container: EngineeringContainerView, coordinator: Coordinator) {}
+    /// The leaving container only gives up presentation ownership; it never
+    /// clears a newer host's ownership or tears down the shared web view.
+    static func dismantleUIView(_ container: EngineeringContainerView, coordinator: Coordinator) {
+        container.session?.releasePresentationHost(container)
+    }
 
-    /// Hosts the shared WKWebView. Whenever a container becomes visible again
-    /// (fullscreen dismissal, tab switch) it re-adopts the session's web view,
-    /// which keeps its JavaScript state, camera, undo history and ink.
+    /// Hosts the shared WKWebView. Ownership is claimed on window entry and
+    /// released on window exit; `layoutSubviews` positions the web view only
+    /// while this container is the single active host. It must never remove the
+    /// web view from another container: during an embedded ↔ fullscreen
+    /// transition two containers coexist, and mutually stealing the web view
+    /// makes each move invalidate the other's layout, looping forever on the
+    /// main thread.
     final class EngineeringContainerView: UIView {
         weak var session: EngineeringWebSession?
 
+        override func willMove(toWindow newWindow: UIWindow?) {
+            super.willMove(toWindow: newWindow)
+            guard let session else { return }
+            if newWindow != nil {
+                // An explicit appearance is the only event that may take
+                // ownership from another live host. The newest appearance wins:
+                // the fullscreen cover mounts over the embedded preview, and on
+                // dismissal the embedded preview returns while the cover is
+                // still animating out. `newWindow` is the incoming window;
+                // `self.window` still reports the old one here.
+                session.claimPresentationHost(self, in: newWindow)
+            } else {
+                session.releasePresentationHost(self)
+            }
+        }
+
         override func layoutSubviews() {
             super.layoutSubviews()
-            guard let web = session?.web else { return }
+            guard let session, let web = session.web else { return }
+            if session.presentationHost == nil, window != nil {
+                // Recovery only: no live host is recorded (e.g. its weak
+                // reference was dropped). Never claim over a recorded live host
+                // from a layout pass — that is what caused the transition loop.
+                session.claimPresentationHost(self, in: window)
+            }
+            guard session.presentationHost === self else { return }
             if web.superview !== self {
                 web.removeFromSuperview()
                 web.frame = bounds
