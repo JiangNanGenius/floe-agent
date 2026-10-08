@@ -413,24 +413,29 @@ again, with the same node id/name/position/size and exactly one node; independen
 LibreDWG read the first output as LINE 1/CIRCLE 2/TEXT 1 and the second as
 LINE 2/CIRCLE 3/TEXT 1, and the original source-file hash was unchanged while the node's asset reference advanced.
 
-Open CAD-backup gap (in progress before the freeze, do **not** claim yet): the
-current Canvas backup export carries media child projects, their assets and
-Materials/WorkbenchRoot, but does **not** include unapplied `CanvasDrawingDraft`
-descriptors or CAD draft history, and persistent restore of the adopted CAD
-revision is still under inspection. CAD drafts are durable inside the app
-(survive close/reopen, as the simulator CUA shows), but a *backup package*
-cannot currently be relied on to restore an unapplied CAD draft. A device-
-completion task is adding CAD draft descriptors to the export with tests; media
-backup evidence stays valid.
+Follow-up CAD backup checks: 19/19 focused package tests passed, including
+unapplied `CanvasDrawingDraft` restoration, adopted revision assets, collision
+remapping and refusal of unsupported history. The original failures were
+retained; the successful rerun took 0.106 seconds. Full-App backup interaction
+is still separate from these module tests. CAD revision restore has also been
+exercised through the simulator UI. Physical asset reclamation remains deferred
+conservatively; deleting a node must preserve bytes referenced by other nodes,
+drafts or history.
+
+后续 CAD 备份定向测试 19/19 通过，覆盖未应用草稿、已采用修订素材、冲突重映射
+和不支持历史的拒绝；原失败证据保留，成功复验用时 0.106 秒。这些模块测试不
+代替完整 App 备份交互。CAD 版本恢复另有模拟器界面验证。物理素材回收仍保守延后，
+删除节点时保留其他节点、草稿或历史仍引用的文件。
 
 Not run / not claimed: engine-tier Office `.uno:` operations on a physical iPad
 (the engine is device-only and `devicectl` physical iPad/iPhone hardware was
 unavailable, so real Office save/reopen is unverified and is not a simulator
 gate); physical-device CAD/CAD-in-Canvas interaction (the lifecycle above is
 simulator CUA only); real-page CAD full-screen keep/undo/redo likewise has
-simulator CUA but no physical-device receipt; Notes qualification/UI xcodebuild
-tests (authored, not executed in the final job); any real paid model/provider
-in-app closed loop (the fixture system model was unavailable/preparing);
+simulator CUA but no physical-device receipt; full-App Notes UI (the NativeNotes
+component host separately passed 35/35 tests); the real model edit/confirm/save
+closed loop (actual capabilities/query/coordinate measurement have passed,
+proposal parameter handling and conversation restoration remain under repair);
 physical performance/HDR; the final release device build from the reviewed
 immutable source. The 2/19 first Office run failed on two `snapshot.liveSession`
 expectations; the expectation now asserts file-only status for a

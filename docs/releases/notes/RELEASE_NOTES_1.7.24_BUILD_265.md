@@ -1,7 +1,7 @@
 # 1.7.24 (265) — 2D CAD, Drawing Assistant, Office/Notes shared AI, Canvas
 
 Distribution status: see [current status](../../CURRENT_STATUS.md). Build 265 is a
-source-validated candidate on branch `codex/build265-creative-cad`; no tag,
+candidate under validation on branch `codex/build265-creative-cad`; no tag,
 TestFlight upload or public release has been made by this documentation pass.
 
 ## English
@@ -40,11 +40,10 @@ TestFlight upload or public release has been made by this documentation pass.
   dirty sessions survive close via durable staged drafts. Canvas backup
   packages are file-backed and include media child projects, their assets and
   Materials/WorkbenchRoot, with path/symlink guards, all-hash verification
-  before commit and rollback (media backup round-trip is tested). The current
-  export does **not yet** carry unapplied Canvas CAD draft descriptors/history;
-  that CAD-specific backup inclusion (and persistent adopted-CAD-revision
-  restore) is being completed and tested before the freeze, so CAD draft/history
-  backup is intended behaviour and **not yet verified**. Legacy flattened
+  before commit and rollback. Unapplied CAD draft descriptors and adopted
+  revision assets are now included; 19 focused backup tests cover restoration,
+  collision remapping and rejection of unsupported history. Full-App backup
+  interaction remains separately unverified. Legacy flattened
   image/video first edits migrate once into typed child bindings; unknown newer
   binding data stays read-only and is preserved.
 - Image workbench adds rectangle/ellipse/lasso selections with
@@ -85,10 +84,9 @@ TestFlight upload or public release has been made by this documentation pass.
 - 画布图纸（`.dwg`/`.dxf`）节点以矢量方式打开编辑器并更新原节点，绝不
   栅格化；“制作变体”创建带来源的新节点；未保存会话通过持久暂存草稿在关闭后
   保留。画布备份包基于文件，包含媒体子工程及其素材、Materials/WorkbenchRoot，
-  带路径/符号链接防护、提交前全量哈希校验与回滚（媒体备份往返已有测试）。当前
-  导出**尚未**包含尚未应用的画布 CAD 草稿描述符/历史；这项 CAD 专项备份（连同
-  持久的已采用 CAD 修订恢复）正在冻结前补齐并测试，因此 CAD 草稿/历史备份属于
-  预期行为，**尚未验证**。旧版扁平图片/视频首次编辑一次性迁移为类型化子工程
+  带路径/符号链接防护、提交前全量哈希校验与回滚。现已包含未应用的 CAD 草稿
+  描述符与已采用修订素材，19 项备份定向测试覆盖恢复、冲突重映射和不支持历史
+  的拒绝；完整 App 备份交互尚未单独验收。旧版扁平图片/视频首次编辑一次性迁移为类型化子工程
   绑定；未知的更新版本绑定数据保持只读并原样保留。
 - 图片工作台新增矩形/椭圆/套索选区及加选/减选/替换、反相与羽化、非破坏
   蒙版、选区复制/剪切/填充，以及更丰富的画笔、文字与调色控制。视频新增音乐
@@ -117,8 +115,9 @@ Local, source-level verification on branch `codex/build265-creative-cad`
 - Package tests: FloeDocuments 83/83 (Office catalog, target-aware saved-package
   verification, tool contract), FloeNotes 47/47 (search helper, proposals,
   durable outbox), Canvas/FloeCore 36 + FloeWorkspace 15 (migration, CAD
-  planner; the 15 backup-package tests cover the **media** child-project/asset
-  round-trip). CAD engine `cargo test --locked` 42/42;
+  planner; the original 15 backup-package tests cover the **media** child-project/asset
+  round-trip, followed by 19/19 backup tests including CAD drafts/history).
+  CAD engine `cargo test --locked` 42/42;
   `test_cad_commands.mjs` 58/58; `test_office_command_bridge.mjs` all checks;
   engineering viewer asset hashes 33/33.
 - Save-time CAD verification is in-app: on every save the same engine
@@ -219,6 +218,18 @@ Not verified this round and not claimed:
 - 后续表单内“发送”在真实键盘编辑后可用；仅辅助功能赋值未更新输入绑定，
   不能据此宣称正常打字有缺陷。实际发送暴露“会话没有规范工作区”错误，正在
   修复画布助手任务初始化，尚未完成真实 CAD 工具闭环或分发。
+
+- The next simulator build repaired canonical-workspace initialization: real
+  Drawing Assistant submission, capability discovery and entity queries passed.
+  Coordinate-based measurement returned 14.142135623730951 drawing units.
+  Handles-only distance with one entity and edit proposals exposed insufficient
+  parameter validation and generic JavaScript errors. The task was stopped with
+  its checkpoint retained; the parameter/error contract is being repaired.
+  No real-model confirmed apply or save/reopen success is claimed yet.
+- 下一模拟器包修复了规范工作区初始化，真实图纸助手发送、能力查询与图元查询
+  已通过；按坐标测量返回 14.142135623730951 个图纸单位。仅提供一个图元的距离
+  测量及编辑提案暴露参数校验不足、错误信息笼统的问题。已停止任务并保留检查点，
+  正在修复参数与错误契约；尚未宣称真实模型确认应用及保存重开通过。
 
 The release preflight (`scripts/release_preflight.sh`) requires this file and
 `docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_265.json` to exist in
