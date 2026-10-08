@@ -2,13 +2,16 @@
 
 更新时间 / Updated: 2026-10-08. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
 
-## 1.7.24（265）候选验证中，未上传 / Candidate under validation, not uploaded
+## 1.7.24（265）本地构建完成，正在分发 / Local build complete, distribution in progress
 
-- 真实模型图纸助手闭环已通过：能力／图元查询、确定性测量、单图元移动提案、界面预览和确认、保存重开。独立 LibreDWG 回读确认目标直线从 (0,0)–(10,10) 变为 (1,0)–(11,10)，保存哈希匹配，通知送回原会话。最终设备构建仍待完成。The real-model Drawing Assistant loop passed queries, measurement, a one-entity move proposal, UI preview/confirmation and save/reopen. Independent LibreDWG confirmed the expected coordinates and saved hash; the decision reached the original conversation. The final device build remains pending. Earlier checks below apply to their tested revisions.
+- 不可变 `v1.7.24` 固定 `246d6c038f0a3f7ec7d7d9f7e19d074f13601bec`，已合并 main。Xcode 27A266a / iphoneos27.0 本地 Release 完成，App 与 dSYM UUID 匹配；相关定向测试和真实模型闭环通过，不宣称完整云端 CI 或实体设备验收。Immutable tag/source merged into main; local Release and matching symbols retained. Focused verification and the real-model loop passed; full cloud CI and physical-device acceptance are not claimed.
+
+
+- 真实模型图纸助手闭环已通过：能力／图元查询、确定性测量、单图元移动提案、界面预览和确认、保存重开。独立 LibreDWG 回读确认目标直线从 (0,0)–(10,10) 变为 (1,0)–(11,10)，保存哈希匹配，通知送回原会话。最终 Xcode 27 设备构建已通过。The real-model Drawing Assistant loop passed queries, measurement, a one-entity move proposal, UI preview/confirmation and save/reopen. Independent LibreDWG confirmed the expected coordinates and saved hash; the decision reached the original conversation. The final Xcode 27 device build passed. Earlier checks below apply to their tested revisions.
 
 - 二维 DWG/DXF 应用内编辑与 `cad.document`、图纸助手（图纸助手/Drawing Assistant）、Office 共享命令目录 `document.office.edit`、手记提案/精确搜索/PDF 与 `.floenote` 导出、画布矢量图纸节点与媒体子工程文件化备份（已含 CAD 草稿和修订素材，19 项备份定向测试通过）、图片/视频细化。In-app 2D DWG/DXF editing and `cad.document`, Drawing Assistant, the shared Office `document.office.edit` catalog, Notes propose/exact-search/PDF and `.floenote` export, vector Canvas drawing nodes and file-backed media child-project backups (including CAD drafts and revision assets, covered by 19 focused backup tests), plus image/video refinements.
 - 分支 `codex/build265-creative-cad`，`project.yml` 1.7.24（265）。模拟器完整 App 构建通过、19 项定向 App 测试通过；CAD-in-Canvas 已在 iPad 模拟器 CUA 中两次“加线/加圆→保留草稿→重开→完成到同一节点”，独立 LibreDWG 复读 LINE1/CIRCLE2→LINE2/CIRCLE3，原节点哈希不变。Simulator App build + 19 focused tests pass; CAD-in-Canvas verified twice in an iPad simulator CUA with an independent LibreDWG re-read and the original node hash unchanged.
-- **未打标签、未上传、未发布；尚不是可安装构建。** 引擎层 Office `.uno:` 编辑仅真机可验（准备时 `devicectl` 无真机），其他真实供应商效果未验；保存时的同引擎重解析是应用内门，LibreDWG 只是代表性产物的离线发布资格核对。**No tag/upload/release; not installable.** Engine-tier Office editing is device-only, other real providers remain unverified; the same-engine reparse is the in-app save gate while LibreDWG is only an offline release-qualification cross-check.
+- **已固定标签并保存设备包，签名上传尚未完成；尚不是可安装构建。** 引擎层 Office `.uno:` 编辑仅真机可验（准备时 `devicectl` 无真机），其他真实供应商效果未验；保存时的同引擎重解析是应用内门，LibreDWG 只是代表性产物的离线发布资格核对。**Tag and recoverable device artifact retained; signing/upload remains pending. Not installable yet.** Engine-tier Office editing is device-only, other real providers remain unverified; the same-engine reparse is the in-app save gate while LibreDWG is only an offline release-qualification cross-check.
 - [创作工具契约与能力表 / Tool contracts and capability table](FLOE_1_7_24_CREATIVE_TOOLS.md) · [更新说明 / Release notes](releases/notes/RELEASE_NOTES_1.7.24_BUILD_265.md)
 
 ## 1.7.23（264）内部可用，公测待审 / Internal available, external review pending

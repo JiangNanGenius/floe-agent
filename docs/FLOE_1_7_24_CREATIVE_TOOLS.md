@@ -461,3 +461,15 @@ Apple availability remain pending.
 及哈希核对，通知回到原会话。独立读取器确认直线精确平移，关闭重开正常，
 模型空间仍有九个图元。真机及其他供应商待验。应用成功提示仍在修补；
 最终设备构建、上传与 Apple 可用性待完成。
+
+### Frozen local build / 本地构建固定
+
+Tag v1.7.24 fixes 246d6c038f0a3f7ec7d7d9f7e19d074f13601bec. The final
+Xcode 27A266a iphoneos27.0 Release build passed; matching App/dSYM and hashed
+recovery transport are retained. Post-apply outcome feedback is fixed and
+compiled. Signing/upload and Apple availability remain pending. This expedited
+route uses local focused qualification, not a full cloud CI claim.
+
+最终本地设备构建通过，成功提示已修复并编译验证；匹配设备包、符号和哈希已留存。
+标签固定，签名上传及 Apple 可用状态待核验。本轮采用本地定向验证快速分发，
+不宣称完整云端 CI 或真机验收。
