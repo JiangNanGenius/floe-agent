@@ -439,12 +439,25 @@ unavailable, so real Office save/reopen is unverified and is not a simulator
 gate); physical-device CAD/CAD-in-Canvas interaction (the lifecycle above is
 simulator CUA only); real-page CAD full-screen keep/undo/redo likewise has
 simulator CUA but no physical-device receipt; full-App Notes UI (the NativeNotes
-component host separately passed 35/35 tests); the real model edit/confirm/save
-closed loop (actual capabilities/query/coordinate measurement have passed,
-proposal parameter handling and conversation restoration remain under repair);
+component host separately passed 35/35 tests); other real-model providers;
 physical performance/HDR; the final release device build from the reviewed
 immutable source. The 2/19 first Office run failed on two `snapshot.liveSession`
 expectations; the expectation now asserts file-only status for a
 registered-but-not-opened session while retaining ownership-denial assertions.
 The failed `.xcresult` bundle path was reused during retries, so only its text
 log survives — an evidence gap, not a hidden failure.
+
+### Latest real-model qualification / 最新真实模型验证
+
+The proposal parameter failure is resolved: actual queries, measurement, proposal
+preview, UI confirmation, saved revision/hash and original-conversation notification
+passed on the simulator. Independent LibreDWG verified the line move from
+(0,0)-(10,10) to (1,0)-(11,10), with nine model-space entities; actual close/reopen
+rendered the result. Physical-device and all-provider acceptance remain separate.
+Post-apply success feedback is being corrected. Final device build, upload and
+Apple availability remain pending.
+
+提案参数故障已修复：模拟器实际完成查询、测量、提案预览、界面确认、保存
+及哈希核对，通知回到原会话。独立读取器确认直线精确平移，关闭重开正常，
+模型空间仍有九个图元。真机及其他供应商待验。应用成功提示仍在修补；
+最终设备构建、上传与 Apple 可用性待完成。

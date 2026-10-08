@@ -237,3 +237,18 @@ the frozen source with both language sections; both are prepared here. The final
 device build must still be produced from the reviewed immutable source,
 re-hashed, and taken through signing/upload, Apple VALID readback, Floe QA and
 publictest1 separately; this documentation pass performs none of those steps.
+
+### Latest real-model qualification / 最新真实模型验证
+
+The proposal parameter failure is resolved: actual queries, measurement, proposal
+preview, UI confirmation, saved revision/hash and original-conversation notification
+passed on the simulator. Independent LibreDWG verified the line move from
+(0,0)-(10,10) to (1,0)-(11,10), with nine model-space entities; actual close/reopen
+rendered the result. Physical-device and all-provider acceptance remain separate.
+Post-apply success feedback is being corrected. Final device build, upload and
+Apple availability remain pending.
+
+提案参数故障已修复：模拟器实际完成查询、测量、提案预览、界面确认、保存
+及哈希核对，通知回到原会话。独立读取器确认直线精确平移，关闭重开正常，
+模型空间仍有九个图元。真机及其他供应商待验。应用成功提示仍在修补；
+最终设备构建、上传与 Apple 可用性待完成。
