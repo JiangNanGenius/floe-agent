@@ -166,20 +166,20 @@ public struct MediaPlayerView: View {
             HStack(spacing: 16) {
                 Button { model.stepFrame(direction: -1, frameRate: model.frameRate) } label: {
                     Image(systemName: "backward.frame").frame(minWidth: 44, minHeight: 44)
-                }.accessibilityLabel("上一帧")
+                }.accessibilityLabel("media.media_player_view.previous_frame")
                 Button { model.togglePlayback() } label: {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").frame(minWidth: 44, minHeight: 44)
-                }.accessibilityLabel(model.isPlaying ? "暂停" : "播放")
+                }.accessibilityLabel(model.isPlaying ? "localmodels.pause" : "media.media_player_view.play")
                 Button { model.stepFrame(direction: 1, frameRate: model.frameRate) } label: {
                     Image(systemName: "forward.frame").frame(minWidth: 44, minHeight: 44)
-                }.accessibilityLabel("下一帧")
+                }.accessibilityLabel("media.media_player_view.next_frame")
                 Spacer(minLength: 0)
                 Button { isFullscreen.toggle() } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right").frame(minWidth: 44, minHeight: 44)
-                }.accessibilityLabel("全屏播放")
+                }.accessibilityLabel("media.media_player_view.play_full_screen")
             }
             .buttonStyle(.borderless)
-            Picker("播放速度", selection: Binding(
+            Picker("media.media_player_view.playback_speed", selection: Binding(
                 get: { model.rate },
                 set: { model.setRate($0) }
             )) {

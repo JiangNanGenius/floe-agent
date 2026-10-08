@@ -171,7 +171,7 @@ final class FilesCenter: ObservableObject {
     ) throws -> AttachmentRef {
         guard let image = UIImage(data: data),
               let compressed = Self.compressImage(image, maxBytes: 1_024 * 1_024) else {
-            throw FloeError.validationFailed("无法读取所选照片")
+            throw FloeError.validationFailed(FloeL10n.l("composer.attachment.photo_unreadable"))
         }
         let base = ((displayName as NSString).deletingPathExtension as NSString)
             .lastPathComponent

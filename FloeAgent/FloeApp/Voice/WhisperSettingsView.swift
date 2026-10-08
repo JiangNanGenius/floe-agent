@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import SwiftUI
 
+import FloeCore
 struct WhisperSettingsView: View {
     @State private var installed = false
     @State private var completed: Int64 = 0
@@ -10,23 +11,23 @@ struct WhisperSettingsView: View {
     @State private var failure: String?
     var body: some View {
         Form {
-            Section("本地识别") {
-                Label("Whisper Small · 多语言", systemImage: "waveform")
-                Text("英语、普通话及混合语音优先使用本地 Whisper；模型不可用或识别失败时回退 Apple 语音识别。")
-                Text(installed ? "模型已安装，运行时仍需检查能否加载。" : "尚未安装，当前使用 Apple 语音识别。")
+            Section("voice.whisper_settings_view.on_device_recognition") {
+                Label("voice.whisper_settings_view.whisper_small_multilingual", systemImage: "waveform")
+                Text("voice.whisper_settings_view.english_mandarin_and_mixed_speech_prefer")
+                Text(installed ? "voice.whisper_settings_view.the_model_is_installed_the_runtime" : "voice.whisper_settings_view.not_installed_yet_currently_using_apple")
                     .font(.caption).foregroundStyle(.secondary)
                 if running {
                     ProgressView(value: Double(completed), total: Double(max(1, total)))
-                    Text("已下载 \(ByteCountFormatter.string(fromByteCount: completed, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
+                    Text(FloeL10n.l("voice.whisper_settings_view.downloaded", ByteCountFormatter.string(fromByteCount: completed, countStyle: .file), ByteCountFormatter.string(fromByteCount: total, countStyle: .file)))
                         .font(.caption)
-                    Button("取消下载", role: .cancel) { Task { await WhisperModelStore.shared.cancelInstallation() } }
+                    Button("voice.whisper_settings_view.cancel_download", role: .cancel) { Task { await WhisperModelStore.shared.cancelInstallation() } }
                 } else {
-                    Button(installed ? "重新下载模型" : "下载模型") {
+                    Button(installed ? "voice.whisper_settings_view.download_model_again" : "voice.whisper_settings_view.download_model") {
                         Task { await WhisperModelStore.shared.beginInstallation() }
 
                     }
                     if installed {
-                        Button("移除模型", role: .destructive) {
+                        Button("voice.whisper_settings_view.remove_model", role: .destructive) {
                             Task {
                                 do { try await WhisperModelStore.shared.remove(); installed = false }
                                 catch { failure = error.localizedDescription }
@@ -37,10 +38,10 @@ struct WhisperSettingsView: View {
                 if let failure { Text(failure).foregroundStyle(.red) }
             }
             Section {
-                Text("下载会占用约 500 MB 空间。音频不会上传给 Whisper 服务；Apple 回退路径遵循系统语音服务和权限设置。长录音的识别速度取决于设备性能。")
+                Text("voice.whisper_settings_view.the_download_uses_about_500_mb")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-        }.navigationTitle("语音识别")
+        }.navigationTitle("voice.whisper_settings_view.speech_recognition")
             .task {
                 while !Task.isCancelled {
                     installed = await WhisperModelStore.shared.isInstalled()

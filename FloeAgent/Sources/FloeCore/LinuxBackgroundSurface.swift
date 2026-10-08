@@ -105,10 +105,7 @@ public struct LinuxBackgroundSurfaceEntry: Sendable, Codable, Hashable, Identifi
     /// rows so a narrow window stays readable.
     public func captionLines(now: Date = Date()) -> [String] {
         [
-            "\(title) · \(state.surfaceLabel)",
-            "CPU \(cpuText) · 内存 \(memoryText)",
-            "命令 \(commandText) · 服务 \(serviceText) · 端口 \(portText)",
-            "已运行 \(elapsedTimeLabel(now: now))",
+            "\(title) · \(state.surfaceLabel)",FloeL10n.l("core.linux_background_surface.cpu_memory", cpuText, memoryText),FloeL10n.l("core.linux_background_surface.command_service_port", commandText, serviceText, portText),FloeL10n.l("core.linux_background_surface.ran", elapsedTimeLabel(now: now)),
         ]
     }
 
@@ -121,14 +118,14 @@ public extension BackgroundWorkState {
     /// Short user-facing label for the floating surface.
     var surfaceLabel: String {
         switch self {
-        case .queued: "排队中"
-        case .running: "运行中"
-        case .completing: "收尾中"
-        case .completed: "已完成"
-        case .failed: "运行失败"
-        case .suspended: "已暂停"
-        case .interrupted: "已中断"
-        case .cancelled: "已取消"
+        case .queued: FloeL10n.l("workspace.i_d_e_language_run_view.queued")
+        case .running: FloeL10n.l("home.home_overview_view.running")
+        case .completing: FloeL10n.l("core.linux_background_surface.wrapping_up")
+        case .completed: FloeL10n.l("home.home_overview_view.completed")
+        case .failed: FloeL10n.l("workspace.text_file_editor_view.failed")
+        case .suspended: FloeL10n.l("core.linux_background_surface.paused")
+        case .interrupted: FloeL10n.l("core.linux_background_surface.interrupted")
+        case .cancelled: FloeL10n.l("chat.thread_detail_view.cancelled")
         }
     }
 }

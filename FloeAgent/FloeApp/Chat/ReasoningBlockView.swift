@@ -21,7 +21,7 @@ struct ModelResponseWaitingView: View {
                 .frame(width: 6, height: 6)
                 .opacity(reduceMotion || !breathing ? 0.85 : 0.35)
                 .accessibilityHidden(true)
-            Text("等待模型响应")
+            Text("chat.reasoning_block_view.waiting_for_the_model")
                 .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
         }
         .padding(.vertical, 8)
@@ -58,7 +58,7 @@ struct ReasoningBlockView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("reasoning.title").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         if !isExpanded {
-                            Text(preview.isEmpty ? (isStreaming ? "正在思考…" : "查看思考记录") : preview)
+                            Text(preview.isEmpty ? (isStreaming ? "chat.reasoning_block_view.thinking" : "chat.reasoning_block_view.view_thinking_record") : preview)
                                 .font(.footnote).foregroundStyle(.secondary)
                                 // New lines replace the preview during streaming;
                                 // reserve both rows so short fragments never shrink it.
@@ -207,11 +207,11 @@ private struct LongReasoningReader: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Text(isStreaming ? "思考内容持续更新中" : "思考全文")
+                Text(isStreaming ? "chat.reasoning_block_view.thinking_is_still_updating" : "chat.reasoning_block_view.full_reasoning")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("全屏阅读", systemImage: "arrow.up.left.and.arrow.down.right") { fullscreen = true }
+                Button("chat.reasoning_block_view.read_full_screen", systemImage: "arrow.up.left.and.arrow.down.right") { fullscreen = true }
                     .labelStyle(.iconOnly)
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("reasoning.fullscreen")
@@ -224,11 +224,11 @@ private struct LongReasoningReader: View {
         .fullScreenCover(isPresented: $fullscreen) {
             NavigationStack {
                 reader.padding()
-                    .navigationTitle("思考全文")
+                    .navigationTitle("chat.reasoning_block_view.full_reasoning")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("完成") { fullscreen = false }
+                            Button("workspace.workspace_canvas_view.done") { fullscreen = false }
                                 .accessibilityIdentifier("reasoning.fullscreen.done")
                         }
                     }
@@ -250,10 +250,10 @@ private struct LongReasoningReader: View {
                 .accessibilityIdentifier("reasoning.reader")
                 .overlay { if layout.chunks.isEmpty { ProgressView() } }
                 HStack {
-                    Button("回到开头") { if let first = layout.chunks.first { proxy.scrollTo(first.id, anchor: .top) } }
+                    Button("chat.reasoning_block_view.back_to_top") { if let first = layout.chunks.first { proxy.scrollTo(first.id, anchor: .top) } }
                         .accessibilityIdentifier("reasoning.first")
                     Spacer()
-                    Button(isStreaming ? "最新内容" : "到结尾") {
+                    Button(isStreaming ? "chat.reasoning_block_view.latest_content" : "chat.reasoning_block_view.to_end") {
                         if let last = layout.chunks.last { proxy.scrollTo(last.id, anchor: .bottom) }
                     }
                     .accessibilityIdentifier("reasoning.latest")

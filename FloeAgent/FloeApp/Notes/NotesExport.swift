@@ -5,6 +5,7 @@ import SwiftUI
 import PencilKit
 import FloeNotes
 
+import FloeCore
 @MainActor enum NotesExport {
     struct Artifact: Identifiable { let id = UUID(); let url: URL }
 
@@ -13,7 +14,7 @@ import FloeNotes
     /// nil exports the whole document.
     static func pdf(document: NoteDocument, pages selectedPages: [NotePage]? = nil,
                     store: NotesStore, progress: (Int, Int) -> Void) async throws -> Artifact {
-        guard document.kind == .notebook else { throw NoteError.invalidOperation("请从 Office 编辑器导出 Office PDF。") }
+        guard document.kind == .notebook else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_export.export_the_office_pdf_from_the")) }
         try document.validate()
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-export-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -21,12 +22,12 @@ import FloeNotes
         defer { if !success { try? FileManager.default.removeItem(at: folder) } }
         let temporary = folder.appendingPathComponent(".partial.pdf")
         guard let context = CGContext(temporary as CFURL, mediaBox: nil, [kCGPDFContextTitle: document.title] as CFDictionary) else {
-            throw NoteError.invalidOperation("无法创建 PDF，请检查剩余空间。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_export.could_not_create_the_pdf_check"))
         }
         var closed = false
         defer { if !closed { context.closePDF() } }
         let pages = selectedPages ?? document.pages
-        guard !pages.isEmpty else { throw NoteError.invalidOperation("没有可导出的页面。") }
+        guard !pages.isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_export.no_pages_to_export")) }
         for (index, page) in pages.enumerated() {
             try Task.checkCancellation()
             let sourcePDF: CGPDFDocument?
@@ -79,7 +80,7 @@ import FloeNotes
         try Task.checkCancellation()
         guard let pdf = CGPDFDocument(temporary as CFURL), pdf.numberOfPages == pages.count,
               (try temporary.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0 > 0 else {
-            throw NoteError.invalidDocument("导出的 PDF 无法重新读取。")
+            throw NoteError.invalidDocument(FloeL10n.l("notes.notes_export.the_exported_pdf_could_not_be"))
         }
         var stem = fileName(document.title)
         if let firstPage = pages.first,
@@ -93,7 +94,7 @@ import FloeNotes
     }
 
     static func outline(document: NoteDocument) throws -> Artifact {
-        guard document.kind == .mindMap else { throw NoteError.invalidOperation("此内容不是思维导图。") }
+        guard document.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_is_not_a_mind")) }
         try document.validate()
         let children = Dictionary(grouping: document.nodes, by: \.parentID)
         var lines = ["# \(document.title)", ""]
@@ -113,7 +114,7 @@ import FloeNotes
 
     static func fileName(_ name: String) -> String {
         let safe = name.components(separatedBy: CharacterSet(charactersIn: "/\\:\n\r\0")).joined(separator: "-")
-        return String((safe.isEmpty ? "手记" : safe).prefix(100))
+        return String((safe.isEmpty ? FloeL10n.l("notes.notes_root_view.notes") : safe).prefix(100))
     }
 }
 struct NotesShareSheet: UIViewControllerRepresentable {

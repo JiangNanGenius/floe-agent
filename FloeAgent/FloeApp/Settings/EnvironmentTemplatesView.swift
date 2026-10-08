@@ -99,7 +99,7 @@ struct EnvironmentTemplatesView: View {
                 }
             }
         }
-        .navigationTitle("template.list_title")
+        .navigationTitle(FloeL10n.l("template.list_title"))
         .refreshable { await reload() }
         .task { await reload() }
         .onChange(of: jobs.revision) { Task { await reload() } }
@@ -320,7 +320,7 @@ private struct EnvironmentTemplateCreationSheet: View {
                     .disabled(busy || workspaceURL == nil)
                 }
             }
-            .navigationTitle("template.new_title")
+            .navigationTitle(FloeL10n.l("template.new_title"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("template.close") { dismiss() }

@@ -93,8 +93,8 @@ struct ToolCallCardView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(isExpanded ? "已展开" : "已折叠")
-        .accessibilityHint(hasDetail ? "查看调用参数、结果和审批记录" : "")
+        .accessibilityValue(isExpanded ? FloeL10n.l("chat.step_group_view.expanded") : FloeL10n.l("chat.step_group_view.collapsed"))
+        .accessibilityHint(hasDetail ? "chat.tool_call_card_view.view_call_arguments_results_and_approval" : "")
     }
 
     // MARK: - Folded-out detail
@@ -220,15 +220,15 @@ private struct ArtifactImageView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { showingFullScreen = true }
-                        .accessibilityLabel("生成的图片")
-                        .accessibilityHint("双击全屏查看")
+                        .accessibilityLabel("chat.tool_call_card_view.generated_images")
+                        .accessibilityHint("chat.tool_call_card_view.double_tap_for_full_screen")
                     ShareLink(item: fileURL) {
-                        Label("保存或共享图片", systemImage: "square.and.arrow.up")
+                        Label("chat.tool_call_card_view.save_or_share_image", systemImage: "square.and.arrow.up")
                     }
                     .font(FloeTheme.Typography.metadata)
                 }
             } else if failed {
-                Label("生成图片已返回，但本地文件校验失败", systemImage: "exclamationmark.triangle")
+                Label("chat.tool_call_card_view.the_generated_image_returned_but_local", systemImage: "exclamationmark.triangle")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.destructive)
             } else {
@@ -316,13 +316,13 @@ private struct FullScreenArtifactImage: View {
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("完成") { dismiss() }
+                    Button("workspace.workspace_canvas_view.done") { dismiss() }
                         .foregroundStyle(.white)
                         .frame(minHeight: FloeTheme.minimumTarget)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: fileURL) {
-                        Label("保存或共享图片", systemImage: "square.and.arrow.up")
+                        Label("chat.tool_call_card_view.save_or_share_image", systemImage: "square.and.arrow.up")
                             .labelStyle(.iconOnly)
                             .foregroundStyle(.white)
                     }

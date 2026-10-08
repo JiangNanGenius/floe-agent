@@ -887,8 +887,7 @@ public actor CreativeAssetStore {
         // unreferenced at the moment of deletion. Fail with a recoverable,
         // user-visible deferral and keep everything.
         if deferPhysicalReclamation {
-            throw FloeError.validationFailed(
-                "素材空间清理已在当前版本保守挂起：文件已保留，将在后续版本的安全回收机制上线后释放。"
+            throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.asset_space_cleanup_is_conservatively_suspended")
             )
         }
         // Authoritative reachability backstop, failing closed: never delete
@@ -898,12 +897,10 @@ public actor CreativeAssetStore {
         case .notReachable:
             break
         case .reachable:
-            throw FloeError.validationFailed(
-                "这个素材仍被画布中的节点或图纸版本历史引用，不能删除。"
+            throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.this_asset_is_still_referenced_by")
             )
         case .unknown:
-            throw FloeError.validationFailed(
-                "画布索引暂时不可读，为避免误删已保留该素材；请稍后重试。"
+            throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.the_canvas_index_is_temporarily_unreadable")
             )
         }
         return try await database.writer { db -> String? in
@@ -913,8 +910,7 @@ public actor CreativeAssetStore {
                 arguments: [assetID.uuidString]
             ), let asset = Self.asset(from: row) else { return nil }
             guard asset.referenceCount == 0 else {
-                throw FloeError.validationFailed(
-                    "这个素材仍被 \(asset.referenceCount) 个画布节点引用。请先移除引用。"
+                throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.this_asset_is_still_referenced_by_2", asset.referenceCount)
                 )
             }
             let hasUnfinishedJob = try Bool.fetchOne(db, sql: """
@@ -925,8 +921,7 @@ public actor CreativeAssetStore {
                 )
                 """, arguments: [assetID.uuidString]) ?? false
             guard !hasUnfinishedJob else {
-                throw FloeError.validationFailed(
-                    "这个素材仍属于未完成的媒体任务，任务结束前不会释放。"
+                throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.this_asset_still_belongs_to_an")
                 )
             }
 
@@ -967,8 +962,7 @@ public actor CreativeAssetStore {
                   )
                 """, arguments: [assetID.uuidString, assetID.uuidString])
             guard db.changesCount == 1 else {
-                throw FloeError.validationFailed(
-                    "素材引用状态已变化，本次没有删除本地文件。"
+                throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.the_asset_reference_state_changed_no")
                 )
             }
             return asset.localRelativePath
@@ -1110,12 +1104,10 @@ public actor CreativeAssetStore {
                 case .notReachable:
                     break
                 case .reachable:
-                    throw FloeError.validationFailed(
-                        "这个素材仍被画布中的节点或图纸版本历史引用，不能删除。"
+                    throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.this_asset_is_still_referenced_by")
                     )
                 case .unknown:
-                    throw FloeError.validationFailed(
-                        "画布索引暂时不可读，为避免误删已保留该素材；请稍后重试。"
+                    throw FloeError.validationFailed(FloeL10n.l("persistence.creative_asset_store.the_canvas_index_is_temporarily_unreadable")
                     )
                 }
                 try db.execute(sql: """

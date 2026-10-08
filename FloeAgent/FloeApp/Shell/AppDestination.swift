@@ -9,6 +9,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 
+import FloeCore
 /// Top-level destinations shared by both idioms. The case order is the
 /// locked tab order; do not reorder or add cases without a product decision.
 enum AppDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
@@ -53,8 +54,8 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
 
     var title: LocalizedStringKey {
         switch self {
-        case .notes: "手记"
-        case .creative: "创意模式"
+        case .notes: "notes.notes_root_view.notes"
+        case .creative: "app.floe_agent_app.creative"
         case .runs: "more.runs"
         case .setupGuide: "more.setup_guide"
         case .providers: "more.providers"

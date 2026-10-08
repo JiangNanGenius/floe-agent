@@ -748,7 +748,7 @@ final class AppEnvironment: ObservableObject {
             )
         }
         let notification = UNMutableNotificationContent()
-        notification.title = job.state == .completed ? "后台任务完成" : "后台任务结束：\(job.state.rawValue)"
+        notification.title = job.state == .completed ? FloeL10n.l("app.app_environment.background_task_complete") : FloeL10n.l("app.app_environment.background_task_ended", job.state.rawValue)
         notification.body = "\(job.targetTool) · \(String(evidence.prefix(160)))"
         notification.userInfo = ["conversationID": job.conversationID.uuidString, "jobID": job.id.uuidString]
         try? await UNUserNotificationCenter.current().add(UNNotificationRequest(

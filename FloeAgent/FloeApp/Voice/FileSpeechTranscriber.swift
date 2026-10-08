@@ -3,6 +3,7 @@
 import Foundation
 import AVFoundation
 import Speech
+import FloeCore
 @preconcurrency import WhisperKit
 
 struct TimedSpeechSegment: Sendable, Codable {
@@ -17,10 +18,10 @@ enum FileSpeechError: Error, LocalizedError {
     case invalidAudio, unavailable, timedOut, empty
     var errorDescription: String? {
         switch self {
-        case .invalidAudio: "无法读取素材的音轨。"
-        case .unavailable: "Whisper 不可用，Apple 语音识别也无法启动。请检查模型和语音权限。"
-        case .timedOut: "Apple 语音识别超时，请重试。"
-        case .empty: "没有识别到可用语音。"
+        case .invalidAudio: FloeL10n.l("voice.file_speech_transcriber.could_not_read_the_asset_s")
+        case .unavailable: FloeL10n.l("voice.file_speech_transcriber.whisper_is_unavailable_and_apple_speech")
+        case .timedOut: FloeL10n.l("voice.file_speech_transcriber.apple_speech_recognition_timed_out_please")
+        case .empty: FloeL10n.l("voice.file_speech_transcriber.no_usable_speech_recognized")
         }
     }
 }

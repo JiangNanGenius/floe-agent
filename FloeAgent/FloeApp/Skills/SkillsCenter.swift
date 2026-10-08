@@ -64,7 +64,7 @@ final class SkillsCenter: ObservableObject {
             lastCatalogCheck = Date()
             catalogError = nil
         } catch is CancellationError {
-        } catch { catalogError = "暂时无法检查更新，已安装的插件仍可使用。" }
+        } catch { catalogError = FloeL10n.l("skills.skills_center.updates_cannot_be_checked_right_now") }
     }
 
     func availableVersion(for skill: PersistedSkill) -> String? {
@@ -539,7 +539,7 @@ final class SkillsCenter: ObservableObject {
             try await self.environment.skillStore.requestBundledSkillInstallation(id: id)
             await self.performBuiltinDomainSeed()
             guard try await self.environment.skillStore.all().contains(where: { $0.id == id }) else {
-                throw FloeError.validationFailed(self.builtinSeedFailures[id] ?? "插件安装失败，请重试。")
+                throw FloeError.validationFailed(self.builtinSeedFailures[id] ?? FloeL10n.l("skills.skills_center.plugin_installation_failed_please_try_again"))
             }
         }
     }

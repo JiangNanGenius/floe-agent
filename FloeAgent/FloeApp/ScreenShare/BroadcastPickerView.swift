@@ -15,16 +15,16 @@ struct BroadcastPickerView: View {
                 Image(systemName: "rectangle.inset.filled.and.person.filled")
                     .font(.system(size: 52))
                     .foregroundStyle(.blue)
-                Text("共享屏幕给 Floe").font(.title2.bold())
-                Text("Floe 正在发起系统屏幕共享确认。请在系统面板中点“开始直播”；画面只写入 Floe 的 App Group，发送给视觉模型前仍会再次确认。")
+                Text("screenshare.broadcast_picker_view.share_screen_with_floe").font(.title2.bold())
+                Text("screenshare.broadcast_picker_view.floe_is_requesting_system_screen_sharing")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
                 SystemBroadcastPicker()
                     .frame(width: 72, height: 72)
-                    .accessibilityLabel("开始屏幕共享")
+                    .accessibilityLabel("screenshare.broadcast_picker_view.start_screen_sharing")
                 Label(
-                    center.isSharing ? "正在接收屏幕画面" : "等待系统开始屏幕共享",
+                    center.isSharing ? "screenshare.broadcast_picker_view.receiving_screen_footage" : "screenshare.broadcast_picker_view.waiting_for_the_system_to_start",
                     systemImage: center.isSharing ? "checkmark.circle.fill" : "hourglass"
                 )
                 .foregroundStyle(center.isSharing ? .green : .secondary)
@@ -38,11 +38,11 @@ struct BroadcastPickerView: View {
                 Spacer()
             }
             .padding(.top, 36)
-            .navigationTitle("屏幕共享")
+            .navigationTitle("screenshare.broadcast_picker_view.screen_sharing")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("完成") {
+                    Button("workspace.workspace_canvas_view.done") {
                         dismiss()
                     }
                 }

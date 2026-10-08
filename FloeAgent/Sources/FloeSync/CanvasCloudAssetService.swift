@@ -91,7 +91,7 @@ public actor CanvasCloudAssetService {
                     _ = try await database.record(for: recordID)
                     try await store.markRelease(
                         id: item.release.id, state: .failed,
-                        error: "CloudKit 删除后仍能查询到该素材。"
+                        error: FloeL10n.l("sync.canvas_cloud_asset_service.the_asset_is_still_queryable_after")
                     )
                 } catch let error as CKError where error.code == .unknownItem {
                     let localRoot = try applicationSupportRootURL()

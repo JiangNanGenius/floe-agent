@@ -135,7 +135,7 @@ struct FeedbackReportView: View {
                 }
             }
         }
-        .navigationTitle("feedback.title")
+        .navigationTitle(FloeL10n.l("feedback.title"))
         .navigationBarTitleDisplayMode(.inline)
         .interactiveDismissDisabled(isSubmitting)
         .toolbar {

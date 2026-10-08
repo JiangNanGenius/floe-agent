@@ -101,8 +101,7 @@ public struct LANDiscoveryService: Sendable {
         }
         let permitted = Set(permittedServiceTypes)
         guard normalized.allSatisfy(permitted.contains) else {
-            throw FloeError.validationFailed(
-                "局域网扫描目前仅支持这些服务类型：\(permittedServiceTypes.joined(separator: ", "))"
+            throw FloeError.validationFailed(FloeL10n.l("execution.l_a_n_discovery_service.lan_scanning_currently_supports_only_these", permittedServiceTypes.joined(separator: ", "))
             )
         }
         return Array(Set(normalized)).sorted()

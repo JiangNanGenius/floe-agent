@@ -20,8 +20,8 @@ struct NotesLinkedMindMaps: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("已关联") {
-                    if links.isEmpty { Text("还没有关联导图").foregroundStyle(.secondary) }
+                Section("notes.notes_linked_mind_maps.linked") {
+                    if links.isEmpty { Text("notes.notes_linked_mind_maps.no_linked_mind_map_yet").foregroundStyle(.secondary) }
                     ForEach(links) { link in
                         if let map = session.documents.first(where: { $0.id == link.documentID }) {
                             HStack {
@@ -30,36 +30,36 @@ struct NotesLinkedMindMaps: View {
                                 } label: {
                                     VStack(alignment: .leading) {
                                         Label(map.title, systemImage: "point.3.connected.trianglepath.dotted")
-                                        Text(map.deletedAt != nil ? "已移入回收站" : link.pageID == nil ? "整个文档" : "关联到指定页面")
+                                        Text(map.deletedAt != nil ? "notes.notes_linked_mind_maps.moved_to_trash" : link.pageID == nil ? "notes.notes_linked_mind_maps.whole_document" : "notes.notes_linked_mind_maps.link_to_a_specific_page")
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                 }.disabled(map.deletedAt != nil)
                                 Spacer()
                                 Menu {
                                     if map.deletedAt != nil {
-                                        Button("恢复导图") { session.trash(map, restore: true) }
+                                        Button("notes.notes_linked_mind_maps.restore_mind_map") { session.trash(map, restore: true) }
                                     }
                                     if let pageID, map.deletedAt == nil {
-                                        Button("关联到当前页") { var updated = link; updated.pageID = pageID; change(.linkMindMap(updated)) }
+                                        Button("notes.notes_linked_mind_maps.link_to_current_page") { var updated = link; updated.pageID = pageID; change(.linkMindMap(updated)) }
                                     }
                                     if link.pageID != nil {
-                                        Button("改为整个文档") { var updated = link; updated.pageID = nil; change(.linkMindMap(updated)) }
+                                        Button("notes.notes_linked_mind_maps.change_to_the_whole_document") { var updated = link; updated.pageID = nil; change(.linkMindMap(updated)) }
                                     }
-                                    Button("解除关联", role: .destructive) { change(.unlinkMindMap(link.id)) }
+                                    Button("notes.notes_linked_mind_maps.unlink", role: .destructive) { change(.unlinkMindMap(link.id)) }
                                 } label: { Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44) }
                             }
                         }
                     }
                 }
                 Section {
-                    if pageID != nil { Toggle("关联到当前页", isOn: $anchorToPage) }
-                    TextField("新导图名称", text: $title)
-                    Button("新建并关联", systemImage: "plus") { create() }
+                    if pageID != nil { Toggle("notes.notes_linked_mind_maps.link_to_current_page", isOn: $anchorToPage) }
+                    TextField("notes.notes_linked_mind_maps.new_mind_map_name", text: $title)
+                    Button("notes.notes_linked_mind_maps.create_and_link", systemImage: "plus") { create() }
                         .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || links.count >= 100)
-                } header: { Text("新建") } footer: {
-                    Text("导图独立保存，也会出现在手记的导图列表中。解除关联或删除这份文档，不会删除导图。")
+                } header: { Text("chat.thread_detail_view_model.new") } footer: {
+                    Text("notes.notes_linked_mind_maps.the_mind_map_is_saved_independently")
                 }
-                Section("关联已有导图") {
+                Section("notes.notes_linked_mind_maps.link_existing_mind_map") {
                     ForEach(candidates) { map in
                         Button(map.title) {
                             let link = NoteMindMapLink(documentID: map.id, pageID: anchorToPage ? pageID : nil)
@@ -68,10 +68,10 @@ struct NotesLinkedMindMaps: View {
                     }
                 }
             }.disabled(busy)
-                .navigationTitle("文档导图")
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-                .alert("文档导图", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                    Button("好") { error = nil }
+                .navigationTitle("notes.notes_linked_mind_maps.document_mind_map")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("workspace.workspace_canvas_view.done") { dismiss() } } }
+                .alert("notes.notes_linked_mind_maps.document_mind_map", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                    Button("workspace.office_document_editor_view.ok") { error = nil }
                 } message: { Text(error ?? "") }
         }.presentationDetents([.medium, .large])
     }
@@ -155,7 +155,7 @@ struct NotesMindMapWindow: View {
                     if !expanded && !shortWindow {
                         Capsule().fill(.secondary).frame(width: 44, height: 5)
                             .frame(width: 100, height: 28).contentShape(Rectangle())
-                            .accessibilityLabel("拖动导图小窗")
+                            .accessibilityLabel("notes.notes_linked_mind_maps.drag_the_mind_map_mini_window")
                             .gesture(DragGesture().updating($moving) { value, state, _ in state = value.translation }
                                 .onEnded { value in
                                     relativeX = max(0, min(1, ((available.width - width) * relativeX + value.translation.width) / max(1, available.width - width)))
@@ -167,7 +167,7 @@ struct NotesMindMapWindow: View {
                     if !expanded && !shortWindow {
                         Image(systemName: "arrow.up.left.and.arrow.down.right").font(.caption)
                             .frame(width: 44, height: 44).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                            .accessibilityLabel("调整导图小窗大小")
+                            .accessibilityLabel("notes.notes_linked_mind_maps.resize_the_mind_map_mini_window")
                             .gesture(DragGesture().updating($resizing) { value, state, _ in state = value.translation }
                                 .onEnded { value in
                                     relativeWidth = min(1, max(min(1, 340 / available.width), relativeWidth + value.translation.width / max(1, available.width)))
@@ -198,8 +198,8 @@ struct NotesMindMapWindow: View {
                 })
             }
         }
-        .alert("导图", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
-            Button("好") { session.errorMessage = nil }
+        .alert("notes.notes_linked_mind_maps.mind_map", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
+            Button("workspace.office_document_editor_view.ok") { session.errorMessage = nil }
         } message: { Text(session.errorMessage ?? "") }
     }
     private func panel(condensed: Bool) -> some View {
@@ -211,34 +211,34 @@ struct NotesMindMapWindow: View {
                 Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { topicActions?.addSibling() }
                     .disabled(topicActions?.isEnabled != true || topicActions?.canAddSibling != true)
                     .accessibilityIdentifier("notes.mindmap.addSibling")
-                Text(session.document?.title ?? "导图").font(.headline).lineLimit(1)
+                Text(session.document?.title ?? "notes.notes_linked_mind_maps.mind_map").font(.headline).lineLimit(1)
                 Spacer()
                 if condensed {
                     Menu {
-                        Button("完整编辑器", systemImage: "arrow.up.forward.app") {
+                        Button("notes.notes_linked_mind_maps.full_editor", systemImage: "arrow.up.forward.app") {
                             Task { if let map = session.document { await parentSession.select(map); close() } }
                         }
                         Button("notes.mindmap.addChild", systemImage: "arrow.turn.down.right") { topicActions?.addChild() }
                             .disabled(topicActions?.isEnabled != true)
                         Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { topicActions?.addSibling() }
                             .disabled(topicActions?.isEnabled != true || topicActions?.canAddSibling != true)
-                        Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }
+                        Button("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward") { session.undo() }
                             .disabled(!session.canUndo || session.pendingWrites > 0)
-                        Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
+                        Button("composer.editor.redo", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
                             .disabled(!session.canRedo || session.pendingWrites > 0)
-                        Button("主题附件", systemImage: "paperclip") { inspector = selectedNode }
+                        Button("notes.notes_linked_mind_maps.topic_attachments", systemImage: "paperclip") { inspector = selectedNode }
                             .disabled(selectedNode == nil)
                         if let document = session.document {
-                            Button("Floe 助手", systemImage: FloeTheme.assistantSymbol) { onAssistant(document) }
+                            Button("notes.notes_linked_mind_maps.floe_assistant", systemImage: FloeTheme.assistantSymbol) { onAssistant(document) }
                         }
-                    } label: { Label("更多操作", systemImage: "ellipsis") }
+                    } label: { Label("notes.notes_linked_mind_maps.more_actions", systemImage: "ellipsis") }
                 } else {
-                    Button("完整编辑器", systemImage: "arrow.up.forward.app") {
+                    Button("notes.notes_linked_mind_maps.full_editor", systemImage: "arrow.up.forward.app") {
                         Task { if let map = session.document { await parentSession.select(map); close() } }
                     }
                 }
-                Button(expanded ? "还原小窗" : "展开", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { expanded.toggle() }
-                Button("关闭小窗", systemImage: "xmark") { close() }
+                Button(expanded ? "notes.notes_linked_mind_maps.restore_mini_window" : "chat.step_group_view.expand", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { expanded.toggle() }
+                Button("notes.notes_linked_mind_maps.close_mini_window", systemImage: "xmark") { close() }
             }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(.horizontal, 12).padding(.top, expanded || condensed ? 4 : 22).padding(.bottom, 4)
             Divider()
             if let document = session.document, document.deletedAt == nil {
@@ -250,12 +250,12 @@ struct NotesMindMapWindow: View {
                     Button("notes.mindmap.addSibling", systemImage: "arrow.turn.right") { topicActions?.addSibling() }
                         .disabled(topicActions?.isEnabled != true || topicActions?.canAddSibling != true)
                         .accessibilityIdentifier("notes.mindmap.addSibling")
-                    Button("撤销", systemImage: "arrow.uturn.backward") { session.undo() }.disabled(!session.canUndo)
-                    Button("重做", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }.disabled(!session.canRedo)
-                    Button("主题附件", systemImage: "paperclip") { inspector = selectedNode }
-                    Button("Floe 助手", systemImage: FloeTheme.assistantSymbol) { onAssistant(document) }
+                    Button("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward") { session.undo() }.disabled(!session.canUndo)
+                    Button("composer.editor.redo", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }.disabled(!session.canRedo)
+                    Button("notes.notes_linked_mind_maps.topic_attachments", systemImage: "paperclip") { inspector = selectedNode }
+                    Button("notes.notes_linked_mind_maps.floe_assistant", systemImage: FloeTheme.assistantSymbol) { onAssistant(document) }
                     Spacer()
-                    Text(session.pendingWrites > 0 ? "保存中" : "已保存").font(.caption).foregroundStyle(.secondary)
+                    Text(session.pendingWrites > 0 ? "notes.notes_linked_mind_maps.saving" : "workspace.text_file_editor_view.saved").font(.caption).foregroundStyle(.secondary)
                 }.labelStyle(.iconOnly).buttonStyle(NotesWindowControlStyle()).padding(8)
                     .disabled(session.pendingWrites > 0)
                 }
@@ -263,7 +263,7 @@ struct NotesMindMapWindow: View {
                     try await session.commit(edits, documentID: document.id, expectedRevision: revision)
                 }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 }, images: images, onSelection: { selected = $0 }, onTopicActions: { topicActions = $0 })
             } else {
-                ContentUnavailableView("导图不可用", systemImage: "doc.questionmark", description: Text("请在文档导图列表中检查关联或从回收站恢复。"))
+                ContentUnavailableView("notes.notes_linked_mind_maps.mind_map_unavailable", systemImage: "doc.questionmark", description: Text("notes.notes_linked_mind_maps.check_the_association_in_the_document"))
             }
         }.accessibilityIdentifier("notes.mindmap.window")
     }

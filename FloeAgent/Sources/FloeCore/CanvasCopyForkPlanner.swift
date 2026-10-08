@@ -131,15 +131,15 @@ public enum CanvasChildProjectMigrationPlanner {
         public var errorDescription: String? {
             switch self {
             case .nodeMissing:
-                return "原画布节点已不存在；导出结果已保存到素材库。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.the_original_canvas_node_no_longer")
             case .missingProject:
-                return "没有可绑定的编辑工程；导出结果已保存到素材库。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.no_bindable_editing_project_the_export")
             case .missingRenderedAsset:
-                return "迁移标记缺少导出素材，无法重试。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.the_migration_marker_is_missing_the")
             case .sourceChanged:
-                return "节点素材在编辑期间已改变；导出结果已保存到素材库，原节点未修改。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.the_node_asset_changed_during_editing")
             case .notMigratable(let detail):
-                return "该节点不能就地迁移（\(detail)）；可新建分支节点。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.this_node_cannot_be_migrated_in", detail)
             }
         }
     }
@@ -348,17 +348,17 @@ public enum CanvasDrawingNodePlanner {
         public var errorDescription: String? {
             switch self {
             case .notDrawing:
-                return "该节点不是可编辑的 DWG/DXF 图纸。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.this_node_is_not_an_editable")
             case .nodeMissing:
-                return "原画布节点已不存在；图纸草稿已保留。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.the_original_canvas_node_no_longer_2")
             case .missingAsset:
-                return "该节点没有本地图纸文件。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.this_node_has_no_local_drawing")
             case .missingSourceHash:
-                return "图纸缺少内容哈希，无法安全比较原始版本。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.the_drawing_is_missing_its_content")
             case .sourceChanged:
-                return "节点图纸在编辑期间已改变；草稿已保留，原节点未修改。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.the_node_drawing_changed_during_editing")
             case .emptyDrawing:
-                return "图纸内容为空，未应用到画布。"
+                return FloeL10n.l("core.canvas_copy_fork_planner.the_drawing_content_is_empty_nothing")
             }
         }
     }
@@ -649,7 +649,7 @@ public enum CanvasDrawingDraftContinuity {
         guard draftCount > 0, totalBytes > budgetBytes, budgetBytes > 0 else { return nil }
         let totalMB = totalBytes / (1024 * 1024)
         let budgetMB = budgetBytes / (1024 * 1024)
-        return "图纸草稿占用 \(totalMB) MB（\(draftCount) 份），超过 \(budgetMB) MB 预算；未应用的草稿已保留。"
+        return FloeL10n.l("core.canvas_copy_fork_planner.drawing_drafts_take_mb_files_over", totalMB, draftCount, budgetMB)
     }
 
     // MARK: Deterministic serialization + teardown decisions

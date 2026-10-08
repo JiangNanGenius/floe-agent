@@ -11,6 +11,7 @@ import SwiftUI
 import FloeExecution
 import FloeTools
 
+import FloeCore
 @MainActor
 final class LinuxImageInstallModel: ObservableObject {
     let imageID: String
@@ -193,7 +194,7 @@ final class LinuxImageInstallModel: ObservableObject {
         facts.downloadRunning = runningNow
         facts.downloadFraction = fraction
         facts.downloadCancelling = runningNow && (cancelling
-            || message?.contains("取消") == true || message?.contains("ancell") == true)
+            || message?.contains(FloeL10n.l("terminal.linux_image_install_card.cancel")) == true || message?.contains("ancell") == true)
         facts.downloadFailureMessage = failedNow ? message : nil
         imageIssue = imageStatus?.verificationIssue
         state = LinuxGuestInstallStateDerivation.state(from: facts)

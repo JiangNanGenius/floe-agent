@@ -33,7 +33,7 @@ struct FilesView: View {
                 } actions: {
                     HStack {
                         Button("files.open") { viewModel.showingPicker = true }
-                        Button("生成图片") { showingImageCreation = true }
+                        Button("files.files_view.generate_image") { showingImageCreation = true }
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -49,7 +49,7 @@ struct FilesView: View {
                     Button("files.open", systemImage: "doc.badge.plus") {
                         viewModel.showingPicker = true
                     }
-                    Button("生成图片", systemImage: "wand.and.stars") {
+                    Button("files.files_view.generate_image", systemImage: "wand.and.stars") {
                         showingImageCreation = true
                     }
                 } label: {

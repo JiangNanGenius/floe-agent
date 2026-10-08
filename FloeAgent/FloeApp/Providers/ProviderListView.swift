@@ -53,13 +53,13 @@ struct ProviderListView: View {
         }
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
-        .confirmationDialog("添加模型服务商", isPresented: $showsProviderTypePicker) {
-            Button("对话模型服务商") { presentedEditor = .new(.conversation) }
-            Button("图片生成/编辑服务商") { presentedEditor = .new(.image) }
-            Button("视频生成服务商") { presentedEditor = .new(.video) }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog("providers.provider_list_view.add_model_provider", isPresented: $showsProviderTypePicker) {
+            Button("providers.provider_list_view.chat_model_provider") { presentedEditor = .new(.conversation) }
+            Button("providers.provider_list_view.image_generation_editing_provider") { presentedEditor = .new(.image) }
+            Button("providers.provider_list_view.video_generation_provider") { presentedEditor = .new(.video) }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
         } message: {
-            Text("先选择用途，再配置端点、凭据和模型能力。")
+            Text("providers.provider_list_view.choose_a_use_first_then_configure")
         }
         .sheet(item: $presentedEditor, onDismiss: {
             Task { await viewModel.load() }
@@ -88,7 +88,7 @@ struct ProviderListView: View {
 
     private var providerList: some View {
         List {
-            Section("对话模型服务商") {
+            Section("providers.provider_list_view.chat_model_provider") {
                 ForEach(viewModel.providers) { provider in
                     providerButton(
                         provider,
@@ -108,9 +108,9 @@ struct ProviderListView: View {
                         )
                     }
                 } header: {
-                    Text("图像模型服务商")
+                    Text("providers.provider_list_view.image_model_provider")
                 } footer: {
-                    Text("用于图片生成与编辑；默认路由在“辅助模型”中设置。")
+                    Text("providers.provider_list_view.used_for_image_generation_and_editing")
                 }
             }
 
@@ -124,9 +124,9 @@ struct ProviderListView: View {
                         )
                     }
                 } header: {
-                    Text("视频模型服务商")
+                    Text("providers.provider_list_view.video_model_provider")
                 } footer: {
-                    Text("视频是创意模式的可选增强，不影响私人画布和图片创作。")
+                    Text("providers.provider_list_view.video_is_an_optional_enhancement_in")
                 }
             }
         }
@@ -167,13 +167,13 @@ struct ProviderListView: View {
             Button {
                 presentedEditor = .existing(provider, role)
             } label: {
-                Label("编辑", systemImage: "pencil")
+                Label("workspace.workspace_canvas_view.edit", systemImage: "pencil")
             }
             .tint(.blue)
             Button(role: .destructive) {
                 Task { await viewModel.delete(provider) }
             } label: {
-                Label("删除", systemImage: "trash")
+                Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
             }
         }
     }
@@ -220,7 +220,7 @@ private struct ProviderRow: View {
                         .foregroundStyle(FloeTheme.pending)
                 }
                 if !provider.isEnabled {
-                    Text("已停用")
+                    Text("providers.provider_list_view.disabled")
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                 }

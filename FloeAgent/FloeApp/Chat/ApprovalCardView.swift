@@ -15,6 +15,7 @@
 import SwiftUI
 import FloeSecurity
 
+import FloeCore
 /// The four authorization scopes offered on an inline approval card.
 /// Mapping to ApprovalScope (§6.1/§10):
 /// - once    → singleUse = true
@@ -130,7 +131,7 @@ struct ApprovalCardView: View {
                     .foregroundStyle(isGateStopped ? FloeTheme.destructive : .secondary)
             }
             if isSkillCreation {
-                Text("此操作会创建一个技能并保存到技能库，之后对所有任务可用。批准即确认保存。")
+                Text("chat.approval_card_view.this_creates_a_skill_saved_to")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.pending)
             }
@@ -308,7 +309,7 @@ struct ApprovalCardView: View {
         case "readsFiles": "risk.reads_files"
         case "writesFiles": "risk.writes_files"
         case "deletesFiles": "risk.deletes_files"
-        case "executesLocalCode": "运行设备上的 Python 代码"
+        case "executesLocalCode": "chat.approval_card_view.run_python_code_on_this_device"
         case "executesRemoteCommand": "risk.executes_remote_command"
         case "modifiesRemoteSystem": "risk.modifies_remote_system"
         case "networkAccess": "risk.network_access"

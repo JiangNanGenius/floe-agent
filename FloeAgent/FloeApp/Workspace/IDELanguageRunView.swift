@@ -8,13 +8,15 @@
 
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
+import FloeCore
 import FloeExecution
 
 /// Inline en/zh strings for this surface. The primary agent may move these
 /// keys into `Localizable.xcstrings`; until then the sheet is usable in both
 /// languages without depending on an unmerged catalog entry.
 enum IDELanguageRunText {
-    static var isChinese: Bool { Locale.current.identifier.hasPrefix("zh") }
+    static var isChinese: Bool { FloeL10n.isChinese }
     static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
 
     /// The measured dual-core equal-work ratio, stated once so every surface
@@ -36,51 +38,51 @@ enum IDELanguageRunText {
     static func reason(_ reason: IDELanguageRunUnavailableReason) -> String {
         switch reason {
         case .noActiveFile:
-            return t("没有打开的文件", "No file is open")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.no_file_is_open"), "No file is open")
         case .invalidPath:
-            return t("文件路径无效，无法运行", "The file path is not valid")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_file_path_is_not_valid"), "The file path is not valid")
         case .unsupportedFileType(let ext):
-            return t("暂不支持运行 .\(ext) 文件", "Running .\(ext) files is not supported")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.running_files_is_not_supported_yet", ext), "Running .\(ext) files is not supported")
         case .localRuntimeMissing(let interpreter):
-            return t("本机未安装 \(interpreterName(interpreter)) 运行时", "The \(interpreterName(interpreter)) runtime is not installed on this device")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_runtime_is_not_installed_on", interpreterName(interpreter)), "The \(interpreterName(interpreter)) runtime is not installed on this device")
         case .remoteLanguageNeedsHost(let tool):
-            return t("\(tool) 只能通过已配置的 SSH 主机运行，请选择目标主机", "\(tool) can only run on a configured SSH host; choose a target host")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.can_only_run_on_a_configured", tool), "\(tool) can only run on a configured SSH host; choose a target host")
         case .noRemoteHostConfigured:
-            return t("没有已配置的 SSH 主机", "No SSH host is configured")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.no_ssh_host_is_configured"), "No SSH host is configured")
         case .conflictUnresolved:
-            return t("存在未解决的编辑冲突，已取消运行", "An unresolved edit conflict cancelled the run")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.an_unresolved_edit_conflict_cancelled_the"), "An unresolved edit conflict cancelled the run")
         case .snapshotSaveFailed:
-            return t("保存当前文件失败，已取消运行", "Saving the current file failed; the run was cancelled")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.saving_the_current_file_failed_the"), "Saving the current file failed; the run was cancelled")
         case .guestShapeUnavailable:
-            return t("所选的客户机内核数无法交付，已在启动前阻止运行（不会以 1 核静默替代 2 核）",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_selected_guest_core_count_cannot"),
                      "The selected guest core count cannot be delivered; the run was blocked before any guest start (an explicit dual-core request is never silently run on one hart)")
         case .gitHubNotConnected:
-            return t("尚未连接 GitHub，请在设置中登录", "GitHub is not connected; sign in under Settings")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.github_is_not_connected_sign_in"), "GitHub is not connected; sign in under Settings")
         case .noGitHubRepositorySelected:
-            return t("请选择要运行 CI 的 GitHub 仓库", "Choose the GitHub repository to run CI on")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.choose_the_github_repository_to_run"), "Choose the GitHub repository to run CI on")
         case .gitHubActionsUnsupported(let language):
-            return t("GitHub Actions 暂不支持运行 \(language)", "GitHub Actions cannot run \(language) yet")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.github_actions_does_not_yet_support", language), "GitHub Actions cannot run \(language) yet")
         case .invalidWorkflowPath:
-            return t("工作流路径无效，必须位于 .github/workflows 下的 YAML 文件", "The workflow path is invalid; it must be a YAML file under .github/workflows")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_workflow_path_is_invalid_it"), "The workflow path is invalid; it must be a YAML file under .github/workflows")
         }
     }
 
     static func stagingFailure(_ failure: IDERunStagingFailure) -> String {
         switch failure {
         case .invalidSourcePath:
-            return t("文件路径无效，无法传输", "The file path is not valid for transfer")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_file_path_is_not_valid_2"), "The file path is not valid for transfer")
         case .sourceTooLarge(let limit):
-            return t("文件超过 \(limit / 1024) KB 的传输上限", "The file exceeds the \(limit / 1024) KB transfer limit")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_file_exceeds_the_kb_transfer", limit / 1024), "The file exceeds the \(limit / 1024) KB transfer limit")
         case .sourceUnreadable:
-            return t("无法读取刚保存的文件内容", "The just-saved file could not be read")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_just_saved_file_could_not"), "The just-saved file could not be read")
         case .conflict:
-            return t("远端暂存目录存在不属于本次运行的数据，已停止且未覆盖", "The remote staging directory holds data this run does not own; nothing was overwritten")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_remote_staging_directory_holds_data"), "The remote staging directory holds data this run does not own; nothing was overwritten")
         case .writeFailed:
-            return t("远端未确认收到相同的字节内容", "The host did not acknowledge the exact bytes sent")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_host_did_not_acknowledge_the"), "The host did not acknowledge the exact bytes sent")
         case .verificationFailed:
-            return t("远端回读的内容与已保存的文件不一致，未执行运行", "The remote read-back did not match the saved file; the run was not executed")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_remote_read_back_did_not"), "The remote read-back did not match the saved file; the run was not executed")
         case .notVisibleOnHost:
-            return t("暂存文件在主机默认云工作区根目录不可见（主机可能自定义了根目录），未执行运行", "The staged file is not visible at the host's default cloud-workspace root (the host may use a custom root); the run was not executed")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_staged_file_is_not_visible"), "The staged file is not visible at the host's default cloud-workspace root (the host may use a custom root); the run was not executed")
         }
     }
 
@@ -88,67 +90,67 @@ enum IDELanguageRunText {
         switch status {
         case .idle: return nil
         case .preparing:
-            return t("正在准备运行（保存、探测、校验传输）…", "Preparing the run (save, probe, verified transfer)…")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.preparing_the_run_save_probe_verified"), "Preparing the run (save, probe, verified transfer)…")
         case .blocked(let reason): return Self.reason(reason)
         case .probeFailed(let tool):
-            return t("远端主机上没有可执行的 \(tool)，未发送运行命令", "\(tool) is not executable on the host; no run command was sent")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.no_executable_exists_on_the_remote", tool), "\(tool) is not executable on the host; no run command was sent")
         case .probeError:
-            return t("无法探测远端可执行文件，未发送运行命令", "Could not probe the remote executable; no run command was sent")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.could_not_probe_the_remote_executable"), "Could not probe the remote executable; no run command was sent")
         case .terminalUnavailable:
-            return t("本地终端无法启动", "The local terminal could not start")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_local_terminal_could_not_start"), "The local terminal could not start")
         case .guestShapeRefused(let refusal):
             return Self.guestShapeStartRefusal(refusal)
         case .projectToolEnvironmentUnavailable:
-            return t("无法解析本工作区的执行环境，已取消本地运行（未打开终端）", "Could not resolve this workspace's execution environment; the local run was not started")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.could_not_resolve_this_workspace_s"), "Could not resolve this workspace's execution environment; the local run was not started")
         case .remoteHostUnavailable:
-            return t("远程主机不可用", "The remote host is unavailable")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_remote_host_is_unavailable"), "The remote host is unavailable")
         case .remoteStagingUnavailable:
-            return t("该主机上没有可连接的 Floe 远程助手，无法完成已校验的源码传输", "No reachable Floe remote agent on this host, so the verified source transfer cannot run")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.no_reachable_floe_remote_agent_on"), "No reachable Floe remote agent on this host, so the verified source transfer cannot run")
         case .stagingFailed(let failure):
             return Self.stagingFailure(failure)
         case .stagingCleanupUnconfirmed(let stagingRoot, let stageFailure):
-            let base = t("本次运行未确认已清理远端暂存目录：\(stagingRoot)。该目录可能残留，可手动删除；不会删除不属于本次运行的数据。",
+            let base = t(FloeL10n.l("workspace.i_d_e_language_run_view.this_run_could_not_confirm_cleanup", stagingRoot),
                          "Could not confirm cleanup of this run's remote staging directory: \(stagingRoot). It may remain and can be removed manually; data not owned by this run is never deleted.")
             if let stageFailure {
                 return base + " " + Self.stagingFailure(stageFailure)
             }
             return base
         case .workspaceChanged:
-            return t("工作区已更改，已阻止本次运行", "The workspace changed; this run was blocked")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_workspace_changed_this_run_was"), "The workspace changed; this run was blocked")
         case .runningLocal:
-            return t("已在本地终端运行", "Running in the local terminal")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.running_in_the_local_terminal"), "Running in the local terminal")
         case .runningRemote:
-            return t("正在远程主机上运行（源码已校验传输）", "Running on the remote host (source staged and verified)")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.running_on_the_remote_host_source"), "Running on the remote host (source staged and verified)")
         case .cancelledPreparation:
-            return t("已取消运行准备。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.run_preparation_was_cancelled"),
                      "Run preparation was cancelled.")
         case .finishedLocal(let exitCode):
             if let exitCode {
-                return t("本地运行已结束（退出码 \(exitCode)）", "Local run finished (exit \(exitCode))")
+                return t(FloeL10n.l("workspace.i_d_e_language_run_view.local_run_ended_exit_code", exitCode), "Local run finished (exit \(exitCode))")
             }
-            return t("本地运行已结束", "Local run finished")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.local_run_finished"), "Local run finished")
         case .finishedRemote(let exitCode):
-            return t("远程运行已结束（退出码 \(exitCode)）", "Remote run finished (exit \(exitCode))")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_remote_run_ended_exit_code", exitCode), "Remote run finished (exit \(exitCode))")
         case .remoteRunTimedOut:
-            return t("远程运行超时，已断开 SSH 连接；无法确认远端进程是否退出或清理陷阱是否运行。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_remote_run_timed_out_and"),
                      "The remote run timed out and the SSH connection was closed; the remote process exit and cleanup trap are not confirmed.")
         case .stoppedLocal:
-            return t("已停止本次本地运行", "Stopped this local run")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.stopped_this_local_run"), "Stopped this local run")
         case .stopRequestedRemote:
-            return t("已请求停止本次远程运行；无法确认远端进程是否退出、SSH 客户端是否关闭或暂存目录是否已清理。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.stop_was_requested_for_this_remote"),
                      "Stop was requested for this remote run; the remote process exit, the SSH client close and the staging cleanup are not confirmed.")
         case .gitHubActionsPreparing:
-            return t("正在发布快照并触发 GitHub Actions…", "Publishing the snapshot and dispatching GitHub Actions…")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.publishing_the_snapshot_and_dispatching_github"), "Publishing the snapshot and dispatching GitHub Actions…")
         case .gitHubActionsDispatched(let runID):
             if let runID {
-                return t("已触发 GitHub Actions（run \(runID)）", "GitHub Actions dispatched (run \(runID))")
+                return t(FloeL10n.l("workspace.i_d_e_language_run_view.triggered_github_actions_run", runID), "GitHub Actions dispatched (run \(runID))")
             }
-            return t("已触发 GitHub Actions，正在关联运行记录", "GitHub Actions dispatched; associating the run")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.github_actions_dispatched_associating_the_run"), "GitHub Actions dispatched; associating the run")
         case .gitHubActionsAssociationPending:
-            return t("已触发工作流，但尚未唯一关联到本次快照；不会重复提交，将按快照继续核对。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_workflow_was_dispatched_but_no"),
                      "The workflow was dispatched but no unique run is associated yet; Floe will not resubmit and keeps checking by snapshot.")
         case .gitHubActionsCancelRequested:
-            return t("已请求取消；GitHub 会异步结束该运行，Floe 会继续核对直到确认 cancelled。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.cancel_requested_github_finalizes_the_run"),
                      "Cancel requested; GitHub finalizes the run asynchronously and Floe keeps checking until it is cancelled.")
         case .gitHubActionsFailed(let detail):
             return detail
@@ -159,10 +161,10 @@ enum IDELanguageRunText {
 
     static func shapeLabel(_ selection: GuestRunEntryShapeSelection) -> String {
         switch selection {
-        case .automatic: return t("自动（按声明信号）", "Automatic (by declared signals)")
-        case .singleCore: return t("1 个客户机内核", "1 guest core")
-        case .dualCore: return t("2 个客户机内核", "2 guest cores")
-        case .tripleCore: return t("3 个客户机内核", "3 guest cores")
+        case .automatic: return t(FloeL10n.l("workspace.i_d_e_language_run_view.automatic_by_declared_signals"), "Automatic (by declared signals)")
+        case .singleCore: return t(FloeL10n.l("workspace.i_d_e_language_run_view.1_guest_core"), "1 guest core")
+        case .dualCore: return t(FloeL10n.l("workspace.i_d_e_language_run_view.2_guest_cores"), "2 guest cores")
+        case .tripleCore: return t(FloeL10n.l("workspace.i_d_e_language_run_view.3_guest_cores"), "3 guest cores")
         }
     }
 
@@ -171,13 +173,13 @@ enum IDELanguageRunText {
     static func shapeRefusal(_ refusal: GuestRunEntryShapeRefusal) -> String {
         switch refusal {
         case .releaseVCPUUnsupported(let requested, let maximum):
-            return t("本版本最多交付 \(maximum) 个客户机内核，\(requested) 核不在此版本的内核阶梯内。选择前即被拒绝，不会以 1 核静默运行。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.this_build_delivers_at_most_guest", maximum, requested),
                      "This release delivers at most \(maximum) guest core(s); \(requested) cores are outside this release's qualified ladder. The run is refused before launch and never silently runs on one hart.")
         case .imageDoesNotProveSMP(let requested):
-            return t("当前镜像清单没有证明支持 \(requested) 核，资源池会拒绝该请求；不会静默降核运行。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_current_image_manifest_does_not", requested),
                      "The current image manifest does not prove \(requested) cores, so the pool refuses the request without silently reducing the core count.")
         case .dispatchNotShapeAware(let requested):
-            return t("运行调度路径尚未接入客户机形状请求，当前无法把 \(requested) 核交给启动流程；已在启动前拒绝，不会以 1 核静默运行。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_run_scheduling_path_does_not", requested),
                      "The run dispatch path cannot deliver a guest shape request yet, so \(requested) cores cannot reach the start path; the run is refused before launch and never silently runs on one hart.")
         }
     }
@@ -188,13 +190,13 @@ enum IDELanguageRunText {
     static func guestShapeStartRefusal(_ refusal: ShellGuestRunShapeError) -> String {
         switch refusal {
         case .startAlreadyInProgress:
-            return t("该环境已有另一次客户机启动正在进行；本次运行未启动任何东西，请等它结束后重试。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.another_guest_start_is_already_in"),
                      "Another guest start is already in progress for this environment; nothing was started for this run. Wait for it to finish and run again.")
         case .runningGuestShapeMismatch(_, let requested, let running):
-            return t("该环境的客户机正在以 \(running) 个内核运行，与请求的 \(requested) 个内核不一致；已拒绝本次请求，未重启或改变正在运行的客户机。请先停止该客户机，再以新形状启动。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_guest_in_this_environment_is", running, requested),
                      "This environment's guest is already running with \(running) core(s), which does not match the requested \(requested); the request was refused and the running guest was not restarted or reshaped. Stop the guest to start it at the new shape.")
         case .runningGuestShapeUnknown(_, let requested):
-            return t("该环境已有客户机在运行，但无法读取其已授予的内核数；为确保不静默按其他形状运行，请求 \(requested) 个内核的本次运行已被拒绝。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.a_guest_is_already_running_in", requested),
                      "A guest is already running for this environment but its granted core count could not be read; to avoid running at an unrequested shape, this \(requested)-core run was refused.")
         }
     }
@@ -204,14 +206,14 @@ enum IDELanguageRunText {
     /// the gate that blocked two instead of leaving a silent downgrade.
     static func automaticShapeNote(_ plan: GuestRunEntryShapePlan) -> String {
         guard plan.recommendation.shape.vcpus == .two else {
-            return t("声明信号未要求并行：本次以 1 个客户机内核启动。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_declared_signals_do_not_ask"),
                      "The declared signals do not ask for parallelism: this run starts with 1 guest core.")
         }
         if plan.automaticDeliversRecommendation {
-            return t("声明信号表明可并行：本次将以 2 个客户机内核启动。双核已通过 S0–S4 正确性验证，但等量工作基准在 2 核上更慢（约 \(IDELanguageRunText.speedupText)）；仅在任务确实受益于并行时使用。",
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.the_declared_signals_support_parallelism_this", IDELanguageRunText.speedupText),
                      "Declared signals indicate parallel work: this run starts with 2 guest cores. Dual-core passed the S0–S4 correctness contract, but the equal-work benchmark is slower on two cores (about \(IDELanguageRunText.speedupText)); use it only when the work really benefits from parallelism.")
         }
-        var note = t("声明信号推荐 2 核，但当前只能交付 1 核。本次将以 1 个客户机内核启动。",
+        var note = t(FloeL10n.l("workspace.i_d_e_language_run_view.the_declared_signals_recommend_2_cores"),
                      "The declared signals recommend 2 cores, but only 1 can be delivered. This run starts with 1 guest core.")
         if let refusal = plan.option(for: .dualCore)?.refusal {
             note += " " + shapeRefusal(refusal)
@@ -222,13 +224,13 @@ enum IDELanguageRunText {
     static func mechanism(_ mechanism: IDELanguageRunMechanism) -> String {
         switch mechanism {
         case .localInterpreter:
-            return t("本机运行时", "On-device runtime")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.on_device_runtime"), "On-device runtime")
         case .remoteInterpreter:
-            return t("远程解释运行", "Remote interpreter")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.remote_interpreter"), "Remote interpreter")
         case .remoteCompileRun:
-            return t("远程编译运行", "Remote compile & run")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.remote_compile_run"), "Remote compile & run")
         case .gitHubActionsCloud:
-            return t("GitHub Actions 云端构建", "GitHub Actions cloud build")
+            return t(FloeL10n.l("workspace.i_d_e_language_run_view.github_actions_cloud_build"), "GitHub Actions cloud build")
         }
     }
 
@@ -240,32 +242,32 @@ enum IDELanguageRunText {
     }
 
     static func snapshotSummary(_ preview: GitHubActionsSnapshotPreview?) -> String {
-        guard let preview else { return t("尚无快照", "No snapshot yet") }
+        guard let preview else { return t(FloeL10n.l("workspace.i_d_e_language_run_view.no_snapshot_yet"), "No snapshot yet") }
         let bytes = ByteCountFormatter.string(fromByteCount: Int64(preview.totalBytes), countStyle: .file)
-        return t("将上传 \(preview.manifest.fileCount) 个文件（\(bytes)）；排除 \(preview.manifest.excluded.count) 个。",
+        return t(FloeL10n.l("workspace.i_d_e_language_run_view.files_will_be_uploaded_excluded", preview.manifest.fileCount, bytes, preview.manifest.excluded.count),
                  "\(preview.manifest.fileCount) files (\(bytes)) will be uploaded; \(preview.manifest.excluded.count) excluded.")
     }
 
     static func role(_ role: IDEGitHubActionsRunRole) -> String {
         switch role {
-        case .build: return t("编译构建", "Build")
-        case .lintTest: return t("Lint/测试", "Lint/test")
+        case .build: return t(FloeL10n.l("workspace.i_d_e_language_run_view.build"), "Build")
+        case .lintTest: return t(FloeL10n.l("workspace.i_d_e_language_run_view.lint_test"), "Lint/test")
         }
     }
 
     static func remoteState(_ state: GitHubActionsJobState) -> String {
         switch state {
-        case .preparing: return t("准备中", "Preparing")
-        case .snapshotPublished: return t("快照已发布", "Snapshot published")
-        case .dispatching: return t("已触发，等待运行记录", "Dispatched, awaiting run")
-        case .associationPending: return t("等待关联运行", "Awaiting run association")
-        case .queued: return t("排队中", "Queued")
-        case .running: return t("运行中", "Running")
-        case .cancelling: return t("取消中", "Cancelling")
-        case .completed: return t("已完成", "Completed")
-        case .failed: return t("失败", "Failed")
-        case .cancelled: return t("已取消", "Cancelled")
-        case .error: return t("出错", "Error")
+        case .preparing: return t(FloeL10n.l("canvas.generation.state.preparing"), "Preparing")
+        case .snapshotPublished: return t(FloeL10n.l("workspace.i_d_e_language_run_view.snapshot_published"), "Snapshot published")
+        case .dispatching: return t(FloeL10n.l("workspace.i_d_e_language_run_view.dispatched_awaiting_run"), "Dispatched, awaiting run")
+        case .associationPending: return t(FloeL10n.l("workspace.i_d_e_language_run_view.awaiting_run_association"), "Awaiting run association")
+        case .queued: return t(FloeL10n.l("workspace.i_d_e_language_run_view.queued"), "Queued")
+        case .running: return t(FloeL10n.l("workspace.i_d_e_language_run_view.running"), "Running")
+        case .cancelling: return t(FloeL10n.l("workspace.i_d_e_language_run_view.cancelling"), "Cancelling")
+        case .completed: return t(FloeL10n.l("workspace.i_d_e_language_run_view.completed"), "Completed")
+        case .failed: return t(FloeL10n.l("workspace.i_d_e_language_run_view.failed"), "Failed")
+        case .cancelled: return t(FloeL10n.l("workspace.i_d_e_language_run_view.cancelled"), "Cancelled")
+        case .error: return t(FloeL10n.l("settings.files.config_sync.error"), "Error")
         }
     }
 }

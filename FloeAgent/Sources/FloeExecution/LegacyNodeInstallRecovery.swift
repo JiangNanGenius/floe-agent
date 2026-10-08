@@ -25,7 +25,7 @@ public enum LegacyNodeInstallRecovery {
         var candidate = base
         for component in relative.split(separator: "/") {
             candidate = candidate.appendingPathComponent(String(component)).resolvingSymlinksInPath().standardizedFileURL
-            guard candidate.path.hasPrefix(base.path + "/") else { throw FloeError.validationFailed("依赖路径越出环境") }
+            guard candidate.path.hasPrefix(base.path + "/") else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_dependency_path_is_outside_the")) }
         }
         return candidate
     }
@@ -33,7 +33,7 @@ public enum LegacyNodeInstallRecovery {
     private static func boundedData(_ url: URL) throws -> Data {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 2 * 1024 * 1024 else {
-            throw FloeError.validationFailed("软件包清单缺失或过大")
+            throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_package_manifest_is_missing_or"))
         }
         return try Data(contentsOf: url)
     }
@@ -46,12 +46,12 @@ public enum LegacyNodeInstallRecovery {
         guard fm.fileExists(atPath: transaction.path) else { return }
         let journalURL = try contained("journal.json", in: transaction)
         guard fm.fileExists(atPath: journalURL.path) else {
-            throw FloeError.validationFailed("npm 暂存目录缺少恢复记录；保留文件，请检查环境")
+            throw FloeError.validationFailed(FloeL10n.l("execution.legacy_node_install_recovery.the_npm_staging_directory_is_missing"))
         }
         let journal = try JSONDecoder().decode(NodeJournal.self, from: boundedData(journalURL))
         let backup = try contained("backup", in: transaction)
         let destination = try contained("usr/lib/node_modules", in: environment.writableLayerURL)
-        guard ["prepared", "committing", "committed"].contains(journal.phase) else { throw FloeError.validationFailed("npm 恢复记录无效") }
+        guard ["prepared", "committing", "committed"].contains(journal.phase) else { throw FloeError.validationFailed(FloeL10n.l("execution.legacy_node_install_recovery.the_npm_restore_record_is_invalid")) }
         if journal.phase == "committing" {
             if fm.fileExists(atPath: backup.path) {
                 if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }

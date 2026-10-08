@@ -313,7 +313,7 @@ public enum WireTranslator {
         // user knows to regenerate the key. Redact only actual key material.
         let message: String
         if status == 401 || status == 403 {
-            message = rawBody.isEmpty ? "API key 无效或已过期" : rawBody
+            message = rawBody.isEmpty ? FloeL10n.l("providers.wire_translator.api_key_is_invalid_or_expired") : rawBody
         } else {
             message = SecretRedactor.redact(rawBody)
         }

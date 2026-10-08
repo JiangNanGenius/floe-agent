@@ -12,6 +12,7 @@
 import SwiftUI
 import FloePersistence
 
+import FloeCore
 /// Static mapping from state machine names (preparing, streamingModel,
 /// …) to localized copy, semantic color and the loading flag.
 enum RunStateLocalizer {
@@ -25,16 +26,16 @@ enum RunStateLocalizer {
         case "streamingModel": "state.streaming"
         case "reconnecting": "state.reconnecting"
         case "committingResults": "state.committing_results"
-        case "reviewingApproval": "审批模型正在审核…"
+        case "reviewingApproval": "chat.run_state_localizer.the_approval_model_is_reviewing"
         case "verifying": "state.verifying"
         case "executingTool": "state.executing_tool"
         case "waitingApproval": "state.waiting_approval"
-        case "compacting": "正在压缩上下文"
+        case "compacting": "chat.run_state_localizer.compacting_context"
         case "checkpointed", "paused", "interrupted": "state.paused"
-        case "noProgress", "blocked": "任务受阻，需处理"
-        case "budgetLimited": "已达到所设预算，可继续"
-        case "truncated": "输出未完成，可继续"
-        case "waitingUser": "等待你的输入"
+        case "noProgress", "blocked": "chat.run_state_localizer.task_blocked_action_needed"
+        case "budgetLimited": "chat.run_state_localizer.the_set_budget_was_reached_you"
+        case "truncated": "chat.run_state_localizer.output_unfinished_you_can_continue"
+        case "waitingUser": "chat.run_state_localizer.waiting_for_your_input"
         case "cancelled": "state.stopped"
         case "cancelling": "state.cancelling"
         case "completed": "state.round_ended"
@@ -102,8 +103,7 @@ enum RunStateLocalizer {
             "state.stopped"
         case "maxTokens", "length":
             "state.truncated"
-        case "budgetLimited", "noProgress":
-            "任务未完成，可继续"
+        case "budgetLimited", "noProgress":"chat.run_state_localizer.task_unfinished_you_can_continue"
         case "toolUse":
             "state.round_ended"
         default:

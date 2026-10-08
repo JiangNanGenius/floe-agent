@@ -70,7 +70,7 @@ struct BackgroundExecutionSettingsView: View {
                 }
             }
         }
-        .navigationTitle("background.settings.title")
+        .navigationTitle(FloeL10n.l("background.settings.title"))
         .task { await center.loadBackgroundExecution() }
     }
 }

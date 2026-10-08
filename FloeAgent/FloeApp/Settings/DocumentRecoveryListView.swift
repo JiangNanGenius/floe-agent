@@ -2,6 +2,7 @@
 import SwiftUI
 import FloeDocuments
 
+import FloeCore
 struct DocumentRecoveryListView: View {
     @State private var records: [DocumentRecoveryRecord] = []
     @State private var error: String?
@@ -12,7 +13,7 @@ struct DocumentRecoveryListView: View {
             if let error {
                 Section {
                     Text(error).foregroundStyle(.secondary)
-                    Button("重试") { Task { await load() } }
+                    Button("settings.document_recovery_list_view.retry") { Task { await load() } }
                 }
             }
             if loading { ProgressView() }
@@ -30,10 +31,10 @@ struct DocumentRecoveryListView: View {
                 }
             }
             if !loading, error == nil, records.isEmpty {
-                ContentUnavailableView("没有保留的文档", systemImage: "doc.badge.clock")
+                ContentUnavailableView("settings.document_recovery_list_view.no_kept_documents", systemImage: "doc.badge.clock")
             }
         }
-        .navigationTitle("保留的文档")
+        .navigationTitle(FloeL10n.l("settings.all_workspaces_files_view.kept_documents"))
         .task { await load() }
         .refreshable { await load() }
     }
@@ -65,7 +66,7 @@ private struct RecoveredOfficePreview: View {
             if !usesOfficeHost {
                 QuickLookView(url: record.workingURL)
             } else if editing {
-                ContentUnavailableView("正在全屏编辑", systemImage: "doc.richtext")
+                ContentUnavailableView("settings.document_recovery_list_view.editing_full_screen", systemImage: "doc.richtext")
             } else {
                 OfficeDocumentSurface(session: session)
             }
@@ -75,13 +76,13 @@ private struct RecoveredOfficePreview: View {
         .navigationBarBackButtonHidden()
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("返回") { Task { await session.release(); dismiss() } }
+                Button("settings.document_recovery_list_view.back") { Task { await session.release(); dismiss() } }
             }
             ToolbarItem(placement: .primaryAction) {
                 if usesOfficeHost {
                     HStack {
-                        Button("查看保留版本", systemImage: "clock.arrow.circlepath") { choosingVersion = true }
-                        Button("全屏编辑", systemImage: "square.and.pencil") { editing = true }
+                        Button("settings.document_recovery_list_view.view_kept_versions", systemImage: "clock.arrow.circlepath") { choosingVersion = true }
+                        Button("settings.document_recovery_list_view.full_screen_editing", systemImage: "square.and.pencil") { editing = true }
                     }.disabled(!session.canAct)
                 }
             }
@@ -116,7 +117,7 @@ private struct DocumentRecoveryVersionsView: View {
     var body: some View {
         List {
             Section {
-                Text("选择要恢复的内容。当前副本会保留为另一个版本，原文件不会改变。")
+                Text("settings.document_recovery_list_view.choose_what_to_restore_the_current")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if loading { ProgressView() }
@@ -144,9 +145,9 @@ private struct DocumentRecoveryVersionsView: View {
                 }.disabled(choosing || !session.canAct || version.kind == .current)
             }
         }
-        .navigationTitle("保留的版本")
+        .navigationTitle(FloeL10n.l("settings.document_recovery_list_view.kept_versions"))
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() }.disabled(choosing) }
+            ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.done") { dismiss() }.disabled(choosing) }
         }
         .interactiveDismissDisabled(choosing)
         .task {
@@ -157,11 +158,11 @@ private struct DocumentRecoveryVersionsView: View {
     }
     private func title(_ kind: DocumentRecoveryVersion.Kind) -> String {
         switch kind {
-        case .current: "当前副本"
-        case .lastSave: "上次保存尝试"
-        case .editor: "编辑器保留的副本"
-        case .previousEdit: "之前的编辑"
-        case .export: "已准备的导出副本"
+        case .current: FloeL10n.l("settings.document_recovery_list_view.current_copy")
+        case .lastSave: FloeL10n.l("settings.document_recovery_list_view.last_save_attempt")
+        case .editor: FloeL10n.l("settings.document_recovery_list_view.copies_kept_by_the_editor")
+        case .previousEdit: FloeL10n.l("settings.document_recovery_list_view.earlier_edit")
+        case .export: FloeL10n.l("settings.document_recovery_list_view.prepared_export_copy")
         }
     }
 }

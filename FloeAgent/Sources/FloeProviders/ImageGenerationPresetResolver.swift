@@ -115,12 +115,12 @@ public enum ImageGenerationPresetResolver {
             ?? cleaned(selection.nativeSizeOverride).flatMap { isAspectRatio($0) ? $0 : nil }
             ?? "1:1"
         guard supportedAspects.contains(aspect) else {
-            throw RemoteImageError.requestFailed("当前图片模型不支持画面比例 \(aspect)。")
+            throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_current_image_model_does_not", aspect))
         }
         let resolution = cleaned(selection.resolution)?.uppercased()
             ?? defaultResolution(provider: provider, modelRemoteID: modelRemoteID)
         guard (["1K", "2K", "4K"].contains(resolution) || (provider == .volcengineArk && ["1.5K", "3K"].contains(resolution))) else {
-            throw RemoteImageError.requestFailed("当前图片模型不支持分辨率 \(resolution)。")
+            throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_current_image_model_does_not_2", resolution))
         }
 
         switch provider {
@@ -130,16 +130,16 @@ public enum ImageGenerationPresetResolver {
             let model = modelRemoteID?.lowercased() ?? ""
             if model.contains("seedream-5-0") {
                 let allowed = model.contains("-pro") ? ["1K", "1.5K", "2K"] : ["2K", "3K", "4K"]
-                guard allowed.contains(resolution) else { throw RemoteImageError.requestFailed("所选 Seedream 模型不支持分辨率 \(resolution)。") }
+                guard allowed.contains(resolution) else { throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_selected_seedream_model_does_not", resolution)) }
             }
             return volcengineSize(aspect: aspect, resolution: resolution)
         case .alibabaStudio:
             if operation != .generate, resolution == "4K" {
-                throw RemoteImageError.requestFailed("阿里云图片编辑最高支持 2K，请降低分辨率后重试。")
+                throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.alibaba_cloud_image_editing_supports_up"))
             }
             let model = modelRemoteID?.lowercased() ?? ""
             if resolution == "4K", !model.contains("wan2.7-image-pro") {
-                throw RemoteImageError.requestFailed("所选阿里云图片模型不支持 4K。")
+                throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.the_selected_alibaba_cloud_image_model"))
             }
             return alibabaSize(aspect: aspect, resolution: resolution)
         case .googleGemini:
@@ -160,7 +160,7 @@ public enum ImageGenerationPresetResolver {
             ? ["low", "medium", "high", "xhigh", "max", "auto"]
             : ["low", "medium", "high", "auto"]
         guard allowed.contains(value) else {
-            throw RemoteImageError.requestFailed("OpenAI 图片质量参数无效：\(value)。")
+            throw RemoteImageError.requestFailed(FloeL10n.l("providers.image_generation_preset_resolver.invalid_openai_image_quality_parameter", value))
         }
         return value
     }

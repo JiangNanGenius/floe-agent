@@ -2,14 +2,15 @@
 import Foundation
 import Crypto
 
+import FloeCore
 public enum NoteError: Error, LocalizedError, Sendable {
     case notFound, conflict, invalidDocument(String), invalidOperation(String), resourceUnavailable, storageUnavailable(String)
     public var errorDescription: String? {
         switch self {
-        case .notFound: "手记内容不存在。"
-        case .conflict: "内容已被修改，请重新载入后再试。"
+        case .notFound: FloeL10n.l("notes.note_models.the_note_content_does_not_exist")
+        case .conflict: FloeL10n.l("notes.note_models.the_content_was_modified_reload_and")
         case .invalidDocument(let reason), .invalidOperation(let reason): reason
-        case .resourceUnavailable: "资料尚未下载或已经不可用。"
+        case .resourceUnavailable: FloeL10n.l("notes.note_models.the_material_has_not_been_downloaded")
         case .storageUnavailable(let reason): reason
         }
     }
@@ -127,7 +128,7 @@ public struct MindMapAttachment: Codable, Hashable, Identifiable, Sendable {
               !fileName.contains("\\"), !fileName.contains(":"),
               !fileName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               fileName.utf8.count <= 255, mediaType.utf8.count <= 256, caption.utf8.count <= 65_536 else {
-            throw NoteError.invalidDocument("主题附件的文件名或说明无效。")
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_topic_attachment_file_name_or"))
         }
     }
 }
@@ -285,43 +286,43 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
     }
     public func validate() throws {
         guard schemaVersion == 1, revision >= 0, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw NoteError.invalidDocument("文档版本或标题无效。")
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_document_version_or_title_is"))
         }
         guard Set(pages.map(\.id)).count == pages.count,
               Set(nodes.map(\.id)).count == nodes.count,
               Set(connections.map(\.id)).count == connections.count,
               Set((summaries ?? []).map(\.id)).count == (summaries ?? []).count,
               pages.count <= 5_000, connections.count <= 10_000, (summaries ?? []).count <= 10_000 else {
-            throw NoteError.invalidDocument("文档包含重复标识。")
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_document_contains_duplicate_identifiers"))
         }
         let links = linkedMindMaps ?? []
         guard links.count <= 100, Set(links.map(\.id)).count == links.count,
               Set(links.map(\.documentID)).count == links.count,
               kind != .mindMap || links.isEmpty,
               links.allSatisfy({ link in link.documentID != id && (link.pageID == nil || pages.contains(where: { $0.id == link.pageID })) }) else {
-            throw NoteError.invalidDocument("关联导图重复、数量过多或页面锚点无效。")
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.linked_mind_maps_are_duplicated_too"))
         }
         for page in pages {
             guard page.width.isFinite, page.height.isFinite, page.width > 0, page.height > 0,
                   page.width <= 16_384, page.height <= 16_384,
                   Set(page.elements.map(\.id)).count == page.elements.count, page.elements.count <= 2_000,
                   page.elements.filter({ $0.kind == .image }).count <= 64 else {
-                throw NoteError.invalidDocument("页面尺寸或内容标识无效。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_page_size_or_content_identifier"))
             }
             if let index = page.pdfPageIndex, index < 0 || page.backgroundResourceID == nil {
-                throw NoteError.invalidDocument("PDF 页面引用无效。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_pdf_page_reference_is_invalid"))
             }
             for element in page.elements {
                 guard element.frame.isValid, element.fontSize.isFinite, (1...512).contains(element.fontSize) else {
-                    throw NoteError.invalidDocument("页面内容尺寸无效。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_page_content_size"))
                 }
                 if element.kind == .image && element.resourceID == nil {
-                    throw NoteError.invalidDocument("图片缺少资源引用。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_image_is_missing_a_resource"))
                 }
             }
         }
         if kind != .mindMap, mindMapDirection != nil || !(summaries ?? []).isEmpty {
-            throw NoteError.invalidDocument("普通手记不能包含导图布局。")
+            throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_regular_note_cannot_contain_a"))
         }
         switch kind {
         case .office:
@@ -329,7 +330,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                   engineeringResourceID == nil, engineeringFileName == nil,
                   let name = officeFileName, name == (name as NSString).lastPathComponent,
                   ["docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp"].contains((name as NSString).pathExtension.lowercased()) else {
-                throw NoteError.invalidDocument("Office 文档缺少有效的文件引用。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_office_document_is_missing_a"))
             }
         case .engineering:
             guard pages.isEmpty, nodes.isEmpty, connections.isEmpty,
@@ -337,54 +338,54 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                   officeTextResourceID == nil, officeExtractedText == nil, officeTextError == nil,
                   engineeringResourceID != nil, let name = engineeringFileName,
                   Self.isSupportedEngineeringFileName(name) else {
-                throw NoteError.invalidDocument("工程图文档缺少有效的文件引用，或格式不受支持。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_engineering_drawing_document_is_missing"))
             }
         case .notebook:
             guard !pages.isEmpty, nodes.isEmpty, connections.isEmpty, officeResourceID == nil, officeFileName == nil,
                   engineeringResourceID == nil, engineeringFileName == nil else {
-                throw NoteError.invalidDocument("笔记至少需要一页，且不能包含导图节点。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_note_needs_at_least_one"))
             }
         case .mindMap:
             guard Set(nodes.compactMap(\.imageResourceID)).count <= 64 else {
-                throw NoteError.invalidDocument("一张导图最多使用 64 张不同的图片，请拆分导图。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_can_use_at"))
             }
             guard pages.isEmpty, !nodes.isEmpty, nodes.count <= 10_000, officeResourceID == nil, officeFileName == nil,
                   engineeringResourceID == nil, engineeringFileName == nil,
                   nodes.filter({ $0.parentID == nil }).count == 1 else {
-                throw NoteError.invalidDocument("导图需要唯一中心主题。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_requires_a_single"))
             }
             let lookup = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
-            guard mindMapDirection == nil || (0...2).contains(mindMapDirection!) else { throw NoteError.invalidDocument("导图方向无效。") }
+            guard mindMapDirection == nil || (0...2).contains(mindMapDirection!) else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_direction")) }
             let permittedStyles: Set<String> = ["fontSize", "fontFamily", "color", "background", "fontWeight", "width", "border", "textDecoration"]
             guard nodes.reduce(0, { $0 + ($1.attachments ?? []).count }) <= 2_000 else {
-                throw NoteError.invalidDocument("一张导图最多保留 2000 个附件。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_can_keep_at"))
             }
             for node in nodes {
                 let attachments = node.attachments ?? []
                 guard attachments.count <= 32, Set(attachments.map(\.id)).count == attachments.count else {
-                    throw NoteError.invalidDocument("每个主题最多保留 32 个附件，且标识不能重复。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.each_topic_keeps_at_most_32"))
                 }
                 for attachment in attachments { try attachment.validate() }
                 guard node.order >= 0, node.title.utf8.count <= 65_536, node.note.utf8.count <= 65_536,
                       (node.style ?? [:]).allSatisfy({ permittedStyles.contains($0.key) && $0.value.utf8.count <= 256 }),
                       node.direction == nil || node.direction == 0 || node.direction == 1,
                       (node.tags ?? []).count <= 100, (node.icons ?? []).count <= 100 else {
-                    throw NoteError.invalidDocument("导图样式无效。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_style"))
                 }
                 if let position = node.position, !position.isValid {
-                    throw NoteError.invalidDocument("导图主题位置无效。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_topic_position"))
                 }
                 if let link = node.hyperLink, !link.isEmpty {
                     guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
-                        throw NoteError.invalidDocument("导图链接只支持网页地址。")
+                        throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.mind_map_links_support_only_web"))
                     }
                 }
                 var visited = Set<UUID>()
                 var current: MindMapNode? = node
                 while let value = current {
-                    guard visited.insert(value.id).inserted else { throw NoteError.invalidDocument("导图不能形成循环。") }
+                    guard visited.insert(value.id).inserted else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_cannot_form_a")) }
                     if let parent = value.parentID {
-                        guard let next = lookup[parent] else { throw NoteError.invalidDocument("导图父节点不存在。") }
+                        guard let next = lookup[parent] else { throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_mind_map_parent_node_does")) }
                         current = next
                     } else { current = nil }
                 }
@@ -393,19 +394,19 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                 let count = nodes.filter { $0.parentID == summary.parent }.count
                 guard lookup[summary.parent] != nil, summary.start >= 0, summary.end >= summary.start, summary.end < count, summary.label.utf8.count <= 65_536,
                       (summary.style ?? [:]).count <= 32, (summary.style ?? [:]).allSatisfy({ $0.key.utf8.count <= 64 && $0.value.utf8.count <= 256 }) else {
-                    throw NoteError.invalidDocument("导图概要范围无效。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_summary_scope"))
                 }
             }
             for edge in connections {
                 for offset in [edge.delta1, edge.delta2].compactMap({ $0 }) {
                     guard offset.x.isFinite, offset.y.isFinite, abs(offset.x) <= 100_000, abs(offset.y) <= 100_000 else {
-                        throw NoteError.invalidDocument("导图关联线位置无效。")
+                        throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_connection_position"))
                     }
                 }
                 guard edge.title.utf8.count <= 65_536, (edge.style ?? [:]).count <= 32,
                       (edge.style ?? [:]).allSatisfy({ $0.key.utf8.count <= 64 && $0.value.utf8.count <= 256 }),
                       edge.from != edge.to, lookup[edge.from] != nil, lookup[edge.to] != nil else {
-                    throw NoteError.invalidDocument("导图关联节点无效。")
+                    throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_mind_map_connection_node"))
                 }
             }
         }

@@ -23,23 +23,23 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
     var title: LocalizedStringKey {
         switch self {
         case .general: "settings.section.general"
-        case .personalization: "记忆与个性化"
+        case .personalization: "settings.settings_root_view.memories_personalization"
         case .providers: "settings.section.providers"
         case .auxiliary: "settings.section.auxiliary"
         case .webSearch: "websearch.title"
         case .localModels: "localmodels.title"
-        case .canvas: "画布"
+        case .canvas: "settings.settings_root_view.canvas"
         case .permissions: "settings.section.permissions"
-        case .appleCapabilities: "Apple 能力"
+        case .appleCapabilities: "settings.apple_capabilities_settings_view.apple_capabilities"
         case .privacy: "settings.section.privacy"
         case .execution: "settings.section.execution"
         case .backgroundExecution: "settings.section.background_execution"
         case .files: "settings.section.files"
-        case .sourceControl: "GitHub 与源码管理"
+        case .sourceControl: "settings.git_hub_settings_view.github_source_control"
         case .sync: "settings.section.sync"
         case .remote: "settings.section.remote"
         case .usage: "settings.section.usage"
-        case .dataManagement: "数据管理"
+        case .dataManagement: "settings.data_management_view.data_management"
         case .diagnostics: "settings.section.diagnostics"
         }
     }
@@ -79,7 +79,6 @@ struct SettingsRootView: View {
     @ObservedObject var environment: AppEnvironment
     @State private var selection: SettingsSection? = .general
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-
     var body: some View {
         Group {
         if horizontalSizeClass == .regular {
@@ -91,7 +90,7 @@ struct SettingsRootView: View {
                         .tag(section)
                         .accessibilityIdentifier("settings.section.\(section.rawValue)")
                 }
-                .navigationTitle("settings.title")
+                .navigationTitle(FloeL10n.l("settings.title"))
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("action.done") { dismiss() }
@@ -122,7 +121,7 @@ struct SettingsRootView: View {
                     .frame(minHeight: FloeTheme.minimumTarget)
                 }
                 .accessibilityIdentifier("settings.sections")
-                .navigationTitle("settings.title")
+                .navigationTitle(FloeL10n.l("settings.title"))
                 .navigationDestination(for: SettingsSection.self) { section in
                     detailView(for: section)
                 }
@@ -135,15 +134,15 @@ struct SettingsRootView: View {
         }
         }
         .environmentObject(environment)
-        .alert("配置未保存", isPresented: Binding(
+        .alert("settings.settings_root_view.configuration_not_saved", isPresented: Binding(
             get: { environment.settingsCenter.settingsSaveError != nil },
             set: { if !$0 { environment.settingsCenter.clearSettingsSaveError() } }
         )) {
-            Button("完成", role: .cancel) {
+            Button("workspace.workspace_canvas_view.done", role: .cancel) {
                 environment.settingsCenter.clearSettingsSaveError()
             }
         } message: {
-            Text(environment.settingsCenter.settingsSaveError ?? "请稍后重试。")
+            Text(environment.settingsCenter.settingsSaveError ?? "settings.settings_root_view.please_try_again")
         }
     }
 
@@ -225,68 +224,68 @@ private struct CanvasSettingsView: View {
 
     var body: some View {
         Form {
-            Section("模型") {
-                Picker("画布助手模型", selection: agentModelBinding) {
-                    Text("继承 Agent 默认模型").tag(Optional<UUID>.none)
+            Section("settings.usage_statistics_view.model") {
+                Picker("settings.settings_root_view.canvas_assistant_model", selection: agentModelBinding) {
+                    Text("settings.settings_root_view.inherit_the_agent_default_model").tag(Optional<UUID>.none)
                     ForEach(center.canvasAssistantModels) { model in
                         Text(model.displayName).tag(Optional(model.id))
                     }
                 }
-                Picker("画面理解模型", selection: visionModelBinding) {
-                    Text("继承辅助视觉模型").tag(Optional<UUID>.none)
+                Picker("settings.settings_root_view.screen_understanding_model", selection: visionModelBinding) {
+                    Text("settings.settings_root_view.inherit_the_auxiliary_vision_model").tag(Optional<UUID>.none)
                     ForEach(center.visionModels) { model in
                         Text(model.displayName).tag(Optional(model.id))
                     }
                 }
-                LabeledContent("当前理解路径") {
-                    Text(center.canvasVisionDestinationName() ?? "尚未配置")
+                LabeledContent("settings.settings_root_view.current_understanding_path") {
+                    Text(center.canvasVisionDestinationName() ?? "settings.settings_root_view.not_configured")
                         .foregroundStyle(.secondary)
                 }
-                Text("画布助手负责搜索、读取素材与调用生成工具；画面理解模型负责识别笔迹、草图和非多模态模型无法读取的视觉内容。")
+                Text("settings.settings_root_view.the_canvas_assistant_handles_search_reading")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             Section("Apple Pencil") {
-                Picker("双击 Pencil", selection: $preferences.doubleTapAction) {
-                    Text("切换橡皮").tag(CanvasDoubleTapAction.toggleEraser)
-                    Text("打开画笔菜单").tag(CanvasDoubleTapAction.showToolPalette)
-                    Text("新建卡片").tag(CanvasDoubleTapAction.createCard)
+                Picker("settings.settings_root_view.double_tap_pencil", selection: $preferences.doubleTapAction) {
+                    Text("settings.settings_root_view.switch_to_eraser").tag(CanvasDoubleTapAction.toggleEraser)
+                    Text("settings.settings_root_view.open_brush_menu").tag(CanvasDoubleTapAction.showToolPalette)
+                    Text("workspace.workspace_canvas_view.new_card").tag(CanvasDoubleTapAction.createCard)
                 }
-                Toggle("允许手指绘画", isOn: $preferences.fingerDrawingEnabled)
-                LabeledContent("默认粗细") {
+                Toggle("settings.settings_root_view.allow_finger_drawing", isOn: $preferences.fingerDrawingEnabled)
+                LabeledContent("settings.settings_root_view.default_thickness") {
                     Slider(value: $preferences.pencilWidth, in: 1...18, step: 0.5)
                         .frame(maxWidth: 260)
                 }
             }
 
-            Section("理解与整理") {
-                Picker("默认整理方式", selection: $preferences.understandingMode) {
-                    Text("自动判断").tag(CanvasInkUnderstandingMode.automatic)
-                    Text("文字").tag(CanvasInkUnderstandingMode.text)
-                    Text("卡片").tag(CanvasInkUnderstandingMode.cards)
-                    Text("图表").tag(CanvasInkUnderstandingMode.diagram)
+            Section("settings.settings_root_view.understand_and_organize") {
+                Picker("settings.settings_root_view.default_organization_method", selection: $preferences.understandingMode) {
+                    Text("settings.settings_root_view.automatic").tag(CanvasInkUnderstandingMode.automatic)
+                    Text("notes.notes_document_editor.text").tag(CanvasInkUnderstandingMode.text)
+                    Text("canvas.node.card").tag(CanvasInkUnderstandingMode.cards)
+                    Text("settings.settings_root_view.chart").tag(CanvasInkUnderstandingMode.diagram)
                 }
-                Toggle("整理后保留原笔迹", isOn: $preferences.preserveInkAfterConversion)
-                Text("只有在你点“理解并整理”或接受“转为卡片”建议时才会转换，原始手写不会被自动替换。")
+                Toggle("settings.settings_root_view.keep_original_strokes_after_organizing", isOn: $preferences.preserveInkAfterConversion)
+                Text("settings.settings_root_view.conversion_happens_only_when_you_tap")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
-            Section("画布") {
-                Toggle("显示网格", isOn: $preferences.showGrid)
-                Toggle("吸附到网格", isOn: $preferences.snapToGrid)
-                Toggle("跨设备同步画布", isOn: $syncEnabled)
-                Text("关闭同步只停止传输，不会删除已上传的画布或素材。")
+            Section("settings.settings_root_view.canvas") {
+                Toggle("settings.settings_root_view.show_grid", isOn: $preferences.showGrid)
+                Toggle("settings.settings_root_view.snap_to_grid", isOn: $preferences.snapToGrid)
+                Toggle("settings.data_management_view.sync_canvases_across_devices", isOn: $syncEnabled)
+                Text("settings.settings_root_view.turning_sync_off_only_stops_transfers")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("画布")
+        .navigationTitle(FloeL10n.l("settings.settings_root_view.canvas"))
         .onChange(of: preferences) { _, value in value.save() }
-        .alert("画布配置保存或同步失败", isPresented: Binding(
+        .alert("settings.settings_root_view.saving_or_syncing_the_canvas_configuration", isPresented: Binding(
             get: { saveError != nil }, set: { if !$0 { saveError = nil } }
-        )) { Button("完成", role: .cancel) {} } message: { Text(saveError ?? "") }
+        )) { Button("workspace.workspace_canvas_view.done", role: .cancel) {} } message: { Text(saveError ?? "") }
     }
 
     private var agentModelBinding: Binding<UUID?> {

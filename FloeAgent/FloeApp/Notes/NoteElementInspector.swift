@@ -3,6 +3,7 @@
 import SwiftUI
 import FloeNotes
 
+import FloeCore
 struct NoteElementInspector: View {
     @State private var draft: NoteElement
     @State private var saving = false
@@ -22,22 +23,22 @@ struct NoteElementInspector: View {
         NavigationStack {
             Form {
                 if let source = draft.source {
-                    Section("来源") {
-                        Label(draft.isAIGenerated ? "AI 生成的整理" : "引用内容", systemImage: "quote.opening")
-                        Text("引用版本：\(source.revision)").font(.caption).foregroundStyle(.secondary)
+                    Section("skills.review.source") {
+                        Label(draft.isAIGenerated ? "notes.note_element_inspector.ai_generated_summary" : "notes.note_element_inspector.cited_content", systemImage: "quote.opening")
+                        Text(FloeL10n.l("notes.note_element_inspector.cited_version", source.revision)).font(.caption).foregroundStyle(.secondary)
                         if source.space == .notes, let openSource {
-                            Button("打开源资料的当前页面") { openSource(source) }
+                            Button("notes.note_element_inspector.open_the_current_page_of_the") { openSource(source) }
                         }
                     }
                 }
                 if draft.kind == .text {
-                    Section("文字") {
+                    Section("notes.notes_document_editor.text") {
                         TextEditor(text: $draft.text).frame(minHeight: 160)
-                        Stepper("字号 \(Int(draft.fontSize))", value: $draft.fontSize, in: 8...128, step: 1)
+                        Stepper(FloeL10n.l("notes.note_element_inspector.font_size", Int(draft.fontSize)), value: $draft.fontSize, in: 8...128, step: 1)
                     }
                 }
                 if draft.kind != .image {
-                    Section("颜色") {
+                    Section("notes.notes_ink_preferences.color") {
                         HStack(spacing: 16) {
                             ForEach(["#202020", "#D32F2F", "#1565C0", "#2E7D32", "#7B1FA2", "#E65100"], id: \.self) { hex in
                                 Button { draft.color = hex } label: {
@@ -49,31 +50,31 @@ struct NoteElementInspector: View {
                         }
                     }
                 }
-                Section("位置与尺寸") {
-                    dimension("水平位置", value: $draft.frame.x, maximum: page.width)
-                    dimension("垂直位置", value: $draft.frame.y, maximum: page.height)
-                    dimension("宽度", value: $draft.frame.width, minimum: min(20, page.width), maximum: page.width)
-                    dimension("高度", value: $draft.frame.height, minimum: min(20, page.height), maximum: page.height)
-                    Button("居中") {
+                Section("notes.note_element_inspector.position_and_size") {
+                    dimension(FloeL10n.l("notes.note_element_inspector.horizontal"), value: $draft.frame.x, maximum: page.width)
+                    dimension(FloeL10n.l("notes.note_element_inspector.vertical"), value: $draft.frame.y, maximum: page.height)
+                    dimension(FloeL10n.l("workspace.workspace_canvas_view.width_2"), value: $draft.frame.width, minimum: min(20, page.width), maximum: page.width)
+                    dimension(FloeL10n.l("workspace.workspace_canvas_view.height"), value: $draft.frame.height, minimum: min(20, page.height), maximum: page.height)
+                    Button("notes.note_element_inspector.center") {
                         draft.frame.x = max(0, (page.width - draft.frame.width) / 2)
                         draft.frame.y = max(0, (page.height - draft.frame.height) / 2)
                     }
                 }
                 Section {
-                    Button("删除此内容", role: .destructive) { perform { try await delete() } }
-                } footer: { Text("修改和删除均可通过手记的撤销按钮恢复。") }
+                    Button("notes.note_element_inspector.delete_this_content", role: .destructive) { perform { try await delete() } }
+                } footer: { Text("notes.note_element_inspector.edits_and_deletions_can_both_be") }
             }
-            .navigationTitle("页面内容")
+            .navigationTitle("notes.note_element_inspector.page_content")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("workspace.workspace_canvas_view.cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { perform { try await save(draft) } }
+                    Button("workspace.workspace_canvas_view.done") { perform { try await save(draft) } }
                         .disabled(!draft.frame.isValid || (draft.kind == .text && draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }
             .disabled(saving)
-            .alert("手记", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("好") { error = nil }
+            .alert("notes.notes_root_view.notes", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("workspace.office_document_editor_view.ok") { error = nil }
             } message: { Text(error ?? "") }
         }.presentationDetents([.large]).interactiveDismissDisabled(saving)
     }

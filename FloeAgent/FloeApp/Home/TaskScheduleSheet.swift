@@ -3,6 +3,7 @@ import SwiftUI
 import FloeModels
 import FloePersistence
 
+import FloeCore
 struct TaskScheduleSheet: View {
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
@@ -18,37 +19,37 @@ struct TaskScheduleSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("任务") {
-                    TextField("名称", text: $title)
+                Section("background.task.name_fallback") {
+                    TextField("notes.notes_root_view.name", text: $title)
                     TextEditor(text: $prompt).frame(minHeight: 120)
                 }
-                Section("项目与时间") {
-                    Picker("工作区", selection: $workspaceID) {
-                        Text("聊天（私有工作区）").tag(Optional<UUID>.none)
+                Section("home.task_schedule_sheet.project_and_time") {
+                    Picker("settings.all_workspaces_files_view.workspace", selection: $workspaceID) {
+                        Text("home.task_schedule_sheet.chat_private_workspace").tag(Optional<UUID>.none)
                         ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                             Text(workspace.name).tag(Optional(workspace.id))
                         }
                     }
-                    Picker("重复", selection: $cadence) {
-                        Text("一次").tag(TaskScheduleCadence.once)
-                        Text("每天").tag(TaskScheduleCadence.daily)
-                        Text("每周").tag(TaskScheduleCadence.weekly)
+                    Picker("shortcuts.floe_shortcuts.duplicate", selection: $cadence) {
+                        Text("home.task_schedule_sheet.once").tag(TaskScheduleCadence.once)
+                        Text("home.task_schedule_sheet.daily").tag(TaskScheduleCadence.daily)
+                        Text("home.task_schedule_sheet.weekly").tag(TaskScheduleCadence.weekly)
                     }
-                    DatePicker("预计执行", selection: $scheduledAt)
+                    DatePicker(FloeL10n.l("home.task_schedule_sheet.estimated_execution"), selection: $scheduledAt)
                 }
                 Section {
-                    Text("iOS 会按系统资源尽力唤醒；预计时间不是分钟级保证，任务中心会同时显示最近实际执行时间。")
+                    Text("home.task_schedule_sheet.ios_wakes_the_app_based_on")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
             }
-            .navigationTitle("安排任务")
+            .navigationTitle("home.home_overview_view.schedule_task")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("workspace.workspace_canvas_view.cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { Task { await save() } }
+                    Button("workspace.workspace_canvas_view.save") { Task { await save() } }
                         .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
                 }
             }

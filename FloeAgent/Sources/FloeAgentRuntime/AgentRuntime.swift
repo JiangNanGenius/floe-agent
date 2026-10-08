@@ -815,7 +815,7 @@ public actor FloeAgentRuntime {
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
-                reason: "任务已由用户停止，当前进度已保存"
+                reason: FloeL10n.l("runtime.agent_runtime.the_task_was_stopped_by_you")
             )))
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
@@ -911,7 +911,7 @@ public actor FloeAgentRuntime {
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
-                reason: "暂停等待已超时，当前进度已保存"
+                reason: FloeL10n.l("runtime.agent_runtime.the_paused_wait_timed_out_current")
             )))
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
@@ -926,7 +926,7 @@ public actor FloeAgentRuntime {
     public func checkpoint() async throws {
         try await writeCheckpoint()
         await transition(to: .checkpointed(AgentState.CheckpointRef(
-            reason: "任务已保存检查点，等待继续"
+            reason: FloeL10n.l("runtime.agent_runtime.task_checkpoint_saved_waiting_to_continue")
         )))
     }
 
@@ -2450,14 +2450,10 @@ public actor FloeAgentRuntime {
             }
             if requiresModelReview {
                 let outcomeSummary: String = switch decision {
-                case .allow:
-                    "已通过：该操作在当前任务授权和安全边界内。"
-                case .deny(let reason):
-                    "未通过：\(reason)"
-                case .escalateToHuman(let reason):
-                    "需要确认：\(reason)"
-                case .stopped(let gateReason):
-                    "已阻止：\(gateReason)"
+                case .allow:FloeL10n.l("runtime.agent_runtime.approved_this_action_is_within_the")
+                case .deny(let reason):FloeL10n.l("runtime.agent_runtime.failed", reason)
+                case .escalateToHuman(let reason):FloeL10n.l("background.approval.result", reason)
+                case .stopped(let gateReason):FloeL10n.l("runtime.agent_runtime.blocked", gateReason)
                 }
                 await sink?.agentRuntime(
                     self,
@@ -3012,7 +3008,7 @@ public actor FloeAgentRuntime {
             do {
                 await transition(to: .checkpointed(AgentState.CheckpointRef(
                     reason: needsUserResult.outputSummary.isEmpty
-                        ? "工具需要你完成操作后继续"
+                        ? FloeL10n.l("runtime.agent_runtime.a_tool_needs_you_to_finish")
                         : needsUserResult.outputSummary
                 )))
                 try await writeCheckpoint()

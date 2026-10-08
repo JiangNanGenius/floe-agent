@@ -4,6 +4,7 @@ import SwiftUI
 import FloeNotes
 import FloePersistence
 
+import FloeCore
 struct NotesAssistantPanel: View {
     let document: NoteDocument
     let store: NotesStore
@@ -22,7 +23,7 @@ struct NotesAssistantPanel: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Floe 助手").font(.headline)
+                    Text("notes.notes_linked_mind_maps.floe_assistant").font(.headline)
                     Label(document.title, systemImage: "doc.text")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -35,7 +36,7 @@ struct NotesAssistantPanel: View {
                 .contentShape(Rectangle())
                 .disabled(conversationID == nil || restarting)
                 .accessibilityIdentifier("notes.assistant.restart")
-                Button("关闭助手", systemImage: "xmark") { close() }
+                Button("notes.notes_assistant_panel.close_assistant", systemImage: "xmark") { close() }
                     .labelStyle(.iconOnly)
                     .font(.body.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -57,9 +58,9 @@ struct NotesAssistantPanel: View {
                     .disabled(restarting)
             } else if let failure {
                 ContentUnavailableView {
-                    Label("助手无法打开", systemImage: "exclamationmark.bubble")
-                } description: { Text(failure) } actions: { Button("重试") { attempt += 1 } }
-            } else { ProgressView("正在打开助手…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                    Label("notes.notes_assistant_panel.assistant_cannot_open", systemImage: "exclamationmark.bubble")
+                } description: { Text(failure) } actions: { Button("settings.document_recovery_list_view.retry") { attempt += 1 } }
+            } else { ProgressView("notes.notes_assistant_panel.opening_assistant").frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .task(id: "\(document.id):\(attempt)") {
             do {
@@ -72,7 +73,7 @@ struct NotesAssistantPanel: View {
                     conversationID = existing
                     return
                 }
-                let conversation = try await environment.conversationCenter.createConversation(title: "手记 · \(document.title)", purpose: .notes)
+                let conversation = try await environment.conversationCenter.createConversation(title: FloeL10n.l("notes.notes_assistant_panel.notes", document.title), purpose: .notes)
                 // The grant is created by this explicit native document selection. Tool arguments
                 // and source text cannot broaden it. The dedicated policy permits bounded undoable document edits.
                 try await store.bindAssistant(conversationID: conversation.id, documentID: document.id, canEdit: true)
@@ -94,7 +95,7 @@ struct NotesAssistantPanel: View {
             environment.voiceInput.stop()
             try await environment.conversationCenter.stopNotesAssistant(conversationID: previous)
             let next = try await environment.conversationCenter.createConversation(
-                title: "手记 · \(document.title)", purpose: .notes)
+                title: FloeL10n.l("notes.notes_assistant_panel.notes", document.title), purpose: .notes)
             try await store.bindAssistant(conversationID: next.id, documentID: document.id, canEdit: true)
             if let composerInput { onInputConsumed(composerInput.id) }
             conversationID = next.id

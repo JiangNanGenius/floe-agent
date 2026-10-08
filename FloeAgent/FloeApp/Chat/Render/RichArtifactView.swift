@@ -44,11 +44,11 @@ private struct RichArtifactView: View {
                 if let data, let html = String(data: data, encoding: .utf8) {
                     SandboxedArtifactWebView(html: html)
                         .ignoresSafeArea(edges: .bottom)
-                        .navigationTitle("交互预览")
+                        .navigationTitle("chat.rich_artifact_view.interactive_preview")
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .confirmationAction) {
-                                Button("完成") { showExpandedWeb = false }
+                                Button("workspace.workspace_canvas_view.done") { showExpandedWeb = false }
                             }
                         }
                 }
@@ -75,12 +75,12 @@ private struct RichArtifactView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quaternary))
                     HStack {
-                        Button("展开交互预览", systemImage: "arrow.up.left.and.arrow.down.right") {
+                        Button("chat.rich_artifact_view.expand_interactive_preview", systemImage: "arrow.up.left.and.arrow.down.right") {
                             showExpandedWeb = true
                         }
                         Spacer()
                         ShareLink(item: fileURL) {
-                            Label("分享", systemImage: "square.and.arrow.up")
+                            Label("chat.rich_artifact_view.share", systemImage: "square.and.arrow.up")
                         }
                     }
                     .font(FloeTheme.Typography.metadata)
@@ -102,7 +102,7 @@ private struct RichArtifactView: View {
     }
 
     private var invalidContent: some View {
-        Label("产物已校验，但结构无法解析", systemImage: "exclamationmark.triangle")
+        Label("chat.rich_artifact_view.the_artifact_passed_verification_but_its", systemImage: "exclamationmark.triangle")
             .font(FloeTheme.Typography.metadata)
             .foregroundStyle(FloeTheme.destructive)
     }
@@ -120,7 +120,7 @@ private struct RichArtifactView: View {
               !artifact.relativePath.split(separator: "/").contains(".."),
               allowedRoots.contains(where: artifact.relativePath.hasPrefix),
               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            error = "产物路径或大小不受支持"
+            error = FloeL10n.l("chat.rich_artifact_view.the_artifact_path_or_size_is")
             return
         }
         let root = support.appendingPathComponent("FloeAgent", isDirectory: true).standardizedFileURL
@@ -129,12 +129,12 @@ private struct RichArtifactView: View {
         guard candidate.path.hasPrefix(prefix),
               let loaded = try? Data(floeContentsOf: candidate, options: [.mappedIfSafe]),
               loaded.count == artifact.byteCount else {
-            error = "无法读取产物"
+            error = FloeL10n.l("chat.rich_artifact_view.could_not_read_the_artifact")
             return
         }
         let digest = FloeDigest.sha256Hex(loaded)
         guard digest == artifact.sha256.lowercased() else {
-            error = "产物校验失败"
+            error = FloeL10n.l("chat.rich_artifact_view.artifact_verification_failed")
             return
         }
         data = loaded
@@ -168,7 +168,7 @@ private struct NativeArtifactTable: View {
                 .padding(10)
             }
             .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 8))
-            ShareLink(item: fileURL) { Label("分享表格数据", systemImage: "square.and.arrow.up") }
+            ShareLink(item: fileURL) { Label("chat.rich_artifact_view.share_table_data", systemImage: "square.and.arrow.up") }
                 .font(FloeTheme.Typography.metadata)
         }
         .accessibilityElement(children: .contain)
@@ -196,28 +196,28 @@ private struct NativeArtifactChart: View {
             Chart(data) { datum in
                 switch document.type {
                 case .line:
-                    LineMark(x: .value("类别", datum.label), y: .value("值", datum.value))
-                        .foregroundStyle(by: .value("系列", datum.series))
-                    PointMark(x: .value("类别", datum.label), y: .value("值", datum.value))
-                        .foregroundStyle(by: .value("系列", datum.series))
+                    LineMark(x: .value(FloeL10n.l("chat.rich_artifact_view.category"), datum.label), y: .value(FloeL10n.l("chat.rich_artifact_view.value"), datum.value))
+                        .foregroundStyle(by: .value(FloeL10n.l("chat.rich_artifact_view.series"), datum.series))
+                    PointMark(x: .value(FloeL10n.l("chat.rich_artifact_view.category"), datum.label), y: .value(FloeL10n.l("chat.rich_artifact_view.value"), datum.value))
+                        .foregroundStyle(by: .value(FloeL10n.l("chat.rich_artifact_view.series"), datum.series))
                 case .bar:
-                    BarMark(x: .value("类别", datum.label), y: .value("值", datum.value))
-                        .foregroundStyle(by: .value("系列", datum.series))
+                    BarMark(x: .value(FloeL10n.l("chat.rich_artifact_view.category"), datum.label), y: .value(FloeL10n.l("chat.rich_artifact_view.value"), datum.value))
+                        .foregroundStyle(by: .value(FloeL10n.l("chat.rich_artifact_view.series"), datum.series))
                 case .area:
-                    AreaMark(x: .value("类别", datum.label), y: .value("值", datum.value))
-                        .foregroundStyle(by: .value("系列", datum.series))
+                    AreaMark(x: .value(FloeL10n.l("chat.rich_artifact_view.category"), datum.label), y: .value(FloeL10n.l("chat.rich_artifact_view.value"), datum.value))
+                        .foregroundStyle(by: .value(FloeL10n.l("chat.rich_artifact_view.series"), datum.series))
                         .opacity(0.6)
                 case .pie:
-                    SectorMark(angle: .value("值", max(0, datum.value)), innerRadius: .ratio(0.45))
-                        .foregroundStyle(by: .value("项目", "\(datum.series) · \(datum.label)"))
+                    SectorMark(angle: .value(FloeL10n.l("chat.rich_artifact_view.value"), max(0, datum.value)), innerRadius: .ratio(0.45))
+                        .foregroundStyle(by: .value(FloeL10n.l("settings.all_workspaces_files_view.project"), "\(datum.series) · \(datum.label)"))
                 case .scatter:
-                    PointMark(x: .value("类别", datum.label), y: .value("值", datum.value))
-                        .foregroundStyle(by: .value("系列", datum.series))
+                    PointMark(x: .value(FloeL10n.l("chat.rich_artifact_view.category"), datum.label), y: .value(FloeL10n.l("chat.rich_artifact_view.value"), datum.value))
+                        .foregroundStyle(by: .value(FloeL10n.l("chat.rich_artifact_view.series"), datum.series))
                 }
             }
             .frame(minHeight: 240)
             .chartLegend(position: .bottom, alignment: .leading)
-            ShareLink(item: fileURL) { Label("分享图表数据", systemImage: "square.and.arrow.up") }
+            ShareLink(item: fileURL) { Label("chat.rich_artifact_view.share_chart_data", systemImage: "square.and.arrow.up") }
                 .font(FloeTheme.Typography.metadata)
         }
         .padding(10)

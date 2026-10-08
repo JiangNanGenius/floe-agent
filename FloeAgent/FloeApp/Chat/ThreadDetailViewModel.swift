@@ -255,9 +255,9 @@ final class ThreadDetailViewModel: ObservableObject {
                   !path.split(separator: "/").contains(".."),
                   seen.insert(path).inserted else { continue }
             let action: String
-            if tool == "workspace.readFile" || tool == "workspace.inspectFileMetadata" { action = "查看" }
-            else if tool == "workspace.createFile" { action = "新建" }
-            else { action = "编辑" }
+            if tool == "workspace.readFile" || tool == "workspace.inspectFileMetadata" { action = FloeL10n.l("chat.thread_detail_view_model.view") }
+            else if tool == "workspace.createFile" { action = FloeL10n.l("chat.thread_detail_view_model.new") }
+            else { action = FloeL10n.l("chat.thread_detail_view_model.edit") }
             result.append(.init(path: path, action: action))
             if result.count == 8 { break }
         }
@@ -317,9 +317,9 @@ final class ThreadDetailViewModel: ObservableObject {
 
     var continuationTitle: String {
         switch selectedRun?.state {
-        case "failed": "任务失败，可从检查点继续"
-        case "interrupted": "任务被中断"
-        default: "任务已保存检查点"
+        case "failed": FloeL10n.l("chat.thread_detail_view_model.task_failed_you_can_continue_from")
+        case "interrupted": FloeL10n.l("chat.thread_detail_view_model.task_interrupted")
+        default: FloeL10n.l("runtime.conversation_run_service.task_checkpoint_saved")
         }
     }
 
@@ -329,7 +329,7 @@ final class ThreadDetailViewModel: ObservableObject {
             let payload = ConversationCenter.decodePayload(event.payloadJSON)
             return payload["reason"]?.isEmpty == false ? payload["reason"] : nil
         }.first
-        let recovery = "继续原任务和原消息，不会新建重复任务；已经完成的工具步骤会被复用。"
+        let recovery = FloeL10n.l("chat.thread_detail_view_model.continues_the_original_task_and_message")
         return reason.map { "\($0)\n\(recovery)" } ?? recovery
     }
 
@@ -804,7 +804,7 @@ final class ThreadDetailViewModel: ObservableObject {
     func refreshMediaJobs() async {
         let store = MediaGenerationJobStore(database: center.environment.database)
         guard let jobs = try? await store.jobs(owner: .conversation(conversationID)) else {
-            actionError = "媒体任务状态暂时无法读取，请稍后重试。"
+            actionError = FloeL10n.l("chat.thread_detail_view_model.media_task_status_is_temporarily_unavailable")
             return
         }
         var firstError: String?
@@ -816,7 +816,7 @@ final class ThreadDetailViewModel: ObservableObject {
             }
         }
         if let firstError {
-            actionError = "部分媒体任务状态暂时无法更新：\(firstError)"
+            actionError = FloeL10n.l("chat.thread_detail_view_model.some_media_task_statuses_could_not", firstError)
         }
     }
 
@@ -847,20 +847,20 @@ final class ThreadDetailViewModel: ObservableObject {
     func requestManualCompaction() {
         guard !isCompacting else { return }
         isCompacting = true
-        compactionStatus = "正在压缩上下文…"
+        compactionStatus = FloeL10n.l("chat.thread_detail_view_model.compacting_context")
         Task {
             defer { isCompacting = false }
             do {
                 compactionStatus = try await center.requestManualCompaction(conversationID: conversationID, modelID: selectedModelID)
             } catch {
-                compactionStatus = "压缩未完成：\(error.localizedDescription)"
+                compactionStatus = FloeL10n.l("chat.thread_detail_view_model.compaction_did_not_finish", error.localizedDescription)
             }
         }
     }
 
     func exportStructuredConversation() async -> URL? {
         do { return try await center.exportStructuredConversation(conversationID: conversationID) }
-        catch { actionError = "导出未完成：\(error.localizedDescription)"; return nil }
+        catch { actionError = FloeL10n.l("chat.thread_detail_view_model.export_did_not_finish", error.localizedDescription); return nil }
     }
 
     func editPendingInput(_ input: PendingUserInput, content: String) async {
@@ -933,14 +933,14 @@ final class ThreadDetailViewModel: ObservableObject {
         )
         if nsError.domain == NSCocoaErrorDomain,
            nsError.code == CocoaError.fileReadCorruptFile.rawValue {
-            return "读取任务数据失败。请重新选择附件或重新打开任务；诊断日志已记录失败阶段（\(stage)）。"
+            return FloeL10n.l("chat.thread_detail_view_model.failed_to_read_task_data_choose", stage)
         }
         if let floeError = error as? FloeError,
            case .syncUnavailable(let reason) = floeError {
             if reason.localizedCaseInsensitiveContains("approval") {
-                return "自动审批模型暂时不可用或响应超时。安全读操作会按本地规则继续；敏感操作请重试或手动确认。"
+                return FloeL10n.l("chat.thread_detail_view_model.the_auto_approval_model_is_temporarily")
             }
-            return "同步服务暂时不可用，本机数据仍可继续使用。稍后会自动重试。"
+            return FloeL10n.l("chat.thread_detail_view_model.the_sync_service_is_temporarily_unavailable")
         }
         return error.localizedDescription
     }
@@ -953,12 +953,12 @@ final class ThreadDetailViewModel: ObservableObject {
     func acceptLatestPlan(as execution: PlanExecutionRecommendation? = nil) async {
         guard let latestPlan else { return }
         guard latestPlan.status == .ready, latestPlan.isDecisionComplete else {
-            actionError = "计划仍需修订，完成后才能执行"
+            actionError = FloeL10n.l("chat.thread_detail_view_model.the_plan_still_needs_revision_and")
             return
         }
         guard !isAcceptingPlan, !isRunning,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
-            actionError = "请先选择可用模型，并等待当前运行结束"
+            actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
             return
         }
         isAcceptingPlan = true
@@ -984,8 +984,7 @@ final class ThreadDetailViewModel: ObservableObject {
             let ordered = accepted.sections.sorted { $0.order < $1.order }.map {
                 "## \($0.title)\n\($0.body)"
             }.joined(separator: "\n\n")
-            let criteria = accepted.acceptanceCriteria.map {
-                "- \($0.text)（验证：\($0.verification)）"
+            let criteria = accepted.acceptanceCriteria.map {FloeL10n.l("chat.thread_detail_view_model.verified", $0.text, $0.verification)
             }.joined(separator: "\n")
             let prompt = """
             Execute the accepted plan below. Preserve its ordering, verify each criterion with inspectable evidence, and continue until the safe in-scope work is complete.
@@ -1022,13 +1021,13 @@ final class ThreadDetailViewModel: ObservableObject {
         guard !cleanObjective.isEmpty else { return }
         guard !isRunning,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
-            actionError = "请先选择可用模型，并等待当前运行结束"
+            actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
             return
         }
         let cleanCriteria = criteria.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let goalCriteria = cleanCriteria.isEmpty
-            ? ["目标已通过可检查证据验证"]
+            ? [FloeL10n.l("chat.thread_detail_view_model.the_goal_was_verified_with_inspectable")]
             : cleanCriteria
         let goal = ConversationGoal(
             conversationID: conversationID,
@@ -1036,7 +1035,7 @@ final class ThreadDetailViewModel: ObservableObject {
             blockingConditions: blockingConditions.filter { !$0.isEmpty },
             stoppingConditions: stoppingConditions.filter { !$0.isEmpty },
             acceptanceCriteria: goalCriteria.map { GoalCriterion(text: $0) },
-            steps: [GoalStep(title: "推进目标", status: .inProgress, order: 0)],
+            steps: [GoalStep(title: FloeL10n.l("chat.thread_detail_view_model.advance_goal"), status: .inProgress, order: 0)],
             status: .active,
             progress: GoalProgress(startedAt: Date())
         )
@@ -1095,7 +1094,7 @@ final class ThreadDetailViewModel: ObservableObject {
             userConfirmedCriterionIDs: confirmedIDs
         )
         guard verdict.mayComplete else {
-            actionError = "仍有步骤、验收证据或检查项未完成，Goal 不会提前结束"
+            actionError = FloeL10n.l("chat.thread_detail_view_model.steps_acceptance_evidence_or_checklist_items")
             return
         }
         goal.status = .completed
@@ -1248,16 +1247,16 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.hasProviderActivity = false
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
-                    if state == .compacting { self.compactionStatus = "正在自动压缩上下文…" }
-                    else if self.compactionStatus == "正在自动压缩上下文…" {
-                        self.compactionStatus = "压缩检查结束，本次未替换历史。"
+                    if state == .compacting { self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context") }
+                    else if self.compactionStatus == FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context") {
+                        self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.the_compaction_check_finished_without_replacing")
                     }
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
                 case .contextCompacted(let record):
-                    self.compactionStatus = "上下文已压缩：约 \(record.beforeEstimatedTokens) → \(record.afterEstimatedTokens) tokens。"
+                    self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.context_compacted_about_tokens", record.beforeEstimatedTokens, record.afterEstimatedTokens)
                 case .livenessChanged(let snapshot):
                     if snapshot.phase == .compacting {
-                        self.compactionStatus = "正在自动压缩上下文…"
+                        self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context")
                         self.liveStateName = "compacting"
                     }
                 case .approvalReviewChanged(let snapshot):

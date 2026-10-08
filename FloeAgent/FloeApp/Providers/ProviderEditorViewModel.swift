@@ -296,7 +296,7 @@ final class ProviderEditorViewModel: ObservableObject {
     /// "provider unavailable" issues without exposing the key itself.
     func diagnoseKeychain() -> String {
         guard let existing, let secretRef = existing.secretRef else {
-            return "尚未保存 API 密钥"
+            return FloeL10n.l("providers.provider_editor_view_model.api_key_not_saved_yet")
         }
         var results: [String] = []
         for sync in [secretRef.synchronizable, !secretRef.synchronizable] {
@@ -305,11 +305,11 @@ final class ProviderEditorViewModel: ObservableObject {
                 synchronizable: sync
             )
             if let data = try? store.read(account: secretRef.keychainAccount) {
-                let namespace = sync ? "iCloud" : "本地"
-                results.append("\(namespace) Keychain: 找到 key（\(data.count) 字节）")
+                let namespace = sync ? "iCloud" : FloeL10n.l("providers.provider_editor_view_model.local")
+                results.append(FloeL10n.l("providers.provider_editor_view_model.keychain_key_found_bytes", namespace, data.count))
             } else {
-                let namespace = sync ? "iCloud" : "本地"
-                results.append("\(namespace) Keychain: 未找到")
+                let namespace = sync ? "iCloud" : FloeL10n.l("providers.provider_editor_view_model.local")
+                results.append(FloeL10n.l("providers.provider_editor_view_model.keychain_not_found", namespace))
             }
         }
         return results.joined(separator: "\n")
@@ -321,10 +321,10 @@ final class ProviderEditorViewModel: ObservableObject {
     func authenticateAndRevealAPIKey() async {
         do {
             guard try await DeviceOwnerAuthenticator.authenticate(
-                reason: "验证身份后显示模型服务 API key"
+                reason: FloeL10n.l("providers.provider_editor_view_model.show_the_model_service_api_key")
             ) else { return }
         } catch {
-            errorMessage = "未通过设备所有者验证"
+            errorMessage = FloeL10n.l("providers.provider_editor_view_model.device_owner_verification_failed")
             return
         }
         if !apiKey.isEmpty {
@@ -332,7 +332,7 @@ final class ProviderEditorViewModel: ObservableObject {
             return
         }
         guard let existing, let secretRef = existing.secretRef else {
-            errorMessage = "未配置 API key"
+            errorMessage = FloeL10n.l("providers.provider_editor_view_model.api_key_not_configured")
             return
         }
         // Try both namespaces; the first hit wins.
@@ -349,7 +349,7 @@ final class ProviderEditorViewModel: ObservableObject {
                 return
             }
         }
-        errorMessage = "Keychain 中没有找到 API key"
+        errorMessage = FloeL10n.l("providers.provider_editor_view_model.no_api_key_found_in_keychain")
     }
 
     // MARK: - Models

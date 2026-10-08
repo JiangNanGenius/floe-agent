@@ -17,16 +17,11 @@ enum CreativeAssetIngestionError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .unsafeURL:
-            "素材网址不安全。仅支持公开 HTTPS 图片，不能访问本机或私有网络。"
-        case .unsupportedImage:
-            "下载内容不是受支持的图片，或图片尺寸超过安全限制。"
-        case .payloadTooLarge:
-            "参考图片超过 20 MiB，无法安全导入。"
-        case .invalidResponse:
-            "图片服务器没有返回可用的图片响应。"
-        case .missingLocalFile:
-            "参考素材尚未下载到本机，请重新导入后再生成。"
+        case .unsafeURL:FloeL10n.l("workspace.creative_asset_ingestion_service.the_asset_url_is_not_secure")
+        case .unsupportedImage:FloeL10n.l("workspace.creative_asset_ingestion_service.the_download_is_not_a_supported")
+        case .payloadTooLarge:FloeL10n.l("workspace.creative_asset_ingestion_service.the_reference_image_exceeds_20_mib")
+        case .invalidResponse:FloeL10n.l("workspace.creative_asset_ingestion_service.the_image_server_returned_no_usable")
+        case .missingLocalFile:FloeL10n.l("workspace.creative_asset_ingestion_service.the_reference_asset_has_not_been")
         }
     }
 }
@@ -60,7 +55,7 @@ actor CreativeAssetIngestionService {
             mimeType: type?.preferredMIMEType,
             sourceURL: nil,
             license: nil,
-            tags: ["导入"]
+            tags: [FloeL10n.l("canvas.artifact.origin.imported")]
         )
     }
 
@@ -126,7 +121,7 @@ actor CreativeAssetIngestionService {
         let resolvedName = if let name, !name.isEmpty {
             name
         } else {
-            fallbackName.isEmpty ? "网络参考图" : fallbackName
+            fallbackName.isEmpty ? FloeL10n.l("workspace.creative_asset_ingestion_service.web_reference_image") : fallbackName
         }
         return try await persist(
             data: normalized.data,
@@ -136,7 +131,7 @@ actor CreativeAssetIngestionService {
             mimeType: normalized.mimeType,
             sourceURL: sourceURL,
             license: license,
-            tags: ["网络导入", "参考图"]
+            tags: [FloeL10n.l("workspace.creative_asset_ingestion_service.web_import"), FloeL10n.l("workspace.creative_asset_ingestion_service.reference_image")]
         )
     }
 

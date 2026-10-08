@@ -409,7 +409,7 @@ struct LocalModelsSettingsView: View {
                 Section { Text(errorMessage).foregroundStyle(.red) }
             }
         }
-        .navigationTitle("localmodels.title")
+        .navigationTitle(FloeL10n.l("localmodels.title"))
         .task { await center.refresh() }
         .refreshable { await center.refresh() }
         .confirmationDialog(
@@ -444,7 +444,7 @@ struct LocalModelsSettingsView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.displayName).font(.headline)
-                Text("\(entry.parameterBillions, specifier: "%.1f")B · \(entry.license)")
+                Text(FloeL10n.l("settings.local_models_settings_view.b", entry.parameterBillions, "%.1f", entry.license))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()

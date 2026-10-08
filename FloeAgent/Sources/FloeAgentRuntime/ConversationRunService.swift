@@ -769,7 +769,7 @@ public actor ConversationRunService {
         if isTerminal(projectedState), !Self.isCompleted(projectedState) {
             let reason: String
             if case .checkpointed(let reference) = projectedState {
-                reason = reference.reason ?? "任务已保存检查点"
+                reason = reference.reason ?? FloeL10n.l("runtime.conversation_run_service.task_checkpoint_saved")
             } else if case .failed(let failure) = projectedState {
                 reason = failure.message
             } else {
@@ -795,7 +795,7 @@ public actor ConversationRunService {
             eventChannel.finish()
         case .checkpointed(let reference):
             eventChannel.yield(.terminal(.interrupted(
-                reason: reference.reason ?? "任务已保存检查点"
+                reason: reference.reason ?? FloeL10n.l("runtime.conversation_run_service.task_checkpoint_saved")
             )))
             eventChannel.finish()
         default:

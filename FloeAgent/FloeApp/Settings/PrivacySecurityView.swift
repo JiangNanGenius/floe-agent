@@ -27,11 +27,11 @@ struct PrivacySecurityView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("优先使用 Face ID / Touch ID", isOn: $preferBiometrics)
+                Toggle("settings.privacy_security_view.prefer_face_id_touch_id", isOn: $preferBiometrics)
             } header: {
-                Text("身份验证")
+                Text("hosts.authentication")
             } footer: {
-                Text("开启时优先显示生物识别；设备不支持或关闭后才使用设备密码。")
+                Text("settings.privacy_security_view.when_on_biometrics_are_preferred_the")
             }
 
             Section {
@@ -92,7 +92,7 @@ struct PrivacySecurityView: View {
                 }
             }
         }
-        .navigationTitle("settings.section.privacy")
+        .navigationTitle(FloeL10n.l("settings.section.privacy"))
         .task { await center.load() }
         .confirmationDialog(
             "settings.privacy.clear_history",
@@ -244,7 +244,7 @@ enum DeviceOwnerAuthenticator {
             throw evaluationError ?? NSError(
                 domain: LAError.errorDomain,
                 code: LAError.authenticationFailed.rawValue,
-                userInfo: [NSLocalizedDescriptionKey: "设备未设置可用的身份验证。"]
+                userInfo: [NSLocalizedDescriptionKey: FloeL10n.l("settings.privacy_security_view.the_device_has_no_usable_authentication")]
             )
         }
         return try await context.evaluatePolicy(

@@ -30,27 +30,27 @@ struct DataManagementView: View {
 
     var body: some View {
         Form {
-            Section("空间概览") {
+            Section("settings.data_management_view.space_overview") {
                 if let snapshot {
                     StorageUsageRow(
-                        title: "Floe 总占用",
+                        title: FloeL10n.l("settings.data_management_view.floe_total_usage"),
                         icon: "internaldrive",
                         bytes: snapshot.combinedBytes,
                         emphasized: true
                     )
-                    StorageUsageRow(title: "App 安装包", icon: "shippingbox", bytes: snapshot.bundleBytes)
-                    StorageUsageRow(title: "用户数据", icon: "externaldrive", bytes: snapshot.dataBytes)
-                    StorageUsageRow(title: "可安全清理", icon: "sparkles", bytes: snapshot.safeCleanupBytes)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.app_installer"), icon: "shippingbox", bytes: snapshot.bundleBytes)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.user_data"), icon: "externaldrive", bytes: snapshot.dataBytes)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.safe_to_clean"), icon: "sparkles", bytes: snapshot.safeCleanupBytes)
                 } else {
                     HStack {
                         ProgressView()
-                        Text("正在统计实际占用…").foregroundStyle(.secondary)
+                        Text("settings.data_management_view.calculating_actual_usage").foregroundStyle(.secondary)
                     }
                 }
             }
 
             if let snapshot {
-                Section("数据分类") {
+                Section("settings.data_management_view.data_categories") {
                     ForEach(snapshot.categories) { category in
                         StorageUsageRow(
                             title: category.name,
@@ -62,36 +62,36 @@ struct DataManagementView: View {
             }
 
             Section {
-                Toggle("跨设备同步画布", isOn: $canvasSyncEnabled)
+                Toggle("settings.data_management_view.sync_canvases_across_devices", isOn: $canvasSyncEnabled)
                 if let creativeStorage {
-                    StorageUsageRow(title: "本机素材", icon: "iphone", bytes: creativeStorage.local)
-                    StorageUsageRow(title: "云端素材", icon: "icloud", bytes: creativeStorage.cloud)
-                    StorageUsageRow(title: "待下载", icon: "arrow.down.circle", bytes: creativeStorage.pendingDownload)
-                    StorageUsageRow(title: "待释放", icon: "trash.circle", bytes: creativeStorage.pendingRelease)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.on_device_assets"), icon: "iphone", bytes: creativeStorage.local)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.cloud_assets"), icon: "icloud", bytes: creativeStorage.cloud)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.pending_download"), icon: "arrow.down.circle", bytes: creativeStorage.pendingDownload)
+                    StorageUsageRow(title: FloeL10n.l("settings.data_management_view.pending_release"), icon: "trash.circle", bytes: creativeStorage.pendingRelease)
                     if creativeStorage.releaseCount > 0 {
                         Button {
                             Task { await releaseCloudSpace() }
                         } label: {
                             HStack {
-                                Label("立即重试释放云端空间", systemImage: "icloud.slash")
+                                Label("settings.data_management_view.retry_freeing_cloud_space_now", systemImage: "icloud.slash")
                                 Spacer()
                                 if isReleasingCloudSpace { ProgressView() }
                             }
                         }
                         .disabled(isReleasingCloudSpace)
                     }
-                    LabeledContent("未引用素材") {
-                        Text("\(orphanedAssetCount) 项 · \(ByteCountFormatter.string(fromByteCount: orphanedAssetBytes, countStyle: .file))")
+                    LabeledContent("settings.data_management_view.unreferenced_asset") {
+                        Text(FloeL10n.l("settings.data_management_view.items", orphanedAssetCount, ByteCountFormatter.string(fromByteCount: orphanedAssetBytes, countStyle: .file)))
                             .foregroundStyle(.secondary)
                     }
                 }
             } header: {
-                Text("创意空间")
+                Text("settings.data_management_view.creative_space")
             } footer: {
-                Text("总开关和画布自身开关都开启时才会同步。关闭同步不会删除云端副本；永久删除素材会进入待释放队列，并以 CloudKit 删除确认结果为准。")
+                Text("settings.data_management_view.syncs_only_when_both_the_master")
             }
 
-            Section("管理") {
+            Section("settings.data_management_view.manage") {
                 NavigationLink {
                     ArchivedConversationsView(
                         center: conversationCenter,
@@ -99,8 +99,8 @@ struct DataManagementView: View {
                     )
                 } label: {
                     ManagementRow(
-                        title: "归档区",
-                        detail: "恢复、单项删除、批量删除或一键清空",
+                        title: FloeL10n.l("chat.conversation_list_view.archive"),
+                        detail: FloeL10n.l("settings.data_management_view.restore_delete_individually_delete_in_bulk"),
                         icon: "archivebox"
                     )
                 }
@@ -109,8 +109,8 @@ struct DataManagementView: View {
                     FontManagementView(store: environment.fontStore)
                 } label: {
                     ManagementRow(
-                        title: "字体资源",
-                        detail: "下载一次，所有 Floe 工作区共用",
+                        title: FloeL10n.l("settings.data_management_view.font_resources"),
+                        detail: FloeL10n.l("settings.data_management_view.download_once_shared_across_all_floe"),
                         icon: "textformat"
                     )
                 }
@@ -119,7 +119,7 @@ struct DataManagementView: View {
             Section {
                 Button(role: .destructive) { confirmsCleanup = true } label: {
                     HStack {
-                        Label("安全清理缓存与临时文件", systemImage: "trash.slash")
+                        Label("settings.data_management_view.safely_clean_caches_and_temporary_files", systemImage: "trash.slash")
                         Spacer()
                         if isCleaning { ProgressView() }
                     }
@@ -127,13 +127,13 @@ struct DataManagementView: View {
                 .disabled(isCleaning)
             } footer: {
                 if let cleanupResult {
-                    Text("上次释放 \(ByteCountFormatter.string(fromByteCount: cleanupResult, countStyle: .file))。工作区、文档、模型、字体、附件、数据库和凭据未被删除。")
+                    Text(FloeL10n.l("settings.data_management_view.last_cleanup_workspaces_documents_models_fonts", ByteCountFormatter.string(fromByteCount: cleanupResult, countStyle: .file)))
                 } else {
-                    Text("只清理 Floe 沙盒中的可重建缓存，以及一小时前遗留的临时文件；不会删除工作区、文档、模型、字体、附件、数据库或凭据。")
+                    Text("settings.data_management_view.cleans_only_rebuildable_caches_in_floe")
                 }
             }
         }
-        .navigationTitle("数据管理")
+        .navigationTitle(FloeL10n.l("settings.data_management_view.data_management"))
         .refreshable { await reload() }
         .task {
             importCanvasSyncPreferenceFromCloud()
@@ -149,11 +149,11 @@ struct DataManagementView: View {
             NSUbiquitousKeyValueStore.default.set(value, forKey: "creative.canvas.sync.enabled")
             NSUbiquitousKeyValueStore.default.synchronize()
         }
-        .confirmationDialog("执行安全清理？", isPresented: $confirmsCleanup, titleVisibility: .visible) {
-            Button("清理", role: .destructive) { Task { await clean() } }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog("settings.data_management_view.run_safe_cleanup", isPresented: $confirmsCleanup, titleVisibility: .visible) {
+            Button("settings.data_management_view.clean", role: .destructive) { Task { await clean() } }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
         } message: {
-            Text("将删除可重建缓存和一小时前遗留的临时文件。用户内容不会被删除。")
+            Text("settings.data_management_view.rebuildable_caches_and_temporary_files_left")
         }
     }
 
@@ -248,12 +248,11 @@ struct FontManagementView: View {
 
     var body: some View {
         Form {
-            Section("Floe 全局字体") {
+            Section("settings.data_management_view.floe_global_fonts") {
                 if records.isEmpty {
-                    ContentUnavailableView(
-                        "还没有 Floe 全局字体",
+                    ContentUnavailableView("settings.data_management_view.no_floe_global_fonts_yet",
                         systemImage: "textformat",
-                        description: Text("导入或下载一次后，Word、PDF 和所有工作区都可复用。")
+                        description: Text("settings.data_management_view.after_importing_or_downloading_once_word")
                     )
                 } else {
                     ForEach(records) { record in
@@ -267,7 +266,7 @@ struct FontManagementView: View {
                         .frame(minHeight: FloeTheme.minimumTarget)
                         .swipeActions {
                             Button(role: .destructive) { pendingRemoval = record } label: {
-                                Label("删除", systemImage: "trash")
+                                Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
                             }
                         }
                     }
@@ -276,9 +275,9 @@ struct FontManagementView: View {
 
             Section {
                 Button { showsImporter = true } label: {
-                    Label("从“文件”导入", systemImage: "folder.badge.plus")
+                    Label("settings.data_management_view.import_from_files", systemImage: "folder.badge.plus")
                 }
-                TextField("公开 HTTPS 字体直链", text: $remoteURL)
+                TextField("settings.data_management_view.public_https_direct_font_link", text: $remoteURL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
@@ -286,20 +285,20 @@ struct FontManagementView: View {
                     Task { await installRemote() }
                 } label: {
                     HStack {
-                        Label("下载并加入全局字体库", systemImage: "arrow.down.circle")
+                        Label("settings.data_management_view.download_and_add_to_the_global", systemImage: "arrow.down.circle")
                         Spacer()
                         if isWorking { ProgressView() }
                     }
                 }
                 .disabled(isWorking || remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } header: {
-                Text("添加字体")
+                Text("settings.data_management_view.add_font")
             } footer: {
-                Text("仅接受公开 HTTPS 地址和真实的 TTF、OTF、TTC、OTC 字体，单文件上限 32 MB；私网地址、凭据 URL 和伪装文件会被拒绝。字体按内容去重，不会因不同工作区重复下载。")
+                Text("settings.data_management_view.only_public_https_links_and_genuine")
             }
 
-            Section("作用范围") {
-                Text("这里安装的字体会全局提供给 Floe 的所有工作区和文档流程。由于 Apple 平台限制，它们不会被静默安装给 Floe 以外的其他 App。")
+            Section("settings.data_management_view.scope") {
+                Text("settings.data_management_view.fonts_installed_here_are_available_globally")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
@@ -307,7 +306,7 @@ struct FontManagementView: View {
                 Section { Text(successMessage).foregroundStyle(.green) }
             }
         }
-        .navigationTitle("字体资源")
+        .navigationTitle(FloeL10n.l("settings.data_management_view.font_resources"))
         .task { await reload() }
         .sheet(isPresented: $showsImporter) {
             DocumentPickerView(contentTypes: Self.fontTypes) { url in
@@ -315,28 +314,27 @@ struct FontManagementView: View {
                 Task { await importFont(url) }
             }
         }
-        .alert("无法添加字体", isPresented: Binding(
+        .alert("settings.data_management_view.could_not_add_the_font", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
-            Button("好") { errorMessage = nil }
+            Button("workspace.office_document_editor_view.ok") { errorMessage = nil }
         } message: {
-            Text(errorMessage ?? "未知错误")
+            Text(errorMessage ?? "common.unknown_error")
         }
-        .confirmationDialog(
-            "从所有 Floe 工作区移除此字体？",
+        .confirmationDialog("settings.data_management_view.remove_this_font_from_all_floe",
             isPresented: Binding(
                 get: { pendingRemoval != nil },
                 set: { if !$0 { pendingRemoval = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("永久移除", role: .destructive) {
+            Button("settings.data_management_view.remove_permanently", role: .destructive) {
                 guard let record = pendingRemoval else { return }
                 pendingRemoval = nil
                 Task { await remove(record) }
             }
-            Button("取消", role: .cancel) { pendingRemoval = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingRemoval = nil }
         }
     }
 
@@ -350,7 +348,7 @@ struct FontManagementView: View {
 
     private func installRemote() async {
         guard let url = URL(string: remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            errorMessage = "字体地址无效。"
+            errorMessage = FloeL10n.l("settings.data_management_view.invalid_font_url")
             return
         }
         isWorking = true
@@ -358,7 +356,7 @@ struct FontManagementView: View {
         do {
             let record = try await store.install(from: url)
             remoteURL = ""
-            successMessage = "已安装 \(record.displayName)，所有 Floe 工作区可用。"
+            successMessage = FloeL10n.l("settings.data_management_view.installed_available_in_all_floe_workspaces", record.displayName)
             await reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -372,7 +370,7 @@ struct FontManagementView: View {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let record = try await store.importFont(from: url)
-            successMessage = "已导入 \(record.displayName)，所有 Floe 工作区可用。"
+            successMessage = FloeL10n.l("settings.data_management_view.imported_available_in_all_floe_workspaces", record.displayName)
             await reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -382,7 +380,7 @@ struct FontManagementView: View {
     private func remove(_ record: ManagedFontRecord) async {
         do {
             try await store.remove(id: record.id)
-            successMessage = "已移除 \(record.displayName)。"
+            successMessage = FloeL10n.l("settings.data_management_view.removed", record.displayName)
             await reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -416,13 +414,13 @@ enum AppStorageInspector {
             let cache = manager.urls(for: .cachesDirectory, in: .userDomainMask).first
             let temporary = manager.temporaryDirectory
             let named: [(String, String, String, String)] = [
-                ("models", "本地模型", "cpu", "LocalModels"),
-                ("workspaces", "私有工作区", "folder.badge.gearshape", "PrivateTasks"),
-                ("fonts", "字体资源", "textformat", "Fonts"),
-                ("attachments", "附件", "paperclip", "Attachments"),
-                ("generated", "生成内容", "photo.on.rectangle", "GeneratedImages"),
-                ("browser", "浏览器产物", "globe", "BrowserArtifacts"),
-                ("checkpoints", "任务检查点", "arrow.trianglehead.2.clockwise", "Checkpoints")
+                ("models", FloeL10n.l("localmodels.title"), "cpu", "LocalModels"),
+                ("workspaces", FloeL10n.l("settings.data_management_view.private_workspace"), "folder.badge.gearshape", "PrivateTasks"),
+                ("fonts", FloeL10n.l("settings.data_management_view.font_resources"), "textformat", "Fonts"),
+                ("attachments", FloeL10n.l("settings.data_management_view.attachments"), "paperclip", "Attachments"),
+                ("generated", FloeL10n.l("platform.background_run_coordinator.generate_content"), "photo.on.rectangle", "GeneratedImages"),
+                ("browser", FloeL10n.l("settings.data_management_view.browser_downloads"), "globe", "BrowserArtifacts"),
+                ("checkpoints", FloeL10n.l("settings.data_management_view.task_checkpoint"), "arrow.trianglehead.2.clockwise", "Checkpoints")
             ]
             var categories = named.map { id, name, icon, component in
                 AppStorageCategory(
@@ -436,7 +434,7 @@ enum AppStorageInspector {
             let supportBytes = floe.map(allocatedBytes(at:)) ?? 0
             categories.append(AppStorageCategory(
                 id: "other",
-                name: "数据库、配置与其他数据",
+                name: FloeL10n.l("settings.data_management_view.databases_configuration_and_other_data"),
                 systemImage: "cylinder",
                 bytes: max(0, supportBytes - categorizedSupport)
             ))

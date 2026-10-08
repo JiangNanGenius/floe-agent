@@ -13,6 +13,7 @@
 import SwiftUI
 import FloeModels
 
+import FloeCore
 /// Renders a single persisted run event by kind.
 struct ThreadEventView: View {
     let event: RunEventRecord
@@ -174,7 +175,7 @@ struct ThreadEventView: View {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.shield")
                     .foregroundStyle(FloeTheme.success)
-                Text("已自动批准：\(payload["tool"] ?? "")")
+                Text(FloeL10n.l("chat.thread_event_view.auto_approved", payload["tool"] ?? ""))
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             }

@@ -1,5 +1,6 @@
 import Foundation
 
+import FloeCore
 public struct CapturedSecret: Sendable, Hashable, Identifiable {
     public var id: UUID
     public var label: String
@@ -131,7 +132,7 @@ public enum SecretIngressScanner {
                 ? "VNC credential"
                 : "VNC password"
         }
-        if line.contains("ssh") || line.contains("远程主机") {
+        if line.contains("ssh") || line.contains(FloeL10n.l("security.secret_ingress_scanner.remote_hosts_2")) {
             return normalized.contains("key") || normalized.contains("private")
                 ? "SSH private key"
                 : "SSH password"
@@ -139,7 +140,7 @@ public enum SecretIngressScanner {
         if line.contains("api") || normalized.contains("api") {
             return "Provider API key"
         }
-        if line.contains("网站") || line.contains("后台") || line.contains("登录") {
+        if line.contains(FloeL10n.l("security.secret_ingress_scanner.website")) || line.contains(FloeL10n.l("security.secret_ingress_scanner.background")) || line.contains(FloeL10n.l("security.secret_ingress_scanner.sign_in")) {
             return "Website password"
         }
         return baseLabel

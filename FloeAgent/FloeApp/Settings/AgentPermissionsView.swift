@@ -32,9 +32,9 @@ struct AgentPermissionsView: View {
                         }
                     }
                 )) {
-                    Text("询问").tag(AgentMode.human)
-                    Text("自动审批").tag(AgentMode.approvalModel)
-                    Text("完全访问").tag(AgentMode.fullControl)
+                    Text("settings.agent_permissions_view.ask").tag(AgentMode.human)
+                    Text("settings.agent_permissions_view.auto_approve").tag(AgentMode.approvalModel)
+                    Text("settings.agent_permissions_view.full_access").tag(AgentMode.fullControl)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .pickerStyle(.segmented)
@@ -44,14 +44,14 @@ struct AgentPermissionsView: View {
                 Text("settings.general.agent_mode.footer")
             }
 
-            Section("自动审批模型") {
-                Picker("审批模型", selection: approvalModelBinding) {
-                    Text("未配置（遇到中风险操作时询问）").tag(UUID?.none)
+            Section("settings.agent_permissions_view.auto_approval_model") {
+                Picker("settings.agent_permissions_view.approval_model", selection: approvalModelBinding) {
+                    Text("settings.agent_permissions_view.not_configured_asks_on_medium_risk").tag(UUID?.none)
                     ForEach(center.environment.conversationCenter.approvalModels) { model in
                         Text(model.displayName).tag(UUID?.some(model.id))
                     }
                 }
-                Text("审批模型不获得工具，只能返回允许、拒绝或询问；任何异常都会回退为询问。")
+                Text("settings.agent_permissions_view.the_approval_model_gets_no_tools")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let approvalSaveError {
@@ -115,22 +115,22 @@ struct AgentPermissionsView: View {
                 Text("settings.permissions.grants.footer")
             }
         }
-        .navigationTitle("settings.section.permissions")
+        .navigationTitle(FloeL10n.l("settings.section.permissions"))
         .task { await center.load() }
-        .alert("确认将完全访问设为默认？", isPresented: $isConfirmingFullAccess) {
-            Button("取消", role: .cancel) {}
-            Button("继续并验证身份", role: .destructive) {
+        .alert("settings.agent_permissions_view.set_full_access_as_the_default", isPresented: $isConfirmingFullAccess) {
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+            Button("settings.agent_permissions_view.continue_and_verify_identity", role: .destructive) {
                 Task { await authenticateFullAccess() }
             }
         } message: {
-            Text("该设置只影响以后新建的任务。任务内工具会自动执行；灾难性命令始终阻止，软件包安装仍需源码审查。")
+            Text("settings.agent_permissions_view.this_setting_affects_only_tasks_created")
         }
     }
 
     private func authenticateFullAccess() async {
         do {
             guard try await DeviceOwnerAuthenticator.authenticate(
-                reason: "确认新任务默认使用完全访问权限"
+                reason: FloeL10n.l("settings.agent_permissions_view.confirm_full_access_as_the_default")
             ) else { return }
             await center.setDefaultAgentMode(.fullControl)
             authenticationError = nil
@@ -150,7 +150,7 @@ struct AgentPermissionsView: View {
                         try await center.environment.conversationCenter.saveModelPreferences(preferences)
                         approvalSaveError = nil
                     } catch {
-                        approvalSaveError = "审批模型设置未完整保存：\(error.localizedDescription)"
+                        approvalSaveError = FloeL10n.l("settings.agent_permissions_view.the_approval_model_setting_was_not", error.localizedDescription)
                     }
                 }
             }

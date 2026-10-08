@@ -161,17 +161,17 @@ enum NotesProposalCenter {
             guard let support = try? FileManager.default.url(for: .applicationSupportDirectory,
                                                              in: .userDomainMask,
                                                              appropriateFor: nil, create: true) else {
-                return .failure(NoteError.storageUnavailable("无法访问应用支持目录，手记提案存储不可用。"))
+                return .failure(NoteError.storageUnavailable(FloeL10n.l("notes.notes_agent_tools.the_application_support_directory_is_inaccessible")))
             }
             root = support.appendingPathComponent("FloeAgent/Notes/Proposals", isDirectory: true)
         }
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         } catch {
-            return .failure(NoteError.storageUnavailable("手记提案存储不可用：无法创建 \(root.lastPathComponent) 目录。"))
+            return .failure(NoteError.storageUnavailable(FloeL10n.l("notes.notes_agent_tools.notes_proposal_storage_unavailable_cannot_create", root.lastPathComponent)))
         }
         guard FileManager.default.isWritableFile(atPath: root.path) else {
-            return .failure(NoteError.storageUnavailable("手记提案存储不可用：目录不可写。"))
+            return .failure(NoteError.storageUnavailable(FloeL10n.l("notes.notes_agent_tools.notes_proposal_storage_unavailable_the_directory")))
         }
         let created = Storage(proposals: NoteProposalStore(root: root),
                               outbox: NoteProposalOutbox(root: root.appendingPathComponent("Outbox", isDirectory: true)))
@@ -317,7 +317,7 @@ struct NotesSearchTool: AgentTool {
     func validate(_ args: Arguments) throws {
         guard !args.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, args.query.count <= 512,
               (1...50).contains(args.limit ?? 20), (args.offset ?? 0) >= 0, (args.offset ?? 0) <= 10_000 else {
-            throw NoteError.invalidOperation("搜索词或结果数量无效。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_search_term_or_result_count"))
         }
     }
     /// Collects matches inside one already-granted document, capped at `limit`.
@@ -350,7 +350,7 @@ struct NotesSearchTool: AgentTool {
         documents.sorted { $0.id.uuidString < $1.id.uuidString }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard let conversation = context.conversationID else { throw NoteError.invalidOperation("任务没有手记范围。") }
+        guard let conversation = context.conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_notes_scope")) }
         let store = try await NotesRepository.shared.store()
         let scoped = try await store.scopedDocuments(conversationID: conversation)
         // A document filter can only select from documents the conversation already holds a grant for.
@@ -567,7 +567,7 @@ struct NotesReadTool: AgentTool {
         if (args.pageID != nil || args.nodeID != nil || args.elementID != nil || args.section != nil
             || args.offset != nil || args.limit != nil || args.textOffset != nil || args.textLimit != nil
             || args.fieldID != nil) && args.documentID == nil {
-            throw NoteError.invalidOperation("读取页面、文字或主题需要 documentID。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.reading_pages_text_or_topics_requires"))
         }
         guard (args.offset ?? 0) >= 0, (args.offset ?? 0) <= 100_000,
               (1...200).contains(args.limit ?? 100),
@@ -575,7 +575,7 @@ struct NotesReadTool: AgentTool {
               args.elementID == nil || args.pageID != nil,
               args.fieldID == nil || args.section == "officeFields",
               [args.pageID != nil, args.nodeID != nil, args.section != nil].filter({ $0 }).count <= 1,
-              args.section == nil || Self.sections.contains(args.section!) else { throw NoteError.invalidOperation("读取范围无效。") }
+              args.section == nil || Self.sections.contains(args.section!) else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.invalid_read_scope")) }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
@@ -584,7 +584,7 @@ struct NotesReadTool: AgentTool {
             return try Self.output(NoteCapabilityMatrix.snapshot())
         }
         let store = try await NotesRepository.shared.store()
-        guard let conversation = context.conversationID else { throw NoteError.invalidOperation("任务没有手记范围。") }
+        guard let conversation = context.conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_notes_scope")) }
         guard let id = args.documentID else {
             let values = try await store.scopedDocuments(conversationID: conversation)
             let summary = values.map { ["id": $0.id.uuidString, "title": $0.title, "kind": $0.kind.rawValue, "revision": String($0.revision)] }
@@ -598,9 +598,9 @@ struct NotesReadTool: AgentTool {
         let textLimit = args.textLimit ?? 8_000
         if let pageID = args.pageID {
             guard value.kind == .notebook else {
-                if value.kind == .office { throw NoteError.invalidOperation("Office 文档没有手记页面；请用 section=officeText 读取提取文本。") }
-                if value.kind == .mindMap { throw NoteError.invalidOperation("思维导图没有手记页面；请用 nodeID 或 section=nodes/connections/summaries 读取主题。") }
-                throw NoteError.invalidOperation("此内容没有手记页面，仅提供受限的只读摘要。")
+                if value.kind == .office { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_office_document_has_no_note")) }
+                if value.kind == .mindMap { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_mind_map_has_no_note")) }
+                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_has_no_note_pages"))
             }
             guard let index = value.pages.firstIndex(where: { $0.id == pageID }) else { throw NoteError.notFound }
             let page = value.pages[index]
@@ -614,7 +614,7 @@ struct NotesReadTool: AgentTool {
                                                   focusElement: focusElement))
         }
         if let nodeID = args.nodeID {
-            guard value.kind == .mindMap else { throw NoteError.invalidOperation("此内容不是思维导图。") }
+            guard value.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_is_not_a_mind")) }
             guard let node = value.nodes.first(where: { $0.id == nodeID }) else { throw NoteError.notFound }
             return try Self.output(Self.nodeDetail(value, node: node, offset: offset, limit: limit,
                                                    textOffset: textOffset, textLimit: textLimit))
@@ -622,21 +622,21 @@ struct NotesReadTool: AgentTool {
         if let section = args.section {
             switch section {
             case "pages":
-                guard value.kind == .notebook else { throw NoteError.invalidOperation("此内容没有分页手记页面；Office 请用 section=officeText，其他类型仅提供只读摘要。") }
+                guard value.kind == .notebook else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_has_no_paginated_note")) }
                 return try Self.output(Self.documentSummary(value, pageOffset: offset, pageLimit: limit, textOffset: textOffset, textLimit: textLimit))
             case "nodes", "connections", "summaries":
-                guard value.kind == .mindMap else { throw NoteError.invalidOperation("此内容不是思维导图；手记页面请用 pageID 或 section=pages，其他类型仅提供只读摘要。") }
+                guard value.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_is_not_a_mind_2")) }
                 return try Self.output(Self.mapSlice(value, section: section, offset: offset, limit: limit,
                                                      textOffset: textOffset, textLimit: textLimit))
             case "officeText":
-                guard value.kind == .office else { throw NoteError.invalidOperation("此内容不是 Office 文档。") }
+                guard value.kind == .office else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_is_not_an_office")) }
                 return try Self.output(Self.officeSummary(value, textOffset: textOffset, textLimit: textLimit))
             case "officeFields":
                 return try Self.output(try await Self.readOfficeFields(value, store: store, offset: offset, limit: limit,
                                                                       textOffset: textOffset, textLimit: textLimit,
                                                                       fieldID: args.fieldID))
             default:
-                throw NoteError.invalidOperation("不支持的读取范围。")
+                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.unsupported_read_scope"))
             }
         }
         if value.kind == .mindMap && (args.offset != nil || args.limit != nil) {
@@ -781,10 +781,10 @@ struct NotesReadTool: AgentTool {
     static func readOfficeFields(_ document: NoteDocument, store: NotesStore,
                                  offset: Int, limit: Int, textOffset: Int, textLimit: Int,
                                  fieldID: String?) async throws -> OfficeFieldsPage {
-        guard document.kind == .office else { throw NoteError.invalidOperation("此内容不是 Office 文档。") }
+        guard document.kind == .office else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_is_not_an_office")) }
         guard let resourceID = document.officeResourceID else { throw NoteError.resourceUnavailable }
         guard let fileExtension = NotesOfficeResourceStaging.validatedExtension(of: document.officeFileName) else {
-            throw NoteError.invalidOperation("Office 正文读写仅支持 .docx、.xlsx 和 .pptx 文件。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.reading_and_writing_office_body_text"))
         }
         let source = try await store.resourceURL(resourceID)
         let staged = try NotesOfficeResourceStaging.stage(source: source, fileExtension: fileExtension)
@@ -1045,7 +1045,7 @@ struct NotesReadTool: AgentTool {
     static func output<T: Encodable>(_ value: T, advice: String = "手记页面请用 pageID 或 section=pages，导图请用 nodeID 或 section=nodes/connections/summaries，Office 请用 section=officeText 分页读取。") throws -> ToolExecutionOutput {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(value)
-        guard data.count <= Self.maximumResponseBytes else { throw NoteError.invalidOperation("内容过大：\(advice)") }
+        guard data.count <= Self.maximumResponseBytes else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.content_too_large", advice)) }
         return ToolExecutionOutput(digesting: String(decoding: data, as: UTF8.self), exitStatus: 0, maximumSummaryCharacters: Self.maximumResponseBytes)
     }
 }
@@ -1105,13 +1105,13 @@ struct NotesEditTool: AgentTool {
             _ = try Self.requiredTitle(args)
             let operations = try Self.requiredOperations(args)
             guard !operations.contains(where: { $0.action == "updateOfficeText" }) else {
-                throw NoteError.invalidOperation("updateOfficeText 需要改写并重新校验 Office 包，请直接用 action=apply（同样可撤销、带幂等回执）；提案暂不支持。")
+                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.updateofficetext_rewrites_and_re_verifies_the"))
             }
         case "preview":
-            guard args.proposalID != nil, args.grantID == nil else { throw NoteError.invalidOperation("预览需要 proposalID。") }
+            guard args.proposalID != nil, args.grantID == nil else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.preview_requires_a_proposalid")) }
         case "applyProposal":
             guard args.proposalID != nil, let grant = args.grantID, !grant.isEmpty else {
-                throw NoteError.invalidOperation("应用提案需要 proposalID 和界面确认 grantID。")
+                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.applying_a_proposal_requires_a_proposalid"))
             }
         default:
             _ = try Self.requiredRevision(args)
@@ -1123,10 +1123,10 @@ struct NotesEditTool: AgentTool {
                 // text update cannot be mixed with unrelated edits that would make
                 // the field IDs and sha256 ambiguous.
                 guard officeOperations.count == operations.count else {
-                    throw NoteError.invalidOperation("updateOfficeText 不能与其他编辑操作混合。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.updateofficetext_cannot_be_mixed_with_other"))
                 }
                 guard let sha = args.expectedSHA256, Self.isSHA256(sha) else {
-                    throw NoteError.invalidOperation("修改 Office 正文前请先用 notes.read section=officeFields 读取字段，并传入返回的 sha256。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.before_modifying_office_body_text_read"))
                 }
                 // A missing `text` is an incomplete update, not an empty clear: only an
                 // explicitly supplied `text` (including an empty string) may clear a
@@ -1136,26 +1136,26 @@ struct NotesEditTool: AgentTool {
                     guard let fieldID = $0.fieldID, !fieldID.isEmpty, let text = $0.text else { return false }
                     return text.utf8.count <= 65_536
                 }) else {
-                    throw NoteError.invalidOperation("Office 字段编辑需要非空 fieldID 和 text（清空字段请显式传 text=\"\"）；text 不超过 65536 字节。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.editing_an_office_field_requires_a"))
                 }
                 let identifiers = officeOperations.compactMap(\.fieldID)
                 guard Set(identifiers).count == identifiers.count else {
-                    throw NoteError.invalidOperation("同一批次不能重复修改同一个 Office 字段。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_same_office_field_cannot_be"))
                 }
             }
         }
     }
     private static func requiredRevision(_ args: Arguments) throws -> Int {
-        guard let value = args.expectedRevision, value > 0 else { throw NoteError.invalidOperation("编辑批次参数无效。") }
+        guard let value = args.expectedRevision, value > 0 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.invalid_edit_batch_parameters")) }
         return value
     }
     private static func requiredTitle(_ args: Arguments) throws -> String {
-        guard let value = args.title, !value.isEmpty else { throw NoteError.invalidOperation("编辑批次参数无效。") }
+        guard let value = args.title, !value.isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.invalid_edit_batch_parameters")) }
         return value
     }
     private static func requiredOperations(_ args: Arguments) throws -> [Operation] {
         guard let value = args.operations, !value.isEmpty, value.count <= 1000 else {
-            throw NoteError.invalidOperation("编辑批次参数无效。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.invalid_edit_batch_parameters"))
         }
         return value
     }
@@ -1197,16 +1197,16 @@ struct NotesEditTool: AgentTool {
         let officeOperations = operations.filter { $0.action == "updateOfficeText" }
         if !officeOperations.isEmpty {
             guard officeOperations.count == operations.count else {
-                throw NoteError.invalidOperation("updateOfficeText 不能与其他编辑操作混合。")
+                throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.updateofficetext_cannot_be_mixed_with_other"))
             }
-            guard draft.kind == .office else { throw NoteError.invalidOperation("目标不是 Office 文档。") }
+            guard draft.kind == .office else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_target_is_not_an_office")) }
             var updates: [String: String] = [:]
             for operation in officeOperations {
                 guard let fieldID = operation.fieldID, !fieldID.isEmpty, let text = operation.text else {
-                    throw NoteError.invalidOperation("Office 字段编辑需要非空 fieldID 和 text（清空字段请显式传 text=\"\"）。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.editing_an_office_field_requires_a_2"))
                 }
                 guard updates[fieldID] == nil else {
-                    throw NoteError.invalidOperation("同一批次不能重复修改同一个 Office 字段。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_same_office_field_cannot_be"))
                 }
                 updates[fieldID] = text
             }
@@ -1233,7 +1233,7 @@ struct NotesEditTool: AgentTool {
             if operation.action == "replaceMap" {
                 guard document.kind == .mindMap, var nodes = operation.nodes, let connections = operation.connections,
                       let summaries = operation.summaries, let direction = operation.direction else {
-                    throw NoteError.invalidOperation("完整导图编辑需要 nodes、connections、summaries 和 direction。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.a_full_mind_map_edit_requires"))
                 }
                 let allowedResources = document.resourceIDs
                 let previousNodes = Dictionary(uniqueKeysWithValues: document.nodes.map { ($0.id, $0) })
@@ -1247,7 +1247,7 @@ struct NotesEditTool: AgentTool {
                 let commands: [NoteEdit] = [.replaceMindMap(nodes: nodes, connections: connections), .mindMapLayout(direction: direction, summaries: summaries)]
                 for command in commands { try command.apply(to: &document) }
                 guard document.resourceIDs.isSubset(of: allowedResources) else {
-                    throw NoteError.invalidOperation("请先从手记界面插入图片，再引用已有资源。")
+                    throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.insert_the_image_from_the_notes"))
                 }
                 edits.append(contentsOf: commands)
                 continue
@@ -1262,7 +1262,7 @@ struct NotesEditTool: AgentTool {
     /// Propose is read-only on the document: it validates the batch against a
     /// decoded copy and stores a durable proposal for the editor's confirm UI.
     private func propose(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard let conversation = context.conversationID else { throw NoteError.invalidOperation("任务没有手记范围。") }
+        guard let conversation = context.conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_notes_scope")) }
         let store = try await NotesRepository.shared.store()
         try await store.authorize(conversationID: conversation, documentID: args.documentID, editing: false)
         let document = try await store.document(args.documentID)
@@ -1296,8 +1296,8 @@ struct NotesEditTool: AgentTool {
 
     /// Preview returns the stored proposal without touching the document.
     private func preview(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard let conversation = context.conversationID else { throw NoteError.invalidOperation("任务没有手记范围。") }
-        guard let proposalID = args.proposalID else { throw NoteError.invalidOperation("预览需要 proposalID。") }
+        guard let conversation = context.conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_notes_scope")) }
+        guard let proposalID = args.proposalID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.preview_requires_a_proposalid")) }
         let store = try await NotesRepository.shared.store()
         try await store.authorize(conversationID: conversation, documentID: args.documentID, editing: false)
         let storage = try NotesProposalCenter.requireStorage()
@@ -1324,9 +1324,9 @@ struct NotesEditTool: AgentTool {
     /// accept control minted. Revision + document fingerprint are re-checked
     /// and the commit reuses store.apply's idempotency receipt.
     private func applyProposal(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard let conversation = context.conversationID else { throw NoteError.invalidOperation("任务没有手记范围。") }
+        guard let conversation = context.conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_notes_scope")) }
         guard let proposalID = args.proposalID, let grantID = args.grantID else {
-            throw NoteError.invalidOperation("应用提案需要 proposalID 和界面确认 grantID。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.applying_a_proposal_requires_a_proposalid"))
         }
         let store = try await NotesRepository.shared.store()
         // Origin ownership before any receipt lookup: a foreign task must not
@@ -1381,9 +1381,9 @@ struct NotesEditTool: AgentTool {
                                        requestID: String?, authorizedConversationID: UUID?) async throws -> NoteDocument {
         guard document.kind == .office, let resourceID = document.officeResourceID,
               let fileExtension = NotesOfficeResourceStaging.validatedExtension(of: document.officeFileName) else {
-            throw NoteError.invalidOperation("目标不是可编辑的 Office 文档（仅支持 .docx、.xlsx、.pptx）。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_target_is_not_an_editable"))
         }
-        guard !updates.isEmpty else { throw NoteError.invalidOperation("没有 Office 正文修改。") }
+        guard !updates.isEmpty else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.no_office_body_text_changes")) }
         let source = try await store.resourceURL(resourceID)
         let staged = try NotesOfficeResourceStaging.stage(source: source, fileExtension: fileExtension)
         defer { NotesOfficeResourceStaging.remove(staged) }
@@ -1395,7 +1395,7 @@ struct NotesEditTool: AgentTool {
         // fails closed on a stale digest or an unknown field ID.
         let updated = try OfficeDocumentService.update(sourceURL: staged, updates: updates, expectedSHA256: before.sha256)
         guard updated.sha256 != nil else {
-            throw NoteError.invalidOperation("Office 保存后无法确认新版本；原文件保持不变。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_new_version_could_not_be"))
         }
         let newResource = try await store.importResource(from: staged, mediaType: NotesOfficeResourceStaging.mediaType(for: fileExtension))
         return try await store.apply(.init(documentID: document.id, expectedRevision: expectedRevision, title: title,
@@ -1406,13 +1406,13 @@ struct NotesEditTool: AgentTool {
     /// deliberately sit over a PDF background; only the page boundary is enforced.
     static func validatedFrame(_ value: Frame, page: NotePage) throws -> NoteRect {
         guard [value.x, value.y, value.width, value.height].allSatisfy(\.isFinite), value.width > 0, value.height > 0 else {
-            throw NoteError.invalidOperation("文本位置必须是有限的正数。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.text_positions_must_be_finite_positive"))
         }
         let tolerance = 0.5
         guard value.x >= 0, value.y >= 0,
               value.x + value.width <= page.width + tolerance,
               value.y + value.height <= page.height + tolerance else {
-            throw NoteError.invalidOperation("文本位置超出手记页面范围（\(page.width) x \(page.height)）。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_text_position_is_outside_the", page.width, page.height))
         }
         return NoteRect(x: value.x, y: value.y, width: value.width, height: value.height)
     }
@@ -1448,13 +1448,13 @@ struct NotesEditTool: AgentTool {
     static func resolveTextFrame(_ page: NotePage, explicit: Frame?) throws -> NoteRect {
         if let explicit { return try Self.validatedFrame(explicit, page: page) }
         guard let frame = Self.defaultTextFrame(page, existing: page.elements.map(\.frame)) else {
-            throw NoteError.invalidOperation("此页面没有可用的默认文字位置；请先 addPage 新建页面，或为该文字提供显式 frame。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_page_has_no_usable_default"))
         }
         return frame
     }
     private static func command(_ operation: Operation, in document: NoteDocument) throws -> NoteEdit {
         func text() throws -> String {
-            guard let value = operation.text, value.utf8.count <= 65_536 else { throw NoteError.invalidOperation("缺少文字或文字过长。") }
+            guard let value = operation.text, value.utf8.count <= 65_536 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.text_is_missing_or_too_long")) }
             return value
         }
         func node() throws -> MindMapNode {
@@ -1467,15 +1467,15 @@ struct NotesEditTool: AgentTool {
         }
         // A model-supplied frame is a page-coordinate rectangle that must stay inside the page surface.
         func frame(_ page: NotePage) throws -> NoteRect {
-            guard let value = operation.frame else { throw NoteError.invalidOperation("缺少文本位置 frame。") }
+            guard let value = operation.frame else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_text_position_frame_is_missing")) }
             return try Self.validatedFrame(value, page: page)
         }
         switch operation.action {
         case "linkMap":
-            guard let id = operation.mapDocumentID else { throw NoteError.invalidOperation("缺少导图 documentID。") }
+            guard let id = operation.mapDocumentID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_mind_map_documentid_is_missing")) }
             return .linkMindMap(.init(id: operation.linkID ?? UUID(), documentID: id, pageID: operation.pageID))
         case "unlinkMap":
-            guard let id = operation.linkID else { throw NoteError.invalidOperation("缺少关联 linkID。") }
+            guard let id = operation.linkID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_association_linkid_is_missing")) }
             return .unlinkMindMap(id)
         case "rename": return .rename(try text())
         case "addPage": return .insertPage(NotePage(), at: operation.index ?? document.pages.count)
@@ -1508,10 +1508,10 @@ struct NotesEditTool: AgentTool {
             var value = try node(); value.title = try text(); value.isAIGenerated = true; return .upsertNode(value)
         case "moveNode":
             var value = try node()
-            guard value.parentID != nil, let parent = operation.parentID else { throw NoteError.invalidOperation("不能移动中心主题。") }
+            guard value.parentID != nil, let parent = operation.parentID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_central_topic_cannot_be_moved")) }
             value.parentID = parent; value.order = operation.index ?? 0; return .upsertNode(value)
         case "deleteBranch": return .deleteBranch(try node().id)
-        default: throw NoteError.invalidOperation("不支持此编辑操作。")
+        default: throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_edit_action_is_not_supported"))
         }
     }
 }
@@ -1527,7 +1527,7 @@ struct NotesAttachFileTool: AgentTool {
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
     func validate(_ args: Arguments) throws {
-        guard args.expectedRevision > 0, !args.path.isEmpty, (args.caption ?? "").utf8.count <= 65_536 else { throw NoteError.invalidOperation("附件参数无效。") }
+        guard args.expectedRevision > 0, !args.path.isEmpty, (args.caption ?? "").utf8.count <= 65_536 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.invalid_attachment_parameters")) }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
@@ -1541,15 +1541,15 @@ struct NotesAttachFileTool: AgentTool {
         guard document.kind == .mindMap, document.revision == args.expectedRevision else { throw NoteError.conflict }
         guard var node = document.nodes.first(where: { $0.id == args.nodeID }) else { throw NoteError.notFound }
         if let replace = args.replaceAttachmentID, node.attachments?.contains(where: { $0.id == replace }) != true { throw NoteError.notFound }
-        guard args.replaceAttachmentID != nil || (node.attachments ?? []).count < 32 else { throw NoteError.invalidOperation("主题附件已满。") }
+        guard args.replaceAttachmentID != nil || (node.attachments ?? []).count < 32 else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.topic_attachments_are_full")) }
         try context.authorizeWorkspacePath(args.path)
-        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation("任务没有工作区。") }
+        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_workspace")) }
         let guardrail = WorkspacePathGuard(rootURL: root)
         let input = try guardrail.resolve(args.path)
         try context.authorizeWorkspacePath(String(input.path.dropFirst(guardrail.rootURL.path.count + 1)))
         var attachment = try await NoteFileImporter.attachment(input, replacing: args.replaceAttachmentID, store: store)
         attachment.caption = args.caption ?? ""
-        guard args.useAsCover != true || attachment.kind == .image else { throw NoteError.invalidOperation("只有图片可以用作主题封面。") }
+        guard args.useAsCover != true || attachment.kind == .image else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.only_images_can_be_used_as")) }
         if let index = node.attachments?.firstIndex(where: { $0.id == attachment.id }) {
             let previous = node.attachments?[index]
             node.attachments?[index] = attachment
@@ -1561,7 +1561,7 @@ struct NotesAttachFileTool: AgentTool {
         if args.useAsCover == true { node.imageResourceID = attachment.resourceID }
         node.isAIGenerated = true
         try context.cancellation.throwIfCancelled()
-        let result = try await store.apply(.init(documentID: document.id, expectedRevision: args.expectedRevision, title: "Agent 添加附件", edits: [.upsertNode(node)], requestID: receiptID), authorizedConversationID: context.conversationID)
+        let result = try await store.apply(.init(documentID: document.id, expectedRevision: args.expectedRevision, title: FloeL10n.l("notes.notes_agent_tools.agent_adds_attachment"), edits: [.upsertNode(node)], requestID: receiptID), authorizedConversationID: context.conversationID)
         return try NotesReadTool.output(["documentID": result.id.uuidString, "revision": String(result.revision), "attachmentID": attachment.id.uuidString, "status": "saved"])
     }
 }
@@ -1583,7 +1583,7 @@ struct NotesStageAttachmentTool: AgentTool {
 
     func validate(_ args: Arguments) throws {
         guard (args.expectedRevision ?? 1) > 0, (args.targetPath ?? "").utf8.count <= 512 else {
-            throw NoteError.invalidOperation("暂存参数无效。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.invalid_staging_parameters"))
         }
     }
 
@@ -1594,9 +1594,9 @@ struct NotesStageAttachmentTool: AgentTool {
         let document = try await store.document(args.documentID)
         if let expected = args.expectedRevision, document.revision != expected { throw NoteError.conflict }
         guard document.resourceIDs.contains(args.resourceID) else {
-            throw NoteError.invalidOperation("该资源不属于这份已授权文档。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_resource_does_not_belong_to"))
         }
-        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation("任务没有工作区。") }
+        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_workspace")) }
         let defaultName = "inputs/\(args.resourceID.uuidString)-\(Self.sanitizedFileName(of: document, resourceID: args.resourceID))"
         let relative = args.targetPath ?? defaultName
         try context.authorizeWorkspacePath(relative)
@@ -1604,7 +1604,7 @@ struct NotesStageAttachmentTool: AgentTool {
         let destination = try guardrail.resolve(relative)
         let source = try await store.resourceURL(args.resourceID)
         let size = (try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        guard size <= Self.maximumStagedBytes else { throw NoteError.invalidOperation("附件超过 512 MB 暂存上限。") }
+        guard size <= Self.maximumStagedBytes else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_attachment_exceeds_the_512_mb")) }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
@@ -1660,19 +1660,19 @@ struct NotesExportTool: AgentTool {
               (args.expectedRevision ?? 1) > 0,
               (args.pageIDs?.count ?? 0) <= NoteExportSelection.maximumPages,
               (args.targetPath ?? "").utf8.count <= 512 else {
-            throw NoteError.invalidOperation("导出参数无效。")
+            throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.invalid_export_parameters"))
         }
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        guard let conversation = context.conversationID else { throw NoteError.invalidOperation("任务没有手记范围。") }
+        guard let conversation = context.conversationID else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_notes_scope")) }
         let store = try await NotesRepository.shared.store()
         // Never export a document this conversation cannot read.
         try await store.authorize(conversationID: conversation, documentID: args.documentID, editing: false)
         let document = try await store.document(args.documentID)
         if let expected = args.expectedRevision, document.revision != expected { throw NoteError.conflict }
-        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation("任务没有工作区。") }
+        guard let root = context.workspaceRootURL else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.the_task_has_no_workspace")) }
         let format = args.format.lowercased()
         let stem = await NotesExport.fileName(document.title)
         let fileExtension = format == "pdf" ? "pdf" : "floenote"
@@ -1698,11 +1698,11 @@ struct NotesExportTool: AgentTool {
             try context.cancellation.throwIfCancelled()
             try FileManager.default.copyItem(at: artifact.url, to: staging)
             guard let reopened = CGPDFDocument(staging as CFURL), reopened.numberOfPages == pages.count else {
-                throw NoteError.invalidDocument("导出的 PDF 无法重新读取或页数与所选页面不符。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.notes_agent_tools.the_exported_pdf_could_not_be"))
             }
             try Self.commit(staging: staging, to: destination)
             guard let final = CGPDFDocument(destination as CFURL), final.numberOfPages == pages.count else {
-                throw NoteError.invalidDocument("写入工作区后的 PDF 无法重新读取。")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.notes_agent_tools.the_pdf_written_to_the_workspace"))
             }
             let bytes = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             return try NotesReadTool.output(ExportResult(
@@ -1727,25 +1727,25 @@ struct NotesExportTool: AgentTool {
     /// get a structural ZIP check instead of a second multi-gigabyte import.
     static func verifyArchive(_ url: URL) async throws -> String {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size > 0 else { throw NoteError.invalidDocument("导出的归档为空。") }
+        guard size > 0 else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_agent_tools.the_exported_archive_is_empty")) }
         if size <= maximumVerifyBytes {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-export-verify-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: root) }
             do {
                 let scratch = try NotesStore(root: root)
                 let documents = try await NotesArchive.importDocuments(from: url, notebookID: nil, store: scratch)
-                guard let primary = documents.first else { throw NoteError.invalidDocument("归档没有主文档。") }
+                guard let primary = documents.first else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_agent_tools.the_archive_has_no_main_document")) }
                 return "reimport-verified documents=\(documents.count) pages=\(primary.pages.count)"
             } catch let error as NoteError {
                 throw error
             } catch {
-                throw NoteError.invalidDocument("导出的归档无法重新导入校验：\(error.localizedDescription)")
+                throw NoteError.invalidDocument(FloeL10n.l("notes.notes_agent_tools.the_exported_archive_could_not_be", error.localizedDescription))
             }
         }
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         let magic = try handle.read(upToCount: 4) ?? Data()
-        guard magic == Data([0x50, 0x4B, 0x03, 0x04]) else { throw NoteError.invalidDocument("导出的归档不是有效 ZIP。") }
+        guard magic == Data([0x50, 0x4B, 0x03, 0x04]) else { throw NoteError.invalidDocument(FloeL10n.l("notes.notes_agent_tools.the_exported_archive_is_not_a")) }
         return "structural-magic-verified bytes=\(size) overFullVerificationBudget=\(maximumVerifyBytes)"
     }
 

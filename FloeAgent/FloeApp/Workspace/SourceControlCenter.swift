@@ -259,7 +259,7 @@ final class SourceControlCenter: ObservableObject {
     func startDeviceLogin(includeWorkflows: Bool = false) async {
         guard !isBusy, deviceLoginTask == nil else { return }
         guard let clientID = githubOAuthClientID else {
-            errorMessage = "此构建尚未配置 GitHub OAuth Client ID，请联系构建管理员；访问令牌登录仍可使用。"
+            errorMessage = FloeL10n.l("workspace.source_control_center.this_build_has_no_github_oauth")
             return
         }
         isBusy = true
@@ -489,7 +489,7 @@ final class SourceControlCenter: ObservableObject {
         }
         let data = try Data(contentsOf: url)
         guard data.count <= 4 * 1024 * 1024, let text = String(data: data, encoding: .utf8) else {
-            throw FloeError.validationFailed("冲突文件不是可编辑的 UTF-8 文本")
+            throw FloeError.validationFailed(FloeL10n.l("workspace.source_control_center.the_conflict_file_is_not_editable"))
         }
         return text
     }
