@@ -193,6 +193,19 @@ Not verified this round and not claimed:
 
 ## Distribution note
 
+### Final candidate follow-up / 最终候选复验
+
+- A later intermediate Canvas CAD build opened full-screen correctly, but
+  returning to the embedded editor left a blank drawing area; re-entering
+  full-screen recovered the same saved draft. Drawing Assistant presentation
+  was delayed until leaving full-screen, and its real CAD tool run was not
+  completed. These are release-blocking regressions under repair; the earlier
+  checks above do not establish acceptance of this newer entry path.
+- 后续中间包的画布 CAD 全屏入口可打开，但返回嵌入编辑器后绘图区空白；再次
+  进入全屏可恢复同一草稿。图纸助手弹窗延迟到退出全屏才显示，真实 CAD 工具
+  调用尚未完成。这些问题正在修复，阻止本候选分发；前述历史验证不替代新入口
+  的复验。
+
 The release preflight (`scripts/release_preflight.sh`) requires this file and
 `docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_265.json` to exist in
 the frozen source with both language sections; both are prepared here. The final
