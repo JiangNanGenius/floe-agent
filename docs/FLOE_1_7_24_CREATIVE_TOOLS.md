@@ -108,13 +108,13 @@ propose/apply/save/export 需 CAD 文档授权，apply 另需界面签发令牌�
 | `read` | document structure and current revision/SHA. |
 | `query` | `kind=entities|text|layers|drawing|snap`; entities/text paginate (`limit` 1–500, `offset`), filter by `layer`, `entity_type` (Line/Circle/Arc/LwPolyline/Text) or `text`; `snap` needs one finite `points` row. |
 | `locate` | exactly one `handles` entry → highlight in the live viewer (CUA surface). |
-| `measure` | `kind=distance|angle|radius|perimeter|area` with `points`/`handles`. |
+| `measure` | `distance`: 2 points or 2 handles; `angle`: 3 points or 2 line handles; `radius`: 1 circle/arc handle; `perimeter`: 1+ handles; `area`: 1 closed entity or 3+ points. |
 | `check` | zero-length, exact duplicates, layer usage, open contours at a stated `tolerance` — drawing hygiene, not engineering certification. |
 | `propose` | validates a typed batch (≤64 ops) on a throwaway session, returns new/changed/deleted preview; never writes. |
 | `preview` | fetch a stored proposal (`proposal_id`). |
 | `apply` | consumes a single-use UI `grant_id`; one atomic undoable transaction, SHA compare-and-swap, idempotent replay. |
 | `save` | commits full DWG/DXF serialization after a fresh same-engine reparse. |
-| `export` | writes a separate verified DXF presentation copy; source unchanged. |
+| `export` | writes a separate verified DXF drawing copy; source unchanged. PDF/PNG previews are separate presentation formats. |
 
 | 动作 | 作用 |
 | --- | --- |
@@ -122,13 +122,13 @@ propose/apply/save/export 需 CAD 文档授权，apply 另需界面签发令牌�
 | `read` | 文档结构与当前修订/SHA。 |
 | `query` | `kind=entities|text|layers|drawing|snap`；entities/text 分页（`limit` 1–500），可按图层/图元类型/文字过滤；`snap` 需一个有限坐标点。 |
 | `locate` | 仅一个 `handles`，在实时查看器中高亮（界面能力）。 |
-| `measure` | `kind=distance|angle|radius|perimeter|area`。 |
+| `measure` | 距离需 2 点或 2 个对象；角度需 3 点或 2 条线；半径需 1 个圆/圆弧；周长需至少 1 个对象；面积需 1 个闭合对象或至少 3 点。 |
 | `check` | 零长度、完全重复、图层使用、给定容差下开放轮廓——图纸卫生检查，非工程认证。 |
 | `propose` | 在校验会话上验证类型化批次（≤64 操作），返回新增/修改/删除预览，不写入。 |
 | `preview` | 读取已存提案。 |
 | `apply` | 消耗一次性界面 `grant_id`，单一原子可撤销事务，SHA 比较并交换，幂等重放。 |
 | `save` | 同引擎重新解析通过后提交完整 DWG/DXF 序列化。 |
-| `export` | 另存已校验的 DXF 呈现副本，源文件不变。 |
+| `export` | 另存已校验的 DXF 图纸副本，源文件不变；PDF/PNG 展示副本另行处理。 |
 
 Operations (typed, anything else is refused before reaching the engine):
 `addLine`, `addCircle`, `addArc`, `addLwPolyline` (closed 4-point = rectangle),
@@ -137,6 +137,12 @@ Operations (typed, anything else is refused before reaching the engine):
 `setLayer`, `setColor`, `setLineWeight`, `delete`, `trim`, `extend`, `offset`,
 `addLayer`, `updateLayer`, `renameLayer`, `deleteLayer`, `batch`. Coordinates are
 Z=0 drawing units. 类型化操作，未列出的会在到达引擎前被拒绝；坐标为 Z=0 图纸单位。
+
+Point and delta vectors use `[x,y]` or `[x,y,0]`; validated `{x,y}`/`{dx,dy}`
+aliases are accepted. Non-default Z coordinates are refused, not projected.
+For example, move uses `{"operation":"move","handle":"<current handle>","delta":[1,0,0]}`.
+点与位移使用 `[x,y]` 或 `[x,y,0]`，也接受经过校验的对象别名；非默认 Z 坐标
+会被拒绝，不会静默投影。对象句柄必须从当前修订重新查询。
 
 ### 3.2 Examples / 示例
 
@@ -154,9 +160,9 @@ Propose → user confirms in the CAD UI → apply → verify / 提案→界面�
 {"action":"propose","path":"plates/base.dwg","expected_sha256":"<64 hex from read>",
  "summary":"add bolt circle and a radius dimension",
  "operations":[
-   {"operation":"addCircle","center":[120,40],"radius":12,"layer":"0"},
-   {"operation":"addDimension","kind":"radius","points":[[120,40],[140,40]],"layer":"DIM"},
-   {"operation":"addLayer","name":"DIM","color":"3"}]}
+   {"operation":"addLayer","name":"DIM","color":"3"},
+   {"operation":"addCircle","center":[120,40,0],"radius":12,"layer":"0"},
+   {"operation":"addDimension","kind":"radius","points":[[120,40,0],[132,40,0]],"layer":"DIM"}]}
 ```
 ```json
 {"action":"preview","path":"plates/base.dwg","proposal_id":"<uuid>"}
