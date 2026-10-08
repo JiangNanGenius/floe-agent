@@ -243,6 +243,97 @@ struct CadDocumentToolTests {
         #expect(decoded.first?.operation == "addLine")
     }
 
+    @Test("propose normalizes 2-number vectors and named delta objects to the engine's 3-number shape")
+    func proposeNormalizesVectors() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        _ = try await execute(tool, #"""
+        {"action":"propose","path":"plate.dwg",
+         "operations":[{"operation":"move","handle":"35","delta":[1,0]},
+                       {"operation":"copy","handle":"35","delta":{"dx":0,"dy":2}},
+                       {"operation":"addText","position":{"x":1,"y":2},"text":"hi","height":2,"layer":"0"},
+                       {"operation":"mirror","handle":"35","axis":[[0,0],[1,0]]}]}
+        """#)
+        let operationsJSON = await host.appliedOperationsJSON ?? ""
+        #expect(operationsJSON.contains("\"delta\":[1,0,0]"))
+        #expect(operationsJSON.contains("\"delta\":[0,2,0]"))
+        #expect(operationsJSON.contains("\"position\":[1,2,0]"))
+        #expect(operationsJSON.contains("\"axis\":[[0,0,0],[1,0,0]]"))
+    }
+
+    @Test("propose rejects a malformed vector with a structured message before the engine")
+    func proposeRejectsMalformedVectors() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        var reason: String?
+        do {
+            _ = try await execute(tool, #"""
+            {"action":"propose","path":"plate.dwg",
+             "operations":[{"operation":"move","handle":"35","delta":"1,0"}]}
+            """#)
+        } catch let error as FloeError {
+            reason = error.reason
+        }
+        #expect(reason == "move.delta must be [x,y] or [x,y,z]")
+        let applied = await host.appliedOperationsJSON
+        #expect(applied == nil, "a malformed proposal must never reach the host")
+    }
+
+    @Test("propose refuses nonzero z in vectors and lwpolyline vertices, including nested batches")
+    func proposeRejectsNonPlanarCoordinates() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let cases = [
+            #"{"action":"propose","path":"plate.dwg","operations":[{"operation":"move","handle":"35","delta":[1,0,5]}]}"#,
+            #"{"action":"propose","path":"plate.dwg","operations":[{"operation":"copy","handle":"35","delta":{"dx":1,"dy":0,"dz":4}}]}"#,
+            #"{"action":"propose","path":"plate.dwg","operations":[{"operation":"addLwPolyline","points":[[0,0,3],[1,0,0]],"layer":"0"}]}"#,
+            #"{"action":"propose","path":"plate.dwg","operations":[{"operation":"batch","operations":[{"operation":"move","handle":"35","delta":[1,0,2]}]}]}"#
+        ]
+        for json in cases {
+            var reason: String?
+            do {
+                _ = try await execute(tool, json)
+            } catch let error as FloeError {
+                reason = error.reason
+            }
+            #expect(reason?.contains("z must be 0") == true,
+                    "case must be refused without projecting z: \(json) -> \(reason ?? "no error")")
+        }
+        let applied = await host.appliedOperationsJSON
+        #expect(applied == nil, "no non-planar proposal may reach the host")
+    }
+
+    @Test("propose normalizes nested batch operations with the same canonical shapes")
+    func proposeNormalizesNestedBatch() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        _ = try await execute(tool, #"""
+        {"action":"propose","path":"plate.dwg",
+         "operations":[{"operation":"batch","operations":[
+             {"operation":"move","handle":"35","delta":[1,0]},
+             {"operation":"rotate","handle":"35","center":{"x":0,"y":0},"angle":90}]}]}
+        """#)
+        let operationsJSON = await host.appliedOperationsJSON ?? ""
+        #expect(operationsJSON.contains("\"delta\":[1,0,0]"))
+        #expect(operationsJSON.contains("\"center\":[0,0,0]"))
+    }
+
+    @Test("measure enforces the engine's exact arity per kind before the worker")
+    func measureArityEnforced() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        var distanceReason: String?
+        do {
+            _ = try await execute(tool, #"{"action":"measure","path":"plate.dwg","kind":"distance","handles":["35"]}"#)
+        } catch let error as FloeError {
+            distanceReason = error.reason
+        }
+        #expect(distanceReason == "CAD distance needs two points or two handles")
+        _ = try await execute(tool, #"{"action":"measure","path":"plate.dwg","kind":"distance","points":[[0,0],[10,10]]}"#)
+        let requests = await host.queryRequests
+        #expect(requests.contains { $0.contains("\"kind\":\"distance\"") && $0.contains("\"points\"") })
+    }
+
     @Test("propose refuses a drawing with blocking diagnostics")
     func proposeRefusesDiagnostics() async throws {
         let host = FakeCadHost()

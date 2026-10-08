@@ -71,6 +71,7 @@ struct ApprovalCardView: View {
                 .strokeBorder(borderColor, lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("approval.card")
         .accessibilityLabel("approval.required")
     }
 
@@ -246,6 +247,7 @@ struct ApprovalCardView: View {
             .buttonStyle(.bordered)
             .frame(minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("action.deny")
+            .accessibilityIdentifier("approval.deny")
 
             Button {
                 onResolve(.allow(scope: approvalScope, expiresAt: nil))
@@ -257,6 +259,7 @@ struct ApprovalCardView: View {
             .tint(approval.isSideEffecting ? FloeTheme.destructive : FloeTheme.primary)
             .frame(minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("action.approve")
+            .accessibilityIdentifier("approval.approve")
         }
     }
 

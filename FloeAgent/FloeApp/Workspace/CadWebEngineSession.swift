@@ -177,13 +177,29 @@ final class CadWebEngineSession: NSObject, WKNavigationDelegate {
 
     // MARK: - Plumbing
 
+    /// Marker the host call returns instead of rejecting, so an engine error
+    /// message survives the WebKit promise boundary. `callAsyncJavaScript`
+    /// replaces a rejected promise with a generic localized
+    /// "发生了JavaScript异常" and drops the real message; the model then
+    /// cannot repair its request. The marker prefix is never a valid CAD
+    /// result (JSON or base64).
+    private static let engineErrorMessagePrefix = "__FLOE_CAD_ENGINE_ERROR__:"
+
     private func hostCall(_ operation: String, payload: [String: Any]) async throws -> String {
         if closed { throw CadEngineHostError.unavailable }
         guard loaded, web != nil else { throw CadEngineHostError.unavailable }
-        return try await evaluate(
-            "return String(await window.floeCadHostCall(operation, payload));",
+        let value = try await evaluate(
+            """
+            try { return String(await window.floeCadHostCall(operation, payload)); }
+            catch (error) { return "__FLOE_CAD_ENGINE_ERROR__:" + String((error && error.message) || error); }
+            """,
             arguments: ["operation": operation, "payload": payload],
             timeout: defaultTimeout)
+        if value.hasPrefix(Self.engineErrorMessagePrefix) {
+            throw CadEngineHostError.engine(
+                String(value.dropFirst(Self.engineErrorMessagePrefix.count)))
+        }
+        return value
     }
 
     private func evaluate(_ body: String, arguments: [String: Any], timeout: TimeInterval) async throws -> String {

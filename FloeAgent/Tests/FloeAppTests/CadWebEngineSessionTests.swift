@@ -11,6 +11,8 @@ import SwiftUI
 import Testing
 @testable import FloeApp
 import FloeCore
+import FloeModels
+import FloePersistence
 import FloeTools
 import FloeWorkspace
 import FloeWorkbench
@@ -93,6 +95,26 @@ struct CadWebEngineSessionTests {
         _ = try await session.open(bytes: try sampleDXF(), format: "dxf")
         await #expect(throws: (any Error).self) {
             _ = try await session.query("\"{\\\"operation\\\":\\\"layers\\\"}\"")
+        }
+        await session.shutdown()
+    }
+
+    /// A rejected engine promise currently loses its message at the WebKit
+    /// boundary ("发生了JavaScript异常"). The host call must carry the real
+    /// engine text so the model can repair the request instead of guessing.
+    @Test func engineErrorsKeepTheirStructuredMessage() async throws {
+        let session = CadWebEngineSession()
+        try await session.start()
+        do {
+            _ = try await session.open(bytes: try sampleDXF(), format: "dxf")
+            _ = try await session.query(#"{"operation":"measure","kind":"distance","handles":["1"]}"#)
+            Issue.record("one handle must not satisfy a two-point/two-handle distance")
+        } catch {
+            let message = error.localizedDescription
+            #expect(message.contains("two points or two handles"),
+                    "engine message must survive the JS boundary, got: \(message)")
+            #expect(!message.contains("JavaScript"),
+                    "raw JavaScript exception leaked to the model: \(message)")
         }
         await session.shutdown()
     }
@@ -446,6 +468,46 @@ struct CadDocumentCenterConcurrencyTests {
         #expect(unmatched == nil, "a non-matching prepared SHA must never yield an applied receipt")
     }
 
+    /// The real model turn that failed sent `move` with a 2-number delta
+    /// (`[1,0]`), which the engine's `[f64; 3]` serde shape rejects. The tool
+    /// normalizer pads z=0 and refuses malformed vectors before the worker, so
+    /// the advertised examples and the engine contract now agree.
+    @Test func toolNormalizesTwoNumberMoveDeltaAgainstRealEngine() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = CadDocumentCenter()
+        let access = access(root)
+        let entitiesJSON = try await center.query(
+            documentID: "plan.dxf",
+            requestJSON: #"{"operation":"entities","limit":50}"#, access: access)
+        let object = try JSONSerialization.jsonObject(with: Data(entitiesJSON.utf8)) as? [String: Any]
+        let rows = object?["entities"] as? [[String: Any]] ?? []
+        guard let line = rows.first(where: { ($0["type"] as? String) == "Line" }),
+              let handle = line["handle"] as? String else {
+            Issue.record("sample drawing has no Line handle")
+            return
+        }
+        let tool = CadDocumentTool(host: center)
+        let context = ToolContext(runID: UUID(), toolCallID: "call-move", scope: .local,
+                                  workspaceRootURL: root, cancellation: CancellationToken(),
+                                  environmentID: nil, conversationID: UUID())
+        let argsJSON = #"{"action":"propose","path":"plan.dxf","summary":"move line","operations":[{"operation":"move","handle":"\#(handle)","delta":[1,0]}]}"#
+        let args = try JSONDecoder().decode(CadDocumentArguments.self, from: Data(argsJSON.utf8))
+        try tool.validate(args)
+        let output = try await tool.execute(args, context: context)
+        #expect(output.requiresUserAction,
+                "a normalized 2-number delta must reach the real engine")
+        // The tool records the proposal under the access it derived from the
+        // context (chat ownership here), not the workspace helper's access.
+        let toolAccess = CadDocumentTool.access(for: context)
+        let proposals = try await center.pendingProposals(documentID: "plan.dxf", access: toolAccess)
+        let proposal = try #require(proposals.first)
+        #expect(proposal.operationsJSON.contains("\"delta\":[1,0,0]"))
+        let changed = proposal.preview.counts["changed"] ?? 0
+        let added = proposal.preview.counts["added"] ?? 0
+        #expect(changed + added >= 1, "moving a real line must produce a preview change")
+    }
+
     /// Earlier persisted decision lines have no `phase`; they are committed
     /// records, never silently dropped or misread as intents.
     @Test func legacyDecisionLineDecodesAsCommitted() throws {
@@ -527,8 +589,25 @@ struct CanvasDrawingAssistantBindingTests {
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let context = toolContext(root: root, stagedPath: stagedPath, canvasID: canvasID)
         try CadDocumentTool.authorizeDocumentPath(stagedPath, context: context)
+        // The same staged file addressed by its canonical absolute path (the
+        // real model turn that hit "Execution error: Unauthorized" used the
+        // draft-root-prefixed path) is still exactly the one authorized file.
+        let absolute = root.appendingPathComponent(stagedPath).standardizedFileURL.path
+        try CadDocumentTool.authorizeDocumentPath(absolute, context: context)
         #expect(throws: FloeError.self) {
             try CadDocumentTool.authorizeDocumentPath("other.dxf", context: context)
+        }
+        // Any OTHER path under the same draft root is refused: the authorized
+        // set must stay exactly this staged document.
+        let sibling = root.appendingPathComponent("\(canvasID.uuidString.lowercased())/other.dxf").path
+        #expect(throws: FloeError.self) {
+            try CadDocumentTool.authorizeDocumentPath(sibling, context: context)
+        }
+        // A traversal that escapes the draft root is refused even when it
+        // resolves to an existing file outside.
+        let escape = root.appendingPathComponent("../../outside.dxf").path
+        #expect(throws: FloeError.self) {
+            try CadDocumentTool.authorizeDocumentPath(escape, context: context)
         }
         // No staged seed: no restriction (ordinary workspace rules apply),
         // and a nil path (capabilities-only upstream) is never an escape.
@@ -739,6 +818,147 @@ struct CanvasReachabilityFailClosedTests {
         }
         writer.cancel()
         #expect(observedUnknown, "the scan must defer while a publication is in flight")
+    }
+}
+
+/// The staged Canvas Drawing Assistant first send failed with the runtime
+/// error "Storage corrupted: Conversation has no canonical workspace":
+/// EngineeringReviewSheet creates the assistant conversation before the run,
+/// and RunLaunchStore is fail-closed for an existing conversation without a
+/// conversation_workspace_ownership row. These tests reproduce that exact
+/// failure against a real database and pin the heal path the sheet now uses
+/// (existing workspace services; a private-task workspace for staged drafts,
+/// never a project workspace), including retry without a duplicate
+/// conversation.
+@Suite("FloeApp.DrawingAssistant review launch", .serialized)
+@MainActor
+struct DrawingAssistantReviewLaunchWorkspaceTests {
+    private func makeDatabase() throws -> (DatabaseManager, URL) {
+        let sandbox = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-review-launch-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
+        let database = try DatabaseManager(path: sandbox.appendingPathComponent("floe.sqlite"))
+        return (database, sandbox)
+    }
+
+    private func launchRequest(conversationID: UUID, workspaceID: UUID?) -> RunLaunchRequest {
+        RunLaunchRequest(
+            conversationID: conversationID,
+            runID: UUID(),
+            goal: "检查这张图纸",
+            workspaceID: workspaceID,
+            conversationMode: "chat",
+            initialPolicy: DraftTaskPolicy(),
+            messageRole: "user")
+    }
+
+    private func saveConversation(_ store: SQLiteConversationStore) async throws -> ConversationRecord {
+        let conversation = ConversationRecord(
+            id: UUID(), title: "图纸助手", createdAt: Date(), updatedAt: Date())
+        try await store.saveConversation(conversation)
+        return conversation
+    }
+
+    @Test("A staged review conversation gets its own private-task workspace and the retry launches")
+    func stagedReviewConversationHealsAndLaunches() async throws {
+        let (database, sandbox) = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+        try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database)
+        let workspaces = SQLiteWorkspaceStore(database: database)
+        let launches = SQLiteRunLaunchStore(database: database)
+        let conversation = try await saveConversation(conversations)
+        let ownerBefore = try await workspaces.workspaceID(conversationID: conversation.id)
+        #expect(ownerBefore == nil)
+
+        // The exact failure the primary CUA observed on send.
+        var reported: FloeError?
+        do {
+            _ = try await launches.prepare(launchRequest(
+                conversationID: conversation.id, workspaceID: nil))
+        } catch let error as FloeError {
+            reported = error
+        }
+        #expect(reported == .storageCorrupted("Conversation has no canonical workspace"))
+
+        // The heal the review sheet applies before launching.
+        let workspaceID = try await WorkspaceCenter.ensureReviewConversationWorkspace(
+            conversationID: conversation.id,
+            workspaceID: nil,
+            title: "图纸助手",
+            store: workspaces)
+        let maybeRecord = try await workspaces.workspace(id: workspaceID)
+        let record = try #require(maybeRecord)
+        #expect(record.kind == .privateTask)
+        #expect(record.internalRelativePath == "PrivateTasks/\(conversation.id.uuidString)")
+
+        // Retry without creating a second conversation: the durable identity
+        // is reused and the run now commits.
+        let prepared = try await launches.prepare(launchRequest(
+            conversationID: conversation.id, workspaceID: nil))
+        #expect(prepared.createdConversation == false)
+        #expect(prepared.conversation.id == conversation.id)
+        #expect(prepared.workspace.id == workspaceID)
+
+        // Idempotent: a later send cannot re-own or duplicate the workspace.
+        let countBefore = try await workspaces.workspaces().count
+        let again = try await WorkspaceCenter.ensureReviewConversationWorkspace(
+            conversationID: conversation.id,
+            workspaceID: nil,
+            title: "图纸助手",
+            store: workspaces)
+        #expect(again == workspaceID)
+        let countAfter = try await workspaces.workspaces().count
+        #expect(countAfter == countBefore)
+    }
+
+    @Test("A workspace review conversation links to the workspace it was opened from")
+    func workspaceReviewConversationLinksToWorkspace() async throws {
+        let (database, sandbox) = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+        try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database)
+        let workspaces = SQLiteWorkspaceStore(database: database)
+        let launches = SQLiteRunLaunchStore(database: database)
+        let project = WorkspaceRecord(
+            name: "批量选择测试", rootBookmark: Data(), kind: .project)
+        try await workspaces.saveWorkspace(project)
+        let conversation = try await saveConversation(conversations)
+
+        // Same fail-closed path, now with a requested workspace.
+        var reported: FloeError?
+        do {
+            _ = try await launches.prepare(launchRequest(
+                conversationID: conversation.id, workspaceID: project.id))
+        } catch let error as FloeError {
+            reported = error
+        }
+        #expect(reported == .storageCorrupted("Conversation has no canonical workspace"))
+
+        let owner = try await WorkspaceCenter.ensureReviewConversationWorkspace(
+            conversationID: conversation.id,
+            workspaceID: project.id,
+            title: "图纸助手",
+            store: workspaces)
+        #expect(owner == project.id)
+        let prepared = try await launches.prepare(launchRequest(
+            conversationID: conversation.id, workspaceID: project.id))
+        #expect(prepared.workspace.id == project.id)
+        #expect(prepared.createdConversation == false)
+
+        // Existing ownership is never silently replaced by a different
+        // requested workspace: the same refusal the launch store would give.
+        let stranger = WorkspaceRecord(name: "Other", rootBookmark: Data(), kind: .project)
+        try await workspaces.saveWorkspace(stranger)
+        await #expect(throws: (any Error).self) {
+            _ = try await WorkspaceCenter.ensureReviewConversationWorkspace(
+                conversationID: conversation.id,
+                workspaceID: stranger.id,
+                title: "图纸助手",
+                store: workspaces)
+        }
+        let ownerAfter = try await workspaces.workspaceID(conversationID: conversation.id)
+        #expect(ownerAfter == project.id)
     }
 }
 

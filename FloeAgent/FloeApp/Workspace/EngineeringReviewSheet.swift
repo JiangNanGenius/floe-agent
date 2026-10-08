@@ -131,9 +131,15 @@ struct EngineeringReviewSheet: View {
                                 .frame(minHeight: 44)
                             }
                         }
-                        if let proposalMessage {
-                            Text(proposalMessage).font(.caption).foregroundStyle(.secondary)
-                        }
+                    }
+                }
+                // The outcome message must survive the pending list: the last
+                // apply/discard removes its proposal, and the success or error
+                // text was previously hidden with the section.
+                if let proposalMessage {
+                    Section {
+                        Text(proposalMessage).font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("engineering.review.proposal.message")
                     }
                 }
                 Section("engineering.review.question") {
@@ -284,8 +290,15 @@ struct EngineeringReviewSheet: View {
                       current.id == workspaceID else {
                     throw FloeError.validationFailed(String(localized: "engineering.review.workspaceChanged"))
                 }
-                if let conversationID, center.workspaceID(for: conversationID) != current.id {
-                    throw FloeError.validationFailed(String(localized: "engineering.review.workspaceChanged"))
+                // A conversation OWNED BY A DIFFERENT workspace is refused.
+                // No ownership (legacy or interrupted creation) is repaired
+                // below through the workspace service, so this must not
+                // preempt the heal with a stale in-memory miss.
+                if let conversationID {
+                    let owner = center.workspaceID(for: conversationID)
+                    if let owner, owner != current.id {
+                        throw FloeError.validationFailed(String(localized: "engineering.review.workspaceChanged"))
+                    }
                 }
                 workspace = current
             } else {
@@ -330,6 +343,19 @@ struct EngineeringReviewSheet: View {
             if stagedDocument == nil, center.currentWorkspace?.id != workspaceID {
                 throw FloeError.validationFailed(String(localized: "engineering.review.workspaceChanged"))
             }
+            // The launch store is fail-closed for an existing conversation
+            // without a canonical workspace row — the exact staged-Canvas
+            // error primary CUA observed ("Conversation has no canonical
+            // workspace"). Establish/heal ownership through the existing
+            // workspace services BEFORE the run: a workspace review links to
+            // the workspace it was opened from; a Canvas staged draft gets
+            // its own app-owned private-task execution workspace (never a
+            // project and never the first workspace). Retrying after this
+            // failure reuses the SAME conversation and never duplicates it.
+            try await center.ensureReviewConversationWorkspace(
+                conversationID: target,
+                workspaceID: workspace?.id,
+                title: String(localized: "engineering.review.title"))
             let attachment = try center.environment.filesCenter.registerPhotoData(capture.image, displayName: "Drawing viewport.jpg")
             let zh = Locale.current.identifier.hasPrefix("zh")
             let goal = question + "\n\n<drawing_reference>\n" + capture.context + "\n</drawing_reference>\n"

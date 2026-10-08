@@ -518,15 +518,15 @@ public struct CadDocumentTool: AgentTool {
         "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable proposal summary shown before confirmation (propose)." },
         "operations": {
           "type": "array", "maxItems": 64,
-          "description": "Typed engine edits (propose). Each object needs operation. Supported: addLine{start,end,layer}; addCircle{center,radius,layer}; addArc{center,radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y]],closed,layer} (rectangle = closed 4-point); addText{position,text,height,layer}; addLeader{points,layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points,layer,offset?,rotation?}; move|copy{handle,delta}; rotate{handle,center,angle}; scale{handle,center,factor}; mirror{handle,axis:[p1,p2]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick}; offset{handle,distance,side}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations}. Coordinates are Z=0 drawing units.",
+          "description": "Typed engine edits (propose). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].",
           "items": { "type": "object", "required": ["operation"], "properties": { "operation": { "type": "string" } } }
         },
         "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply)." },
         "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the CAD UI after the user accepts. The model cannot mint this." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
-        "kind": { "type": "string", "description": "query scope: entities|text|layers|drawing|snap. measure kind: distance|angle|radius|perimeter|area. check tolerance is separate." },
-        "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points; snap point (first row)." },
-        "handles": { "type": "array", "items": { "type": "string" }, "description": "measure entity handles." },
+        "kind": { "type": "string", "description": "query scope: entities|text|layers|drawing|snap. measure kind: distance (exactly 2 points OR 2 handles) | angle (exactly 3 points OR 2 line handles) | radius (1 circle/arc handle) | perimeter (1+ handles) | area (1 closed entity handle OR 3+ points)." },
+        "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: distance exactly 2, angle exactly 3, area 3+; snap point (first row)." },
+        "handles": { "type": "array", "items": { "type": "string" }, "description": "measure entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units." },
         "layer": { "type": "string", "description": "query filter." },
         "entity_type": { "type": "string", "description": "query filter: Line|Circle|Arc|LwPolyline|Text." },
@@ -645,13 +645,27 @@ public struct CadDocumentTool: AgentTool {
     }
 
     /// When a staged document is authorized, the tool may touch ONLY that
-    /// exact staged path: quoting another path (under the draft root or
-    /// elsewhere) grants nothing. A nil path only reaches `capabilities`
-    /// (every document action validates a non-empty path upstream), so nil
-    /// is not an escape hatch and needs no staged check.
+    /// exact staged document: quoting another path (under the draft root or
+    /// elsewhere) grants nothing. The staged path is accepted in its exact
+    /// relative form and in its canonical absolute form (the draft root is
+    /// visible in the assistant context, and real model turns address the
+    /// file that way) — both resolve to the SAME file, so the authorized set
+    /// stays exactly one document. Anything else is denied. A nil path only
+    /// reaches `capabilities` (every document action validates a non-empty
+    /// path upstream), so nil is not an escape hatch and needs no staged
+    /// check.
     public static func authorizeDocumentPath(_ path: String?, context: ToolContext) throws {
         guard let staged = context.canvasStagedDocument, let path else { return }
-        guard path == staged.stagedRelativePath else {
+        if path == staged.stagedRelativePath { return }
+        let root = URL(fileURLWithPath: staged.draftRootPath, isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let expected = root.appendingPathComponent(staged.stagedRelativePath)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = URL(fileURLWithPath: path)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard !staged.stagedRelativePath.hasPrefix("/"),
+              expected.path.hasPrefix(root.path + "/"),
+              candidate == expected else {
             throw FloeError.unauthorized
         }
     }
@@ -685,9 +699,38 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded("cad.document locate: \(reply)", 8_000))
 
         case .measure:
+            // Exact engine arity per kind, checked BEFORE the worker so the
+            // model receives a structured message instead of a worker
+            // exception. These strings mirror the engine's own errors.
+            let measurePoints = args.points ?? []
+            let measureHandles = args.handles ?? []
+            switch args.kind! {
+            case "distance":
+                guard measurePoints.count == 2 || measureHandles.count == 2 else {
+                    throw FloeError.validationFailed("CAD distance needs two points or two handles")
+                }
+            case "angle":
+                guard measurePoints.count == 3 || measureHandles.count == 2 else {
+                    throw FloeError.validationFailed("CAD angle needs three points or two line handles")
+                }
+            case "radius":
+                guard measureHandles.count == 1 else {
+                    throw FloeError.validationFailed("CAD radius needs one circle or arc handle")
+                }
+            case "perimeter":
+                guard !measureHandles.isEmpty else {
+                    throw FloeError.validationFailed("CAD perimeter needs at least one handle")
+                }
+            case "area":
+                guard measureHandles.count == 1 || measurePoints.count >= 3 else {
+                    throw FloeError.validationFailed("CAD area needs one closed entity handle or 3+ points")
+                }
+            default:
+                break
+            }
             var fields: [String: Any] = ["operation": "measure", "kind": args.kind!]
             if let points = args.points, !points.isEmpty {
-                guard points.count >= 2, points.allSatisfy({ $0.count >= 2 && $0.allSatisfy { $0.isFinite } }) else {
+                guard points.allSatisfy({ $0.count >= 2 && $0.allSatisfy { $0.isFinite } }) else {
                     throw FloeError.validationFailed("measure points must have at least two rows of finite x/y")
                 }
                 fields["points"] = points.map { [Double($0[0]), Double($0[1]), 0] }
@@ -706,7 +749,7 @@ public struct CadDocumentTool: AgentTool {
             guard snapshot.editable else {
                 throw FloeError.validationFailed("this drawing has unresolved read diagnostics; editing is disabled")
             }
-            let operationsJSON = try encodeOperations(args.operations!)
+            let operationsJSON = try encodeOperations(Self.normalizedOperations(args.operations!))
             let proposal = try await host.prepareProposal(
                 documentID: args.path!, snapshot: snapshot,
                 summary: args.summary ?? "CAD edit proposal",
@@ -832,6 +875,134 @@ public struct CadDocumentTool: AgentTool {
             throw FloeError.validationFailed("operations could not be encoded")
         }
         return json
+    }
+
+    /// Canonicalizes the coordinate shapes real model turns send into the
+    /// exact wire form the engine parses: vectors as [x,y,z] with z forced to
+    /// 0 on the drawing plane (a 2-number [x,y] is padded), LWPolyline
+    /// vertices as 2 numbers, mirror axis as two vectors. Unknown operations
+    /// and fields pass through unchanged — the engine remains the semantic
+    /// validator; this only removes avoidable deserialization failures and
+    /// keeps the advertised examples exactly equal to the engine contract.
+    static func normalizedOperations(_ operations: [CadEditOperation]) throws -> [CadEditOperation] {
+        try operations.map { try normalizedOperation($0) }
+    }
+
+    /// One operation (also used recursively for `batch.operations`).
+    private static func normalizedOperation(_ operation: CadEditOperation) throws -> CadEditOperation {
+        guard let name = operation.operation else {
+            throw FloeError.validationFailed("every operation needs an operation name")
+        }
+        var fields = operation.fields
+        func vector(_ key: String) throws {
+            guard let value = fields[key] else { return }
+            fields[key] = .array(try Self.vectorNumbers(value, field: "\(name).\(key)").map(CadValue.number))
+        }
+        switch name {
+            case "addLine":
+                try vector("start")
+                try vector("end")
+            case "addCircle", "addArc":
+                try vector("center")
+            case "addText":
+                try vector("position")
+            case "move", "copy":
+                try vector("delta")
+            case "rotate", "scale":
+                try vector("center")
+            case "mirror":
+                guard let value = fields["axis"] else { break }
+                guard case .array(let rows) = value, rows.count == 2 else {
+                    throw FloeError.validationFailed(
+                        "\(name).axis must be exactly two points [[x,y],[x,y]]")
+                }
+                fields["axis"] = .array(try rows.map { row in
+                    .array(try Self.vectorNumbers(row, field: "\(name).axis").map(CadValue.number))
+                })
+            case "trim", "extend":
+                try vector("pick")
+            case "offset":
+                try vector("side")
+            case "addLeader", "addDimension":
+                guard let value = fields["points"] else { break }
+                guard case .array(let rows) = value, !rows.isEmpty else {
+                    throw FloeError.validationFailed("\(name).points must be a non-empty point list")
+                }
+                fields["points"] = .array(try rows.map { row in
+                    .array(try Self.vectorNumbers(row, field: "\(name).points").map(CadValue.number))
+                })
+            case "addLwPolyline":
+                guard let value = fields["points"] else { break }
+                guard case .array(let rows) = value, !rows.isEmpty else {
+                    throw FloeError.validationFailed("\(name).points must be a non-empty point list")
+                }
+                fields["points"] = .array(try rows.map { row in
+                    // The engine takes 2D vertices; a supplied z is validated
+                    // (must be the drawing plane) and never silently dropped.
+                    let numbers = try Self.vectorNumbers(row, field: "\(name).points")
+                    return .array([.number(numbers[0]), .number(numbers[1])])
+                })
+            case "batch":
+                guard let value = fields["operations"] else { break }
+                guard case .array(let rows) = value, !rows.isEmpty else {
+                    throw FloeError.validationFailed("batch.operations must be a non-empty operation list")
+                }
+                fields["operations"] = .array(try rows.map { row in
+                    guard case .object(let nested) = row else {
+                        throw FloeError.validationFailed("batch.operations entries must be objects")
+                    }
+                    return .object(try Self.normalizedOperation(CadEditOperation(fields: nested)).fields)
+                })
+        default:
+            break
+        }
+        return CadEditOperation(fields: fields)
+    }
+
+    /// A vector point or delta: canonical `[x,y]`/`[x,y,z]`, or the validated
+    /// aliases `{x,y[,z]}` / `{dx,dy[,dz]}`. An omitted z is the 2D drawing
+    /// plane; an explicit non-default z (beyond the engine's plane epsilon) is
+    /// REFUSED — no silent 3D→2D projection.
+    private static func vectorNumbers(_ value: CadValue, field: String) throws -> [Double] {
+        var raw: [Double]
+        switch value {
+        case .array(let values):
+            raw = try values.map { element in
+                guard case .number(let number) = element, number.isFinite else {
+                    throw FloeError.validationFailed("\(field) must contain finite numbers")
+                }
+                return number
+            }
+        case .object(let object):
+            let keySets = [["x", "y", "z"], ["dx", "dy", "dz"]]
+            guard let picked = keySets.first(where: { keys in
+                keys.allSatisfy { object[$0] != nil }
+                    || (object[keys[0]] != nil && object[keys[1]] != nil)
+            }) else {
+                throw FloeError.validationFailed("\(field) must be [x,y] or [x,y,z]")
+            }
+            raw = try picked.compactMap { key -> Double? in
+                guard let entry = object[key] else { return nil }
+                guard case .number(let number) = entry, number.isFinite else {
+                    throw FloeError.validationFailed("\(field).\(key) must be a finite number")
+                }
+                return number
+            }
+        default:
+            throw FloeError.validationFailed("\(field) must be [x,y] or [x,y,z]")
+        }
+        guard raw.count == 2 || raw.count == 3 else {
+            throw FloeError.validationFailed("\(field) needs 2 or 3 numbers, got \(raw.count)")
+        }
+        if raw.count == 2 {
+            raw.append(0)
+        } else if abs(raw[2]) > 1e-9 {
+            throw FloeError.validationFailed(
+                "\(field) z must be 0: only 2D XY drawing-plane coordinates are supported, no 3D projection")
+        } else {
+            raw[2] = 0
+        }
+        return raw
     }
 
     private func jsonString(_ fields: [String: Any]) -> String {

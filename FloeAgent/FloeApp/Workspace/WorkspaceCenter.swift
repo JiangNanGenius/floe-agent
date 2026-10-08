@@ -187,6 +187,75 @@ final class WorkspaceCenter: ObservableObject {
         return id
     }
 
+    /// Ensures a Drawing Assistant review conversation has a canonical
+    /// execution workspace BEFORE its first run. `RunLaunchStore` is
+    /// fail-closed for an existing conversation without an ownership row —
+    /// exactly the staged-Canvas failure primary CUA observed on send
+    /// ("Conversation has no canonical workspace"). This reuses the same
+    /// services as normal task creation:
+    ///
+    /// * A review opened from a workspace document links the conversation to
+    ///   that workspace.
+    /// * A staged Canvas draft gets the conversation's own app-owned
+    ///   private-task workspace (the canvas agent's rule), never a project's
+    ///   workspace and never the first workspace in the list.
+    ///
+    /// Existing ownership is authoritative and never replaced; a conflicting
+    /// requested workspace is refused exactly like the launch store would.
+    @discardableResult
+    func ensureReviewConversationWorkspace(
+        conversationID: UUID,
+        workspaceID: UUID?,
+        title: String
+    ) async throws -> UUID {
+        let resolved = try await Self.ensureReviewConversationWorkspace(
+            conversationID: conversationID,
+            workspaceID: workspaceID,
+            title: title,
+            store: store
+        )
+        await reload()
+        return resolved
+    }
+
+    /// Store-injected variant of `ensureReviewConversationWorkspace` so the
+    /// launch-initialization contract is testable without the app-lifetime
+    /// environment graph.
+    nonisolated static func ensureReviewConversationWorkspace(
+        conversationID: UUID,
+        workspaceID: UUID?,
+        title: String,
+        store: any WorkspaceStore
+    ) async throws -> UUID {
+        if let existing = try await store.workspaceID(conversationID: conversationID) {
+            if let workspaceID, workspaceID != existing {
+                throw FloeError.validationFailed(String(
+                    localized: "engineering.review.workspaceChanged"))
+            }
+            return existing
+        }
+        guard let workspaceID else {
+            // No workspace in scope (Canvas staged draft): the conversation
+            // owns an app-owned private-task execution workspace, exactly
+            // like a new chat or the canvas agent. The staged CAD identity
+            // itself stays the durable canvas draft binding; this workspace
+            // is only the run's task root.
+            let workspace = try await store.ensureWorkspace(
+                conversationID: conversationID,
+                title: title
+            )
+            return workspace.id
+        }
+        guard try await store.workspace(id: workspaceID) != nil else {
+            throw FloeError.notFound("workspace \(workspaceID.uuidString)")
+        }
+        try await store.linkConversation(
+            workspaceID: workspaceID,
+            conversationID: conversationID
+        )
+        return workspaceID
+    }
+
     /// Creates a workspace from a picked directory URL (security-scoped).
     /// The URL is bookmarked immediately; only the bookmark enters the
     /// database — never file contents or secrets.
