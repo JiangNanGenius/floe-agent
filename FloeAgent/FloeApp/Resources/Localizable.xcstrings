@@ -25164,6 +25164,23 @@
           }
         }
       }
+    },
+    "engineering.review.actions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

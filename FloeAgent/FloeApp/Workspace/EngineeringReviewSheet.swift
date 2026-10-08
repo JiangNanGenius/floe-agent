@@ -143,6 +143,35 @@ struct EngineeringReviewSheet: View {
                 if let selection = center.environment.conversationCenter.defaultProviderAndModel() {
                     LabeledContent("engineering.review.model", value: selection.1.displayName)
                 }
+                // Reliable send/cancel that does NOT depend on the navigation
+                // bar: when this sheet is presented as a second-level sheet
+                // (canvas editor → review), its NavigationStack toolbar may
+                // never materialize, leaving the toolbar Send unreachable in
+                // the AX tree and nonresponsive. These form controls are the
+                // same action and the same disabled state.
+                Section {
+                    Button {
+                        Task { await send() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if sending {
+                                ProgressView()
+                                    .padding(.trailing, 6)
+                            }
+                            Text("engineering.review.send")
+                                .fontWeight(.semibold)
+                            Spacer()
+                        }
+                    }
+                    .disabled(sending || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("engineering.review.sendForm")
+                    Button("engineering.review.cancel") { dismiss() }
+                        .disabled(sending)
+                        .accessibilityIdentifier("engineering.review.cancelForm")
+                } header: {
+                    Text("engineering.review.actions")
+                }
                 DisclosureGroup {
                     Text(capture.context).font(.caption.monospaced()).textSelection(.enabled)
                         .accessibilityIdentifier("engineering.review.context")
@@ -237,7 +266,13 @@ struct EngineeringReviewSheet: View {
             "Showing the colored change preview (green=added, orange=changed, red=deleted).")
     }
 
-    @MainActor private func send() async {        sending = true; defer { sending = false }
+    @MainActor private func send() async {
+        // Reentrancy guard: both the toolbar and the form controls call
+        // here, and a second tap can enqueue before the disabled state
+        // redraws — the same question must never launch duplicate runs.
+        guard !sending else { return }
+        sending = true
+        defer { sending = false }
         do {
             // A Canvas staged draft validates against its exact staged
             // identity (draft root + canvas ownership), never against the
