@@ -5,7 +5,7 @@
 
 ## 渠道只读复核 / Channel readback · 2026-10-09
 
-- GitHub Releases 与 Feather 源实时读取：最新公开 App 预发布与源条目均为 **1.7.19（260）**。GitHub 的 latest 稳定版为 1.7.0（241）；不能用 latest 稳定版端点代替预发布查询。Live GitHub and Feather readback: newest public App prerelease/feed entry is **1.7.19 (260)**; the stable latest endpoint returns 1.7.0 (241).
+- GitHub 与 Feather/AltStore 分发已于 2026-10-09 补齐至 **1.7.24（265）**；GitHub 为预发布，IPA 未签名，需自行签名。latest 稳定版仍为 1.7.0（241）。GitHub prerelease and source feed now carry **1.7.24 (265)**; the IPA requires your own signing. Stable latest remains 1.7.0 (241). [分发核验 / Distribution verification](releases/verification/RELEASE_DISTRIBUTION_1.7.24_20261009.md).
 - Apple GET-only 核验（2026-10-09）：Build 265 为 `VALID`、未过期，内部 `IN_BETA_TESTING`，publictest1 外部状态 `WAITING_FOR_BETA_REVIEW`，检查 issues 为空。Apple readback confirms VALID, unexpired, internal availability and external review still pending; no submission or membership was changed. [只读核验 / Readback](https://github.com/JiangNanGenius/floe-agent/actions/runs/37872109678).
 - 官网与源码版本不等于全部渠道同时可安装。Gitee 仅作源码与发行记录同步，不作为 App 下载加速或 Linux 自动回退。Website/source version does not establish installation availability across channels. Gitee synchronizes source and releases; it is not an App accelerator or automatic Linux fallback.
 

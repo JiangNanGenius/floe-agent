@@ -14,11 +14,13 @@
 
 - 官网与 GitHub 使用同一份双语图文手册：各 20 个主章节、相同的 4 张真实界面图与双语图注；官网 HTML 和可下载 Markdown 的源正文及哈希一致。
 - 生成器 7 项测试通过，涵盖链接转换、特殊字符转义、重复标题、元数据日期、旧锚点、图片复制和正文/哈希一致性。旧中文 section-1 至 section-33、英文 section-1 至 section-30 保留。
-- 当前公开文档相对链接检查无缺失；README 来源链接测试 5 项通过。历史证据及第三方文件保留，不把它们视为当日重新验收。
+- 当前公开文档相对链接及 3 个 Markdown 内部锚点检查无缺失；README 来源链接测试 5 项通过。历史证据及第三方文件保留，不把它们视为当日重新验收。
 - 网站前端 27 项测试、TypeScript 与生产构建通过。手机 390px、iPad 1024px、桌面 1440px 检查中英文导航、目录、图片和下载入口；表单错误与焦点恢复已验证，未提交真实申请。
 - 本任务没有触发完整 iOS 发布构建；发布状态和分发同步见 [CURRENT_STATUS](CURRENT_STATUS.md)。
 
 The illustrated manuals share 20 top-level chapters and four real-interface images. Seven generator tests and five README-link tests pass; source bytes, hashes and legacy anchors are checked. Frontend tests, TypeScript, production builds and responsive keyboard/form checks are scoped to the website. No new full iOS release build or real beta application was performed.
+
+发布补齐与分发工具验证见 [Build 265 分发记录](releases/verification/RELEASE_DISTRIBUTION_1.7.24_20261009.md)。
 
 新增文档 / New documents: this checklist; the archived engineering chronology; [screenshot provenance](assets/guide/README.md). The inventory below records the original document set.
 
