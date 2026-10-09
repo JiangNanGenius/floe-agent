@@ -594,6 +594,38 @@ current one.
   printf specifiers (`%lld`, `%d`, `%.2f`, `%%`, …) left to right; the export
   byte-count call no longer leaks a raw token, and missing arguments keep the
   specifier verbatim instead of trapping.
+- **Canvas preview is a VIEWPORT render, not a drawing page (production fix).**
+  A brand-new blank CAD document can now be created from an ordinary Canvas:
+  the node preview comes from the offscreen viewport (`bodies + assembly
+  instances + grid`), independent of engineering drawings; when a device
+  cannot render (no Metal) an explicit placeholder PNG is used and the node
+  metadata records `"preview":"placeholder"` (distinguishable from a real
+  `"viewport"` preview). The preview pipeline also REFUSES to publish against
+  an uncommitted draft: `save()` must succeed first (`save_failed` otherwise),
+  and the node records the verified save's revision + package SHA-256.
+- **Canvas ZIP backup carries the EDITABLE package (not only the PNG).**
+  `CanvasBackupPackage` gains a `nativeCADPackages` manifest section: every
+  regular file of every `<CanvasCAD>/<canvasID>/<name>.floecad` bundle is
+  streamed (size + SHA-256) into the archive with ownership-directory
+  containment (symlinked/escaping packages refuse the export, a bound but
+  absent package is reported). Restore verifies every payload before writing,
+  bounds package/file counts, rejects duplicate package identities and
+  duplicate normalized destination paths, validates the `.floecad` suffix and
+  containment, commits with full rollback, and rewrites node bindings to the
+  RESTORED canvas identity — carried packages point at the restored bytes, and
+  MISSING ones are rebound into the new namespace so a restored canvas can
+  never read the original canvas's live document. Backups predating the field
+  decode/restore unchanged. Tests: workspace transport/guard suite (8 cases,
+  including legacy compatibility) plus an app-level end-to-end test that
+  exports, deletes the source, imports and REOPENS the package with its body
+  geometry intact.
+- **Panel defaults + localization follow-ups (CUA 2026-10-10).** The
+  ShapeScript default source is a valid, previewable `cube { size 10 }` (the
+  old `# …` comment prefix failed to parse); a new drawing page starts at
+  scale 1 (it used to display 0 and disable Save); drawing kind labels,
+  projected-entity count badges, the “selected” instance badge, the script
+  conflict picker and the canvas apply/variant/working labels are now
+  localized (en + zh-Hans, ~150 new keys in total for this round).
 - **Viewport render baseline instrumentation.**
   `CADPerformanceBaselineTests.testViewportFirstPaintFrameAndMemoryBaseline`
   attaches the real coordinator/renderer, renders the scene (48 bodies + 2
@@ -605,7 +637,9 @@ current one.
 
 | Check | Command (retained logs under `Local/evidence/cad-part4/`) | Result |
 | --- | --- | --- |
-| FloeCADKit full suite | `xcodebuild test -scheme FloeCADKit` (Xcode 27A266a, iPad Air 13-inch M4 sim) | **59/59 passed** (assembly 12 incl. rank DOF/duplicate/no-mutation/sourceUpdate refusal, preview binding + strings 5, assembly render 3, drawing 8, script+mesh 10, IGES 6, proposal 6, store 4, viewport 2, perf 3) |
+| FloeCADKit full suite | `xcodebuild test -scheme FloeCADKit` (Xcode 27A266a, iOS 27 sim) | **62/62 passed** (assembly 12 incl. rank DOF/duplicate/no-mutation/sourceUpdate refusal, preview binding + panel defaults + strings 10, assembly render 3, drawing 8, script+mesh 10, IGES 6, proposal 6, store 4, viewport 2, perf 3) |
+| Workspace backup suite | `swift test --filter "NativeCADBackupTests|CanvasBackupPackageTests"` (internal scratch) | **27/27 passed** (native package round trip, missing/corrupt/duplicate rejection with zero changes, missing-package rebinding, legacy manifest compatibility) |
+| App canvas tests | `… -only-testing:FloeAppTests/NativeCADCanvasCreationTests …CanvasBackupTests` | **3/3 passed** (blank canvas creation without workspace or drawing page; failed-save refusal keeps the draft; export→delete→import→REOPEN with body geometry under the restored identity) |
 | App focused | `… -only-testing:FloeAppTests/NativeCADProposalPersistenceTests …Authority …Creation …WorkbenchTests` | **21/21 passed** |
 | Host UI smoke (iPad regular) | `… CADWorkbenchHostIPadUITests` | **1/1 passed** |
 | Host UI smoke (iPhone compact) | `… CADWorkbenchHostIPhoneUITests` | **1/1 passed — NO skip** (compact strip exposed; overflow menu listed its actions) |
@@ -626,12 +660,12 @@ current one.
 | ShapeScript: record selection/parameters/conflict handling, transient geometry preview bound to apply | implemented + tested |
 | Mesh: explicit targets/parameters, transient result preview bound to apply, B-rep downgrade acknowledgement | implemented + tested |
 | `FloeCADStrings` typed formatting (%@/%lld/%.2f) | implemented + tested |
-| Canvas-owned CAD creation/rebind/duplicate-fork/delete-prune, canvas node editor | implemented; app-level lifecycle (unit-testable paths) + CUA pending |
+| Canvas-owned CAD creation/rebind/duplicate-fork/delete-prune, canvas node editor | implemented + tested; primary CUA confirmed creation now proceeds (viewport preview) |
+| Canvas preview = viewport render (drawings independent) + save-outcome guard + placeholder distinguishable | implemented + tested |
+| Canvas ZIP backup with editable `.floecad` packages, guarded bounded restore, identity rewrite, legacy compatibility | implemented + tested (workspace 27/27 incl. 8 native-package cases; app end-to-end reopen) |
 | Compact iPhone control strip + explicit overflow | implemented; iPhone UI test passes |
 | Viewport instancing/perf baseline | implemented; simulator baseline measured (not a device claim) |
 | Physical-device acceptance, real configured-provider loop | **not run** — see limitations |
-| ZIP backup carrying canvas-owned `.floecad` packages | **not implemented** — the canvas ZIP backup carries the node render (PNG) and the 2D CAD drafts, not the `CanvasCAD` container; packages are durable in Application Support (device backup) and forked on duplicate. Exact missing capability: a package-directory manifest entry in `CanvasBackupPackage` plus import-time canvas-id key rewrite |
-
 ### Honest limitations
 
 - The viewport numbers above are simulator measurements of the CPU/GPU path;
@@ -641,8 +675,9 @@ current one.
   this worker environment has no chat-provider key (only Volc image/search/TTS
   environment keys) and no headless provider entry point. Exact missing
   capability: an interactive app session with the user's configured provider.
-- The canvas ZIP backup does not include canvas-owned `.floecad` packages (see
-  matrix); device-level backup and duplicate-fork coverage are in place.
+- A device without Metal falls back to the explicit placeholder preview
+  (recorded as `"preview":"placeholder"`); the simulator/iPad runs used the
+  real viewport render (`"viewport"`).
 - 中文界面（zh-Hans 目录值）随本轮新增键补齐，最终视觉中文验收仍属 CUA。
 
 ### 中文摘要（2026-10-10 第四部分，未发布）
@@ -657,7 +692,11 @@ current one.
 绑定，输入变动即拒绝 preview_stale，不产生无效果预览）。画布自有 CAD 文档存储落地（无需聊天或本地
 工作区、失败保留待重建记录、重试重绑同一文档、复制画布分叉包、删除画布清理、路径包含校验），
 画布节点可直接打开工作台。iPhone 紧凑布局改为内容内 44pt 控制条＋显式溢出菜单，跳过项已消除。
-`FloeCADStrings.format` 支持 %@/%lld/%.2f 等类型化占位符。已运行：包内 59/59、App 定向 21/21、
-iPad 宿主 UI 1/1、iPhone 紧凑 1/1（无跳过）、模拟器完整 App 测试构建成功；视口首帧/帧延迟/内存
-基线为模拟器首测值（非提升、非真机宣称）。未竟：画布 ZIP 备份尚未包含自有 .floecad 包、真实模型
-provider 回路（需交互式配置，工作机无凭据入口）、真机验收。
+`FloeCADStrings.format` 支持 %@/%lld/%.2f 等类型化占位符。随后按 CUA 第二轮修复：画布节点预览改为视口离屏渲染（与工程图纸无关，空白新文档可直接在普通画布
+创建；无 Metal 时使用可区分的占位图并在节点元数据标注），预览前必须保存成功（失败/冲突拒绝发布，
+记录已验证保存的修订与包哈希）；画布 ZIP 备份现完整携带可编辑 .floecad 包（清单、逐文件哈希、
+有界恢复、重复/缺失/损坏拒绝且零改动、恢复后重写为新区身份、旧备份兼容），并有真实导出→删除→
+导入→重开几何体的端到端测试。ShapeScript 默认脚本改为可预览的 cube、图纸新页默认比例 1、绘图
+类型/计数/选中徽标等中文标签补齐。已运行：包内 62/62、工作区备份 27/27、App 画布 3/3、App 定向
+21/21、iPad UI 1/1、iPhone 紧凑 1/1（无跳过）、视口基线为模拟器首测值。未竟：真实模型 provider
+回路（需交互式配置，工作机无凭据入口）、真机验收。

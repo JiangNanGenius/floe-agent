@@ -10,6 +10,12 @@
 import OCCTShim
 import Foundation
 import simd
+#if canImport(MetalKit)
+import MetalKit
+#endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Visualization-lite material (plan §B15): nil on a BodyDrawable keeps the
 /// legacy shaded look exactly (metallic 0, legacy fixed highlight).
@@ -203,5 +209,43 @@ struct ViewportScene {
             for point in batch.triangles { fold(point) }
         }
         return result
+    }
+}
+
+// MARK: - Canvas preview (viewport, independent of drawings)
+
+#if canImport(MetalKit)
+public extension FloeCADDocument {
+    /// Offscreen VIEWPORT thumbnail of the live document scene (bodies, grid
+    /// grid, assembly instances) — a Canvas node preview must never depend on
+    /// an engineering DRAWING page existing. Returns nil when Metal is
+    /// unavailable; callers may then use `CADCanvasPreview.placeholderPNG()`.
+    @MainActor
+    func viewportThumbnailPNG(width: Int = 640, height: Int = 480) -> Data? {
+        guard width > 0, height > 0 else { return nil }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        let coordinator = ViewportCoordinator(viewModel: viewModel())
+        coordinator.attach(to: view)
+        guard let renderer = coordinator.renderer else { return nil }
+        return renderer.makeThumbnailPNG(width: width, height: height)
+    }
+}
+#endif
+
+/// Explicit empty preview placeholder, used ONLY when the viewport renderer is
+/// unavailable on this device: the canvas node still binds the editable
+/// `.floecad` package instead of failing the creation.
+public enum CADCanvasPreview {
+    public static func placeholderPNG() -> Data? {
+        #if canImport(UIKit)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 48))
+        let image = renderer.image { context in
+            UIColor.secondarySystemFill.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 64, height: 48))
+        }
+        return image.pngData()
+        #else
+        return nil
+        #endif
     }
 }

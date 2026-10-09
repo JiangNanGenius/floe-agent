@@ -183,6 +183,29 @@ final class CADPreviewBindingTests: XCTestCase {
         XCTAssertEqual(document.session.document.bodies.count, bodiesBefore + 1)
     }
 
+    // MARK: - Panel defaults (CUA regressions)
+
+    func testScriptPanelDefaultSourceEvaluatesToRealGeometry() {
+        // The old default `# cube { size 10 }` failed with "Unexpected token #".
+        let outcome = ShapeScriptKit.evaluate(source: CADScriptPanelView.defaultSource)
+        XCTAssertNil(outcome.errorCode, outcome.errorMessage ?? "")
+        XCTAssertEqual(outcome.triangleCount, 12,
+                       "the default script must preview a real 12-triangle cube")
+        XCTAssertFalse(outcome.mesh?.indices.isEmpty ?? true)
+        XCTAssertNotEqual(CADScriptPanelView.defaultSource.first, "#",
+                          "the default source must not start with a comment character")
+    }
+
+    func testDrawingPageEditorDefaultsUseValidScaleForNewPages() {
+        XCTAssertEqual(CADDrawingPageEditorDefaults.scale(page: nil), "1",
+                       "a new page must start at a valid scale of 1, not 0")
+        XCTAssertEqual(CADDrawingPageEditorDefaults.scale(page: ["scale": 0.5]), "0.5000")
+        XCTAssertEqual(CADDrawingPageEditorDefaults.scale(page: ["scale": 0.0]), "1",
+                       "an invalid stored scale falls back to 1")
+        XCTAssertEqual(CADDrawingPageEditorDefaults.name(page: nil), "Sheet")
+        XCTAssertEqual(CADDrawingPageEditorDefaults.name(page: ["name": "Plate"]), "Plate")
+    }
+
     // MARK: - String formatting
 
     func testFormatTemplateHandlesTypedPlaceholders() {

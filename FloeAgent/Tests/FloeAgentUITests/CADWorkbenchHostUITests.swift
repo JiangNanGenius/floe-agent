@@ -150,6 +150,14 @@ final class CADWorkbenchHostIPhoneUITests: XCTestCase {
 
     func testWorkbenchHostChromeCompact() throws {
         guard app.windows.firstMatch.exists else { throw XCTSkip("Requires a running host") }
+        // This suite asserts the COMPACT control strip; on a regular-width
+        // runner (iPad) those controls legitimately do not exist, so the
+        // class is not applicable there. On an iPhone destination it always
+        // runs to completion (no skip).
+        let hostWidth = app.windows.firstMatch.frame.width
+        guard hostWidth > 0, hostWidth < 700 else {
+            throw XCTSkip("compact-only suite; run on an iPhone destination")
+        }
         XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
         // Compact-width navigation bars overflow earlier toolbar items; the
         // compact contract is the core edit pair plus a tool strip that

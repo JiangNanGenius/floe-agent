@@ -289,3 +289,32 @@ public enum CADCanvasNodePlanner {
         return raw
     }
 }
+
+/// The ONE binding-key vocabulary shared by the app-side canvas CAD storage,
+/// the export/import rewrite and the node planner: `canvas-cad:<canvasUUID>/
+/// <packageFileName>`. Parsing is strict (UUID, no separators/traversal) so a
+/// corrupted key can never resolve outside its canvas namespace.
+public enum CanvasCADBindingKey {
+    public static let prefix = "canvas-cad:"
+
+    public static func key(canvasID: UUID, packageFileName: String) -> String {
+        "\(prefix)\(canvasID.uuidString)/\(packageFileName)"
+    }
+
+    public static func parse(_ key: String) -> (canvasID: UUID, packageFileName: String)? {
+        guard key.hasPrefix(prefix) else { return nil }
+        let rest = String(key.dropFirst(prefix.count))
+        let parts = rest.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let canvasID = UUID(uuidString: parts[0]) else { return nil }
+        let fileName = (parts[1] as NSString).lastPathComponent
+        guard fileName == parts[1], !fileName.isEmpty, fileName.hasSuffix(".floecad") else {
+            return nil
+        }
+        return (canvasID, fileName)
+    }
+
+    public static func isCanvasOwned(_ key: String?) -> Bool {
+        guard let key else { return false }
+        return parse(key) != nil
+    }
+}

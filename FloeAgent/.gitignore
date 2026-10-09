@@ -20,6 +20,7 @@ xcuserdata/
 
 # SPM
 .build/
+.build
 .swiftpm/
 Package.pins
 

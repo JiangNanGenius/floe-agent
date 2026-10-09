@@ -525,6 +525,8 @@ targets:
       - path: Tests/FloeAppTests/NativeCADProposalAuthorityTests.swift
       - path: Tests/FloeAppTests/NativeCADProposalPersistenceTests.swift
       - path: Tests/FloeAppTests/NativeCADDocumentCreationTests.swift
+      - path: Tests/FloeAppTests/NativeCADCanvasCreationTests.swift
+      - path: Tests/FloeAppTests/NativeCADCanvasBackupTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift

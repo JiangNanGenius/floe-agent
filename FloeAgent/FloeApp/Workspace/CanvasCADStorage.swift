@@ -24,13 +24,14 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import FloeCore
 
 @MainActor
 enum CanvasCADStorage {
     /// Marker + key prefix for canvas-owned package bindings.
     static let keyPrefix = "canvas-cad:"
     /// Folder name under `Application Support/FloeAgent`.
-    static let containerDirectoryName = "CanvasCAD"
+    nonisolated static let containerDirectoryName = "CanvasCAD"
 
     enum StorageError: Error, LocalizedError {
         case containerUnavailable
@@ -79,26 +80,17 @@ enum CanvasCADStorage {
 
     /// Binding key recorded on a canvas node for a package file name.
     static func key(canvasID: UUID, packageFileName: String) -> String {
-        "\(keyPrefix)\(canvasID.uuidString)/\(packageFileName)"
+        CanvasCADBindingKey.key(canvasID: canvasID, packageFileName: packageFileName)
     }
 
     /// Parse a `canvas-cad:` key into its canvas id + package file name.
     static func parse(key: String) -> (canvasID: UUID, packageFileName: String)? {
-        guard key.hasPrefix(keyPrefix) else { return nil }
-        let rest = String(key.dropFirst(keyPrefix.count))
-        let parts = rest.split(separator: "/", maxSplits: 1).map(String.init)
-        guard parts.count == 2,
-              let canvasID = UUID(uuidString: parts[0]),
-              !parts[1].isEmpty else { return nil }
-        let fileName = (parts[1] as NSString).lastPathComponent
-        guard fileName == parts[1] else { return nil } // no path traversal
-        return (canvasID, fileName)
+        CanvasCADBindingKey.parse(key)
     }
 
     /// True when a node's recorded source path is a canvas-owned package.
     static func isCanvasOwnedKey(_ sourcePath: String?) -> Bool {
-        guard let sourcePath else { return false }
-        return parse(key: sourcePath) != nil
+        CanvasCADBindingKey.isCanvasOwned(sourcePath)
     }
 
     /// Resolve a recorded binding key to its absolute package URL. Returns nil

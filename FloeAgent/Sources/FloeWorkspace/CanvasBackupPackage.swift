@@ -57,6 +57,13 @@ public enum CanvasBackupPackage {
         public var cadRevisionAssets: [CADRevisionAsset]
         /// CAD revision paths whose bytes were unavailable at export time.
         public var missingCADRevisionAssets: [String]
+        /// Editable native CAD packages (`.floecad` bundles) owned by this
+        /// canvas, carried file-by-file. Absent in backups written before
+        /// native CAD existed (decodes as empty).
+        public var nativeCADPackages: [NativeCADPackage]
+        /// Bound native CAD packages whose bytes were unavailable at export
+        /// time; the node binding survives and is listed here truthfully.
+        public var missingNativeCADPackages: [String]
 
         public init(formatVersion: Int, canvasID: UUID, canvasName: String,
                     canvasSchemaVersion: Int, exportedAt: Date,
@@ -68,7 +75,9 @@ public enum CanvasBackupPackage {
                     missingExternalNodeAssets: [String] = [],
                     cadDrafts: [CADDraft] = [],
                     cadRevisionAssets: [CADRevisionAsset] = [],
-                    missingCADRevisionAssets: [String] = []) {
+                    missingCADRevisionAssets: [String] = [],
+                    nativeCADPackages: [NativeCADPackage] = [],
+                    missingNativeCADPackages: [String] = []) {
             self.formatVersion = formatVersion
             self.canvasID = canvasID
             self.canvasName = canvasName
@@ -86,6 +95,8 @@ public enum CanvasBackupPackage {
             self.cadDrafts = cadDrafts
             self.cadRevisionAssets = cadRevisionAssets
             self.missingCADRevisionAssets = missingCADRevisionAssets
+            self.nativeCADPackages = nativeCADPackages
+            self.missingNativeCADPackages = missingNativeCADPackages
         }
 
         // Packages written before external node assets existed decode with
@@ -112,6 +123,10 @@ public enum CanvasBackupPackage {
                 [CADRevisionAsset].self, forKey: .cadRevisionAssets) ?? []
             missingCADRevisionAssets = try values.decodeIfPresent(
                 [String].self, forKey: .missingCADRevisionAssets) ?? []
+            nativeCADPackages = try values.decodeIfPresent(
+                [NativeCADPackage].self, forKey: .nativeCADPackages) ?? []
+            missingNativeCADPackages = try values.decodeIfPresent(
+                [String].self, forKey: .missingNativeCADPackages) ?? []
         }
     }
 
@@ -224,6 +239,42 @@ public enum CanvasBackupPackage {
         }
     }
 
+    /// One regular file inside a carried native CAD `.floecad` package.
+    public struct NativeCADFile: Codable, Sendable, Equatable {
+        /// Path relative to the package directory (no "..", no leading "/").
+        public var relativePath: String
+        /// Archive entry carrying the bytes (`nativecad/<pkg>/<idx>-<base>`).
+        public var file: String
+        public var byteCount: Int64
+        public var sha256: String
+
+        public init(relativePath: String, file: String,
+                    byteCount: Int64, sha256: String) {
+            self.relativePath = relativePath
+            self.file = file
+            self.byteCount = byteCount
+            self.sha256 = sha256
+        }
+    }
+
+    /// One editable native CAD package (a `.floecad` directory bundle) owned
+    /// by the canvas. Packages are carried file-by-file (the bundle is a
+    /// directory of JSON + binary blobs), so a restore cannot lose the
+    /// editable document behind a PNG-only node.
+    public struct NativeCADPackage: Codable, Sendable, Equatable {
+        /// Owner canvas at export time; the restore rewrites this identity.
+        public var canvasID: UUID
+        /// Package directory name, e.g. "CAD Model.floecad".
+        public var fileName: String
+        public var files: [NativeCADFile]
+
+        public init(canvasID: UUID, fileName: String, files: [NativeCADFile]) {
+            self.canvasID = canvasID
+            self.fileName = fileName
+            self.files = files
+        }
+    }
+
     /// Export-side source for one unapplied CAD draft.
     public struct CADDraftSource: Sendable, Equatable {
         public var descriptor: CanvasDrawingNodePlanner.CanvasDrawingDraftDescriptor
@@ -281,6 +332,11 @@ public enum CanvasBackupPackage {
 
     static let maximumEntry: Int64 = 512 * 1024 * 1024
     static let maximumTotal: Int64 = 2 * 1024 * 1024 * 1024
+    /// Bound on the file count of one native CAD package (the versioned store
+    /// writes a manifest, a document JSON and per-blob files).
+    static let maximumNativeCADFilesPerPackage = 4096
+    /// Bound on the number of native CAD packages one canvas backup carries.
+    static let maximumNativeCADPackagesPerCanvas = 256
 
     private struct PlannedFile {
         var source: URL
@@ -338,6 +394,7 @@ public enum CanvasBackupPackage {
                                 externalNodeAssetData: (String) throws -> Data?,
                                 cadDraftItems: () throws -> [DraftItem],
                                 revisionAssetData: ((String) throws -> Data?)? = nil,
+                                nativeCADRoot: URL? = nil,
                                 maximumDataBytes: Int64) throws -> URL {
         let manager = FileManager.default
         let totalCap = min(maximumTotal, maximumDataBytes)
@@ -358,11 +415,12 @@ public enum CanvasBackupPackage {
         /// Streaming file stage: size is preflighted/accounted BEFORE bytes
         /// are copied, then the source is streamed in bounded chunks through
         /// SHA-256 into the staged file. Never loads the draft into memory.
-        func stageFile(from source: URL, as name: String) throws -> (Int64, String) {
+        func stageFile(from source: URL, as name: String,
+                       allowEmpty: Bool = false) throws -> (Int64, String) {
             let resolved = source.standardizedFileURL.resolvingSymlinksInPath()
             let attributes = try manager.attributesOfItem(atPath: resolved.path)
             let size = (attributes[.size] as? Int64) ?? 0
-            guard size > 0 else { throw BackupError.corrupt(FloeL10n.l("workspace.canvas_backup_package.the_cad_draft_is_empty")) }
+            guard size > 0 || allowEmpty else { throw BackupError.corrupt(FloeL10n.l("workspace.canvas_backup_package.the_cad_draft_is_empty")) }
             total += size
             guard total <= totalCap else {
                 throw BackupError.corrupt(FloeL10n.l("workspace.canvas_backup_package.the_backup_exceeds_the_size_limit"))
@@ -576,6 +634,102 @@ public enum CanvasBackupPackage {
                 sha256: Self.digest(bytes)))
         }
 
+        // Editable native CAD packages owned by this canvas: every regular
+        // file of every `<nativeCADRoot>/<canvasID>/<name>.floecad` bundle is
+        // streamed (size + SHA-256), so the ZIP carries the DOCUMENT, not just
+        // the node's PNG render. Symlinks and escaping paths refuse the whole
+        // export; a bound package missing from disk is reported truthfully.
+        var nativePackages: [NativeCADPackage] = []
+        var missingNativePackages: [String] = []
+        var boundPackageNames = Set<String>()
+        for document in project.documents {
+            for node in document.nodes {
+                guard let key = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
+                      let binding = CanvasCADBindingKey.parse(key),
+                      binding.canvasID == project.id else { continue }
+                boundPackageNames.insert(binding.packageFileName)
+            }
+        }
+        if let nativeCADRoot {
+            let canonicalNativeRoot = nativeCADRoot.standardizedFileURL.resolvingSymlinksInPath()
+            let canvasDirectory = canonicalNativeRoot
+                .appendingPathComponent(project.id.uuidString, isDirectory: true)
+            let canonicalCanvasDirectory = canvasDirectory.standardizedFileURL.resolvingSymlinksInPath()
+            let packageURLs = (try? manager.contentsOfDirectory(
+                at: canvasDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])) ?? []
+            for packageURL in packageURLs.sorted(by: { $0.path < $1.path })
+            where packageURL.pathExtension.lowercased() == "floecad" {
+                // Ownership containment: the package must be a regular
+                // directory DIRECTLY inside THIS canvas's folder. Resolving a
+                // symlink and only checking the root would let one canvas's
+                // marker carry another canvas's package.
+                let values = try packageURL.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isSymbolicLink != true, values.isDirectory == true else {
+                    throw BackupError.unsafePath(packageURL.lastPathComponent)
+                }
+                let parent = packageURL.deletingLastPathComponent()
+                    .standardizedFileURL.resolvingSymlinksInPath()
+                guard parent.path == canonicalCanvasDirectory.path else {
+                    throw BackupError.unsafePath(packageURL.lastPathComponent)
+                }
+                let resolvedPackage = packageURL.standardizedFileURL.resolvingSymlinksInPath()
+                guard resolvedPackage.path.hasPrefix(canonicalCanvasDirectory.path + "/") else {
+                    throw BackupError.unsafePath(packageURL.lastPathComponent)
+                }
+                var files: [NativeCADFile] = []
+                if let enumerator = manager.enumerator(
+                    at: resolvedPackage,
+                    includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                    options: []) {
+                    while let fileURL = enumerator.nextObject() as? URL {
+                        let values = try fileURL.resourceValues(
+                            forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                        if values.isSymbolicLink == true {
+                            throw BackupError.unsafePath(fileURL.lastPathComponent)
+                        }
+                        guard values.isRegularFile == true else { continue }
+                        let relative = String(
+                            fileURL.standardizedFileURL.path.dropFirst(resolvedPackage.path.count + 1))
+                        guard !relative.isEmpty, !relative.contains(".."),
+                              !relative.hasPrefix("/") else {
+                            throw BackupError.unsafePath(relative)
+                        }
+                        guard files.count < maximumNativeCADFilesPerPackage else {
+                            throw BackupError.corrupt(FloeL10n.l(
+                                "workspace.canvas_backup_package.native_cad_file_limit"))
+                        }
+                        let base = (relative as NSString).lastPathComponent
+                        let stagedName = "nativecad-\(nativePackages.count)-\(files.count)-\(base)"
+                        let (size, sha) = try stageFile(from: fileURL, as: stagedName,
+                                                        allowEmpty: true)
+                        guard size <= maximumEntry else {
+                            throw BackupError.sourceFile(FloeL10n.l(
+                                "workspace.canvas_backup_package.native_cad_file_too_large", relative))
+                        }
+                        files.append(NativeCADFile(
+                            relativePath: relative,
+                            file: "nativecad/\(nativePackages.count)/\(files.count)-\(base)",
+                            byteCount: size,
+                            sha256: sha))
+                    }
+                }
+                guard !files.isEmpty else {
+                    throw BackupError.corrupt(FloeL10n.l(
+                        "workspace.canvas_backup_package.native_cad_empty"))
+                }
+                nativePackages.append(NativeCADPackage(
+                    canvasID: project.id,
+                    fileName: resolvedPackage.lastPathComponent,
+                    files: files))
+            }
+            let present = Set(nativePackages.map(\.fileName))
+            missingNativePackages = boundPackageNames.subtracting(present).sorted()
+        } else {
+            missingNativePackages = boundPackageNames.sorted()
+        }
+
         let canvasData = try CanvasProjectCodec.encode(project)
         try stage(canvasData, as: "canvas.json")
         let manifest = Manifest(
@@ -595,7 +749,9 @@ public enum CanvasBackupPackage {
             missingExternalNodeAssets: missingNodeAssets,
             cadDrafts: cadDrafts,
             cadRevisionAssets: revisionAssets,
-            missingCADRevisionAssets: missingRevisionAssets)
+            missingCADRevisionAssets: missingRevisionAssets,
+            nativeCADPackages: nativePackages,
+            missingNativeCADPackages: missingNativePackages)
         let manifestData = try JSONEncoder().encode(manifest)
         try stage(manifestData, as: "manifest.json")
 
@@ -655,6 +811,14 @@ public enum CanvasBackupPackage {
                             stagedName: stagedCADRevisionName(revisionAsset),
                             sha: revisionAsset.sha256)
         }
+        // Editable native CAD package files: entry paths are manifest-relative
+        // and the staged name mirrors them deterministically.
+        for package in nativePackages {
+            for file in package.files {
+                let stagedName = file.file.replacingOccurrences(of: "/", with: "-")
+                try appendEntry(file.file, stagedName: stagedName, sha: file.sha256)
+            }
+        }
         return temporary
     }
 
@@ -668,7 +832,8 @@ public enum CanvasBackupPackage {
                                  assetData: (String) throws -> Data?,
                                  externalNodeAssetData: (String) throws -> Data? = { _ in nil },
                                  revisionAssetData: ((String) throws -> Data?)? = nil,
-                                 cadDraftFileSources: () throws -> [CADDraftFileSource] = { [] }) throws {
+                                 cadDraftFileSources: () throws -> [CADDraftFileSource] = { [] },
+                                 nativeCADRoot: URL? = nil) throws {
         let temporary = try makeZip(project: project,
                                     childProjectData: childProjectData,
                                     materialData: materialData,
@@ -676,6 +841,7 @@ public enum CanvasBackupPackage {
                                     externalNodeAssetData: externalNodeAssetData,
                                     cadDraftItems: { try cadDraftFileSources().map(DraftItem.file) },
                                     revisionAssetData: revisionAssetData,
+                                    nativeCADRoot: nativeCADRoot,
                                     maximumDataBytes: maximumFileBackedBytes)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temporary, to: destination)
@@ -696,6 +862,10 @@ public enum CanvasBackupPackage {
         /// Required by the production path; nil only for legacy callers that
         /// do not export CAD drafts (export then fails if drafts exist).
         public var cadDraftsRoot: URL?
+        /// Root of canvas-owned editable native CAD packages
+        /// (`<floeRoot>/CanvasCAD`). When nil, no native packages are
+        /// carried (legacy callers); the production path always supplies it.
+        public var nativeCADRoot: URL?
         /// Bound for a child project JSON document.
         public var maximumChildProjectBytes: Int64
         /// Bound for one material/asset payload.
@@ -705,6 +875,7 @@ public enum CanvasBackupPackage {
 
         public init(projectsRoot: URL, materialsRoot: URL, fallbackMediaRoot: URL,
                     cadDraftsRoot: URL? = nil,
+                    nativeCADRoot: URL? = nil,
                     maximumChildProjectBytes: Int64 = 8 * 1024 * 1024,
                     maximumEntryBytes: Int64 = 512 * 1024 * 1024,
                     maximumTotalBytes: Int64 = 2 * 1024 * 1024 * 1024) {
@@ -712,6 +883,7 @@ public enum CanvasBackupPackage {
             self.materialsRoot = materialsRoot
             self.fallbackMediaRoot = fallbackMediaRoot
             self.cadDraftsRoot = cadDraftsRoot
+            self.nativeCADRoot = nativeCADRoot
             self.maximumChildProjectBytes = maximumChildProjectBytes
             self.maximumEntryBytes = maximumEntryBytes
             self.maximumTotalBytes = maximumTotalBytes
@@ -1014,7 +1186,8 @@ public enum CanvasBackupPackage {
                 guard let url = revisionURLs[path] else { return nil }
                 return try? Data(contentsOf: url, options: .mappedIfSafe)
             },
-            cadDraftFileSources: { draftFileSources })
+            cadDraftFileSources: { draftFileSources },
+            nativeCADRoot: layout.nativeCADRoot)
     }
 
     /// ZIP detection for import preflight: reads only the first bytes from
@@ -1105,13 +1278,17 @@ public enum CanvasBackupPackage {
         public var remappedRevisionPaths: [String: String]
         /// Node ids whose unapplied CAD drafts were restored (resumable).
         public var restoredDraftNodeIDs: [UUID]
+        /// Number of editable native CAD packages restored under the new
+        /// canvas identity.
+        public var restoredNativeCADPackageCount: Int
 
         public init(project: CanvasProject, manifest: Manifest,
                     remappedMaterials: [String: String],
                     remappedAssets: [String: String],
                     remappedNodeAssets: [String: String],
                     remappedRevisionPaths: [String: String] = [:],
-                    restoredDraftNodeIDs: [UUID] = []) {
+                    restoredDraftNodeIDs: [UUID] = [],
+                    restoredNativeCADPackageCount: Int = 0) {
             self.project = project
             self.manifest = manifest
             self.remappedMaterials = remappedMaterials
@@ -1119,6 +1296,7 @@ public enum CanvasBackupPackage {
             self.remappedNodeAssets = remappedNodeAssets
             self.remappedRevisionPaths = remappedRevisionPaths
             self.restoredDraftNodeIDs = restoredDraftNodeIDs
+            self.restoredNativeCADPackageCount = restoredNativeCADPackageCount
         }
     }
 
@@ -1161,6 +1339,10 @@ public enum CanvasBackupPackage {
         let mediaRoot = try containedDirectory(canonicalRoot, "WorkbenchRoot", create: true)
         let cadDraftsRoot = try containedDirectory(
             canonicalRoot, CanvasDrawingNodePlanner.draftRootDirectoryName, create: true)
+        // Restored editable native CAD packages land here, per restored
+        // canvas. Created LAZILY at commit time so a refused import leaves
+        // zero changes on disk (the hostile-manifest contract).
+        let canvasCADRoot = try containedDirectory(canonicalRoot, "CanvasCAD", create: false)
         // The restored canvas identity is fixed before destinations resolve so
         // carried drafts can be rewritten onto it.
         let restoredCanvasID = UUID()
@@ -1259,7 +1441,88 @@ public enum CanvasBackupPackage {
         var nodeAssetPlans: [String: PlannedFile] = [:]
         for nodeAsset in manifest.externalNodeAssets {
             nodeAssetPlans[nodeAsset.relativePath] = try requireStaged(
-                nodeAsset.file, nodeAsset.byteCount, nodeAsset.sha256, FloeL10n.l("workspace.canvas_backup_package.node_asset"))
+                nodeAsset.file, nodeAsset.byteCount, nodeAsset.sha256,
+                FloeL10n.l("workspace.canvas_backup_package.node_asset"))
+        }
+
+        // Carried editable native CAD packages: every file is verified against
+        // the manifest BEFORE any destination is written, and the recorded
+        // owner must be the archived canvas. Corrupt or missing payloads
+        // refuse the whole import while leaving existing data untouched.
+        struct RestoredNativePackage {
+            var canvasID: UUID
+            var fileName: String
+            var newFileName: String
+            var destinationDirectory: URL
+            var files: [(relativePath: String, plan: PlannedFile)]
+        }
+        var restoredNativePackages: [RestoredNativePackage] = []
+        var restoredNativeNames = Set<String>()
+        guard manifest.nativeCADPackages.count <= maximumNativeCADPackagesPerCanvas else {
+            throw BackupError.corrupt(FloeL10n.l(
+                "workspace.canvas_backup_package.native_cad_package_limit"))
+        }
+        var seenNativeIdentities = Set<String>()
+        for package in manifest.nativeCADPackages {
+            guard package.canvasID == manifest.canvasID else {
+                throw BackupError.corrupt(FloeL10n.l(
+                    "workspace.canvas_backup_package.native_cad_ownership"))
+            }
+            let name = package.fileName
+            guard !name.isEmpty, !name.contains("/"), !name.contains(".."),
+                  name.hasSuffix(".floecad"),
+                  (name as NSString).lastPathComponent == name else {
+                throw BackupError.unsafePath(name)
+            }
+            // Duplicate identities would make the binding remap ambiguous.
+            let identity = "\(package.canvasID.uuidString)/\(name)"
+            guard seenNativeIdentities.insert(identity).inserted else {
+                throw BackupError.corrupt(FloeL10n.l(
+                    "workspace.canvas_backup_package.native_cad_duplicate"))
+            }
+            guard package.files.count <= maximumNativeCADFilesPerPackage else {
+                throw BackupError.corrupt(FloeL10n.l(
+                    "workspace.canvas_backup_package.native_cad_file_limit"))
+            }
+            var plans: [(String, PlannedFile)] = []
+            var seenRelativePaths = Set<String>()
+            for file in package.files {
+                let relative = file.relativePath
+                guard !relative.isEmpty, !relative.contains(".."),
+                      !relative.hasPrefix("/") else {
+                    throw BackupError.unsafePath(relative)
+                }
+                // A duplicate (or case-variant) destination path would
+                // silently overwrite one of the two files.
+                let normalized = relative.precomposedStringWithCanonicalMapping.lowercased()
+                guard seenRelativePaths.insert(normalized).inserted else {
+                    throw BackupError.corrupt(FloeL10n.l(
+                        "workspace.canvas_backup_package.native_cad_duplicate_path", relative))
+                }
+                let plan = try requireStaged(
+                    file.file, file.byteCount, file.sha256,
+                    FloeL10n.l("workspace.canvas_backup_package.native_cad_payload"))
+                plans.append((relative, plan))
+            }
+            guard !plans.isEmpty else {
+                throw BackupError.corrupt(FloeL10n.l(
+                    "workspace.canvas_backup_package.native_cad_empty"))
+            }
+            // Duplicate package NAMES under the fresh canvas id are refused
+            // above by identity; the name itself stays verbatim.
+            restoredNativeNames.insert(name)
+            let directory = canvasCADRoot
+                .appendingPathComponent(restoredCanvasID.uuidString, isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+            guard directory.standardizedFileURL.path.hasPrefix(canvasCADRoot.path + "/") else {
+                throw BackupError.unsafePath(name)
+            }
+            restoredNativePackages.append(RestoredNativePackage(
+                canvasID: package.canvasID,
+                fileName: name,
+                newFileName: name,
+                destinationDirectory: directory,
+                files: plans.map { (relativePath: $0.0, plan: $0.1) }))
         }
 
         // Carried unapplied CAD drafts: verify descriptor + drawing pairs and
@@ -1451,6 +1714,16 @@ public enum CanvasBackupPackage {
                 try commit(restoredDraft.descriptorDestination,
                            from: stagedDescriptor)
             }
+            // Editable native CAD packages: every verified file committed
+            // under the restored canvas identity (rollback removes them if a
+            // later step fails).
+            for package in restoredNativePackages {
+                for file in package.files {
+                    let destination = package.destinationDirectory
+                        .appendingPathComponent(file.relativePath)
+                    try commit(destination, from: file.plan.source)
+                }
+            }
             // Child projects: fresh ids; inner id remapped; asset paths
             // remapped to the restored locations.
             var remappedChildData: [UUID: Data] = [:]
@@ -1495,6 +1768,11 @@ public enum CanvasBackupPackage {
         for (original, restored) in remappedNodeAssets where original != restored {
             historyPathRemap[original] = restored
         }
+        // Native CAD node bindings are rewritten from the archived canvas id
+        // to the restored identity — for CARRIED packages (which were written
+        // under the new canvas folder above) AND for MISSING ones, so a
+        // restored canvas can never keep reading the ORIGINAL canvas's live
+        // document. The package file name is preserved verbatim.
         for documentIndex in project.documents.indices {
             for nodeIndex in project.documents[documentIndex].nodes.indices {
                 var node = project.documents[documentIndex].nodes[nodeIndex]
@@ -1516,6 +1794,16 @@ public enum CanvasBackupPackage {
                           let restored = remappedNodeAssets[relative],
                           restored != relative {
                     node.asset?.localRelativePath = restored
+                }
+                // Rewrite the native CAD package binding to the restored
+                // canvas identity (carried → its restored bytes; missing →
+                // a missing binding in the NEW namespace, never the original).
+                if let sourceKey = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
+                   let binding = CanvasCADBindingKey.parse(sourceKey),
+                   binding.canvasID == manifest.canvasID {
+                    node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath] =
+                        CanvasCADBindingKey.key(canvasID: restoredCanvasID,
+                                                packageFileName: binding.packageFileName)
                 }
                 // Rewrite typed revision history paths after collision remaps.
                 // Absent history stays absent; unsupported raw metadata is
@@ -1547,7 +1835,8 @@ public enum CanvasBackupPackage {
                         remappedAssets: remappedAssets,
                         remappedNodeAssets: remappedNodeAssets,
                         remappedRevisionPaths: remappedRevisionPaths,
-                        restoredDraftNodeIDs: restoredDrafts.map(\.descriptor.nodeID))
+                        restoredDraftNodeIDs: restoredDrafts.map(\.descriptor.nodeID),
+                        restoredNativeCADPackageCount: restoredNativePackages.count)
     }
 
     // MARK: Path safety

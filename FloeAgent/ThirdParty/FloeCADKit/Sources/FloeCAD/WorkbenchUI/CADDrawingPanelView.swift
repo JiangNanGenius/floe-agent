@@ -102,6 +102,56 @@ struct CADDrawingPreview {
     }
 }
 
+// MARK: - Localized display helpers
+
+/// Localized drawing-view-kind label (the raw service value stays on disk).
+func localizedDrawingKind(_ raw: String) -> String {
+    let fallback: String
+    switch raw {
+    case "front": fallback = "Front"
+    case "top": fallback = "Top"
+    case "side": fallback = "Side"
+    case "iso": fallback = "Isometric"
+    case "section": fallback = "Section"
+    case "detail": fallback = "Detail"
+    default: fallback = raw
+    }
+    return FloeCADStrings.text("cad.workbench.drawing.kind.\(raw)", fallback)
+}
+
+/// Localized label for a projected-entity/element count bucket.
+func localizedDrawingCount(_ key: String) -> String {
+    let fallback: String
+    switch key {
+    case "entities": fallback = "entities"
+    case "lines": fallback = "lines"
+    case "circles": fallback = "circles"
+    case "arcs": fallback = "arcs"
+    case "polylines": fallback = "polylines"
+    case "dimensions": fallback = "dimensions"
+    case "centerlines": fallback = "centerlines"
+    default: fallback = key
+    }
+    return FloeCADStrings.text("cad.workbench.drawing.count.\(key)", fallback)
+}
+
+/// Defaults for the page editor (unit-testable): a NEW page must start at a
+/// valid scale of 1 — the old `Double(text) ?? 0` default displayed 0 and
+/// disabled Save (CUA 2026-10-10).
+enum CADDrawingPageEditorDefaults {
+    static func scale(page: [String: Any]?) -> String {
+        guard let page, let value = page["scale"] as? Double, value > 0 else {
+            return "1"
+        }
+        return CADPanelTransform.format(value)
+    }
+
+    static func name(page: [String: Any]?) -> String {
+        if let name = page?["name"] as? String, !name.isEmpty { return name }
+        return FloeCADStrings.text("cad.workbench.drawing.sheetDefault", "Sheet")
+    }
+}
+
 // MARK: - Panel
 
 struct CADDrawingPanelView: View {
@@ -166,7 +216,7 @@ struct CADDrawingPanelView: View {
                             HStack(spacing: 8) {
                                 Text(page["name"] as? String ?? "—")
                                     .font(.callout.weight(.semibold))
-                                Text("· \(page["kind"] as? String ?? "")")
+                                Text("· \(localizedDrawingKind(page["kind"] as? String ?? ""))")
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
                                 if let scale = page["scale"] as? Double, scale > 0 {
@@ -445,7 +495,7 @@ struct CADDrawingVectorPreview: View {
 
             HStack(spacing: 8) {
                 ForEach(preview.counts.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
-                    PanelBadge(text: "\(key) \(value)")
+                    PanelBadge(text: "\(localizedDrawingCount(key)) \(value)")
                 }
             }
             if !preview.notes.isEmpty {
@@ -517,7 +567,7 @@ private struct CADDrawingPageEditorSheet: View {
         func vector(_ value: Any?, fallback: [Double]) -> [Double] {
             (value as? [Double]) ?? fallback
         }
-        _name = State(initialValue: page?["name"] as? String ?? "Sheet")
+        _name = State(initialValue: CADDrawingPageEditorDefaults.name(page: page))
         _kind = State(initialValue: page?["kind"] as? String ?? "front")
         if let list = page?["sourceBodyIDs"] as? [String] {
             _sourceIDs = State(initialValue: Set(list.compactMap(UUID.init(uuidString:))))
@@ -526,7 +576,7 @@ private struct CADDrawingPageEditorSheet: View {
         } else {
             _sourceIDs = State(initialValue: [])
         }
-        _scale = State(initialValue: number(page?["scale"]))
+        _scale = State(initialValue: CADDrawingPageEditorDefaults.scale(page: page))
         _paper = State(initialValue: page?["paper"] as? String ?? "a3")
         _customWidth = State(initialValue: (page?["customWidthMM"] as? Double).map { number($0) } ?? "")
         _customHeight = State(initialValue: (page?["customHeightMM"] as? Double).map { number($0) } ?? "")
@@ -587,12 +637,12 @@ private struct CADDrawingPageEditorSheet: View {
                     TextField(FloeCADStrings.text("cad.workbench.drawing.name", "Name"), text: $name)
                         .accessibilityIdentifier("CADDrawingPageName")
                     Picker(FloeCADStrings.text("cad.workbench.drawing.kind", "View kind"), selection: $kind) {
-                        Text("Front").tag("front")
-                        Text("Top").tag("top")
-                        Text("Side").tag("side")
-                        Text("Isometric").tag("iso")
-                        Text("Section").tag("section")
-                        Text("Detail").tag("detail")
+                        Text(localizedDrawingKind("front")).tag("front")
+                        Text(localizedDrawingKind("top")).tag("top")
+                        Text(localizedDrawingKind("side")).tag("side")
+                        Text(localizedDrawingKind("iso")).tag("iso")
+                        Text(localizedDrawingKind("section")).tag("section")
+                        Text(localizedDrawingKind("detail")).tag("detail")
                     }
                     .accessibilityIdentifier("CADDrawingPageKind")
                     CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.scale", "Scale (drawing mm per model mm)"),

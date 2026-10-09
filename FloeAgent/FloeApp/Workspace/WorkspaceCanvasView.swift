@@ -1103,7 +1103,9 @@ enum WorkspaceCanvasRegistry {
             materialsRoot: floeRoot.appendingPathComponent("Materials", isDirectory: true),
             fallbackMediaRoot: WorkbenchPaths.fallbackRoot(),
             cadDraftsRoot: floeRoot.appendingPathComponent(
-                CanvasDrawingNodePlanner.draftRootDirectoryName, isDirectory: true))
+                CanvasDrawingNodePlanner.draftRootDirectoryName, isDirectory: true),
+            nativeCADRoot: floeRoot.appendingPathComponent(
+                CanvasCADStorage.containerDirectoryName, isDirectory: true))
         try CanvasBackupPackage.exportToURL(
             project: project, destination: destination, layout: layout)
     }

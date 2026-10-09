@@ -111,7 +111,8 @@ enum CADCanvasActionBridge {
                 extraMetadata: [
                     "editor": "native-cad",
                     "cadFormat": "floecad",
-                    "appliedRevision": String(document.revision),
+                    "preview": exported.isPlaceholder ? "placeholder" : "viewport",
+                    "appliedRevision": String(exported.revision),
                     "appliedContentHash": exported.hash,
                 ])
             guard try await commit(operations: [operation],
@@ -166,7 +167,8 @@ enum CADCanvasActionBridge {
                     "editor": "native-cad",
                     "cadFormat": "floecad",
                     "variant": "true",
-                    "appliedRevision": String(document.revision),
+                    "preview": exported.isPlaceholder ? "placeholder" : "viewport",
+                    "appliedRevision": String(exported.revision),
                     "appliedContentHash": exported.hash,
                 ])
             guard try await commit(operations: operations,
@@ -236,17 +238,12 @@ enum CADCanvasActionBridge {
                     at: url, name: (url.lastPathComponent as NSString).deletingPathExtension)
             }
             do {
-                let save = await document.save()
-                guard save.succeeded else {
-                    throw CADDocumentError(code: "save_failed",
-                                           message: save.error ?? "The new CAD document could not be committed.")
-                }
                 let exported = try await exportPNG(document: document, url: url)
                 let render = try await persistRender(exported, document: document,
                                                      node: nil, assetStore: assetStore)
                 let operation = try CADCanvasNodePlanner.createPatch(
                     sourcePath: binding,
-                    sourceAssetHash: document.contentSHA256,
+                    sourceAssetHash: exported.packageSHA256,
                     renderedAsset: render,
                     position: position,
                     size: CanvasSize(width: 420, height: 300),
@@ -255,7 +252,8 @@ enum CADCanvasActionBridge {
                         "editor": "native-cad",
                         "cadFormat": "floecad",
                         "cadStorage": "canvas-owned",
-                        "appliedRevision": String(document.revision),
+                        "preview": exported.isPlaceholder ? "placeholder" : "viewport",
+                        "appliedRevision": String(exported.revision),
                         "appliedContentHash": exported.hash,
                     ])
                 // The bridge keeps the document open; release it now that the
@@ -276,9 +274,13 @@ enum CADCanvasActionBridge {
                         "The canvas write failed, but the CAD document was saved in this canvas's on-device storage; trying again rebinds the same document."))
                 }
                 CanvasCADStorage.clearPending(canvasID: canvasID, documentID: documentID)
+                let placeholderNote = exported.isPlaceholder
+                    ? canvasLocalized("（预览为占位图，本机无法渲染视口）",
+                                      " (placeholder preview; on-device viewport rendering is unavailable)")
+                    : ""
                 return (operation.nodeID, canvasLocalized(
                     "已创建 CAD 模型“\(document.name)”（参数化工作台）；如需组合简单场景请使用 3D 场景编辑器。",
-                    "Created CAD model \"\(document.name)\" (parametric workbench); use the 3D scene editor only for simple scene compositions."))
+                    "Created CAD model \"\(document.name)\" (parametric workbench); use the 3D scene editor only for simple scene compositions.") + placeholderNote)
             } catch {
                 await FloeCAD3DBridge.shared.releaseDocument(at: url)
                 // Keep a durable package's pending record (rebindable); a
@@ -329,7 +331,7 @@ enum CADCanvasActionBridge {
             let position = CanvasPoint(x: 120, y: 120)
             let operation = try CADCanvasNodePlanner.createPatch(
                 sourcePath: sourcePathKey(packageURL: url),
-                sourceAssetHash: document.contentSHA256,
+                sourceAssetHash: exported.packageSHA256,
                 renderedAsset: render,
                 position: position,
                 size: CanvasSize(width: 420, height: 300),
@@ -337,7 +339,8 @@ enum CADCanvasActionBridge {
                 extraMetadata: [
                     "editor": "native-cad",
                     "cadFormat": "floecad",
-                    "appliedRevision": String(document.revision),
+                    "preview": exported.isPlaceholder ? "placeholder" : "viewport",
+                    "appliedRevision": String(exported.revision),
                     "appliedContentHash": exported.hash,
                 ])
             guard try await commit(operations: [operation],
@@ -360,25 +363,51 @@ enum CADCanvasActionBridge {
 
     // MARK: Export + asset persistence
 
-    private struct ExportedRender {
+    struct ExportedRender {
         let data: Data
         let hash: String
+        /// The committed document revision/package hash the preview was
+        /// rendered from (AFTER a verified save).
+        let revision: Int
+        let packageSHA256: String
+        /// True when the device could not render the viewport and an explicit
+        /// empty placeholder was used (recorded in node metadata).
+        let isPlaceholder: Bool
     }
 
-    private static func exportPNG(document: FloeCADDocument,
+    static func exportPNG(document: FloeCADDocument,
                                   url: URL) async throws -> ExportedRender {
-        // Persist the document first: a sheet created for this export must be
-        // durable before the canvas references its render.
-        _ = await document.save()
-        let export = try await FloeCAD3DBridge.shared.exportNativeData(
-            at: url, format: "png", pageID: nil)
-        guard !export.data.isEmpty else {
-            throw CADDocumentError(code: "empty_export",
+        // The preview must never be published against an uncommitted or
+        // conflicted draft: a failed save refuses BEFORE any canvas write.
+        let save = await document.save()
+        guard save.succeeded else {
+            throw CADDocumentError(code: "save_failed",
                                    message: canvasLocalized(
-                                       "CAD 图纸渲染为空，未应用到画布。",
-                                       "The CAD drawing render was empty; nothing was applied to the canvas."))
+                                       "CAD 文档保存失败，未写入画布：",
+                                       "The CAD document could not be saved; nothing was written to the canvas. ")
+                                   + (save.error ?? ""))
         }
-        return ExportedRender(data: export.data, hash: FloeDigest.sha256Hex(export.data))
+        // Canvas node previews come from the VIEWPORT (bodies + assembly
+        // instances), independent of any engineering drawing page — a brand
+        // new blank CAD document must be creatable from the Canvas. Drawing
+        // pages remain available for explicit PDF/SVG/DXF/PNG exports.
+        if let data = document.viewportThumbnailPNG(width: 640, height: 480),
+           !data.isEmpty {
+            return ExportedRender(data: data, hash: FloeDigest.sha256Hex(data),
+                                  revision: save.revision,
+                                  packageSHA256: save.contentSHA256,
+                                  isPlaceholder: false)
+        }
+        if let placeholder = CADCanvasPreview.placeholderPNG(), !placeholder.isEmpty {
+            return ExportedRender(data: placeholder, hash: FloeDigest.sha256Hex(placeholder),
+                                  revision: save.revision,
+                                  packageSHA256: save.contentSHA256,
+                                  isPlaceholder: true)
+        }
+        throw CADDocumentError(code: "empty_export",
+                               message: canvasLocalized(
+                                   "CAD 视口渲染为空，未应用到画布。",
+                                   "The CAD viewport render was empty; nothing was applied to the canvas."))
     }
 
     /// Writes the render into the app-owned material library and registers it

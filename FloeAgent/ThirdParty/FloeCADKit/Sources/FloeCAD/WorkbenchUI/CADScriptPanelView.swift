@@ -15,13 +15,18 @@
 import SwiftUI
 
 struct CADScriptPanelView: View {
+    /// The default source shown for a new script. MUST be valid ShapeScript:
+    /// a leading `#` is a comment in some languages but a parse error here
+    /// (CUA 2026-10-10), so the default is a plain, previewable cube.
+    static let defaultSource = "cube { size 10 }"
+
     let document: FloeCADDocument
     @State private var records: [[String: Any]] = []
-    @State private var outcome: [String: Any] = [:]
+    @State private var outcome: [String: Any] = Dictionary<String, Any>()
     @State private var busy = false
     @State private var selectedRecordID: String?
     @State private var name = ""
-    @State private var source = "# cube { size 10 }"
+    @State private var source = CADScriptPanelView.defaultSource
     @State private var parameters: [ParameterRow] = []
     @State private var conflictMode = "auto"
     @State private var previewLines: [String] = []
