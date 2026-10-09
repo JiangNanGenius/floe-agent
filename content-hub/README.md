@@ -108,7 +108,8 @@ uses the fixture's own public key.
 
 ## Publish procedure / 发布流程
 
-1. A coordinator (GitHub Actions with the `FLOE_CONTENT_HUB_SIGNING_KEY` secret)
+1. The existing Official Skill and Content Hubs workflow (mapping the existing
+   `FLOE_SKILL_HUB_SIGNING_KEY` secret to the content builder)
    runs `--sign` on the exact release commit, then runs `--check`.
 2. The commit containing `index.json`, `index.sig` and `packages/**` is an
    immutable revision; never move a tag or replace a published package.
@@ -117,7 +118,8 @@ uses the fixture's own public key.
    It never trusts a new key from the network; rotating the trust root requires
    an app release, exactly like skill-hub.
 
-协调者（持有 Actions 密钥 `FLOE_CONTENT_HUB_SIGNING_KEY`）在确切的发布提交上运行
+现有 Official Skill and Content Hubs 工作流（复用 Actions 密钥
+`FLOE_SKILL_HUB_SIGNING_KEY`，映射给内容构建器）在确切的发布提交上运行
 `--sign` 并随后执行 `--check`。包含 `index.json`、`index.sig` 与 `packages/**` 的
 提交即为不可变版本，禁止移动标签或替换已发布包。App 按提交解析并验证全部字节，
 绝不从网络信任新密钥；更换信任根必须随 App 版本发布，与 skill-hub 相同。
