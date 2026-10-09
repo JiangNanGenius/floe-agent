@@ -26,21 +26,22 @@
 // that session so only the poll cadence differs. First install/boot time is
 // reported separately and is NOT part of the latency comparison.
 //
-// LOCAL LIMITATION (measured 2026-10-09, retained evidence): on this
-// simulator the real guest reaches a login shell and the host path is proven
-// complete end-to-end (owner 36 B -> backend 36 B -> 96 B wire frame -> 96 B
-// queued in the engine console ring, with the runner's parser verified
-// against every split byte of that frame), but the guest transport then
-// stalls: one run echoed only the first 30 bytes of a 36-byte command and
-// produced nothing further for 420 s; another produced no session output at
-// all within 900 s while the emulator thread idled in `select`. The stall is
-// guest/engine-side and run-dependent, so the real round-trip / drain
-// measurement is an OPT-IN qualification
+// LOCAL RESULT (measured 2026-10-09, this simulator, after the session
+// output-integrity fix): the real guest reaches a login shell, executes the
+// computed marker, and the full measurement passes — echo RTT 31 ms on a
+// fixed-150 ms-poll baseline vs 43 ms on the adaptive visible loop (the
+// transport round trip dominates both; the 150 ms boundary only bounded the
+// OLD poll cadence), 2000/2000 exact ordered UTF-8/ANSI lines in 2.54 s
+// (789 lines/s), Ctrl-C aborts `sleep 30` and returns to a usable prompt,
+// and a 100x30 resize is adopted. The original stall (partial echo, then
+// 420 s of silence) was a host-side session-buffer race, not the guest;
+// see Local/Private/evidence/content-upgrade-20261009/terminal-transport-
+// stall/RESOLVED.md. This remains an OPT-IN qualification
 // (`FLOE_REALVM_QUALIFICATION=1`) for a qualified host or physical device;
 // its disabled state is reported as disabled, never as a pass.
 //
-// The simulator admission fix this investigation produced is real and
-// stays: `RuntimeProcessHeadroom.availableBytes()` now reports the probe as
+// The simulator admission fix from the original investigation stays:
+// `RuntimeProcessHeadroom.availableBytes()` reports the probe as
 // unavailable under `targetEnvironment(simulator)` because
 // `os_proc_available_memory()` returns a constant 0 there (measured), which
 // previously queued every guest start until
@@ -173,7 +174,7 @@ struct LocalLinuxTerminalRealVMTests {
     /// Opt-in real-guest qualification (see the file header limitation note).
     /// Disabled by default for the simulator; run with
     /// `FLOE_REALVM_QUALIFICATION=1` on a qualified host/physical device.
-    @Test("Real Linux guest: real visible loop echoes faster than 150ms baseline; exact sustained sequence; Ctrl-C; resize",
+    @Test("Real Linux guest: echo latency and cadence comparison; exact sustained sequence; Ctrl-C; resize",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_QUALIFICATION"] == "1"))
     func realGuestTerminalCadenceDrainInterruptResize() async throws {
         let environment = AppEnvironment.live()

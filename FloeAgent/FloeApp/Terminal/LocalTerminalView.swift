@@ -223,10 +223,11 @@ final class LocalTerminalOwner: Identifiable {
             append(result.terminalOutput ?? Data(result.output.utf8))
             alive = result.alive
             if !alive {
-                if let failure = result.failure {
-                    // Recoverable, deliberate session end (e.g. the
-                    // unread-output overflow): say why and let the user
-                    // reconnect, instead of a bare "exited".
+                if result.failure == LinuxGuestInteractiveSession.outputOverflowFailureCode {
+                    // Known recoverable failure: localized presentation; the
+                    // technical detail is logged at the failure site.
+                    status = String(localized: "terminal.status.output_overflow")
+                } else if let failure = result.failure {
                     status = failure
                 } else {
                     status = result.exitCode.map { String(format: String(localized: "terminal.status.exited_code"), Int64($0)) } ?? String(localized: "terminal.status.exited")

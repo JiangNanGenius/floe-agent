@@ -41,6 +41,15 @@ Content updates, provider catalog and traditional skills — implementation reco
 - 内置提示词版本独立于 App 营销版本展示；内置正文保持编译原文。复查发现中文界面两个内置章节标题仍为英文（“Delivering work / Communicating with the user”），本轮已改为**仅 UI 按 `section.id` 映射本地化标题**（en/zh-Hans），运行时冻结的英文标题与正文逐字不变，不把 UI 翻译混入模型内容。
 - 供应商目录由入口“+”菜单打开为页尺寸、可搜索的预置目录；本地搜索可收窄结果；选择 DeepSeek 打开既有编辑器（Chat Completions、预期公开端点、凭据为空）。未做真实网络/模型鉴权。
 
+## 本地 Linux 终端传输修复 / Local Linux terminal transport fix
+
+2026-10-09 后续提交 `f56f1ae5`（同一分支）：用户反馈本地 Linux 终端“像牙膏一样”响应迟钝的剩余根因修复。
+
+- 根因：`LinuxGuestInteractiveSession.nextOutput(timeoutMs:)` 用 `withTaskGroup` 超时与 `deliver` 的 waiter 续补竞争，已续补的数据块被任务组丢弃（executor 繁忙时必现，真实 VM 复现：guest 已完整执行命令、路由已送达全部字节，而 owner 输出停在部分回显）。非 guest/引擎问题；引擎与路由经带计数器的 App 内仪器运行证明逐字节完整。
+- 修复：actor 串行化、按代（generation）守卫的超时（恰好一次续补；过期超时/取消不会完成后续读取；已取消的轮询不消费缓冲字节）；移除无人消费的无界重复输出流；待读输出以 1 MB 为界，超限会话以结构化可恢复失败关闭（清读字节、`failure` 携带稳定代码 `output-overflow`、owner 本地化为 en/zh-Hans 状态、经既有 registry→center 链传递、向 guest 发送一次 CLOSE 并走既有回收路径，其它会话与 VM 不受影响）；`SessionParser` 不再按整帧长度回持静默突发（仅保留真实帧前缀后缀，分帧契约不变）；终端中断键改为 ETX(0x03) 有序输入，行纪律向前台进程组发信号，交互 shell 在 Ctrl-C 后存活。
+- 验证：24 个定向模块测试通过（含竞争无丢失回归、过期超时/取消防护、分帧、超限关闭与隔离、center 失败面）。真实 Linux guest（复用模拟器 `37D8E931`，`FLOE_REALVM_QUALIFICATION=1`）：计算标记真实执行；同一会话回显 RTT 基线 31 ms / 自适应 43 ms（传输往返主导，旧 150 ms 边界只约束旧轮询节奏）；2000/2000 有序 UTF-8/ANSI 行 2.54 s（789 行/s）；Ctrl-C 中断 `sleep 30` 后返回可用提示符；100x30 调整生效。完整 App 测试构建 **BUILD SUCCEEDED**。证据与原始故障日志：`Local/Private/evidence/content-upgrade-20261009/terminal-transport-stall/`。
+- 限制：以上为模拟器资格结果；iPad 真机终端验收仍留给用户。RTT 数字为单次运行实测，不声称自适应快于基线（本轮 43 ms vs 31 ms，断言边界为自适应 ≤ 基线+25 ms）。
+
 ## 剩余门槛 / Remaining gates
 
 - ~~`content-hub/index.sig` 正式密钥签名发布~~：已完成（run 37877603979，见上），不再是门槛。

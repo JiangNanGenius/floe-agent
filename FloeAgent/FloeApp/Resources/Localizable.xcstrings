@@ -68786,6 +68786,22 @@
           }
         }
       }
+    },
+    "terminal.status.output_overflow": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output buffer filled while the terminal was hidden; reconnect to continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终端隐藏期间输出缓冲已满，请重新连接后继续"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

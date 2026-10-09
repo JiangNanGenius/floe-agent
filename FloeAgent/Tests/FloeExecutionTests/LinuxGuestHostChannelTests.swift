@@ -1053,10 +1053,9 @@ final class LinuxGuestInteractiveSessionOutputTests: XCTestCase {
         }
         XCTAssertTrue(finished, "overflow did not fail the session closed")
         let failure = await overflowed.failure
-        XCTAssertNotNil(failure)
-        XCTAssertTrue(
-            failure?.contains("reconnect") ?? false,
-            "overflow reason is not recoverable/actionable: \(failure ?? "nil")"
+        XCTAssertEqual(
+            failure, LinuxGuestInteractiveSession.outputOverflowFailureCode,
+            "overflow must carry the stable machine-readable failure code"
         )
         // Pending output was cleared: the reader sees a clean EOF, and the
         // session stays within the documented bound.
@@ -1168,7 +1167,10 @@ final class ShellSessionCenterFailureSurfaceTests: XCTestCase {
     }
 
     func testExchangePassesRecoverableFailureThroughToOwnerResult() async throws {
-        let reason = "terminal output exceeded the unread 1048576-byte buffer; reconnect to continue"
+        // Any structured failure string flows through; the known overflow
+        // code maps to a localized owner presentation without the backend
+        // embedding user-facing text.
+        let reason = "output-overflow-detail-for-diagnostics"
         let backend = FakeBackend(exchangeResult: ShellExchangeResult(
             output: "",
             alive: false,

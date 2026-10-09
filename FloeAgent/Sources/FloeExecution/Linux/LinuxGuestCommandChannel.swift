@@ -819,6 +819,12 @@ public actor LinuxGuestInteractiveSession {
     /// reconnects to continue.
     static let maxPendingOutputBytes = 1 * 1024 * 1024
 
+    /// Stable machine-readable code carried by `failure` for the unread
+    /// output overflow, so owners can map it to a localized presentation
+    /// without string-fragment matching. Technical detail (byte counts etc.)
+    /// is logged at the failure site, not embedded in the code.
+    public static let outputOverflowFailureCode = "output-overflow"
+
     init(id: String, sendFrame: @escaping @Sendable (Data) async throws -> Void) {
         self.id = id
         self.sendFrame = sendFrame
@@ -972,7 +978,10 @@ public actor LinuxGuestInteractiveSession {
         // finished and later delivers return early.
         pendingChunks.removeAll()
         pendingBytes = 0
-        fail("terminal output exceeded the unread \(Self.maxPendingOutputBytes)-byte buffer; reconnect to continue")
+        fail(Self.outputOverflowFailureCode)
+        FloeLogger(category: .tools).error(
+            "Linux guest terminal session \(id) overflowed the unread \(Self.maxPendingOutputBytes)-byte buffer; failed closed (reconnect to continue)"
+        )
         try? await sendFrame(LinuxGuestFraming.sessionCloseLine(sessionID: id))
     }
 
