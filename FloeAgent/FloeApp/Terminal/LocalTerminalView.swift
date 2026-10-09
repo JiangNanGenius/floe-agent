@@ -168,7 +168,6 @@ final class LocalTerminalOwner: Identifiable {
         status = String(localized: "terminal.status.closed")
     }
 
-    @discardableResult
     /// One visible-loop iteration (flush pending input / drain output), with
     /// the cadence sleep left to the caller. DEBUG-only seam so the cadence
     /// measurements drive the real production body instead of a copy.
@@ -182,6 +181,7 @@ final class LocalTerminalOwner: Identifiable {
     }
     #endif
 
+    @discardableResult
     private func exchange(_ input: String?) async -> Int {
         guard let sessionID, alive, !exchangeInFlight else { return 0 }
         exchangeInFlight = true
