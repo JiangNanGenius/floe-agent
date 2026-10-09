@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import Darwin
 import Testing
 @testable import FloeApp
 import FloeModels
@@ -96,6 +97,153 @@ struct ThreadTimelineTests {
             #expect(previous.isSubset(of: Set(model.messages.map(\.id))))
             model.stopLiveUpdates()
         }
+    }
+
+    /// Synthetic 1k/10k qualification for the thread detail surface with
+    /// dense tool activity: open, run switching, message/event paging,
+    /// projection reuse and folded-group render preparation. Prints
+    /// FLOE_PERF lines (durations only, never message contents); guards
+    /// assert the pagination/dedup contracts stay intact.
+    @MainActor @Test("Event-heavy histories: open, switch, paging and projection baseline")
+    func eventHeavyTimelinePerformance() async throws {
+        for (messageCount, eventCount) in [(1_000, 1_000), (10_000, 10_000)] {
+            let environment = AppEnvironment.preview()
+            try await environment.database.migrate()
+            let center = environment.conversationCenter
+            let conversation = try await center.createConversation(title: "Synthetic perf")
+            let markdown = String(
+                repeating: "## Result\n- dense markdown with `code` and 中文文本\n\n| a | b |\n| - | - |\n",
+                count: 40
+            )
+            let detail = String(
+                repeating: "{\"row\":\"synthetic tool-output row with representative detail\"},",
+                count: 120
+            )
+            var runIDs: [UUID] = []
+            for offset in 0..<3 {
+                var run = makeRun(state: "completed", conversationID: conversation.id)
+                run.startedAt = Date(timeIntervalSince1970: 1_000 + Double(offset))
+                try await environment.runStore.saveRun(run)
+                runIDs.append(run.id)
+            }
+            for index in 0..<messageCount {
+                try await environment.conversationStore.appendMessage(.init(
+                    id: UUID(), conversationID: conversation.id,
+                    role: index % 2 == 0 ? "user" : "assistant",
+                    content: markdown,
+                    createdAt: Date(timeIntervalSince1970: 10_000 + Double(index)),
+                    parts: [], runID: runIDs[index % runIDs.count]
+                ))
+            }
+            for index in 0..<eventCount {
+                let runID = runIDs[index % runIDs.count]
+                switch index % 4 {
+                case 0:
+                    try await environment.runStore.appendEvent(
+                        runID: runID, kind: .reasoning,
+                        payloadJSON: "{\"text\":\"thinking chunk \(index % 7) \(String(repeating: "y", count: 600))\"}")
+                case 1:
+                    try await environment.runStore.appendEvent(
+                        runID: runID, kind: .toolRequest,
+                        payloadJSON: "{\"tool\":\"workspace.readFile\",\"status\":\"pending\",\"id\":\"call_perf_\(index)\",\"input\":\"{\\\"path\\\":\\\"f.txt\\\"}\"}")
+                case 2:
+                    try await environment.runStore.appendEvent(
+                        runID: runID, kind: .toolResult,
+                        payloadJSON: "{\"status\":\"ok\",\"id\":\"call_perf_\(index - 1)\",\"durationMs\":\"12\",\"summary\":\"\(detail)\"}")
+                default:
+                    try await environment.runStore.appendEvent(
+                        runID: runID, kind: .assistantText,
+                        payloadJSON: "{\"text\":\"\(markdown.prefix(1_500))\"}")
+                }
+            }
+
+            let model = ThreadDetailViewModel(conversationID: conversation.id, center: center)
+            let loadStart = ContinuousClock.now
+            await model.load()
+            let loadDuration = loadStart.duration(to: .now)
+            model.stopLiveUpdates()
+            #expect(model.actionError == nil)
+            #expect(model.messages.count == 20)
+
+            let switchStart = ContinuousClock.now
+            for runID in runIDs { await model.selectRun(runID) }
+            let switchDuration = switchStart.duration(to: .now)
+            model.stopLiveUpdates()
+
+            let pageStart = ContinuousClock.now
+            var pageCount = 0
+            while model.messages.count < 200 && model.hasEarlierMessages {
+                await model.loadEarlierMessages()
+                pageCount += 1
+            }
+            let pageMessagesDuration = pageStart.duration(to: .now)
+            #expect(model.messages.count >= 200)
+            #expect(Set(model.messages.map(\.id)).count == model.messages.count)
+
+            let eventPageStart = ContinuousClock.now
+            let targetRun = runIDs[0]
+            var eventPageCount = 0
+            while (model.eventsByRun[targetRun]?.count ?? 0) < 2_000 {
+                let before = model.eventsByRun[targetRun]?.count ?? 0
+                await model.loadEarlierEvents(runID: targetRun)
+                eventPageCount += 1
+                guard model.eventsByRun[targetRun]?.count ?? 0 > before else { break }
+            }
+            let pageEventsDuration = eventPageStart.duration(to: .now)
+            let targetEvents = model.eventsByRun[targetRun] ?? []
+            #expect(targetEvents.count >= 2_000 || eventPageCount > 0)
+            #expect(Set(targetEvents.map(\.id)).count == targetEvents.count)
+
+            let eventsByRun = model.eventsByRun
+            let runs = model.runs
+            let messages = model.messages
+            let cachedStart = ContinuousClock.now
+            for _ in 0..<100 { _ = model.timeline }
+            let cachedDuration = cachedStart.duration(to: .now)
+            let uncachedStart = ContinuousClock.now
+            for _ in 0..<20 {
+                _ = ThreadTimelineBuilder.buildConversation(
+                    messages: messages, runs: runs, eventsByRun: eventsByRun,
+                    liveRunID: nil, isRunning: false, liveStreamedText: "",
+                    liveReasoningText: "", pendingApprovals: []
+                )
+            }
+            let uncachedDuration = uncachedStart.duration(to: .now)
+
+            let renderStart = ContinuousClock.now
+            let host = UIHostingController(rootView: StepGroupView(
+                events: Array(targetEvents.prefix(600)),
+                isLatest: false, isLive: false, hasError: false
+            ))
+            let proposed = CGSize(width: 820, height: 20_000)
+            let foldedHeight = host.sizeThatFits(in: proposed).height
+            let renderDuration = renderStart.duration(to: .now)
+            #expect(foldedHeight > 0)
+
+            let footprint = Self.physFootprintBytes()
+            print("FLOE_PERF messages=\(messageCount) events=\(eventCount) "
+                  + "load=\(loadDuration) switch3=\(switchDuration) "
+                  + "pageMessages(\(pageCount))=\(pageMessagesDuration) "
+                  + "pageEvents(\(eventPageCount))=\(pageEventsDuration) "
+                  + "cachedTimeline100=\(cachedDuration) uncachedBuild20=\(uncachedDuration) "
+                  + "stepGroupRender=\(renderDuration) footprintBytes=\(footprint)")
+            model.stopLiveUpdates()
+        }
+    }
+
+    /// Resident footprint of this test process (synthetic qualification
+    /// environments only; durations and bytes are reported, never contents).
+    static func physFootprintBytes() -> UInt64 {
+        var info = mach_task_basic_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<integer_t>.size
+        )
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? UInt64(info.resident_size) : 0
     }
 
     @MainActor @Test("Reopening a long timeline retains history and pages through reconnect gaps")

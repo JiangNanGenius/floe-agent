@@ -87,6 +87,26 @@ enum ThreadTimelineItem: Identifiable, Hashable {
 /// Builds the unified timeline from persisted state plus live flags.
 enum ThreadTimelineBuilder {
 
+    /// Per-build payload decode cache. Every predicate in one build reads the
+    /// same immutable event bytes, so each event is decoded at most once per
+    /// build instead of 3–6 times with a fresh decoder each time.
+    private final class PayloadCache {
+        private let decoder = JSONDecoder()
+        private var values: [UUID: [String: String]] = [:]
+
+        func payload(for event: RunEventRecord) -> [String: String] {
+            if let cached = values[event.id] { return cached }
+            let decoded = Self.decode(event.payloadJSON, decoder: decoder)
+            values[event.id] = decoded
+            return decoded
+        }
+
+        static func decode(_ json: String, decoder: JSONDecoder) -> [String: String] {
+            guard let data = json.data(using: .utf8) else { return [:] }
+            return (try? decoder.decode([String: String].self, from: data)) ?? [:]
+        }
+    }
+
     static func buildConversation(
         messages: [PersistedMessage],
         runs: [RunRecord],
@@ -98,7 +118,22 @@ enum ThreadTimelineBuilder {
         pendingApprovals: [PendingApproval],
         earlierEventRunIDs: Set<UUID> = []
     ) -> [ThreadTimelineItem] {
+        let payloadCache = PayloadCache()
         let sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
+        // Index the loaded messages once; `build` previously re-filtered the
+        // full message array per run (O(runs × messages) per rebuild).
+        var boundByRun: [UUID: [PersistedMessage]] = [:]
+        var unboundUserMessages: [PersistedMessage] = []
+        var unboundAssistantMessages: [PersistedMessage] = []
+        for message in messages {
+            if let runID = message.runID {
+                boundByRun[runID, default: []].append(message)
+            } else if message.role == "user" {
+                unboundUserMessages.append(message)
+            } else if message.role == "assistant" {
+                unboundAssistantMessages.append(message)
+            }
+        }
         var result: [ThreadTimelineItem] = []
         for run in sortedRuns {
             let isLive = run.id == liveRunID && isRunning
@@ -106,7 +141,9 @@ enum ThreadTimelineBuilder {
                 result.append(.earlierEvents(runID: run.id))
             }
             let runItems = build(
-                messages: messages,
+                messagesForRun: boundByRun[run.id, default: []],
+                unboundUserMessages: unboundUserMessages,
+                unboundAssistantMessages: unboundAssistantMessages,
                 events: eventsByRun[run.id, default: []],
                 run: run,
                 isRunning: isLive,
@@ -115,7 +152,8 @@ enum ThreadTimelineBuilder {
                 // A run waiting for a human decision may be represented as
                 // suspended rather than "running". Keep its decision card in
                 // the timeline until the runtime consumes the answer.
-                pendingApprovals: pendingApprovals.filter { $0.runID == run.id }
+                pendingApprovals: pendingApprovals.filter { $0.runID == run.id },
+                payloadCache: payloadCache
             )
             result += runItems.map { item in
                 if run.id != liveRunID, case .stepGroup(let events, _) = item {
@@ -138,6 +176,8 @@ enum ThreadTimelineBuilder {
         return result
     }
 
+    /// Single-run convenience entry for tests and previews: performs the
+    /// per-run message grouping and owns a fresh payload cache.
     static func build(
         messages: [PersistedMessage],
         events: [RunEventRecord],
@@ -147,6 +187,45 @@ enum ThreadTimelineBuilder {
         liveReasoningText: String,
         pendingApprovals: [PendingApproval]
     ) -> [ThreadTimelineItem] {
+        var boundByRun: [UUID: [PersistedMessage]] = [:]
+        var unboundUserMessages: [PersistedMessage] = []
+        var unboundAssistantMessages: [PersistedMessage] = []
+        for message in messages {
+            if let runID = message.runID {
+                boundByRun[runID, default: []].append(message)
+            } else if message.role == "user" {
+                unboundUserMessages.append(message)
+            } else if message.role == "assistant" {
+                unboundAssistantMessages.append(message)
+            }
+        }
+        let payloadCache = PayloadCache()
+        return build(
+            messagesForRun: run.map { boundByRun[$0.id, default: []] } ?? [],
+            unboundUserMessages: unboundUserMessages,
+            unboundAssistantMessages: unboundAssistantMessages,
+            events: events,
+            run: run,
+            isRunning: isRunning,
+            liveStreamedText: liveStreamedText,
+            liveReasoningText: liveReasoningText,
+            pendingApprovals: pendingApprovals,
+            payloadCache: payloadCache
+        )
+    }
+
+    private static func build(
+        messagesForRun: [PersistedMessage],
+        unboundUserMessages: [PersistedMessage],
+        unboundAssistantMessages: [PersistedMessage],
+        events: [RunEventRecord],
+        run: RunRecord?,
+        isRunning: Bool,
+        liveStreamedText: String,
+        liveReasoningText: String,
+        pendingApprovals: [PendingApproval],
+        payloadCache: PayloadCache
+    ) -> [ThreadTimelineItem] {
         var items: [ThreadTimelineItem] = []
         var startingGoalMessageID: UUID?
 
@@ -154,9 +233,9 @@ enum ThreadTimelineBuilder {
         //    prompts are common, so choose the matching message nearest to
         //    this run's start instead of the last equal string globally.
         if let run {
-            let directlyBound = messages.filter { $0.role == "user" && $0.runID == run.id }
-            let candidates = directlyBound.isEmpty ? messages.filter {
-                $0.role == "user" && $0.runID == nil && $0.content == run.goal
+            let directlyBound = messagesForRun.filter { $0.role == "user" }
+            let candidates = directlyBound.isEmpty ? unboundUserMessages.filter {
+                $0.content == run.goal
             } : directlyBound
             if let goalMessage = candidates.min(by: {
                 abs($0.createdAt.timeIntervalSince(run.startedAt))
@@ -178,7 +257,7 @@ enum ThreadTimelineBuilder {
         // the single authoritative execution instead of duplicate failures.
         let suppressedToolCallIDs = Set(sortedEvents.compactMap { event -> String? in
             guard event.kind == .toolResult else { return nil }
-            let payload = decodePayload(event.payloadJSON)
+            let payload = payloadCache.payload(for: event)
             guard payload["summary"]?.hasPrefix("Harness suppression:") == true else {
                 return nil
             }
@@ -196,11 +275,12 @@ enum ThreadTimelineBuilder {
             .sequence
         let nonTerminalEvents = sortedEvents.filter {
             $0.kind != .terminal
-                && !isTerminalStatusEvent($0)
-                && !isStaleStatusEvent($0, currentState: run?.state)
+                && !isTerminalStatusEvent($0, payloadCache: payloadCache)
+                && !isStaleStatusEvent($0, currentState: run?.state, payloadCache: payloadCache)
                 && !isSuppressedToolProtocolEvent(
                     $0,
-                    suppressedCallIDs: suppressedToolCallIDs
+                    suppressedCallIDs: suppressedToolCallIDs,
+                    payloadCache: payloadCache
                 )
                 && !isTrailingVerificationReasoning(
                     $0,
@@ -211,13 +291,9 @@ enum ThreadTimelineBuilder {
         }
         var finalReplyRendered = false
         var currentStepGroup: [RunEventRecord] = []
-        var guidedMessages = run.map { currentRun in
-            messages
-                .filter {
-                    $0.role == "user"
-                        && $0.runID == currentRun.id
-                        && $0.id != startingGoalMessageID
-                }
+        var guidedMessages = run.map { _ in
+            messagesForRun
+                .filter { $0.role == "user" && $0.id != startingGoalMessageID }
                 .sorted { lhs, rhs in
                     if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
                     return lhs.id.uuidString < rhs.id.uuidString
@@ -246,7 +322,7 @@ enum ThreadTimelineBuilder {
             // not just the last one. The old "final text only" rule inverted
             // the order when verifyFinalAnswer wrote a draft message.
             if event.kind == .assistantText {
-                let text = decodePayload(event.payloadJSON)["text"] ?? ""
+                let text = payloadCache.payload(for: event)["text"] ?? ""
                 if !text.isEmpty {
                     flushStepGroup()
                     items.append(.assistantMessage(
@@ -298,13 +374,9 @@ enum ThreadTimelineBuilder {
             // older selected run can accidentally display the newest
             // assistant message from another run in the conversation.
             let upperBound = run.endedAt ?? .distantFuture
-            let directlyBound = messages.filter {
-                $0.role == "assistant" && $0.runID == run.id
-            }
-            let assistantMessages = directlyBound.isEmpty ? messages.filter {
-                $0.role == "assistant"
-                    && $0.runID == nil
-                    && $0.createdAt >= run.startedAt
+            let directlyBound = messagesForRun.filter { $0.role == "assistant" }
+            let assistantMessages = directlyBound.isEmpty ? unboundAssistantMessages.filter {
+                $0.createdAt >= run.startedAt
                     && $0.createdAt <= upperBound.addingTimeInterval(2)
             } : directlyBound
             if let latest = assistantMessages.last, !latest.content.isEmpty {
@@ -347,9 +419,8 @@ enum ThreadTimelineBuilder {
         // call ID, so no approval card is pinned independently at the bottom.
         let representedApprovalCallIDs = Set(sortedEvents.compactMap { event -> String? in
             guard event.kind == .toolRequest || event.kind == .toolResult else { return nil }
-            let value = decodePayload(event.payloadJSON)["callID"]
-                ?? decodePayload(event.payloadJSON)["id"]
-                ?? ""
+            let payload = payloadCache.payload(for: event)
+            let value = payload["callID"] ?? payload["id"] ?? ""
             return value.isEmpty ? nil : value
         })
         for approval in pendingApprovals
@@ -368,21 +439,25 @@ enum ThreadTimelineBuilder {
     /// Runtime transitions persist a terminal `.status` before the final
     /// `.assistantText` event. That status belongs in the toolbar, not the
     /// visible event stream, or "Completed" appears above the answer.
-    private static func isTerminalStatusEvent(_ event: RunEventRecord) -> Bool {
+    private static func isTerminalStatusEvent(
+        _ event: RunEventRecord,
+        payloadCache: PayloadCache
+    ) -> Bool {
         guard event.kind == .status else { return false }
-        let state = decodePayload(event.payloadJSON)["state"] ?? ""
+        let state = payloadCache.payload(for: event)["state"] ?? ""
         return RunStateLocalizer.isTerminal(state)
     }
 
     private static func isSuppressedToolProtocolEvent(
         _ event: RunEventRecord,
-        suppressedCallIDs: Set<String>
+        suppressedCallIDs: Set<String>,
+        payloadCache: PayloadCache
     ) -> Bool {
         guard event.kind == .toolRequest
                 || event.kind == .toolResult
                 || event.kind == .approval
                 || event.kind == .autoApproved else { return false }
-        let payload = decodePayload(event.payloadJSON)
+        let payload = payloadCache.payload(for: event)
         let callID = payload["callID"] ?? payload["id"] ?? ""
         return !callID.isEmpty && suppressedCallIDs.contains(callID)
     }
@@ -411,15 +486,12 @@ enum ThreadTimelineBuilder {
     /// already arriving. The toolbar/live projection owns the current state.
     private static func isStaleStatusEvent(
         _ event: RunEventRecord,
-        currentState: String?
+        currentState: String?,
+        payloadCache: PayloadCache
     ) -> Bool {
         guard event.kind == .status, let currentState else { return false }
-        return decodePayload(event.payloadJSON)["state"] != currentState
+        return payloadCache.payload(for: event)["state"] != currentState
     }
 
-    private static func decodePayload(_ json: String) -> [String: String] {
-        guard let data = json.data(using: .utf8) else { return [:] }
-        return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
-    }
 }
 #endif

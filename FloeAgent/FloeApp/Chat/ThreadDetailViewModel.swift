@@ -103,7 +103,9 @@ final class ThreadDetailViewModel: ObservableObject {
     /// The run currently displayed (the one the user expanded / latest).
     @Published var selectedRunID: UUID? { didSet { timelineRevision &+= 1 } }
     /// Persisted events of the selected run, in sequence order.
-    @Published private(set) var events: [RunEventRecord] = []
+    @Published private(set) var events: [RunEventRecord] = [] {
+        didSet { cachedImportantFiles = nil }
+    }
     @Published private(set) var eventsByRun: [UUID: [RunEventRecord]] = [:] { didSet { timelineRevision &+= 1 } }
     @Published private(set) var usageByRun: [UUID: [RunUsageRecord]] = [:]
     @Published private(set) var liveUsage = UsageSnapshot()
@@ -134,6 +136,12 @@ final class ThreadDetailViewModel: ObservableObject {
     }
     /// Monotonic identity of the live composer text. See `draft`.
     private(set) var draftGeneration = 0
+    /// Id membership indexes for the paged-in rows. Merging a page no longer
+    /// rebuilds a dictionary over every loaded row just to dedup: pages are
+    /// sequence-ordered, so only genuinely new rows are appended (earlier
+    /// pages) or prepended (newer live rows).
+    private var messageIDs = Set<UUID>()
+    private var eventIDsByRun: [UUID: Set<UUID>] = [:]
     /// True from the moment `send` consumes the draft until the send's
     /// outcome is known. The composer keeps the sent content in the draft
     /// store while it is set, so a failure can restore it and a success can
@@ -236,8 +244,19 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Files actually read or changed in the selected run, newest first.
     /// Directory listings and deleted paths are intentionally excluded: this
-    /// strip is a focused working set, not a second file tree.
+    /// strip is a focused working set, not a second file tree. The scan is
+    /// computed once per `timelineRevision` (events/messages changes bump
+    /// it) instead of per body evaluation — the strip was an O(events)
+    /// decode on every render pass during streaming.
     var importantFiles: [ImportantFileShortcut] {
+        if let cached = cachedImportantFiles { return cached }
+        let value = computeImportantFiles()
+        cachedImportantFiles = value
+        return value
+    }
+    private var cachedImportantFiles: [ImportantFileShortcut]?
+
+    private func computeImportantFiles() -> [ImportantFileShortcut] {
         let supportedTools: Set<String> = [
             "workspace.readFile", "workspace.inspectFileMetadata",
             "workspace.createFile", "workspace.writeFile", "workspace.applyPatch"
@@ -424,6 +443,9 @@ final class ThreadDetailViewModel: ObservableObject {
                 runs = []
                 messages = []
                 events = []
+                messageIDs = []
+                eventIDsByRun = [:]
+                eventsByRun = [:]
                 stopLiveUpdates()
                 return
             }
@@ -544,7 +566,14 @@ final class ThreadDetailViewModel: ObservableObject {
 
     private func mergeRunHeaders(_ incoming: [RunRecord]) {
         var headers = Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0) })
-        for header in incoming { headers[header.id] = header }
+        var changed = false
+        for header in incoming where headers[header.id] != header {
+            headers[header.id] = header
+            changed = true
+        }
+        // The session reconciliation pump republishes every two seconds;
+        // an unchanged header set must not bump the timeline revision.
+        guard changed else { return }
         runs = headers.values.sorted { ($0.startedAt, $0.id.uuidString) > ($1.startedAt, $1.id.uuidString) }
     }
 
@@ -560,7 +589,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 page = try await center.environment.runStore.recentEvents(runID: runID, limit: 51)
             }
             mergeEventPage(page, runID: runID, before: before)
-            if selectedRunID == runID { events = eventsByRun[runID, default: []] }
+            let selected = eventsByRun[runID, default: []]
+            if selectedRunID == runID, events != selected { events = selected }
         } catch { actionError = presentableError(error, stage: "olderEvents") }
     }
 
@@ -582,15 +612,39 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Record page coverage separately from row identity. Merging only row IDs
     /// loses the cursor for gaps after reconnecting to a bounded live snapshot.
     private func mergeEventPage(_ page: [RunEventRecord], runID: UUID, before: Int? = nil) {
-        let tail = page.suffix(50)
+        let tail = Array(page.suffix(50))
         eventCoverage[runID, default: .init()].record(
             first: tail.first?.sequence, last: tail.last?.sequence,
             before: before, hasEarlier: page.count > 50
         )
-        var merged = Dictionary(eventsByRun[runID, default: []].map { ($0.id, $0) },
-                                uniquingKeysWith: { _, new in new })
-        for event in tail { merged[event.id] = event }
-        eventsByRun[runID] = merged.values.sorted { $0.sequence < $1.sequence }
+        let existing = eventsByRun[runID, default: []]
+        let known = eventIDsByRun[runID, default: []]
+        var added: [RunEventRecord] = []
+        var knownUpdated = known
+        for event in tail where knownUpdated.insert(event.id).inserted {
+            added.append(event)
+        }
+        guard !added.isEmpty else {
+            if eventCoverage[runID]?.earlierCursor != nil { earlierEventRunIDs.insert(runID) }
+            else { earlierEventRunIDs.remove(runID) }
+            return
+        }
+        eventIDsByRun[runID] = knownUpdated
+        let merged: [RunEventRecord]
+        if existing.isEmpty {
+            merged = added
+        } else if added.last!.sequence <= existing.first!.sequence {
+            // An earlier page: its rows precede everything loaded.
+            merged = added + existing
+        } else if existing.last!.sequence <= added.first!.sequence {
+            // A newest page: its rows follow everything loaded.
+            merged = existing + added
+        } else {
+            // Interleave after a reconnect gap: rare; keep the exact
+            // sequence order over the merged superset.
+            merged = (existing + added).sorted { $0.sequence < $1.sequence }
+        }
+        eventsByRun[runID] = merged
         if eventCoverage[runID]?.earlierCursor != nil { earlierEventRunIDs.insert(runID) }
         else { earlierEventRunIDs.remove(runID) }
     }
@@ -601,9 +655,30 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         messageCoverage.record(first: page.messages.first.map(cursor), last: page.messages.last.map(cursor),
                                before: before, hasEarlier: page.hasEarlier)
-        var merged = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-        for message in page.messages { merged[message.id] = message }
-        messages = merged.values.sorted { cursor($0) < cursor($1) }
+        let existing = messages
+        var added: [PersistedMessage] = []
+        for message in page.messages where messageIDs.insert(message.id).inserted {
+            added.append(message)
+        }
+        guard !added.isEmpty else {
+            hasEarlierMessages = messageCoverage.earlierCursor != nil
+            return
+        }
+        let merged: [PersistedMessage]
+        if existing.isEmpty {
+            merged = added
+        } else if cursor(added.last!) <= cursor(existing.first!) {
+            // An earlier page (or an earlier reconnect snapshot): prepend.
+            merged = added + existing
+        } else if cursor(existing.last!) <= cursor(added.first!) {
+            // The newest page: append after everything loaded.
+            merged = existing + added
+        } else {
+            // Out-of-order overlap after reconnect: rare; restore the exact
+            // cursor order over the merged superset.
+            merged = (existing + added).sorted { cursor($0) < cursor($1) }
+        }
+        messages = merged
         hasEarlierMessages = messageCoverage.earlierCursor != nil
     }
 
@@ -1132,7 +1207,10 @@ final class ThreadDetailViewModel: ObservableObject {
                 }) == nil {
                     self.selectedRunID = snapshot.runs.first?.id
                 }
-                self.events = self.selectedRunID.flatMap { self.eventsByRun[$0] } ?? []
+                let selectedEvents = self.selectedRunID.flatMap { self.eventsByRun[$0] } ?? []
+                if self.events != selectedEvents {
+                    self.events = selectedEvents
+                }
                 self.latestPlan = snapshot.latestPlan
                 self.taskChecklist = snapshot.taskChecklist
                 // Keep Plan mode in sync when a plan becomes ready or still
