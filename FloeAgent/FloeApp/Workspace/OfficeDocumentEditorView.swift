@@ -1402,7 +1402,19 @@ final class OfficeFileSession: ObservableObject {
             defer { native.view.isUserInteractionEnabled = true }
             // Bounded: a save that neither acknowledges nor fails in time
             // surfaces a recoverable error instead of an endless "Saving…".
-            try await Self.saveWorkingCopy(native)
+            // A save dispatched while another tracked save is still open is
+            // rejected pre-dispatch (native error 9, the engine's one-save
+            // admission); retry that proven busy signal exactly once after
+            // the activity settles. Generic completion failures (code 8) are
+            // surfaced, never masked: they can be genuine save defects.
+            let saveAttempts = try await OfficeSaveAdmissionRetry.run(
+                onRetry: { [weak self] in self?.recordStage("save.busyRetry", [:]) }
+            ) {
+                try await Self.saveWorkingCopy(native)
+            }
+            if saveAttempts > 1 {
+                recordStage("save.busyRetry.ok", ["attempts": "\(saveAttempts)"])
+            }
             try await workspace.save(session)
             hasSaveConflict = false
             hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)

@@ -395,4 +395,70 @@ struct ApprovalResolutionRaceTests {
         #expect(executor.executedCalls.count == 2)
         #expect(await runtime.state.name == "completed")
     }
+
+    @Test("A policy change cannot resume a parked approval whose descriptor vanished")
+    func policyChangeWithMissingDescriptorKeepsApprovalParked() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "call_descriptorless")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerSideEffectingEcho(in: executor)
+        let backend = RecordingApprovalBackend()
+        let provider = TestFixtures.localhostProvider()
+        // Start under human escalation; the mid-flight policy change would
+        // allow the tool if the re-evaluation consulted the policy.
+        let dynamicPolicy = DynamicApprovalPolicy(HumanApprovalPolicy())
+        let runtime = FloeAgentRuntime(
+            configuration: FloeAgentRuntime.Configuration(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                pauseTimeout: 0.1,
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0,
+                providerRetryJitterRatio: 0
+            ),
+            adapter: adapter,
+            policy: dynamicPolicy,
+            executor: executor,
+            auditSink: MockAuditSink(),
+            checkpointStore: MockCheckpointStore(),
+            sink: MockSink()
+        )
+        let finished = AsyncLock(false)
+
+        let startTask = startFlagged(runtime, finished: finished)
+        guard await waitUntil({ await runtime.state.name == "waitingApproval" }) else {
+            Issue.record("Runtime never requested approval")
+            startTask.cancel()
+            return
+        }
+        // The descriptor disappears mid-flight (tool catalog changed): the
+        // policy re-evaluation must refuse to decide for an unknown tool —
+        // the backend is never consulted and the approval stays parked,
+        // still requiring its own human decision.
+        executor.descriptors["test.echo"] = nil
+        dynamicPolicy.update(to: AutomaticApprovalPolicy(backend: backend))
+        await runtime.approvalPolicyDidChange()
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(backend.actions.isEmpty, "An unknown tool must never reach the policy")
+        #expect(await runtime.state.name == "waitingApproval")
+        #expect(executor.executedCalls.isEmpty)
+
+        executor.descriptors["test.echo"] = ToolCatalog.Descriptor(
+            name: "test.echo", riskLabels: [], isSideEffecting: true
+        )
+        await runtime.resolveApproval(allowDecision(), for: "call_descriptorless")
+        var settled = await waitUntil { finished.withLock { $0 } }
+        if !settled {
+            await runtime.cancel()
+            settled = await waitUntil { finished.withLock { $0 } }
+        }
+        if settled { _ = try? await startTask.value }
+        #expect(settled, "The human decision must still settle the run")
+        #expect(executor.executedCalls.count == 1)
+        #expect(await runtime.state.name == "completed")
+    }
 }

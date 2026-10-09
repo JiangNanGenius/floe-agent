@@ -3618,13 +3618,17 @@ final class ConversationCenter: ObservableObject {
         )
     }
 
-    /// Resolves a pending human approval, then forgets it. The card is
-    /// removed and the resolution is deduplicated before any suspension so
-    /// a double tap can never queue a second delivery; the decision carries
-    /// the call id it was requested for, and the runtime rejects it if the
-    /// pending approval has moved on to a different call.
+    /// Resolves a pending human approval, then forgets it. The approval must
+    /// still be tracked: a stale card copy that arrives after the decision
+    /// (or after a newer escalation replaced it) is rejected at the entry
+    /// check instead of being accepted anew. The card is then removed and
+    /// the resolution is deduplicated before any suspension so a double tap
+    /// can never queue a second delivery; the decision carries the call id
+    /// it was requested for, and the runtime rejects it if the pending
+    /// approval has moved on to a different call.
     func resolve(_ approval: PendingApproval, decision: ApprovalDecision) async {
         guard let service = runServices[approval.runID] else { return }
+        guard pendingApprovals.contains(where: { $0.id == approval.id }) else { return }
         guard approvalsBeingResolved.insert(approval.id).inserted else { return }
         pendingApprovals.removeAll { $0.id == approval.id }
         let resolvedDecision: ApprovalDecision

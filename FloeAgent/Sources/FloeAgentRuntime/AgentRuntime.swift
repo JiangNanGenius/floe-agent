@@ -1174,11 +1174,13 @@ public actor FloeAgentRuntime {
     /// buffers the new decision for the same call, and the post-await check
     /// verifies the run is still waiting on that exact call.
     public func approvalPolicyDidChange() async {
-        guard case .waitingApproval(let waiting) = state else { return }
+        guard case .waitingApproval(let waiting) = state,
+              let descriptor = executor.descriptor(named: waiting.toolCall.toolName)
+        else { return }
         let callID = waiting.toolCall.id
         let action = ProposedAction(
             toolCall: waiting.toolCall,
-            riskLabels: Set(executor.descriptor(named: waiting.toolCall.toolName)?.riskLabels.map(\.rawValue) ?? []),
+            riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
             userRequests: Self.approvalUserRequests(from: messages),
