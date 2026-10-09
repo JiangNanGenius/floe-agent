@@ -366,6 +366,10 @@ final class ConversationCenter: ObservableObject {
     @Published private(set) var goalPresentationRevision = 0
     /// Outstanding human approvals across all live runs.
     @Published private(set) var pendingApprovals: [PendingApproval] = []
+    /// Approval resolutions currently in flight; a second tap on the same
+    /// card (or a stale card copy) is dropped before any suspension so a
+    /// decision can never be delivered twice.
+    private var approvalsBeingResolved: Set<String> = []
     /// Providers, refreshed lazily so the UI can gate the composer honestly.
     @Published private(set) var providers: [ProviderProfile] = []
     /// Enabled models keyed by provider ID.
@@ -3614,9 +3618,15 @@ final class ConversationCenter: ObservableObject {
         )
     }
 
-    /// Resolves a pending human approval, then forgets it.
+    /// Resolves a pending human approval, then forgets it. The card is
+    /// removed and the resolution is deduplicated before any suspension so
+    /// a double tap can never queue a second delivery; the decision carries
+    /// the call id it was requested for, and the runtime rejects it if the
+    /// pending approval has moved on to a different call.
     func resolve(_ approval: PendingApproval, decision: ApprovalDecision) async {
         guard let service = runServices[approval.runID] else { return }
+        guard approvalsBeingResolved.insert(approval.id).inserted else { return }
+        pendingApprovals.removeAll { $0.id == approval.id }
         let resolvedDecision: ApprovalDecision
         if decision.permitsExecution,
            approval.toolCall.toolName.hasPrefix("workspace."),
@@ -3625,8 +3635,8 @@ final class ConversationCenter: ObservableObject {
         } else {
             resolvedDecision = decision
         }
-        await service.resolveApproval(resolvedDecision)
-        pendingApprovals.removeAll { $0.id == approval.id }
+        await service.resolveApproval(resolvedDecision, for: approval.toolCall.id)
+        approvalsBeingResolved.remove(approval.id)
         publishSession(approval.conversationID)
     }
 

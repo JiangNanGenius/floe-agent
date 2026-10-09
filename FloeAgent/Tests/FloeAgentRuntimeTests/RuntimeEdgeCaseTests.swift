@@ -163,7 +163,7 @@ struct AgentRuntimeEdgeTests {
         await runtime.resolveApproval(.allow(
             scope: ApprovalScope(toolName: "test.echo"),
             expiresAt: nil
-        ))
+        ), for: "call_none")
         #expect(await runtime.state.name == "completed")
     }
 

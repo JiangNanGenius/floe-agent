@@ -544,14 +544,23 @@ public actor FloeAgentRuntime {
     /// approval.
     private var approvalContinuation: CheckedContinuation<ApprovalDecision, Never>?
 
-    /// Human decision that arrived after the `.waitingApproval` state was
-    /// published but before the escalation wait installed
-    /// `approvalContinuation`. The actor serializes publish → decision →
-    /// install, so without this mailbox a fast decision used to be dropped
-    /// silently and the run parked forever (observed as an approval that the
-    /// user granted but which never executed, until the run wedged in
-    /// `cancelling` because `cancel()` awaited a parked stream task).
-    private var bufferedApprovalDecision: ApprovalDecision?
+    /// Explicit lifecycle gate for the human-decision hand-off. A decision
+    /// may be buffered only while the escalation that published
+    /// `.waitingApproval` is still publishing (the durable sink write is in
+    /// flight and the continuation is not installed), and only for that
+    /// escalation's exact call; the wait below consumes it before parking.
+    /// Once resolved, the gate goes `.idle`, so a double tap or an old card
+    /// that outlived its escalation can never authorize a different tool.
+    private enum ApprovalGate {
+        case idle
+        case publishing(callID: String)
+        case waiting(callID: String)
+    }
+    private var approvalGate: ApprovalGate = .idle
+
+    /// Decision buffered during `.publishing`, tagged with the call it was
+    /// requested for; consumed only by that same escalation.
+    private var bufferedApprovalDecision: (callID: String, decision: ApprovalDecision)?
 
     /// Set by `cancel()` when an approval escalation may still be in flight
     /// (the state publish has not returned, or `policy.decide` has not
@@ -806,11 +815,12 @@ public actor FloeAgentRuntime {
         cancellationToken.cancel()
         // 3. Expire any pending approval and audit it. The escalation wait may
         // not have installed its continuation yet: the state publish can still
-        // be awaiting its sink, or `policy.decide` can still be running. Flag
-        // the interruption (one-shot, consumed by the wait) and drop any
-        // decision that raced the publish, so a late wait denies instead of
-        // parking on a continuation nobody will resume while `cancel()` owns
-        // the terminal transition.
+        // be awaiting its sink, or `policy.decide` can still be running. Close
+        // the gate (one-shot, consumed by the wait) and drop any decision that
+        // raced the publish, so a late wait denies instead of parking on a
+        // continuation nobody will resume while `cancel()` owns the terminal
+        // transition.
+        approvalGate = .idle
         bufferedApprovalDecision = nil
         approvalWaitInterrupted = true
         if let continuation = approvalContinuation {
@@ -979,9 +989,10 @@ public actor FloeAgentRuntime {
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
         // A resumed run starts a fresh escalation lifecycle: any interruption
-        // flag or buffered decision from a pre-cancel wait must not deny a
-        // legitimately re-asked approval.
+        // flag, gate or buffered decision from a pre-cancel wait must not
+        // deny or authorize a legitimately re-asked approval.
         approvalWaitInterrupted = false
+        approvalGate = .idle
         bufferedApprovalDecision = nil
         replayableToolHistory = checkpoint.replayedToolPairs ?? []
         // A resumed run keeps the cross-task continuation contract: a
@@ -1131,36 +1142,43 @@ public actor FloeAgentRuntime {
     }
 
     /// Human decision arriving for a `.waitingApproval` tool call.
+    /// `callID` must be the id of the call the decision was requested for:
+    /// the current `.waitingApproval` gate matches it exactly, and decisions
+    /// targeting any other call (stale card, double tap after resolution)
+    /// are ignored so they can never authorize a different tool.
     /// waitingApproval → executingTool (allow) or → streamingModel (deny,
     /// result injected back into the model context).
-    public func resolveApproval(_ decision: ApprovalDecision) async {
+    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async {
         guard case .waitingApproval = state else { return }
-        if let continuation = approvalContinuation {
+        switch approvalGate {
+        case .waiting(let current):
+            guard current == callID, let continuation = approvalContinuation else { return }
             approvalContinuation = nil
             continuation.resume(returning: decision)
-        } else if bufferedApprovalDecision == nil {
-            // Racing the escalation wait: the state is already published (the
-            // UI card is visible and durable) but the continuation is not
-            // installed while the transition's sink publish is still in
-            // flight. Buffer the first decision — the wait consumes it
-            // instead of parking. A duplicate tap while buffered is ignored,
-            // keeping the first human decision authoritative.
-            bufferedApprovalDecision = decision
+        case .publishing(let current):
+            // The publish is still in flight (durable sink write); the
+            // continuation is not installed yet. Buffer only a decision for
+            // this exact escalation — the wait below consumes it instead of
+            // parking. An earlier buffered decision stays authoritative.
+            guard current == callID, bufferedApprovalDecision == nil else { return }
+            bufferedApprovalDecision = (callID, decision)
+        case .idle:
+            return
         }
     }
 
     /// Re-evaluates an already visible approval after the user changes the
     /// task mode from the composer. An unchanged human/escalation result
     /// leaves the card in place; allow/deny/stopped resumes the suspended
-    /// continuation exactly once.
+    /// continuation exactly once. Safe during the publish phase: the gate
+    /// buffers the new decision for the same call, and the post-await check
+    /// verifies the run is still waiting on that exact call.
     public func approvalPolicyDidChange() async {
-        guard case .waitingApproval(let waiting) = state,
-              approvalContinuation != nil,
-              let descriptor = executor.descriptor(named: waiting.toolCall.toolName)
-        else { return }
+        guard case .waitingApproval(let waiting) = state else { return }
+        let callID = waiting.toolCall.id
         let action = ProposedAction(
             toolCall: waiting.toolCall,
-            riskLabels: Set(descriptor.riskLabels.map(\.rawValue)),
+            riskLabels: Set(executor.descriptor(named: waiting.toolCall.toolName)?.riskLabels.map(\.rawValue) ?? []),
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
             userRequests: Self.approvalUserRequests(from: messages),
@@ -1175,10 +1193,10 @@ public actor FloeAgentRuntime {
             return
         }
         guard case .waitingApproval(let current) = state,
-              current.toolCall.id == waiting.toolCall.id else { return }
+              current.toolCall.id == callID else { return }
         switch decision {
         case .allow, .deny, .stopped:
-            await resolveApproval(decision)
+            await resolveApproval(decision, for: callID)
         case .escalateToHuman:
             break
         }
@@ -2515,25 +2533,34 @@ public actor FloeAgentRuntime {
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
+            // Arm the gate before publishing so a decision racing the
+            // publish is attributed to this exact escalation.
+            approvalGate = .publishing(callID: call.id)
             await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
             // Consume a decision that raced the publish above, or an
             // interruption installed by `cancel()` while the publish was in
-            // flight, before parking on the continuation. Both checks and the
-            // install below run in one uninterrupted actor turn, so a
-            // decision can never fall between them.
+            // flight, before parking on the continuation. The checks, the
+            // buffered consume and the install below run in one uninterrupted
+            // actor turn, so a decision can never fall between them, and only
+            // a decision tagged with this call's id is consumed.
             let humanDecision: ApprovalDecision
             if approvalWaitInterrupted {
                 approvalWaitInterrupted = false
                 humanDecision = .deny(reason: "cancelled")
-            } else if let buffered = bufferedApprovalDecision {
-                bufferedApprovalDecision = nil
-                humanDecision = buffered
+            } else if let buffered = bufferedApprovalDecision, buffered.callID == call.id {
+                humanDecision = buffered.decision
             } else {
                 humanDecision = await withCheckedContinuation {
                     (continuation: CheckedContinuation<ApprovalDecision, Never>) in
                     approvalContinuation = continuation
+                    approvalGate = .waiting(callID: call.id)
                 }
             }
+            // The escalation lifecycle is over: any later decision — double
+            // tap or a card that outlived this escalation — finds the gate
+            // closed and can never reach a different tool.
+            bufferedApprovalDecision = nil
+            approvalGate = .idle
             guard case .waitingApproval = state else {
                 return .denied(reason: "Cancelled while waiting for approval", decision: "deny:cancelled")
             }

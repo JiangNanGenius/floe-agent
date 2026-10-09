@@ -106,8 +106,8 @@ struct ApprovalResolutionRaceTests {
         }
         // A double tap / duplicate delivery: the first allow is authoritative,
         // the second decision must not execute the tool again or override it.
-        await runtime.resolveApproval(allowDecision())
-        await runtime.resolveApproval(.deny(reason: "duplicate tap"))
+        await runtime.resolveApproval(allowDecision(), for: "call_repeat")
+        await runtime.resolveApproval(.deny(reason: "duplicate tap"), for: "call_repeat")
 
         var settled = await waitUntil { finished.withLock { $0 } }
         if !settled {
@@ -141,7 +141,7 @@ struct ApprovalResolutionRaceTests {
             startTask.cancel()
             return
         }
-        await runtime.resolveApproval(allowDecision())
+        await runtime.resolveApproval(allowDecision(), for: "call_late")
 
         var settled = await waitUntil { finished.withLock { $0 } }
         if !settled {
@@ -154,7 +154,7 @@ struct ApprovalResolutionRaceTests {
         #expect(executor.executedCalls.count == 1)
 
         // A stale tap from a card that outlived its run is a no-op.
-        await runtime.resolveApproval(.deny(reason: "stale tap"))
+        await runtime.resolveApproval(.deny(reason: "stale tap"), for: "call_late")
         #expect(executor.executedCalls.count == 1)
         #expect(await runtime.state.name == "completed")
     }
@@ -167,19 +167,31 @@ struct ApprovalResolutionRaceTests {
     /// silently dropped and the run parked forever — the same *shape* as the
     /// observed evidence (approval event persisted, no execution, run later
     /// wedged in `cancelling`), though the historic logs alone do not prove
-    /// this exact interleaving.
+    /// this exact interleaving. The gate is generation-based so every
+    /// `waitingApproval` publish blocks until its own generation is released.
     private final class GatedApprovalPublishSink: AgentEventSink, @unchecked Sendable {
-        let entered = AsyncLock(false)
-        let release = AsyncLock(false)
-        let cancellingEntered = AsyncLock(false)
+        struct GateState: Sendable {
+            var entered = 0
+            var released = 0
+            var cancellingEntered = false
+        }
+        let gate = AsyncLock(GateState())
+        var entered: Int { gate.withLock { $0.entered } }
+        var cancellingEntered: Bool { gate.withLock { $0.cancellingEntered } }
+        func releaseThrough(_ generation: Int) {
+            gate.withLock { $0.released = max($0.released, generation) }
+        }
         func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
             if state.name == "cancelling" {
-                cancellingEntered.withLock { $0 = true }
+                gate.withLock { $0.cancellingEntered = true }
                 return
             }
             guard state.name == "waitingApproval" else { return }
-            entered.withLock { $0 = true }
-            while !release.withLock({ $0 }) {
+            let generation = gate.withLock { state -> Int in
+                state.entered += 1
+                return state.entered
+            }
+            while gate.withLock({ $0.released < generation }) {
                 try? await Task.sleep(for: .milliseconds(5))
             }
         }
@@ -201,18 +213,18 @@ struct ApprovalResolutionRaceTests {
         let finished = AsyncLock(false)
 
         let startTask = startFlagged(runtime, finished: finished)
-        guard await waitUntil({ sink.entered.withLock { $0 } }) else {
+        guard await waitUntil({ sink.entered >= 1 }) else {
             Issue.record("Runtime never published waitingApproval")
             startTask.cancel()
-            sink.release.withLock { $0 = true }
+            sink.releaseThrough(1)
             return
         }
         // Publish still blocked: state is waitingApproval but the
         // continuation is not installed. A pre-fix runtime drops this
         // decision and parks forever.
-        await runtime.resolveApproval(allowDecision())
+        await runtime.resolveApproval(allowDecision(), for: "call_race_publish")
         #expect(await runtime.state.name == "waitingApproval")
-        sink.release.withLock { $0 = true }
+        sink.releaseThrough(1)
 
         var settled = await waitUntil { finished.withLock { $0 } }
         if !settled {
@@ -241,10 +253,10 @@ struct ApprovalResolutionRaceTests {
         let finished = AsyncLock(false)
 
         let startTask = startFlagged(runtime, finished: finished)
-        guard await waitUntil({ sink.entered.withLock { $0 } }) else {
+        guard await waitUntil({ sink.entered >= 1 }) else {
             Issue.record("Runtime never published waitingApproval")
             startTask.cancel()
-            sink.release.withLock { $0 = true }
+            sink.releaseThrough(1)
             return
         }
         // Start cancellation, then gate the release of the blocked approval
@@ -256,16 +268,16 @@ struct ApprovalResolutionRaceTests {
             await runtime.cancel()
             cancelFinished.withLock { $0 = true }
         }
-        guard await waitUntil({ sink.cancellingEntered.withLock { $0 } }) else {
+        guard await waitUntil({ sink.cancellingEntered }) else {
             Issue.record("Cancel never committed the cancelling transition")
-            sink.release.withLock { $0 = true }
+            sink.releaseThrough(1)
             startTask.cancel()
             return
         }
         // Pre-fix: the continuation is not installed when cancel expires the
         // approval, the escalation later parks forever, and cancel wedges
         // awaiting the parked stream task — the run never leaves cancelling.
-        sink.release.withLock { $0 = true }
+        sink.releaseThrough(1)
 
         let settled = await waitUntil(timeout: 8) { finished.withLock { $0 } }
         if settled { _ = try? await startTask.value }
@@ -279,5 +291,108 @@ struct ApprovalResolutionRaceTests {
         let cancelSettled = await waitUntil(timeout: 8) { cancelFinished.withLock { $0 } }
         #expect(cancelSettled, "cancel() must return instead of awaiting a parked run forever")
         if cancelSettled { _ = try? await cancelTask.value }
+    }
+
+    @Test("An old card's decision never reaches the next escalation: each tool needs its own decision")
+    func oldCardDecisionNeverReachesSecondEscalation() async throws {
+        let adapter = MockAdapter()
+        let first = try TestFixtures.toolCall(id: "call_first")
+        let second = try TestFixtures.toolCall(id: "call_second")
+        adapter.script = [
+            [.toolRequest(first)],
+            [.toolRequest(second)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerSideEffectingEcho(in: executor)
+        let runtime = makeRuntime(adapter: adapter, executor: executor)
+        let finished = AsyncLock(false)
+
+        let startTask = startFlagged(runtime, finished: finished)
+        guard await waitUntil({ await runtime.state.name == "waitingApproval" }) else {
+            Issue.record("Runtime never requested the first approval")
+            startTask.cancel()
+            return
+        }
+        await runtime.resolveApproval(allowDecision(), for: "call_first")
+        guard await waitUntil({ executor.executedCalls.count == 1 }) else {
+            Issue.record("The approved first tool did not execute")
+            startTask.cancel()
+            return
+        }
+        guard await waitUntil({ await runtime.state.name == "waitingApproval" }) else {
+            Issue.record("Runtime never requested the second approval")
+            startTask.cancel()
+            return
+        }
+        // A stale duplicate for the first card must not authorize the
+        // second tool, whether it arrives while parked…
+        await runtime.resolveApproval(allowDecision(), for: "call_first")
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(executor.executedCalls.count == 1)
+        #expect(await runtime.state.name == "waitingApproval")
+        // …and the correct decision for the second call still executes
+        // exactly once.
+        await runtime.resolveApproval(allowDecision(), for: "call_second")
+        var settled = await waitUntil { finished.withLock { $0 } }
+        if !settled {
+            await runtime.cancel()
+            settled = await waitUntil { finished.withLock { $0 } }
+        }
+        if settled { _ = try? await startTask.value }
+        #expect(settled, "The run must settle after the second decision")
+        #expect(executor.executedCalls.count == 2)
+        #expect(await runtime.state.name == "completed")
+    }
+
+    @Test("A stale first-card decision arriving during the second publish is rejected, not buffered")
+    func staleDecisionDuringSecondPublishIsRejected() async throws {
+        let adapter = MockAdapter()
+        let first = try TestFixtures.toolCall(id: "call_pub_first")
+        let second = try TestFixtures.toolCall(id: "call_pub_second")
+        adapter.script = [
+            [.toolRequest(first)],
+            [.toolRequest(second)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerSideEffectingEcho(in: executor)
+        let sink = GatedApprovalPublishSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+        let finished = AsyncLock(false)
+
+        let startTask = startFlagged(runtime, finished: finished)
+        guard await waitUntil({ sink.entered >= 1 }) else {
+            Issue.record("Runtime never published the first approval")
+            startTask.cancel()
+            sink.releaseThrough(99)
+            return
+        }
+        await runtime.resolveApproval(allowDecision(), for: "call_pub_first")
+        sink.releaseThrough(1)
+        guard await waitUntil({ sink.entered >= 2 }) else {
+            Issue.record("Runtime never published the second approval")
+            startTask.cancel()
+            sink.releaseThrough(99)
+            return
+        }
+        // The second publish is blocked. A stale duplicate for the first
+        // call arrives now: it must be rejected by call identity instead of
+        // being buffered for the second escalation.
+        await runtime.resolveApproval(allowDecision(), for: "call_pub_first")
+        sink.releaseThrough(2)
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(executor.executedCalls.count == 1)
+        #expect(await runtime.state.name == "waitingApproval")
+        await runtime.resolveApproval(allowDecision(), for: "call_pub_second")
+        var settled = await waitUntil { finished.withLock { $0 } }
+        if !settled {
+            await runtime.cancel()
+            settled = await waitUntil { finished.withLock { $0 } }
+        }
+        if settled { _ = try? await startTask.value }
+        #expect(settled, "The run must settle after the correct second decision")
+        #expect(executor.executedCalls.count == 2)
+        #expect(await runtime.state.name == "completed")
     }
 }

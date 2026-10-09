@@ -537,9 +537,11 @@ public actor ConversationRunService {
         await persistRecoveryPointReliably(boundary: "externalRecoveryPoint")
     }
 
-    /// Resolves a pending human approval.
-    public func resolveApproval(_ decision: ApprovalDecision) async {
-        await runtime.resolveApproval(decision)
+    /// Resolves a pending human approval. `callID` is the id of the tool call
+    /// the decision was requested for; the runtime ignores decisions whose
+    /// call no longer matches the pending approval.
+    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async {
+        await runtime.resolveApproval(decision, for: callID)
     }
 
     /// Applies a composer permission change to this live run. If the run is

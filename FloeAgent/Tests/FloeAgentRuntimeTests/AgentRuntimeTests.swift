@@ -1102,7 +1102,7 @@ struct AgentRuntimeTests {
         await runtime.resolveApproval(.allow(
             scope: ApprovalScope(toolName: "test.echo"),
             expiresAt: nil
-        ))
+        ), for: "call_2")
         try await startTask.value
         let state = await runtime.state
         #expect(state.name == "completed")
@@ -1187,7 +1187,7 @@ struct AgentRuntimeTests {
         await runtime.resolveApproval(.allow(
             scope: ApprovalScope(toolName: "test.echo"),
             expiresAt: nil
-        ))
+        ), for: "call_scoped")
         try await startTask.value
 
         #expect(executor.executedCalls.isEmpty)
@@ -1221,7 +1221,7 @@ struct AgentRuntimeTests {
         await runtime.resolveApproval(.allow(
             scope: ApprovalScope(toolName: "test.echo", hostID: hostID),
             expiresAt: nil
-        ))
+        ), for: "call_hostpath")
         try await startTask.value
 
         #expect(executor.executedCalls.count == 1)
@@ -1243,7 +1243,7 @@ struct AgentRuntimeTests {
         let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit)
         let startTask = Task { try await runtime.start(goal: "do it") }
         try await waitForState("waitingApproval", in: runtime)
-        await runtime.resolveApproval(.deny(reason: "not now"))
+        await runtime.resolveApproval(.deny(reason: "not now"), for: "call_3")
         try await startTask.value
         #expect(executor.executedCalls.isEmpty)
         // Denial audited.
