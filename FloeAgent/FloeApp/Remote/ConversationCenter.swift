@@ -370,6 +370,10 @@ final class ConversationCenter: ObservableObject {
     /// card (or a stale card copy) is dropped before any suspension so a
     /// decision can never be delivered twice.
     private var approvalsBeingResolved: Set<String> = []
+    /// Cards accepted by the runtime but not yet durably recorded. The card
+    /// stays visible until the run's checkpoint/grant (allow) or audit/result
+    /// (deny) receipt arrives — never on the in-memory decision alone.
+    private var approvalsAwaitingReceipt: [String: PendingApproval] = [:]
     /// Providers, refreshed lazily so the UI can gate the composer honestly.
     @Published private(set) var providers: [ProviderProfile] = []
     /// Enabled models keyed by provider ID.
@@ -3319,6 +3323,9 @@ final class ConversationCenter: ObservableObject {
             activeRuns[runID] = nil
         }
         pendingApprovals.removeAll { conversationIDs.contains($0.conversationID) }
+        approvalsAwaitingReceipt = approvalsAwaitingReceipt.filter {
+            !conversationIDs.contains($0.value.conversationID)
+        }
 
         // The runs are being deleted: no resume is possible, so every frozen
         // content snapshot for the conversation's runs is released now.
@@ -3641,13 +3648,14 @@ final class ConversationCenter: ObservableObject {
     /// being accepted anew. The resolution is deduplicated before any
     /// suspension so a double tap can never queue a second delivery.
     ///
-    /// The card is removed only after the run acknowledges the decision:
-    /// the decision carries the call id it was requested for, the runtime
-    /// rejects a mismatched or stale decision (returning false), and an
-    /// accepted decision is durably recorded through the run's existing
-    /// checkpoint/audit persistence before it can execute. A rejected
-    /// decision never looks accepted — the card stays actionable so the user
-    /// can decide again.
+    /// An accepted decision keeps its card visible until the run durably
+    /// records it (`.approvalResolved` — checkpoint/grant for allow,
+    /// audit/result for deny); the in-memory acknowledgment alone never
+    /// retires the card. If the run moves on without a receipt (e.g. its
+    /// pre-dispatch checkpoint failed and the tool was refused), the card is
+    /// retired by the same sweep so it can never look pending forever. A
+    /// rejected decision never looks accepted — the card stays actionable so
+    /// the user can decide again.
     func resolve(_ approval: PendingApproval, decision: ApprovalDecision) async {
         guard let service = runServices[approval.runID] else { return }
         guard pendingApprovals.contains(where: { $0.id == approval.id }) else { return }
@@ -3663,13 +3671,42 @@ final class ConversationCenter: ObservableObject {
         let accepted = await service.resolveApproval(resolvedDecision, for: approval.toolCall.id)
         approvalsBeingResolved.remove(approval.id)
         let stillPending = await service.snapshot().pendingApproval?.toolCall.id == approval.toolCall.id
-        if accepted || !stillPending {
-            // Accepted: the card is retired. Rejected but the run moved on:
-            // the approval is no longer pending either, so the stale card
-            // goes too. Rejected and still pending: the card stays.
+        if accepted {
+            // The decision is bound to the escalation; the card now waits for
+            // its durable record before retiring.
+            approvalsAwaitingReceipt[approval.id] = approval
+        } else if !stillPending {
+            // Rejected and the run moved on: the approval is no longer
+            // pending, so the stale card goes too. Rejected and still
+            // pending: the card stays actionable.
             pendingApprovals.removeAll { $0.id == approval.id }
         }
         publishSession(approval.conversationID)
+    }
+
+    /// Retires one card on its durable-record receipt (allow: grant persisted
+    /// in the pre-dispatch checkpoint; deny: audited result committed).
+    private func retireApprovalOnReceipt(callID: String) {
+        guard let approval = approvalsAwaitingReceipt.removeValue(forKey: callID) else { return }
+        pendingApprovals.removeAll { $0.id == approval.id }
+        publishSession(approval.conversationID)
+    }
+
+    /// Retires accepted cards whose run moved past the pending approval
+    /// without emitting a receipt (failing checkpoint store, cancellation
+    /// racing the publish, runtime failure). Keeps the card from looking
+    /// pending forever without inventing a receipt.
+    private func sweepResolvedApprovals(service: ConversationRunService) async {
+        guard !approvalsAwaitingReceipt.isEmpty else { return }
+        let pendingCallID = await service.snapshot().pendingApproval?.toolCall.id
+        let runID = service.runID
+        for (id, approval) in approvalsAwaitingReceipt where approval.runID == runID {
+            if id != pendingCallID {
+                approvalsAwaitingReceipt.removeValue(forKey: id)
+                pendingApprovals.removeAll { $0.id == id }
+                publishSession(approval.conversationID)
+            }
+        }
     }
 
     /// The live service for a run, if this center owns one.
@@ -4366,6 +4403,8 @@ final class ConversationCenter: ObservableObject {
                         await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
                     }
                     self.publishSession(snapshot.conversationID)
+                case .approvalResolved(let callID):
+                    self.retireApprovalOnReceipt(callID: callID)
                 case .stateChanged, .approvalRequested,
                      .approvalReviewChanged,
                      .livenessChanged, .providerAttemptChanged,
@@ -4373,6 +4412,7 @@ final class ConversationCenter: ObservableObject {
                      .childRunChanged, .userInputConsumed, .terminal:
                     let snapshot = await service.snapshot()
                     self.apply(snapshot)
+                    await self.sweepResolvedApprovals(service: service)
                     self.publishSession(snapshot.conversationID)
                     if snapshot.isTerminal { break }
                     await self.environment.browserCenter.recoverHandoff(conversationID: snapshot.conversationID, runID: runID)

@@ -19,6 +19,17 @@ import FloeTools
 import FloeSecurity
 import Crypto
 
+/// Durable-record receipt for one human approval decision. Emitted after the
+/// decision's effect reached its awaited persistence point: an allow after
+/// the pre-dispatch checkpoint (which records the grant) and the
+/// executingTool state publish, a deny after its audit/result commit. The UI
+/// retires the approval card on this receipt, never on the in-memory
+/// decision alone.
+public struct ApprovalDecisionReceipt: Sendable, Hashable {
+    public let callID: String
+    public init(callID: String) { self.callID = callID }
+}
+
 /// Sink observing state transitions and normalized events. Implemented by
 /// the UI layer (iOS) and by tests.
 public protocol AgentEventSink: Sendable {
@@ -40,9 +51,19 @@ public protocol AgentEventSink: Sendable {
         _ runtime: FloeAgentRuntime,
         didChangeApprovalReview snapshot: ApprovalReviewSnapshot
     ) async
+    /// Fired after a human approval decision reached its awaited durable
+    /// record (checkpoint/grant for allow, audit/result for deny).
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didRecordApprovalDecision receipt: ApprovalDecisionReceipt
+    ) async
 }
 
 public extension AgentEventSink {
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didRecordApprovalDecision receipt: ApprovalDecisionReceipt
+    ) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
@@ -2704,6 +2725,16 @@ public actor FloeAgentRuntime {
             }
         }
 
+        // The human decision (when this dispatch crossed the approval
+        // boundary) is durably recorded now: the run state was published as
+        // executingTool, and for side-effecting tools the checkpoint above
+        // persisted the grant before any real-world effect. The UI may
+        // retire the approval card on this receipt.
+        await sink?.agentRuntime(
+            self,
+            didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
+        )
+
         // Subagent delegation opens a child slot in the shared budget ledger
         // so the subagent's iterations are charged against this run's total.
         let childBudget = await makeChildBudget(for: call)
@@ -2929,6 +2960,12 @@ public actor FloeAgentRuntime {
             case .denied(let reason, let decision):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
                 await audit(toolCall: call, result: result, decision: decision)
+                // The denial (human, policy or cancel) is durably audited;
+                // the card can retire on this receipt.
+                await sink?.agentRuntime(
+                    self,
+                    didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
+                )
                 resultsByID[call.id] = result
             case .stopped(let reason):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: "Stopped: \(reason)", outputDigest: "")

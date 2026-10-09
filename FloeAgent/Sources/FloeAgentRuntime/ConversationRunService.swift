@@ -352,6 +352,9 @@ public actor ConversationRunService {
         forwarder.onApprovalReview = { [weak self] snapshot in
             await self?.handleApprovalReview(snapshot)
         }
+        forwarder.onApprovalDecisionRecorded = { [weak self] receipt in
+            self?.eventChannel.yield(.approvalResolved(callID: receipt.callID))
+        }
     }
 
     /// Current live snapshot for the UI.
@@ -1939,6 +1942,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
+    var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)
@@ -1973,5 +1977,12 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
         didChangeApprovalReview snapshot: ApprovalReviewSnapshot
     ) async {
         await onApprovalReview?(snapshot)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didRecordApprovalDecision receipt: ApprovalDecisionReceipt
+    ) async {
+        await onApprovalDecisionRecorded?(receipt)
     }
 }

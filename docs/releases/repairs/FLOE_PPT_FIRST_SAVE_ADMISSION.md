@@ -1,87 +1,86 @@
 # PPT selected-object first save — admission-race hardening
 
-Date: 2026-10-09 · Branch: `codex/content-upgrade-20261009` · No device claim: local
-evidence is state/JS-level; the real-engine save/reopen verification belongs to
-the cloud real-engine qualification (fixture and exact steps below).
+Date: 2026-10-09 · Branch: `codex/content-upgrade-20261009` · No release performed.
 
-## Observed symptom (previous qualification)
+## Observed symptom (previous qualification, historical)
 
-Editing a PPTX in the native Office host (Impress via the pinned Collabora
-engine), the FIRST save intermittently failed while an object/shape was
-selected; deselecting allowed the save to succeed. Save/reopen of the actual
-PPTX bytes is the only accepted verification — no screenshot or PDF
-substitution.
+Editing a PPTX in the native Office host, the FIRST save intermittently
+failed while an object/shape was selected; deselecting allowed the save to
+succeed. Save/reopen of the actual PPTX bytes is the only accepted
+verification — no screenshot or PDF substitution.
 
-## Mechanism (verified against the pinned sources)
+**Attribution status:** the historical logs do not identify the failure
+code, and the failure was not reproduced locally (see below). What is
+verified from the pinned sources is a *mechanism class* — not proof that it
+caused the observed failure.
 
-The engine admits one save at a time. `DocumentBroker::manualSave` refuses an
-explicit save while a save activity (the autosave that follows an edit, e.g.
-inserting/selecting a shape) is in flight, and the embedding overlay
-(`FloeAgent/ThirdParty/Collabora/patches/ios-embedding-boundaries.patch`)
-converts that refusal into `floeSaveRequestRejected` →
-`saveReceipts reject:` → completion `NO` → native error
-**8** "Office could not complete this save." (`FloeOfficeNative.mm` ~2014-2045).
-A retry after the activity settles — exactly what deselect-then-save does —
-succeeds.
+## Known source mechanism (verified against pinned sources)
 
-Error 8 is **generic**: it also covers kit sequence-save failures and JS
-dispatch rejection. It is therefore not safe to blanket-retry, and this
-change does not: a first-save defect keeps surfacing as `save.failed` with
-domain/code evidence.
+The pinned engine admits one save at a time. `DocumentBroker::manualSave`
+(source-pinned, `wsd/DocumentBroker.cpp`) refuses an explicit save while a
+save activity is in flight, and the embedding overlay
+(`ThirdParty/Collabora/patches/ios-embedding-boundaries.patch`) converts that
+refusal into `floeSaveRequestRejected` → `saveReceipts reject:` → completion
+`NO` → native **error 8** "Office could not complete this save."
+(`FloeOfficeNative.mm` ~2014-2045). Error 8 is **generic** — it also covers
+kit sequence-save failures and JS dispatch rejection — and native **error 9**
+is the distinct "a save is already in progress" pre-dispatch signal. The
+historical cause (admission race vs sequence-save failure vs JS rejection)
+stays **unproven** until a failing run records the `save.failed` domain/code.
 
 ## Change (app side, existing channels only)
 
-- `OfficeSaveAdmissionRetry` (`FloeAgent/FloeApp/Workspace/OfficeSaveAdmissionRetry.swift`):
+- `OfficeSaveAdmissionRetry` (`FloeApp/Workspace/OfficeSaveAdmissionRetry.swift`):
   retries a save **exactly once**, only for the proven pre-dispatch busy
-  signal — native **code 9** ("a save is already in progress"), which
-  `saveReceipts begin:` raises while another tracked save receipt is open and
-  which the overlay guarantees for every frontend Save route. The settle delay
-  throws, so cancellation prevents the second attempt. Generic failures
-  (code 8, conflicts, timeouts) propagate unchanged.
+  signal (native code 9). The settle delay throws, so cancellation prevents
+  the second attempt. Generic failures (code 8, conflicts, timeouts) propagate
+  unchanged — a real first-save defect still surfaces as `save.failed` with
+  its code, and the busy-retry stage evidence (`save.busyRetry` /
+  `save.busyRetry.ok`) records which path ran.
 - `OfficeDocumentEditorView.save(returnToPreview:)` runs the working-copy
-  flush through that policy and records `save.busyRetry` /
-  `save.busyRetry.ok` stages for qualification.
-- A reason-preserving bridge change (distinguishing admission rejection from
-  sequence-save failure at the receipt) requires rebuilding the pinned native
-  host and is **not** part of this patch; the `save.failed` stage domain/code
-  is the deciding evidence if the observed failure proves to be code 8.
+  flush through that policy.
+- This is hardening of the observed *contract* (retry-after-settle succeeds),
+  not a claim that the historical selected-object failure is repaired.
 
-## Local evidence
+## Local verification attempt (2026-10-09, measured outcome)
 
-- `OfficeBridgeStateTests` → `FloeApp.OfficeSaveAdmissionRetry` (5 tests):
-  classification (only code 9 retryable; code 7/8/30/foreign domains refused),
-  clean single attempt, busy-retry-then-succeed, generic code 8 propagates
-  without retry, persistent busy stops at two attempts, **cancellation during
-  the settle delay prevents the second attempt**.
-- Headless bridge regression (`FloeAgent/scripts/test_office_explicit_save.py`,
-  Node `vm` against the shipped script): after a failed save the bridge stays
-  armed, a repeated UI_Save posts a new native save, rapid taps coalesce, and
-  the watchdog bounds a lost handoff — the "save remains admissible after
-  failure" contract the retry relies on.
-- Full app test-bundle run (iPad Air 13-inch M4 simulator): suite passes
-  except four environment-dependent tests that fail identically before and
-  after this diff (see the delivery report).
+A dedicated app-hosted qualification test now exists:
+`Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift` — opens the pinned
+`synthetic floe-sim-qual.pptx` editable through the production
+session/intent path, inserts an image attachment (the engine leaves the
+inserted object selected — the reported precondition), saves in place,
+reopens and byte-verifies persistence. When the engine runtime is available
+it performs the full save/reopen check; when unavailable it skips with the
+recorded reason (it never passes or fails for the wrong cause).
 
-## Real-engine verification (cloud workflow — required before claiming a fix)
+Local result in this checkout: the pinned simulator host **links** and its
+resources embed (`cool.html`, `rc`, `fundamentalrc`, `program/`, `share/`,
+`ICU.dat` verified in the built app), but the engine runtime aborts during
+`prepare` with native error 4 and leaves an empty profile — the local
+`simulator-36792170654-kit` predates the current overlay pin, and the kit
+thread swallows the startup exception. The qualified real-engine runner is
+the cloud workflow (`.github/workflows/office-floe-simulator.yml`), which
+verifies/installs the pinned host before running. This boundary is recorded
+honestly; the test is the exact fixture for the native step wherever the
+qualified engine runs.
 
-Fixture: `floe-sim-qual.pptx` via `OfficeRealEngineUITests` save phases.
+## Fixture for the native verification step (primary / cloud runner)
 
-1. Open the deck in the Notes Office editor → Edit. Insert a shape and leave
-   it selected.
-2. Tap Save. Accept: `save.ok`, or `save.busyRetry` + `save.busyRetry.ok`.
-   If `save.failed` appears, record domain/code — code 9 retried-and-failed or
-   code 8 decides the follow-up (receipt-reason bridge vs kit investigation).
-3. Reopen the deck from a cold preview and byte-compare against the working
-   copy (the existing save/reopen phase does this): the inserted shape and
-   title edit must survive.
-4. Control run: repeat with the shape deselected; both runs must reach
-   `save.ok` and reopen equal.
+1. Run `FloeAppTests` → `FloeApp.OfficeSelectedObjectSave` /
+   `selectedObjectFirstSaveAndReopen` on a build whose engine runtime starts
+   (the cloud real-engine workflow's simulator). Accept: test passes with
+   `save.ok` or `save.busyRetry.ok` stages and differing post-save bytes.
+2. If `saveInPlace()` returns false, the issue carries `session.error` and
+   the durable stage trace records the `save.failed` domain/code — code 9
+   (busy, retried-and-failed) or code 8 (generic: admission vs
+   sequence-save vs JS rejection) decides the follow-up. A code-8 admission
+   refusal reproduced here would justify the reason-preserving receipt
+   bridge (requires rebuilding the pinned native host; deferred, not waived).
+3. Manual UI equivalent: Notes → import `floe-sim-qual.pptx` → Edit → insert
+   an image (stays selected) → Save → expect success without deselecting →
+   force-quit and reopen → image persists.
 
-## Historical attribution note
+## Related
 
-The stalled-run logs from 2026-10-08 (`promo-shell-stall-20261008.jsonl`) prove
-an approval that never executed after the user approved; they do **not** prove
-the exact interleaving. The deterministically reproduced race (decision or
-cancellation arriving between the `.waitingApproval` state publish and the
-continuation install) is fixed and regression-tested; the historical root
-cause remains **unproven** and is tracked in the approval-stall evidence.
+- Approval-stall evidence (same handoff era): see
+  `Local/Private/evidence/content-upgrade-20261009/approval-stall-evidence.md`.
