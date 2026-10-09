@@ -24,6 +24,15 @@ The illustrated manuals share 20 top-level chapters and four real-interface imag
 
 新增文档 / New documents: this checklist; the archived engineering chronology; [screenshot provenance](assets/guide/README.md). The inventory below records the original document set.
 
+## 上线确认 / Deployment verification
+
+- 官网版本 `1.2.23-docs` 已上线，健康端点、首页、双语手册、创作工具页及两个添加源入口通过检查。30 个公开文件在本地、源站与公网的 SHA-256 一致。
+- 中英文首页和手册以实际 CSS 视口 390、1024、1440 像素检查；13 组稳定布局读数（含手机创作工具页）均无页面横向溢出。目录折叠、菜单键盘关闭和焦点恢复、表单错误提示通过。
+- 前端 27 项测试、生成器 7 项、README 链接 5 项、分发工具 12 项通过；TypeScript、生产构建、Go 四个测试包及云端字节还原通过。未执行完整 iOS 发布构建。
+- 部署前镜像与配置、两次部署日志及前后截图已保留；检查通过，没有触发回滚。临时传输文件和打包目录按任务范围清理。
+
+Website `1.2.23-docs` is live. Thirty files match across local output, origin and public HTTPS; thirteen settled responsive checks have no page overflow. Relevant frontend, documentation, distribution and Go checks pass. Recovery images/configuration and before/after evidence are retained; no rollback was required.
+
 ## 清单 / Inventory
 
 “核对保留”表示索引、链接与适用范围审查，无行为变化依据时保留原说明；不表示重新执行其全部命令或资格测试。Reviewed/retained means documentation scope/link review, not re-execution of every historical check.

@@ -32,3 +32,9 @@ Checked: ZIP integrity, bundle/version/UUID, no signing materials, PDFium linkag
 - 分发工具测试 12 项通过。发现并修正一项既有测试的固定字符串前缀假设，使其识别新增的本地产物保护条件；保留原有恢复限制，没有修改发布工作流的既有安全条件。
 
 Original focused App evidence retains its scope. Full App CI, real-provider behavior and physical-device acceptance are not claimed. External beta approval remains pending. Twelve distribution-tool tests pass after correcting an outdated guard-prefix assertion; release safety predicates remain unchanged.
+
+## Gitee 同步边界 / Gitee synchronization scope
+
+2026-10-09 的自动同步已更新发行记录及 7 份小型校验/说明附件，但仓库附件配额不足，IPA 未完成镜像。[同步记录](https://github.com/JiangNanGenius/floe-agent/actions/runs/37876066497)。Gitee 不作为 App 下载加速或自动回退；完整 IPA 使用已验证的 GitHub 发布地址，Feather/AltStore 源同样指向 GitHub。未删除历史资产以腾出配额。
+
+The October 9 automatic mirror updated release metadata and seven small verification/documentation assets, but the attachment quota prevented the IPA mirror. Use the verified GitHub download; the source feed also points to GitHub. Existing historical assets were preserved.
