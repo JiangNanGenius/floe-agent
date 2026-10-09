@@ -18,9 +18,13 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-[![Floe on iPad — start a task from the app home screen.](docs/assets/guide/home.jpg)](docs/USER_GUIDE.md)
+## See Floe at work
 
-*Floe on iPad — start a task from the app home screen.*
+[![Watch Floe: AI tasks, Office, code, Notes and Canvas](docs/assets/video/floe-en.jpg)](https://www.youtube.com/watch?v=OXHntB2dyvo)
+
+[Watch on YouTube](https://www.youtube.com/watch?v=OXHntB2dyvo) · [Bilibili 中文版](https://www.bilibili.com/video/BV1YBpx6QEe1/) · [Explore all features](https://www.floe-agent.com/features)
+
+Go from a request to editable documents, spreadsheets and slides. Run a webpage, annotate a PDF and organize creative work on Canvas. See the everyday workflow in 95 seconds.
 
 <p align="center">
   <a href="https://www.floe-agent.com/add/feather"><img src="docs/images/badge-add-to-feather.svg" alt="Add to Feather" width="190"></a>

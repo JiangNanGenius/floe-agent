@@ -18,9 +18,13 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-[![Floe iPad 应用首页：从任务开始工作。](docs/assets/guide/home.jpg)](docs/USER_GUIDE.zh-CN.md)
+## 看看 Floe 如何工作
 
-*Floe iPad 应用首页：从任务开始工作。*
+[![播放 Floe 功能展示：AI 任务、Office、代码、手记与画布](docs/assets/video/floe-zh.jpg)](https://www.bilibili.com/video/BV1YBpx6QEe1/)
+
+[在 B 站观看中文版](https://www.bilibili.com/video/BV1YBpx6QEe1/) · [Watch on YouTube](https://www.youtube.com/watch?v=OXHntB2dyvo) · [探索全部功能](https://www.floe-agent.com/features)
+
+从一句要求开始，生成并编辑文档、处理表格与演示稿、运行网页、批注 PDF，再把素材整理到画布。95 秒演示，了解 Floe 的日常工作流程。
 
 <p align="center">
   <a href="https://www.floe-agent.com/add/feather"><img src="docs/images/badge-add-to-feather.svg" alt="添加到 Feather" width="190"></a>
