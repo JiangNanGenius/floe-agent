@@ -55,14 +55,20 @@ recorded reason (it never passes or fails for the wrong cause).
 
 Local result in this checkout: the pinned simulator host **links** and its
 resources embed (`cool.html`, `rc`, `fundamentalrc`, `program/`, `share/`,
-`ICU.dat` verified in the built app), but the engine runtime aborts during
-`prepare` with native error 4 and leaves an empty profile — the local
-`simulator-36792170654-kit` predates the current overlay pin, and the kit
-thread swallows the startup exception. The qualified real-engine runner is
-the cloud workflow (`.github/workflows/office-floe-simulator.yml`), which
-verifies/installs the pinned host before running. This boundary is recorded
-honestly; the test is the exact fixture for the native step wherever the
-qualified engine runs.
+`ICU.dat` verified in the built app), and the kit manifest
+(`native-host-simulator.json`) records the CURRENT overlay pin
+(`overlaySHA256 4ac3cc3b…` matches `engine.lock.json`) — the kit is not
+stale. The engine runtime nevertheless aborts during `prepare` with native
+error 4 and leaves an empty profile; the kit thread swallows the startup
+exception. The newer matching workflow artifact (`office-floe-simulator-host`
+from run 36843561563) was attempted via `gh run download` into a task-owned
+path but the download was reset by the network twice — recorded as the
+measured fallback, not a verification boundary. The qualified real-engine
+runner is the cloud workflow (`.github/workflows/office-floe-simulator.yml`),
+which verifies/installs the pinned host before running. Where the engine
+does not start, the app-hosted test verifies the product surfaces its
+truthful unavailable state; the full save/reopen check runs wherever the
+qualified engine starts.
 
 ## Fixture for the native verification step (primary / cloud runner)
 
