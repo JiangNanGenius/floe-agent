@@ -2,21 +2,14 @@
 //  CADWorkbenchPanels.swift
 //  FloeCADKit
 //
-//  Floe-owned workbench chrome for the native side of the CAD editor: assembly
-//  instances/constraints/DOF/interference, drawing pages/views/dimensions/
-//  exports, ShapeScript records and mesh operations. These views are the
-//  interactive confirmation surface for the same services the `cad.document`
-//  tool drives; mutating assistant proposals still require the grant banner.
-//
-//  Every user-visible string goes through `FloeCADStrings` so the host app can
-//  route it to its localization catalog; without a host localizer the English
-//  fallback is shown (never a bare key).
+//  Floe-owned workbench chrome shared by the CAD panels (assembly, drawings,
+//  ShapeScript, mesh) and the single toolbar-toggled tools sheet. The panels
+//  themselves live in their own files; this file owns the localization hook,
+//  the 44pt action grid, structured report primitives and the tools sheet.
 //
 //  iPad-first layout contract (CUA 2026-10-10): the tools sheet fills its
-//  width (no fixed 330pt column), every action is a real 44pt hit target, and
-//  reports are NATIVE structured lists (instances / constraints / DOF /
-//  conflicts / pages / records / results) with meaningful empty states —
-//  never raw JSON, never a nested tiny popover.
+//  width, every action is a real 44pt hit target, and reports are NATIVE
+//  structured lists with meaningful empty states — never raw JSON.
 //
 //  SPDX-License-Identifier: MPL-2.0
 //
@@ -39,27 +32,148 @@ public enum FloeCADStrings {
         return value.isEmpty ? fallback : value
     }
 
-    /// Localized format string with `%@` substitution (same placeholder
-    /// convention as the host catalog), e.g.
-    /// `FloeCADStrings.format("cad.error.import", "Couldn't import “%@”.", name)`.
+    /// Localized format substitution. Supports the host catalog's `%@`
+    /// convention AND typed printf specifiers (`%d`, `%lld`, `%ld`, `%i`,
+    /// `%u`, `%f`, `%.2f`) left to right. This exists because the same key is
+    /// shared with native code that formats byte counts with `%lld`; a catalog
+    /// value must never reach the user with a raw conversion token.
     nonisolated public static func format(_ key: String, _ fallback: String,
                                           _ arguments: Any...) -> String {
-        let template = text(key, fallback)
+        formatTemplate(text(key, fallback), arguments: arguments)
+    }
+
+    /// Specifier-aware substitution, split out so it is unit-testable without
+    /// a host localizer. Arguments are consumed left to right. A specifier with
+    /// no argument left (or a malformed specifier) is emitted verbatim rather
+    /// than trapping — a raw conversion token is still better than a crash.
+    public static func formatTemplate(_ template: String, arguments: [Any]) -> String {
         var result = ""
-        var iterator = arguments.makeIterator()
+        var args = arguments
         var index = template.startIndex
         while index < template.endIndex {
-            let next = template.index(after: index)
-            if template[index] == "%", next < template.endIndex, template[next] == "@",
-               let argument = iterator.next() {
-                result += String(describing: argument)
-                index = template.index(after: next)
-            } else {
+            guard template[index] == "%" else {
                 result.append(template[index])
-                index = next
+                index = template.index(after: index)
+                continue
             }
+            guard let specifier = Parse.scanSpecifier(template, from: index) else {
+                result.append(template[index])
+                index = template.index(after: index)
+                continue
+            }
+            let token = String(template[index..<specifier.end])
+            if specifier.conversion == "%" {
+                result.append("%")
+                index = specifier.end
+                continue
+            }
+            index = specifier.end
+            guard !args.isEmpty else {
+                result += token
+                continue
+            }
+            let argument = args.removeFirst()
+            result += Parse.render(argument: argument, conversion: specifier.conversion,
+                                   rawToken: token)
         }
         return result
+    }
+
+    private enum Parse {
+        struct Scanned { let end: String.Index; let conversion: String }
+
+        /// Parse one printf-style conversion starting at the `%`. Returns nil
+        /// when this `%` does not begin a recognized specifier.
+        static func scanSpecifier(_ template: String, from start: String.Index) -> Scanned? {
+            var cursor = template.index(after: start)
+            func take(_ set: Set<Character>) {
+                while cursor < template.endIndex, set.contains(template[cursor]) {
+                    cursor = template.index(after: cursor)
+                }
+            }
+            // Flags
+            take(["-", "+", " ", "#", "0"])
+            // Width (digits or *)
+            if cursor < template.endIndex, template[cursor] == "*" {
+                cursor = template.index(after: cursor)
+            } else {
+                take(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
+            }
+            // Precision
+            if cursor < template.endIndex, template[cursor] == "." {
+                cursor = template.index(after: cursor)
+                if cursor < template.endIndex, template[cursor] == "*" {
+                    cursor = template.index(after: cursor)
+                } else {
+                    take(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
+                }
+            }
+            // Length modifiers
+            take(["h", "l", "j", "z", "t", "L"])
+            guard cursor < template.endIndex else { return nil }
+            let conversion = template[cursor]
+            let allowed: Set<Character> = ["@", "d", "i", "o", "u", "x", "X",
+                                           "e", "E", "f", "F", "g", "G", "a",
+                                           "A", "c", "C", "s", "S", "%"]
+            guard allowed.contains(conversion) else { return nil }
+            let end = template.index(after: cursor)
+            return Scanned(end: end, conversion: String(conversion))
+        }
+
+        static func render(argument: Any, conversion: String, rawToken: String) -> String {
+            // Object/string conversion always uses the description.
+            if conversion == "@" || conversion == "s" || conversion == "S" {
+                if let s = argument as? String { return s }
+                return String(describing: argument)
+            }
+            if conversion == "c" || conversion == "C" {
+                if let scalar = (argument as? NSNumber)?.intValue,
+                   let us = UnicodeScalar(scalar) {
+                    return String(us)
+                }
+                return String(describing: argument)
+            }
+            // Numeric conversions. Swift Int/Double/etc. bridge to NSNumber.
+            guard let number = argument as? NSNumber else {
+                // A non-numeric argument for a numeric specifier degrades to a
+                // description rather than trapping or dropping the value.
+                return String(describing: argument)
+            }
+            switch conversion {
+            case "d", "i":
+                return "\(number.intValue)"
+            case "u", "o", "x", "X":
+                let value = number.uint64Value
+                switch conversion {
+                case "o": return String(value, radix: 8)
+                case "x": return String(value, radix: 16)
+                case "X": return String(value, radix: 16).uppercased()
+                default: return "\(value)"
+                }
+            case "f", "F", "e", "E", "g", "G", "a", "A":
+                // Honour an explicit precision (e.g. %.2f) so measurements keep
+                // their formatting; otherwise a clean shortest value.
+                if let precision = precision(of: rawToken) {
+                    return String(format: "%.\(precision)\(conversion)",
+                                  number.doubleValue)
+                }
+                return String(number.doubleValue)
+            default:
+                return String(describing: argument)
+            }
+        }
+
+        private static func precision(of token: String) -> Int? {
+            guard let dot = token.firstIndex(of: ".") else { return nil }
+            var digits = ""
+            var cursor = token.index(after: dot)
+            let numerals: Set<Character> = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+            while cursor < token.endIndex, numerals.contains(token[cursor]) {
+                digits.append(token[cursor])
+                cursor = token.index(after: cursor)
+            }
+            return Int(digits)
+        }
     }
 
     /// SwiftUI label text.
@@ -70,15 +184,15 @@ public enum FloeCADStrings {
 
 // MARK: - Shared chrome
 
-/// The 44-point hit-target floor the rest of the app follows; the CUA
-/// measured 19–21pt panel buttons before this modifier existed.
-private func panelHitTarget(_ button: some View) -> some View {
+/// The 44-point hit-target floor the rest of the app follows.
+func panelHitTarget(_ button: some View) -> some View {
     button
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Rectangle())
 }
 
-private struct PanelActionButton: View {
+/// A labelled 44pt action.
+struct PanelActionButton: View {
     let title: LocalizedStringKey
     let systemImage: String
     var disabled = false
@@ -99,7 +213,7 @@ private struct PanelActionButton: View {
 
 /// Action rows WRAP (adaptive grid) instead of squeezing — an HStack would
 /// overflow or shrink buttons below the 44pt floor on narrower sheets.
-private struct PanelActionGrid<Content: View>: View {
+struct PanelActionGrid<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -112,7 +226,7 @@ private struct PanelActionGrid<Content: View>: View {
 }
 
 /// A small status badge (stale/suppressed/conflict/...) used across panels.
-private struct PanelBadge: View {
+struct PanelBadge: View {
     let text: String
     var tint: Color = .secondary
 
@@ -127,8 +241,8 @@ private struct PanelBadge: View {
 }
 
 /// Readable, styled outcome line. Errors are complete sentences in the system
-/// font — raw JSON never reaches the user (CUA 2026-10-10).
-private struct PanelOutcome: View {
+/// font — raw JSON never reaches the user.
+struct PanelOutcome: View {
     let reply: [String: Any]
 
     private var message: String? {
@@ -155,7 +269,7 @@ private struct PanelOutcome: View {
 }
 
 /// Empty state with an actionable hint, instead of a blank panel.
-private struct PanelEmptyState: View {
+struct PanelEmptyState: View {
     let text: String
     let hint: String
 
@@ -174,9 +288,9 @@ private struct PanelEmptyState: View {
     }
 }
 
-/// Panel container: fills the tools-sheet width on iPad (no fixed narrow
-/// column), scrolls its content, keeps the test identifier.
-private struct WorkbenchPanelChrome<Content: View>: View {
+/// Panel container: fills the tools-sheet width on iPad, scrolls its content,
+/// keeps the test identifier.
+struct WorkbenchPanelChrome<Content: View>: View {
     let title: String
     let identifier: String
     @ViewBuilder var content: Content
@@ -198,7 +312,7 @@ private struct WorkbenchPanelChrome<Content: View>: View {
 }
 
 /// One labelled section inside a panel report.
-private struct PanelSection<Content: View>: View {
+struct PanelSection<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 
@@ -212,578 +326,7 @@ private struct PanelSection<Content: View>: View {
     }
 }
 
-// MARK: - Assembly
-
-private struct AssemblyReport {
-    struct Instance {
-        var id: String
-        var name: String
-        var dof: Int
-        var stale: Bool
-        var hidden: Bool
-        var independentCopy: Bool
-    }
-    struct Constraint {
-        var id: String
-        var kind: String
-        var value: Double?
-        var suppressed: Bool
-        var valid: Bool
-        var conflicting: Bool
-    }
-    var instances: [Instance] = []
-    var constraints: [Constraint] = []
-    var assemblyDOF = 0
-    var unconstrainedCount = 0
-    var conflictCount = 0
-    var invalidCount = 0
-
-    init(reply: [String: Any] = [:]) {
-        assemblyDOF = reply["assemblyDOF"] as? Int ?? 0
-        unconstrainedCount = (reply["unconstrainedInstances"] as? [String])?.count ?? 0
-        let conflicts = Set(reply["conflicts"] as? [String] ?? reply["conflicting"] as? [String] ?? [])
-        conflictCount = conflicts.count
-        let invalid = Set(reply["invalidRefs"] as? [String] ?? [])
-        invalidCount = invalid.count
-        instances = (reply["instances"] as? [[String: Any]] ?? []).map { row in
-            Instance(id: row["id"] as? String ?? "",
-                     name: row["name"] as? String ?? "—",
-                     dof: row["dof"] as? Int ?? 0,
-                     stale: row["stale"] as? Bool ?? false,
-                     hidden: row["hidden"] as? Bool ?? false,
-                     independentCopy: row["independentCopy"] as? Bool ?? false)
-        }
-        constraints = (reply["constraints"] as? [[String: Any]] ?? []).map { row in
-            Constraint(id: row["id"] as? String ?? "",
-                       kind: row["kind"] as? String ?? "",
-                       value: row["value"] as? Double,
-                       suppressed: row["isSuppressed"] as? Bool
-                           ?? row["suppressed"] as? Bool ?? false,
-                       valid: row["valid"] as? Bool ?? true,
-                       conflicting: conflicts.contains(row["id"] as? String ?? ""))
-        }
-    }
-}
-
-private func localizedConstraintKind(_ raw: String) -> String {
-    let key = "cad.constraint.\(raw)"
-    let fallback: String
-    switch raw {
-    case "fixed": fallback = "Fixed"
-    case "coaxial": fallback = "Coaxial"
-    case "planarAlign": fallback = "Planar align"
-    case "distance": fallback = "Distance"
-    case "angle": fallback = "Angle"
-    default: fallback = raw
-    }
-    return FloeCADStrings.text(key, fallback)
-}
-
-struct CADAssemblyPanelView: View {
-    let document: FloeCADDocument
-    @Bindable var viewModel: EditorViewModel
-    @State private var report = AssemblyReport()
-    @State private var outcome: [String: Any] = Dictionary<String, Any>()
-    @State private var busy = false
-
-    private var selectedBodyID: UUID? {
-        viewModel.selection.first?.raw
-    }
-
-    var body: some View {
-        WorkbenchPanelChrome(title: FloeCADStrings.text("cad.workbench.panel.assembly", "Assembly"),
-                             identifier: "CADAssemblyPanel") {
-            PanelActionGrid {
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.place", "Place instance"),
-                                  systemImage: "cube.transparent", disabled: busy) {
-                    run { service in
-                        guard let bodyID = selectedBodyID ?? document.session.document.bodies.first?.id.raw else {
-                            return ["ok": false,
-                                    "message": FloeCADStrings.text("cad.ui.workbench.selectBody",
-                                                                   "Select a body in the viewport first.")]
-                        }
-                        return await service.handleAsync(action: "addInstance",
-                                                         args: ["bodyID": bodyID.uuidString])
-                    }
-                }
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.solve", "Solve"),
-                                  systemImage: "arrow.triangle.branch", disabled: busy) {
-                    run { await $0.handleAsync(action: "solve", args: [:]) }
-                }
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.dof", "DOF"),
-                                  systemImage: "number", disabled: busy) {
-                    run { await $0.handleAsync(action: "dof", args: [:]) }
-                }
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.interference", "Interference"),
-                                  systemImage: "square.on.square.dashed", disabled: busy) {
-                    run { await $0.handleAsync(action: "interference", args: ["toleranceMM": 1e-6]) }
-                }
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.assembly.source", "Update sources"),
-                                  systemImage: "arrow.triangle.2.circlepath", disabled: busy) {
-                    run { await $0.handleAsync(action: "sourceUpdate", args: [:]) }
-                }
-            }
-
-            if busy { ProgressView().controlSize(.small) }
-
-            PanelOutcome(reply: outcome)
-
-            assemblyReportContent
-        }
-        .task { refresh() }
-    }
-
-    @ViewBuilder
-    private var assemblyReportContent: some View {
-        if report.instances.isEmpty {
-            PanelEmptyState(
-                text: FloeCADStrings.text("cad.workbench.assembly.empty", "No assembly instances yet."),
-                hint: FloeCADStrings.text("cad.workbench.assembly.emptyHint",
-                                          "Select a body in the viewport and tap “Place instance”; constraints are solved against the placed instances."))
-        } else {
-            PanelSection(title: FloeCADStrings.text("cad.workbench.assembly.instances", "Instances")) {
-                ForEach(report.instances, id: \.id) { instance in
-                    HStack(spacing: 8) {
-                        Text(instance.name)
-                            .font(.callout)
-                        Spacer(minLength: 4)
-                        if instance.hidden {
-                            PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.hidden", "hidden"))
-                        }
-                        if instance.independentCopy {
-                            PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.copy", "copy"))
-                        }
-                        if instance.stale {
-                            PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
-                                       tint: .orange)
-                        }
-                        PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.dofEach", "%@ DOF", "\(instance.dof)"),
-                                   tint: instance.dof == 0 ? .green : .blue)
-                    }
-                    .accessibilityIdentifier("CADAssemblyInstance-\(instance.id)")
-                }
-            }
-            if !report.constraints.isEmpty {
-                PanelSection(title: FloeCADStrings.text("cad.workbench.assembly.constraints", "Constraints")) {
-                    ForEach(report.constraints, id: \.id) { constraint in
-                        HStack(spacing: 8) {
-                            Text(localizedConstraintKind(constraint.kind))
-                                .font(.callout)
-                            if let value = constraint.value {
-                                Text("· \(Self.valueFormatter.string(from: NSNumber(value: value)) ?? "\(value)")")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 4)
-                            if constraint.suppressed {
-                                PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.suppressed", "suppressed"))
-                            }
-                            if !constraint.valid {
-                                PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.invalid", "invalid ref"),
-                                           tint: .red)
-                            }
-                            if constraint.conflicting {
-                                PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.conflict", "conflict"),
-                                           tint: .red)
-                            }
-                        }
-                        .accessibilityIdentifier("CADAssemblyConstraint-\(constraint.id)")
-                    }
-                }
-            }
-            PanelSection(title: FloeCADStrings.text("cad.workbench.assembly.results", "Results")) {
-                HStack(spacing: 10) {
-                    PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.dofTotal", "%@ DOF total", "\(report.assemblyDOF)"),
-                               tint: report.assemblyDOF == 0 ? .green : .blue)
-                    if report.unconstrainedCount > 0 {
-                        PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.unconstrained", "%@ unconstrained", "\(report.unconstrainedCount)"),
-                                   tint: .orange)
-                    }
-                    if report.conflictCount > 0 {
-                        PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.conflicts", "%@ conflicts", "\(report.conflictCount)"),
-                                   tint: .red)
-                    }
-                    if report.invalidCount > 0 {
-                        PanelBadge(text: FloeCADStrings.format("cad.workbench.assembly.invalid", "%@ invalid refs", "\(report.invalidCount)"),
-                                   tint: .red)
-                    }
-                }
-            }
-        }
-    }
-
-    private static let valueFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.maximumFractionDigits = 3
-        return formatter
-    }()
-
-    private func refresh() {
-        run { await $0.handleAsync(action: "report", args: [:]) }
-    }
-
-    private func run(_ operation: @escaping @MainActor (CADAssemblyService) async -> [String: Any]) {
-        busy = true
-        Task { @MainActor in
-            let service = CADAssemblyService(document: document)
-            let reply = await operation(service)
-            if reply["mutated"] as? Bool == true {
-                _ = await document.save()
-            }
-            outcome = reply
-            if reply["mutated"] as? Bool == true || reply["instanceCount"] != nil {
-                // Mutations (place/solve/source update) change the report;
-                // re-read it so the structured lists stay current.
-                let fresh = await service.handleAsync(action: "report", args: [:])
-                report = AssemblyReport(reply: fresh)
-            }
-            busy = false
-        }
-    }
-}
-
-// MARK: - Drawings
-
-struct CADDrawingPanelView: View {
-    let document: FloeCADDocument
-    @Bindable var viewModel: EditorViewModel
-    @State private var pages: [[String: Any]] = []
-    @State private var outcome: [String: Any] = Dictionary<String, Any>()
-    @State private var exportURL: URL?
-    @State private var busy = false
-
-    private var selectedBodyID: UUID? {
-        viewModel.selection.first?.raw ?? document.session.document.bodies.first?.id.raw
-    }
-
-    var body: some View {
-        WorkbenchPanelChrome(title: FloeCADStrings.text("cad.workbench.panel.drawing", "Drawings"),
-                             identifier: "CADDrawingPanel") {
-            PanelActionGrid {
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.drawing.sheet", "Standard sheet"),
-                                  systemImage: "doc.on.doc", disabled: busy) {
-                    run { service in
-                        guard let bodyID = selectedBodyID else {
-                            return ["ok": false,
-                                    "message": FloeCADStrings.text("cad.ui.workbench.selectBody",
-                                                                   "Select a body in the viewport first.")]
-                        }
-                        return service.handle(action: "standardSheet",
-                                              args: ["bodyID": bodyID.uuidString, "title": document.name])
-                    }
-                }
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.drawing.refresh", "Refresh"),
-                                  systemImage: "arrow.clockwise", disabled: busy) {
-                    refresh()
-                }
-            }
-
-            if busy { ProgressView().controlSize(.small) }
-            PanelOutcome(reply: outcome)
-
-            if pages.isEmpty {
-                PanelEmptyState(
-                    text: FloeCADStrings.text("cad.workbench.drawing.empty", "No drawing pages yet."),
-                    hint: FloeCADStrings.text("cad.workbench.drawing.emptyHint",
-                                              "Pick a body and tap “Standard sheet”; pages carry their own scale, paper and dimensions, and mark themselves stale when the model moves."))
-            } else {
-                PanelSection(title: FloeCADStrings.text("cad.workbench.drawing.pages", "Pages")) {
-                    ForEach(pages.indices, id: \.self) { index in
-                        let page = pages[index]
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 8) {
-                                Text(page["name"] as? String ?? "—")
-                                    .font(.callout.weight(.semibold))
-                                Text("· \(page["kind"] as? String ?? "")")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                                if let scale = page["scale"] as? Int, scale > 0 {
-                                    Text("· 1:\(scale)")
-                                        .font(.callout)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 4)
-                                if page["stale"] as? Bool == true {
-                                    PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
-                                               tint: .orange)
-                                }
-                            }
-                            HStack(spacing: 8) {
-                                panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.project", "View")) {
-                                    project(page)
-                                }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small))
-                                panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.pdf", "PDF")) {
-                                    export(page, format: "pdf")
-                                }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small))
-                                panelHitTarget(Button("SVG") { export(page, format: "svg") }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small))
-                                panelHitTarget(Button("DXF") { export(page, format: "dxf") }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small))
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .accessibilityIdentifier("CADDrawingPage-\(page["id"] as? String ?? "\(index)")")
-                    }
-                }
-            }
-            if let exportURL {
-                ShareLink(item: exportURL) {
-                    Label(FloeCADStrings.label("cad.workbench.drawing.share", "Share export"),
-                          systemImage: "square.and.arrow.up")
-                }
-                .font(.callout)
-            }
-        }
-        .task { refresh() }
-    }
-
-    private func refresh() {
-        let service = CADDrawingService(document: document)
-        let reply = service.handle(action: "pages", args: [:])
-        pages = reply["pages"] as? [[String: Any]] ?? []
-        outcome = reply
-    }
-
-    private func project(_ page: [String: Any]) {
-        guard let id = page["id"] as? String, let uuid = UUID(uuidString: id) else { return }
-        let service = CADDrawingService(document: document)
-        let reply = service.pageGeometry(pageID: uuid)
-        outcome = reply
-    }
-
-    private func export(_ page: [String: Any], format: String) {
-        guard let id = page["id"] as? String, let uuid = UUID(uuidString: id) else { return }
-        busy = true
-        Task { @MainActor in
-            let service = CADDrawingService(document: document)
-            do {
-                let data = try service.exportData(pageID: uuid, format: format)
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(document.name)-\(page["kind"] as? String ?? "page").\(format)")
-                try data.write(to: url, options: [.atomic])
-                exportURL = url
-                outcome = ["ok": true,
-                           "message": FloeCADStrings.format("cad.workbench.drawing.exported", "%@ export ready (%lld bytes).", format.uppercased(), data.count)]
-            } catch {
-                outcome = ["ok": false, "message": error.localizedDescription]
-            }
-            busy = false
-        }
-    }
-
-    private func run(_ operation: @escaping @MainActor (CADDrawingService) -> [String: Any]) {
-        busy = true
-        Task { @MainActor in
-            let service = CADDrawingService(document: document)
-            let reply = operation(service)
-            if reply["mutated"] as? Bool == true {
-                _ = await document.save()
-            }
-            outcome = reply
-            pages = service.handle(action: "pages", args: [:])["pages"] as? [[String: Any]] ?? []
-            busy = false
-        }
-    }
-}
-
-// MARK: - ShapeScript
-
-struct CADScriptPanelView: View {
-    let document: FloeCADDocument
-    @State private var source = "cube { size 10 }"
-    @State private var scripts: [[String: Any]] = []
-    @State private var outcome: [String: Any] = Dictionary<String, Any>()
-    @State private var busy = false
-
-    var body: some View {
-        WorkbenchPanelChrome(title: FloeCADStrings.text("cad.workbench.panel.script", "ShapeScript"),
-                             identifier: "CADScriptPanel") {
-            TextEditor(text: $source)
-                .font(.system(.callout, design: .monospaced))
-                .frame(minHeight: 110, maxHeight: 180)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
-                .accessibilityIdentifier("CADScriptSource")
-            PanelActionGrid {
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.script.preview", "Preview"),
-                                  systemImage: "eye", disabled: busy) {
-                    run { await $0.handle(action: "preview", args: ["source": self.source]) }
-                }
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.script.apply", "Apply"),
-                                  systemImage: "checkmark.circle", disabled: busy) {
-                    run { await $0.handle(action: "apply", args: ["source": self.source, "name": "Script"]) }
-                }
-                PanelActionButton(title: FloeCADStrings.label("cad.workbench.script.list", "Records"),
-                                  systemImage: "list.bullet", disabled: busy) {
-                    run { await $0.handle(action: "list", args: [:]) }
-                }
-            }
-
-            if busy { ProgressView().controlSize(.small) }
-            PanelOutcome(reply: outcome)
-
-            if scripts.isEmpty {
-                PanelEmptyState(
-                    text: FloeCADStrings.text("cad.workbench.script.empty", "No script records yet."),
-                    hint: FloeCADStrings.text("cad.workbench.script.emptyHint",
-                                              "Write ShapeScript on the left and Preview it — applying creates a body bound to its source so later manual edits are detected, never overwritten silently."))
-            } else {
-                PanelSection(title: FloeCADStrings.text("cad.workbench.script.records", "Records")) {
-                    ForEach(scripts.indices, id: \.self) { index in
-                        let script = scripts[index]
-                        panelHitTarget(
-                            Button {
-                                if let id = script["id"] as? String {
-                                    run { await $0.handle(action: "apply", args: ["id": id]) }
-                                }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Text(script["name"] as? String
-                                         ?? FloeCADStrings.text("cad.ui.script.untitled", "Script"))
-                                        .font(.callout)
-                                    if script["stale"] as? Bool == true {
-                                        PanelBadge(text: FloeCADStrings.text("cad.workbench.badge.stale", "stale"),
-                                                   tint: .orange)
-                                    } else if script["outputBodyID"] != nil {
-                                        PanelBadge(text: FloeCADStrings.text("cad.workbench.script.applied", "applied"),
-                                                   tint: .green)
-                                    }
-                                    Spacer(minLength: 4)
-                                    if let triangles = script["outputTriangleCount"] as? Int {
-                                        Text(FloeCADStrings.format("cad.workbench.script.triangles", "%@ triangles", "\(triangles)"))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        )
-                        .accessibilityIdentifier("CADScriptRecord-\(script["id"] as? String ?? "\(index)")")
-                    }
-                }
-            }
-        }
-        .task { run { await $0.handle(action: "list", args: [:]) } }
-    }
-
-    private func run(_ operation: @escaping @MainActor (CADScriptService) async -> [String: Any]) {
-        busy = true
-        Task { @MainActor in
-            let service = CADScriptService(document: document)
-            let reply = await operation(service)
-            if reply["mutated"] as? Bool == true {
-                _ = await document.save()
-            }
-            if let list = reply["scripts"] as? [[String: Any]] {
-                scripts = list
-            }
-            outcome = reply
-            busy = false
-        }
-    }
-}
-
-// MARK: - Mesh
-
-struct CADMeshPanelView: View {
-    let document: FloeCADDocument
-    @Bindable var viewModel: EditorViewModel
-    @State private var outcome: [String: Any] = Dictionary<String, Any>()
-    @State private var busy = false
-
-    private var selectedBodyIDs: [UUID] {
-        viewModel.selection.map(\.raw)
-    }
-
-    var body: some View {
-        WorkbenchPanelChrome(title: FloeCADStrings.text("cad.workbench.panel.mesh", "Mesh"),
-                             identifier: "CADMeshPanel") {
-            PanelBadge(text: FloeCADStrings.format("cad.workbench.mesh.selected", "%@ bodies selected", "\(selectedBodyIDs.count)"),
-                       tint: selectedBodyIDs.count >= 2 ? .green : .secondary)
-            if document.session.document.bodies.isEmpty {
-                PanelEmptyState(
-                    text: FloeCADStrings.text("cad.workbench.mesh.empty", "No bodies to work with yet."),
-                    hint: FloeCADStrings.text("cad.workbench.mesh.emptyHint",
-                                              "Sketch and extrude a solid first; mesh operations run on tessellations and keep analytic B-rep bodies intact unless you explicitly force a downgrade."))
-            } else {
-                PanelActionGrid {
-                    PanelActionButton(title: FloeCADStrings.label("cad.workbench.mesh.union", "Union"),
-                                      systemImage: "plus.square.on.square", disabled: busy || selectedBodyIDs.count < 2) {
-                        boolean("union")
-                    }
-                    PanelActionButton(title: FloeCADStrings.label("cad.workbench.mesh.subtract", "Subtract"),
-                                      systemImage: "minus.square", disabled: busy || selectedBodyIDs.count < 2) {
-                        boolean("subtract")
-                    }
-                    PanelActionButton(title: FloeCADStrings.label("cad.workbench.mesh.intersect", "Intersect"),
-                                      systemImage: "arrow.triangle.merge", disabled: busy || selectedBodyIDs.count < 2) {
-                        boolean("intersect")
-                    }
-                }
-                PanelActionGrid {
-                    PanelActionButton(title: FloeCADStrings.label("cad.workbench.mesh.combine", "Combine"),
-                                      systemImage: "square.on.square", disabled: busy || selectedBodyIDs.count < 2) {
-                        combine()
-                    }
-                    PanelActionButton(title: FloeCADStrings.label("cad.workbench.mesh.repair", "Repair"),
-                                      systemImage: "wrench.and.screwdriver", disabled: busy || selectedBodyIDs.isEmpty) {
-                        single("repair", extra: ["tolerance": 1e-4])
-                    }
-                    PanelActionButton(title: FloeCADStrings.label("cad.workbench.mesh.simplify", "Simplify"),
-                                      systemImage: "arrow.down.right.and.arrow.up.left", disabled: busy || selectedBodyIDs.isEmpty) {
-                        single("simplify", extra: ["ratio": 0.5])
-                    }
-                    PanelActionButton(title: FloeCADStrings.label("cad.workbench.mesh.normals", "Normals"),
-                                      systemImage: "arrow.up.and.down.and.arrow.left.and.right", disabled: busy || selectedBodyIDs.isEmpty) {
-                        single("recomputeNormals", extra: [:])
-                    }
-                }
-            }
-            if busy { ProgressView().controlSize(.small) }
-            PanelOutcome(reply: outcome)
-        }
-    }
-
-    private func boolean(_ op: String) {
-        let target = selectedBodyIDs[0].uuidString
-        let tools = selectedBodyIDs.dropFirst().map(\.uuidString)
-        perform(["action": "boolean", "op": op, "target": target, "tools": tools])
-    }
-
-    private func combine() {
-        perform(["action": "combine", "bodyIDs": selectedBodyIDs.map(\.uuidString)])
-    }
-
-    private func single(_ action: String, extra: [String: Any]) {
-        guard let bodyID = selectedBodyIDs.first else {
-            outcome = ["ok": false,
-                       "message": FloeCADStrings.text("cad.workbench.mesh.selectOne", "Select a body first.")]
-            return
-        }
-        var args: [String: Any] = ["action": action, "bodyID": bodyID.uuidString]
-        for (key, value) in extra { args[key] = value }
-        perform(args)
-    }
-
-    private func perform(_ args: [String: Any]) {
-        busy = true
-        Task { @MainActor in
-            let reply = CADMeshService(document: document).handle(action: args["action"] as? String ?? "boundary",
-                                                                  args: args)
-            if reply["mutated"] as? Bool == true {
-                _ = await document.save()
-            }
-            outcome = reply
-            busy = false
-        }
-    }
-}
+// MARK: - Tools sheet
 
 /// The single toolbar-toggled panel with a mode picker, so the editor gains
 /// one overlay/button instead of four.
@@ -798,8 +341,7 @@ struct CADWorkbenchToolsPanel: View {
     @State private var canvasMessage: String?
 
     var body: some View {
-        // NavigationStack gives the sheet an explicit Close control (drag-to-
-        // dismiss alone failed the CUA accessibility/narrow-layout review).
+        // NavigationStack gives the sheet an explicit Close control.
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -840,8 +382,7 @@ struct CADWorkbenchToolsPanel: View {
     /// The Canvas entry path, visible in the same panel the other CAD tools
     /// live in: "Apply to canvas" updates the ORIGINAL bound node;
     /// "Make variant" creates a new node FROM a bound one; "Add to canvas"
-    /// creates the FIRST node in an explicitly picked destination — no
-    /// first-canvas guessing, no contradictory dead end.
+    /// creates the FIRST node in an explicitly picked destination.
     @ViewBuilder
     private var canvasSection: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -968,5 +509,4 @@ struct CADWorkbenchToolsPanel: View {
         }
     }
 }
-
 #endif

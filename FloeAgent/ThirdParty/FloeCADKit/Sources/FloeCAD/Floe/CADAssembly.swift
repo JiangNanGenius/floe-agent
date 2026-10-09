@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import simd
 
 /// Rigid placement of an instance: translation + unit quaternion (+ uniform
 /// scale, normally 1). Double precision because constraint solves and
@@ -168,5 +169,41 @@ public nonisolated struct CADAssemblySolveResult: Sendable, Equatable {
         self.invalidReferences = invalidReferences
         self.conflicting = conflicting
         self.solved = solved
+    }
+}
+
+// MARK: - Placement
+
+extension CADTransform {
+    /// The kernel TRS placement of this instance transform (uniform scale),
+    /// mirroring `CADAssemblySolver.transform3D(from:)` so the VIEWPORT and the
+    /// solver/derived code compute the identical placement. Non-finite or
+    /// degenerate rotations fall back to identity rotation rather than
+    /// poisoning the render matrix.
+    nonisolated func placement3D() -> Transform3D {
+        let length = simd_length(rotation)
+        let quaternion = length > 1e-12
+            ? simd_quatd(ix: rotation.x / length,
+                         iy: rotation.y / length,
+                         iz: rotation.z / length,
+                         r: rotation.w / length)
+            : simd_quatd(ix: 0, iy: 0, iz: 0, r: 1)
+        return Transform3D(translation: position,
+                           rotation: quaternion,
+                           scale: scale.x)
+    }
+
+    /// True when this transform is finite with positive uniform scale — the
+    /// same validity rule the assembly solver applies before placement.
+    nonisolated var isPlaceable: Bool {
+        guard position.x.isFinite, position.y.isFinite, position.z.isFinite,
+              rotation.x.isFinite, rotation.y.isFinite, rotation.z.isFinite, rotation.w.isFinite,
+              scale.x.isFinite, scale.y.isFinite, scale.z.isFinite,
+              scale.x > 0, scale.y > 0, scale.z > 0 else { return false }
+        let spread = max(scale.x, max(scale.y, scale.z))
+        guard abs(scale.x - scale.y) <= 1e-9 * spread,
+              abs(scale.y - scale.z) <= 1e-9 * spread,
+              simd_length(rotation) > 1e-12 else { return false }
+        return true
     }
 }

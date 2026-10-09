@@ -50,6 +50,24 @@ enum CADQualificationFixture {
             {"op":"feature.extrude","args":{"sketchID":"\(holeSketchID)","seedPoint":[50,30],
              "distance":40,"symmetric":true,"boolean":"subtract","booleanTargets":["\(bodyID)"]}}
             """)
+            // Two SEPARATED assembly instances of the same immutable source
+            // body (shared mesh, own transforms) so the primary CUA can see
+            // placement, selection and hide/update behavior in the viewport.
+            let assembly = CADAssemblyService(document: document)
+            let first = assembly.handle(action: "addInstance", args: [
+                "bodyID": bodyID,
+                "name": "Plate A",
+                "transform": ["position": [0.0, 0.0, 0.0]],
+            ])
+            let second = assembly.handle(action: "addInstance", args: [
+                "bodyID": bodyID,
+                "name": "Plate B",
+                "transform": ["position": [140.0, 0.0, 0.0]],
+            ])
+            guard first["ok"] as? Bool == true, second["ok"] as? Bool == true else {
+                throw CADDocumentError(code: "fixture_assembly_failed",
+                                       message: "The fixture assembly instances could not be placed.")
+            }
             let save = await document.save()
             guard save.succeeded else {
                 throw CADDocumentError(code: "fixture_save_failed",

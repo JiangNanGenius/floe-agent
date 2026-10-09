@@ -24,6 +24,9 @@
 //
 
 import XCTest
+import Metal
+import MetalKit
+import Euclid
 @testable import FloeCAD
 
 #if DEBUG
@@ -155,6 +158,83 @@ final class CADPerformanceBaselineTests: XCTestCase {
     /// Large fixture: 600 bodies.
     func testLargeFixtureBaseline() async throws {
         try await measureFixture(name: "large-30x20", columns: 30, rows: 20)
+    }
+
+    // MARK: - Viewport render baseline
+
+    /// First-paint / frame-latency / resident-memory baseline for the REAL
+    /// viewport render path: the coordinator builds the Metal pipelines from
+    /// the package library, the scene carries the kernel bodies AND assembly
+    /// instances, and every frame is a full offscreen render
+    /// (`makeThumbnailPNG`). These numbers are the SIMULATOR CPU/GPU baseline
+    /// of this host — not a physical-device frame-time claim, and not an
+    /// improvement claim over any earlier build. Sanity bounds only.
+    @MainActor
+    func testViewportFirstPaintFrameAndMemoryBaseline() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal device unavailable in this environment.")
+        }
+        let url = workDir.appendingPathComponent("viewport-baseline.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "ViewportBaseline")
+        defer { document.close() }
+
+        // 48 bodies straight from the kernel mesh path (independent of the
+        // feature rebuild already covered above), plus two assembly
+        // instances sharing the first body's mesh.
+        for index in 0..<48 {
+            var transform = Transform3D.identity
+            transform.translation = SIMD3(Double(index % 8) * 15,
+                                          Double(index / 8) * 15, 0)
+            let body = Body(name: "V\(index)", transform: transform, primitive: nil,
+                            euclidMesh: .cube(center: Vector(0, 0, 0),
+                                              size: Vector(10, 10, 10)),
+                            revision: 1)
+            document.session.perform(AddBodyCommand(body: body, title: "Perf \(index)"))
+        }
+        let source = try XCTUnwrap(document.session.document.bodies.first)
+        let assembly = CADAssemblyService(document: document)
+        for placement in [[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]] {
+            let reply = assembly.handle(action: "addInstance", args: [
+                "bodyID": source.id.raw.uuidString,
+                "transform": ["position": placement],
+            ])
+            XCTAssertEqual(reply["ok"] as? Bool, true, reply["message"] as? String ?? "")
+        }
+
+        let viewModel = document.viewModel()
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 480, height: 360))
+        let coordinator = ViewportCoordinator(viewModel: viewModel)
+        coordinator.attach(to: view)
+        let renderer = try XCTUnwrap(coordinator.renderer, "attach must build a renderer")
+        XCTAssertEqual(viewModel.scene.bodies.filter { $0.assemblyInstanceID != nil }.count, 2,
+                       "the render scene must carry the assembly instances")
+
+        let memoryBefore = residentBytes()
+        var firstPaintMS: Double?
+        var frameMS: [Double] = []
+        let frameCount = 10
+        for frame in 0..<frameCount {
+            let start = Date()
+            let png = renderer.makeThumbnailPNG(width: 480, height: 360)
+            let elapsed = Date().timeIntervalSince(start) * 1000
+            XCTAssertNotNil(png, "offscreen viewport render must produce bytes")
+            XCTAssertFalse(png?.isEmpty ?? true)
+            if frame == 0 { firstPaintMS = elapsed }
+            frameMS.append(elapsed)
+        }
+        let memoryAfter = residentBytes()
+        let average = frameMS.reduce(0, +) / Double(frameMS.count)
+        let worst = frameMS.max() ?? 0
+        NSLog("[CADPerf] viewport: firstPaint=%.1fms avgFrame=%.1fms worstFrame=%.1fms "
+              + "rssBefore=%.0fMB rssAfter=%.0fMB bodies=49",
+              firstPaintMS ?? -1, average, worst,
+              Double(memoryBefore) / 1e6, Double(memoryAfter) / 1e6)
+        XCTAssertLessThan(average, 500,
+                          "average simulator offscreen frame must stay under a generous bound")
+        XCTAssertLessThan(worst, 2000,
+                          "no simulator offscreen frame may take seconds")
+        XCTAssertLessThan(Double(memoryAfter) - Double(memoryBefore), 2_000_000_000,
+                          "resident growth must stay bounded")
     }
 }
 #endif

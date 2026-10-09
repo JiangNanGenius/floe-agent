@@ -920,6 +920,7 @@ enum WorkspaceCanvasRegistry {
     }
 
     @discardableResult
+    @MainActor
     static func duplicate(canvasID: UUID) throws -> UUID {
         let source = try projectURL(canvasID: canvasID, createDirectory: false)
         var project = try decodeProject(at: source)
@@ -933,8 +934,36 @@ enum WorkspaceCanvasRegistry {
         project.agentConversationIDsByDocument = [:]
         project.createdAt = Date()
         project.updatedAt = Date()
+        forkCanvasOwnedCADPackages(in: &project, from: canvasID, to: copyID)
         try encodeProject(project, to: projectURL(canvasID: copyID, createDirectory: true))
         return copyID
+    }
+
+    /// The duplicate of a canvas owns MUTABLE copies of its native CAD
+    /// packages: every `canvas-cad:<old>/<file>` binding is forked to
+    /// `canvas-cad:<new>/<copy>` so editing the copy can never write through
+    /// to the original canvas's document. A package that cannot be copied
+    /// keeps its binding (the node render still shows) — never a silently
+    /// dangling reference to a deleted file.
+    @MainActor
+    private static func forkCanvasOwnedCADPackages(
+        in project: inout CanvasProject, from: UUID, to: UUID
+    ) {
+        let pathKey = CADCanvasNodePlanner.MetadataKeys.sourcePath
+        for documentIndex in project.documents.indices {
+            for nodeIndex in project.documents[documentIndex].nodes.indices {
+                guard let key = project.documents[documentIndex].nodes[nodeIndex]
+                    .metadata[pathKey],
+                      let parsed = CanvasCADStorage.parse(key: key),
+                      parsed.canvasID == from else { continue }
+                guard let copied = try? CanvasCADStorage.copyPackage(
+                    fromCanvas: from, fileName: parsed.packageFileName, toCanvas: to) else {
+                    continue
+                }
+                project.documents[documentIndex].nodes[nodeIndex].metadata[pathKey] =
+                    CanvasCADStorage.key(canvasID: to, packageFileName: copied)
+            }
+        }
     }
 
     static func move(canvasID: UUID, to workspace: WorkspaceRecord) throws {
@@ -1268,6 +1297,9 @@ private enum CanvasLifecycleService {
         )
         try await environment.canvasSyncOperationStore.enqueue(operation)
         try WorkspaceCanvasRegistry.delete(canvasID: project.id)
+        // Remove the canvas-owned native CAD package container (separate from
+        // the canvas project JSON and the material-library renders).
+        CanvasCADStorage.removePackages(canvasID: project.id)
         // Release every reachable reference (current assets PLUS CAD
         // revision history). An asset referenced twice is decremented twice.
         var perAsset: [UUID: Int] = [:]
@@ -5320,6 +5352,7 @@ struct WorkspaceCanvasView: View {
     @State private var imageEditorPresentation: CanvasImageEditorPresentation?
     @State private var videoEditorPresentation: CanvasVideoEditorPresentation?
     @State private var drawingEditorPresentation: CanvasDrawingEditorPresentation?
+    @State private var nativeCADPresentation: CanvasNativeCADPresentation?
     @StateObject private var drawingSessions = CanvasDrawingSessionRegistry()
     @State private var importedVideoExports = Set<URL>()
     @State private var showsMediaJobs = false
@@ -5532,6 +5565,12 @@ struct WorkspaceCanvasView: View {
                     onCancel: { directorPresentation = nil }
                 )
             }
+        }
+        .fullScreenCover(item: $nativeCADPresentation) { presentation in
+            CanvasNativeCADEditor(
+                presentation: presentation,
+                assetStore: environment.creativeAssetStore,
+                onClose: { nativeCADPresentation = nil })
         }
         .fileExporter(
             isPresented: Binding(
@@ -6150,7 +6189,6 @@ struct WorkspaceCanvasView: View {
                     canvasID: store.project.id,
                     documentID: canvasDocument.id,
                     position: CanvasPoint(x: canvasPoint(visibleCanvasCenter).x, y: canvasPoint(visibleCanvasCenter).y),
-                    workspaceCenter: environment.workspaceCenter,
                     assetStore: environment.creativeAssetStore)
                 if let nodeID = result.nodeID {
                     selectedNodeIDs = [nodeID]
@@ -6231,6 +6269,16 @@ struct WorkspaceCanvasView: View {
                     Button("workspace.workspace_canvas_view.open_drawing_cad_editor", systemImage: "ruler") {
                         openDrawingEditor(selected)
                     }
+                }
+                if selectedNodeIDs.count == 1,
+                   let selected = store.selectedDocument?.nodes.first(where: {
+                       selectedNodeIDs.contains($0.id)
+                           && CADCanvasNodePlanner.isNativeCADNode($0)
+                   }) {
+                    Button("workspace.workspace_canvas_view.open_native_cad_editor", systemImage: "cube.transparent") {
+                        openNativeCADEditor(selected)
+                    }
+                    .accessibilityIdentifier("canvas.openNativeCAD")
                 }
                 if selectedNodeIDs.count == 1,
                    let document = store.selectedDocument,
@@ -7075,6 +7123,9 @@ struct WorkspaceCanvasView: View {
                 if CanvasDrawingNodePlanner.isDrawingNode(node), !node.isLocked {
                     selectedNodeIDs = [node.id]
                     openDrawingEditor(node)
+                } else if CADCanvasNodePlanner.isNativeCADNode(node), !node.isLocked {
+                    selectedNodeIDs = [node.id]
+                    openNativeCADEditor(node)
                 } else if node.kind == .generationTask
                     || node.metadata["generationState"] == "failed" {
                     openGenerationConfiguration(for: node)
@@ -8625,6 +8676,28 @@ struct WorkspaceCanvasView: View {
         Task { await CanvasDrawingDraftRecoveryCenter.shared.retryAll() }
         drawingEditorPresentation = CanvasDrawingEditorPresentation(
             id: node.id, documentID: store.project.selectedDocumentID)
+    }
+
+    /// Opens the native parametric CAD workbench for a canvas-owned CAD node.
+    /// The node binds its editable package by an explicit
+    /// `canvas-cad:<canvas>/<package>` key (resolved to the app-owned on-device
+    /// container); a missing/unbound package is reported rather than opening
+    /// an empty or temporary editor.
+    private func openNativeCADEditor(_ node: FloeCanvasNode) {
+        guard CADCanvasNodePlanner.isNativeCADNode(node) else { return }
+        guard let sourceKey = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
+              CanvasCADStorage.isCanvasOwnedKey(sourceKey),
+              let url = CADCanvasActionBridge.packageURL(forSourceKey: sourceKey),
+              FileManager.default.fileExists(atPath: url.path) else {
+            store.saveError = canvasLocalized(
+                "该 CAD 节点引用的本机文档缺失；可删除后重新创建。",
+                "The on-device CAD document for this node is missing; delete and recreate the node.")
+            return
+        }
+        nativeCADPresentation = CanvasNativeCADPresentation(
+            id: node.id,
+            documentID: store.project.selectedDocumentID,
+            sourceKey: sourceKey)
     }
 
     @MainActor

@@ -240,12 +240,15 @@ public final class CADAssemblyService {
         case .failure(let error):
             return fail(error.code, error.message)
         case .success(let assembly):
-            let dof = dofModel(assembly)
-            let dryRun = CADAssemblySolver.solve(assembly, modelScale: modelScaleFor(assembly))
+            let dof = CADAssemblySolver.degreesOfFreedom(assembly)
             let index = CADAssemblySolver.resolvableIndex(assembly)
             let invalidAll = assembly.constraints
                 .filter { !CADAssemblySolver.constraintIsResolvable($0, in: index) }
                 .map { $0.id.uuidString }
+            // Conflicts are read-only diagnostics: run the pure solver but
+            // never persist its candidate placements from the report action.
+            let dryRun = CADAssemblySolver.solve(assembly, modelScale: modelScaleFor(assembly))
+            let redundant = Set(dof.redundant.map(\.uuidString))
 
             var instanceEntries: [[String: Any]] = []
             var stale: [String] = []
@@ -267,6 +270,7 @@ public final class CADAssemblyService {
                     "instanceA": constraint.instanceA.uuidString,
                     "suppressed": constraint.isSuppressed,
                     "valid": CADAssemblySolver.constraintIsResolvable(constraint, in: index),
+                    "redundant": redundant.contains(constraint.id.uuidString),
                 ]
                 if let instanceB = constraint.instanceB {
                     entry["instanceB"] = instanceB.uuidString
@@ -277,14 +281,24 @@ public final class CADAssemblyService {
 
             return [
                 "ok": true,
-                "dofModel": "approximate",
+                "dofModel": "kinematic-rank",
                 "instanceCount": assembly.instances.count,
                 "constraintCount": assembly.constraints.count,
                 "instances": instanceEntries,
                 "constraints": constraintEntries,
+                // Total remaining mobility, including the 6 global rigid modes
+                // while nothing is grounded (two free instances read 12).
                 "assemblyDOF": dof.total,
+                // Parts-vs-parts mobility: total minus the global modes.
+                "relativeDOF": dof.relative,
+                // The 6 free-fly modes remain until an instance is fixed.
+                "globalRigidDOF": dof.globalRigid,
+                // True only when the assembly is grounded AND has no remaining
+                // mobility. A free-floating assembly is never "fully constrained".
+                "fullyConstrained": dof.fullyConstrained,
                 "unconstrainedInstances": dof.unconstrained.map(\.uuidString),
                 "invalidRefs": invalidAll,
+                "redundantConstraints": dof.redundant.map(\.uuidString),
                 "conflicting": dryRun.conflicting.map(\.uuidString),
                 "conflicts": dryRun.conflicting.map(\.uuidString),
                 "solved": dryRun.solved,
@@ -312,16 +326,20 @@ public final class CADAssemblyService {
         case .failure(let error):
             return fail(error.code, error.message)
         case .success(let assembly):
-            let dof = dofModel(assembly)
+            let dof = CADAssemblySolver.degreesOfFreedom(assembly)
             let rows: [[String: Any]] = assembly.instances.map { instance in
                 ["id": instance.id.uuidString,
                  "dof": dof.perInstance[instance.id] ?? 0]
             }
             return [
                 "ok": true,
-                "dofModel": "approximate",
+                "dofModel": "kinematic-rank",
                 "assemblyDOF": dof.total,
+                "relativeDOF": dof.relative,
+                "globalRigidDOF": dof.globalRigid,
+                "fullyConstrained": dof.fullyConstrained,
                 "unconstrainedInstances": dof.unconstrained.map(\.uuidString),
+                "redundantConstraints": dof.redundant.map(\.uuidString),
                 "instances": rows,
             ]
         }
@@ -666,19 +684,58 @@ public final class CADAssemblyService {
         case .failure(let error): return fail(error.code, error.message)
         case .success(let loaded): assembly = loaded
         }
+        // The solver is pure and runs on a value copy; it NEVER mutates the
+        // persisted assembly. A failed solve (unresolved references or
+        // contradictory constraints) must leave the stored model — revision,
+        // undo stack and every placement — untouched and return structured
+        // diagnostics plus the uncommitted candidate as a PREVIEW, rather than
+        // persisting "as close as it got" placements.
         let result = CADAssemblySolver.solve(assembly, modelScale: modelScaleFor(assembly))
+        guard result.solved else {
+            let invalid = Set(result.invalidReferences.map(\.uuidString))
+            let conflicts = Set(result.conflicting.map(\.uuidString))
+            return [
+                "ok": false,
+                "error": "constraint_failed",
+                "mutated": false,
+                "solved": false,
+                "message": failureMessage(invalid: invalid, conflicts: conflicts),
+                "conflicting": result.conflicting.map(\.uuidString),
+                "invalidRefs": result.invalidReferences.map(\.uuidString),
+                // Candidate placements the solve reached; NOT applied. The
+                // caller can render these as a preview only.
+                "previewInstances": result.updatedInstances.map(instancePayload),
+            ]
+        }
         var updated = assembly
         updated.instances = result.updatedInstances
         if let failure = persist(updated) { return failure }
+        let dof = CADAssemblySolver.degreesOfFreedom(updated)
         return [
             "ok": true,
             "mutated": true,
-            "solved": result.solved,
+            "solved": true,
             "updatedInstances": result.updatedInstances.map { instancePayload($0) },
             "updatedInstanceIDs": result.updatedInstances.map(\.id.uuidString),
-            "invalidRefs": result.invalidReferences.map(\.uuidString),
-            "conflicting": result.conflicting.map(\.uuidString),
+            "invalidRefs": [],
+            "conflicting": [],
+            "assemblyDOF": dof.relative,
+            "globalRigidDOF": dof.globalRigid,
+            "fullyConstrained": dof.fullyConstrained,
+            "redundantConstraints": dof.redundant.map(\.uuidString),
         ]
+    }
+
+    private func failureMessage(invalid: Set<String>, conflicts: Set<String>) -> String {
+        var parts: [String] = []
+        if !conflicts.isEmpty {
+            parts.append("\(conflicts.count) conflicting constraint(s) cannot be satisfied together")
+        }
+        if !invalid.isEmpty {
+            parts.append("\(invalid.count) constraint(s) reference missing or changed geometry")
+        }
+        if parts.isEmpty { parts.append("the constraints could not be solved") }
+        return parts.joined(separator: "; ") + "; the assembly was left unchanged."
     }
 
     // MARK: - Interference
@@ -725,15 +782,33 @@ public final class CADAssemblyService {
             updated.instances[index].sourceRevision = source.meshRevision
         }
         let result = CADAssemblySolver.solve(updated, modelScale: modelScaleFor(updated))
+        // Same rule as `solve`: a failed re-solve (contradictory or now-invalid
+        // constraints) must not be persisted. Return the diagnostics and the
+        // uncommitted candidate, leaving the stored revisions and placements
+        // exactly as they were.
+        guard result.solved else {
+            var payload = staleReport(updated)
+            payload["ok"] = false
+            payload["error"] = "constraint_failed"
+            payload["mutated"] = false
+            payload["solved"] = false
+            payload["message"] = failureMessage(
+                invalid: Set(result.invalidReferences.map(\.uuidString)),
+                conflicts: Set(result.conflicting.map(\.uuidString)))
+            payload["conflicting"] = result.conflicting.map(\.uuidString)
+            payload["invalidRefs"] = result.invalidReferences.map(\.uuidString)
+            payload["previewInstances"] = result.updatedInstances.map(instancePayload)
+            return payload
+        }
         updated.instances = result.updatedInstances
         if let failure = persist(updated) { return failure }
 
         var payload = staleReport(updated)
         payload["ok"] = true
         payload["mutated"] = true
-        payload["solved"] = result.solved
-        payload["conflicting"] = result.conflicting.map(\.uuidString)
-        payload["invalidRefs"] = result.invalidReferences.map(\.uuidString)
+        payload["solved"] = true
+        payload["conflicting"] = []
+        payload["invalidRefs"] = []
         return payload
     }
 
@@ -849,50 +924,6 @@ public final class CADAssemblyService {
         let overlap = simd_max(SIMD3<Double>.zero,
                                simd_min(a.max, b.max) - simd_max(a.min, b.min))
         return overlap.x * overlap.y * overlap.z
-    }
-
-    /// Approximate DOF model from the task contract: 6 per free instance, and
-    /// each unsuppressed constraint removes its weight from every instance it
-    /// references (fixed 6, coaxial 4, planarAlign 3, distance 1, angle 1),
-    /// floored at 0. Deliberately a heuristic; callers see `dofModel`.
-    private func dofModel(_ assembly: CADAssembly) -> (perInstance: [UUID: Int],
-                                                       total: Int,
-                                                       unconstrained: [UUID]) {
-        var referenced = Set<UUID>()
-        var fixedInstances = Set<UUID>()
-        var weights: [UUID: Int] = [:]
-        for constraint in assembly.constraints where !constraint.isSuppressed {
-            referenced.insert(constraint.instanceA)
-            if let instanceB = constraint.instanceB { referenced.insert(instanceB) }
-            switch constraint.kind {
-            case .fixed:
-                fixedInstances.insert(constraint.instanceA)
-            case .coaxial:
-                weights[constraint.instanceA, default: 0] += 4
-                if let instanceB = constraint.instanceB { weights[instanceB, default: 0] += 4 }
-            case .planarAlign:
-                weights[constraint.instanceA, default: 0] += 3
-                if let instanceB = constraint.instanceB { weights[instanceB, default: 0] += 3 }
-            case .distance, .angle:
-                weights[constraint.instanceA, default: 0] += 1
-                if let instanceB = constraint.instanceB { weights[instanceB, default: 0] += 1 }
-            }
-        }
-        var perInstance: [UUID: Int] = [:]
-        var total = 0
-        var unconstrained: [UUID] = []
-        for instance in assembly.instances {
-            let dof: Int
-            if fixedInstances.contains(instance.id) {
-                dof = 0
-            } else {
-                dof = max(0, 6 - (weights[instance.id] ?? 0))
-            }
-            perInstance[instance.id] = dof
-            total += dof
-            if !referenced.contains(instance.id) { unconstrained.append(instance.id) }
-        }
-        return (perInstance, total, unconstrained)
     }
 
     private func uniqueInstanceName(base: String, in assembly: CADAssembly) -> String {
@@ -1320,6 +1351,340 @@ private nonisolated enum CADAssemblySolver {
             invalidReferences: invalid,
             conflicting: conflicting,
             solved: conflicting.isEmpty && invalid.isEmpty)
+    }
+
+    // MARK: - Degrees of freedom (kinematic rank)
+
+    /// Rank-based DOF over the assembly's instantaneous twists.
+    ///
+    /// Every resolvable instance contributes six twist coordinates
+    /// `[ωx ωy ωz vx vy vz]` (angular velocity about the instance origin plus
+    /// the origin's linear velocity). Each unsuppressed, resolvable constraint
+    /// contributes its linearized screw rows at the CURRENT configuration
+    /// (fixed 6, coaxial 4, planarAlign 3, distance 1, angle 1); its true
+    /// effect is the RANK of the stacked rows, so duplicate or redundant
+    /// constraints add no extra rank and can never falsely reduce the count.
+    ///
+    /// Reported quantities:
+    ///  * `total`     — remaining mobility `6N - rank`. With no `fixed`
+    ///                  constraint the six global rigid modes are included, so
+    ///                  two free instances report 12 (6 each).
+    ///  * `globalRigid` — 6 while nothing is grounded, else 0. Internal
+    ///                  constraints can never remove the global modes.
+    ///  * `relative`  — `total - globalRigid`, the parts-vs-parts mobility.
+    ///  * `fullyConstrained` — mobility 0 AND grounded; a free-floating
+    ///                  assembly is never reported as fully constrained.
+    ///  * `perInstance` — dimension of the projection of the nullspace onto
+    ///                  each instance's six coordinates (0 for a pinned body).
+    ///  * `redundant` — constraints whose own rows lie in the span of the
+    ///                  other constraints' rows (duplicate/redundant rows).
+    ///
+    /// The computation is exact for ≤ `maxExactInstances` instances and
+    /// ≤ `maxExactConstraints` constraints; beyond that the rank is still
+    /// computed but `exact` is false and `fullyConstrained` is not claimed.
+    static let maxExactInstances = 64
+    static let maxExactConstraints = 128
+
+    struct DOFResult: Sendable, Equatable {
+        var perInstance: [UUID: Int]
+        var total: Int
+        var relative: Int
+        var globalRigid: Int
+        var fullyConstrained: Bool
+        var unconstrained: [UUID]
+        var redundant: [UUID]
+        var exact: Bool
+    }
+
+    static func degreesOfFreedom(_ assembly: CADAssembly) -> DOFResult {
+        let index = resolvableIndex(assembly)
+        var order: [Int] = []
+        var columnOf: [UUID: Int] = [:]
+        var transforms: [Transform3D] = []
+        for (position, instance) in assembly.instances.enumerated()
+        where index[instance.id] == position {
+            columnOf[instance.id] = order.count
+            order.append(position)
+            transforms.append(transform3D(from: instance.transform))
+        }
+        let n = order.count
+        let columns = 6 * n
+        let active = assembly.constraints.filter {
+            !$0.isSuppressed && constraintIsResolvable($0, in: index)
+        }
+        let grounded = active.contains { $0.kind == .fixed }
+        let exact = n <= maxExactInstances && active.count <= maxExactConstraints
+
+        func row() -> [Double] { [Double](repeating: 0, count: columns) }
+
+        /// Coefficients of the functional `n · v_p` at world point `p` for
+        /// body `id`: linear part `n`, angular part `(p - o) × n`.
+        func translationRow(_ id: UUID, direction n: SIMD3<Double>,
+                            point p: SIMD3<Double>, sign: Double) -> [Double] {
+            var result = row()
+            guard let column = columnOf[id] else { return result }
+            let offset = p - transforms[column].translation
+            let angular = simd_cross(offset, n)
+            for k in 0..<3 {
+                result[6 * column + k] += sign * angular[k]
+                result[6 * column + 3 + k] += sign * n[k]
+            }
+            return result
+        }
+
+        func rotationRow(_ id: UUID, axis a: SIMD3<Double>, sign: Double) -> [Double] {
+            var result = row()
+            guard let column = columnOf[id] else { return result }
+            for k in 0..<3 { result[6 * column + k] += sign * a[k] }
+            return result
+        }
+
+        func add(_ lhs: [Double], _ rhs: [Double]) -> [Double] {
+            var result = lhs
+            for k in 0..<result.count { result[k] += rhs[k] }
+            return result
+        }
+
+        func perpendicularBasis(_ axis: SIMD3<Double>) -> [SIMD3<Double>] {
+            let helper: SIMD3<Double> = abs(axis.x) < 0.9 ? SIMD3(1, 0, 0) : SIMD3(0, 1, 0)
+            let first = simd_normalize(simd_cross(axis, helper))
+            let second = simd_normalize(simd_cross(axis, first))
+            return [first, second]
+        }
+
+        /// World reference point/direction of a constraint's local geometry.
+        func worldPoint(_ id: UUID, _ local: SIMD3<Double>) -> SIMD3<Double>? {
+            guard let column = columnOf[id] else { return nil }
+            return transforms[column].applying(to: local)
+        }
+
+        func worldDirection(_ id: UUID, _ local: SIMD3<Double>) -> SIMD3<Double>? {
+            guard let column = columnOf[id] else { return nil }
+            let direction = transforms[column].rotation.act(local)
+            guard simd_length(direction) > 1e-12 else { return nil }
+            return simd_normalize(direction)
+        }
+
+        /// One pair constraint's linearized rows.
+        ///
+        /// All rows are pure functionals of the RELATIVE motion
+        /// `(ω_B - ω_A, v_B - v_A)` so a global rigid motion applied to every
+        /// body is exactly in the nullspace. For point/plane offsets the
+        /// functional is evaluated at one common world point and includes the
+        /// lever-arm angular coupling a rotating reference frame contributes.
+        func rows(for constraint: CADAssemblyConstraint) -> [[Double]] {
+            switch constraint.kind {
+            case .fixed:
+                guard let column = columnOf[constraint.instanceA] else { return [] }
+                var result: [[Double]] = []
+                for k in 0..<6 {
+                    var r = row()
+                    r[6 * column + k] = 1
+                    result.append(r)
+                }
+                return result
+            case .coaxial, .planarAlign:
+                guard let b = constraint.instanceB,
+                      let directionA = worldDirection(constraint.instanceA, constraint.directionA),
+                      let _ = worldDirection(b, constraint.directionB ?? .zero),
+                      let common = worldPoint(constraint.instanceA, constraint.pointA)
+                else { return [] }
+                let basis = perpendicularBasis(directionA)
+                var result: [[Double]] = []
+                for axis in basis {
+                    // Relative angular velocity perpendicular to the axis
+                    // keeps the two directions at a constant angle.
+                    result.append(add(
+                        rotationRow(b, axis: axis, sign: 1),
+                        rotationRow(constraint.instanceA, axis: axis, sign: -1)))
+                }
+                if constraint.kind == .coaxial {
+                    // Perpendicular point-on-axis offsets, measured at the
+                    // common point. The lever arm λ (separation along the
+                    // axis) couples relative rotation into the offset rate.
+                    guard let pointB = worldPoint(b, constraint.pointB ?? .zero) else { return [] }
+                    let lever = simd_dot(pointB - common, directionA)
+                    for axis in basis {
+                        var r = add(
+                            translationRow(b, direction: axis, point: common, sign: 1),
+                            translationRow(constraint.instanceA, direction: axis,
+                                           point: common, sign: -1))
+                        let coupling = simd_cross(directionA, axis) * lever
+                        r = add(r, rotationRow(b, axis: coupling, sign: 1))
+                        r = add(r, rotationRow(constraint.instanceA, axis: coupling, sign: -1))
+                        result.append(r)
+                    }
+                } else {
+                    // Coplanar offset along A's normal plus the lever-arm
+                    // coupling of relative rotation at that point.
+                    guard let pointB = worldPoint(b, constraint.pointB ?? .zero) else { return [] }
+                    let lever = simd_cross(pointB - common, directionA)
+                    var r = add(
+                        translationRow(b, direction: directionA, point: common, sign: 1),
+                        translationRow(constraint.instanceA, direction: directionA,
+                                       point: common, sign: -1))
+                    r = add(r, rotationRow(b, axis: lever, sign: 1))
+                    r = add(r, rotationRow(constraint.instanceA, axis: lever, sign: -1))
+                    result.append(r)
+                }
+                return result
+            case .distance:
+                guard let b = constraint.instanceB,
+                      let pointA = worldPoint(constraint.instanceA, constraint.pointA),
+                      let pointB = worldPoint(b, constraint.pointB ?? .zero) else { return [] }
+                var separation = pointB - pointA
+                if simd_length(separation) < 1e-12 {
+                    separation = worldDirection(constraint.instanceA, constraint.directionA)
+                        ?? SIMD3(0, 0, 1)
+                }
+                let normal = simd_normalize(separation)
+                // n is parallel to (pointB - pointA), so the body-rate
+                // angular term vanishes and the common-point form is exact.
+                return [add(
+                    translationRow(b, direction: normal, point: pointA, sign: 1),
+                    translationRow(constraint.instanceA, direction: normal,
+                                   point: pointA, sign: -1))]
+            case .angle:
+                guard let b = constraint.instanceB,
+                      let directionA = worldDirection(constraint.instanceA, constraint.directionA),
+                      let directionB = worldDirection(b, constraint.directionB ?? .zero)
+                else { return [] }
+                var axis = simd_cross(directionA, directionB)
+                if simd_length(axis) < 1e-12 {
+                    // Parallel axes: any perpendicular axis is a valid
+                    // linearization of the angle constraint.
+                    axis = perpendicularBasis(directionA)[0]
+                }
+                axis = simd_normalize(axis)
+                return [add(
+                    rotationRow(b, axis: axis, sign: 1),
+                    rotationRow(constraint.instanceA, axis: axis, sign: -1))]
+            }
+        }
+
+        var matrix: [[Double]] = []
+        for constraint in active {
+            matrix.append(contentsOf: rows(for: constraint))
+        }
+
+        let analysis = analyze(matrix, columns: columns)
+        let rank = analysis.rank
+        let total = max(0, columns - rank)
+        let globalRigid = (!grounded && n > 0) ? 6 : 0
+        let relative = max(0, total - globalRigid)
+        let fullyConstrained = exact && grounded && total == 0
+
+        var perInstance: [UUID: Int] = [:]
+        for (slot, position) in order.enumerated() {
+            let id = assembly.instances[position].id
+            let projection = analysis.nullspace.map { vector in
+                Array(vector[(6 * slot)..<(6 * slot + 6)])
+            }
+            perInstance[id] = analyze(projection, columns: 6).rank
+        }
+        // Instances skipped by the solver (invalid transform) stay listed but
+        // have no kinematic contribution to report.
+        for instance in assembly.instances where perInstance[instance.id] == nil {
+            perInstance[instance.id] = 0
+        }
+
+        var referenced = Set<UUID>()
+        for constraint in active {
+            referenced.insert(constraint.instanceA)
+            if let b = constraint.instanceB { referenced.insert(b) }
+        }
+        let unconstrained = assembly.instances
+            .filter { !referenced.contains($0.id) }
+            .map(\.id)
+
+        // Redundancy, incremental and order-stable: a constraint is redundant
+        // when adding its rows to the previously accepted constraints does not
+        // increase the rank. With duplicate rows this flags the LATER copies
+        // (the earlier one remains authoritative readable); independent
+        // constraints are never flagged. Bounded to a small exact window.
+        var redundant: [UUID] = []
+        if exact && n <= 16 && active.count <= 24 {
+            var accumulated: [[Double]] = []
+            var accumulatedRank = 0
+            for constraint in active {
+                accumulated.append(contentsOf: rows(for: constraint))
+                let grown = analyze(accumulated, columns: columns).rank
+                if grown == accumulatedRank {
+                    redundant.append(constraint.id)
+                } else {
+                    accumulatedRank = grown
+                }
+            }
+        }
+
+        return DOFResult(perInstance: perInstance,
+                         total: total,
+                         relative: relative,
+                         globalRigid: globalRigid,
+                         fullyConstrained: fullyConstrained,
+                         unconstrained: unconstrained,
+                         redundant: redundant,
+                         exact: exact)
+    }
+
+    struct RankAnalysis {
+        var rank: Int
+        var nullspace: [[Double]]
+    }
+
+    /// Gauss-Jordan rank + nullspace. Rows are normalized to unit length so
+    /// the pivot tolerance is scale-independent; `tolerance` is relative.
+    static func analyze(_ matrix: [[Double]], columns: Int,
+                        tolerance: Double = 1e-8) -> RankAnalysis {
+        guard !matrix.isEmpty, columns > 0 else {
+            return RankAnalysis(rank: 0, nullspace: identityNullspace(columns: columns))
+        }
+        var a = matrix.map { row -> [Double] in
+            let norm = sqrt(row.reduce(0) { $0 + $1 * $1 })
+            guard norm > 1e-15 else { return row }
+            return row.map { $0 / norm }
+        }
+        let rows = a.count
+        var pivotRow = 0
+        var pivotColumns: [Int] = []
+        for col in 0..<columns where pivotRow < rows {
+            var best = pivotRow
+            var bestValue = abs(a[pivotRow][col])
+            for r in (pivotRow + 1)..<rows {
+                let value = abs(a[r][col])
+                if value > bestValue { best = r; bestValue = value }
+            }
+            guard bestValue > tolerance else { continue }
+            a.swapAt(pivotRow, best)
+            let pivot = a[pivotRow][col]
+            for c in 0..<columns { a[pivotRow][c] /= pivot }
+            for r in 0..<rows where r != pivotRow {
+                let factor = a[r][col]
+                guard factor != 0 else { continue }
+                for c in 0..<columns { a[r][c] -= factor * a[pivotRow][c] }
+            }
+            pivotColumns.append(col)
+            pivotRow += 1
+        }
+        let pivotSet = Set(pivotColumns)
+        var nullspace: [[Double]] = []
+        for free in 0..<columns where !pivotSet.contains(free) {
+            var vector = [Double](repeating: 0, count: columns)
+            vector[free] = 1
+            for (rowIndex, pivotColumn) in pivotColumns.enumerated() {
+                vector[pivotColumn] = -a[rowIndex][free]
+            }
+            nullspace.append(vector)
+        }
+        return RankAnalysis(rank: pivotColumns.count, nullspace: nullspace)
+    }
+
+    private static func identityNullspace(columns: Int) -> [[Double]] {
+        (0..<columns).map { index in
+            var vector = [Double](repeating: 0, count: columns)
+            vector[index] = 1
+            return vector
+        }
     }
 
     // MARK: Validation

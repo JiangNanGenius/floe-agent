@@ -103,6 +103,10 @@ public final class CADMeshService {
         guard !result.polygons.isEmpty else {
             return Self.fail("empty_geometry", "The combined mesh is empty; nothing changed.")
         }
+        let renderResult = EuclidBridge.renderMesh(from: result)
+        let gate = previewGate(action: "combine", args: args, meshes: [renderResult])
+        if let refusal = gate.refusal { return refusal }
+        if let reply = gate.reply { return reply }
 
         let body = makeResultBody(name: name, mesh: result)
         commit(body, consuming: bodies, title: "Combine")
@@ -171,6 +175,10 @@ public final class CADMeshService {
             return Self.fail("empty_geometry",
                              "The \(opString) result is empty; nothing changed.")
         }
+        let renderResult = EuclidBridge.renderMesh(from: result)
+        let gate = previewGate(action: "boolean", args: args, meshes: [renderResult])
+        if let refusal = gate.refusal { return refusal }
+        if let reply = gate.reply { return reply }
 
         let name = sanitizeName(args["name"]) ?? "Boolean"
         let body = makeResultBody(name: name, mesh: result)
@@ -335,6 +343,7 @@ public final class CADMeshService {
         let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
         var replacements: [(before: Body, after: Body)] = []
         var entries: [[String: Any]] = []
+        var previewMeshes: [RenderMesh] = []
         for body in bodies {
             guard let welded = Self.weldAndClean(body.render, tolerance: tolerance, clock: clock) else {
                 if clock.expired { return limitTime() }
@@ -345,6 +354,7 @@ public final class CADMeshService {
                 return Self.fail("empty_geometry",
                                  "Repairing '\(body.name)' would remove every triangle; nothing changed.")
             }
+            previewMeshes.append(welded.mesh)
             entries.append(["bodyID": body.id.raw.uuidString,
                             "beforeTriangles": body.render.triangleCount,
                             "afterTriangles": welded.mesh.triangleCount,
@@ -359,6 +369,9 @@ public final class CADMeshService {
             after.primitive = nil
             replacements.append((before: body, after: after))
         }
+        let gate = previewGate(action: "repair", args: args, meshes: previewMeshes)
+        if let refusal = gate.refusal { return refusal }
+        if let reply = gate.reply { return reply }
         performReplacements(replacements, title: "Repair Mesh")
         return ["ok": true,
                 "action": "repair",
@@ -389,6 +402,7 @@ public final class CADMeshService {
         let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
         var replacements: [(before: Body, after: Body)] = []
         var entries: [[String: Any]] = []
+        var previewMeshes: [RenderMesh] = []
         for body in bodies {
             let before = body.render.triangleCount
             guard before >= 4 else {
@@ -454,8 +468,12 @@ public final class CADMeshService {
             after.euclid = nil
             after.brep = nil
             after.primitive = nil
+            previewMeshes.append(simplified)
             replacements.append((before: body, after: after))
         }
+        let gate = previewGate(action: "simplify", args: args, meshes: previewMeshes)
+        if let refusal = gate.refusal { return refusal }
+        if let reply = gate.reply { return reply }
         performReplacements(replacements, title: "Simplify Mesh")
         return ["ok": true,
                 "action": "simplify",
@@ -651,6 +669,65 @@ public final class CADMeshService {
                              + analytic.map(\.name).joined(separator: ", ")
                              + ". Pass forceMesh:true to acknowledge the downgrade.")
         }
+        return nil
+    }
+
+    /// Preview/apply gate for destructive mesh operations.
+    ///
+    /// `preview:true` returns the transient result geometry (a bounded mesh
+    /// snapshot a UI can draw) plus an order-independent content hash and the
+    /// document revision/change-count it was computed against — WITHOUT
+    /// touching the document. A subsequent apply may pass those values as
+    /// `expectedPreviewHash` / `expectedRevision` / `expectedChangeCount`; a
+    /// mismatch refuses with `preview_stale` instead of committing geometry
+    /// the user never saw.
+    private func previewGate(action: String, args: [String: Any],
+                             meshes: [RenderMesh]) -> (reply: [String: Any]?,
+                                                       refusal: [String: Any]?) {
+        guard let hash = CADTransientMeshPreview.hash(of: meshes) else {
+            return (nil, Self.fail("invalid_mesh",
+                                   "The '\(action)' result has non-finite geometry; nothing changed."))
+        }
+        let revision = document.store.revision
+        let changeCount = document.session.changeCount
+        if let expected = args["expectedPreviewHash"] as? String, !expected.isEmpty {
+            guard expected == hash else {
+                return (nil, Self.fail("preview_stale",
+                                       "The geometry changed since the preview; preview again before applying."))
+            }
+            if let expectedRevision = Self.integer(args["expectedRevision"]),
+               expectedRevision != revision {
+                return (nil, Self.fail("preview_stale",
+                                       "The document changed since the preview; preview again before applying."))
+            }
+            if let expectedChangeCount = Self.integer(args["expectedChangeCount"]),
+               expectedChangeCount != changeCount {
+                return (nil, Self.fail("preview_stale",
+                                       "The document changed since the preview; preview again before applying."))
+            }
+        }
+        if Self.boolean(args["preview"]) {
+            guard let snapshot = CADTransientMeshPreview.snapshot(of: meshes) else {
+                return (nil, Self.fail("invalid_mesh", "The '\(action)' preview is empty."))
+            }
+            return (["ok": true,
+                     "action": action,
+                     "mutated": false,
+                     "preview": true,
+                     "exactness": "mesh",
+                     "previewHash": hash,
+                     "previewRevision": revision,
+                     "previewChangeCount": changeCount,
+                     "triangleCount": meshes.reduce(0) { $0 + $1.triangleCount },
+                     "mesh": CADTransientMeshPreview.payload(snapshot)],
+                    nil)
+        }
+        return (nil, nil)
+    }
+
+    private static func integer(_ raw: Any?) -> Int? {
+        if let value = raw as? Int { return value }
+        if let number = raw as? NSNumber { return number.intValue }
         return nil
     }
 

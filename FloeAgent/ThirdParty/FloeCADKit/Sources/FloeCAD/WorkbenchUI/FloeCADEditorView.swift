@@ -1558,6 +1558,7 @@ struct FloeCADEditorView: View {
             }
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    if horizontalSizeClass != .compact {
                     Button {
                         viewModel.undo()
                     } label: {
@@ -1765,6 +1766,7 @@ struct FloeCADEditorView: View {
                         .accessibilityLabel("Settings")
                     }
                     .accessibilityIdentifier("SettingsButton")
+                    }
                 }
             }
             .sheet(isPresented: $showSettings) {
@@ -1776,6 +1778,182 @@ struct FloeCADEditorView: View {
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
+    }
+
+    /// Compact-width toolbar: the CAD tools entry stays a DIRECT 44pt button
+    /// (reachable by test and thumb) and every other action lives in one
+    /// explicit overflow menu — no action is silently dropped by bar overflow.
+    @ViewBuilder
+    private func compactToolbarItems(_ viewModel: EditorViewModel) -> some View {
+        Button {
+            showWorkbenchTools = true
+        } label: {
+            ZStack {
+                Color.clear
+                Image(systemName: "square.grid.2x2")
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .accessibilityLabel("CAD Tools")
+        }
+        .accessibilityIdentifier("CADWorkbenchToolsButton")
+
+        Menu {
+            Button {
+                viewModel.fitView()
+            } label: {
+                Label("Fit View", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            Menu {
+                ForEach(StandardView.allCases) { standard in
+                    Button(standard.rawValue) {
+                        viewModel.applyStandardView(standard)
+                    }
+                }
+                Divider()
+                Toggle("Orthographic", isOn: Binding(
+                    get: { viewModel.orthographicEnabled },
+                    set: { viewModel.setOrthographic($0) }
+                ))
+                Divider()
+                Menu {
+                    Picker("Display", selection: Binding(
+                        get: { viewModel.displayMode },
+                        set: { viewModel.displayMode = $0 }
+                    )) {
+                        ForEach(DisplayMode.allCases, id: \.self) { mode in
+                            Text(mode.displayLabel).tag(mode)
+                        }
+                    }
+                    Divider()
+                    Toggle("Show Hidden Edges", isOn: Binding(
+                        get: { viewModel.showHiddenEdges },
+                        set: { viewModel.showHiddenEdges = $0 }
+                    ))
+                } label: {
+                    Label("Display: \(viewModel.displayMode.displayLabel)",
+                          systemImage: "cube.transparent")
+                }
+                Toggle("Ground Shadow", isOn: Binding(
+                    get: { viewModel.groundShadowEnabled },
+                    set: { viewModel.groundShadowEnabled = $0 }
+                ))
+                if viewModel.isIsolateActive {
+                    Button("Exit Isolate") { viewModel.exitIsolate() }
+                } else {
+                    Button("Isolate") { viewModel.enterIsolate() }
+                        .disabled(viewModel.selection.isEmpty)
+                }
+                if viewModel.sectionState != nil {
+                    Button("Flip Section") { viewModel.flipSection() }
+                    Button("Section Off") { viewModel.endSection() }
+                } else {
+                    Button("Section") { viewModel.beginSectionPlanePick() }
+                }
+            } label: {
+                Label("Views", systemImage: "square.stack.3d.up")
+            }
+            Button {
+                viewModel.showHistoryPanel.toggle()
+            } label: {
+                Label(FloeCADStrings.label("cad.toolbar.history", "History"),
+                      systemImage: "clock.arrow.circlepath")
+            }
+            Button {
+                viewModel.showVariablesPanel.toggle()
+            } label: {
+                Label(FloeCADStrings.label("cad.toolbar.variables", "Variables"),
+                      systemImage: "function")
+            }
+            Button {
+                showItemsPanel.toggle()
+            } label: {
+                Label(FloeCADStrings.label("cad.toolbar.items", "Items"),
+                      systemImage: "sidebar.trailing")
+            }
+            importMenu(viewModel)
+            exportMenu(viewModel)
+            if let actions = canvasActions, actions.applyToCanvas != nil {
+                Button {
+                    runCanvasAction(actions.applyToCanvas)
+                } label: {
+                    Label(FloeCADStrings.label("cad.canvas.apply", "Apply to canvas"),
+                          systemImage: "rectangle.on.rectangle.angled")
+                }
+                .disabled(isCanvasActionRunning)
+            }
+            if let actions = canvasActions, actions.makeVariant != nil {
+                Button {
+                    runCanvasAction(actions.makeVariant)
+                } label: {
+                    Label(FloeCADStrings.label("cad.canvas.variant", "Make variant"),
+                          systemImage: "plus.square.on.square")
+                }
+                .disabled(isCanvasActionRunning)
+            }
+            Button {
+                viewModel.openCommandSearch()
+            } label: {
+                Label("Command Search", systemImage: "magnifyingglass")
+            }
+            Button {
+                showSettings = true
+            } label: {
+                Text("Settings")
+            }
+        } label: {
+            ZStack {
+                Color.clear
+                Image(systemName: "ellipsis.circle")
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .accessibilityLabel("More")
+        }
+        .accessibilityIdentifier("CADCompactMoreMenu")
+    }
+
+    /// In-content compact control strip (iPhone): undo/redo, the CAD tools
+    /// entry and the explicit action menu, each a 44pt target. The navigation
+    /// bar's automatic overflow is never relied on for these.
+    @ViewBuilder
+    private func compactControlStrip(_ viewModel: EditorViewModel) -> some View {
+        HStack(spacing: 4) {
+            Button {
+                viewModel.undo()
+            } label: {
+                ZStack {
+                    Color.clear
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Undo")
+            }
+            .disabled(!viewModel.session.undoStack.canUndo && !viewModel.hasPendingRectangle)
+            .accessibilityIdentifier("UndoButton")
+
+            Button {
+                viewModel.redo()
+            } label: {
+                ZStack {
+                    Color.clear
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Redo")
+            }
+            .disabled(!viewModel.session.undoStack.canRedo)
+            .accessibilityIdentifier("RedoButton")
+
+            Spacer(minLength: 0)
+
+            compactToolbarItems(viewModel)
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
     }
 
     /// The one Import-menu completion handler; `importRequest` says which
@@ -1815,6 +1993,16 @@ struct FloeCADEditorView: View {
     @ViewBuilder
     private func editorContent(_ viewModel: EditorViewModel) -> some View {
         viewportChrome(viewModel)
+            // Compact widths get an IN-CONTENT control strip: the system
+            // navigation bar collapses whole toolbar groups into an
+            // unlabelled overflow on an iPhone, so the essential controls
+            // (undo/redo, CAD tools, the explicit action menu) live in the
+            // content where they are always visible and tappable at 44pt.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if horizontalSizeClass == .compact {
+                    compactControlStrip(viewModel)
+                }
+            }
             .safeAreaInset(edge: .bottom) { canvasActionStatusBar }
             // ONE importer for every Import-menu entry (see `ImportRequest`).
             .fileImporter(

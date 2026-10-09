@@ -200,32 +200,41 @@ enum CADCanvasActionBridge {
         canvasID: UUID,
         documentID: UUID,
         position: CanvasPoint,
-        workspaceCenter: WorkspaceCenter,
         assetStore: CreativeAssetStore
     ) async -> (nodeID: UUID?, message: String) {
+        // Canvas is its OWN workspace: the editable package is created in the
+        // app-owned, on-device `CanvasCAD` container for THIS canvas, never in
+        // a temporary directory and never guessed from "the first project" or
+        // an open chat task. No local file workspace is required.
+        //
+        // A previous failed creation persists a PENDING record; a retry REUSES
+        // that same package (rebind) instead of generating another orphan.
+        let url: URL
+        let reused: Bool
+        if let pending = CanvasCADStorage.pendingPackage(canvasID: canvasID,
+                                                         documentID: documentID) {
+            url = pending
+            reused = true
+        } else {
+            do {
+                url = try CanvasCADStorage.uniquePackageURL(canvasID: canvasID)
+            } catch {
+                return (nil, error.localizedDescription)
+            }
+            CanvasCADStorage.setPending(canvasID: canvasID, documentID: documentID,
+                                        packageFileName: url.lastPathComponent)
+            reused = false
+        }
+        let binding = CanvasCADStorage.key(canvasID: canvasID,
+                                           packageFileName: url.lastPathComponent)
         do {
-            guard !workspaceCenter.isCloudWorkspacePath("."),
-                  !workspaceCenter.isNetworkWorkspacePath("."),
-                  let service = workspaceCenter.fileService else {
-                throw CADDocumentError(code: "workspace_unavailable",
-                                       message: canvasLocalized(
-                                           "CAD 文档只能在本地工作区中创建。",
-                                           "CAD documents can only be created in a local workspace."))
+            let document: FloeCADDocument
+            if reused {
+                document = try await FloeCADDocument.open(at: url)
+            } else {
+                document = try await FloeCADDocument.create(
+                    at: url, name: (url.lastPathComponent as NSString).deletingPathExtension)
             }
-            // Unique package name in the workspace root (never overwrite).
-            let root = service.guardResolver.rootURL
-            func exists(_ relative: String) -> Bool {
-                FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path)
-            }
-            var candidate = "CAD Model.floecad"
-            var serial = 2
-            while exists(candidate) {
-                candidate = "CAD Model \(serial).floecad"
-                serial += 1
-            }
-            let url = try service.guardResolver.resolve(candidate)
-            let document = try await FloeCADDocument.create(
-                at: url, name: (candidate as NSString).deletingPathExtension)
             do {
                 let save = await document.save()
                 guard save.succeeded else {
@@ -236,7 +245,7 @@ enum CADCanvasActionBridge {
                 let render = try await persistRender(exported, document: document,
                                                      node: nil, assetStore: assetStore)
                 let operation = try CADCanvasNodePlanner.createPatch(
-                    sourcePath: sourcePathKey(packageURL: url),
+                    sourcePath: binding,
                     sourceAssetHash: document.contentSHA256,
                     renderedAsset: render,
                     position: position,
@@ -245,30 +254,45 @@ enum CADCanvasActionBridge {
                     extraMetadata: [
                         "editor": "native-cad",
                         "cadFormat": "floecad",
+                        "cadStorage": "canvas-owned",
                         "appliedRevision": String(document.revision),
                         "appliedContentHash": exported.hash,
                     ])
+                // The bridge keeps the document open; release it now that the
+                // node binds the package on disk — regardless of the canvas
+                // write outcome (a failed write leaves a recoverable on-disk
+                // package, not a locked live session).
+                defer { Task { await FloeCAD3DBridge.shared.releaseDocument(at: url) } }
                 guard try await commit(operations: [operation],
                                  nodeID: nil,
                                  canvasID: canvasID,
                                  documentID: documentID,
                                  assetStore: assetStore) != nil else {
-                    throw CADDocumentError(code: "canvas_write_failed",
-                                           message: canvasLocalized(
-                                               "画布写入失败；CAD 文档已保留在工作区。",
-                                               "The canvas write failed; the CAD document stays in the workspace."))
+                    // Recoverable, not a dead end: the package is durably
+                    // saved and the pending record makes the retry rebind THIS
+                    // document instead of creating a second orphan.
+                    return (nil, canvasLocalized(
+                        "画布写入失败，但 CAD 文档已保存在本机画布存储中；再次点击会重新绑定同一文档。",
+                        "The canvas write failed, but the CAD document was saved in this canvas's on-device storage; trying again rebinds the same document."))
                 }
-                // The bridge keeps the document open; release it now that the
-                // node binds the package on disk.
-                await FloeCAD3DBridge.shared.releaseDocument(at: url)
+                CanvasCADStorage.clearPending(canvasID: canvasID, documentID: documentID)
                 return (operation.nodeID, canvasLocalized(
                     "已创建 CAD 模型“\(document.name)”（参数化工作台）；如需组合简单场景请使用 3D 场景编辑器。",
                     "Created CAD model \"\(document.name)\" (parametric workbench); use the 3D scene editor only for simple scene compositions."))
             } catch {
                 await FloeCAD3DBridge.shared.releaseDocument(at: url)
-                throw error
+                // Keep a durable package's pending record (rebindable); a
+                // failure before the package existed clears it so the next
+                // attempt starts clean.
+                if !FileManager.default.fileExists(atPath: url.appendingPathComponent("manifest.json").path) {
+                    CanvasCADStorage.clearPending(canvasID: canvasID, documentID: documentID)
+                }
+                return (nil, error.localizedDescription)
             }
         } catch {
+            if !reused {
+                CanvasCADStorage.clearPending(canvasID: canvasID, documentID: documentID)
+            }
             return (nil, error.localizedDescription)
         }
     }
@@ -490,10 +514,30 @@ enum CADCanvasActionBridge {
         }
     }
 
-    /// Identity recorded on the node and in the action metadata: file-name
-    /// based (not absolute) so it survives workspace relocation.
+    /// Identity recorded on the node and in the action metadata. Canvas-owned
+    /// packages (created from the Canvas toolbar) bind with their explicit
+    /// `canvas-cad:<canvas>/<file>` key; packages that live in a user file
+    /// workspace keep the file-name based `floecad:<file>` key. Neither is an
+    /// absolute path, so both survive container/workspace relocation.
     private static func sourcePathKey(packageURL: URL) -> String {
-        "floecad:\(packageURL.lastPathComponent)"
+        let standardized = packageURL.standardizedFileURL
+        if let root = try? CanvasCADStorage.containerRoot(createIfNeeded: false).standardizedFileURL,
+           standardized.path.hasPrefix(root.path + "/") {
+            let remainder = String(standardized.path.dropFirst(root.path.count + 1))
+            let parts = remainder.split(separator: "/", maxSplits: 1).map(String.init)
+            if parts.count == 2, let canvasID = UUID(uuidString: parts[0]) {
+                return CanvasCADStorage.key(canvasID: canvasID, packageFileName: parts[1])
+            }
+        }
+        return "floecad:\(packageURL.lastPathComponent)"
+    }
+
+    /// Resolve a node-recorded source key to its absolute on-disk package.
+    /// Canvas-owned keys resolve through `CanvasCADStorage`; legacy
+    /// `floecad:` keys are not canvas-owned and resolve nil here (they live in
+    /// a user file workspace and are opened through FilePreview).
+    static func packageURL(forSourceKey key: String) -> URL? {
+        CanvasCADStorage.packageURL(forKey: key)
     }
 }
 

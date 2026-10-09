@@ -505,3 +505,159 @@ Floe 级保存/全屏外壳。脚本 apply 强制校验记录的 `outputDocument
 21/21、包内 48/48、iPad 宿主 UI 1/1、iPhone 紧凑通过并记录 1 项跳过（窄栏溢出隐藏工具入口，
 移交 CUA 清单）、模拟器与通用设备完整编译均成功（设备产物未签名，已留存来源/哈希/工具链）。
 真机、真实模型、视口首帧/帧延迟与紧凑机型面板可达性仍未验收，不在本轮宣称。
+
+## Native FloeCAD continuation — unreleased work, 2026-10-10 (part 4: manual workflows, rank DOF, canvas-owned documents, compact controls)
+
+Status: **implemented and locally verified; not merged, not tagged, not
+published.** Branch `codex/content-upgrade-20261009`. The earlier matrices in
+this page (parts 1–3) are HISTORICAL checkpoints; the matrix below is the
+current one.
+
+### What was added
+
+- **Rank-based assembly DOF, honest failure semantics.**
+  `CADAssemblySolver.degreesOfFreedom` builds the linearized screw rows of the
+  unsuppressed constraints at the current configuration (fixed 6, coaxial 4,
+  planarAlign 3, distance 1, angle 1), normalizes each row, and takes the
+  numerical rank (Gauss–Jordan + nullspace). Reported: total mobility, the
+  parts-vs-parts relative DOF, the 6 global rigid modes that only a `fixed`
+  constraint can remove, per-instance projection dimensions, and
+  `fullyConstrained` (TRUE only when grounded with zero mobility — a
+  free-floating assembly is never claimed constrained). Duplicate constraints
+  add no rank and are listed as `redundantConstraints`; the old weight-heuristic
+  (which double-counted and could claim 0 with duplicates) is gone.
+- **Failed solves no longer mutate.** `solve` and `sourceUpdate(apply:true)`
+  return `ok:false / error:constraint_failed / mutated:false` with conflict and
+  invalid-reference ids plus the uncommitted candidate as `previewInstances`;
+  the persisted assembly, document revision and undo stack stay untouched.
+- **Assembly panel is a real manual workflow.** `CADAssemblyPanelView`: an
+  explicit source-body picker (the viewport selection is only a PRESELECTION —
+  there is no implicit first body), name/position/Euler-rotation/uniform-scale
+  fields and an independent-copy toggle; per-instance edit/hide/show/delete;
+  constraint creation for fixed/coaxial/planarAlign/distance/angle with named
+  axis presets, reference points, numeric validation (distance ≥ 0, angle
+  0–180), and per-constraint suppress/enable/remove. Instance rows select the
+  instance in the viewport.
+- **Assembly instances now RENDER in the main viewport.** `EditorViewModel.scene`
+  appends one `BodyDrawable` per visible instance: it references the shared
+  source body's mesh (CoW — the document still has one body), composes the
+  instance transform with the source placement via `CADTransform.placement3D()`
+  (the same placement function the solver uses), honors per-instance hide and
+  selection highlight, and refreshes for solve/setTransform/hide/delete/undo
+  and reopen because the scene reads `assemblyData` through the change counter.
+  Viewport taps and double-taps on an instance select the INSTANCE
+  (`EditorViewModel.selectedAssemblyInstances`), not the underlying body.
+- **Drawing panel with a real vector preview and full page editing.**
+  `CADDrawingPanelView` renders the projected entities of `pageGeometry`
+  (lines/circles/arcs/polylines, dimensions as text) in a SwiftUI Canvas —
+  never a screenshot; add/edit/delete pages through `CADDrawingService` with
+  kind, source bodies (≤ 12, explicit checklist), scale, paper incl. custom
+  size, view normal/up, section plane, detail window, title, part numbers and
+  centerline/dimension toggles; PDF/SVG/DXF export uses exactly that page.
+- **ShapeScript and mesh panels show TRANSIENT result geometry before apply.**
+  `CADTransientMeshPreview` builds a bounded, order-independent-hashed snapshot
+  of the result mesh; `CADTransientPreviewView` draws it (isometric,
+  depth-sorted) in the panel. Script `preview` and mesh
+  `combine/boolean/repair/simplify` with `preview:true` compute the result on
+  their own copies and return the snapshot + `previewHash` +
+  `previewRevision`/`previewChangeCount` WITHOUT touching the document; the
+  following apply passes those values back (`expectedPreviewHash`,
+  `expectedRevision`, `expectedChangeCount`) and is refused with
+  `preview_stale` when the inputs moved — no no-op previews, no unseen
+  commits. Script records get explicit selection, editable parameters,
+  conflict choice (auto/fork/rebuild), save/remove, and the apply flow persists
+  editor edits before applying the selected record.
+- **Mesh panel explicit targets + parameters.** Body checklist (plus “use
+  viewport selection”), boolean op + explicit target/tools, combine, transform
+  (translate/axis-angle/scale), recompute normals, repair tolerance, simplify
+  ratio, boundary check, material colour/opacity and image texture from the
+  document's inserted images, and an explicit “allow destructive mesh edits
+  (drops B-rep)” acknowledgement — destructive ops never silently downgrade.
+- **Canvas-owned native CAD documents (production creation dead-end fixed).**
+  `CanvasCADStorage` owns the app-side `Application Support/FloeAgent/CanvasCAD/
+  <canvasID>/<package>.floecad` container: creation no longer requires a local
+  file workspace or an open chat task, never uses a temp directory. Node
+  bindings are `canvas-cad:<canvasUUID>/<file>` keys with traversal/containment
+  checks. A failed creation persists a PENDING record, so retry REBINDS the
+  same document instead of creating orphans; duplicate forks the package so the
+  copy is independently editable; deleting a canvas prunes its container;
+  missing packages are reported (not silently recreated). Tapping a canvas CAD
+  node opens the full-screen workbench bound to the same bridge session.
+- **Compact iPhone controls.** The compact editor no longer relies on the
+  navigation bar's automatic overflow (which collapsed whole groups into an
+  untappable “…” on iPhone): an in-content 44pt strip carries undo/redo, the
+  CAD tools entry (direct, `CADWorkbenchToolsButton`) and an explicit
+  `CADCompactMoreMenu` with fit/views/display/isolate/section, history,
+  variables, items, import/export, canvas actions, command search and settings.
+  The iPhone UI test now PASSES (no skip).
+- **Typed string formatting.** `FloeCADStrings.format` understands `%@` and
+  printf specifiers (`%lld`, `%d`, `%.2f`, `%%`, …) left to right; the export
+  byte-count call no longer leaks a raw token, and missing arguments keep the
+  specifier verbatim instead of trapping.
+- **Viewport render baseline instrumentation.**
+  `CADPerformanceBaselineTests.testViewportFirstPaintFrameAndMemoryBaseline`
+  attaches the real coordinator/renderer, renders the scene (48 bodies + 2
+  assembly instances) offscreen and reports first paint / average / worst
+  frame and resident memory. These are SIMULATOR first measurements — not
+  improvements and not physical-device frame times.
+
+### Verification actually run (2026-10-10, part 4)
+
+| Check | Command (retained logs under `Local/evidence/cad-part4/`) | Result |
+| --- | --- | --- |
+| FloeCADKit full suite | `xcodebuild test -scheme FloeCADKit` (Xcode 27A266a, iPad Air 13-inch M4 sim) | **59/59 passed** (assembly 12 incl. rank DOF/duplicate/no-mutation/sourceUpdate refusal, preview binding + strings 5, assembly render 3, drawing 8, script+mesh 10, IGES 6, proposal 6, store 4, viewport 2, perf 3) |
+| App focused | `… -only-testing:FloeAppTests/NativeCADProposalPersistenceTests …Authority …Creation …WorkbenchTests` | **21/21 passed** |
+| Host UI smoke (iPad regular) | `… CADWorkbenchHostIPadUITests` | **1/1 passed** |
+| Host UI smoke (iPhone compact) | `… CADWorkbenchHostIPhoneUITests` | **1/1 passed — NO skip** (compact strip exposed; overflow menu listed its actions) |
+| Full App test build | `xcodebuild build-for-testing …` | **TEST BUILD SUCCEEDED** |
+| Full App build (simulator) | `xcodebuild build …` | **BUILD SUCCEEDED** |
+| Viewport baseline (simulator) | perf test log | firstPaint 25.6 ms, avg frame 9.5 ms, worst 25.6 ms, RSS 817→826 MB (49 bodies incl. 2 instances) |
+| CUA fixture | `xcrun simctl launch <iPad> org.floeagent.ios -ui-testing --ui-test-cad-fixture` | fixture now carries TWO separated instances (Plate A at origin, Plate B at x=140) for the primary pass |
+
+### Current completion matrix (2026-10-10, part 4) — supersedes earlier tables
+
+| Area | State |
+| --- | --- |
+| Versioned `.floecad` kernel, atomic commit, CAS, undo/redo, off-main save | implemented + tested |
+| Sketch/parametric features, analytic B-rep, STEP/IGES import | implemented + tested |
+| Assembly service: instances, constraints, rank-based DOF, interference, source update | implemented + tested (failed solve/apply preserve the stored model) |
+| Assembly MANUAL workflow: explicit place, transform/hide/delete, constraint create/suppress/remove, viewport instancing + instance selection | implemented + tested (deterministic scene tests; fixture for CUA) |
+| Drawings: vector page preview, page/view/title/frame/section/detail/part-number editing, PDF/SVG/DXF of the visible page | implemented + tested |
+| ShapeScript: record selection/parameters/conflict handling, transient geometry preview bound to apply | implemented + tested |
+| Mesh: explicit targets/parameters, transient result preview bound to apply, B-rep downgrade acknowledgement | implemented + tested |
+| `FloeCADStrings` typed formatting (%@/%lld/%.2f) | implemented + tested |
+| Canvas-owned CAD creation/rebind/duplicate-fork/delete-prune, canvas node editor | implemented; app-level lifecycle (unit-testable paths) + CUA pending |
+| Compact iPhone control strip + explicit overflow | implemented; iPhone UI test passes |
+| Viewport instancing/perf baseline | implemented; simulator baseline measured (not a device claim) |
+| Physical-device acceptance, real configured-provider loop | **not run** — see limitations |
+| ZIP backup carrying canvas-owned `.floecad` packages | **not implemented** — the canvas ZIP backup carries the node render (PNG) and the 2D CAD drafts, not the `CanvasCAD` container; packages are durable in Application Support (device backup) and forked on duplicate. Exact missing capability: a package-directory manifest entry in `CanvasBackupPackage` plus import-time canvas-id key rewrite |
+
+### Honest limitations
+
+- The viewport numbers above are simulator measurements of the CPU/GPU path;
+  physical-device frame latency remains a primary/CUA gate.
+- A real configured-model-provider loop was NOT run: the app's chat-provider
+  credentials live in its protected store and require an interactive session;
+  this worker environment has no chat-provider key (only Volc image/search/TTS
+  environment keys) and no headless provider entry point. Exact missing
+  capability: an interactive app session with the user's configured provider.
+- The canvas ZIP backup does not include canvas-owned `.floecad` packages (see
+  matrix); device-level backup and duplicate-fork coverage are in place.
+- 中文界面（zh-Hans 目录值）随本轮新增键补齐，最终视觉中文验收仍属 CUA。
+
+### 中文摘要（2026-10-10 第四部分，未发布）
+
+本轮关闭手工工作流与正确性缺口：装配自由度改为基于约束螺旋行秩的真实计算（区分部件间自由度与 6 个
+全局刚体自由度，重复约束只计一次并列为冗余；仅“已接地且动度为零”才报告完全约束），求解/来源应用
+失败时返回结构化诊断与未提交预览、绝不写入模型（修订/撤销不变）。装配面板提供显式来源实体选择
+（视口选择仅为预选，不再隐式取第一个实体）、实例变换/隐藏/删除与固定/同轴/平面对齐/距离/角度约束的
+创建、编辑、抑制与删除；装配实例现按共享源网格＋各自变换真实渲染于主视口，支持隐藏、选中高亮与
+点选实例，求解/修改/撤销/重开即时更新。图纸面板新增真实矢量页面预览与页面/视图/标题/剖面/详图/
+零件号编辑，导出即所见页面；ShapeScript 与网格操作在应用前用临时副本生成真实结果几何（哈希＋版本
+绑定，输入变动即拒绝 preview_stale，不产生无效果预览）。画布自有 CAD 文档存储落地（无需聊天或本地
+工作区、失败保留待重建记录、重试重绑同一文档、复制画布分叉包、删除画布清理、路径包含校验），
+画布节点可直接打开工作台。iPhone 紧凑布局改为内容内 44pt 控制条＋显式溢出菜单，跳过项已消除。
+`FloeCADStrings.format` 支持 %@/%lld/%.2f 等类型化占位符。已运行：包内 59/59、App 定向 21/21、
+iPad 宿主 UI 1/1、iPhone 紧凑 1/1（无跳过）、模拟器完整 App 测试构建成功；视口首帧/帧延迟/内存
+基线为模拟器首测值（非提升、非真机宣称）。未竟：画布 ZIP 备份尚未包含自有 .floecad 包、真实模型
+provider 回路（需交互式配置，工作机无凭据入口）、真机验收。

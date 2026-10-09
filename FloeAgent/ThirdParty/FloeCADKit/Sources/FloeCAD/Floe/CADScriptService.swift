@@ -277,6 +277,19 @@ public final class CADScriptService {
                 [Double(aabb.min.x), Double(aabb.min.y), Double(aabb.min.z)],
                 [Double(aabb.max.x), Double(aabb.max.y), Double(aabb.max.z)],
             ]
+            // Transient preview geometry for the UI: the actual evaluated
+            // mesh (bounded) plus the content hash/change count that bind the
+            // subsequent apply. Nothing here writes the document.
+            // `outcome.mesh` is already the render mesh (positions/indices).
+            let render = mesh
+            if let previewHash = CADTransientMeshPreview.hash(of: render) {
+                response["previewHash"] = previewHash
+                response["previewRevision"] = document.store.revision
+                response["previewChangeCount"] = document.session.changeCount
+            }
+            if let snapshot = CADTransientMeshPreview.snapshot(of: [render]) {
+                response["mesh"] = CADTransientMeshPreview.payload(snapshot)
+            }
         }
         return response
     }
@@ -325,6 +338,25 @@ public final class CADScriptService {
         }
         guard let renderHash = Self.renderHash(render) else {
             return Self.fail("hash_failed", "The script result could not be fingerprinted; nothing was created.")
+        }
+
+        // Preview binding: when the caller previewed this exact evaluation it
+        // passes the transient preview hash (and optionally the change count).
+        // A mismatch means the inputs moved between preview and apply — refuse
+        // rather than commit geometry the user never saw.
+        if let expectedHash = args["expectedPreviewHash"] as? String, !expectedHash.isEmpty {
+            guard let previewHash = CADTransientMeshPreview.hash(of: render),
+                  previewHash == expectedHash else {
+                return Self.fail("preview_stale",
+                                 "The script output changed since the preview; preview again before applying.")
+            }
+        }
+        if let rawCount = args["expectedChangeCount"] {
+            let expectedCount = (rawCount as? Int) ?? (rawCount as? NSNumber)?.intValue
+            if let expectedCount, expectedCount != document.session.changeCount {
+                return Self.fail("preview_stale",
+                                 "The document changed since the preview; preview again before applying.")
+            }
         }
 
         // Result binding: the record's output body must still contain exactly

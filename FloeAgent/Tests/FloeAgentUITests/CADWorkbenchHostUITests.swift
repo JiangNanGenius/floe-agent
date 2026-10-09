@@ -43,19 +43,25 @@ private enum CADWorkbenchHostAssertions {
             return
         }
         // Explicit Close control (accessibility/narrow layouts), Assembly as
-        // the default mode, and each panel's structured empty state as the
-        // mode is walked.
+        // the default mode, and each panel's structured state as the mode is
+        // walked. The qualification fixture now carries real assembly
+        // instances, so the Assembly panel may show its instance list instead
+        // of the empty state — both are valid structured states.
         XCTAssertTrue(app.buttons["CADToolsSheetCloseButton"].waitForExistence(timeout: 5),
                       "the tools sheet must have an explicit Close control", file: file, line: line)
-        XCTAssertTrue(app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5),
-                      "Assembly is the default mode with its empty state", file: file, line: line)
+        let assemblyState = app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5)
+            || app.staticTexts["Instances"].waitForExistence(timeout: 5)
+        XCTAssertTrue(assemblyState,
+                      "Assembly is the default mode with its structured state", file: file, line: line)
         for panel in ["Drawings", "ShapeScript", "Mesh"] {
             app.buttons[panel].tap()
         }
         XCTAssertTrue(app.staticTexts["0 bodies selected"].waitForExistence(timeout: 5),
                       "the Mesh panel shows its selection state", file: file, line: line)
         app.buttons["Assembly"].tap()
-        XCTAssertTrue(app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5),
+        let assemblyAgain = app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5)
+            || app.staticTexts["Instances"].waitForExistence(timeout: 5)
+        XCTAssertTrue(assemblyAgain,
                       "returning to Assembly must re-show its panel", file: file, line: line)
         app.buttons["CADToolsSheetCloseButton"].tap()
     }
@@ -146,22 +152,37 @@ final class CADWorkbenchHostIPhoneUITests: XCTestCase {
         guard app.windows.firstMatch.exists else { throw XCTSkip("Requires a running host") }
         XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
         // Compact-width navigation bars overflow earlier toolbar items; the
-        // chrome contract at compact width is the core edit pair plus a
-        // tool strip that answers taps.
+        // compact contract is the core edit pair plus a tool strip that
+        // answers taps.
+        let stripExists = app.otherElements["CADCompactControlStrip"].exists
+            || app.buttons["CADCompactControlStrip"].exists
         for identifier in ["UndoButton", "RedoButton"] {
+            let visible = app.buttons.allElementsBoundByIndex.prefix(60)
+                .map { $0.identifier.isEmpty ? ($0.label) : $0.identifier }
             XCTAssertTrue(app.buttons[identifier].waitForExistence(timeout: 20),
-                          "workbench toolbar item \(identifier) must be present")
+                          "workbench toolbar item \(identifier) must be present (in-content strip: \(stripExists)); visible: \(visible)")
         }
         CADWorkbenchHostAssertions.assertToolStripResponds(app)
-        // The full tools/panel walk requires the tools entry; on narrow
-        // phones the bar may overflow it. When present it must work; when
-        // absent the gap is recorded for the primary CUA pass rather than
-        // silently ignored (panel reachability on compact phones).
-        if app.buttons["CADWorkbenchToolsButton"].waitForExistence(timeout: 5) {
-            CADWorkbenchHostAssertions.assertToolsPanels(app)
-        } else {
-            throw XCTSkip("Compact toolbar overflow hides CADWorkbenchToolsButton; panel reachability moves to the primary CUA checklist")
-        }
+        // The tools entry is a DIRECT 44pt control at compact width (the
+        // adaptive compact bar keeps it out of the automatic overflow), so
+        // the full panel walk must succeed here — no skip.
+        let visibleButtons = app.buttons.allElementsBoundByIndex.prefix(60)
+            .map { $0.identifier.isEmpty ? ($0.label) : $0.identifier }
+        XCTAssertTrue(app.buttons["CADWorkbenchToolsButton"].waitForExistence(timeout: 10),
+                      "the compact bar must keep the CAD tools entry reachable; visible buttons: \(visibleButtons)")
+        CADWorkbenchHostAssertions.assertToolsPanels(app)
+        // Every other action stays reachable through the explicit overflow
+        // menu instead of being silently dropped by bar overflow.
+        let more = app.buttons["CADCompactMoreMenu"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10),
+                      "the compact bar must expose the explicit overflow menu")
+        more.tap()
+        let sawHistoryOrSettings = app.buttons["History"].waitForExistence(timeout: 5)
+            || app.buttons["Settings"].waitForExistence(timeout: 5)
+            || app.staticTexts["History"].waitForExistence(timeout: 5)
+        XCTAssertTrue(sawHistoryOrSettings,
+                      "the overflow menu must list the non-essential actions (History/Settings)")
+        app.tap()
     }
 }
 #endif

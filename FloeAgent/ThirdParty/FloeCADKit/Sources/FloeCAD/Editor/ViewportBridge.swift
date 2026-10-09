@@ -55,6 +55,11 @@ struct BodyDrawable: Identifiable {
     /// Optional appearance override; when set its baseColor/metallic/roughness
     /// replace `baseColor` and the default shading response.
     var material: BodyMaterial?
+    /// Set when this drawable is an ASSEMBLY INSTANCE placement rather than a
+    /// document body: the shared source body's mesh is referenced (never
+    /// duplicated) and `modelMatrix` carries the instance transform composed
+    /// with the source placement. Taps and selection route to the instance id.
+    var assemblyInstanceID: UUID? = nil
 }
 
 /// A snapshot of what the viewport should draw. Value type, rebuilt cheaply

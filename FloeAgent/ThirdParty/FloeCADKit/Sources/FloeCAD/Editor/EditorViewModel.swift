@@ -65,6 +65,11 @@ final class EditorViewModel {
     }
     var selection: Set<BodyID> = []
 
+    /// Assembly instance selection (runtime only; the persisted assembly is
+    /// untouched). A viewport tap on a placed instance selects the INSTANCE —
+    /// the shared source body's mesh is referenced, never duplicated.
+    var selectedAssemblyInstances: Set<UUID> = []
+
     /// Multi-select chip (plan §B13, spec §8.1): while on, viewport taps
     /// toggle whole bodies in and out of `selection` instead of replacing
     /// it, and area selects add instead of replace. Boolean tool picking
@@ -626,6 +631,39 @@ final class EditorViewModel {
         }
         var scene = ViewportScene(bodies: drawables)
         scene.gridPlane = activeSketch?.plane
+
+        // Assembly instances: the shared immutable source body's mesh is
+        // referenced (CoW — no geometry duplication), each placement drawn
+        // with its own composed transform. Hidden instances are skipped; a
+        // selected instance highlights like a selected body. The scene reads
+        // `assemblyData` through `session.changeCount`, so solve/update/hide/
+        // delete/undo and reopen all refresh the visible placements.
+        if let data = session.document.assemblyData,
+           let assembly = try? CADAssembly.decode(from: data) {
+            for instance in assembly.instances where !instance.isHidden {
+                let effectiveID = instance.copiedBodyID ?? instance.bodyID
+                guard let source = session.document.bodies.first(where: { $0.id.raw == effectiveID }),
+                      instance.transform.isPlaceable else { continue }
+                let world = instance.transform.placement3D().composed(onto: source.transform)
+                var state = SelectionStateNone.rawValue
+                if selectedAssemblyInstances.contains(instance.id) {
+                    state = SelectionStateSelected.rawValue
+                }
+                scene.bodies.append(BodyDrawable(
+                    id: BodyID(raw: instance.id),
+                    renderMesh: source.render,
+                    edges: source.edges,
+                    meshRevision: source.meshRevision,
+                    modelMatrix: world.matrixFloat,
+                    baseColor: SIMD4(0.72, 0.74, 0.78, 1),
+                    selectionState: state,
+                    material: source.material.map {
+                        BodyMaterial(spec: $0, meshHasTexcoords: source.render.texcoords != nil,
+                                     revision: source.meshRevision)
+                    },
+                    assemblyInstanceID: instance.id))
+            }
+        }
 
         // Tool preview (extrude/revolve): translucent accent body — except a
         // face push/pull preview replaces the source body, so it renders as a
@@ -6113,8 +6151,16 @@ final class EditorViewModel {
             return
         }
         if let hit = HitTester.pickBody(ray: ray, in: scene) {
+            if let drawable = scene.bodies.first(where: { $0.id == hit.bodyID }),
+               let instanceID = drawable.assemblyInstanceID {
+                cancelTool()
+                selection.removeAll()
+                selectedAssemblyInstances = [instanceID]
+                return
+            }
             cancelTool()
             selection = [hit.bodyID]
+            selectedAssemblyInstances.removeAll()
             if let body = session.document.body(with: hit.bodyID), body.primitive != nil {
                 mode = .editingPrimitive(hit.bodyID)
             } else {
@@ -6128,6 +6174,31 @@ final class EditorViewModel {
     /// Shapr3D: a single tap on a body selects the planar face under it.
     private func selectFaceOrBody(ray: Ray) {
         let bodyHit = HitTester.pickBody(ray: ray, in: scene)
+
+        // Assembly instances are their own selectable drawables: a tap on a
+        // placement selects the INSTANCE (shared source mesh, own transform),
+        // never the underlying document body.
+        if let hit = bodyHit,
+           let drawable = scene.bodies.first(where: { $0.id == hit.bodyID }),
+           let instanceID = drawable.assemblyInstanceID {
+            cancelTool()
+            if selectionAdditive {
+                if selectedAssemblyInstances.contains(instanceID) {
+                    selectedAssemblyInstances.remove(instanceID)
+                } else {
+                    selectedAssemblyInstances.insert(instanceID)
+                }
+            } else {
+                selection.removeAll()
+                selectedAssemblyInstances = [instanceID]
+            }
+            selectedImageID = nil
+            selectedSketchEntityIDs.removeAll()
+            selectedSketchPoints.removeAll()
+            return
+        }
+        // A plain tap that is not on an instance clears the instance selection.
+        selectedAssemblyInstances.removeAll()
 
         // Multi-select chip (plan §B13, spec §8.1): additive taps toggle
         // whole bodies in and out of the selection; an empty tap keeps the

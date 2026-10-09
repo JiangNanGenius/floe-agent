@@ -224,7 +224,7 @@ final class CADAssemblyTests: XCTestCase {
                        "distance constraint must set |pB - pA| to the requested value")
     }
 
-    func testConflictingDistanceConstraintsReportedWithoutCorruption() throws {
+    func testConflictingDistanceConstraintsReportedWithoutMutation() throws {
         let bodyA = try makeBox(min: [0, 0], max: [10, 10], height: 10)
         let bodyB = try makeBox(min: [0, 0], max: [10, 10], height: 10)
         let service = service()
@@ -240,19 +240,34 @@ final class CADAssemblyTests: XCTestCase {
         let firstID = try XCTUnwrap(first["id"] as? String)
         let secondID = try XCTUnwrap(second["id"] as? String)
 
+        // Snapshot the committed package identity and placements.
+        let storedBefore = try CADAssembly.decode(from: document.session.document.assemblyData)
+        let revisionBefore = document.store.revision
+        let changeCountBefore = document.session.changeCount
+
         let solved = service.handle(action: "solve", args: [:])
-        XCTAssertEqual(solved["ok"] as? Bool, true)
-        XCTAssertEqual(solved["solved"] as? Bool, false,
-                       "contradictory distances cannot solve")
+        // A failed solve is a structured failure with preview diagnostics and
+        // NO mutation: the stored model keeps its placements, revision and
+        // undo state.
+        XCTAssertEqual(solved["ok"] as? Bool, false,
+                       "a contradictory solve must be reported as a failure")
+        XCTAssertEqual(solved["error"] as? String, "constraint_failed")
+        XCTAssertEqual(solved["solved"] as? Bool, false)
+        XCTAssertEqual(solved["mutated"] as? Bool, false)
         let conflicting = try XCTUnwrap(solved["conflicting"] as? [String])
         XCTAssertFalse(conflicting.isEmpty)
         XCTAssertTrue(conflicting.contains(firstID) || conflicting.contains(secondID))
+        XCTAssertNotNil(solved["previewInstances"] as? [[String: Any]],
+                        "the failure must carry the uncommitted candidate as a preview")
 
-        // "As close as it got", not half-written: the persisted assembly still
-        // decodes and every placement is a finite transform.
-        let stored = try CADAssembly.decode(from: document.session.document.assemblyData)
-        XCTAssertEqual(stored.instances.count, 2)
-        for instance in stored.instances {
+        let storedAfter = try CADAssembly.decode(from: document.session.document.assemblyData)
+        XCTAssertEqual(storedAfter, storedBefore,
+                       "a failed solve must not change the persisted assembly")
+        XCTAssertEqual(document.store.revision, revisionBefore,
+                       "a failed solve must not bump the document revision")
+        XCTAssertEqual(document.session.changeCount, changeCountBefore,
+                       "a failed solve must not add an undo entry")
+        for instance in storedAfter.instances {
             XCTAssertTrue(instance.transform.position.x.isFinite)
             XCTAssertTrue(instance.transform.position.y.isFinite)
             XCTAssertTrue(instance.transform.position.z.isFinite)
@@ -301,8 +316,13 @@ final class CADAssemblyTests: XCTestCase {
 
         let free = service.handle(action: "dof", args: [:])
         XCTAssertEqual(free["ok"] as? Bool, true)
-        XCTAssertEqual(free["dofModel"] as? String, "approximate")
+        XCTAssertEqual(free["dofModel"] as? String, "kinematic-rank")
         XCTAssertEqual(free["assemblyDOF"] as? Int, 12, "two free instances report 6 DOF each")
+        XCTAssertEqual(free["globalRigidDOF"] as? Int, 6,
+                       "an ungrounded assembly keeps its 6 global rigid modes")
+        XCTAssertEqual(free["relativeDOF"] as? Int, 6)
+        XCTAssertEqual(free["fullyConstrained"] as? Bool, false,
+                       "a free-floating assembly is never fully constrained")
 
         let fixed = service.handle(action: "addConstraint",
                                    args: ["kind": "fixed", "instanceA": a])
@@ -310,6 +330,10 @@ final class CADAssemblyTests: XCTestCase {
 
         let report = service.handle(action: "dof", args: [:])
         XCTAssertEqual(report["assemblyDOF"] as? Int, 6)
+        XCTAssertEqual(report["globalRigidDOF"] as? Int, 0,
+                       "a grounded assembly has no free-fly modes")
+        XCTAssertEqual(report["fullyConstrained"] as? Bool, false,
+                       "B is still free, so the assembly is not fully constrained")
         let rows = try XCTUnwrap(report["instances"] as? [[String: Any]])
         XCTAssertEqual(rows.first { $0["id"] as? String == a }?["dof"] as? Int, 0,
                        "a fixed instance reports 0 DOF")
@@ -318,6 +342,61 @@ final class CADAssemblyTests: XCTestCase {
         let unconstrained = try XCTUnwrap(report["unconstrainedInstances"] as? [String])
         XCTAssertTrue(unconstrained.contains(b))
         XCTAssertFalse(unconstrained.contains(a))
+    }
+
+    func testCoaxialDuplicateConstraintsDoNotEraseGlobalDOF() throws {
+        let bodyA = try makeBox(min: [0, 0], max: [10, 10], height: 10)
+        let bodyB = try makeBox(min: [20, 20], max: [30, 30], height: 10)
+        let service = service()
+        let a = try addInstance(service, bodyID: bodyA, name: "A")
+        let b = try addInstance(service, bodyID: bodyB, name: "B", position: [10, 0, 0])
+
+        let args: [String: Any] = [
+            "kind": "coaxial", "instanceA": a, "instanceB": b,
+            "directionA": [0.0, 0.0, 1.0], "directionB": [0.0, 0.0, 1.0],
+        ]
+        let first = service.handle(action: "addConstraint", args: args)
+        let second = service.handle(action: "addConstraint", args: args)
+        let firstID = try XCTUnwrap(first["id"] as? String)
+        let secondID = try XCTUnwrap(second["id"] as? String)
+
+        let dof = service.handle(action: "dof", args: [:])
+        // A single coaxial pair removes 4 of the 12 relative coordinates; the
+        // six global rigid modes can never be consumed by an internal
+        // constraint, and the duplicate must not count twice.
+        XCTAssertEqual(dof["assemblyDOF"] as? Int, 8,
+                       "coaxial removes 4 relative DOF; global rigid motion remains")
+        XCTAssertEqual(dof["globalRigidDOF"] as? Int, 6)
+        XCTAssertEqual(dof["relativeDOF"] as? Int, 2)
+        XCTAssertEqual(dof["fullyConstrained"] as? Bool, false)
+        let redundant = try XCTUnwrap(dof["redundantConstraints"] as? [String])
+        XCTAssertTrue(redundant.contains(secondID),
+                      "the later duplicate must be reported redundant")
+        XCTAssertFalse(redundant.contains(firstID),
+                       "the first constraint is the authoritative one")
+
+        // And the solver itself agrees the duplicate is satisfiable: solving
+        // must not report a conflict for two identical coaxials.
+        let solved = service.handle(action: "solve", args: [:])
+        XCTAssertEqual(solved["ok"] as? Bool, true)
+        XCTAssertEqual(solved["solved"] as? Bool, true)
+    }
+
+    func testFullyConstrainedRequiresGrounding() throws {
+        let bodyA = try makeBox(min: [0, 0], max: [10, 10], height: 10)
+        let bodyB = try makeBox(min: [20, 20], max: [30, 30], height: 10)
+        let service = service()
+        let a = try addInstance(service, bodyID: bodyA, name: "A")
+        let b = try addInstance(service, bodyID: bodyB, name: "B", position: [20, 0, 0])
+
+        // Grounding both instances is the minimal fully-constrained system.
+        _ = service.handle(action: "addConstraint", args: ["kind": "fixed", "instanceA": a])
+        _ = service.handle(action: "addConstraint", args: ["kind": "fixed", "instanceA": b])
+
+        let dof = service.handle(action: "dof", args: [:])
+        XCTAssertEqual(dof["assemblyDOF"] as? Int, 0)
+        XCTAssertEqual(dof["globalRigidDOF"] as? Int, 0)
+        XCTAssertEqual(dof["fullyConstrained"] as? Bool, true)
     }
 
     func testInterferenceOverlapDisjointAndMeshOnly() async throws {
@@ -396,6 +475,32 @@ final class CADAssemblyTests: XCTestCase {
 
         let after = service.handle(action: "sourceUpdate", args: [:])
         XCTAssertEqual((after["stale"] as? [String])?.isEmpty, true)
+    }
+
+    func testSourceUpdateApplyRefusesWhenConstraintsConflict() throws {
+        let bodyA = try makeBox(min: [0, 0], max: [10, 10], height: 10)
+        let bodyB = try makeBox(min: [0, 0], max: [10, 10], height: 10)
+        let service = service()
+        let a = try addInstance(service, bodyID: bodyA, name: "A")
+        let b = try addInstance(service, bodyID: bodyB, name: "B", position: [5, 0, 0])
+        _ = service.handle(action: "addConstraint", args: [
+            "kind": "distance", "instanceA": a, "instanceB": b, "value": 10.0,
+        ])
+        _ = service.handle(action: "addConstraint", args: [
+            "kind": "distance", "instanceA": a, "instanceB": b, "value": 20.0,
+        ])
+
+        let before = document.session.document.assemblyData
+        let changeCount = document.session.changeCount
+        let applied = service.handle(action: "sourceUpdate", args: ["apply": true])
+        XCTAssertEqual(applied["ok"] as? Bool, false)
+        XCTAssertEqual(applied["error"] as? String, "constraint_failed")
+        XCTAssertEqual(applied["mutated"] as? Bool, false)
+        XCTAssertNotNil(applied["previewInstances"])
+        XCTAssertEqual(document.session.document.assemblyData, before,
+                       "a refused source-update apply must not touch the assembly")
+        XCTAssertEqual(document.session.changeCount, changeCount,
+                       "a refused source-update apply must not add an undo entry")
     }
 
     func testAssemblyPersistsAcrossSaveAndReopen() async throws {
