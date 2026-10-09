@@ -42,40 +42,79 @@ stays **unproven** until a failing run records the `save.failed` domain/code.
 - This is hardening of the observed *contract* (retry-after-settle succeeds),
   not a claim that the historical selected-object failure is repaired.
 
-## Local verification attempt (2026-10-09, measured outcome)
+## Local verification (2026-10-09, measured outcome — corrected)
 
-A dedicated app-hosted qualification test now exists:
-`Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift` — opens the pinned
-`synthetic floe-sim-qual.pptx` editable through the production
-session/intent path, inserts an image attachment (the engine leaves the
-inserted object selected — the reported precondition), saves in place,
-reopens and byte-verifies persistence. When the engine runtime is available
-it performs the full save/reopen check; when unavailable it skips with the
-recorded reason (it never passes or fails for the wrong cause).
+A dedicated app-hosted qualification test exists:
+`Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift`. It mounts the **real
+production `OfficeDocumentSurface`** in a visible foreground `UIWindow`, drives
+the production preview → edit session against the pinned synthetic
+`floe-sim-qual.pptx`, waits for the host's genuine painted-surface signal
+(editable `ViewLayoutImpress`, `editSurfacePainted=1`), inserts an image
+attachment (the engine leaves the inserted object selected — the reported
+precondition), saves in place, byte-verifies the embedded `ppt/media/` part and
+a changed hash, and reopens to a rendered preview. The session itself refuses
+to flush any unrendered document (`renderGate.permitsSave`), so a green run
+proves a visible edit → selected object → save → reopen; it never passes on the
+engine-unavailable branch or a relaxed gate.
 
-Local result in this checkout: the pinned simulator host **links** and its
-resources embed (`cool.html`, `rc`, `fundamentalrc`, `program/`, `share/`,
-`ICU.dat` verified in the built app), and the kit manifest
-(`native-host-simulator.json`) records the CURRENT overlay pin
-(`overlaySHA256 4ac3cc3b…` matches `engine.lock.json`) — the kit is not
-stale. The engine runtime nevertheless aborts during `prepare` with native
-error 4 and leaves an empty profile; the kit thread swallows the startup
-exception. The newer matching workflow artifact (`office-floe-simulator-host`
-from run 36843561563) was attempted via `gh run download` into a task-owned
-path but the download was reset by the network twice — recorded as the
-measured fallback, not a verification boundary. The qualified real-engine
-runner is the cloud workflow (`.github/workflows/office-floe-simulator.yml`),
-which verifies/installs the pinned host before running. Where the engine
-does not start, the app-hosted test verifies the product surfaces its
-truthful unavailable state; the full save/reopen check runs wherever the
-qualified engine starts.
+**The earlier "engine aborts during `prepare` with native error 4 and an empty
+profile" diagnosis was inaccurate and is superseded.** On this checkout the
+pinned simulator kit (`overlaySHA256 4ac3cc3b…` matching `engine.lock.json`)
+**starts locally**: the stage trace reaches `engine.runtime.ready` (fonts
+resolved=23/staged=23) and mounts editable controllers that really paint. The
+native error 4 seen previously came from the *headless* test host: the old
+test only called `OfficeFileSession.open` without presenting a window, so the
+presentation `visibleRenderRequired` gate never observed a tile and the open
+ended at the 30 s `open.watchdog`; the (then) unavailable branch was wrongly
+reported as a pass. Mounting the production surface visibly (as the cloud
+runner and the real App do) removes that false failure — no render-gate
+relaxation was needed.
+
+Measured local results, Xcode 27 / iPad Air 13-inch (M4) iOS 27 simulator
+`37D8E931`, pinned kit `simulator-36792170654-kit`:
+
+- `FloeApp.OfficeSelectedObjectSave.selectedObjectFirstSaveAndReopen`
+  (real visible editor): **passes** — editable generation paints
+  (`permission=edit`, `ViewLayoutImpress`, new tile decodes), selected-image
+  insert, `save.ok`, one `ppt/media/` part, post-save hash differs, reopen
+  renders. Log marker `FLOE_OFFICE_SELECTED_SAVE_OK`.
+- Genuine full-app scenario `OfficeRealEngineUITests` (import → preview →
+  edit → insert slide → real slideshow of all 3 pages → idle 120 s → save →
+  remembered reopen ×2 → persist): **22/22 phases pass locally** (≈190 s). On
+  a freshly reinstalled container the cloud gate
+  `verify_real_engine_trace.py` reports `tracePassed=true` (155 events, no
+  failures), and the committed Notes resources independently unzip to 2
+  (fixture) → 3 → 4 slides. Evidence under
+  `Local/Private/evidence/content-upgrade-20261009/office-realengine-local/`.
+
+Distinct, non-blocking observation (preserved, not conflated with save): when
+the old **headless** host exited, the pinned process-lifetime Office server is
+destroyed by a static destructor (`__cxa_finalize` → `COOLWSDServer::stop()`)
+while a `SocketPoll` worker thread is still live, and a `std::mutex::lock`
+throws `system_error: mutex lock failed: Invalid argument` → `SIGABRT`
+(`ggml_uncaught_exception` frames are llama.cpp's generic backtrace handler,
+not a model failure). It is a unit-host process-teardown race only; the
+process-lifetime server is deliberately never restarted inside one app
+(`FloeOfficeNative.mm` keeps upstream shutdown destructors out of the in-app
+restart path), and neither the real App lifecycle nor the visible XCUITest
+scenario hits it. Raw excerpt retained as
+`office-realengine-local/unit-host-exit-mutex-exception.txt`.
+
+The cloud workflow (`.github/workflows/office-floe-simulator.yml`) remains the
+canonical qualified runner; run 36843561563 (`office-floe-simulator-host`,
+both jobs `success`) is the byte-identical overlay pin. Its newer framework
+binary was downloaded for diagnosis but is **not** embedded: its receipt omits
+the `engineRepair` provenance block this checkout's
+`bootstrap_office_host.verify_simulator_host` gate requires, so swapping it in
+would violate the tracked pin. The already-pinned committed kit is what
+actually started and passed locally.
 
 ## Fixture for the native verification step (primary / cloud runner)
 
 1. Run `FloeAppTests` → `FloeApp.OfficeSelectedObjectSave` /
-   `selectedObjectFirstSaveAndReopen` on a build whose engine runtime starts
-   (the cloud real-engine workflow's simulator). Accept: test passes with
-   `save.ok` or `save.busyRetry.ok` stages and differing post-save bytes.
+   `selectedObjectFirstSaveAndReopen` (now a real visible-editor host). Accept:
+   test passes with `engine.visibleRender` (editable), `save.ok`/`save.busyRetry.ok`,
+   a `ppt/media/` part and differing post-save bytes. It now passes locally.
 2. If `saveInPlace()` returns false, the issue carries `session.error` and
    the durable stage trace records the `save.failed` domain/code — code 9
    (busy, retried-and-failed) or code 8 (generic: admission vs

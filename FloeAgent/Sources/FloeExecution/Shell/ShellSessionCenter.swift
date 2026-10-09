@@ -167,6 +167,12 @@ public actor ShellSessionCenter {
         var result: ShellExchangeResult
         do {
             result = try await backend.exchangeSession(request, cancellation: cancellation)
+        } catch is CancellationError {
+            // Cooperative cancellation of the VIEW's poll loop is not a
+            // disconnect: keep the live session. The owner's explicit close()
+            // closes it itself, and genuine backend errors still take the
+            // branch below and tear the session down.
+            throw CancellationError()
         } catch {
             await close(sessionID: sessionID, runID: runID)
             throw error

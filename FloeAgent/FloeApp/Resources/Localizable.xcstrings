@@ -46897,6 +46897,40 @@
         }
       }
     },
+    "settings.internal_prompts.section.communication": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Communicating with the user"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与用户沟通"
+          }
+        }
+      }
+    },
+    "settings.internal_prompts.section.delivery": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delivering work"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "交付工作"
+          }
+        }
+      }
+    },
     "settings.internal_prompts.sections.empty": {
       "extractionState": "manual",
       "localizations": {

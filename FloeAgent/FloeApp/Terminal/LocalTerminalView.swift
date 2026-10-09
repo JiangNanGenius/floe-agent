@@ -27,6 +27,7 @@ final class LocalTerminalStore {
 /// every round trip, which made typing and output feel "toothpaste".
 struct TerminalPollCadence: Sendable {
     private(set) var idleRounds = 0
+    private(set) var inactiveRounds = 0
 
     /// Delay before the next exchange after one completes.
     mutating func delayAfterExchange(sentInput: Bool, bytesRead: Int) -> Duration {
@@ -37,6 +38,25 @@ struct TerminalPollCadence: Sendable {
         idleRounds += 1
         return .milliseconds(min(10 * idleRounds, 100))
     }
+
+    /// Delay while the guest is not alive. A still-opening/reconnecting owner
+    /// is transiently *busy* and must re-check quickly so the first prompt is
+    /// not delayed; a genuinely inactive owner (stopped, never opened, exited
+    /// or disconnected) is *idle* and must not spin at the 50 Hz busy rate.
+    /// Back off to the pre-cadence ~6.7 Hz (150 ms) idle period; the first
+    /// rounds stay short so a manual start is still noticed promptly.
+    mutating func delayWhileInactive(opening: Bool, exchangeInFlight: Bool) -> Duration {
+        if opening || exchangeInFlight {
+            inactiveRounds = 0
+            return busyDelay
+        }
+        inactiveRounds += 1
+        return .milliseconds(min(20 * inactiveRounds, 150))
+    }
+
+    /// Re-arm the inactive backoff whenever the guest is live again, so the
+    /// next disconnect/still-start sequence begins with short re-checks.
+    mutating func noteLive() { inactiveRounds = 0 }
 
     /// Delay when an exchange is still in flight (the loop is single-flight;
     /// this only smooths the re-check).
@@ -113,6 +133,7 @@ final class LocalTerminalOwner: Identifiable {
         var cadence = TerminalPollCadence()
         while !Task.isCancelled {
             if alive, !exchangeInFlight {
+                cadence.noteLive()
                 let input = pendingInput
                 pendingInput.removeAll(keepingCapacity: true)
                 if input.isEmpty {
@@ -128,7 +149,11 @@ final class LocalTerminalOwner: Identifiable {
                     _ = cadence.delayAfterExchange(sentInput: true, bytesRead: 0)
                 }
             } else {
-                do { try await Task.sleep(for: cadence.busyDelay) } catch { return }
+                // Not live. Opening/reconnecting is transient busy-work and
+                // stays responsive; a stopped/never-opened/exited/disconnected
+                // terminal backs off instead of waking at the 50 Hz busy rate.
+                let delay = cadence.delayWhileInactive(opening: opening, exchangeInFlight: exchangeInFlight)
+                do { try await Task.sleep(for: delay) } catch { return }
             }
         }
     }
@@ -202,6 +227,13 @@ final class LocalTerminalOwner: Identifiable {
                 status = String(localized: "terminal.status.running")
             }
             return result.bytesRead
+        } catch is CancellationError {
+            // Cooperative cancellation of the VIEW's poll loop (panel close,
+            // fullscreen transition) or of the owner's own close token is not
+            // a disconnect: the session stays owned and a later visible loop
+            // resumes it. Genuine backend outcomes still take the branches
+            // below and mark the shell dead.
+            return 0
         } catch let error as LinuxGuestError {
             guard self.sessionID == sessionID else { return 0 }
             alive = false

@@ -272,6 +272,24 @@ struct InternalPromptsSettingsView: View {
         values[promptLocale] ?? values["en"] ?? values.values.first ?? ""
     }
 
+    /// UI-only localized label for a compiled built-in section. The runtime
+    /// freeze stores the English heading (its body is compiled verbatim and
+    /// must stay identical across resume); this maps the stable section id to
+    /// the app's own localization table for the review-screen title so zh-Hans
+    /// users do not see an English built-in heading. The displayed body and the
+    /// model-facing frozen content are never touched. Signed packages keep
+    /// their own localized titles (see `localizedText(section.title)`).
+    private func builtInSectionTitle(_ section: ContentPackageCodec.PromptSection) -> String {
+        switch section.id {
+        case AgentPromptOverlay.deliverySectionID:
+            return FloeL10n.l("settings.internal_prompts.section.delivery")
+        case AgentPromptOverlay.communicationSectionID:
+            return FloeL10n.l("settings.internal_prompts.section.communication")
+        default:
+            return localizedText(section.title)
+        }
+    }
+
     private var sectionsSection: some View {
         Section {
             let sections = center.promptSections()
@@ -290,7 +308,7 @@ struct InternalPromptsSettingsView: View {
                                 .font(FloeTheme.Typography.body)
                                 .textSelection(.enabled)
                         } label: {
-                            Text(localizedText(section.title))
+                            Text(builtInSectionTitle(section))
                                 .font(FloeTheme.Typography.section)
                         }
                         .accessibilityIdentifier("settings.internal_prompts.section.\(section.id)")

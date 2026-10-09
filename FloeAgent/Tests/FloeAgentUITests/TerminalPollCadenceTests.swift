@@ -13,6 +13,7 @@ import Foundation
 import Testing
 import FloeExecution
 import FloeTools
+import FloeCore
 @testable import FloeApp
 
 @Suite("FloeApp.TerminalPollCadence")
@@ -39,6 +40,35 @@ struct TerminalPollCadenceTests {
         #expect(last == .milliseconds(100))
     }
 
+    @Test("Inactive cadence: stopped/never-opened/exited terminal backs off, busy open stays at the fast re-check")
+    func inactiveVsBusyCadence() {
+        var cadence = TerminalPollCadence()
+
+        // Transient busy-work (opening/reconnecting or an exchange in flight)
+        // keeps the fast 20 ms re-check so the first prompt is not delayed.
+        #expect(cadence.delayWhileInactive(opening: true, exchangeInFlight: false) == .milliseconds(20))
+        #expect(cadence.delayWhileInactive(opening: false, exchangeInFlight: true) == .milliseconds(20))
+
+        // A genuinely inactive owner (stopped / never opened / exited /
+        // disconnected) must NOT spin at the 50 Hz busy rate. It backs off
+        // 20, 40, … capped at the pre-cadence idle period of 150 ms (~6.7 Hz).
+        #expect(cadence.delayWhileInactive(opening: false, exchangeInFlight: false) == .milliseconds(20))
+        #expect(cadence.delayWhileInactive(opening: false, exchangeInFlight: false) == .milliseconds(40))
+        #expect(cadence.delayWhileInactive(opening: false, exchangeInFlight: false) == .milliseconds(60))
+        var inactiveLast = Duration.zero
+        for _ in 0..<20 { inactiveLast = cadence.delayWhileInactive(opening: false, exchangeInFlight: false) }
+        #expect(inactiveLast == .milliseconds(150), "inactive terminal must cap at 150 ms, got \(inactiveLast)")
+
+        // A busy round while reconnecting resets the inactive backoff, so once
+        // it opens the next disconnect starts with short re-checks again.
+        #expect(cadence.delayWhileInactive(opening: true, exchangeInFlight: false) == .milliseconds(20))
+        #expect(cadence.delayWhileInactive(opening: false, exchangeInFlight: false) == .milliseconds(20))
+
+        // Going live re-arms the sequence.
+        cadence.noteLive()
+        #expect(cadence.delayWhileInactive(opening: false, exchangeInFlight: false) == .milliseconds(20))
+    }
+
     /// In-process fake backend with a scripted shell: writes are echoed into
     /// an output queue, reads drain the queue with the request's blocking
     /// window (compressed to keep the test fast; latency ratios are what the
@@ -54,6 +84,7 @@ struct TerminalPollCadenceTests {
         actor State {
             var queue: [UInt8] = []
             var log: [LogEvent] = []
+            var exchangeError: Error?
             func drain(maxBytes: Int) -> [UInt8] {
                 let bytes = Array(queue.prefix(maxBytes))
                 queue.removeFirst(bytes.count)
@@ -61,6 +92,9 @@ struct TerminalPollCadenceTests {
             }
             func appendLog(_ event: LogEvent) { log.append(event) }
             func appendOutput(_ bytes: [UInt8]) { queue.append(contentsOf: bytes) }
+            func setExchangeError(_ error: Error?) { exchangeError = error }
+            func failNextExchange(_ error: Error) { exchangeError = error }
+            func clearExchangeError() { exchangeError = nil }
         }
         private let state = State()
         /// Compressed blocking window per exchange (ms).
@@ -83,6 +117,7 @@ struct TerminalPollCadenceTests {
         }
 
         func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
+            if let error = await state.exchangeError { throw error }
             if let input = request.input, !input.isEmpty {
                 await record("write", bytes: input.utf8.count)
                 // Scripted echo shell: whatever arrives becomes output.
@@ -109,14 +144,29 @@ struct TerminalPollCadenceTests {
         func scriptOutput(_ byteCount: Int) async {
             await state.appendOutput([UInt8](repeating: UInt8(ascii: "x"), count: byteCount))
         }
+
+        /// Makes the next exchange fail with `error` (cancellation vs genuine).
+        func failNextExchange(_ error: Error) async {
+            await state.failNextExchange(error)
+        }
+
+        func clearExchangeError() async {
+            await state.clearExchangeError()
+        }
     }
 
     private func makeOwner(backend: MockShellBackend) -> LocalTerminalOwner {
+        makeOwnerAndCenter(backend: backend).0
+    }
+
+    /// Returns the owner AND the exact `ShellSessionCenter` that owns its
+    /// session, so lifecycle tests can assert the center's session inventory.
+    private func makeOwnerAndCenter(backend: MockShellBackend) -> (LocalTerminalOwner, ShellSessionCenter) {
         let center = ShellSessionCenter(backend: backend)
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("terminal-cadence-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return LocalTerminalOwner(root: root, sessions: center)
+        return (LocalTerminalOwner(root: root, sessions: center), center)
     }
 
     @Test("Mock backend: a keystroke reaches the shell within one exchange round (owner loop)")
@@ -173,6 +223,48 @@ struct TerminalPollCadenceTests {
         // is the only expected cost. Generous bound for scheduler jitter.
         #expect(elapsed < .milliseconds(1_500), "256 KiB drain took \(elapsed)")
         await owner.close()
+    }
+
+    @Test("View-loop cancellation is not a disconnect: session survives and resumes")
+    func pollCancellationKeepsSessionAlive() async throws {
+        let backend = MockShellBackend()
+        let (owner, center) = makeOwnerAndCenter(backend: backend)
+        await owner.open()
+        guard owner.alive, let sessionID = owner.sessionID else {
+            Issue.record("Mock session did not open")
+            return
+        }
+        // A cancelled exchange (view loop/panel close) must not kill the shell.
+        await backend.failNextExchange(CancellationError())
+        await owner.pollOnceForTesting()
+        #expect(owner.alive, "cancellation must not mark the live shell dead")
+        #expect(owner.sessionID == sessionID, "cancellation must not drop the owned session")
+        let afterCancel = await center.activeSessionIDs(runID: owner.id)
+        #expect(afterCancel.contains(sessionID),
+                "the session center must keep the session after cooperative cancellation")
+        // And the same session keeps working afterwards.
+        await backend.clearExchangeError()
+        owner.enqueue(Data("x".utf8))
+        await owner.pollOnceForTesting()
+        #expect(owner.alive && owner.sessionID == sessionID)
+        await owner.close()
+    }
+
+    @Test("A genuine exchange failure still tears the session down")
+    func genuineExchangeFailureDisconnects() async throws {
+        let backend = MockShellBackend()
+        let (owner, center) = makeOwnerAndCenter(backend: backend)
+        await owner.open()
+        guard owner.alive, let sessionID = owner.sessionID else {
+            Issue.record("Mock session did not open")
+            return
+        }
+        await backend.failNextExchange(FloeError.validationFailed("simulated backend failure"))
+        await owner.pollOnceForTesting()
+        #expect(!owner.alive, "a real backend failure must mark the shell dead")
+        let remaining = await center.activeSessionIDs(runID: owner.id)
+        #expect(!remaining.contains(sessionID),
+                "a real backend failure must close the session in the center")
     }
 }
 #endif

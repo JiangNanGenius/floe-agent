@@ -501,6 +501,8 @@ targets:
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift
       - path: Tests/FloeAppTests/ApprovalCardRegistryTests.swift
+      - path: Tests/FloeAppTests/ContentUpdateRealSignedFeedTests.swift
+      - path: Tests/FloeAppTests/LocalLinuxTerminalRealVMTests.swift
       - path: Tests/FloeAgentUITests/TerminalPollCadenceTests.swift
       - path: Tests/FloeAgentUITests/floe-sim-qual.pptx
         buildPhase: resources

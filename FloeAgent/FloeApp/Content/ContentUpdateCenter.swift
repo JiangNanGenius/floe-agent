@@ -26,6 +26,18 @@ import FloeAgentRuntime
 @MainActor
 final class ContentUpdateCenter: ObservableObject {
 
+    /// Reads one object (or commit metadata when `path == nil`) from the
+    /// official public content hub over anonymous HTTPS. Production closes
+    /// over the app's real `SourceControlCenter`; qualification injects the
+    /// identical REST fetch pointed at an immutable commit SHA. Signature and
+    /// digest verification, version policy and the atomic install transaction
+    /// are always the real production path — this never swaps the trust root
+    /// or introduces a parallel updater.
+    typealias RepositoryFetch = @MainActor (
+        _ owner: String, _ repository: String, _ ref: String, _ path: String?
+    ) async throws -> Data
+
+
     struct InstalledRecord: Equatable, Sendable {
         var id: String
         var kind: String
@@ -117,7 +129,14 @@ final class ContentUpdateCenter: ObservableObject {
 
     // MARK: - Dependencies
 
-    private unowned let environment: AppEnvironment
+    /// Anonymous public-hub transport. Production closes over the app's real
+    /// `SourceControlCenter`; qualification injects the same fetch pinned to
+    /// an immutable commit SHA.
+    private let repositoryFetch: RepositoryFetch
+    /// Feed ref. Production always reads `main`; qualification pins an
+    /// immutable published commit SHA so the run exercises a frozen, auditable
+    /// source rather than a moving branch.
+    private let feedRef: String
     private let defaults = UserDefaults.standard
     private let store: ContentUpdateStore?
     private let storageError: String?
@@ -135,8 +154,38 @@ final class ContentUpdateCenter: ObservableObject {
     private var onWiFi = false
     private var onWiFiKnown = false
 
-    init(environment: AppEnvironment, root: URL? = nil) {
-        self.environment = environment
+    /// Production: the app's real anonymous-hub connector, feed ref `main`.
+    convenience init(environment: AppEnvironment, root: URL? = nil) {
+        let connector = environment.sourceControlCenter
+        self.init(root: root, feedRef: "main", repositoryFetch: { owner, repository, ref, path in
+            try await connector.skillRepositoryData(
+                owner: owner, repository: repository, ref: ref, path: path,
+                usesConnectorCredential: false
+            )
+        })
+    }
+
+    #if DEBUG
+    /// Qualification only: drive the real center against an immutable
+    /// published commit through the identical anonymous GitHub transport,
+    /// without standing up the whole `AppEnvironment`. Trust root, signature
+    /// and digest verification, version policy and the atomic install
+    /// transaction are unchanged production code; only the bytes' ref and the
+    /// on-disk store root are redirected. Never compiled into release.
+    static func forImmutableCommit(
+        _ commit: String,
+        root: URL,
+        fetch: @escaping RepositoryFetch
+    ) -> ContentUpdateCenter {
+        ContentUpdateCenter(root: root, feedRef: commit, repositoryFetch: fetch)
+    }
+    #endif
+
+    /// Designated: the transport is required (no environment back-reference is
+    /// kept — the center only ever needs the fetch closure).
+    private init(root: URL?, feedRef: String, repositoryFetch: @escaping RepositoryFetch) {
+        self.feedRef = feedRef
+        self.repositoryFetch = repositoryFetch
         let support = try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false
@@ -332,23 +381,19 @@ final class ContentUpdateCenter: ObservableObject {
 
     private func fetchVerifiedFeed(store: ContentUpdateStore) async throws -> (SignedContentFeed, String) {
         let source = try OfficialContentHub.source()
-        let connector = environment.sourceControlCenter
-        let commitData = try await connector.skillRepositoryData(
-            owner: source.owner, repository: source.repository,
-            ref: source.ref, path: nil, usesConnectorCredential: false
+        let commitData = try await repositoryFetch(
+            source.owner, source.repository, feedRef, nil
         )
         struct Commit: Decodable { let sha: String }
         let commit = try JSONDecoder().decode(Commit.self, from: commitData).sha
         guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else {
             throw SignedContentFailure.feed
         }
-        let index = try await connector.skillRepositoryData(
-            owner: source.owner, repository: source.repository,
-            ref: commit, path: OfficialContentHub.indexPath, usesConnectorCredential: false
+        let index = try await repositoryFetch(
+            source.owner, source.repository, commit, OfficialContentHub.indexPath
         )
-        let signature = try await connector.skillRepositoryData(
-            owner: source.owner, repository: source.repository,
-            ref: commit, path: OfficialContentHub.signaturePath, usesConnectorCredential: false
+        let signature = try await repositoryFetch(
+            source.owner, source.repository, commit, OfficialContentHub.signaturePath
         )
         let feed = try await store.verifyFeed(
             index: index, signature: signature, trustedKeys: OfficialSkillHub.trustedKeys
@@ -469,13 +514,12 @@ final class ContentUpdateCenter: ObservableObject {
         for id in needed { installInFlight.insert(id) }
         defer { for id in needed { installInFlight.remove(id) } }
 
-        let connector = environment.sourceControlCenter
         var batch: [ContentUpdateStore.BatchItem] = []
         for id in needed {
             guard let item = plan.items[id] else { continue }
-            let zip = try await connector.skillRepositoryData(
-                owner: OfficialContentHub.owner, repository: OfficialContentHub.repository,
-                ref: snapshot.commit, path: item.entry.path, usesConnectorCredential: false
+            let zip = try await repositoryFetch(
+                OfficialContentHub.owner, OfficialContentHub.repository,
+                snapshot.commit, item.entry.path
             )
             batchBytes += zip.count
             guard batchBytes <= 64 * 1_024 * 1_024 else {

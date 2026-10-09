@@ -238,6 +238,7 @@
 		90C63942E9AF35955B3FA0B9 /* CreativeAssetIngestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */; };
 		912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */; };
 		91EA3DEC4908CCC6F47A53C3 /* LayoutPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB38C0A73749F36D4220FE3F /* LayoutPreferences.swift */; };
+		91EF544AB5F6A11102AF1996 /* ContentUpdateRealSignedFeedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09764BE52F1D5879D0DD63EB /* ContentUpdateRealSignedFeedTests.swift */; };
 		9233A31C6990563129C25B2B /* floe-sim-qual.pptx in Resources */ = {isa = PBXBuildFile; fileRef = 316DA0723AA58D762AD5EF3E /* floe-sim-qual.pptx */; };
 		92B24B94472F24426637372F /* dashB.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 35B5A41ABFA2589E38D1E784 /* dashB.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		93988B422674C07884228520 /* IDELanguageRunPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 056D48997010E93B1EA2BD84 /* IDELanguageRunPolicy.swift */; };
@@ -373,6 +374,7 @@
 		DFEE733D8E6C4F1C018D2EEA /* HeavyRuntimeConflictCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59AC485C9A8012E5FBA241E0 /* HeavyRuntimeConflictCenter.swift */; };
 		E11239ECA4A085CFD74D31B0 /* FloeShellEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 923643E245C0A12DF9647622 /* FloeShellEngine */; };
 		E2667D676B12957E2787BD59 /* FilesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00969624B0A954308417634B /* FilesViewModel.swift */; };
+		E28CF9438A445A3211CA0B98 /* LocalLinuxTerminalRealVMTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A215E12AB436586E9B2DE7A4 /* LocalLinuxTerminalRealVMTests.swift */; };
 		E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219CD6341FB443743691F92D /* LocalPreviewServer.swift */; };
 		E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */; };
 		E40E39F14DBED467D850E91A /* FloeProviders in Frameworks */ = {isa = PBXBuildFile; productRef = B6555425212C5867CBB75D36 /* FloeProviders */; };
@@ -496,6 +498,7 @@
 		0820216531ADA023BF4AC6B5 /* CodeEditorCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditorCore.swift; sourceTree = "<group>"; };
 		085605503DC285FC91B0449B /* HostEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditorView.swift; sourceTree = "<group>"; };
 		09130318B26A8CC203740EA0 /* LocalTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTerminalView.swift; sourceTree = "<group>"; };
+		09764BE52F1D5879D0DD63EB /* ContentUpdateRealSignedFeedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentUpdateRealSignedFeedTests.swift; sourceTree = "<group>"; };
 		09CB04D2BFAC5929E4265F1F /* ExternalWorkspaceTemplateAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalWorkspaceTemplateAccessTests.swift; sourceTree = "<group>"; };
 		09F2199DBD6A16038C3468C7 /* OfficeInkPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeInkPreferences.swift; sourceTree = "<group>"; };
 		0ADAB596B28C48F18A0D1196 /* RichArtifactView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichArtifactView.swift; sourceTree = "<group>"; };
@@ -748,6 +751,7 @@
 		A082083860EE4285F25B90BA /* MindMapEdgesLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MindMapEdgesLayer.swift; sourceTree = "<group>"; };
 		A18EF17B949C9C5817F9DCE9 /* PrivacySecurityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySecurityView.swift; sourceTree = "<group>"; };
 		A1F564E49046005F6AEEB1EF /* NotesEngineeringView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesEngineeringView.swift; sourceTree = "<group>"; };
+		A215E12AB436586E9B2DE7A4 /* LocalLinuxTerminalRealVMTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalLinuxTerminalRealVMTests.swift; sourceTree = "<group>"; };
 		A2633E84AC1785E404DEC82A /* HomeLaunchpadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeLaunchpadView.swift; sourceTree = "<group>"; };
 		A3C3CC090EE8725611E64C35 /* FloeImageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeImageEditorView.swift; sourceTree = "<group>"; };
 		A421102C6F73CB0DCC678535 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
@@ -1174,9 +1178,11 @@
 				0DBB17111CB3EFA4C8BF7302 /* CadWebEngineSessionTests.swift */,
 				FE6C8028BD08725BB2E7F7A4 /* CapabilityExecutionRouterTests.swift */,
 				F45D36BF6CCD7DE422A618F0 /* ComposerTests.swift */,
+				09764BE52F1D5879D0DD63EB /* ContentUpdateRealSignedFeedTests.swift */,
 				E8F8FC341EB79C0398024D88 /* EngineeringWebSessionReparentTests.swift */,
 				09CB04D2BFAC5929E4265F1F /* ExternalWorkspaceTemplateAccessTests.swift */,
 				57E8DF48A4B14C35313776F0 /* IDEMarkdownOutlineTests.swift */,
+				A215E12AB436586E9B2DE7A4 /* LocalLinuxTerminalRealVMTests.swift */,
 				03667B0F672BB8254A12AAD8 /* OfficeEditEntryAckTests.swift */,
 				86170DEFDF34F4E46569FBF7 /* OfficePresentationOpeningTests.swift */,
 				1D7142BCE7885AECB1430A26 /* OfficeSelectedObjectSaveTests.swift */,
@@ -2421,6 +2427,7 @@
 				661CA51EDEEDD000187330F0 /* CanvasTouchInteractionTests.swift in Sources */,
 				80F0C36814D20EE8E41C4F8F /* CapabilityExecutionRouterTests.swift in Sources */,
 				1F9E9D4798A43C720FD0E1AF /* ComposerTests.swift in Sources */,
+				91EF544AB5F6A11102AF1996 /* ContentUpdateRealSignedFeedTests.swift in Sources */,
 				A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */,
 				F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */,
 				1B09F214770EC590CB41E94B /* CreativeMediaModelsTests.swift in Sources */,
@@ -2434,6 +2441,7 @@
 				969E2E0B2506BF1A1752EADC /* IDERunSourceStagingTests.swift in Sources */,
 				5783D26BF683BAD283217A43 /* ImportantFileShortcutTests.swift in Sources */,
 				FCD2E354FB678A9A1CB365D9 /* LinuxComponentUpdatePolicyTests.swift in Sources */,
+				E28CF9438A445A3211CA0B98 /* LocalLinuxTerminalRealVMTests.swift in Sources */,
 				413F511639D463F80B8F7E2B /* LocalShellRuntimeTests.swift in Sources */,
 				5BE98E2301E8DA1F45A90A2D /* LuaShellInstallTests.swift in Sources */,
 				B3B2899A491FD31765C51A2C /* MailConnectorTests.swift in Sources */,
