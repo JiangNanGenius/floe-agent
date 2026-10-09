@@ -124,7 +124,9 @@ class FeatherProvenanceTests(unittest.TestCase):
         for job in ('direct-testflight', 'expedited-testflight', 'recover-testflight',
                     'component-recovery', 'prepare-release', 'build-verify-release', 'notes-component'):
             condition = helpers.job_scalar(helpers.job_block(source, job), 'if')
-            self.assertTrue(condition.startswith('${{ !inputs.recover_developer_build191 && '), job)
+            # The local-artifact guard can precede the legacy recovery guard;
+            # require both guards to remain top-level conjunctions in that case.
+            self.assertRegex(condition, r"^\$\{\{ (?:inputs\.local_artifact_sha256 == '' && )?!inputs\.recover_developer_build191 && ", job)
         package = (root / '.github/workflows/developer-ipa-from-recovery.yml').read_text()
         self.assertNotIn('altool', package)
         self.assertNotIn('CODE_SIGNING_ALLOWED', package)
