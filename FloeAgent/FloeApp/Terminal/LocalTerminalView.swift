@@ -19,6 +19,30 @@ final class LocalTerminalStore {
     }
 }
 
+/// Poll cadence for the local terminal loop. One exchange already blocks up
+/// to its `waitMs` server-side, so the loop only adds pacing when the guest
+/// is quiet: no delay at all while input was sent or output arrived (echo and
+/// sustained output then drain at transport speed), and a short bounded
+/// backoff while idle. The previous fixed 150 ms sleep stacked on top of
+/// every round trip, which made typing and output feel "toothpaste".
+struct TerminalPollCadence: Sendable {
+    private(set) var idleRounds = 0
+
+    /// Delay before the next exchange after one completes.
+    mutating func delayAfterExchange(sentInput: Bool, bytesRead: Int) -> Duration {
+        if sentInput || bytesRead > 0 {
+            idleRounds = 0
+            return .zero
+        }
+        idleRounds += 1
+        return .milliseconds(min(10 * idleRounds, 100))
+    }
+
+    /// Delay when an exchange is still in flight (the loop is single-flight;
+    /// this only smooths the re-check).
+    var busyDelay: Duration { .milliseconds(20) }
+}
+
 @MainActor @Observable
 final class LocalTerminalOwner: Identifiable {
     let id = UUID()
@@ -86,14 +110,26 @@ final class LocalTerminalOwner: Identifiable {
     }
 
     func pollWhileVisible() async {
+        var cadence = TerminalPollCadence()
         while !Task.isCancelled {
             if alive, !exchangeInFlight {
                 let input = pendingInput
                 pendingInput.removeAll(keepingCapacity: true)
-                if input.isEmpty { await exchange(nil) }
-                else { await send(input) }
+                if input.isEmpty {
+                    let bytesRead = await exchange(nil)
+                    let delay = cadence.delayAfterExchange(sentInput: false, bytesRead: bytesRead)
+                    if delay > .zero {
+                        do { try await Task.sleep(for: delay) } catch { return }
+                    }
+                } else {
+                    await send(input)
+                    // Input went out: poll again immediately so the echo and
+                    // any follow-up keystroke batch at transport speed.
+                    _ = cadence.delayAfterExchange(sentInput: true, bytesRead: 0)
+                }
+            } else {
+                do { try await Task.sleep(for: cadence.busyDelay) } catch { return }
             }
-            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
         }
     }
 
@@ -132,13 +168,27 @@ final class LocalTerminalOwner: Identifiable {
         status = String(localized: "terminal.status.closed")
     }
 
-    private func exchange(_ input: String?) async {
-        guard let sessionID, alive, !exchangeInFlight else { return }
+    @discardableResult
+    /// One visible-loop iteration (flush pending input / drain output), with
+    /// the cadence sleep left to the caller. DEBUG-only seam so the cadence
+    /// measurements drive the real production body instead of a copy.
+    #if DEBUG
+    func pollOnceForTesting() async {
+        guard alive, !exchangeInFlight else { return }
+        let input = pendingInput
+        pendingInput.removeAll(keepingCapacity: true)
+        if input.isEmpty { _ = await exchange(nil) }
+        else { await send(input) }
+    }
+    #endif
+
+    private func exchange(_ input: String?) async -> Int {
+        guard let sessionID, alive, !exchangeInFlight else { return 0 }
         exchangeInFlight = true
         defer { exchangeInFlight = false }
         do {
             let result = try await sessions.exchange(sessionID: sessionID, input: input, waitMs: 50, maxBytes: 64 * 1024, runID: id, cancellation: token, forTerminal: true)
-            guard self.sessionID == sessionID else { return }
+            guard self.sessionID == sessionID else { return 0 }
             append(result.terminalOutput ?? Data(result.output.utf8))
             alive = result.alive
             if !alive {
@@ -151,8 +201,9 @@ final class LocalTerminalOwner: Identifiable {
             } else {
                 status = String(localized: "terminal.status.running")
             }
+            return result.bytesRead
         } catch let error as LinuxGuestError {
-            guard self.sessionID == sessionID else { return }
+            guard self.sessionID == sessionID else { return 0 }
             alive = false
             if case .imageNotQualified = error {
                 missingImageID = LinuxGuestImageDistributionCatalog.defaultImageID
@@ -161,10 +212,11 @@ final class LocalTerminalOwner: Identifiable {
                 status = String(describing: error)
             }
         } catch {
-            guard self.sessionID == sessionID else { return }
+            guard self.sessionID == sessionID else { return 0 }
             alive = false
             status = String(describing: error)
         }
+        return 0
     }
 
     private func append(_ data: Data) {
