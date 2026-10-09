@@ -57,14 +57,17 @@ the folder), `requiredCapabilities`, `dependencies`, `sourceRevision`,
 `containsScripts`. All files under the source folder (including `content.json`)
 are stored at archive root under their relative path with deterministic 1980
 timestamps and `0644`, sorted. Dot-prefixed or unsafe paths and symlinks are
-rejected. Prompts packages are descriptive metadata only; they must not claim to
-be active runtime rules.
+rejected. Prompt packages may replace only the compiled allowlist of working-method,
+communication and delivery sections. The runtime freezes the selected content
+for each task. Permission, approval, tool protocol and security rules remain
+compiled into the App and cannot be replaced by a content package.
 
 `content.json` 至少包含 `schemaVersion`、`id`、`version`，并携带
 `minimumAppVersion`、`releaseNotes` 等上述字段。源目录下的全部文件（含
 `content.json`）以相对路径写入归档根目录，时间戳固定为 1980-01-01、权限固定为
-`0644`，条目排序。拒绝符号链接、点开头或越界路径。提示词包只是描述性元数据，
-不得声称是生效中的运行时规则。
+`0644`，条目排序。拒绝符号链接、点开头或越界路径。提示词包只可替换代码白名单中的工作方法、
+沟通和交付段落；运行时为每个任务冻结选定内容。权限、审批、工具协议和安全规则
+仍由 App 代码固定，内容包不可替换。
 
 ## Build / Check / Sign / 构建、校验、签名
 
