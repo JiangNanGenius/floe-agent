@@ -510,6 +510,13 @@ struct OfficeIDETabOpenContractTests {
 
 @Suite("FloeApp.OfficeSaveAdmissionRetry")
 struct OfficeSaveAdmissionRetryTests {
+    /// Mutable counter usable from @Sendable closures under strict
+    /// concurrency (same pattern as the runtime test support).
+    final class Box: @unchecked Sendable {
+        var attempts = 0
+        var retried = false
+    }
+
     private func nativeError(_ code: Int) -> NSError {
         NSError(domain: OfficeSaveAdmissionRetry.errorDomain, code: code, userInfo: [
             NSLocalizedDescriptionKey: "synthetic"
@@ -536,87 +543,84 @@ struct OfficeSaveAdmissionRetryTests {
 
     @Test("A clean save performs exactly one attempt")
     func cleanSaveSingleAttempt() async throws {
-        var attempts = 0
+        let box = Box()
         let count = try await OfficeSaveAdmissionRetry.run(delay: {}) {
-            attempts += 1
+            box.attempts += 1
         }
         #expect(count == 1)
-        #expect(attempts == 1)
+        #expect(box.attempts == 1)
     }
 
     @Test("A busy failure is retried once and then succeeds")
     func busyFailureRetriesOnce() async throws {
-        var attempts = 0
-        var retried = false
+        let box = Box()
         let count = try await OfficeSaveAdmissionRetry.run(
-            onRetry: { retried = true },
+            onRetry: { box.retried = true },
             delay: {}
         ) {
-            attempts += 1
-            if attempts == 1 { throw self.nativeError(9) }
+            box.attempts += 1
+            if box.attempts == 1 { throw self.nativeError(9) }
         }
         #expect(count == 2)
-        #expect(attempts == 2)
-        #expect(retried)
+        #expect(box.attempts == 2)
+        #expect(box.retried)
     }
 
     @Test("A generic completion failure (code 8) propagates without a retry")
     func genericCompletionFailureDoesNotRetry() async throws {
-        var attempts = 0
-        var retried = false
+        let box = Box()
         await #expect(throws: NSError.self) {
             try await OfficeSaveAdmissionRetry.run(
-                onRetry: { retried = true },
+                onRetry: { box.retried = true },
                 delay: {}
             ) {
-                attempts += 1
+                box.attempts += 1
                 throw self.nativeError(8)
             }
         }
-        #expect(attempts == 1)
-        #expect(!retried)
+        #expect(box.attempts == 1)
+        #expect(!box.retried)
     }
 
     @Test("A second busy failure propagates after exactly two attempts")
     func persistentBusyFailureStopsAtTwoAttempts() async throws {
-        var attempts = 0
-        var retried = false
+        let box = Box()
         await #expect(throws: NSError.self) {
             try await OfficeSaveAdmissionRetry.run(
-                onRetry: { retried = true },
+                onRetry: { box.retried = true },
                 delay: {}
             ) {
-                attempts += 1
+                box.attempts += 1
                 throw self.nativeError(9)
             }
         }
-        #expect(attempts == 2)
-        #expect(retried)
+        #expect(box.attempts == 2)
+        #expect(box.retried)
     }
 
     @Test("Cancellation during the settle delay prevents the second attempt")
     func cancellationPreventsSecondAttempt() async throws {
-        var attempts = 0
-        var retried = false
+        let box = Box()
         let task = Task {
             try await OfficeSaveAdmissionRetry.run(
-                onRetry: { retried = true },
-                delay: { await Task.never() }
+                onRetry: { box.retried = true },
+                delay: { try await Task.sleep(nanoseconds: .max) }
             ) {
-                attempts += 1
-                if attempts == 1 { throw self.nativeError(9) }
+                box.attempts += 1
+                if box.attempts == 1 { throw self.nativeError(9) }
             }
         }
         // Let the first attempt fail and the retry schedule; then cancel.
-        while attempts < 1 { try? await Task.sleep(for: .milliseconds(5)) }
+        while box.attempts < 1 { try? await Task.sleep(for: .milliseconds(5)) }
         try? await Task.sleep(for: .milliseconds(50))
         task.cancel()
         let result = await task.result
         #expect(throws: CancellationError.self) {
             try result.get()
         }
-        #expect(attempts == 1, "A cancelled retry must never write again")
-        #expect(retried)
+        #expect(box.attempts == 1, "A cancelled retry must never write again")
+        #expect(box.retried)
     }
 }
+
 #endif

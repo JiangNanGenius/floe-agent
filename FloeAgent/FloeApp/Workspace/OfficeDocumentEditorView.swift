@@ -1408,7 +1408,9 @@ final class OfficeFileSession: ObservableObject {
             // the activity settles. Generic completion failures (code 8) are
             // surfaced, never masked: they can be genuine save defects.
             let saveAttempts = try await OfficeSaveAdmissionRetry.run(
-                onRetry: { [weak self] in self?.recordStage("save.busyRetry", [:]) }
+                onRetry: { [weak self] in
+                    Task { @MainActor [weak self] in self?.recordStage("save.busyRetry", [:]) }
+                }
             ) {
                 try await Self.saveWorkingCopy(native)
             }
