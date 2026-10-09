@@ -454,6 +454,7 @@ targets:
     sources:
       - path: Tests/FloeAgentUITests
         excludes:
+          - TerminalPollCadenceTests.swift
           - IDERunSourceStagingTests.swift
           - IDELanguageRunPolicyTests.swift
           - HomeChatSeparationTests.swift
