@@ -332,6 +332,22 @@ public protocol CadDocumentHost: Sendable {
     /// source document.
     func export(documentID: String, relativeOutput: String,
                 access: CadDocumentAccess) async throws -> CadExportReceipt
+    /// Native FloeCAD request. `requestJSON` carries a `kind` plus the typed
+    /// operation/payload. Read-only kinds (`snapshot`, `measure`, `assembly`,
+    /// `drawing` reads) return JSON; `propose` validates on a throwaway copy
+    /// and never writes; `apply` requires a UI-issued single-use `grant_id`
+    /// bound to the proposal and base revision/SHA.
+    func threeDAction(documentID: String, requestJSON: String,
+                      access: CadDocumentAccess) async throws -> String
+}
+
+public extension CadDocumentHost {
+    /// Environments without the native CAD kernel must answer honestly rather
+    /// than pretending the action is unsupported per-file.
+    func threeDAction(documentID: String, requestJSON: String,
+                      access: CadDocumentAccess) async throws -> String {
+        throw FloeError.notFound("native_cad_kernel")
+    }
 }
 
 // MARK: - Trusted confirmation grants
@@ -359,6 +375,18 @@ public actor CadProposalGrantStore {
     }) {
         self.timeToLive = timeToLive
         self.idProvider = idProvider
+    }
+
+    @discardableResult
+    public func issueGrant(proposalID: UUID, documentID: String,
+                           revision: Int64, sha256: String, now: Date = Date()) -> String {
+        sweep(now: now)
+        let id = idProvider()
+        entries[id] = Entry(proposalID: proposalID, documentID: documentID,
+                            revision: revision, sha256: sha256,
+                            expiresAt: now.addingTimeInterval(timeToLive), consumed: false,
+                            reserved: false)
+        return id
     }
 
     @discardableResult
@@ -443,6 +471,15 @@ public actor CadProposalGrantStore {
 
 public enum CadDocumentAction: String, Decodable, Sendable {
     case capabilities, read, query, locate, measure, check, propose, preview, apply, save, export
+    // Native FloeCAD (3D / parametric / assembly / drawings) actions. These
+    // route typed operations to the native kernel through `CadDocumentHost`;
+    // mutations still require a UI-issued grant, exactly like the 2D path.
+    case threeDSnapshot = "three_d_snapshot"
+    case threeDMeasure = "three_d_measure"
+    case threeDPropose = "three_d_propose"
+    case threeDApply = "three_d_apply"
+    case threeDAssembly = "three_d_assembly"
+    case threeDDrawing = "three_d_drawing"
 }
 
 public struct CadDocumentArguments: Decodable, Sendable {
@@ -464,9 +501,15 @@ public struct CadDocumentArguments: Decodable, Sendable {
     public var offset: Int?
     public var limit: Int?
     public var output: String?
+    /// Native CAD: the typed operation name (for example `feature.extrude`).
+    public var op: String?
+    /// Native CAD: the operation's `args` object, encoded as a JSON string.
+    public var args: String?
+    /// Native CAD: assembly/drawing request payload, encoded as a JSON string.
+    public var payload: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output
+        case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output, op, args, payload
         case proposalID = "proposal_id"
         case grantID = "grant_id"
         case requestID = "request_id"
@@ -488,9 +531,16 @@ public struct CadDocumentTool: AgentTool {
     issued in the CAD UI. Supported edits are lines, circles, arcs, LWPolylines \
     (including rectangles), single-line text, dimensions and leaders plus \
     move/copy/rotate/scale/mirror/trim/extend/offset and layer management. \
-    3D, blocks, xrefs, splines and proxy graphics are retained read-only; they \
-    are never flattened. Units stay drawing units when the file leaves them \
-    undefined.
+    3D, blocks, xrefs, splines and proxy graphics are retained read-only in \
+    the 2D engine; they are never flattened. Units stay drawing units when the \
+    file leaves them undefined.
+    Native `.floecad` documents add parametric 3D actions: three_d_snapshot, \
+    three_d_measure, three_d_propose (validated on a throwaway copy, returns a \
+    diff preview and a proposal id), three_d_apply (requires the UI-issued \
+    single-use grant_id bound to that proposal and base revision/SHA), \
+    three_d_assembly and three_d_drawing. Propose/apply use the shared typed \
+    operation vocabulary (feature.extrude, feature.boolean, feature.fillet, \
+    feature.shell, feature.pattern, ...); nothing is written before apply.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -607,6 +657,23 @@ public struct CadDocumentTool: AgentTool {
             if let tolerance = args.tolerance, !(tolerance.isFinite && tolerance > 0) {
                 throw FloeError.validationFailed("tolerance must be positive")
             }
+        case .threeDSnapshot, .threeDAssembly, .threeDDrawing:
+            break
+        case .threeDMeasure, .threeDPropose:
+            guard let op = args.op, !op.isEmpty else {
+                throw FloeError.validationFailed("\(args.action.rawValue) requires op")
+            }
+            if let raw = args.args,
+               (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] == nil {
+                throw FloeError.validationFailed("args must be a JSON object string")
+            }
+        case .threeDApply:
+            guard args.proposalID != nil else {
+                throw FloeError.validationFailed("three_d_apply requires proposal_id")
+            }
+            guard let grant = args.grantID, !grant.isEmpty else {
+                throw FloeError.validationFailed("three_d_apply requires a user-issued grant_id")
+            }
         case .propose:
             guard let operations = args.operations, !operations.isEmpty else {
                 throw FloeError.validationFailed("propose requires at least one operation")
@@ -668,6 +735,37 @@ public struct CadDocumentTool: AgentTool {
               candidate == expected else {
             throw FloeError.unauthorized
         }
+    }
+
+    /// Build the native request envelope. `args.args`/`args.payload` are JSON
+    /// object strings; anything else is refused before it reaches the kernel.
+    static func threeDRequestJSON(kind: String, args: CadDocumentArguments) throws -> String {
+        var object: [String: Any] = ["kind": kind]
+        if let op = args.op { object["op"] = op }
+        if let raw = args.args {
+            guard let data = raw.data(using: .utf8),
+                  let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                throw FloeError.validationFailed("cad.document args must be a JSON object string.")
+            }
+            object["args"] = parsed
+        }
+        if let raw = args.payload {
+            guard let data = raw.data(using: .utf8),
+                  let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                throw FloeError.validationFailed("cad.document payload must be a JSON object string.")
+            }
+            object["payload"] = parsed
+        }
+        if let summary = args.summary { object["summary"] = summary }
+        if let proposalID = args.proposalID { object["proposal_id"] = proposalID.uuidString }
+        if let grantID = args.grantID { object["grant_id"] = grantID }
+        if let requestID = args.requestID { object["request_id"] = requestID }
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            throw FloeError.validationFailed("cad.document request could not be encoded.")
+        }
+        return text
     }
 
     public func execute(_ args: CadDocumentArguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -826,6 +924,34 @@ public struct CadDocumentTool: AgentTool {
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let json = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "{}"
             return ToolExecutionOutput(digesting: bounded("cad.document export: \(json)", 16_000))
+
+        case .threeDSnapshot, .threeDMeasure, .threeDPropose, .threeDApply,
+             .threeDAssembly, .threeDDrawing:
+            let kind: String
+            switch args.action {
+            case .threeDSnapshot: kind = "snapshot"
+            case .threeDMeasure: kind = "measure"
+            case .threeDPropose: kind = "propose"
+            case .threeDApply: kind = "apply"
+            case .threeDAssembly: kind = "assembly"
+            default: kind = "drawing"
+            }
+            // The model never mints a grant; the field is passed through only
+            // so the host can validate one the UI issued. Missing/forged values
+            // are refused by the host.
+            if kind == "apply" {
+                guard args.proposalID != nil, let grant = args.grantID, !grant.isEmpty else {
+                    throw FloeError.validationFailed(
+                        "cad.document three_d_apply requires proposal_id and a UI-issued grant_id.")
+                }
+            }
+            if (kind == "propose" || kind == "measure"), args.op == nil {
+                throw FloeError.validationFailed("cad.document \(kind) requires op.")
+            }
+            let request = try Self.threeDRequestJSON(kind: kind, args: args)
+            let reply = try await host.threeDAction(documentID: args.path!,
+                                                    requestJSON: request, access: access)
+            return ToolExecutionOutput(digesting: bounded("cad.document \(kind): \(reply)", 48_000))
         }
     }
 

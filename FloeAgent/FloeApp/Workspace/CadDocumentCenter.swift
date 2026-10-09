@@ -17,6 +17,7 @@
 //   * tool-call ids are idempotent per authenticated owner/action/payload.
 
 import Foundation
+import FloeCAD
 import FloeCore
 import FloeTools
 import FloeWorkbench
@@ -30,6 +31,81 @@ func registerCadDocumentTools(center: CadDocumentCenter, registry: ToolRunnerReg
 }
 
 actor CadDocumentCenter: CadDocumentHost {
+
+    // MARK: - Native FloeCAD (3D) actions
+
+    /// Routes a native CAD request to `FloeCAD3DBridge` after the same access
+    /// authorization and canonical path resolution the 2D engine uses. The
+    /// bridge enforces propose-on-copy and UI-grant apply; this host never
+    /// mints a grant from tool input.
+    func threeDAction(documentID: String, requestJSON: String,
+                      access: CadDocumentAccess) async throws -> String {
+        let resolved = try resolve(documentID: documentID, access: access)
+        let url = try resolved.service.guardResolver.resolve(resolved.id)
+        // Apply is authorized HERE through the shared CadProposalGrantStore:
+        // the bridge never mints or consumes a grant.
+        if let data = requestJSON.data(using: .utf8),
+           let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           request["kind"] as? String == "apply" {
+            guard let proposalString = request["proposal_id"] as? String,
+                  let proposalID = UUID(uuidString: proposalString),
+                  let grantID = request["grant_id"] as? String else {
+                throw CADDocumentError(code: "grant_required",
+                                       message: "apply requires proposal_id and a UI-issued grant_id.")
+            }
+            let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
+            let decision = await grants.consume(grantID: grantID,
+                                                proposalID: proposalID,
+                                                documentID: binding.documentPath,
+                                                revision: Int64(binding.revision),
+                                                sha256: binding.contentSHA256)
+            guard case .authorized = decision else {
+                throw CADDocumentError(code: "grant_refused",
+                                       message: "The confirmation grant was refused (\(decision)).")
+            }
+            let receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
+            let payload: [String: Any] = [
+                "ok": true,
+                "receipt": ["proposal_id": receipt.proposalID.uuidString,
+                            "revision": receipt.revision,
+                            "content_sha256": receipt.contentSHA256,
+                            "message": receipt.message],
+            ]
+            let encoded = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            return String(data: encoded, encoding: .utf8) ?? "{}"
+        }
+        return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+    }
+
+    /// Interactive grant issuance for the native CAD confirmation banner.
+    /// Uses the SAME single-use `CadProposalGrantStore` as the 2D path and is
+    /// only called by the UI; a grant id arriving in a tool request is not
+    /// authority.
+    func issueNativeCADGrant(proposalID: UUID) async throws -> String {
+        let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
+        return await grants.issueGrant(proposalID: proposalID,
+                                       documentID: binding.documentPath,
+                                       revision: Int64(binding.revision),
+                                       sha256: binding.contentSHA256)
+    }
+
+    /// Consume the UI grant through the shared store, then execute the
+    /// already-authorized native proposal.
+    @discardableResult
+    func applyNativeCAD(proposalID: UUID, grantID: String) async throws -> CADApplyReceipt {
+        let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
+        let decision = await grants.consume(grantID: grantID,
+                                            proposalID: proposalID,
+                                            documentID: binding.documentPath,
+                                            revision: Int64(binding.revision),
+                                            sha256: binding.contentSHA256)
+        guard case .authorized = decision else {
+            throw CADDocumentError(code: "grant_refused",
+                                   message: "The confirmation grant was refused (\(decision)); "
+                                          + "review the document and confirm again.")
+        }
+        return try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
+    }
     struct Session {
         /// Canonical session key (environment/owner/root/relative path).
         var key: String

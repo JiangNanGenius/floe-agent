@@ -32,6 +32,11 @@ packages:
     path: ThirdParty/VideoEditorKit
   FloeShellEngine:
     path: ThirdParty/FloeShellEngine
+  FloeCADKit:
+    # Native CAD kernel package: OCCT 7.8.1 B-rep bridge, parametric feature
+    # graph, sketch solver, Metal viewport and the workbench editor, vendored
+    # from OpenShape3D (MIT) with Floe's document/session adaptations.
+    path: ThirdParty/FloeCADKit
 
 targets:
   FloeAgent:
@@ -218,6 +223,8 @@ targets:
         product: FloeMedia
       - package: FloeAgentPackages
         product: FloeWorkbench
+      - package: FloeCADKit
+        product: FloeCAD
       - package: FloeAgentPackages
         product: FloeNotes
       - package: FloeAgentPackages
@@ -514,6 +521,7 @@ targets:
       - path: Tests/FloeAppTests/WorkbenchAIReviewTests.swift
       - path: Tests/FloeAppTests/WorkbenchExportDeliveryTests.swift
       - path: Tests/FloeAppTests/CadWebEngineSessionTests.swift
+      - path: Tests/FloeAppTests/FloeCADWorkbenchTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
@@ -541,6 +549,8 @@ targets:
       - path: Tests/FloeAgentUITests/RARFixtures.generated.swift
     dependencies:
       - target: FloeAgent
+      - package: FloeCADKit
+        product: FloeCAD
     settings:
       base:
         DEVELOPMENT_TEAM: QYL72C43K6

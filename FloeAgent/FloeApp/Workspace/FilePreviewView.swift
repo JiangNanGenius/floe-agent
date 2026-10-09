@@ -11,6 +11,7 @@
 import SwiftUI
 import FloeImages
 import FloeWorkspace
+import FloeCAD
 
 /// Previews one workspace file. Loaded through WorkspaceCenter's guarded
 /// file service; offers edit (text files), Quick Look, and "add to
@@ -49,6 +50,8 @@ struct FilePreviewView: View {
     @State private var isArchiveBrowserPresented = false
     @State private var imageEditRequest: WorkspaceImageEditRequest?
     @State private var engineeringPackage: EngineeringPreviewPackage?
+    /// Native FloeCAD document (`.floecad` package) opened in the workbench.
+    @State private var floecadDocument: FloeCADDocument?
     @State private var isEngineeringFullScreen = false
     @State private var engineeringReview: EngineeringReviewCapture?
     @State private var engineeringRoot: URL?
@@ -69,6 +72,9 @@ struct FilePreviewView: View {
                 } description: {
                     Text(loadError)
                 }
+            } else if let floecadDocument {
+                FloeCADWorkbenchView(document: floecadDocument)
+                    .safeAreaInset(edge: .top) { nativeCADProposalBanner }
             } else if let engineeringPackage {
                 if isEngineeringFullScreen {
                     Color.clear
@@ -339,6 +345,55 @@ struct FilePreviewView: View {
         } : nil, onDirty: { cadDirty = $0 }, session: engineeringSession,
         identity: EngineeringWebSession.documentKey(
             rootPath: engineeringRoot?.path, relativePath: relativePath))
+    }
+
+    /// Interactive confirmation for a native CAD proposal drafted by the
+    /// assistant. The grant is issued and consumed by the shared
+    /// CadDocumentCenter store; the model never sees a token.
+    @ViewBuilder
+    private var nativeCADProposalBanner: some View {
+        if let proposal = FloeCAD3DBridge.shared.pending.last {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "cube.transparent")
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(proposal.summary)
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(proposal.preview.bodyCountBefore) → \(proposal.preview.bodyCountAfter) bodies · "
+                         + String(format: "%+.1f mm³", proposal.preview.volumeDeltaMM3))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("Discard") {
+                    FloeCAD3DBridge.shared.discard(proposalID: proposal.id)
+                }
+                .buttonStyle(.bordered)
+                Button("Apply") {
+                    confirmNativeCADProposal(proposal.id)
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("cad.native.apply")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.bar)
+            .accessibilityIdentifier("cad.native.proposalBanner")
+        }
+    }
+
+    private func confirmNativeCADProposal(_ proposalID: UUID) {
+        Task {
+            do {
+                let grant = try await environment.cadDocumentCenter
+                    .issueNativeCADGrant(proposalID: proposalID)
+                _ = try await environment.cadDocumentCenter
+                    .applyNativeCAD(proposalID: proposalID, grantID: grant)
+            } catch {
+                loadError = error.localizedDescription
+                FloeCAD3DBridge.shared.noteError(error.localizedDescription)
+            }
+        }
     }
 
     private var fileName: String {
@@ -732,6 +787,18 @@ struct FilePreviewView: View {
         engineeringPackage = nil
         engineeringRoot = nil
         cadDirty = false
+        // Flush the document this preview owned BEFORE releasing it: a failed
+        // commit keeps the preview and its error visible instead of being
+        // dropped behind a fire-and-forget task.
+        if let previous = floecadDocument {
+            let outcome = await previous.save()
+            if let error = outcome.error {
+                loadError = "CAD save failed: \(error)"
+                return
+            }
+            previous.close()
+            floecadDocument = nil
+        }
         remotePreview.clear()
         await refreshDrawingAssistantBinding()
         if center.fileService == nil, let conversationID {
@@ -744,6 +811,49 @@ struct FilePreviewView: View {
         }
         guard center.fileService != nil else {
             loadError = String(localized: "inspector.no_workspace")
+            return
+        }
+        if (relativePath as NSString).pathExtension.lowercased() == "floecad" {
+            // Native FloeCAD package: a directory with JSON metadata and
+            // separate binary B-rep/mesh blobs. Open it as a live document;
+            // remote/cloud packages are not staged for editing yet and say so
+            // instead of silently opening a stale copy.
+            guard let service = center.fileService else {
+                loadError = String(localized: "inspector.no_workspace")
+                return
+            }
+            if center.isCloudWorkspacePath(relativePath) || center.isNetworkWorkspacePath(relativePath) {
+                loadError = "FloeCAD documents must be downloaded to a local workspace before editing."
+                return
+            }
+            do {
+                // Authorized canonical resolution: traversal/symlink checks,
+                // workspace-boundary enforcement and read-size guards all live
+                // in the resolver; never concatenate a relative path onto the
+                // root by hand.
+                let resolved = try service.guardResolver.resolve(relativePath)
+                guard resolved.standardizedFileURL.path.hasPrefix(
+                    service.guardResolver.rootURL.standardizedFileURL.path) else {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+                // A package must carry a manifest (current or recoverable
+                // previous) before it is offered as an editable document.
+                let manifest = resolved.appendingPathComponent("manifest.json")
+                let recoverable = resolved.appendingPathComponent("previous/snapshot/manifest.json")
+                guard FileManager.default.fileExists(atPath: manifest.path)
+                        || FileManager.default.fileExists(atPath: recoverable.path) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                // One live session: the bridge owns it so the workbench and
+                // the assistant route operate on the same in-memory document.
+                let document = try await FloeCAD3DBridge.shared.openDocument(at: resolved)
+                try Task.checkCancellation()
+                floecadDocument = document
+                await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
+            } catch is CancellationError {
+            } catch {
+                loadError = error.localizedDescription
+            }
             return
         }
         if EngineeringPreviewKind.identify(relativePath) != nil, let service = center.fileService {
