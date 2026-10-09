@@ -199,8 +199,19 @@ final class AppEnvironment: ObservableObject {
         bridge: WorkbenchAIBridge.live(environment: self)
     )
     /// Single mutation/commit authority for CAD documents (visible editor and
-    /// agent tools share it).
-    private lazy var _cadDocumentCenter = CadDocumentCenter()
+    /// agent tools share it). The decision deliverer routes native CAD
+    /// proposal outcomes to the originating conversation through the same
+    /// durable runtime-input ingress the 2D path uses; reconciliation of
+    /// interrupted applies and undelivered decisions runs at bootstrap.
+    private lazy var _cadDocumentCenter: CadDocumentCenter = {
+        let center = CadDocumentCenter { [weak self] conversationID, proposalID, decision, revision, sha256 in
+            guard let self else { return }
+            try await self.conversationCenter.recordProposalDecision(
+                conversationID: conversationID, proposalID: proposalID, decision: decision,
+                revision: revision, sha256: sha256)
+        }
+        return center
+    }()
     /// Single authority for engine-level Office edits (document.office.edit);
     /// routes through the live editor session registered per document.
     private lazy var _officeCommandCenter = OfficeCommandCenter()
@@ -1256,6 +1267,10 @@ final class AppEnvironment: ObservableObject {
             if let backgroundJobService {
                 _ = try? await backgroundJobService.reconcileInterruptedOnLaunch()
             }
+            // Native CAD proposals interrupted mid-apply and decision
+            // deliveries that never reached the originating task reconcile
+            // from durable records (never from ordering alone).
+            Task { await self.cadDocumentCenter.reconcileNativeProposals() }
             let fontActivationFailures = await fontStore.activateManagedFonts()
             if !fontActivationFailures.isEmpty {
                 FloeLogger(category: .tools).warning(

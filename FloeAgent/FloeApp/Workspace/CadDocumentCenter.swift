@@ -32,6 +32,24 @@ func registerCadDocumentTools(center: CadDocumentCenter, registry: ToolRunnerReg
 
 actor CadDocumentCenter: CadDocumentHost {
 
+    /// Delivers one structured proposal decision to the originating
+    /// conversation through the durable runtime-input ingress
+    /// (`ConversationCenter.recordProposalDecision`). Wired by AppEnvironment;
+    /// nil in tests (decisions stay durable-but-undelivered, which the tests
+    /// assert on).
+    typealias NativeDecisionDeliverer = @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void
+
+    private let nativeProposals: NativeCADProposalStore
+    private let decisionDeliverer: NativeDecisionDeliverer?
+
+    init(nativeProposalStoreFileURL: URL? = nil,
+         decisionDeliverer: NativeDecisionDeliverer? = nil) {
+        self.nativeProposals = NativeCADProposalStore(
+            fileURL: nativeProposalStoreFileURL ?? NativeCADProposalStore.defaultFileURL()
+                ?? URL(fileURLWithPath: "/dev/null"))
+        self.decisionDeliverer = decisionDeliverer
+    }
+
     // MARK: - Native FloeCAD (3D) actions
 
     /// Native 3D proposal authority. A proposal id alone is not authority:
@@ -83,8 +101,24 @@ actor CadDocumentCenter: CadDocumentHost {
             if let proposalID = Self.nativeProposalID(in: reply) {
                 nativeProposalContexts[proposalID] = NativeProposalContext(
                     access: access, canonicalPath: canonicalTarget)
+                // Durable BEFORE the model learns the id: a proposal that
+                // cannot be persisted must not linger half-alive (the banner
+                // would offer an apply that dies at relaunch). The throw also
+                // removes the in-process copy, so no half-state remains.
+                do {
+                    try await persistNativeProposal(reply: reply, proposalID: proposalID,
+                                                    access: access, canonicalTarget: canonicalTarget)
+                } catch {
+                    await FloeCAD3DBridge.shared.discard(proposalID: proposalID)
+                    nativeProposalContexts[proposalID] = nil
+                    throw FloeError.storageCorrupted(
+                        "The proposal could not be persisted, so it was not drafted: \(error.localizedDescription)")
+                }
             }
             return reply
+        case "preview":
+            return try await nativePreview(request: request, access: access,
+                                           canonicalTarget: canonicalTarget)
         case "export":
             return try await nativeExport(resolved: resolved, documentURL: url, request: request,
                                           access: access)
@@ -391,7 +425,8 @@ actor CadDocumentCenter: CadDocumentHost {
         // Idempotent replay first: after a successful apply the live context is
         // cleared, but a retry with the same request id must return the
         // original receipt instead of failing or re-running the operation.
-        // Replay keeps the same owner/canonical-target isolation as the apply.
+        // Replay keeps the same owner/canonical-target isolation as the apply,
+        // and survives a restart through the durable proposal store.
         if let applied = nativeApplyReceipts[proposalID] {
             guard applied.access == access, applied.canonicalPath == canonicalTarget else {
                 throw FloeError.unauthorized
@@ -403,14 +438,58 @@ actor CadDocumentCenter: CadDocumentHost {
             }
             return try Self.encodeNativeReceipt(applied.receipt, replay: true)
         }
+        if let stored = nativeProposals.record(for: proposalID), stored.status == .applied,
+           let receipt = stored.receipt {
+            // Restart replay: the in-process tombstone is gone, the durable
+            // receipt is the authority. Same owner + target + request id.
+            guard stored.access.matches(access), stored.canonicalDocumentPath == canonicalTarget else {
+                throw FloeError.unauthorized
+            }
+            guard receipt.requestID == requestID else {
+                throw FloeError.validationFailed(
+                    "proposal \(proposalID.uuidString) was already applied with a different request; "
+                    + "start a new proposal to change the document again.")
+            }
+            let restored = CADApplyReceipt(proposalID: proposalID,
+                                           revision: receipt.revision,
+                                           contentSHA256: receipt.contentSHA256,
+                                           message: receipt.message)
+            nativeApplyReceipts[proposalID] = NativeAppliedReceipt(
+                requestID: requestID, access: access,
+                canonicalPath: canonicalTarget, receipt: restored)
+            return try Self.encodeNativeReceipt(restored, replay: true)
+        }
         // Authority before any grant reservation or mutation: the recorded
         // propose context must match the current access EXACTLY and the
-        // authorized canonical target must be the proposal's document.
-        guard let context = nativeProposalContexts[proposalID],
-              context.access == access,
-              context.canonicalPath == canonicalTarget else {
+        // authorized canonical target must be the proposal's document. The
+        // DURABLE record is the authority (the in-process context is only a
+        // cache); a proposal from before a restart restores cleanly.
+        guard let stored = nativeProposals.record(for: proposalID),
+              stored.access.matches(access),
+              stored.canonicalDocumentPath == canonicalTarget,
+              stored.status == .pending || stored.status == .applying else {
+            // Distinguish "unknown/forged" from real terminal states the
+            // model should see: a manual change supersedes a proposal; an
+            // interrupted apply's outcome is unknown and must be re-drafted,
+            // never retried blindly.
+            if let record = nativeProposals.record(for: proposalID) {
+                switch record.status {
+                case .superseded:
+                    throw FloeError.validationFailed(
+                        record.statusNote
+                            ?? "The document changed after this proposal was drafted; re-read it and draft the change again.")
+                case .interrupted:
+                    throw FloeError.validationFailed(
+                        record.statusNote
+                            ?? "The apply was interrupted before its outcome was recorded; re-read the document and draft the change again.")
+                default:
+                    break
+                }
+            }
             throw FloeError.unauthorized
         }
+        nativeProposalContexts[proposalID] = NativeProposalContext(
+            access: access, canonicalPath: canonicalTarget)
         let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
         guard Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath)) == canonicalTarget else {
             throw FloeError.unauthorized
@@ -424,7 +503,11 @@ actor CadDocumentCenter: CadDocumentHost {
     /// Shared two-phase apply used by the tool and the interactive banner:
     /// reserve -> mutate+commit -> commitReservation, with releaseReservation
     /// on every failure so the same authorized grant can be retried inside its
-    /// TTL. The whole transaction runs under the per-document gate.
+    /// TTL. The whole transaction runs under the per-document gate. A durable
+    /// `.applying` intent is written BEFORE the mutation and the receipt is
+    /// journaled in the SHARED CadAppliedReceiptJournal after the commit, so a
+    /// crash between commit and notify is recoverable — never a lost or
+    /// fabricated outcome.
     private func nativePerformApply(proposalID: UUID, grantID: String, requestID: String,
                                     binding: FloeCAD3DBridge.ProposalBinding,
                                     recordedAccess: CadDocumentAccess) async throws
@@ -457,19 +540,76 @@ actor CadDocumentCenter: CadDocumentHost {
                 await self.grants.releaseReservation(grantID: grantID)
                 throw FloeError.cancelled
             }
+            // Write-ahead intent BEFORE the mutation. A failure here refuses
+            // the apply: an interrupted commit must never be unrecoverable.
+            do {
+                // The apply transaction commits exactly one package revision;
+                // binding that expectation closes the commit-to-receipt gap
+                // with a durable marker reconciliation can verify against the
+                // store identity (never against ordering alone).
+                try await self.nativeProposals.markApplying(
+                    proposalID, expectedResultRevision: binding.revision + 1)
+            } catch {
+                await self.grants.releaseReservation(grantID: grantID)
+                throw FloeError.storageCorrupted(
+                    "The apply intent could not be persisted, so the confirmed change was not applied: "
+                        + error.localizedDescription)
+            }
             do {
                 let receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
                 _ = await self.grants.commitReservation(grantID: grantID)
-                self.nativeApplyReceipts[proposalID] = NativeAppliedReceipt(
-                    requestID: requestID, access: recordedAccess,
-                    canonicalPath: gateKey, receipt: receipt)
-                self.nativeProposalContexts[proposalID] = nil
+                await self.recordNativeApplySuccess(proposalID: proposalID, receipt: receipt,
+                                                    requestID: requestID, canonicalPath: gateKey,
+                                                    recordedAccess: recordedAccess)
                 return (receipt, false)
             } catch {
                 await self.grants.releaseReservation(grantID: grantID)
+                // The document was rolled back in-memory by the proposal
+                // service (one undo); the durable record returns to pending so
+                // the same confirmed proposal can be retried inside the TTL.
+                try? await self.nativeProposals.markApplyReturnedToPending(
+                    proposalID, note: error.localizedDescription)
+                self.recordNativeDecision(proposalID: proposalID,
+                                          decision: "failed to apply",
+                                          revision: nil, sha256: nil)
                 throw error
             }
         }
+    }
+
+    /// Post-commit bookkeeping shared by the tool and the UI banner: durable
+    /// receipt + shared write-ahead journal + in-process replay tombstone +
+    /// the originating task's adoption notice.
+    private func recordNativeApplySuccess(proposalID: UUID, receipt: CADApplyReceipt,
+                                          requestID: String, canonicalPath: String,
+                                          recordedAccess: CadDocumentAccess) async {
+        let receiptRecord = NativeCADProposalStore.ReceiptRecord(
+            revision: receipt.revision, contentSHA256: receipt.contentSHA256,
+            message: receipt.message, requestID: requestID, appliedAt: Date())
+        try? await nativeProposals.markApplied(proposalID, receipt: receiptRecord)
+        // The shared 2D write-ahead journal serves the native path too: a
+        // prepared entry validated against the on-disk SHA is how recovery
+        // rebuilds an "applied" receipt after a crash between commit and
+        // notify. Ordering alone is never proof.
+        let documentID = (canonicalPath as NSString).lastPathComponent
+        let docReceipt = CadDocumentReceipt(documentID: documentID,
+                                            revision: Int64(receipt.revision),
+                                            sha256: receipt.contentSHA256,
+                                            created: [], saved: true, replay: false,
+                                            note: "native CAD apply")
+        if (try? CadAppliedReceiptJournal.shared.prepare(
+            proposalID: proposalID, expectedSHA256: receipt.contentSHA256,
+            pendingReceipt: docReceipt)) != nil {
+            try? CadAppliedReceiptJournal.shared.complete(proposalID: proposalID,
+                                                          receipt: docReceipt)
+        }
+        nativeApplyReceipts[proposalID] = NativeAppliedReceipt(
+            requestID: requestID, access: recordedAccess,
+            canonicalPath: canonicalPath, receipt: receipt)
+        nativeProposalContexts[proposalID] = nil
+        recordNativeDecision(proposalID: proposalID, decision: "applied",
+                             revision: Int64(receipt.revision),
+                             sha256: receipt.contentSHA256)
     }
 
     private static func encodeNativeReceipt(_ receipt: CADApplyReceipt, replay: Bool) throws -> String {
@@ -493,6 +633,110 @@ actor CadDocumentCenter: CadDocumentHost {
         return UUID(uuidString: raw)
     }
 
+    // MARK: - Native proposal persistence (write-ahead)
+
+    /// Freezes a drafted proposal: owner/environment/canonical document,
+    /// revision/SHA, the operation and the exact record the model saw.
+    /// Durability before reply, so a restart can restore, replay and notify.
+    private func persistNativeProposal(reply: String, proposalID: UUID,
+                                       access: CadDocumentAccess,
+                                       canonicalTarget: String) async throws {
+        guard let data = reply.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let proposalObject = object["proposal"] as? [String: Any],
+              let proposalData = try? JSONSerialization.data(withJSONObject: proposalObject),
+              let record = try? JSONDecoder().decode(CADProposalRecord.self, from: proposalData) else {
+            throw NativeCADProposalStore.StoreFailure()
+        }
+        try await nativeProposals.save(NativeCADProposalStore.Record(
+            proposalID: proposalID,
+            canonicalDocumentPath: canonicalTarget,
+            access: NativeCADProposalStore.AccessRecord(access),
+            baseRevision: record.baseRevision,
+            baseContentSHA256: record.baseContentSHA256,
+            summary: record.summary,
+            operationJSON: record.operationJSON,
+            proposalJSON: String(data: proposalData, encoding: .utf8) ?? "{}",
+            createdAt: record.createdAt,
+            status: .pending,
+            statusNote: nil,
+            receipt: nil))
+    }
+
+    /// Preview serves the FROZEN record and enforces the same ownership as
+    /// apply: only the exact proposing access context reading the proposal's
+    /// own canonical document sees it. A foreign/stale caller gets the same
+    /// denial as an unknown proposal, so ids are not enumerable.
+    private func nativePreview(request: [String: Any], access: CadDocumentAccess,
+                               canonicalTarget: String) async throws -> String {
+        guard let raw = request["proposal_id"] as? String,
+              let proposalID = UUID(uuidString: raw) else {
+            throw CADDocumentError(code: "bad_request", message: "preview requires proposal_id.")
+        }
+        guard let stored = nativeProposals.record(for: proposalID),
+              stored.access.matches(access),
+              stored.canonicalDocumentPath == canonicalTarget else {
+            throw FloeError.unauthorized
+        }
+        guard let data = stored.proposalJSON.data(using: .utf8),
+              let record = try? JSONDecoder().decode(CADProposalRecord.self, from: data) else {
+            throw FloeError.notFound("CAD proposal \(raw)")
+        }
+        let previewData = try JSONEncoder().encode(record.preview)
+        let preview = (try? JSONSerialization.jsonObject(with: previewData)) as? [String: Any] ?? [:]
+        return Self.encodeNativeJSON([
+            "ok": true,
+            "proposal_id": record.id.uuidString,
+            "summary": record.summary,
+            "base_revision": record.baseRevision,
+            "base_content_sha256": record.baseContentSHA256,
+            "preview": preview,
+        ])
+    }
+
+    /// Structured decision to the originating task, recorded BEFORE any
+    /// delivery attempt and retried until acknowledged (the shared 2D
+    /// decision outbox; delivery is idempotent by stable id).
+    private func recordNativeDecision(proposalID: UUID, decision: String,
+                                      revision: Int64?, sha256: String?) {
+        guard let stored = nativeProposals.record(for: proposalID),
+              let conversation = stored.access.originatingConversationID else { return }
+        let durable: DrawingAssistantDecisionStore.Decision?
+        do {
+            durable = try DrawingAssistantDecisionStore.shared.record(
+                conversationID: conversation, proposalID: proposalID, decision: decision,
+                revision: revision, sha256: sha256, phase: .committed)
+        } catch {
+            durable = nil
+        }
+        guard let durable, let deliverer = decisionDeliverer else { return }
+        Task {
+            do {
+                try await deliverer(durable.conversationID, durable.proposalID,
+                                    durable.decision, durable.revision, durable.sha256)
+                try? DrawingAssistantDecisionStore.shared.markDelivered(id: durable.id)
+            } catch {
+                // Stays pending in the durable store; retried on the next
+                // flushNativeProposalDecisions.
+            }
+        }
+    }
+
+    /// Retries any native decision whose durable delivery never acknowledged
+    /// (restart after commit, transient ingress failure).
+    func flushNativeProposalDecisions() async {
+        guard decisionDeliverer != nil else { return }
+        let pending = DrawingAssistantDecisionStore.shared.pendingDeliveries()
+        for decision in pending {
+            guard let deliverer = decisionDeliverer else { return }
+            do {
+                try await deliverer(decision.conversationID, decision.proposalID,
+                                    decision.decision, decision.revision, decision.sha256)
+                try? DrawingAssistantDecisionStore.shared.markDelivered(id: decision.id)
+            } catch { break }
+        }
+    }
+
     private static func canonicalDocumentPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
     }
@@ -501,9 +745,11 @@ actor CadDocumentCenter: CadDocumentHost {
     /// Uses the SAME single-use `CadProposalGrantStore` as the 2D path and is
     /// only called by the UI; a grant id arriving in a tool request is not
     /// authority, and a proposal that was never drafted through the authorized
-    /// host path cannot mint a grant.
+    /// host path cannot mint a grant. The durable pending record is the
+    /// authority, so a restored (post-restart) proposal can be confirmed too.
     func issueNativeCADGrant(proposalID: UUID) async throws -> String {
-        guard nativeProposalContexts[proposalID] != nil else {
+        guard nativeProposalContexts[proposalID] != nil
+                || nativeProposals.record(for: proposalID)?.status == .pending else {
             throw FloeError.unauthorized
         }
         let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
@@ -513,25 +759,168 @@ actor CadDocumentCenter: CadDocumentHost {
                                        sha256: binding.contentSHA256)
     }
 
+    /// Interactive rejection from the confirmation banner. The durable record
+    /// becomes `.rejected` and the originating task is told — a discarded
+    /// proposal must never look still-pending to the model.
+    func rejectNativeCADProposal(_ proposalID: UUID) async {
+        await FloeCAD3DBridge.shared.discard(proposalID: proposalID)
+        nativeProposalContexts[proposalID] = nil
+        try? await nativeProposals.markRejected(proposalID)
+        recordNativeDecision(proposalID: proposalID, decision: "rejected",
+                             revision: nil, sha256: nil)
+    }
+
+    /// Pending proposals for the interactive banner. Restores durable pending
+    /// records into the bridge after a restart; a record whose document moved
+    /// past its base (manual edit or another adopted change) becomes
+    /// `.superseded` and the originating task is told its proposal no longer
+    /// applies.
+    func pendingNativeProposals(for url: URL) async -> [CADProposalRecord] {
+        let canonical = Self.canonicalDocumentPath(url)
+        for stored in nativeProposals.records(forCanonicalDocument: canonical)
+        where stored.status == .pending {
+            guard let data = stored.proposalJSON.data(using: .utf8),
+                  let proposal = try? JSONDecoder().decode(CADProposalRecord.self, from: data) else {
+                continue
+            }
+            do {
+                try await FloeCAD3DBridge.shared.restore(proposal: proposal,
+                                                         documentURL: URL(fileURLWithPath: canonical))
+            } catch {
+                // Stale base: a manual edit or another adopted change moved
+                // the document. The frozen operation can never apply now;
+                // drop it from the in-process banner too so the interactive
+                // list never offers a dead confirmation.
+                await FloeCAD3DBridge.shared.discard(proposalID: stored.proposalID)
+                let note = "The document changed after proposal \(stored.proposalID.uuidString) "
+                    + "was drafted; the proposal no longer applies."
+                try? await nativeProposals.markSuperseded(stored.proposalID, note: note)
+                recordNativeDecision(proposalID: stored.proposalID,
+                                      decision: "invalidated by a manual change",
+                                      revision: nil, sha256: nil)
+            }
+        }
+        return await FloeCAD3DBridge.shared.pendingProposals(for: url)
+    }
+
+    /// Launch recovery for interrupted applies and undelivered decisions.
+    /// An `.applying` record is resolved ONLY against the native store's
+    /// verified identity (manifest + document JSON + every blob, read through
+    /// `FloeCADDocument.storedIdentity`): hashing a package directory is
+    /// meaningless, and a bare manifest never beats blob validation.
+    ///   * completed journal entry whose expected SHA equals the VERIFIED
+    ///     store content SHA -> applied (the one proof that beats
+    ///     uncertainty), with the adoption decision delivered;
+    ///   * verified revision still at base -> nothing committed: back to
+    ///     pending, an honest retry remains possible;
+    ///   * verified revision advanced without that proof -> `.interrupted`:
+    ///     the outcome is unknown and NEVER implies a safe retry.
+    func reconcileNativeProposals() async {
+        await flushNativeProposalDecisions()
+        for stored in nativeProposals.allRecords() where stored.status == .applying {
+            let url = URL(fileURLWithPath: stored.canonicalDocumentPath)
+            let identity = await FloeCADDocument.storedIdentity(at: url)
+            if let entry = CadAppliedReceiptJournal.shared.entry(proposalID: stored.proposalID),
+               let completed = entry.completedReceipt,
+               let identity,
+               identity.contentSHA256.lowercased() == entry.expectedSHA256.lowercased() {
+                let receipt = NativeCADProposalStore.ReceiptRecord(
+                    revision: Int(completed.revision),
+                    contentSHA256: completed.sha256,
+                    message: "Applied (reconciled from the write-ahead journal against the verified package identity).",
+                    requestID: stored.receipt?.requestID ?? "recovered",
+                    appliedAt: Date())
+                try? await nativeProposals.markApplied(stored.proposalID, receipt: receipt)
+                recordNativeDecision(proposalID: stored.proposalID, decision: "applied",
+                                     revision: completed.revision, sha256: completed.sha256)
+                continue
+            }
+            guard let identity else {
+                // Unreadable package: keep the marker, deliver the honest
+                // state, and never guess. Reconciliation retries next launch
+                // when the package is readable again.
+                try? await nativeProposals.markRecovered(
+                    stored.proposalID, status: .interrupted,
+                    note: "The apply was interrupted and the package could not be read for recovery; "
+                        + "re-read the document before drafting again.")
+                recordNativeDecision(proposalID: stored.proposalID,
+                                      decision: "apply interrupted; outcome unknown",
+                                      revision: nil, sha256: nil)
+                continue
+            }
+            if identity.revision == stored.baseRevision {
+                // Nothing reached the package: the in-memory draft died with
+                // the process and the grant reservation is gone. The same
+                // confirmed proposal can be retried honestly.
+                try? await nativeProposals.markRecovered(
+                    stored.proposalID, status: .pending,
+                    note: "The apply was interrupted before the commit; the confirmed proposal can be retried.")
+            } else {
+                // The package advanced while the outcome was unrecorded. An
+                // advanced revision without a verified receipt is NEVER
+                // proof of this apply (another writer may have committed),
+                // so recovery reports the outcome as unknown — not applied,
+                // and not a safe retry.
+                let expected = stored.expectedResultRevision.map { " (expected revision \($0))" } ?? ""
+                let note = "The apply outcome was interrupted before its receipt was recorded; the package "
+                    + "advanced to revision \(identity.revision)\(expected) without verification. "
+                    + "Re-read the document and draft the change again — do not assume this proposal applied, "
+                    + "and do not retry it blindly."
+                if let recovered = try? await nativeProposals.markRecovered(
+                    stored.proposalID, status: .interrupted, note: note) {
+                    recordNativeDecision(proposalID: recovered.proposalID,
+                                          decision: "apply interrupted; outcome unknown",
+                                          revision: Int64(identity.revision),
+                                          sha256: identity.contentSHA256)
+                }
+            }
+        }
+    }
+
+
     /// Interactive apply from the confirmation banner. The human is
     /// environment-agnostic, so the recorded access identity is not re-checked
-    /// here; the proposal's canonical target must still be intact and the
-    /// grant is consumed through the same two-phase reservation as the tool
-    /// path so a failed apply can be retried inside the grant TTL.
+    /// here; the proposal's canonical target must still be intact (the durable
+    /// record is the authority, so a restored post-restart proposal confirms
+    /// cleanly) and the grant is consumed through the same two-phase
+    /// reservation as the tool path so a failed apply can be retried inside
+    /// the grant TTL.
     @discardableResult
     func applyNativeCAD(proposalID: UUID, grantID: String) async throws -> CADApplyReceipt {
         let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
-        guard let context = nativeProposalContexts[proposalID],
-              context.canonicalPath == Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath)) else {
+        let canonical = Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath))
+        let context = nativeProposalContexts[proposalID]
+        let stored = nativeProposals.record(for: proposalID)
+        guard context?.canonicalPath == canonical
+                || stored?.canonicalDocumentPath == canonical else {
             // Already applied: return the recorded receipt to the banner.
             if let applied = nativeApplyReceipts[proposalID] { return applied.receipt }
+            if let stored, stored.status == .applied, let receipt = stored.receipt {
+                return CADApplyReceipt(proposalID: proposalID, revision: receipt.revision,
+                                       contentSHA256: receipt.contentSHA256,
+                                       message: receipt.message)
+            }
             throw FloeError.unauthorized
         }
         let outcome = try await nativePerformApply(proposalID: proposalID, grantID: grantID,
                                                    requestID: "ui-\(proposalID.uuidString)",
                                                    binding: binding,
-                                                   recordedAccess: context.access)
+                                                   recordedAccess: context?.access
+                                                    ?? accessForStored(stored))
         return outcome.receipt
+    }
+
+    /// The access identity a restored proposal was drafted under; the UI
+    /// apply path re-records it so replays keep owner isolation.
+    private func accessForStored(_ stored: NativeCADProposalStore.Record?) -> CadDocumentAccess {
+        guard let stored else {
+            return CadDocumentAccess(environmentID: nil, workspacePath: nil,
+                                     ownerKind: "ui", ownerID: nil)
+        }
+        return CadDocumentAccess(environmentID: stored.access.environmentID,
+                                 workspacePath: stored.access.workspacePath,
+                                 ownerKind: stored.access.ownerKind,
+                                 ownerID: stored.access.ownerID)
     }
     struct Session {
         /// Canonical session key (environment/owner/root/relative path).

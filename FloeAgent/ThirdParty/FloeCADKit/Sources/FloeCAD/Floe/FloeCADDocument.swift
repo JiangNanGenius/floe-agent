@@ -108,6 +108,25 @@ public final class FloeCADDocument {
         return FloeCADDocument(url: url, project: project, store: store, session: session)
     }
 
+    /// Verified committed identity of a package on disk WITHOUT opening a
+    /// live document: the versioned store reads the manifest, the document
+    /// JSON and every blob, and the returned identity binds them (the
+    /// content digest incorporates each blob's SHA-256). Nil when the
+    /// package is unreadable or corrupt. Recovery code must use this —
+    /// hashing a package directory is meaningless, and trusting a bare
+    /// manifest without the store's read path skips blob validation.
+    public static func storedIdentity(at url: URL) async -> (revision: Int, contentSHA256: String)? {
+        let store = FileCADDocumentStore(packageURL: url)
+        do {
+            _ = try await Task.detached(priority: .userInitiated) {
+                try store.read()
+            }.value
+        } catch {
+            return nil
+        }
+        return (store.revision, store.contentSHA256)
+    }
+
     /// Create (or recreate) a package at `url`. An existing package is
     /// REPLACED only when `overwrite` is set, and even then it is staged and
     /// moved aside first: a failed create never deletes the previous document,

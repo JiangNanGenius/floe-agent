@@ -356,10 +356,13 @@ struct FilePreviewView: View {
 
     /// Interactive confirmation for a native CAD proposal drafted by the
     /// assistant. The grant is issued and consumed by the shared
-    /// CadDocumentCenter store; the model never sees a token.
+    /// CadDocumentCenter store; the model never sees a token. Pending
+    /// proposals restore from the durable store after a restart, and reject
+    /// notifies the originating task through the shared decision outbox.
     @ViewBuilder
     private var nativeCADProposalBanner: some View {
-        if let proposal = FloeCAD3DBridge.shared.pending.last {
+        if let proposal = floecadDocument
+            .flatMap({ FloeCAD3DBridge.shared.pendingProposals(for: $0.url).last }) {
             HStack(alignment: .center, spacing: 12) {
                 Image(systemName: "cube.transparent")
                     .foregroundStyle(.tint)
@@ -373,9 +376,13 @@ struct FilePreviewView: View {
                 }
                 Spacer(minLength: 8)
                 Button("Discard") {
-                    FloeCAD3DBridge.shared.discard(proposalID: proposal.id)
+                    Task {
+                        await environment.cadDocumentCenter
+                            .rejectNativeCADProposal(proposal.id)
+                    }
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("cad.native.discard")
                 Button("Apply") {
                     confirmNativeCADProposal(proposal.id)
                 }
@@ -856,6 +863,9 @@ struct FilePreviewView: View {
                 let document = try await FloeCAD3DBridge.shared.openDocument(at: resolved)
                 try Task.checkCancellation()
                 floecadDocument = document
+                // Restore durable pending proposals (post-restart recovery)
+                // and surface ones invalidated by manual edits.
+                await environment.cadDocumentCenter.pendingNativeProposals(for: resolved)
                 await center.recordRecentFile(relativePath: relativePath, displayName: fileName)
             } catch is CancellationError {
             } catch {

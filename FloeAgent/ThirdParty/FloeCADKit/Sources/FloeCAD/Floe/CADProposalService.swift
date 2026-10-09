@@ -76,6 +76,13 @@ public nonisolated struct CADApplyReceipt: Sendable, Equatable {
     public var revision: Int
     public var contentSHA256: String
     public var message: String
+
+    public init(proposalID: UUID, revision: Int, contentSHA256: String, message: String) {
+        self.proposalID = proposalID
+        self.revision = revision
+        self.contentSHA256 = contentSHA256
+        self.message = message
+    }
 }
 
 public nonisolated struct CADProposalError: Error, LocalizedError {
@@ -223,6 +230,19 @@ public final class CADProposalService {
     public func discardProposal(_ id: UUID) {
         proposals[id] = nil
         grants = grants.filter { $0.value.proposalID != id }
+    }
+
+    /// Re-adopts a durably persisted, still-pending proposal after an app
+    /// restart. No evaluation re-runs; the record is frozen exactly as it was
+    /// drafted. Apply re-validates revision/SHA before mutating.
+    public func adoptRestored(_ record: CADProposalRecord) {
+        guard applied[record.id] == nil else { return }
+        proposals[record.id] = record
+    }
+
+    /// True when a proposal record is held (pending or restored).
+    public func hasProposal(_ id: UUID) -> Bool {
+        proposals[id] != nil
     }
 
     // MARK: Apply

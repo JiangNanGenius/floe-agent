@@ -464,6 +464,37 @@ final class FloeCAD3DBridge {
         proposalDocument[proposalID] = nil
     }
 
+    /// Re-registers a durably recorded pending proposal after an app restart
+    /// (the in-process `pending` list is empty then). The proposal service
+    /// re-adopts the frozen record — no evaluation re-runs — and the live
+    /// document must still be at the recorded base revision/SHA, otherwise
+    /// the restored proposal would be stale and is refused.
+    func restore(proposal: CADProposalRecord, documentURL: URL) async throws {
+        let document = try await document(at: documentURL)
+        guard document.revision == proposal.baseRevision,
+              document.contentSHA256 == proposal.baseContentSHA256 else {
+            throw CADDocumentError(
+                code: "stale_proposal",
+                message: "The document changed after this proposal was drafted; "
+                    + "re-read it and draft the change again.")
+        }
+        pending.removeAll { $0.id == proposal.id }
+        pending.append(proposal)
+        proposalDocument[proposal.id] = documentURL
+        // The proposal service owns the apply path; re-register the frozen
+        // record there too (it validates revision/SHA again at apply).
+        service.adoptRestored(proposal)
+    }
+
+    /// Pending proposals for one document as the interactive banner shows
+    /// them (sorted newest first).
+    func pendingProposals(for url: URL) -> [CADProposalRecord] {
+        let key = key(url)
+        return pending
+            .filter { proposalDocument[$0.id].map { self.key($0) == key } ?? false }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
     // MARK: Helpers
 
     private func summaryObject(_ document: FloeCADDocument) -> [String: Any] {
