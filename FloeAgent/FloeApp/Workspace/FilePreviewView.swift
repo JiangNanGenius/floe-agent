@@ -77,10 +77,15 @@ struct FilePreviewView: View {
                 // host-injected: FloeCADKit never sees app Canvas types. The
                 // closures export a real projected drawing page and commit
                 // through the same atomic patch primitives as the 2D flow.
+                // Floe-level chrome (save status + fullscreen) is the SAME
+                // shared modifier the qualification fixture presents.
                 FloeCADWorkbenchView(
                     document: floecadDocument,
                     canvasActions: CADCanvasActionBridge.actions(
                         assetStore: environment.creativeAssetStore))
+                    .modifier(FloeCADHostChrome(document: floecadDocument,
+                                                canvasActions: CADCanvasActionBridge.actions(
+                                                    assetStore: environment.creativeAssetStore)))
                     .safeAreaInset(edge: .top) { nativeCADProposalBanner }
             } else if let engineeringPackage {
                 if isEngineeringFullScreen {

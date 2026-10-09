@@ -16645,51 +16645,73 @@ final class EditorViewModel {
 
     /// Short label for a feature kind (History panel row subtitle).
     private static func kindLabel(_ kind: FeatureKind) -> String {
+        func f(_ key: String, _ fallback: String, _ arguments: Any...) -> String {
+            FloeCADStrings.format(key, fallback, arguments)
+        }
+        func count(_ n: Int, _ singular: String, _ plural: String) -> String {
+            // Persisted data stays English; only the display count wording
+            // localizes through the same host catalog.
+            n == 1 ? FloeCADStrings.text("cad.feature.count.one", singular)
+                   : FloeCADStrings.format("cad.feature.count.many", "%@ %@", "\(n)", plural)
+        }
         switch kind {
         case let .primitive(spec, _):
             return spec.displayName
         case let .extrude(_, _, distance, _, boolean, _):
-            let verb: String
+            let value = fmt(distance.value)
             switch boolean.op {
-            case .subtract: verb = "Cut"
-            case .union: verb = "Extrude +"
-            case .intersect: verb = "Extrude ∩"
-            case .newBody: verb = "Extrude"
+            case .subtract: return f("cad.feature.cut", "Cut %@ mm", value)
+            case .union: return f("cad.feature.extrudeUnion", "Extrude + %@ mm", value)
+            case .intersect: return f("cad.feature.extrudeIntersect", "Extrude ∩ %@ mm", value)
+            case .newBody: return f("cad.feature.extrude", "Extrude %@ mm", value)
             }
-            return "\(verb) \(fmt(distance.value)) mm"
         case let .draftExtrude(_, _, distance, taperAngle, _, _):
-            return "Draft \(fmt(distance.value)) mm @ \(fmt(taperAngle.value))°"
+            return f("cad.feature.draftExtrude", "Draft %@ mm @ %@°", fmt(distance.value), fmt(taperAngle.value))
         case let .boolean(op, _, _):
-            return op.rawValue.capitalized
+            return localizedBooleanName(op)
         case let .pushPull(_, distance, _):
-            return "Push/Pull \(fmt(distance.value)) mm"
+            return f("cad.feature.pushPull", "Push/Pull %@ mm", fmt(distance.value))
         case let .moveFace(_, delta):
-            return "Move Face \(fmt(simd_length(delta.point))) mm"
+            return f("cad.feature.moveFace", "Move Face %@ mm", fmt(simd_length(delta.point)))
         case let .scaleFace(_, factor):
-            return "Scale Face ×\(fmt(factor.value))"
+            return f("cad.feature.scaleFace", "Scale Face ×%@", fmt(factor.value))
         case let .rotateFace(_, angle, _):
-            return "Rotate Face \(fmt(angle.value * 180 / .pi))°"
+            return f("cad.feature.rotateFace", "Rotate Face %@°", fmt(angle.value * 180 / .pi))
         case let .draftFace(_, _, _, angle):
-            return "Draft Face \(fmt(angle.value))°"
+            return f("cad.feature.draftFace", "Draft Face %@°", fmt(angle.value))
         case let .revolve(_, _, _, angle, _):
-            return "Revolve \(fmt(angle.value))°"
-        case .sweep: return "Sweep"
-        case .loft: return "Loft"
-        case .transform: return "Move"
-        case .mirror: return "Mirror"
-        case let .pattern(_, spec): return "Pattern ×\(spec.count)"
+            return f("cad.feature.revolve", "Revolve %@°", fmt(angle.value))
+        case .sweep: return FloeCADStrings.text("cad.cmd.model.sweep", "Sweep")
+        case .loft: return FloeCADStrings.text("cad.cmd.model.loft", "Loft")
+        case .transform: return FloeCADStrings.text("cad.cmd.model.move", "Move / Rotate")
+        case .mirror: return FloeCADStrings.text("cad.cmd.sketch.mirror", "Mirror")
+        case let .pattern(_, spec):
+            return f("cad.feature.pattern", "Pattern ×%@", spec.count)
         case let .chamfer(_, edges, setback):
-            return "Chamfer \(fmt(setback.value)) mm (\(edges.count) edge\(edges.count == 1 ? "" : "s"))"
+            return f("cad.feature.chamfer", "Chamfer %@ mm (%@)", fmt(setback.value),
+                     count(edges.count, "1 edge", "%d edges"))
         case let .fillet(_, edges, radius):
-            return "Fillet \(fmt(radius.value)) mm (\(edges.count) edge\(edges.count == 1 ? "" : "s"))"
+            return f("cad.feature.fillet", "Fillet %@ mm (%@)", fmt(radius.value),
+                     count(edges.count, "1 edge", "%d edges"))
         case let .shell(_, openFaces, thickness):
-            return openFaces.isEmpty
-                ? "Shell \(fmt(thickness.value)) mm (hollow)"
-                : "Shell \(fmt(thickness.value)) mm (\(openFaces.count) face\(openFaces.count == 1 ? "" : "s") open)"
+            if openFaces.isEmpty {
+                return f("cad.feature.shellClosed", "Shell %@ mm (hollow)", fmt(thickness.value))
+            }
+            return f("cad.feature.shellOpen", "Shell %@ mm (%@ open)", fmt(thickness.value),
+                     count(openFaces.count, "1 face", "%d faces"))
         case let .deleteFace(_, faces):
-            return "Delete Face (\(faces.count) face\(faces.count == 1 ? "" : "s"))"
+            return f("cad.feature.deleteFace", "Delete Face (%@)", count(faces.count, "1 face", "%d faces"))
         case let .replaceFace(_, _, _, flip):
-            return flip ? "Replace Face (flipped)" : "Replace Face"
+            return flip ? FloeCADStrings.text("cad.feature.replaceFaceFlipped", "Replace Face (flipped)")
+                        : FloeCADStrings.text("cad.feature.replaceFace", "Replace Face")
+        }
+    }
+
+    private static func localizedBooleanName(_ op: BooleanKind) -> String {
+        switch op {
+        case .union: FloeCADStrings.text("cad.feature.booleanUnion", "Union")
+        case .subtract: FloeCADStrings.text("cad.feature.booleanSubtract", "Subtract")
+        case .intersect: FloeCADStrings.text("cad.feature.booleanIntersect", "Intersect")
         }
     }
 

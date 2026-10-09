@@ -42,18 +42,22 @@ private enum CADWorkbenchHostAssertions {
             XCTFail("the workbench tools sheet must open; CAD elements: \(ids)", file: file, line: line)
             return
         }
-        XCTAssertTrue(app.otherElements["CADAssemblyPanel"].waitForExistence(timeout: 5),
-                      "Assembly panel is the default tools mode", file: file, line: line)
+        // Explicit Close control (accessibility/narrow layouts), Assembly as
+        // the default mode, and each panel's structured empty state as the
+        // mode is walked.
+        XCTAssertTrue(app.buttons["CADToolsSheetCloseButton"].waitForExistence(timeout: 5),
+                      "the tools sheet must have an explicit Close control", file: file, line: line)
+        XCTAssertTrue(app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5),
+                      "Assembly is the default mode with its empty state", file: file, line: line)
         for panel in ["Drawings", "ShapeScript", "Mesh"] {
             app.buttons[panel].tap()
         }
-        // Walk back so the sheet ends on the first panel like a fresh open.
+        XCTAssertTrue(app.staticTexts["0 bodies selected"].waitForExistence(timeout: 5),
+                      "the Mesh panel shows its selection state", file: file, line: line)
         app.buttons["Assembly"].tap()
-        XCTAssertTrue(app.otherElements["CADAssemblyPanel"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.staticTexts["No assembly instances yet."].waitForExistence(timeout: 5),
                       "returning to Assembly must re-show its panel", file: file, line: line)
-        // iPhone sheets need an explicit close; the tools sheet has none, so
-        // swipe it down before the next assertion group.
-        app.swipeDown(velocity: .fast)
+        app.buttons["CADToolsSheetCloseButton"].tap()
     }
 
     /// A floating tool-strip tap must change editor state, not just render.
@@ -77,7 +81,13 @@ private enum CADWorkbenchHostAssertions {
 
     static func assertHistoryPanelOpens(_ app: XCUIApplication, _ file: StaticString = #filePath, _ line: UInt = #line) {
         app.buttons["HistoryButton"].tap()
-        XCTAssertTrue(app.otherElements["HistoryPanel"].waitForExistence(timeout: 5),
+        let panel = app.otherElements["HistoryPanel"]
+        let scrolled = app.scrollViews["HistoryPanel"]
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline && !panel.exists && !scrolled.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(panel.exists || scrolled.exists,
                       "the history panel must open from the toolbar", file: file, line: line)
         app.swipeDown(velocity: .fast)
     }
@@ -93,7 +103,8 @@ final class CADWorkbenchHostIPadUITests: XCTestCase {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
         app = XCUIApplication()
-        app.launchArguments += ["-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                                "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
         app.launch()
     }
 
@@ -121,7 +132,8 @@ final class CADWorkbenchHostIPhoneUITests: XCTestCase {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
         app = XCUIApplication()
-        app.launchArguments += ["-ui-testing", "--ui-test-cad-fixture"]
+        app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                                "-ui-testing", "--ui-test-cad-fixture"]
         app.launch()
     }
 

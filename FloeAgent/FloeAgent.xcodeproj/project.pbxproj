@@ -14,6 +14,7 @@
 		05635906778159CE3C3DEA14 /* EngineeringReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4944CFBAEA7D26E2EB1FF8C0 /* EngineeringReviewSheet.swift */; };
 		05825834C3827B7ED11B314B /* EnvironmentLanguagePackageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A809A3D1E4CFC7C591315E2A /* EnvironmentLanguagePackageService.swift */; };
 		0698EEE9614E076C9AFEED3A /* FeedbackReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */; };
+		0752AFFD93E7F29962C5648F /* FloeCADHostChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC97385B4FE8D7E8A34BCD8 /* FloeCADHostChrome.swift */; };
 		075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */; };
 		07D1C1304E9448BD34727FE9 /* OfficeConflictReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC5A01D009413E26CBFDA461 /* OfficeConflictReviewView.swift */; };
 		089D513D837438C091ED08A0 /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
@@ -630,6 +631,7 @@
 		4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaEditorView.swift; sourceTree = "<group>"; };
 		4B25959E4F8222EDB001D367 /* IDEActivityBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEActivityBar.swift; sourceTree = "<group>"; };
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
+		4BC97385B4FE8D7E8A34BCD8 /* FloeCADHostChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeCADHostChrome.swift; sourceTree = "<group>"; };
 		4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsCenter.swift; sourceTree = "<group>"; };
 		4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeWorkspaceAttachmentPicker.swift; sourceTree = "<group>"; };
 		4DC1B32CC8B563333858CC18 /* IDESidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDESidebar.swift; sourceTree = "<group>"; };
@@ -1150,6 +1152,7 @@
 				42E25ED52EAD56B5234BCA43 /* FileTreeView.swift */,
 				86BFC8770B049F008476B6C8 /* FileTreeViewModel.swift */,
 				AE3AE6743145A42D8772615C /* FloeCAD3DBridge.swift */,
+				4BC97385B4FE8D7E8A34BCD8 /* FloeCADHostChrome.swift */,
 				E782E6A24779378BB40F5953 /* GitHubActionsJobCenter.swift */,
 				D75AB31E403196E004FD9202 /* GitHubActionsJobEngine.swift */,
 				EB85CCE3602481954CF3D23A /* GitHubActionsJobStore.swift */,
@@ -2234,6 +2237,7 @@
 				E2667D676B12957E2787BD59 /* FilesViewModel.swift in Sources */,
 				C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */,
 				9AB0F65C2B7C5E6D9EEA59E3 /* FloeCAD3DBridge.swift in Sources */,
+				0752AFFD93E7F29962C5648F /* FloeCADHostChrome.swift in Sources */,
 				0C3B75DEC2F5E1676ADB7CAD /* FloeImageEditorView.swift in Sources */,
 				9BA3B9A6FA78531B9263C768 /* FloePDFExceptionGuard.mm in Sources */,
 				700E0E333832B9669753A226 /* FloePDFiumBridge.mm in Sources */,

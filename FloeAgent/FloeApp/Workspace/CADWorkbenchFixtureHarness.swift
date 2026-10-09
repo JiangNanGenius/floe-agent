@@ -105,7 +105,12 @@ struct CADWorkbenchFixtureHarness: View {
                     // No identifier on this container: an accessibility id
                     // on a view with children merges the whole workbench into
                     // one element and hides the tool palette from tests.
+                    // The SAME Floe-level chrome modifier the production
+                    // FilePreview host applies (save status + fullscreen) is
+                    // present here, so CUA always reviews the product
+                    // surface, not a reduced copy.
                     FloeCADWorkbenchView(document: document)
+                        .modifier(FloeCADHostChrome(document: document))
                 }
             } else if let error {
                 VStack(spacing: 12) {

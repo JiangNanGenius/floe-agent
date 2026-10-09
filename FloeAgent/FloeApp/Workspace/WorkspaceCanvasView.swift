@@ -6139,6 +6139,31 @@ struct WorkspaceCanvasView: View {
         } label: {
             Label("workspace.workspace_canvas_view.3d_director", systemImage: "cube.transparent")
         }
+        // Explicit parametric CAD creation, kept distinct from the 3D
+        // Director above: that editor arranges lightweight scene
+        // compositions; this entry creates a real editable `.floecad`
+        // package in the workspace and binds it as a native CAD node.
+        Button {
+            Task { @MainActor in
+                guard let canvasDocument = store.selectedDocument else { return }
+                let result = await CADCanvasActionBridge.newCADDocumentInCanvas(
+                    canvasID: store.project.id,
+                    documentID: canvasDocument.id,
+                    position: CanvasPoint(x: canvasPoint(visibleCanvasCenter).x, y: canvasPoint(visibleCanvasCenter).y),
+                    workspaceCenter: environment.workspaceCenter,
+                    assetStore: environment.creativeAssetStore)
+                if let nodeID = result.nodeID {
+                    selectedNodeIDs = [nodeID]
+                    mode = .select
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                } else {
+                    store.saveError = result.message
+                }
+            }
+        } label: {
+            Label("canvas.cad.new_model", systemImage: "cube.transparent")
+        }
+        .accessibilityIdentifier("canvas.addCADCube")
         Menu {
             Toggle("workspace.workspace_canvas_view.sync_this_canvas", isOn: Binding(
                 get: { store.project.sync.isEnabled },

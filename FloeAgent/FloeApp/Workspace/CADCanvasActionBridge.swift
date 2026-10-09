@@ -189,6 +189,90 @@ enum CADCanvasActionBridge {
 
     // MARK: Create the FIRST node (explicit destination)
 
+    /// Canvas Add-menu "New CAD model": creates a NEW editable parametric
+    /// `.floecad` package in the canvas workspace and binds it as a native
+    /// CAD node through the same atomic patch primitives as the workbench
+    /// entry. This is the explicit CAD creation route next to the 3D
+    /// Director's lightweight scene compositions — the scene editor is for
+    /// arranging simple shapes, NOT parametric CAD, and the two are never
+    /// conflated.
+    static func newCADDocumentInCanvas(
+        canvasID: UUID,
+        documentID: UUID,
+        position: CanvasPoint,
+        workspaceCenter: WorkspaceCenter,
+        assetStore: CreativeAssetStore
+    ) async -> (nodeID: UUID?, message: String) {
+        do {
+            guard !workspaceCenter.isCloudWorkspacePath("."),
+                  !workspaceCenter.isNetworkWorkspacePath("."),
+                  let service = workspaceCenter.fileService else {
+                throw CADDocumentError(code: "workspace_unavailable",
+                                       message: canvasLocalized(
+                                           "CAD 文档只能在本地工作区中创建。",
+                                           "CAD documents can only be created in a local workspace."))
+            }
+            // Unique package name in the workspace root (never overwrite).
+            let root = service.guardResolver.rootURL
+            func exists(_ relative: String) -> Bool {
+                FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path)
+            }
+            var candidate = "CAD Model.floecad"
+            var serial = 2
+            while exists(candidate) {
+                candidate = "CAD Model \(serial).floecad"
+                serial += 1
+            }
+            let url = try service.guardResolver.resolve(candidate)
+            let document = try await FloeCADDocument.create(
+                at: url, name: (candidate as NSString).deletingPathExtension)
+            do {
+                let save = await document.save()
+                guard save.succeeded else {
+                    throw CADDocumentError(code: "save_failed",
+                                           message: save.error ?? "The new CAD document could not be committed.")
+                }
+                let exported = try await exportPNG(document: document, url: url)
+                let render = try await persistRender(exported, document: document,
+                                                     node: nil, assetStore: assetStore)
+                let operation = try CADCanvasNodePlanner.createPatch(
+                    sourcePath: sourcePathKey(packageURL: url),
+                    sourceAssetHash: document.contentSHA256,
+                    renderedAsset: render,
+                    position: position,
+                    size: CanvasSize(width: 420, height: 300),
+                    text: document.name,
+                    extraMetadata: [
+                        "editor": "native-cad",
+                        "cadFormat": "floecad",
+                        "appliedRevision": String(document.revision),
+                        "appliedContentHash": exported.hash,
+                    ])
+                guard try await commit(operations: [operation],
+                                 nodeID: nil,
+                                 canvasID: canvasID,
+                                 documentID: documentID,
+                                 assetStore: assetStore) != nil else {
+                    throw CADDocumentError(code: "canvas_write_failed",
+                                           message: canvasLocalized(
+                                               "画布写入失败；CAD 文档已保留在工作区。",
+                                               "The canvas write failed; the CAD document stays in the workspace."))
+                }
+                // The bridge keeps the document open; release it now that the
+                // node binds the package on disk.
+                await FloeCAD3DBridge.shared.releaseDocument(at: url)
+                return (operation.nodeID, canvasLocalized(
+                    "已创建 CAD 模型“\(document.name)”（参数化工作台）；如需组合简单场景请使用 3D 场景编辑器。",
+                    "Created CAD model \"\(document.name)\" (parametric workbench); use the 3D scene editor only for simple scene compositions."))
+            } catch {
+                await FloeCAD3DBridge.shared.releaseDocument(at: url)
+                throw error
+            }
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
     /// Creates the first Canvas node for this package in the user's explicit
     /// pick. The node binds to the package by `sourcePath` + content hash
     /// metadata (the live asset is the exported render), so a later "Apply to
