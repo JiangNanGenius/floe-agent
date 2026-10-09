@@ -92,7 +92,21 @@ struct CADWorkbenchFixtureHarness: View {
     var body: some View {
         Group {
             if let document {
-                FloeCADWorkbenchView(document: document)
+                // Mirror the real FilePreview host: the workbench's title and
+                // toolbar chrome (undo/redo, views, history, variables, items,
+                // import/export, tools, settings) only render inside a
+                // navigation context. Every real host embeds the workbench in
+                // a NavigationStack (inspector column, thread sheet, IDE tab,
+                // workspace-picker sheet); the fixture must present the SAME
+                // chrome or CUA accepts a workbench that does not exist in
+                // the product. The editor sets its own inline navigation
+                // title (the document name), exactly as it does in-product.
+                NavigationStack {
+                    // No identifier on this container: an accessibility id
+                    // on a view with children merges the whole workbench into
+                    // one element and hides the tool palette from tests.
+                    FloeCADWorkbenchView(document: document)
+                }
             } else if let error {
                 VStack(spacing: 12) {
                     Text("CAD fixture failed")
