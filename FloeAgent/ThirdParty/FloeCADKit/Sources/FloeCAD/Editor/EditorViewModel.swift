@@ -176,7 +176,7 @@ final class EditorViewModel {
     private func exportableBodies() -> [Body]? {
         let bodies = session.document.bodies
         guard !bodies.isEmpty else {
-            errorMessage = "Nothing to export — the design has no solid bodies."
+            errorMessage = FloeCADStrings.text("cad.error.exportNoBodies", "Nothing to export — the design has no solid bodies.")
             return nil
         }
         return bodies
@@ -208,7 +208,7 @@ final class EditorViewModel {
     func exportUSDZ() -> Data? {
         guard let bodies = exportableBodies() else { return nil }
         guard let data = USDZExporter.usdz(bodies: bodies) else {
-            errorMessage = "Couldn't export USDZ on this device."
+            errorMessage = FloeCADStrings.text("cad.error.exportUSDZ", "Couldn't export USDZ on this device.")
             return nil
         }
         return data
@@ -250,7 +250,7 @@ final class EditorViewModel {
                   + "nothing to write to STEP. Mesh bodies can be exported as STL, OBJ, GLB or 3MF."
             return nil
         case .failed:
-            errorMessage = "Couldn't write the STEP file — please try again."
+            errorMessage = FloeCADStrings.text("cad.error.exportSTEP", "Couldn't write the STEP file — please try again.")
             return nil
         }
     }
@@ -271,7 +271,7 @@ final class EditorViewModel {
         let sketch = activeSketch
             ?? session.document.sketches.first { $0.plane.isCoincident(with: .ground) }
         guard let sketch, !sketch.entities.isEmpty else {
-            errorMessage = "Nothing to export — draw a sketch on the ground plane first."
+            errorMessage = FloeCADStrings.text("cad.error.exportNoSketch", "Nothing to export — draw a sketch on the ground plane first.")
             return nil
         }
         return Data(DXFKit.exportSketch(entities: sketch.entities, plane: sketch.plane).utf8)
@@ -284,7 +284,7 @@ final class EditorViewModel {
     func importDXF(data: Data, fileName: String) {
         let entities = DXFKit.importDXF(data)
         guard !entities.isEmpty else {
-            errorMessage = "Couldn't import “\(fileName)” — no supported DXF entities found."
+            errorMessage = FloeCADStrings.format("cad.error.importDXF", "Couldn't import “%@” — no supported DXF entities found.", fileName)
             return
         }
         cancelTransientPicks()
@@ -318,7 +318,7 @@ final class EditorViewModel {
         width: Int, height: Int, transparentBackground: Bool, showGrid: Bool
     ) -> Data? {
         guard let data = screenshotProvider?(width, height, transparentBackground, showGrid) else {
-            errorMessage = "Couldn't capture a screenshot — please try again."
+            errorMessage = FloeCADStrings.text("cad.error.screenshot", "Couldn't capture a screenshot — please try again.")
             return nil
         }
         return data
@@ -331,7 +331,7 @@ final class EditorViewModel {
         do {
             mesh = try STLImporter.importSTL(data)
         } catch {
-            errorMessage = "Couldn't import “\(fileName)” — not a valid STL file."
+            errorMessage = FloeCADStrings.format("cad.error.importSTL", "Couldn't import “%@” — not a valid STL file.", fileName)
             return
         }
         // Recenter local coordinates so the gizmo pivot sits at the AABB
@@ -370,7 +370,7 @@ final class EditorViewModel {
     func importSTEP(data: Data, fileName: String) {
         let solids = STEPKit.solids(from: data)
         guard !solids.isEmpty else {
-            errorMessage = "Couldn't import “\(fileName)” — no solids found in the STEP file."
+            errorMessage = FloeCADStrings.format("cad.error.importSTEPNoSolids", "Couldn't import “%@” — no solids found in the STEP file.", fileName)
             return
         }
         let stem = (fileName as NSString).deletingPathExtension
@@ -388,7 +388,7 @@ final class EditorViewModel {
             bodies.append(body)
         }
         guard !bodies.isEmpty else {
-            errorMessage = "Couldn't import “\(fileName)” — its solids could not be meshed."
+            errorMessage = FloeCADStrings.format("cad.error.importSTEPMesh", "Couldn't import “%@” — its solids could not be meshed.", fileName)
             return
         }
         cancelTransientPicks()
@@ -414,13 +414,13 @@ final class EditorViewModel {
         do {
             return try MeshImportKit.probe(data: data, fileName: fileName, siblings: siblings)
         } catch MeshImportError.unsupportedFormat(let what) {
-            errorMessage = "Couldn't import “\(fileName)” — \(what.isEmpty ? "unknown" : what) files aren't supported."
+            errorMessage = FloeCADStrings.format("cad.error.importUnsupported", "Couldn't import “%@” — %@ files aren't supported.", fileName, what.isEmpty ? "unknown" : what)
         } catch MeshImportError.empty {
-            errorMessage = "Couldn't import “\(fileName)” — no triangle meshes found."
+            errorMessage = FloeCADStrings.format("cad.error.importNoMesh", "Couldn't import “%@” — no triangle meshes found.", fileName)
         } catch MeshImportError.malformed(let what) {
-            errorMessage = "Couldn't import “\(fileName)” — \(what)."
+            errorMessage = FloeCADStrings.format("cad.error.importMalformed", "Couldn't import “%@” — %@.", fileName, what)
         } catch {
-            errorMessage = "Couldn't import “\(fileName)” — \(error)."
+            errorMessage = FloeCADStrings.format("cad.error.importGeneric", "Couldn't import “%@” — %@.", fileName, error)
         }
         return nil
     }
@@ -2933,7 +2933,7 @@ final class EditorViewModel {
         let copy = scaleCopyOnCommit
         scaleCopyOnCommit = false
         guard factor > 0.001 else {
-            errorMessage = "Scale factor must be greater than 0.001."
+            errorMessage = FloeCADStrings.text("cad.error.scaleFactor", "Scale factor must be greater than 0.001.")
             return
         }
         if copy {
@@ -3517,7 +3517,7 @@ final class EditorViewModel {
             ids.insert(copy.id)
         }
         guard !commands.isEmpty else {
-            errorMessage = "Mirror produced no geometry."
+            errorMessage = FloeCADStrings.text("cad.error.mirrorNoGeometry", "Mirror produced no geometry.")
             return
         }
         session.perform(commands.count == 1
@@ -4287,7 +4287,7 @@ final class EditorViewModel {
         guard let originalHit = HitTester.pickBody(ray: ray, in: originalScene),
               let face = FaceTopology.planarFace(
                   in: body.render, seedTriangle: originalHit.triangleIndex) else {
-            errorMessage = "Only flat faces can be opened — tap a planar face."
+            errorMessage = FloeCADStrings.text("cad.error.shellPlanarOnly", "Only flat faces can be opened — tap a planar face.")
             return
         }
         // Toggle: same triangle set already picked → close it again.
@@ -4410,7 +4410,7 @@ final class EditorViewModel {
         } else if let computed = shelledBody(source: source, revision: 0) {
             after = computed
         } else {
-            errorMessage = "The shell produced no geometry — try a thinner wall."
+            errorMessage = FloeCADStrings.text("cad.error.shellNoGeometry", "The shell produced no geometry — try a thinner wall.")
             cancelShell()
             return
         }
@@ -5025,7 +5025,7 @@ final class EditorViewModel {
     /// Manager shows where they came from.
     private func performSplit(of body: Body, halves: (Euclid.Mesh, Euclid.Mesh)) {
         guard !halves.0.polygons.isEmpty, !halves.1.polygons.isEmpty else {
-            errorMessage = "The cutter doesn't pass through the body — nothing to split."
+            errorMessage = FloeCADStrings.text("cad.error.splitNoCut", "The cutter doesn't pass through the body — nothing to split.")
             return
         }
         var document = session.document // local: unique name + revision
@@ -5270,7 +5270,7 @@ final class EditorViewModel {
     func commitPattern() {
         guard case .patterning = mode, let state = patternState else { return }
         guard state.count >= 2 else {
-            errorMessage = "Pattern needs a quantity of at least 2."
+            errorMessage = FloeCADStrings.text("cad.error.patternQuantity", "Pattern needs a quantity of at least 2.")
             return
         }
         if state.isSketchPattern {
@@ -6890,7 +6890,7 @@ final class EditorViewModel {
         guard let originalHit = HitTester.pickBody(ray: ray, in: originalScene),
               let ref = planarFaceRef(on: source, seedTriangle: originalHit.triangleIndex, bodyRef: current.body)
         else {
-            errorMessage = "Tap a flat face — only planar faces can be re-picked here."
+            errorMessage = FloeCADStrings.text("cad.error.repickPlanarOnly", "Tap a flat face — only planar faces can be re-picked here.")
             return
         }
         let after: FeatureKind
@@ -16081,21 +16081,32 @@ final class EditorViewModel {
         case booleanKind
     }
 
-    private static let booleanKindChoices: [(kind: BooleanKind, label: String)] = [
-        (.union, "Union"), (.subtract, "Subtract"), (.intersect, "Intersect"),
-    ]
+    /// Computed (not a stored `static let`) so an in-session language change
+    /// re-resolves the labels; the UI round-trips these strings, so frozen
+    /// storage would pin the initial language into the history panel.
+    private static var booleanKindChoices: [(kind: BooleanKind, label: String)] {
+        [(.union, FloeCADStrings.text("cad.feature.booleanUnion", "Union")),
+         (.subtract, FloeCADStrings.text("cad.feature.booleanSubtract", "Subtract")),
+         (.intersect, FloeCADStrings.text("cad.feature.booleanIntersect", "Intersect"))]
+    }
 
     /// The editable options of a feature kind, in display order.
     static func options(of kind: FeatureKind) -> [FeatureOption] {
         switch kind {
         case let .extrude(_, _, _, symmetric, _, _), let .draftExtrude(_, _, _, _, symmetric, _):
-            return [FeatureOption(key: .symmetric, label: "Symmetric", value: .toggle(symmetric))]
+            return [FeatureOption(key: .symmetric,
+                                    label: FloeCADStrings.text("cad.feature.symmetric", "Symmetric"),
+                                    value: .toggle(symmetric))]
         case let .mirror(_, _, keepOriginal):
-            return [FeatureOption(key: .keepOriginal, label: "Keep original", value: .toggle(keepOriginal))]
+            return [FeatureOption(key: .keepOriginal,
+                                    label: FloeCADStrings.text("cad.feature.keepOriginal", "Keep original"),
+                                    value: .toggle(keepOriginal))]
         case let .boolean(booleanKind, _, _):
-            let selected = booleanKindChoices.first { $0.kind == booleanKind }?.label ?? "Union"
-            return [FeatureOption(key: .booleanKind, label: "Type",
-                                  value: .choice(selected: selected, choices: booleanKindChoices.map(\.label)))]
+            let selected = booleanKindChoices.first { $0.kind == booleanKind }?.label
+                ?? FloeCADStrings.text("cad.feature.booleanUnion", "Union")
+            return [FeatureOption(key: .booleanKind,
+                                    label: FloeCADStrings.text("cad.feature.type", "Type"),
+                                    value: .choice(selected: selected, choices: booleanKindChoices.map(\.label)))]
         default:
             return []
         }
@@ -16105,27 +16116,47 @@ final class EditorViewModel {
     static func scalars(of kind: FeatureKind) -> [FeatureScalar] {
         switch kind {
         case let .extrude(_, _, distance, _, _, _):
-            return [FeatureScalar(key: .primary, label: "Distance", unit: "mm", value: distance.value)]
+            return [FeatureScalar(key: .primary,
+                                    label: FloeCADStrings.text("cad.feature.distance", "Distance"),
+                                    unit: "mm", value: distance.value)]
         case let .pushPull(_, distance, _):
-            return [FeatureScalar(key: .primary, label: "Distance", unit: "mm", value: distance.value)]
+            return [FeatureScalar(key: .primary,
+                                    label: FloeCADStrings.text("cad.feature.distance", "Distance"),
+                                    unit: "mm", value: distance.value)]
         case let .draftExtrude(_, _, distance, taperAngle, _, _):
             return [
-                FeatureScalar(key: .primary, label: "Distance", unit: "mm", value: distance.value),
-                FeatureScalar(key: .taperAngle, label: "Draft", unit: "°", value: taperAngle.value),
+                FeatureScalar(key: .primary,
+                              label: FloeCADStrings.text("cad.feature.distance", "Distance"),
+                              unit: "mm", value: distance.value),
+                FeatureScalar(key: .taperAngle,
+                              label: FloeCADStrings.text("cad.feature.draft", "Draft"),
+                              unit: "°", value: taperAngle.value),
             ]
         case let .revolve(_, _, _, angle, _):
-            return [FeatureScalar(key: .primary, label: "Angle", unit: "°", value: angle.value)]
+            return [FeatureScalar(key: .primary,
+                                    label: FloeCADStrings.text("cad.feature.angle", "Angle"),
+                                    unit: "°", value: angle.value)]
         case let .chamfer(_, _, setback):
-            return [FeatureScalar(key: .primary, label: "Setback", unit: "mm", value: setback.value)]
+            return [FeatureScalar(key: .primary,
+                                    label: FloeCADStrings.text("cad.feature.setback", "Setback"),
+                                    unit: "mm", value: setback.value)]
         case let .fillet(_, _, radius):
-            return [FeatureScalar(key: .primary, label: "Radius", unit: "mm", value: radius.value)]
+            return [FeatureScalar(key: .primary,
+                                    label: FloeCADStrings.text("cad.feature.radius", "Radius"),
+                                    unit: "mm", value: radius.value)]
         case let .shell(_, _, thickness):
-            return [FeatureScalar(key: .primary, label: "Thickness", unit: "mm", value: thickness.value)]
+            return [FeatureScalar(key: .primary,
+                                    label: FloeCADStrings.text("cad.feature.thickness", "Thickness"),
+                                    unit: "mm", value: thickness.value)]
         case let .scaleFace(_, factor):
-            return [FeatureScalar(key: .primary, label: "Factor", unit: "×", value: factor.value)]
+            return [FeatureScalar(key: .primary,
+                                    label: FloeCADStrings.text("cad.feature.factor", "Factor"),
+                                    unit: "×", value: factor.value)]
         case let .rotateFace(_, angle, _):
-            return [FeatureScalar(key: .rotateAngle, label: "Angle", unit: "°",
-                                  value: angle.value * 180 / Double.pi)]
+            return [FeatureScalar(key: .rotateAngle,
+                                    label: FloeCADStrings.text("cad.feature.angle", "Angle"),
+                                    unit: "°",
+                                    value: angle.value * 180 / Double.pi)]
         default:
             return []
         }

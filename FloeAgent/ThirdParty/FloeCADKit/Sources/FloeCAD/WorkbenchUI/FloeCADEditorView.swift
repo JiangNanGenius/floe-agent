@@ -327,7 +327,7 @@ struct FloeCADEditorView: View {
             // drags spring back rather than writing the solver's compromise
             // into the document, and without this chip that reads as a
             // stuck gesture.
-            Text("Constraints conflict")
+            Text(FloeCADStrings.text("cad.status.constraintsConflict", "Constraints conflict"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 10)
@@ -335,7 +335,7 @@ struct FloeCADEditorView: View {
                 .background(Color.red, in: Capsule())
                 .accessibilityIdentifier("SketchConflictChip")
         } else if let status = viewModel.sketchDefinitionStatus, status.fullyDefined {
-            Text("Fully defined")
+            Text(FloeCADStrings.text("cad.status.fullyDefined", "Fully defined"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 10)
@@ -346,24 +346,33 @@ struct FloeCADEditorView: View {
     }
 
     private func sketchStatusText(_ viewModel: EditorViewModel) -> String {
-        if viewModel.isPickingSymmetryAxis { return "Select a line for the axis of symmetry" }
-        guard let sketch = viewModel.activeSketch else { return "Sketching" }
+        if viewModel.isPickingSymmetryAxis {
+            return FloeCADStrings.text("cad.status.pickSymmetryAxis",
+                                       "Select a line for the axis of symmetry")
+        }
+        guard let sketch = viewModel.activeSketch else {
+            return FloeCADStrings.text("cad.status.sketching", "Sketching")
+        }
         if case .sketching(_, let tool) = viewModel.mode {
             switch tool {
-            case .text: return "Tap to place text"
-            case .project: return "Tap a body to project its edges"
+            case .text: return FloeCADStrings.text("cad.status.tapToPlaceText", "Tap to place text")
+            case .project: return FloeCADStrings.text("cad.status.tapToProject",
+                                                      "Tap a body to project its edges")
             case nil:
                 if viewModel.sketchTransformActive {
                     return viewModel.selectedSketchEntityIDs.isEmpty
-                        ? "Select sketch geometry to move or rotate" : "Drag an arrow or tap for an exact value"
+                        ? FloeCADStrings.text("cad.status.selectSketchGeometry",
+                                              "Select sketch geometry to move or rotate")
+                        : FloeCADStrings.text("cad.status.dragOrExactValue",
+                                              "Drag an arrow or tap for an exact value")
                 }
-                return "Drag to orbit — pick a tool to draw"
+                return FloeCADStrings.text("cad.status.dragToOrbit", "Drag to orbit — pick a tool to draw")
             default: break
             }
         }
         return sketch.plane.isCoincident(with: .ground)
-            ? "Sketching on ground plane"
-            : "Sketching on plane"
+            ? FloeCADStrings.text("cad.status.sketchingOnGround", "Sketching on ground plane")
+            : FloeCADStrings.text("cad.status.sketchingOnPlane", "Sketching on plane")
     }
 
     private func statusPill(
@@ -402,11 +411,11 @@ struct FloeCADEditorView: View {
                 .foregroundStyle(.secondary)
             } else {
                 Text(viewModel.measurePoints.isEmpty
-                    ? "Tap two points to measure"
-                    : "Tap the second point")
+                    ? FloeCADStrings.text("cad.status.measureFirstPoint", "Tap two points to measure")
+                    : FloeCADStrings.text("cad.status.measureSecondPoint", "Tap the second point"))
                     .font(.subheadline)
             }
-            Button("Done") {
+            Button(FloeCADStrings.text("cad.ui.common.done", "Done")) {
                 viewModel.exitMeasure()
             }
             .buttonStyle(.borderedProminent)

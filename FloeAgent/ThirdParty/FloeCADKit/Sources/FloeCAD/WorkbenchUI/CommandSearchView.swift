@@ -145,7 +145,7 @@ struct CommandSearchView: View {
                 .font(.callout)
                 .foregroundStyle(Color.primary)
             Spacer(minLength: 8)
-            Text(command.category.rawValue.capitalized)
+            Text(command.category.title)
                 .font(.caption2)
                 .foregroundStyle(.barLabel)
             if let chord = command.chord {

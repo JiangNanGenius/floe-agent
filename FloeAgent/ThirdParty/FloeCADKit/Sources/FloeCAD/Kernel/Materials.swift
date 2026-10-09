@@ -51,27 +51,29 @@ nonisolated struct MaterialPreset: Identifiable, Sendable {
     var id: String { name }
 
     /// Flat-color starter set (plan §B15): metals + plastics + rubber/wood.
-    static let library: [MaterialPreset] = [
-        MaterialPreset(name: "Steel", spec: BodyMaterialSpec(
+    /// Names route through the host catalog (the preset identity stays the
+    /// English `id`; only display localizes).
+    static var library: [MaterialPreset] {
+        [MaterialPreset(name: FloeCADStrings.text("cad.material.steel", "Steel"), spec: BodyMaterialSpec(
             baseColor: SIMD4(0.62, 0.64, 0.67, 1), metallic: 1, roughness: 0.35
         )),
-        MaterialPreset(name: "Aluminum", spec: BodyMaterialSpec(
+        MaterialPreset(name: FloeCADStrings.text("cad.material.aluminum", "Aluminum"), spec: BodyMaterialSpec(
             baseColor: SIMD4(0.83, 0.85, 0.87, 1), metallic: 1, roughness: 0.22
         )),
-        MaterialPreset(name: "Brass", spec: BodyMaterialSpec(
-            baseColor: SIMD4(0.85, 0.68, 0.30, 1), metallic: 1, roughness: 0.30
+        MaterialPreset(name: FloeCADStrings.text("cad.material.brass", "Brass"), spec: BodyMaterialSpec(
+            baseColor: SIMD4(0.83, 0.68, 0.32, 1), metallic: 1, roughness: 0.3
         )),
-        MaterialPreset(name: "Plastic Matte", spec: BodyMaterialSpec(
-            baseColor: SIMD4(0.90, 0.91, 0.93, 1), metallic: 0, roughness: 0.85
+        MaterialPreset(name: FloeCADStrings.text("cad.material.plasticMatte", "Plastic Matte"), spec: BodyMaterialSpec(
+            baseColor: SIMD4(0.85, 0.86, 0.88, 1), metallic: 0, roughness: 0.8
         )),
-        MaterialPreset(name: "Plastic Gloss", spec: BodyMaterialSpec(
-            baseColor: SIMD4(0.16, 0.45, 0.95, 1), metallic: 0, roughness: 0.12
+        MaterialPreset(name: FloeCADStrings.text("cad.material.plasticGloss", "Plastic Gloss"), spec: BodyMaterialSpec(
+            baseColor: SIMD4(0.9, 0.91, 0.93, 1), metallic: 0, roughness: 0.25
         )),
-        MaterialPreset(name: "Rubber", spec: BodyMaterialSpec(
-            baseColor: SIMD4(0.13, 0.13, 0.14, 1), metallic: 0, roughness: 0.95
+        MaterialPreset(name: FloeCADStrings.text("cad.material.rubber", "Rubber"), spec: BodyMaterialSpec(
+            baseColor: SIMD4(0.15, 0.15, 0.16, 1), metallic: 0, roughness: 0.95
         )),
-        MaterialPreset(name: "Wood", spec: BodyMaterialSpec(
-            baseColor: SIMD4(0.55, 0.38, 0.22, 1), metallic: 0, roughness: 0.75
-        )),
-    ]
+        MaterialPreset(name: FloeCADStrings.text("cad.material.wood", "Wood"), spec: BodyMaterialSpec(
+            baseColor: SIMD4(0.58, 0.4, 0.24, 1), metallic: 0, roughness: 0.7
+        ))]
+    }
 }

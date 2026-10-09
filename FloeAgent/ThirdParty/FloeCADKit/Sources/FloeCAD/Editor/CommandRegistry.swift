@@ -52,12 +52,40 @@ nonisolated struct KeyChord: Hashable, Codable, Sendable {
 nonisolated struct AppCommand: Identifiable, Hashable, Sendable {
     nonisolated enum Category: String, Sendable, CaseIterable {
         case sketch, modeling, boolean, transform, view, edit, project
+
+        /// Localized section title for the search/shortcut surfaces.
+        var title: String {
+            switch self {
+            case .sketch: FloeCADStrings.text("cad.cmd.category.sketch", "Sketch")
+            case .modeling: FloeCADStrings.text("cad.cmd.category.modeling", "Modeling")
+            case .boolean: FloeCADStrings.text("cad.cmd.category.boolean", "Boolean")
+            case .transform: FloeCADStrings.text("cad.cmd.category.transform", "Transform")
+            case .view: FloeCADStrings.text("cad.cmd.category.view", "View")
+            case .edit: FloeCADStrings.text("cad.cmd.category.edit", "Edit")
+            case .project: FloeCADStrings.text("cad.cmd.category.project", "Project")
+            }
+        }
     }
 
     let id: String
-    var title: String
+    /// Host-catalog localization key (`cad.cmd.<id>`); the catalog build in
+    /// the app supplies the English fallback.
+    var titleKey: String
+    var titleFallback: String
     var category: Category
     var chord: KeyChord?
+
+    /// Localized display title, resolved live so an in-session language
+    /// change re-renders the search corpus without a relaunch.
+    var title: String { FloeCADStrings.text(titleKey, titleFallback) }
+
+    init(id: String, title: String, category: Category, chord: KeyChord?) {
+        self.id = id
+        self.titleKey = "cad.cmd.\(id)"
+        self.titleFallback = title
+        self.category = category
+        self.chord = chord
+    }
 }
 
 /// What a bare letter does (spec's Settings > Single Key Action).

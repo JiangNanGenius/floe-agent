@@ -18,10 +18,10 @@ nonisolated enum SnapKind: String, Sendable, Equatable, CaseIterable {
     /// too frequent to label on every stroke.
     var label: String? {
         switch self {
-        case .endpoint: "Endpoint"
-        case .midpoint: "Midpoint"
-        case .center: "Center"
-        case .edge: "Edge"
+        case .endpoint: FloeCADStrings.text("cad.snap.endpoint", "Endpoint")
+        case .midpoint: FloeCADStrings.text("cad.snap.midpoint", "Midpoint")
+        case .center: FloeCADStrings.text("cad.snap.center", "Center")
+        case .edge: FloeCADStrings.text("cad.snap.edge", "Edge")
         case .grid, .free: nil
         }
     }
