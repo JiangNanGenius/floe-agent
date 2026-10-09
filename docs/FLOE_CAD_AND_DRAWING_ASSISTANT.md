@@ -762,14 +762,38 @@ the fixture.
   (`…/logs/accept-part5-thumb-tests*.log`; original failing compiles retained).
 - Full App `build-for-testing` (FloeAgent scheme, generic iOS Simulator) — TEST BUILD SUCCEEDED,
   0 errors.
-- UI: `FloeAgentUITests/CanvasCADEntryUITests` drove the contextual CAD action to the real
-  workbench and back — the entry/open/close path passed in an earlier run; the node-identity
-  badge selector is being finalized against primary's AX diagnosis (failed selector runs and
-  their logs retained; not counted as a pass).
+- App canvas creation tests `NativeCADCanvasCreationTests` — 3/3 passed, incl. localized node
+  title vs stable `CAD Model*.floecad` package identity (`accept-part5-app-creation-tests2.log`).
+- UI: `FloeAgentUITests/CanvasCADEntryUITests` — 1/1 passed (21.0 s): the selected CAD node card
+  carries the editable `.floecad` identity on its parent `canvas.node.<uuid>` label, the bottom
+  contextual "Open CAD workbench" action (`canvas.toolbar.openNativeCAD`) opens the real workbench
+  (`canvas.nativeCAD.done`, `CADWorkbenchToolsButton`), and Done returns to the canvas
+  (`accept-part5-canvas-ui-final.log`).
+- Independent generic/iOS device build at HEAD `3f91efba` (app source `be0077ea`, the follow-up
+  commit is test-only): BUILD SUCCEEDED. Unsigned Debug product 1.7.24 (265), binary sha256
+  `3a0a6a97c633daa283a6d78d8ca2629d060a3a86233d65f61b759e2118743e8e`, dwarf UUID
+  `13D9E972-2862-39C9-9F78-76F44EA1DB47` (binary == extracted dSYM, verified). Recovery artifact:
+  `Local/evidence/cad-part5/device-artifact-3f91efba.tar.zst` (sha256
+  `a0d285a5a5af0e0d71f61836053cd8d1a72d111d7a892490fedc74bd5d93ff6b`, packaged binary hash
+  verified equal to the build). Compile gate only; the unsigned product is not installable as-is.
+- Primary native Device Hub CUA on the simulator product (binary `0f9a579e…`, same app source):
+  confirmed the parent node AX label reads as an editable `.floecad` model, the bottom action opens
+  the bound editor, ShapeScript cube preview/Apply renders the real cube, and Fit → Apply to
+  Canvas → dismiss tools PRESERVES exact framing and the Top/Front/Right orientation labels; the
+  card then shows the actual cube thumbnail + editable `.floecad` badge, and reopening via the
+  bottom action retains the cube. Screenshots:
+  `Local/Private/cad-upgrade-20261009/cua/final-before-canvas-apply.png`,
+  `final-after-canvas-apply.png`, `final-cad-canvas-card.png`.
+
+### Observation (not a persistent defect)
+
+- On the first Done transition out of the freshly opened editor the view briefly showed a zoomed
+  cube and needed a second tap; every subsequent reopen/Done returned normally. Recorded for the
+  CUA history; no source change was warranted from a single non-reproducing transition.
 
 ### Honest limitations (part 5)
 
-- The package and App builds/tests above are simulator runs; physical-device acceptance and the
-  real configured-provider loop remain unrun (interactive credentials unavailable to this worker).
-- The canvas-CAD UI test's badge identity assertion is awaiting primary's Device Hub AX/screenshot
-  diagnosis; the editor-open/close portion is green and not weakened to pass.
+- The package and App builds/tests above are simulator runs; the device slice is an unsigned
+  compile gate (physical-device install/acceptance remains a primary/user gate).
+- A real configured-model-provider loop was NOT run (interactive credentials unavailable to this
+  worker; Apple Foundation Models unavailable / model downloading in the simulator).
