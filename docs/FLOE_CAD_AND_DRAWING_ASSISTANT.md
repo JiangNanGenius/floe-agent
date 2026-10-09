@@ -359,11 +359,149 @@ Mesh (boolean on a mesh copy). Debug-only: no release code path can create this 
 
 本轮完成装配服务（实例/约束/求解/自由度/干涉/源更新；精确干涉在主线程序列化 B-rep 后于
 分离任务中对自有副本执行，带取消与修订检查）、出图服务（独立页面/投影/尺寸/中心线/PDF/
-SVG/DXF 真实几何）、ShapeScript 无头求值与脚本结果绑定、网格操作，统一 `cad.document`
-路由与模式（`.floecad` 不再经过二维加载器），并按评审意见修复权限：直接 mutation 载荷被
+SVG/DXF 真实几何）、ShapeScript 无头求值与脚本结果绑定、网格操作，统一 `cad.document` 路由
+与模式（`.floecad` 不再经过二维加载器），并按评审意见修复权限：直接 mutation 载荷被
 拒绝、提案/授权/预留/幂等回执、任务记录按环境/所有者/文档隔离、失败回执如实记录。工作台
 工具面板、原生画布入口（更新原节点 / 显式变体）、IGES 实体/曲面导入与中英文案已接入；
 模拟器 CUA 视口崩溃（宿主 default.metallib 被误选、管线缺失后断言）已修复并有视口初始化/渲染
 测试。已运行：包内 44/44、完整 App 编译成功、定向 App 测试 5/5、工作台 schema/路由 22/22、
 画布规划器 7/7。未完成：导入编辑器剩余内部文案（EditorViewModel 标签、材料名等）中文化、
 原生提案通知持久化 outbox、真机/真实模型/性能验收；均未发布。
+
+---
+
+## Native FloeCAD continuation — unreleased work, 2026-10-10 (part 3: recovery, localization, production entry, CUA repair)
+
+Status: **implemented and locally verified; not merged, not tagged, not
+published.** This section records the round that closes the review-hardened
+persistence/recovery contract, the production creation/import entry, the
+remaining imported-editor localization, the CUA panel repair and the
+reproducible performance baselines. Branch `codex/content-upgrade-20261009`.
+
+### What was added
+
+- **Durable native proposal persistence + origin notification.**
+  `NativeCADProposalStore` (versioned envelope; corrupt/newer-schema state is
+  rejected and preserved, never overwritten — quarantine is explicit; growth
+  is bounded: active records never dropped, saturation refuses with a clear
+  resource error; writes run off the caller thread) persists the frozen
+  operation, owner/environment/canonical document/revision, receipts and
+  status (pending/applying/interrupted/applied/rejected/superseded). Apply
+  receipts are also written to the SHARED `CadAppliedReceiptJournal`;
+  adoption/rejection/manual-conflict/interrupted decisions reach the
+  originating conversation through the SHARED durable decision outbox
+  (idempotent delivery, retried at launch). Preview enforces the same
+  recorded ownership as apply; replay survives relaunch for the same request
+  id only; UI-issued grants cannot be forged by a model (authority is the
+  recorded propose-time access + canonical target, re-checked before any
+  reservation).
+- **Crash-safe recovery against the verified package identity.**
+  `FloeCADDocument.storedIdentity(at:)` reads the manifest + document JSON +
+  every blob through the versioned store (the content digest binds each
+  blob's SHA-256). Reconciliation resolves an interrupted apply ONLY against
+  that identity: a completed journal entry whose expected SHA equals the
+  verified content SHA recovers as applied; an unchanged base revision
+  returns to pending (honest retry); an advanced package without that proof
+  recovers as **interrupted** — never "applied", never a safe retry. A
+  durable `.applying` marker binds the expected result revision before the
+  mutation runs (no package-directory hashing anywhere).
+- **Production creation + Canvas create-node route.**
+  `FloeCADDocument.create` was reachable only from the DEBUG fixture. The
+  file tree now offers "New CAD Document" (toolbar + and folder menu)
+  creating a real versioned package through the guard resolver in local
+  workspaces. The Canvas Add menu gains an explicit "CAD model (parametric
+  workbench)" entry next to the 3D scene director (kept distinct — the scene
+  editor is not CAD), creating a real `.floecad` bound as a native node; the
+  workbench's "Add to canvas" offers an explicit destination picker (no
+  first-canvas guessing; a binding that appears between pick and write
+  refuses). The contradictory "Make variant without a node" dead end is gone.
+- **Localization.** The imported editor's user-facing strings now route
+  through the host catalog with live resolution: the full command catalog
+  (65 commands + 7 categories), feature option/scalar labels, history
+  feature labels (display-time, stored data stays English), material names,
+  snap labels, sketch/measure statuses, constraint chips, workbench panel
+  reports/empty states and the common import/export/feature errors. The
+  catalog carries ~380 `cad.*`/`canvas.cad.*` bilingual keys.
+- **CUA panel repair (iPad-first).** The tools sheet fills its width, wraps
+  actions in an adaptive grid at a 44pt hit-target floor, renders native
+  structured reports (assembly instances/constraints with
+  stale/suppressed/invalid/conflict badges + DOF summary; drawing pages with
+  scale/stale; script records with applied/stale; mesh selection state) with
+  meaningful empty states and readable styled errors — raw JSON never
+  reaches the user — and has an explicit Close control. The production
+  FilePreview host and the qualification fixture present the SAME Floe-level
+  chrome (explicit save with status + fullscreen) via a shared modifier.
+- **Script result binding (guidance cad-script-review-1 completed).** Apply
+  now enforces the recorded `outputDocumentRevision` against the live
+  document, not just the render hash: any committed change refuses an
+  automatic re-apply until the caller explicitly chooses `fork`/`rebuild`;
+  record + body stay one undoable composite.
+- **IGES mixed roots.** A file carrying BOTH a closed solid and loose
+  surfaces imports both (exact analytic solid + render-only surface bodies,
+  per-body undo) — never "solids only, surfaces dropped".
+- **Reproducible performance fixtures.** `CADPerformanceBaselineTests` build
+  synthetic medium (96 bodies) and large (600 bodies) models through the
+  typed command vocabulary and measure build/snapshot/save/open + resident
+  memory with sanity bounds only. Honest baseline on the M5 Pro simulator
+  host: medium build 1.18s / save 0.045s / open 0.045s; large build ~33s
+  (≈55ms per typed op — the per-op executor/JSON path, not a paint metric) /
+  save 0.41s / open 0.28s. These are first measurements, not improvements;
+  viewport first-paint/frame latency remains a CUA/physical-device gate.
+
+### Verification actually run (2026-10-10, part 3)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused App tests (persistence 14, authority 4, creation 2, workbench 1) | `xcodebuild test-without-building … -only-testing:FloeAppTests/…` (Xcode 27A266a, iPad Air 13 M4 sim) | **21/21 passed** |
+| FloeCADKit package tests | `xcodebuild test -scheme FloeCADKit …` | **48/48 passed** (assembly 9, drawing 8, script+mesh 10, IGES 6, plate/hole 1, proposal 6, store recovery 4, viewport 2, perf 2) |
+| Host UI smoke (iPad regular width) | `… -only-testing:FloeAgentUITests/CADWorkbenchHostIPadUITests` | **1/1 passed** (toolbar chrome, tool-strip response, tools-sheet panels + Close, history panel) |
+| Host UI smoke (iPhone compact, serial) | `… CADWorkbenchHostIPhoneUITests` | **passed with 1 recorded skip** — compact toolbar overflow hides `CADWorkbenchToolsButton`; panel reachability on compact phones moves to the primary CUA checklist |
+| Full App compile (simulator arm64) | `xcodebuild build-for-testing …` | **TEST BUILD SUCCEEDED** |
+| Full App compile (generic iOS device, unsigned) | `xcodebuild build -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO` | **BUILD SUCCEEDED**; unsigned Debug product + provenance (source SHA, toolchain, binary SHA-256) preserved under `Local/Private/content-upgrade/device-artifact-20261010` |
+| Independent STEP reader / tamper tests | retained from part 1/2 | 5/5 (unchanged) |
+
+Fixture launch recipe (primary CUA, unchanged):
+
+```sh
+xcrun simctl launch <booted-device-udid> org.floeagent.ios \
+  -ui-testing --ui-test-cad-fixture
+```
+
+Normal production entry for the second pass: Files tree "+" → "New CAD
+Document" (or a folder's context menu) → name → the workbench opens with the
+Floe-level Save/Fullscreen chrome; Creative → New Canvas → Add → "CAD model
+(parametric workbench)" creates a package bound as a native canvas node; the
+3D scene director next to it stays a lightweight scene composer and is not
+CAD. Canvas binding from the workbench: CAD Tools → "Add to canvas" /
+"Apply to canvas" / "Make variant".
+
+### Completion matrix update (honest)
+
+| Area | State |
+| --- | --- |
+| Versioned `.floecad` kernel, atomic commit, CAS, undo/redo, off-main save | implemented + tested |
+| Sketch/parametric features, analytic B-rep, STEP/IGES import, plate+hole fixture | implemented + tested (IGES mixed-roots now covered) |
+| Assembly/drawing/script/mesh services | implemented + tested; panels now structured/44pt/localized |
+| Script manual-result conflict + `outputDocumentRevision` enforcement | implemented + tested |
+| Unified `cad.document` routing + schema | implemented; App tests cover native routing |
+| Native proposal persistence/recovery/origin notification | implemented + tested (relaunch replay, crash-after-commit, crash-before-commit, corrupt/newer-schema, saturation, pruning) |
+| Production creation + Canvas create-node/import route | implemented + tested end-to-end (create → edit → save → reopen) |
+| Workbench + imported-editor localization (en/zh-Hans) | implemented (~380 keys); a full visual zh pass remains CUA |
+| CUA acceptance | **in progress**: chrome/toolstrip/panels/history verified in fixture; second confirmation pass pending on the repaired product |
+| Physical-device / real-provider acceptance, viewport first-paint & frame latency, compact-phone panel reachability | **not run** — primary/physical-device gates; honest limitations, not claimed |
+
+### 中文摘要（2026-10-10 第三部分，未发布）
+
+本轮关闭评审加固的持久化/恢复契约：原生提案与回执经版本化信封落盘（损坏/更高版本状态只拒绝
+不覆盖、可隔离取证；活跃记录永不丢弃、饱和明确报错；写入不阻塞调用方线程），应用回执复用共享
+预写日志，采纳/拒绝/人工冲突/中断结果经共享持久 outbox 幂等送达原会话；恢复只依据包存储的已验证
+身份（manifest＋文档＋全部 blob），绝不用目录哈希，中断未验证一律记为 interrupted（不冒充已应用、
+不暗示可安全重试）。生产入口补齐：文件树“新建 CAD 文档”真实建包；画布 Add 菜单新增显式
+“CAD 模型（参数化工作台）”并与 3D 场景编辑器明确区分；工作台“添加到画布”为显式目标选择。
+本地化覆盖命令目录、特征/历史标签、材料、捕捉、状态与面板报告（约 380 个双语键）。按 CUA 修复
+工具面板：满宽、44pt 目标、结构化报表与空状态、可读错误、显式关闭；生产宿主与夹具共用同一
+Floe 级保存/全屏外壳。脚本 apply 强制校验记录的 `outputDocumentRevision`；IGES 混合根（实体＋
+曲面）同文件导入有测试。性能基线为可复现合成夹具的首测数值（非提升宣称）。已运行：App 定向
+21/21、包内 48/48、iPad 宿主 UI 1/1、iPhone 紧凑通过并记录 1 项跳过（窄栏溢出隐藏工具入口，
+移交 CUA 清单）、模拟器与通用设备完整编译均成功（设备产物未签名，已留存来源/哈希/工具链）。
+真机、真实模型、视口首帧/帧延迟与紧凑机型面板可达性仍未验收，不在本轮宣称。
