@@ -131,8 +131,10 @@ final class NativeCADCanvasCreationTests: XCTestCase {
         let node = try XCTUnwrap(updated.documents.flatMap(\.nodes).first { $0.id == nodeID })
 
         XCTAssertEqual(node.text, CADCanvasNodePlanner.defaultDisplayName())
-        // The test host runs English: the default title is "CAD Model".
-        XCTAssertEqual(node.text, "CAD Model")
+        // The title is one of the catalog defaults (host language may differ
+        // from the test's preferred language in the XCTest environment).
+        XCTAssertTrue(["CAD Model", "CAD 模型"].contains(node.text),
+                      "node title must be a localized default, got \(node.text)")
 
         let key = try XCTUnwrap(node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
         let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: key))
