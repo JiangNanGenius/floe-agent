@@ -173,13 +173,19 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Everything except the gizmo overlay — shared by live drawing and
     /// offscreen thumbnail/screenshot capture. `drawBackground`/`drawGrid`
     /// support screenshot options (transparent background, grid off).
+    ///
+    /// `renderScene`/`renderCamera` default to the live state; the canvas
+    /// snapshot path passes a SNAPSHOT scene and a local fitted camera, so the
+    /// encode never observes or changes the live viewport framing.
     private func encodeScene(
         encoder: MTLRenderCommandEncoder,
         frame: inout FrameUniforms,
         drawBackground: Bool = true,
-        drawGrid: Bool = true
+        drawGrid: Bool = true,
+        renderScene: ViewportScene? = nil
     ) {
         let pipelines = context.pipelines
+        let scene = renderScene ?? self.scene
         let mode = scene.displayMode
 
         // 1. Background gradient
@@ -200,7 +206,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // 1b. Ground blob shadows, before any body fragments land.
         if scene.groundShadow {
-            drawGroundShadows(encoder: encoder)
+            drawGroundShadows(encoder: encoder, renderScene: scene)
         }
 
         // 2. Opaque bodies. Wireframe swaps the fill for a depth-only prepass
@@ -210,12 +216,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         case .shaded, .shadedNoEdges:
             encoder.setDepthStencilState(pipelines.depthReadWrite)
             for drawable in scene.bodies where !drawable.isTranslucent {
-                drawBody(drawable, encoder: encoder, pipeline: pipelines.lit)
+                drawBody(drawable, encoder: encoder, pipeline: pipelines.lit, frame: frame)
             }
         case .wireframe:
             encoder.setDepthStencilState(pipelines.depthReadWrite)
             for drawable in scene.bodies where !drawable.isTranslucent {
-                drawBody(drawable, encoder: encoder, pipeline: pipelines.depthOnly)
+                drawBody(drawable, encoder: encoder, pipeline: pipelines.depthOnly, frame: frame)
             }
         case .xray:
             break
@@ -226,12 +232,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setRenderPipelineState(pipelines.edge)
             encoder.setDepthStencilState(pipelines.depthReadOnly)
             for drawable in scene.bodies where !drawable.isTranslucent {
-                drawEdges(drawable, encoder: encoder)
+                drawEdges(drawable, encoder: encoder, frame: frame)
             }
             if scene.showHiddenEdges {
                 encoder.setDepthStencilState(pipelines.depthGreaterReadOnly)
                 for drawable in scene.bodies where !drawable.isTranslucent {
-                    drawEdges(drawable, encoder: encoder, alphaScale: 0.25)
+                    drawEdges(drawable, encoder: encoder, alphaScale: 0.25, frame: frame)
                 }
             }
         }
@@ -245,7 +251,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // 4a. Image quads (Insert Image): blended, depth read, no depth write.
         if !scene.imageQuads.isEmpty {
-            drawImageQuads(encoder: encoder)
+            drawImageQuads(encoder: encoder, renderScene: scene)
         }
 
         // 4b. Closed-profile fills (edge pipeline reused for its depth bias so
@@ -306,16 +312,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setDepthStencilState(pipelines.depthReadOnly)
             let xrayAlpha: Float? = (mode == .xray && !drawable.isTranslucent) ? 0.35 : nil
             drawBody(drawable, encoder: encoder, pipeline: pipelines.litBlended,
-                     alphaOverride: xrayAlpha)
+                     alphaOverride: xrayAlpha, frame: frame)
         }
     }
 
     /// Insert-Image reference quads: textured, blended, both windings so the
     /// image reads from either side (mirrored from the back, like paper).
-    private func drawImageQuads(encoder: MTLRenderCommandEncoder) {
+    private func drawImageQuads(encoder: MTLRenderCommandEncoder, renderScene: ViewportScene) {
         encoder.setRenderPipelineState(context.pipelines.texturedQuad)
         encoder.setDepthStencilState(context.pipelines.depthReadOnly)
-        for quad in scene.imageQuads {
+        for quad in renderScene.imageQuads {
             guard let texture = quadTextures.texture(for: quad.id) else { continue }
             let hx = quad.xAxis * (quad.width * 0.5)
             let hy = quad.yAxis * (quad.height * 0.5)
@@ -357,10 +363,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Cheap planar blob shadows (visualization v1): one soft dark ellipse on
     /// the ground plane under each opaque body's AABB, fading as the body
     /// lifts off the ground.
-    private func drawGroundShadows(encoder: MTLRenderCommandEncoder) {
+    private func drawGroundShadows(encoder: MTLRenderCommandEncoder, renderScene: ViewportScene) {
         encoder.setRenderPipelineState(context.pipelines.blobShadow)
         encoder.setDepthStencilState(context.pipelines.depthReadOnly)
-        for drawable in scene.bodies where !drawable.isTranslucent {
+        for drawable in renderScene.bodies where !drawable.isTranslucent {
             let aabb = drawable.renderMesh.localAABB
             var lo = SIMD3<Float>(.greatestFiniteMagnitude, .greatestFiniteMagnitude,
                                   .greatestFiniteMagnitude)
@@ -415,14 +421,67 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // MARK: - Thumbnail capture
 
+    /// Offscreen render of an INDEPENDENT scene snapshot, returned as PNG data.
+    ///
+    /// This is the canvas-node thumbnail entry point and, unlike
+    /// `makeThumbnailPNG(width:height:transparentBackground:showGrid:)`, it
+    /// never reads or writes this renderer's live camera: it builds a LOCAL
+    /// turntable camera fitted to the SNAPSHOT bounds and renders with that.
+    /// The viewport passed for thumbnail capture is a detached, offscreen
+    /// MTKView whose `Renderer` has never owned a live editor, so calling this
+    /// against the live viewport is also harmless — the live camera, the
+    /// viewport-size callback and the orientation-cube overlay are all
+    /// untouched. No gizmo/overlay pass runs (the canvas preview shows bodies,
+    /// edges, grid and assembly instances only).
+    func makeSceneSnapshotPNG(
+        _ snapshot: ViewportScene,
+        width: Int = 640,
+        height: Int = 480
+    ) -> Data? {
+        guard width > 0, height > 0 else { return nil }
+        // A private fitted camera: frames the snapshot bounds isometrically
+        // without mutating `self.camera` or invoking `viewportSizeChanged`.
+        var snapshotCamera = TurntableCamera()
+        if let bounds = snapshot.worldBounds {
+            snapshotCamera.fit(boundsMin: bounds.min, boundsMax: bounds.max,
+                               aspect: Float(width) / Float(height))
+        }
+        return renderPNG(scene: snapshot, camera: snapshotCamera,
+                         width: width, height: height,
+                         transparentBackground: false, showGrid: true)
+    }
+
     /// Offscreen render of the current scene (no gizmo), returned as PNG data.
     /// Screenshot options: `transparentBackground` clears to alpha 0 and skips
     /// the gradient pass; `showGrid` off skips the ground grid.
+    ///
+    /// This renders with the renderer's OWN camera and exists for the live
+    /// workbench screenshot/thumbnail providers (where the renderer IS the
+    /// on-screen viewport). Canvas previews must use
+    /// `makeSceneSnapshotPNG`, which fits an independent camera and so can
+    /// never change the framing the user is looking at.
     func makeThumbnailPNG(
         width: Int = 640,
         height: Int = 480,
         transparentBackground: Bool = false,
         showGrid: Bool = true
+    ) -> Data? {
+        renderPNG(scene: scene, camera: camera, width: width, height: height,
+                  transparentBackground: transparentBackground, showGrid: showGrid)
+    }
+
+    /// Shared offscreen encoder. It renders the supplied scene with the
+    /// supplied camera into private multisample/resolve textures and reads the
+    /// pixels back as PNG. The caller decides whether that camera is the live
+    /// one (screenshot) or a local fitted snapshot camera (canvas thumbnail),
+    /// which is what keeps thumbnail capture from re-framing the editor.
+    private func renderPNG(
+        scene: ViewportScene,
+        camera: TurntableCamera,
+        width: Int,
+        height: Int,
+        transparentBackground: Bool,
+        showGrid: Bool
     ) -> Data? {
         let device = context.device
 
@@ -479,12 +538,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         cache.sync(with: scene, device: context.device)
         quadTextures.sync(quads: scene.imageQuads, device: context.device)
         bodyTextures.sync(bodies: scene.bodies, device: context.device)
-        var frame = makeFrameUniforms(viewportSize: CGSize(width: width, height: height))
+        var frame = makeFrameUniforms(
+            scene: scene,
+            camera: camera,
+            viewportSize: CGSize(width: width, height: height))
         encodeScene(
             encoder: encoder,
             frame: &frame,
             drawBackground: !transparentBackground,
-            drawGrid: showGrid
+            drawGrid: showGrid,
+            renderScene: scene
         )
         encoder.endEncoding()
         commandBuffer.commit()
@@ -527,7 +590,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         _ drawable: BodyDrawable,
         encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState,
-        alphaOverride: Float? = nil
+        alphaOverride: Float? = nil,
+        frame: FrameUniforms? = nil
     ) {
         guard let resources = cache.resources(for: drawable.id) else { return }
         // An imported body with a texture and texcoords shades through the
@@ -560,8 +624,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                                index: Int(BufferIndexBodyUniforms.rawValue))
         encoder.setFragmentBytes(&body, length: MemoryLayout<BodyUniforms>.stride,
                                  index: Int(BufferIndexBodyUniforms.rawValue))
-        var frame = makeFrameUniforms()
-        encoder.setFragmentBytes(&frame, length: MemoryLayout<FrameUniforms>.stride,
+        // Reuse the frame already bound for this encode: a snapshot encode's
+        // frame carries the independent fitted camera, so per-draw lighting
+        // must not rebuild one from the live camera.
+        var drawFrame = frame ?? makeFrameUniforms()
+        encoder.setFragmentBytes(&drawFrame, length: MemoryLayout<FrameUniforms>.stride,
                                  index: Int(BufferIndexFrameUniforms.rawValue))
         encoder.drawIndexedPrimitives(
             type: .triangle,
@@ -575,7 +642,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private func drawEdges(
         _ drawable: BodyDrawable,
         encoder: MTLRenderCommandEncoder,
-        alphaScale: Float = 1
+        alphaScale: Float = 1,
+        frame: FrameUniforms? = nil
     ) {
         guard let resources = cache.resources(for: drawable.id),
               let edgeBuffer = resources.edgeVertexBuffer,
@@ -584,7 +652,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         var body = makeBodyUniforms(drawable)
         let selected = drawable.selectionState == SelectionStateSelected.rawValue
         body.baseColor = selected
-            ? makeFrameUniforms().accentColor
+            ? (frame?.accentColor ?? makeFrameUniforms().accentColor)
             : SIMD4(0.13, 0.15, 0.17, 1)
         body.baseColor.w *= alphaScale
         encoder.setVertexBuffer(edgeBuffer, offset: 0, index: Int(BufferIndexPositions.rawValue))
@@ -598,8 +666,22 @@ final class Renderer: NSObject, MTKViewDelegate {
     // MARK: - Uniforms
 
     private func makeFrameUniforms(viewportSize: CGSize? = nil) -> FrameUniforms {
+        makeFrameUniforms(scene: scene, camera: camera, viewportSize: viewportSize,
+                          centerOffsetOverride: nil)
+    }
+
+    /// Frame uniforms for an explicit scene/camera. The canvas snapshot path
+    /// uses this so a thumbnail can never read the live camera (and so can
+    /// neither re-frame the editor nor feed it a changed viewport).
+    private func makeFrameUniforms(
+        scene: ViewportScene,
+        camera: TurntableCamera,
+        viewportSize: CGSize?,
+        centerOffsetOverride: SIMD2<Float>? = nil
+    ) -> FrameUniforms {
         // An explicit size is an offscreen capture: no palette sits over it.
-        let centerOffset = viewportSize == nil ? self.centerOffset : .zero
+        let centerOffset = centerOffsetOverride
+            ?? (viewportSize == nil ? self.centerOffset : .zero)
         let viewportSize = viewportSize ?? self.viewportSize
         let aspect = Float(viewportSize.width / max(viewportSize.height, 1))
         let cameraPosition = camera.position

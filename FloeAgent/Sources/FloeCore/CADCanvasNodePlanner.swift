@@ -84,6 +84,19 @@ public enum CADCanvasNodePlanner {
         return node.metadata[MetadataKeys.sourcePath] != nil
     }
 
+    /// The localized DEFAULT node display name for a canvas-owned CAD model
+    /// ("CAD Model" read as English in a Chinese UI was the reported defect).
+    /// This is presentation ONLY: the on-disk `.floecad` package file name and
+    /// the recorded binding key stay language-independent ("CAD Model…"), so a
+    /// device language switch never breaks a node's identity. Callers pass this
+    /// as the node text while keeping the package name stable.
+    public static func defaultDisplayName() -> String {
+        // `FloeL10n.l` returns the key itself when no catalog value exists, so
+        // fall back to English explicitly there.
+        let localized = FloeL10n.l("canvas.cad.node_default_name")
+        return localized == "canvas.cad.node_default_name" ? "CAD Model" : localized
+    }
+
     /// Identity hash recorded when the native document was last applied, if
     /// any. Falls back to the node's current asset hash (first apply).
     public static func capturedSourceHash(for node: CanvasNode) -> String? {

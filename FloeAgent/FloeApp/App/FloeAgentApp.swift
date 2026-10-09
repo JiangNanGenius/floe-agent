@@ -89,6 +89,12 @@ struct FloeAgentApp: App {
                     // 100×60×10 plate with a Ø10 through-hole. No workspace,
                     // grant or credential setup required.
                     CADWorkbenchFixtureHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-canvas-cad-fixture"),
+                          ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                    // Deterministic canvas fixture: an ordinary canvas with
+                    // one canvas-owned native CAD node, for the node preview +
+                    // explicit "Open CAD workbench" entry acceptance.
+                    CanvasCADEntryFixtureHarness()
                 } else {
                     RootView()
                 }

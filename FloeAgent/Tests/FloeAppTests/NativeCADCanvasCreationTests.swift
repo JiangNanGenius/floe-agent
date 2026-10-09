@@ -110,6 +110,39 @@ final class NativeCADCanvasCreationTests: XCTestCase {
         XCTAssertEqual(nodes.count, 1)
     }
 
+    /// The node display title follows the UI language while the bound
+    /// package's file-name identity stays the stable English stem — a device
+    /// language switch must never break the `canvas-cad:` binding.
+    func testNodeTitleIsLocalizedDefaultButPackageIdentityStaysStable() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let assetStore = CreativeAssetStore(database: database)
+
+        let project = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let documentID = try XCTUnwrap(project.documents.first?.id)
+
+        let result = await CADCanvasActionBridge.newCADDocumentInCanvas(
+            canvasID: canvasID,
+            documentID: documentID,
+            position: CanvasPoint(x: 200, y: 200),
+            assetStore: assetStore)
+        let nodeID = try XCTUnwrap(result.nodeID, result.message)
+        let updated = try WorkspaceCanvasRegistry.project(canvasID: canvasID)
+        let node = try XCTUnwrap(updated.documents.flatMap(\.nodes).first { $0.id == nodeID })
+
+        XCTAssertEqual(node.text, CADCanvasNodePlanner.defaultDisplayName())
+        // The test host runs English: the default title is "CAD Model".
+        XCTAssertEqual(node.text, "CAD Model")
+
+        let key = try XCTUnwrap(node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
+        let packageURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: key))
+        // The on-disk identity keeps the stable English stem regardless of
+        // the localized display title.
+        XCTAssertTrue(packageURL.lastPathComponent.hasPrefix("CAD Model"),
+                      "package file name must keep the stable stem, got \(packageURL.lastPathComponent)")
+        XCTAssertTrue(packageURL.lastPathComponent.hasSuffix(".floecad"))
+    }
+
     /// The preview pipeline must refuse an uncommitted/conflicted draft BEFORE
     /// any canvas publish (review 2026-10-10): a failed save throws, keeps the
     /// draft alive, and produces no bytes for a node.

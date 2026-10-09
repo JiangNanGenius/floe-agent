@@ -216,34 +216,98 @@ struct ViewportScene {
 
 #if canImport(MetalKit)
 public extension FloeCADDocument {
-    /// Offscreen VIEWPORT thumbnail of the live document scene (bodies, grid
-    /// grid, assembly instances) — a Canvas node preview must never depend on
-    /// an engineering DRAWING page existing. Returns nil when Metal is
+    /// Offscreen VIEWPORT thumbnail of the live document scene (bodies, grid,
+    /// assembly instances) — a Canvas node preview must never depend on an
+    /// engineering DRAWING page existing. Returns nil when Metal is
     /// unavailable; callers may then use `CADCanvasPreview.placeholderPNG()`.
+    ///
+    /// ISOLATION (canvas-apply CUA regression): the snapshot is rendered by a
+    /// DETACHED `Renderer` over a value-type copy of `viewModel.scene`, fitted
+    /// with its own local camera. It deliberately does NOT go through
+    /// `ViewportCoordinator.attach`, which would (a) install the transient
+    /// coordinator as the shared view model's `cameraControl` and overwrite
+    /// its `thumbnailProvider`/`screenshotProvider`, and (b) fit ITS camera to
+    /// the scene. The editor's live renderer callbacks, camera, selection and
+    /// orientation cube are therefore untouched — closing the tools panel
+    /// after "Apply to canvas" can no longer re-frame or blank the live
+    /// viewport.
     @MainActor
     func viewportThumbnailPNG(width: Int = 640, height: Int = 480) -> Data? {
         guard width > 0, height > 0 else { return nil }
-        let view = MTKView(frame: CGRect(x: 0, y: 0, width: width, height: height))
-        let coordinator = ViewportCoordinator(viewModel: viewModel())
-        coordinator.attach(to: view)
-        guard let renderer = coordinator.renderer else { return nil }
-        return renderer.makeThumbnailPNG(width: width, height: height)
+        guard let context = RenderContext() else { return nil }
+        // Read the current scene ONCE (a value type with CoW mesh references);
+        // the snapshot renderer never observes or mutates the editor.
+        let snapshot = viewModel().scene
+        let snapshotRenderer = Renderer(context: context)
+        return snapshotRenderer.makeSceneSnapshotPNG(
+            snapshot, width: width, height: height)
     }
 }
 #endif
 
-/// Explicit empty preview placeholder, used ONLY when the viewport renderer is
+/// Explicit preview placeholder, used ONLY when the viewport renderer is
 /// unavailable on this device: the canvas node still binds the editable
-/// `.floecad` package instead of failing the creation.
+/// `.floecad` package instead of failing the creation. The image is deliberately
+/// NOT a blank grey rectangle (which read as "an undecodable image") — it draws
+/// an explicit cube glyph and a CAD label so a human can tell a real render is
+/// unavailable from a genuine preview of an empty/unrenderable scene.
 public enum CADCanvasPreview {
-    public static func placeholderPNG() -> Data? {
+    public static func placeholderPNG(width: Int = 640, height: Int = 480) -> Data? {
         #if canImport(UIKit)
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 48))
-        let image = renderer.image { context in
+        let size = CGSize(width: max(width, 1), height: max(height, 1))
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { context in
+            let rect = CGRect(origin: .zero, size: size)
             UIColor.secondarySystemFill.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 64, height: 48))
-        }
-        return image.pngData()
+            context.fill(rect)
+            let stroke = UIColor.secondaryLabel.withAlphaComponent(0.55)
+            // Rounded border keeps it distinct from a rasterized photo.
+            let inset = rect.insetBy(dx: size.width * 0.08, dy: size.height * 0.10)
+            let border = UIBezierPath(roundedRect: inset, cornerRadius: size.height * 0.06)
+            border.lineWidth = max(2, size.height * 0.008)
+            stroke.setStroke()
+            border.stroke()
+            // Explicit cube glyph, drawn as a wireframe isometric cube so the
+            // placeholder reads as "3D CAD" without depending on SF Symbols in
+            // an offscreen graphics context.
+            let cx = rect.midX
+            let glyphH = size.height * 0.30
+            let glyphW = glyphH
+            let topY = inset.minY + size.height * 0.10
+            let s = glyphW * 0.5
+            let front = CGRect(x: cx - s, y: topY + s * 0.6, width: s * 2, height: s * 2)
+            let dx = s * 0.6, dy = -s * 0.6
+            let glyph = UIBezierPath()
+            glyph.lineWidth = max(2, size.height * 0.010)
+            stroke.setStroke()
+            // Front face
+            glyph.move(to: front.origin)
+            glyph.addLine(to: CGPoint(x: front.maxX, y: front.minY))
+            glyph.addLine(to: CGPoint(x: front.maxX, y: front.maxY))
+            glyph.addLine(to: CGPoint(x: front.minX, y: front.maxY))
+            glyph.close()
+            // Top + side edges
+            let shifted = front.offsetBy(dx: dx, dy: dy)
+            glyph.move(to: front.origin)
+            glyph.addLine(to: shifted.origin)
+            glyph.move(to: CGPoint(x: front.maxX, y: front.minY))
+            glyph.addLine(to: CGPoint(x: shifted.maxX, y: shifted.minY))
+            glyph.move(to: CGPoint(x: front.maxX, y: front.maxY))
+            glyph.addLine(to: CGPoint(x: shifted.maxX, y: shifted.maxY))
+            glyph.append(UIBezierPath(rect: shifted))
+            glyph.stroke()
+            // Explicit label.
+            let label = "CAD"
+            let font = UIFont.systemFont(ofSize: size.height * 0.11, weight: .semibold)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: UIColor.secondaryLabel,
+            ]
+            let textSize = label.size(withAttributes: attrs)
+            let textPoint = CGPoint(x: cx - textSize.width / 2,
+                                    y: front.maxY + size.height * 0.06)
+            label.draw(at: textPoint, withAttributes: attrs)
+        }.pngData()
         #else
         return nil
         #endif

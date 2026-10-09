@@ -247,7 +247,10 @@ enum CADCanvasActionBridge {
                     renderedAsset: render,
                     position: position,
                     size: CanvasSize(width: 420, height: 300),
-                    text: document.name,
+                    // The node TITLE follows the UI language ("CAD 模型" in
+                    // Chinese); the package file name/binding key stay the
+                    // stable English stem, so a language switch keeps identity.
+                    text: CADCanvasNodePlanner.defaultDisplayName(),
                     extraMetadata: [
                         "editor": "native-cad",
                         "cadFormat": "floecad",

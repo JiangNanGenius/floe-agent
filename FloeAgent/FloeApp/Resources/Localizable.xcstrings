@@ -2568,6 +2568,23 @@
         }
       }
     },
+    "canvas.cad.node_default_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CAD Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CAD 模型"
+          }
+        }
+      }
+    },
     "canvas.connection.ai_associate": {
       "extractionState": "manual",
       "localizations": {
@@ -77588,6 +77605,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "打开 CAD 工作台"
+          }
+        }
+      }
+    },
+    "workspace.workspace_canvas_view.open_native_cad_editor_rename": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名"
           }
         }
       }

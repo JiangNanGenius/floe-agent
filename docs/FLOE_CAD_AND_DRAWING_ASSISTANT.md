@@ -701,3 +701,75 @@ current one.
 类型/计数/选中徽标等中文标签补齐。已运行：包内 62/62、工作区备份 27/27、App 画布 3/3、App 定向
 21/21、iPad UI 1/1、iPhone 紧凑 1/1（无跳过）、视口基线为模拟器首测值。未竟：真实模型 provider
 回路（需交互式配置，工作机无凭据入口）、真机验收。
+
+## Native FloeCAD continuation — unreleased work, 2026-10-10 (part 5: canvas node presentation, explicit edit entry, thumbnail isolation, localized title)
+
+Follow-up to primary CUA on the part-4 build. Four concrete, user-visible defects found after
+"Apply to canvas"; all addressed in the same worktree, no parallel media subsystem, source
+geometry/binding contract unchanged.
+
+### What changed
+
+1. **Real viewport thumbnail on the canvas node (was: generic document icon labelled `image/png`,
+   header 产物/导入, title "CAD Model").** A native CAD node now renders through a dedicated
+   `CanvasNativeCADNodeContent` (FloeApp): the live asset (the workbench viewport render in the
+   material library) is shown through the SAME path-guarded resolver and bounded
+   `CanvasImageThumbnailCache` every image node uses. An explicit "Editable CAD · .floecad"
+   capsule badge identifies the editable package as the original — the PNG is only its render,
+   never presented as the source. A missing/unreadable render shows an explicit cube +
+   "CAD viewport preview unavailable" placeholder (still double-tap opens the package), not a
+   blank/generic file glyph. The Metal-unavailable fallback placeholder
+   (`CADCanvasPreview.placeholderPNG`) now draws an explicit wireframe cube + CAD label instead
+   of an empty grey rectangle.
+2. **Explicit "Open CAD workbench / 打开 CAD 工作台" action; rename is separate.** The node's
+   primary edit action was inline rename only. Three contextual surfaces now expose the workbench
+   entry through the SAME binding route as double tap (`openNativeCADEditor` →
+   `CanvasNativeCADEditor`, resolving the `canvas-cad:` key with containment guards): the
+   long-press node context menu, the selected-node bottom contextual toolbar
+   (`canvas.toolbar.openNativeCAD`), and the compact iPhone pencil menu
+   (`canvas.pencil.openNativeCAD`). A distinct "Rename / 重命名" pencil action keeps the old
+   inline-rename behaviour. Locked nodes keep their lock semantics; non-CAD nodes are unchanged.
+3. **Thumbnail capture no longer touches the live viewport (the "cube fills viewport, Top/Front/
+   Right labels vanish" defect).** `FloeCADDocument.viewportThumbnailPNG` used to build a SECOND
+   `ViewportCoordinator` on the shared cached `EditorViewModel`; attach installed that transient
+   coordinator as the view model's `cameraControl`, overwrote its thumbnail/screenshot providers,
+   and fitted its own camera. It now renders with a DETACHED `Renderer` over a one-shot value-type
+   copy of `viewModel.scene`, fitted by a LOCAL camera
+   (`Renderer.makeSceneSnapshotPNG` + a scene/camera-parameterized offscreen encode path). The live
+   renderer's camera, MTKView delegate, viewport-size callback, orientation cube, selection and
+   mode are never observed or mutated. A new focused test class asserts camera/delegate/
+   cameraControl/selection/mode are bit-identical before/after single and repeated captures, that
+   cube vs empty scenes render different bytes, and that the cube PNG contains real shaded
+   geometry (non-background pixel coverage), not a blank pass.
+4. **Localized default node title; identity stays stable.** New-canvas CAD nodes titled "CAD
+   Model" in a Chinese UI now use `CADCanvasNodePlanner.defaultDisplayName()` ("CAD Model" /
+   "CAD 模型", catalog key `canvas.cad.node_default_name`). Presentation only: the on-disk package
+   file name and the `canvas-cad:<canvas>/<package>` binding key keep the stable English stem, so a
+   device-language switch cannot break the binding.
+
+DEBUG-only test support: `--ui-test-canvas-cad-fixture` builds an ordinary canvas with one
+canvas-owned CAD node through the production bridge and presents the real `WorkspaceCanvasView`
+with the node selected, so the contextual "Open CAD workbench" entry is asserted end-to-end
+(opens the full-screen real workbench; Done returns to the node). No release code path creates
+the fixture.
+
+### Verification actually run (2026-10-10, part 5)
+
+- FloeCADKit build: `xcodebuild build -scheme FloeCADKit -destination generic/platform=iOS
+  Simulator` — succeeded (incremental, DerivedData `…/DerivedData/pkg`, Xcode 27.0 27A266a).
+- Package focused tests, iPad Air 13-inch (M4) simulator: `CADThumbnailIsolationTests` 3/3,
+  `ViewportRenderTests` 2/2, `CADPreviewBindingTests` 7/7 — 12/12 passed, 0 failures
+  (`…/logs/accept-part5-thumb-tests*.log`; original failing compiles retained).
+- Full App `build-for-testing` (FloeAgent scheme, generic iOS Simulator) — TEST BUILD SUCCEEDED,
+  0 errors.
+- UI: `FloeAgentUITests/CanvasCADEntryUITests` drove the contextual CAD action to the real
+  workbench and back — the entry/open/close path passed in an earlier run; the node-identity
+  badge selector is being finalized against primary's AX diagnosis (failed selector runs and
+  their logs retained; not counted as a pass).
+
+### Honest limitations (part 5)
+
+- The package and App builds/tests above are simulator runs; physical-device acceptance and the
+  real configured-provider loop remain unrun (interactive credentials unavailable to this worker).
+- The canvas-CAD UI test's badge identity assertion is awaiting primary's Device Hub AX/screenshot
+  diagnosis; the editor-open/close portion is green and not weakened to pass.

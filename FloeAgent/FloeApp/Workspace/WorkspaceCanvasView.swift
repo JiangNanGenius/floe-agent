@@ -5291,6 +5291,10 @@ private struct CanvasConnectionDragDraft: Equatable {
 struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
+    /// DEBUG fixture only: when present, the canvas selects this node and
+    /// opens the native CAD editor through the production binding route once
+    /// (`--ui-test-canvas-cad-fixture`). Nil in every product path.
+    @Environment(\.canvasCADFixtureAutoOpen) private var canvasCADFixtureAutoOpen
     @AppStorage("creative.canvas.sync.enabled") private var globalCanvasSyncEnabled = true
     @AppStorage("creative.canvas.appearance") private var canvasAppearance = "system"
     @AppStorage("floe.settings.appearance") private var appAppearance = "system"
@@ -5413,6 +5417,14 @@ struct WorkspaceCanvasView: View {
             canvasName: name
         ))
     }
+
+    #if DEBUG
+    /// Fixture task identity: stable while a DEBUG CAD fixture drives an
+    /// auto-selection, nil (so `.task` is a no-op) in every product path.
+    private var canvasCADFixtureIdentity: UUID? { canvasCADFixtureAutoOpen?.nodeID }
+    #else
+    private var canvasCADFixtureIdentity: UUID? { nil }
+    #endif
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
@@ -5573,6 +5585,21 @@ struct WorkspaceCanvasView: View {
                 presentation: presentation,
                 assetStore: environment.creativeAssetStore,
                 onClose: { nativeCADPresentation = nil })
+        }
+        .task(id: canvasCADFixtureIdentity) {
+            // DEBUG fixture only (see CanvasCADEntryFixtureHarness): select
+            // the seeded CAD node so the bottom contextual toolbar shows its
+            // explicit "Open CAD workbench" action. Never triggered in
+            // product paths (the environment value is nil there).
+            #if DEBUG
+            guard let nodeID = canvasCADFixtureAutoOpen?.nodeID else { return }
+            try? await Task.sleep(for: .milliseconds(500))
+            if let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }),
+               CADCanvasNodePlanner.isNativeCADNode(node) {
+                selectedNodeIDs = [node.id]
+                mode = .select
+            }
+            #endif
         }
         .fileExporter(
             isPresented: Binding(
@@ -6970,6 +6997,10 @@ struct WorkspaceCanvasView: View {
                 onOpen3D: node.kind == .scene3D ? {
                     directorPresentation = Canvas3DDirectorPresentation(nodeID: node.id)
                 } : nil,
+                onOpenCAD: CADCanvasNodePlanner.isNativeCADNode(node) ? {
+                    selectedNodeIDs = [node.id]
+                    openNativeCADEditor(node)
+                } : nil,
                 onConfigureGeneration: node.kind == .generationTask ? {
                     handleGenerationAction(for: node)
                 } : nil,
@@ -7854,9 +7885,23 @@ struct WorkspaceCanvasView: View {
                 if selectedNodeIDs.count == 1,
                    let nodeID = selectedNodeIDs.first,
                    let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }),
+                   CADCanvasNodePlanner.isNativeCADNode(node),
+                   !node.isLocked {
+                    // Explicit CAD editor entry on the compact surface;
+                    // rename stays a separate pencil action below.
+                    Button("workspace.workspace_canvas_view.open_native_cad_editor",
+                           systemImage: "cube.transparent") {
+                        openNativeCADEditor(node)
+                        pencilContextPoint = nil
+                    }
+                    .accessibilityIdentifier("canvas.pencil.openNativeCAD")
+                }
+                if selectedNodeIDs.count == 1,
+                   let nodeID = selectedNodeIDs.first,
+                   let node = store.selectedDocument?.nodes.first(where: { $0.id == nodeID }),
                    node.supportsInlineEditing,
                    !node.isLocked {
-                    Button("workspace.workspace_canvas_view.edit", systemImage: "pencil") {
+                    Button("workspace.workspace_canvas_view.open_native_cad_editor_rename", systemImage: "pencil") {
                         editingNodeID = nodeID
                         pencilContextPoint = nil
                     }
@@ -8142,6 +8187,22 @@ struct WorkspaceCanvasView: View {
                             }
                             .disabled(taskNode.generationTaskState.isRunning)
                             .accessibilityIdentifier("canvas.generation.configure")
+                        } else if CADCanvasNodePlanner.isNativeCADNode(node) {
+                            // A native CAD node's primary edit action opens
+                            // the parametric workbench through the SAME
+                            // binding double tap uses; rename stays a
+                            // separate explicit control.
+                            if !node.isLocked {
+                                Button("workspace.workspace_canvas_view.open_native_cad_editor",
+                                       systemImage: "cube.transparent") {
+                                    openNativeCADEditor(node)
+                                }
+                                .accessibilityIdentifier("canvas.toolbar.openNativeCAD")
+                                Button("workspace.workspace_canvas_view.open_native_cad_editor_rename",
+                                       systemImage: "pencil") {
+                                    editingNodeID = nodeID
+                                }
+                            }
                         } else if node.supportsInlineEditing, !node.isLocked {
                             Button("workspace.workspace_canvas_view.edit", systemImage: "pencil") { editingNodeID = nodeID }
                         }
@@ -9810,6 +9871,10 @@ private struct CanvasNodeCard: View {
     let licenseStatus: String?
     let canGroup: Bool
     let onOpen3D: (() -> Void)?
+    /// Opens the native parametric CAD workbench for a canvas-owned CAD node.
+    /// Nil for non-CAD nodes; routes through the SAME document binding as
+    /// double tap.
+    let onOpenCAD: (() -> Void)?
     let onConfigureGeneration: (() -> Void)?
     let onRetryAsset: (() -> Void)?
     let onBeginEditing: () -> Void
@@ -9860,6 +9925,16 @@ private struct CanvasNodeCard: View {
                         ? "arrow.clockwise" : "slider.horizontal.3",
                     action: onConfigureGeneration
                 )
+            } else if let onOpenCAD, CADCanvasNodePlanner.isNativeCADNode(node), !node.isLocked {
+                // A CAD node's pencil "Edit" used to inline-rename only. The
+                // first edit action opens the real parametric workbench, via
+                // the same document binding double tap uses; renaming stays a
+                // separate explicit action below.
+                Button("workspace.workspace_canvas_view.open_native_cad_editor",
+                       systemImage: "cube.transparent", action: onOpenCAD)
+                    .accessibilityIdentifier("canvas.context.openNativeCAD")
+                Button("workspace.workspace_canvas_view.open_native_cad_editor_rename",
+                       systemImage: "pencil", action: onBeginEditing)
             } else if node.supportsInlineEditing, !node.isLocked {
                 Button("workspace.workspace_canvas_view.edit", systemImage: "pencil", action: onBeginEditing)
             }
@@ -9987,7 +10062,11 @@ private struct CanvasNodeCard: View {
         case .audio:
             editableAssetContent(icon: "waveform", fallbackTitle: FloeL10n.l("workspace.workspace_canvas_view.audio"))
         case .file:
-            editableAssetContent(icon: "doc", fallbackTitle: FloeL10n.l("app.floe_agent_app.files"))
+            if CADCanvasNodePlanner.isNativeCADNode(node) {
+                nativeCADContent
+            } else {
+                editableAssetContent(icon: "doc", fallbackTitle: FloeL10n.l("app.floe_agent_app.files"))
+            }
         case .group:
             VStack(alignment: .leading) {
                 if isEditing {
@@ -10285,6 +10364,26 @@ private struct CanvasNodeCard: View {
         }
     }
 
+    /// A native CAD node's body: the real viewport PNG thumbnail rendered by
+    /// the workbench (never the generic document icon), an explicit editable
+    /// `.floecad` badge, and an inline rename field ONLY while renaming —
+    /// ordinary editing opens the CAD workbench instead.
+    @ViewBuilder
+    private var nativeCADContent: some View {
+        ZStack(alignment: .bottom) {
+            CanvasNativeCADNodeContent(node: node)
+            if isEditing {
+                TextField("workspace.workspace_canvas_view.node_name", text: $draftText)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($editorFocused)
+                    .onSubmit(finishEditing)
+                    .accessibilityIdentifier("canvas.node.editor")
+                    .padding(10)
+                    .background(.regularMaterial)
+            }
+        }
+    }
+
     private func commitDraft() {
         guard draftText != text else { return }
         text = draftText
@@ -10310,8 +10409,8 @@ private struct CanvasNodeCard: View {
     }
 }
 
-private struct CanvasAssetNodeContent: View {
-    let node: FloeCanvasNode
+internal struct CanvasAssetNodeContent: View {
+    let node: CanvasNode
     let fallbackIcon: String
     let title: String
     var onRetryDownload: (() -> Void)?
@@ -10325,7 +10424,7 @@ private struct CanvasAssetNodeContent: View {
         case file(URL)
     }
 
-    static func resolveLocal(for node: FloeCanvasNode) -> LocalAssetResolution {
+    static func resolveLocal(for node: CanvasNode) -> LocalAssetResolution {
         guard let relativePath = node.asset?.localRelativePath, !relativePath.isEmpty else { return .absent }
         guard !relativePath.contains(".."),
               let support = try? FileManager.default.url(
@@ -10345,7 +10444,7 @@ private struct CanvasAssetNodeContent: View {
         return .file(url)
     }
 
-    static func localURL(for node: FloeCanvasNode) -> URL? {
+    static func localURL(for node: CanvasNode) -> URL? {
         if case .file(let url) = resolveLocal(for: node) { return url }
         return nil
     }
@@ -10439,7 +10538,7 @@ private struct CanvasAssetNodeContent: View {
 /// Bounded, downsampled thumbnails so node bodies never decode full-size
 /// images on every layout pass. Keyed by path + maximum pixel size; evicted by
 /// count and total decoded cost.
-private enum CanvasImageThumbnailCache {
+internal enum CanvasImageThumbnailCache {
     /// NSCache is internally thread-safe; the annotation only satisfies Swift
     /// 6 shared-mutable-state checking for this bounded cache.
     nonisolated(unsafe) private static let cache: NSCache<NSString, UIImage> = {
