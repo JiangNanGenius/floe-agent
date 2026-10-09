@@ -168,6 +168,10 @@ public struct ShellExchangeResult: Sendable, Equatable {
     public var terminalOutput: Data?
     public var alive: Bool
     public var exitCode: Int32?
+    /// Recoverable session failure text (e.g. unread-output overflow): the
+    /// session ended deliberately; the owner surfaces this and the user can
+    /// reconnect to continue.
+    public var failure: String?
     /// Cumulative bytes read from the session's output descriptor. Zero after
     /// an interactive prompt means the program never wrote anything, which is
     /// different from output that was drained but not returned.
@@ -175,11 +179,12 @@ public struct ShellExchangeResult: Sendable, Equatable {
     /// Cumulative bytes accepted onto the session's input descriptor.
     public var bytesWritten: Int
 
-    public init(output: String, alive: Bool, exitCode: Int32? = nil, terminalOutput: Data? = nil, bytesRead: Int = 0, bytesWritten: Int = 0) {
+    public init(output: String, alive: Bool, exitCode: Int32? = nil, terminalOutput: Data? = nil, failure: String? = nil, bytesRead: Int = 0, bytesWritten: Int = 0) {
         self.output = output
         self.alive = alive
         self.exitCode = exitCode
         self.terminalOutput = terminalOutput
+        self.failure = failure
         self.bytesRead = bytesRead
         self.bytesWritten = bytesWritten
     }

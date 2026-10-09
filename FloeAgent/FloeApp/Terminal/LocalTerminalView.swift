@@ -168,11 +168,10 @@ final class LocalTerminalOwner: Identifiable {
     }
 
     func send(_ data: Data) async {
-        if data.contains(3) {
-            await interrupt()
-            let remaining = data.filter { $0 != 3 }
-            if !remaining.isEmpty { await exchange(String(decoding: remaining, as: UTF8.self)) }
-        } else { await exchange(String(decoding: data, as: UTF8.self)) }
+        // ETX bytes ride the input stream in order (the interrupt key is
+        // line-discipline input, not an out-of-band signal), so no byte is
+        // split out here.
+        await exchange(String(decoding: data, as: UTF8.self))
     }
 
     func resize(columns: Int, rows: Int) async {
@@ -180,8 +179,15 @@ final class LocalTerminalOwner: Identifiable {
         if let sessionID { await sessions.resize(sessionID: sessionID, columns: columns, rows: rows, runID: id) }
     }
 
+    /// The interrupt key: a real terminal Ctrl-C writes ETX (0x03) to the
+    /// pty; the line discipline then signals the FOREGROUND process group
+    /// (ISIG is on for a foreground job), so the running command aborts and
+    /// the interactive shell survives — exactly what a user expects. The
+    /// byte rides the same ordered input queue as typed text. The explicit
+    /// per-session signal API stays available for callers that mean
+    /// "terminate this session" rather than the interrupt key.
     func interrupt() async {
-        if let sessionID { await sessions.signal(sessionID: sessionID, signal: .interrupt, runID: id) }
+        enqueue(Data([3]))
     }
 
     func close() async {
@@ -217,7 +223,14 @@ final class LocalTerminalOwner: Identifiable {
             append(result.terminalOutput ?? Data(result.output.utf8))
             alive = result.alive
             if !alive {
-                status = result.exitCode.map { String(format: String(localized: "terminal.status.exited_code"), Int64($0)) } ?? String(localized: "terminal.status.exited")
+                if let failure = result.failure {
+                    // Recoverable, deliberate session end (e.g. the
+                    // unread-output overflow): say why and let the user
+                    // reconnect, instead of a bare "exited".
+                    status = failure
+                } else {
+                    status = result.exitCode.map { String(format: String(localized: "terminal.status.exited_code"), Int64($0)) } ?? String(localized: "terminal.status.exited")
+                }
                 self.sessionID = nil
             } else if result.bytesRead == 0 {
                 // Distinguishes a live shell that has not written anything

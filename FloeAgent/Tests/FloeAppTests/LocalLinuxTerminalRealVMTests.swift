@@ -327,9 +327,13 @@ struct LocalLinuxTerminalRealVMTests {
             ) { $0.contains("GEOM_OK_OK") }
             #expect(resizeOK, "guest PTY did not adopt the resized geometry: \(afterResize.suffix(160))")
 
-            print("FLOE_REALVM_OK baselineMs=\(String(format: "%.0f", baselineRTT)) "
-                  + "adaptiveMs=\(String(format: "%.0f", adaptiveRTT)) drainLines=\(numbers.count) "
-                  + "rate=\(String(format: "%.0f", rate))/s")
+            // Success summary only when every required stage passed — a
+            // partial run must never print the OK line.
+            if shellReady && drainOK && ctrlCOK && resizeOK {
+                print("FLOE_REALVM_OK baselineMs=\(String(format: "%.0f", baselineRTT)) "
+                      + "adaptiveMs=\(String(format: "%.0f", adaptiveRTT)) drainLines=\(numbers.count) "
+                      + "rate=\(String(format: "%.0f", rate))/s")
+            }
             await cleanup()
         } catch {
             await cleanup()

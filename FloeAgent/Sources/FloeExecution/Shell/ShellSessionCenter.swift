@@ -178,7 +178,7 @@ public actor ShellSessionCenter {
             throw error
         }
         guard sessions[sessionID]?.schedulerID == entry.schedulerID else {
-            return ShellExchangeResult(output: "", alive: false, exitCode: result.exitCode, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
+            return ShellExchangeResult(output: "", alive: false, exitCode: result.exitCode, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
         }
         entry.alive = result.alive
         entry.expiresAt = Date().addingTimeInterval(configuration.sessionLifetime)
@@ -193,7 +193,7 @@ public actor ShellSessionCenter {
         } else {
             await close(sessionID: sessionID, runID: runID)
         }
-        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
+        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
     }
 
     public func close(sessionID: String, runID: UUID) async {

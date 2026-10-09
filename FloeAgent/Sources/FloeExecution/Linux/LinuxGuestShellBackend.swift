@@ -152,6 +152,7 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             alive: read.info.alive,
             exitCode: read.info.alive ? nil : read.info.exitCode,
             terminalOutput: read.output,
+            failure: read.info.failure,
             bytesRead: read.output.count,
             bytesWritten: request.input?.utf8.count ?? 0
         )
