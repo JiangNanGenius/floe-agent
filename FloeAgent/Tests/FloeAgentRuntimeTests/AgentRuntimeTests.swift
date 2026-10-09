@@ -1179,6 +1179,49 @@ struct AgentRuntimeTests {
         #expect(sink.approvalReceipts.isEmpty)
     }
 
+    @Test("A failed deny audit emits no card-retirement receipt")
+    func failedDenyAuditEmitsNoReceipt() async throws {
+        struct ThrowingAuditSink: AuditSink, @unchecked Sendable {
+            func record(_ entry: AuditEntry) async throws {
+                throw NSError(domain: "FloeAgentRuntimeTests.Audit", code: 1, userInfo: nil)
+            }
+        }
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "call_audit_fails")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerEcho(in: executor, sideEffecting: true)
+        let sink = MockSink()
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(
+            configuration: FloeAgentRuntime.Configuration(
+                provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id),
+                pauseTimeout: 0.1,
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0,
+                providerRetryJitterRatio: 0
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            auditSink: ThrowingAuditSink(),
+            checkpointStore: MockCheckpointStore(),
+            sink: sink
+        )
+        let startTask = Task { try await runtime.start(goal: "do it") }
+        try await waitForState("waitingApproval", in: runtime)
+        await runtime.resolveApproval(.deny(reason: "not now"), for: "call_audit_fails")
+        try await startTask.value
+        #expect(executor.executedCalls.isEmpty)
+        // Nothing was durably recorded: no receipt may fire, so the card
+        // cannot look retired on an unrecorded decision.
+        #expect(sink.approvalReceipts.isEmpty)
+    }
+
     @Test("Human approval with a mismatched host scope does not execute")
     func waitingApprovalRejectsMismatchedScope() async throws {
         let adapter = MockAdapter()

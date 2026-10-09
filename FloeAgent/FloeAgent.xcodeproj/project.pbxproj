@@ -397,6 +397,7 @@
 		EF38B4329039226E8A757EE4 /* HostListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104F2ACE88D931C8C54A6787 /* HostListViewModel.swift */; };
 		EFB8B154A44004A6D4A9366C /* RunStateLocalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112A159AE387A7219A69172 /* RunStateLocalizer.swift */; };
 		EFBF97EFFC3734AFBAA2BDE6 /* PDFContentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */; };
+		EFDEEEE385F4DD9EEB64BF0E /* ApprovalCardRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82EC5CFD8139A8DD4786A020 /* ApprovalCardRegistryTests.swift */; };
 		F06F6F70E7F2AE95B86ED221 /* LocalStaticFileServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFF792B3AF248CE276071E95 /* LocalStaticFileServer.swift */; };
 		F0702B8CBA014A55B657E7C4 /* pdf-lib.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 566A108E33736D5DD705D005 /* pdf-lib.min.js */; };
 		F09E869AFA8CF58AA546E27F /* PDFDocumentOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC238A09CB801EBB02AA39B /* PDFDocumentOperations.swift */; };
@@ -689,6 +690,7 @@
 		81D3E2674CC7FFB5E2064D20 /* PDFContentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentEditor.swift; sourceTree = "<group>"; };
 		828FB1CF3C25988D5F9E8574 /* FloeShellCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShellCommands.swift; sourceTree = "<group>"; };
 		82DB29DC9BABBD2FE6410C1C /* NotesPalettePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesPalettePresentation.swift; sourceTree = "<group>"; };
+		82EC5CFD8139A8DD4786A020 /* ApprovalCardRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalCardRegistryTests.swift; sourceTree = "<group>"; };
 		8351C46DA1F3C3E41CF3739B /* WhisperModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelStore.swift; sourceTree = "<group>"; };
 		83D0EBB0361B5F388903EE7F /* SetupGuideLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupGuideLauncherView.swift; sourceTree = "<group>"; };
 		8496EE48316FEA0DF993901A /* CapabilityStoreAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityStoreAdapters.swift; sourceTree = "<group>"; };
@@ -1164,6 +1166,7 @@
 		28BC25D92D9FAD5D529EB886 /* FloeAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				82EC5CFD8139A8DD4786A020 /* ApprovalCardRegistryTests.swift */,
 				F7E12D7C552004CF3B937FB6 /* BackgroundRunCoordinatorTests.swift */,
 				0DBB17111CB3EFA4C8BF7302 /* CadWebEngineSessionTests.swift */,
 				FE6C8028BD08725BB2E7F7A4 /* CapabilityExecutionRouterTests.swift */,
@@ -2407,6 +2410,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EFDEEEE385F4DD9EEB64BF0E /* ApprovalCardRegistryTests.swift in Sources */,
 				2762BD92AC5F19A8D158FE61 /* BackgroundRunCoordinatorTests.swift in Sources */,
 				200FF4205A0D8FB439E16371 /* BrowserProtocolTests.swift in Sources */,
 				1F32E06B561D0EF46F855469 /* CadWebEngineSessionTests.swift in Sources */,

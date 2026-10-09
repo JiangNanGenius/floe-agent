@@ -2959,13 +2959,16 @@ public actor FloeAgentRuntime {
                 )
             case .denied(let reason, let decision):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: reason, outputDigest: "")
-                await audit(toolCall: call, result: result, decision: decision)
-                // The denial (human, policy or cancel) is durably audited;
-                // the card can retire on this receipt.
-                await sink?.agentRuntime(
-                    self,
-                    didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
-                )
+                let recorded = await audit(toolCall: call, result: result, decision: decision)
+                // The card retires on this receipt only when the denial was
+                // genuinely persisted; a failed record emits nothing and the
+                // owning surface sweeps the card once the run moves on.
+                if recorded {
+                    await sink?.agentRuntime(
+                        self,
+                        didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
+                    )
+                }
                 resultsByID[call.id] = result
             case .stopped(let reason):
                 let result = ToolResult(callID: call.id, status: .denied, outputSummary: "Stopped: \(reason)", outputDigest: "")
@@ -4105,9 +4108,14 @@ public actor FloeAgentRuntime {
         Task { try? await discoveryStore.save(conversationID: conversationID, names: names, priority: priority) }
     }
 
-    private func audit(toolCall: ToolCall, result: ToolResult, decision: String) async {
+    /// Records the audit entry and reports whether the record actually
+    /// persisted. Receipts that claim a durable decision MUST gate on this
+    /// result: a missing sink or a failed record means nothing is durable
+    /// yet, and the caller must not emit a card-retirement receipt.
+    @discardableResult
+    private func audit(toolCall: ToolCall, result: ToolResult, decision: String) async -> Bool {
         activateReadTools(toolCall: toolCall, result: result)
-        guard let auditSink else { return }
+        guard let auditSink else { return false }
         let entry = AuditEntry(
             sequence: 0, // recomputed by the chain actor
             runID: runID,
@@ -4121,7 +4129,8 @@ public actor FloeAgentRuntime {
             prevHashSHA256: "",
             entryHashSHA256: ""
         )
-        try? await auditSink.record(entry)
+        do { try await auditSink.record(entry); return true }
+        catch { return false }
     }
 
     private func describe(scope: ToolScope) -> String {

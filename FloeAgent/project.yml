@@ -499,6 +499,7 @@ targets:
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift
+      - path: Tests/FloeAppTests/ApprovalCardRegistryTests.swift
       - path: Tests/FloeAgentUITests/floe-sim-qual.pptx
         buildPhase: resources
       - path: Tests/FloeAppTests/OfficeEditEntryAckTests.swift
