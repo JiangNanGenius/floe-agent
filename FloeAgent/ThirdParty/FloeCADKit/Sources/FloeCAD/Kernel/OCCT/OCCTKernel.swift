@@ -78,6 +78,28 @@ nonisolated enum OCCTOpError: Error, Equatable {
     }
 }
 
+/// What an IGES read actually contained, with solids and non-solid surfaces
+/// kept apart. IGES files commonly carry only shells or isolated faces; a
+/// shell is NOT a solid and must not enter the boolean/blend/shell paths, so
+/// callers must be able to tell the two apart without re-inspecting topology.
+/// Every item here already passed the bridge's finite-bounds gate and one
+/// heal-and-validate pass; invalid roots were dropped before this result.
+nonisolated struct IGESImport {
+    /// Closed solids, one handle per TopAbs_SOLID.
+    var solids: [BRepHandle]
+    /// Shells/faces/compounds with no solid — exact geometry, but not solids.
+    var surfaces: [BRepHandle]
+    /// Parallel to `solids`: each solid's TopAbs_FACE count.
+    var solidFaceCounts: [Int]
+    /// Parallel to `surfaces`: each surface's TopAbs_FACE count.
+    var surfaceFaceCounts: [Int]
+    /// False when the reader refused the bytes outright (format/IO error).
+    var readSucceeded: Bool
+    /// Root shapes the reader transferred, before validation dropped any.
+    /// 0 with `readSucceeded` means "parsed, but nothing to transfer".
+    var rootCount: Int
+}
+
 /// Namespace for OCCT-backed geometry. `nonisolated` — kernel work runs off the
 /// main actor, same contract as `KernelOps`.
 nonisolated enum OCCTKernel {
@@ -1019,6 +1041,52 @@ nonisolated enum OCCTKernel {
     static func deserialize(_ data: Data) -> BRepHandle? {
         OCCTBridge.shape(fromSerialized: data).map(BRepHandle.init)
     }
+
+    // MARK: - IGES interchange (spec §12.1 / §12.2, import only)
+
+    /// Read an IGES payload through OCCT's IGES reader. Solids and non-solid
+    /// surfaces come back SEPARATELY (`IGESImport`): IGES routinely carries
+    /// only shells or faces, and those are exact geometry but not solids — a
+    /// body built from one must not be marked analytic or fed to boolean /
+    /// fillet / shell. The bridge healed and validated every root; a shape
+    /// that survived here can still fail to tessellate, which callers handle
+    /// per item (see `nativeImportData`). There is no IGES writer anywhere in
+    /// the product, so this type is read-only by design.
+    static func readIGES(_ data: Data) -> IGESImport {
+        guard let imported = OCCTBridge.readIGES(from: data) else {
+            return IGESImport(solids: [], surfaces: [],
+                              solidFaceCounts: [], surfaceFaceCounts: [],
+                              readSucceeded: false, rootCount: 0)
+        }
+        let solids = imported.solids.map(BRepHandle.init)
+        let surfaces = imported.surfaces.map(BRepHandle.init)
+        // A parse that transfers NO shape is not a successful import (the IGES
+        // reader is tolerant of garbage and reports success with zero roots);
+        // callers turn this into a structured refusal instead of an empty body.
+        return IGESImport(
+            solids: solids,
+            surfaces: surfaces,
+            solidFaceCounts: imported.solidFaceCounts.map(\.intValue),
+            surfaceFaceCounts: imported.surfaceFaceCounts.map(\.intValue),
+            readSucceeded: imported.readSucceeded && (solids.count + surfaces.count) > 0,
+            rootCount: imported.rootCount)
+    }
+
+#if DEBUG
+    /// Test support only: write `handles` to an IGES file through OCCT's own
+    /// IGES writer. `brepMode` true writes them as IGES BRep (solids stay
+    /// solids on read-back); false decomposes them into loose faces, which is
+    /// how the import tests produce a surface-only file. No product feature
+    /// exports IGES, so this exists solely for the import tests. Debug builds
+    /// only, matching the bridge's `debugWriteIGESShapes:toPath:brepMode:`.
+    static func debugWriteIGES(_ handles: [BRepHandle], to url: URL,
+                               brepMode: Bool) -> Bool {
+        guard !handles.isEmpty else { return false }
+        return OCCTBridge.debugWriteIGESShapes(handles.map(\.shape),
+                                               toPath: url.path,
+                                               brepMode: brepMode)
+    }
+#endif
 
     /// Smooth world-space render mesh for a B-rep solid.
     static func renderMesh(from handle: BRepHandle)

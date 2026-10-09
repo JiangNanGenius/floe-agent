@@ -803,6 +803,12 @@ final class DocumentSession {
         for persisted in project.variables.sorted(by: { $0.orderIndex < $1.orderIndex }) {
             loaded.variables.append(decodeVariable(persisted))
         }
+        // Floe workbench record blobs: opaque JSON owned by the assembly,
+        // drawing and script services. They ride on the document so their
+        // edits are undoable commands; save() writes them back to the project.
+        loaded.assemblyData = project.assemblyData
+        loaded.drawingsData = project.drawingsData
+        loaded.scriptsData = project.scriptsData
         document = loaded
         evalCache = EvalCache()   // a fresh memo for a freshly loaded document
         #if DEBUG
@@ -1008,6 +1014,13 @@ final class DocumentSession {
         // build — the diffs below would delete every row it couldn't decode.
         // The user was warned at load (`loadWarning`).
         guard !storeIsNewerThanApp else { return nil }
+
+        // Floe workbench record blobs are document state (undoable commands);
+        // mirror them onto the project columns the package store slices
+        // verbatim into document.json.
+        project.assemblyData = document.assemblyData
+        project.drawingsData = document.drawingsData
+        project.scriptsData = document.scriptsData
 
         // Diff by ID against the persisted objects. Every deletion loop
         // excludes `unreadableRows` — rows load() couldn't decode are not in

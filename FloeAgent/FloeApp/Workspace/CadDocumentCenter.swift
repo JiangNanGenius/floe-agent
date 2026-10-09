@@ -34,54 +34,478 @@ actor CadDocumentCenter: CadDocumentHost {
 
     // MARK: - Native FloeCAD (3D) actions
 
+    /// Native 3D proposal authority. A proposal id alone is not authority:
+    /// `apply` requires that the SAME access context (environment, owner kind +
+    /// id, workspace root) that drafted the proposal now targets the SAME
+    /// canonical document before a grant can be reserved or any mutation can
+    /// run. This blocks a forged cross-document or cross-task/environment
+    /// apply that quotes an otherwise valid proposal + grant.
+    private struct NativeProposalContext: Sendable {
+        var access: CadDocumentAccess
+        var canonicalPath: String
+    }
+
+    /// Committed native apply receipts keyed by proposal id, bound to the
+    /// request id, access context and canonical target that produced them. A
+    /// retry from the same context replays the receipt; a foreign context gets
+    /// the same denial as an unknown proposal, and a different request id on
+    /// an already-applied proposal is refused rather than silently re-run.
+    private struct NativeAppliedReceipt: Sendable {
+        var requestID: String
+        var access: CadDocumentAccess
+        var canonicalPath: String
+        var receipt: CADApplyReceipt
+    }
+
+    private var nativeProposalContexts: [UUID: NativeProposalContext] = [:]
+    private var nativeApplyReceipts: [UUID: NativeAppliedReceipt] = [:]
+
     /// Routes a native CAD request to `FloeCAD3DBridge` after the same access
     /// authorization and canonical path resolution the 2D engine uses. The
     /// bridge enforces propose-on-copy and UI-grant apply; this host never
-    /// mints a grant from tool input.
+    /// mints a grant from tool input and owns the proposal authority context.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String {
-        let resolved = try resolve(documentID: documentID, access: access)
+        let resolved = try resolve(documentID: documentID, access: access, allowingNativePackages: true)
         let url = try resolved.service.guardResolver.resolve(resolved.id)
-        // Apply is authorized HERE through the shared CadProposalGrantStore:
-        // the bridge never mints or consumes a grant.
-        if let data = requestJSON.data(using: .utf8),
-           let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           request["kind"] as? String == "apply" {
-            guard let proposalString = request["proposal_id"] as? String,
-                  let proposalID = UUID(uuidString: proposalString),
-                  let grantID = request["grant_id"] as? String else {
-                throw CADDocumentError(code: "grant_required",
-                                       message: "apply requires proposal_id and a UI-issued grant_id.")
-            }
-            let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
-            let decision = await grants.consume(grantID: grantID,
-                                                proposalID: proposalID,
-                                                documentID: binding.documentPath,
-                                                revision: Int64(binding.revision),
-                                                sha256: binding.contentSHA256)
-            guard case .authorized = decision else {
-                throw CADDocumentError(code: "grant_refused",
-                                       message: "The confirmation grant was refused (\(decision)).")
-            }
-            let receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
-            let payload: [String: Any] = [
-                "ok": true,
-                "receipt": ["proposal_id": receipt.proposalID.uuidString,
-                            "revision": receipt.revision,
-                            "content_sha256": receipt.contentSHA256,
-                            "message": receipt.message],
-            ]
-            let encoded = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-            return String(data: encoded, encoding: .utf8) ?? "{}"
+        let canonicalTarget = Self.canonicalDocumentPath(url)
+        guard let data = requestJSON.data(using: .utf8),
+              let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let kind = request["kind"] as? String else {
+            return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
         }
-        return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+        switch kind {
+        case "apply":
+            return try await nativeApply(request: request, access: access,
+                                         canonicalTarget: canonicalTarget)
+        case "propose":
+            let reply = try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+            if let proposalID = Self.nativeProposalID(in: reply) {
+                nativeProposalContexts[proposalID] = NativeProposalContext(
+                    access: access, canonicalPath: canonicalTarget)
+            }
+            return reply
+        case "export":
+            return try await nativeExport(resolved: resolved, documentURL: url, request: request,
+                                          access: access)
+        case "import":
+            return try await nativeImport(resolved: resolved, documentURL: url, request: request,
+                                          access: access)
+        case "status":
+            return try await nativeTaskStatus(request, resolved: resolved, access: access)
+        case "cancel":
+            return try await nativeTaskCancel(request, resolved: resolved, access: access)
+        case "assembly", "drawing", "script", "mesh":
+            // Read-only service actions run directly; MUTATING ones share the
+            // geometry proposal transaction (propose on a throwaway copy, user
+            // grant, apply). A model can never mutate through a payload call.
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            let action = (payload["action"] as? String) ?? Self.defaultReadAction(for: kind)
+            if CADServiceOperations.isMutating(kind: kind, action: action) {
+                return Self.encodeNativeJSON([
+                    "ok": false,
+                    "error": "proposal_required",
+                    "message": "\(kind).\(action) mutates the document and is not callable directly. "
+                        + "Draft it with propose using op \"\(kind).\(action)\" and apply it after the "
+                        + "user confirms in the CAD UI.",
+                ])
+            }
+            // Read-only native jobs are registered durably (status/cancel) and
+            // run through the bridge; the reply carries the task id.
+            return try await nativeLongOperation(resolved: resolved, url: url,
+                                                 requestJSON: requestJSON, kind: kind, access: access)
+        default:
+            return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
+        }
+    }
+
+    /// The default payload action for each service kind is its report action.
+    private static func defaultReadAction(for kind: String) -> String {
+        switch kind {
+        case "assembly": return "report"
+        case "drawing": return "pages"
+        case "script": return "list"
+        default: return "boundary"
+        }
+    }
+
+    // MARK: - Native durable tasks (status / cancel)
+
+    /// In-flight native jobs keyed by task id, so `cancel` can actually cancel
+    /// the Task rather than only writing a flag.
+    private var inflightNativeTasks: [UUID: Task<String, Error>] = [:]
+
+    private func nativeLongOperation(resolved: Resolved, url: URL,
+                                     requestJSON: String, kind: String,
+                                     access: CadDocumentAccess) async throws -> String {
+        let ownership = NativeCADTaskRegistry.Ownership(access: access, documentPath: resolved.id)
+        let taskID = await NativeCADTaskRegistry.shared.begin(kind: kind, ownership: ownership)
+        let task = Task { try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON) }
+        inflightNativeTasks[taskID] = task
+        defer { inflightNativeTasks[taskID] = nil }
+        do {
+            let reply = try await task.value
+            // A service-level failure inside a 200 envelope is NOT a completed
+            // job: the durable record keeps the real error.
+            let object = reply.data(using: .utf8).flatMap {
+                (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+            }
+            if let object, object["ok"] as? Bool == false {
+                let detail = (object["message"] as? String) ?? (object["error"] as? String)
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed, detail: detail)
+            } else {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed, detail: nil)
+            }
+            return Self.injectingNativeTaskID(taskID, into: reply)
+        } catch {
+            let state: NativeCADTaskRegistry.State = error is CancellationError ? .cancelled : .failed
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: state,
+                                                      detail: error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func nativeTaskStatus(_ request: [String: Any], resolved: Resolved,
+                                  access: CadDocumentAccess) async throws -> String {
+        let payload = request["payload"] as? [String: Any] ?? [:]
+        let taskID = (payload["task_id"] as? String).flatMap(UUID.init(uuidString:))
+        let ownership = NativeCADTaskRegistry.Ownership(access: access, documentPath: resolved.id)
+        let records = await NativeCADTaskRegistry.shared.status(id: taskID, ownership: ownership)
+        return Self.encodeNativeJSON([
+            "ok": true,
+            "count": records.count,
+            "tasks": records.map(Self.nativeTaskRecordJSON),
+        ])
+    }
+
+    private func nativeTaskCancel(_ request: [String: Any], resolved: Resolved,
+                                  access: CadDocumentAccess) async throws -> String {
+        let payload = request["payload"] as? [String: Any] ?? [:]
+        guard let raw = payload["task_id"] as? String,
+              let taskID = UUID(uuidString: raw) else {
+            throw FloeError.validationFailed("cancel requires a task_id from status.")
+        }
+        let ownership = NativeCADTaskRegistry.Ownership(access: access, documentPath: resolved.id)
+        switch await NativeCADTaskRegistry.shared.requestCancel(id: taskID, ownership: ownership) {
+        case .cancelled(let record):
+            // Actually cancel the running Task; the operation decides at its
+            // next boundary. The record keeps whatever final state it reaches.
+            inflightNativeTasks[taskID]?.cancel()
+            return Self.encodeNativeJSON([
+                "ok": true,
+                "task": Self.nativeTaskRecordJSON(record),
+                "note": "Cancellation requested; the job stops at its next boundary and the durable record reports the outcome.",
+            ])
+        case .notRunning(let record):
+            return Self.encodeNativeJSON([
+                "ok": true,
+                "task": Self.nativeTaskRecordJSON(record),
+                "note": "The job is not running; nothing was cancelled.",
+            ])
+        case .unauthorized:
+            throw FloeError.unauthorized
+        case .notFound:
+            // A foreign owner gets the same answer as an unknown id, so ids are
+            // not enumerable across tasks/documents/environments.
+            throw FloeError.notFound("native CAD task \(raw)")
+        }
+    }
+
+    private static func nativeTaskRecordJSON(_ record: NativeCADTaskRegistry.Record) -> [String: Any] {
+        var object: [String: Any] = [
+            "id": record.id.uuidString,
+            "kind": record.kind,
+            "document": record.ownership.documentPath,
+            "state": record.state.rawValue,
+            "created_at": ISO8601DateFormatter().string(from: record.createdAt),
+            "updated_at": ISO8601DateFormatter().string(from: record.updatedAt),
+        ]
+        if let detail = record.detail { object["detail"] = detail }
+        return object
+    }
+
+    private static func injectingNativeTaskID(_ id: UUID, into reply: String) -> String {
+        guard let data = reply.data(using: .utf8),
+              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return reply
+        }
+        object["task_id"] = id.uuidString
+        return encodeNativeJSON(object)
+    }
+
+    private static func encodeNativeJSON(_ object: [String: Any]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return "{}"
+        }
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    // MARK: - Native export / import (workspace-guarded)
+
+    /// Native export writes a separate verified copy inside the workspace.
+    /// The format is validated against the output extension, the source
+    /// document is never modified, and the written bytes are re-read and
+    /// SHA-256-verified before the receipt is returned.
+    private func nativeExport(resolved: Resolved, documentURL: URL,
+                              request: [String: Any], access: CadDocumentAccess) async throws -> String {
+        let payload = request["payload"] as? [String: Any] ?? [:]
+        guard let output = payload["output"] as? String, !output.isEmpty else {
+            throw FloeError.validationFailed("native export requires payload.output (a workspace path).")
+        }
+        let format = ((payload["format"] as? String) ?? (output as NSString).pathExtension).lowercased()
+        let supported: Set<String> = ["step", "stp", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf"]
+        guard supported.contains(format) else {
+            throw FloeError.validationFailed(
+                "native export format '\(format)' is not supported (step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf).")
+        }
+        guard format != "iges" && format != "igs" else {
+            throw FloeError.validationFailed("IGES export is not available in this build.")
+        }
+        let pageID = (payload["page_id"] as? String).flatMap(UUID.init(uuidString:))
+        let taskID = await NativeCADTaskRegistry.shared.begin(
+            kind: "export",
+            ownership: NativeCADTaskRegistry.Ownership(access: access, documentPath: resolved.id))
+        if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
+            throw FloeError.cancelled
+        }
+        let exported: FloeCAD3DBridge.NativeExportResult
+        do {
+            exported = try await FloeCAD3DBridge.shared.exportNativeData(at: documentURL,
+                                                                         format: format, pageID: pageID)
+        } catch let error as CADDocumentError {
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                      detail: error.message)
+            return Self.encodeNativeJSON([
+                "ok": false,
+                "error": error.code,
+                "message": error.message,
+                "task_id": taskID.uuidString,
+            ])
+        }
+        if Task.isCancelled {
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .cancelled, detail: nil)
+            throw FloeError.cancelled
+        }
+        let bytes = exported.data
+        let note = exported.note
+        var relative = output
+        if relative.hasPrefix("/") {
+            guard relative.hasPrefix(resolved.root.path + "/") else {
+                await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                          detail: "output outside workspace")
+                throw FloeError.validationFailed("Native export path must be inside the workspace.")
+            }
+            relative = String(relative.dropFirst(resolved.root.path.count + 1))
+        }
+        try resolved.service.guardResolver.assertWritableSize(bytes: bytes.count)
+        let receipt = try resolved.service.createBinaryFile(relative, data: bytes)
+        let written = try Data(contentsOf: resolved.service.guardResolver.resolve(relative))
+        let digest = FloeDigest.sha256Hex(written)
+        guard digest == receipt.sha256, digest == FloeDigest.sha256Hex(bytes) else {
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                      detail: "written bytes failed verification")
+            throw FloeError.storageCorrupted("Native CAD export verification failed; the source document is unchanged.")
+        }
+        await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed,
+                                                  detail: "\(format) \(written.count) bytes")
+        return Self.encodeNativeJSON([
+            "ok": true,
+            "task_id": taskID.uuidString,
+            "output": relative,
+            "format": format,
+            "byte_count": written.count,
+            "sha256": digest,
+            "note": note,
+            "source_revision": exported.revision,
+            "reparse_verification": format == "dxf" ? "same-engine reparse not run for native exports"
+                : "not applicable to this format",
+        ])
+    }
+
+    /// Native import reads a workspace file (guarded, size-capped) and adds its
+    /// geometry as one undoable body add, then commits with the normal save.
+    private func nativeImport(resolved: Resolved, documentURL: URL,
+                              request: [String: Any], access: CadDocumentAccess) async throws -> String {
+        let payload = request["payload"] as? [String: Any] ?? [:]
+        guard let input = payload["path"] as? String, !input.isEmpty else {
+            throw FloeError.validationFailed("native import requires payload.path (a workspace path).")
+        }
+        var relative = input
+        if relative.hasPrefix("/") {
+            guard relative.hasPrefix(resolved.root.path + "/") else {
+                throw FloeError.validationFailed("Native import path must be inside the workspace.")
+            }
+            relative = String(relative.dropFirst(resolved.root.path.count + 1))
+        }
+        let inputURL = try resolved.service.guardResolver.resolve(relative)
+        try resolved.service.guardResolver.assertReadableSize(inputURL)
+        let bytes = try Data(contentsOf: inputURL)
+        let format = ((payload["format"] as? String) ?? (relative as NSString).pathExtension).lowercased()
+        let taskID = await NativeCADTaskRegistry.shared.begin(
+            kind: "import",
+            ownership: NativeCADTaskRegistry.Ownership(access: access, documentPath: resolved.id))
+        let imported: FloeCAD3DBridge.NativeImportResult
+        do {
+            imported = try await FloeCAD3DBridge.shared.importNativeData(
+                at: documentURL, data: bytes, format: format,
+                fileName: (payload["name"] as? String) ?? nil,
+                unitScale: payload["unitScale"] as? Double)
+        } catch let error as CADDocumentError {
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
+                                                      detail: error.message)
+            return Self.encodeNativeJSON([
+                "ok": false,
+                "error": error.code,
+                "message": error.message,
+                "task_id": taskID.uuidString,
+                "mutated": error.code == "save_failed",
+            ])
+        }
+        await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed, detail: relative)
+        return Self.encodeNativeJSON([
+            "ok": true,
+            "task_id": taskID.uuidString,
+            "count": imported.bodyIDs.count,
+            "body_ids": imported.bodyIDs,
+            "names": imported.names,
+            "mutated": true,
+            "revision": imported.revision,
+            "content_sha256": imported.contentSHA256,
+            "source": relative,
+        ])
+    }
+
+    /// Tool-facing apply: validate request shape, receipt replay, then the
+    /// recorded propose-time authority (access + canonical target), then the
+    /// bridge's proposal binding. Only after all of that may a grant be
+    /// reserved.
+    private func nativeApply(request: [String: Any], access: CadDocumentAccess,
+                             canonicalTarget: String) async throws -> String {
+        guard let proposalString = request["proposal_id"] as? String,
+              let proposalID = UUID(uuidString: proposalString),
+              let grantID = request["grant_id"] as? String else {
+            throw CADDocumentError(code: "grant_required",
+                                   message: "apply requires proposal_id and a UI-issued grant_id.")
+        }
+        let requestID = (request["request_id"] as? String) ?? "native-\(proposalID.uuidString)"
+        // Idempotent replay first: after a successful apply the live context is
+        // cleared, but a retry with the same request id must return the
+        // original receipt instead of failing or re-running the operation.
+        // Replay keeps the same owner/canonical-target isolation as the apply.
+        if let applied = nativeApplyReceipts[proposalID] {
+            guard applied.access == access, applied.canonicalPath == canonicalTarget else {
+                throw FloeError.unauthorized
+            }
+            guard applied.requestID == requestID else {
+                throw FloeError.validationFailed(
+                    "proposal \(proposalID.uuidString) was already applied with a different request; "
+                    + "start a new proposal to change the document again.")
+            }
+            return try Self.encodeNativeReceipt(applied.receipt, replay: true)
+        }
+        // Authority before any grant reservation or mutation: the recorded
+        // propose context must match the current access EXACTLY and the
+        // authorized canonical target must be the proposal's document.
+        guard let context = nativeProposalContexts[proposalID],
+              context.access == access,
+              context.canonicalPath == canonicalTarget else {
+            throw FloeError.unauthorized
+        }
+        let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
+        guard Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath)) == canonicalTarget else {
+            throw FloeError.unauthorized
+        }
+        let outcome = try await nativePerformApply(proposalID: proposalID, grantID: grantID,
+                                                   requestID: requestID, binding: binding,
+                                                   recordedAccess: access)
+        return try Self.encodeNativeReceipt(outcome.receipt, replay: outcome.replay)
+    }
+
+    /// Shared two-phase apply used by the tool and the interactive banner:
+    /// reserve -> mutate+commit -> commitReservation, with releaseReservation
+    /// on every failure so the same authorized grant can be retried inside its
+    /// TTL. The whole transaction runs under the per-document gate.
+    private func nativePerformApply(proposalID: UUID, grantID: String, requestID: String,
+                                    binding: FloeCAD3DBridge.ProposalBinding,
+                                    recordedAccess: CadDocumentAccess) async throws
+        -> (receipt: CADApplyReceipt, replay: Bool) {
+        let gateKey = Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath))
+        return try await withDocumentGate(gateKey) {
+            if let applied = self.nativeApplyReceipts[proposalID] {
+                return (applied.receipt, true)
+            }
+            switch await self.grants.reserve(grantID: grantID, proposalID: proposalID,
+                                             documentID: binding.documentPath,
+                                             revision: Int64(binding.revision),
+                                             sha256: binding.contentSHA256) {
+            case .reserved:
+                break
+            case .unknownGrant, .documentMismatch:
+                throw FloeError.unauthorized
+            case .expired:
+                throw FloeError.validationFailed("The confirmation grant expired; review and confirm again.")
+            case .alreadyConsumed, .alreadyReserved:
+                throw FloeError.validationFailed("The confirmation grant was already used.")
+            case .revisionMismatch(let expected, let actual):
+                throw FloeError.validationFailed(
+                    "The document revision changed (expected \(expected), actual \(actual)); regenerate the proposal.")
+            case .shaMismatch(let expected, let actual):
+                throw FloeError.validationFailed(
+                    "The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
+            }
+            if Task.isCancelled {
+                await self.grants.releaseReservation(grantID: grantID)
+                throw FloeError.cancelled
+            }
+            do {
+                let receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
+                _ = await self.grants.commitReservation(grantID: grantID)
+                self.nativeApplyReceipts[proposalID] = NativeAppliedReceipt(
+                    requestID: requestID, access: recordedAccess,
+                    canonicalPath: gateKey, receipt: receipt)
+                self.nativeProposalContexts[proposalID] = nil
+                return (receipt, false)
+            } catch {
+                await self.grants.releaseReservation(grantID: grantID)
+                throw error
+            }
+        }
+    }
+
+    private static func encodeNativeReceipt(_ receipt: CADApplyReceipt, replay: Bool) throws -> String {
+        let payload: [String: Any] = [
+            "ok": true,
+            "replay": replay,
+            "receipt": ["proposal_id": receipt.proposalID.uuidString,
+                        "revision": receipt.revision,
+                        "content_sha256": receipt.contentSHA256,
+                        "message": receipt.message],
+        ]
+        let encoded = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        return String(data: encoded, encoding: .utf8) ?? "{}"
+    }
+
+    private static func nativeProposalID(in reply: String) -> UUID? {
+        guard let data = reply.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let proposal = object["proposal"] as? [String: Any],
+              let raw = proposal["id"] as? String else { return nil }
+        return UUID(uuidString: raw)
+    }
+
+    private static func canonicalDocumentPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     /// Interactive grant issuance for the native CAD confirmation banner.
     /// Uses the SAME single-use `CadProposalGrantStore` as the 2D path and is
     /// only called by the UI; a grant id arriving in a tool request is not
-    /// authority.
+    /// authority, and a proposal that was never drafted through the authorized
+    /// host path cannot mint a grant.
     func issueNativeCADGrant(proposalID: UUID) async throws -> String {
+        guard nativeProposalContexts[proposalID] != nil else {
+            throw FloeError.unauthorized
+        }
         let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
         return await grants.issueGrant(proposalID: proposalID,
                                        documentID: binding.documentPath,
@@ -89,22 +513,25 @@ actor CadDocumentCenter: CadDocumentHost {
                                        sha256: binding.contentSHA256)
     }
 
-    /// Consume the UI grant through the shared store, then execute the
-    /// already-authorized native proposal.
+    /// Interactive apply from the confirmation banner. The human is
+    /// environment-agnostic, so the recorded access identity is not re-checked
+    /// here; the proposal's canonical target must still be intact and the
+    /// grant is consumed through the same two-phase reservation as the tool
+    /// path so a failed apply can be retried inside the grant TTL.
     @discardableResult
     func applyNativeCAD(proposalID: UUID, grantID: String) async throws -> CADApplyReceipt {
         let binding = try await FloeCAD3DBridge.shared.proposalBinding(proposalID: proposalID)
-        let decision = await grants.consume(grantID: grantID,
-                                            proposalID: proposalID,
-                                            documentID: binding.documentPath,
-                                            revision: Int64(binding.revision),
-                                            sha256: binding.contentSHA256)
-        guard case .authorized = decision else {
-            throw CADDocumentError(code: "grant_refused",
-                                   message: "The confirmation grant was refused (\(decision)); "
-                                          + "review the document and confirm again.")
+        guard let context = nativeProposalContexts[proposalID],
+              context.canonicalPath == Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath)) else {
+            // Already applied: return the recorded receipt to the banner.
+            if let applied = nativeApplyReceipts[proposalID] { return applied.receipt }
+            throw FloeError.unauthorized
         }
-        return try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
+        let outcome = try await nativePerformApply(proposalID: proposalID, grantID: grantID,
+                                                   requestID: "ui-\(proposalID.uuidString)",
+                                                   binding: binding,
+                                                   recordedAccess: context.access)
+        return outcome.receipt
     }
     struct Session {
         /// Canonical session key (environment/owner/root/relative path).
@@ -706,7 +1133,11 @@ actor CadDocumentCenter: CadDocumentHost {
         let service: WorkspaceFileService
     }
 
-    private func resolve(documentID: String, access: CadDocumentAccess) throws -> Resolved {
+    /// Resolve a document inside the task workspace. `allowingNativePackages`
+    /// additionally admits `.floecad` packages for the native 3D actions only;
+    /// the 2D engine methods keep their DWG/DXF-only contract.
+    private func resolve(documentID: String, access: CadDocumentAccess,
+                         allowingNativePackages: Bool = false) throws -> Resolved {
         guard let workspace = access.workspacePath, !workspace.isEmpty else {
             throw FloeError.notFound("CAD workspace")
         }
@@ -728,8 +1159,12 @@ actor CadDocumentCenter: CadDocumentHost {
         }
         let url = try guardResolver.resolve(relative)
         let ext = (relative as NSString).pathExtension.lowercased()
-        guard ext == "dwg" || ext == "dxf" else {
-            throw FloeError.validationFailed("cad.document supports DWG and DXF files")
+        let isNativePackage = ext == "floecad"
+        guard ext == "dwg" || ext == "dxf" || (allowingNativePackages && isNativePackage) else {
+            throw FloeError.validationFailed(
+                allowingNativePackages
+                    ? "cad.document supports DWG, DXF and .floecad files"
+                    : "cad.document supports DWG and DXF files")
         }
         _ = url
         let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()

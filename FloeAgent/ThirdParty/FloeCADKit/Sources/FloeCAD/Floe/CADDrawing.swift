@@ -44,10 +44,49 @@ public nonisolated enum CADPaperSize: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// Ordered fingerprint of a page's source geometry: one entry per source body
+/// (in `sourceBodyIDs` order) with the render-mesh content hash and the
+/// placement hash captured when the view was projected. This is the page's
+/// staleness identity — it notices a changed NON-maximum source, survives
+/// reopen (content hashes are durable identities, unlike per-session revision
+/// counters) and records a missing source explicitly.
+public nonisolated struct CADDrawingSourceFingerprint: Codable, Sendable, Equatable {
+    public nonisolated struct Source: Codable, Sendable, Equatable {
+        public var bodyID: UUID
+        public var missing: Bool
+        /// SHA-256 of the persisted render-mesh blob at projection time.
+        public var renderSHA256: String?
+        /// SHA-256 of the body's placement transform at projection time.
+        public var placementSHA256: String?
+
+        public init(bodyID: UUID, missing: Bool,
+                    renderSHA256: String? = nil, placementSHA256: String? = nil) {
+            self.bodyID = bodyID
+            self.missing = missing
+            self.renderSHA256 = renderSHA256
+            self.placementSHA256 = placementSHA256
+        }
+    }
+
+    public var sources: [Source]
+
+    public init(sources: [Source] = []) {
+        self.sources = sources
+    }
+
+    /// Compare against the live fingerprint. A legacy page without a recorded
+    /// fingerprint is stale until it is re-projected.
+    public func matches(_ live: CADDrawingSourceFingerprint?) -> Bool {
+        guard let live else { return false }
+        return self == live
+    }
+}
+
 /// One independent drawing page. `modelRevision` records which document
-/// revision the projected geometry was generated from; a page whose stored
-/// revision differs from the live document is explicitly stale rather than
-/// silently re-projected.
+/// revision the projected geometry was generated from (informational);
+/// `sourceFingerprint` is the staleness authority. A page whose fingerprint
+/// differs from the live model is explicitly stale rather than silently
+/// re-projected.
 public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
     public var name: String
@@ -65,8 +104,14 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
     /// Section plane (origin + normal) for `section` pages.
     public var sectionOrigin: SIMD3<Double>?
     public var sectionNormal: SIMD3<Double>?
+    /// Detail window for `detail` pages: model-space center + size (mm,
+    /// width/height). Typed fields — never aliased into the section plane.
+    public var detailOrigin: SIMD3<Double>?
+    public var detailSizeMM: SIMD2<Double>?
     /// Pinned model revision; nil means generated at the current revision.
     public var modelRevision: UInt64?
+    /// Ordered per-source content/placement identity (see above).
+    public var sourceFingerprint: CADDrawingSourceFingerprint?
     public var showCenterlines: Bool
     public var showDimensions: Bool
 
@@ -82,7 +127,10 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
                 viewUp: SIMD3<Double> = SIMD3(0, 1, 0),
                 sectionOrigin: SIMD3<Double>? = nil,
                 sectionNormal: SIMD3<Double>? = nil,
+                detailOrigin: SIMD3<Double>? = nil,
+                detailSizeMM: SIMD2<Double>? = nil,
                 modelRevision: UInt64? = nil,
+                sourceFingerprint: CADDrawingSourceFingerprint? = nil,
                 showCenterlines: Bool = false,
                 showDimensions: Bool = false) {
         self.id = id
@@ -97,7 +145,10 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
         self.viewUp = viewUp
         self.sectionOrigin = sectionOrigin
         self.sectionNormal = sectionNormal
+        self.detailOrigin = detailOrigin
+        self.detailSizeMM = detailSizeMM
         self.modelRevision = modelRevision
+        self.sourceFingerprint = sourceFingerprint
         self.showCenterlines = showCenterlines
         self.showDimensions = showDimensions
     }
@@ -110,17 +161,44 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
     }
 
     /// A page is stale when it pins a revision older than the live document.
+    /// Kept for callers that only have revisions; `isStale(against:)` is the
+    /// fingerprint-based authority the drawing service uses.
     public func isStale(comparedTo liveRevision: UInt64?) -> Bool {
         guard let modelRevision, let liveRevision else { return false }
         return modelRevision != liveRevision
     }
+
+    /// Fingerprint staleness: a missing recorded fingerprint (legacy page) or
+    /// any content/placement/missing-source difference is stale.
+    public func isStale(against live: CADDrawingSourceFingerprint?) -> Bool {
+        guard let recorded = sourceFingerprint else { return true }
+        return !recorded.matches(live)
+    }
 }
 
 public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
+    /// Drawing schema. v1 pages carry no detail fields and no source
+    /// fingerprint; v2 adds typed detail windows and the fingerprint. A newer
+    /// value opens for reading and blocks edits (the service refuses).
+    public static let currentSchemaVersion = 2
+    public var schemaVersion: Int
     public var pages: [CADDrawingPage]
 
-    public init(pages: [CADDrawingPage] = []) {
+    public init(pages: [CADDrawingPage] = [],
+                schemaVersion: Int = CADDrawingSet.currentSchemaVersion) {
+        self.schemaVersion = schemaVersion
         self.pages = pages
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, pages
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Missing key = legacy document (v1); never fail a decode on it.
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        pages = try container.decodeIfPresent([CADDrawingPage].self, forKey: .pages) ?? []
     }
 
     public static func decode(from data: Data?) throws -> CADDrawingSet {

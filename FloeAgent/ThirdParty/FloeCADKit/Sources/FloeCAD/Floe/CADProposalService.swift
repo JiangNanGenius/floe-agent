@@ -32,6 +32,12 @@ public nonisolated struct CADProposalPreview: Codable, Sendable, Equatable {
     public var volumeAfterMM3: Double
     public var evalErrors: [String]
     public var failed: Bool
+    /// Workbench service operations (assembly/drawing/script/mesh) preview
+    /// through the same record; these fields describe what the service said
+    /// on the throwaway copy.
+    public var serviceOperation: String? = nil
+    public var serviceMutated: Bool? = nil
+    public var serviceMessage: String? = nil
 
     public var volumeDeltaMM3: Double { volumeAfterMM3 - volumeBeforeMM3 }
 }
@@ -123,6 +129,7 @@ public final class CADProposalService {
         }
         let operation = try Self.decodeOperation(operationJSON)
         let before = Self.documentStats(document)
+        let isServiceOperation = CADServiceOperations.isServiceOperation(operation)
 
         let cloneURL = fileManager.temporaryDirectory
             .appendingPathComponent("floecad-propose-\(UUID().uuidString).\(FileCADDocumentStore.packageExtension)")
@@ -143,14 +150,28 @@ public final class CADProposalService {
                                    message: "The proposal preview copy could not be opened: \(error.localizedDescription)")
         }
 
-        let outcome = clone.execute(operation)
         var errors: [String] = []
-        if let message = outcome.message { errors.append(message) }
+        var serviceOutcome: CADServiceOperationOutcome?
+        var failed = false
+        if isServiceOperation {
+            // Workbench mutations run through the SAME typed executor the apply
+            // path uses, on the same throwaway clone as geometry proposals.
+            let outcome = await CADServiceOperationExecutor.execute(operation, on: clone)
+            serviceOutcome = outcome
+            if !outcome.ok {
+                failed = true
+                errors.append(outcome.message ?? outcome.errorCode ?? "The service operation failed.")
+            }
+        } else {
+            let outcome = clone.execute(operation)
+            if let message = outcome.message { errors.append(message) }
+            failed = !outcome.isOK
+        }
         if let snapshotError = Self.evalErrors(clone) { errors.append(contentsOf: snapshotError) }
         let after = Self.documentStats(clone)
         clone.close()
 
-        let preview = CADProposalPreview(
+        var preview = CADProposalPreview(
             bodyCountBefore: before.bodyCount,
             bodyCountAfter: after.bodyCount,
             addedBodyNames: Array(after.names.subtracting(before.names)).sorted(),
@@ -158,7 +179,12 @@ public final class CADProposalService {
             volumeBeforeMM3: before.volume,
             volumeAfterMM3: after.volume,
             evalErrors: errors,
-            failed: !outcome.isOK)
+            failed: failed)
+        if let serviceOutcome {
+            preview.serviceOperation = operation["op"] as? String
+            preview.serviceMutated = serviceOutcome.mutated
+            preview.serviceMessage = serviceOutcome.message
+        }
         let record = CADProposalRecord(
             documentPath: document.url.path,
             baseRevision: document.revision,
@@ -217,16 +243,7 @@ public final class CADProposalService {
                                           + "re-read it and draft the change again.")
         }
         let operation = try Self.decodeOperation(proposal.operationJSON)
-        let outcome = document.execute(operation)
-        guard outcome.isOK else {
-            throw CADProposalError(code: outcome.errorCode ?? "apply_failed",
-                                   message: outcome.message ?? "The CAD operation failed; nothing was kept.")
-        }
-        let save = await document.save()
-        guard save.succeeded else {
-            throw CADProposalError(code: "save_failed",
-                                   message: save.error ?? "The applied change could not be committed.")
-        }
+        let save = try await Self.executeAuthorizedOperation(document: document, operation: operation)
         let receipt = CADApplyReceipt(proposalID: proposalID,
                                       revision: save.revision,
                                       contentSHA256: save.contentSHA256,
@@ -283,17 +300,7 @@ public final class CADProposalService {
         // reusable grant behind.
         grants[grantUUID] = nil
         let operation = try Self.decodeOperation(proposal.operationJSON)
-        let outcome = document.execute(operation)
-        guard outcome.isOK else {
-            proposals[proposalID] = proposal
-            throw CADProposalError(code: outcome.errorCode ?? "apply_failed",
-                                   message: outcome.message ?? "The CAD operation failed; nothing was kept.")
-        }
-        let save = await document.save()
-        guard save.succeeded else {
-            throw CADProposalError(code: "save_failed",
-                                   message: save.error ?? "The applied change could not be committed.")
-        }
+        let save = try await Self.executeAuthorizedOperation(document: document, operation: operation)
         let receipt = CADApplyReceipt(proposalID: proposalID,
                                       revision: save.revision,
                                       contentSHA256: save.contentSHA256,
@@ -309,6 +316,51 @@ public final class CADProposalService {
     }
 
     // MARK: Helpers
+
+    /// Execute one authorized proposal operation (geometry command vocabulary
+    /// or a workbench service operation) and commit it. A failed SAVE rolls the
+    /// in-memory model back with one undo so a retry can never apply the
+    /// operation twice. The committed package was never touched.
+    private static func executeAuthorizedOperation(document: FloeCADDocument,
+                                                   operation: [String: Any]) async throws -> CADSaveOutcome {
+        if CADServiceOperations.isServiceOperation(operation) {
+            let outcome = await CADServiceOperationExecutor.execute(operation, on: document)
+            guard outcome.ok else {
+                throw CADProposalError(code: outcome.errorCode ?? "apply_failed",
+                                       message: outcome.message ?? "The CAD operation failed; nothing was kept.")
+            }
+            let save = await document.save()
+            guard save.succeeded else {
+                document.session.undo()
+                throw CADProposalError(code: "save_failed",
+                                       message: (save.error ?? "The applied change could not be committed.")
+                                              + " The in-memory draft was rolled back so the proposal can be retried.")
+            }
+            return save
+        }
+        return try await executeAndCommit(document: document, operation: operation)
+    }
+
+    /// Execute one authorized GEOMETRY operation and commit it. An executor
+    /// refusal is transactional by itself; a failed SAVE rolls the in-memory
+    /// model back with one undo so a retry of the same proposal can never apply
+    /// the operation twice.
+    private static func executeAndCommit(document: FloeCADDocument,
+                                         operation: [String: Any]) async throws -> CADSaveOutcome {
+        let outcome = document.execute(operation)
+        guard outcome.isOK else {
+            throw CADProposalError(code: outcome.errorCode ?? "apply_failed",
+                                   message: outcome.message ?? "The CAD operation failed; nothing was kept.")
+        }
+        let save = await document.save()
+        guard save.succeeded else {
+            document.session.undo()
+            throw CADProposalError(code: "save_failed",
+                                   message: (save.error ?? "The applied change could not be committed.")
+                                          + " The in-memory draft was rolled back so the proposal can be retried.")
+        }
+        return save
+    }
 
     static func decodeOperation(_ json: String) throws -> [String: Any] {
         guard let data = json.data(using: .utf8),

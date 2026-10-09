@@ -60,6 +60,10 @@ final class Project {
     var assemblyData: Data? = nil
     var drawingsData: Data? = nil
 
+    /// ShapeScript records (`[CADScriptRecord]`) owned by `CADScriptService`.
+    /// Additive optional JSON blob, independent of the body/feature records.
+    var scriptsData: Data? = nil
+
     init(name: String) {
         self.name = name
         self.createdAt = Date()

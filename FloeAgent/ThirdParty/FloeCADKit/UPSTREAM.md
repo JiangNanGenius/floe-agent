@@ -41,6 +41,21 @@ actually recorded during extraction on 2026-10-09/10.
   `OCCT_LGPL_EXCEPTION.txt` and the relink statement are copied here;
   see `OCCT_RELINK.md`.
 
+## ShapeScript (scripted mesh workflow)
+
+- Repository: https://github.com/nicklockwood/ShapeScript
+- Revision: `cda3024b2f17ac06aef23aae7ddcf39c217c6237` (master, library version
+  1.11.6; MIT). Declared in `Package.swift` as an exact `revision` pin; the
+  resolved transitive pins (LRUCache, SVGPath, Euclid 0.9.6) are recorded in
+  `Package.resolved`.
+- Usage: the `ShapeScript` library target is evaluated headlessly in
+  `Sources/FloeCAD/Kernel/ShapeScriptKit.swift`; no ShapeScript app shell,
+  viewer, CLI or docs are copied. Imports/models/textures/fonts are refused by
+  a sandboxed `EvaluationDelegate`, evaluation is deadline/triangle bounded,
+  and script records/results are Floe-owned (`CADScriptService`).
+- License: MIT (upstream `LICENSE` applies to the linked package; no source is
+  vendored into this repository).
+
 ## Euclid (mesh CSG)
 
 - Repository: https://github.com/nicklockwood/Euclid
@@ -54,6 +69,6 @@ actually recorded during extraction on 2026-10-09/10.
 
 ## ShapeScript / Canvas creation path
 
-Not integrated in this round. The interpreter reuse is part of the approved
-outcome and remains open; see the completion matrix in
-`docs/FLOE_CAD_AND_DRAWING_ASSISTANT.md`.
+ShapeScript is integrated (see above). The Canvas child-project entry from the
+native workbench is still open; the 2D Canvas binding path from 1.7.24 is
+unchanged. See the completion matrix in `docs/FLOE_CAD_AND_DRAWING_ASSISTANT.md`.

@@ -469,11 +469,15 @@ public actor CadProposalGrantStore {
 
 // MARK: - Arguments
 
-public enum CadDocumentAction: String, Decodable, Sendable {
+public enum CadDocumentAction: String, Decodable, Sendable, CaseIterable {
     case capabilities, read, query, locate, measure, check, propose, preview, apply, save, export
-    // Native FloeCAD (3D / parametric / assembly / drawings) actions. These
-    // route typed operations to the native kernel through `CadDocumentHost`;
-    // mutations still require a UI-issued grant, exactly like the 2D path.
+    /// Durable native-task status and cancellation (long rebuild/export/mesh
+    /// jobs). `status` lists or reports one task; `cancel` requires task_id.
+    case status, cancel
+    // Native FloeCAD compatibility aliases. The unified read/query/measure/
+    // check/propose/preview/apply/save/export actions route on the document
+    // representation (`.floecad` = native); these aliases stay for callers
+    // written against the first native surface.
     case threeDSnapshot = "three_d_snapshot"
     case threeDMeasure = "three_d_measure"
     case threeDPropose = "three_d_propose"
@@ -505,14 +509,18 @@ public struct CadDocumentArguments: Decodable, Sendable {
     public var op: String?
     /// Native CAD: the operation's `args` object, encoded as a JSON string.
     public var args: String?
-    /// Native CAD: assembly/drawing request payload, encoded as a JSON string.
+    /// Native CAD: assembly/drawing/script/mesh request payload, encoded as a
+    /// JSON string.
     public var payload: String?
+    /// Durable native task id (status/cancel).
+    public var taskID: String?
 
     enum CodingKeys: String, CodingKey {
         case action, path, summary, operations, kind, points, handles, tolerance, scope, layer, text, offset, limit, output, op, args, payload
         case proposalID = "proposal_id"
         case grantID = "grant_id"
         case requestID = "request_id"
+        case taskID = "task_id"
         case entityType = "entity_type"
     }
 }
@@ -525,22 +533,19 @@ public struct CadDocumentTool: AgentTool {
     public static let name = "cad.document"
     public static let toolDescription = """
     Read, query, measure, propose changes to, apply confirmed proposals to, \
-    save and export a 2D DWG/DXF drawing through the local CAD engine. Propose \
-    binds an exact document revision and SHA-256 and returns a new/changed/\
-    deleted preview without writing; apply needs a single-use grant the user \
-    issued in the CAD UI. Supported edits are lines, circles, arcs, LWPolylines \
-    (including rectangles), single-line text, dimensions and leaders plus \
-    move/copy/rotate/scale/mirror/trim/extend/offset and layer management. \
-    3D, blocks, xrefs, splines and proxy graphics are retained read-only in \
-    the 2D engine; they are never flattened. Units stay drawing units when the \
-    file leaves them undefined.
-    Native `.floecad` documents add parametric 3D actions: three_d_snapshot, \
-    three_d_measure, three_d_propose (validated on a throwaway copy, returns a \
-    diff preview and a proposal id), three_d_apply (requires the UI-issued \
-    single-use grant_id bound to that proposal and base revision/SHA), \
-    three_d_assembly and three_d_drawing. Propose/apply use the shared typed \
-    operation vocabulary (feature.extrude, feature.boolean, feature.fillet, \
-    feature.shell, feature.pattern, ...); nothing is written before apply.
+    save and export a CAD document. The document representation decides the \
+    engine: a DWG/DXF drawing runs in the local 2D engine, a native `.floecad` \
+    package runs in the parametric 3D kernel. Propose binds an exact document \
+    revision and SHA-256 and returns a preview without writing; apply needs a \
+    single-use grant the user issued in the CAD UI. 2D edits are lines, \
+    circles, arcs, LWPolylines, text, dimensions and leaders plus move/copy/\
+    rotate/scale/mirror/trim/extend/offset and layer management. 3D, blocks, \
+    xrefs, splines and proxy graphics are retained read-only in the 2D engine; \
+    they are never flattened. Units stay drawing units when undefined. Native \
+    documents add parametric features, assembly constraints, drawings, \
+    ShapeScript and mesh operations through the typed operation vocabulary \
+    (feature.extrude, feature.boolean, ...) and the three_d_* aliases; \
+    status/cancel report durable native jobs. Nothing is written before apply.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -563,27 +568,31 @@ public struct CadDocumentTool: AgentTool {
       "additionalProperties": false,
       "required": ["action"],
       "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "read", "query", "locate", "measure", "check", "propose", "preview", "apply", "save", "export"] },
-        "path": { "type": "string", "description": "Drawing path (relative to the task workspace or an allowed absolute path). Required for every action except capabilities." },
+        "action": { "type": "string", "enum": ["capabilities", "read", "query", "locate", "measure", "check", "propose", "preview", "apply", "save", "export", "status", "cancel", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
+        "path": { "type": "string", "description": "Document path (relative to the task workspace or an allowed absolute path). Required for every action except capabilities without a path. A .floecad extension routes to the native 3D kernel; .dwg/.dxf route to the 2D engine." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Human-readable proposal summary shown before confirmation (propose)." },
         "operations": {
           "type": "array", "maxItems": 64,
-          "description": "Typed engine edits (propose). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].",
+          "description": "Typed 2D engine edits (propose on a DWG/DXF drawing). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].",
           "items": { "type": "object", "required": ["operation"], "properties": { "operation": { "type": "string" } } }
         },
         "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply)." },
         "grant_id": { "type": "string", "description": "Opaque single-use confirmation token issued by the CAD UI after the user accepts. The model cannot mint this." },
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
-        "kind": { "type": "string", "description": "query scope: entities|text|layers|drawing|snap. measure kind: distance (exactly 2 points OR 2 handles) | angle (exactly 3 points OR 2 line handles) | radius (1 circle/arc handle) | perimeter (1+ handles) | area (1 closed entity handle OR 3+ points)." },
-        "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: distance exactly 2, angle exactly 3, area 3+; snap point (first row)." },
-        "handles": { "type": "array", "items": { "type": "string" }, "description": "measure entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+." },
-        "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units." },
-        "layer": { "type": "string", "description": "query filter." },
-        "entity_type": { "type": "string", "description": "query filter: Line|Circle|Arc|LwPolyline|Text." },
-        "text": { "type": "string", "description": "query filter: text content contains." },
+        "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
+        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|variables|assembly|drawings|detail|snapshot. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind)." },
+        "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
+        "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; bounds takes body handles." },
+        "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
+        "layer": { "type": "string", "description": "2D query filter." },
+        "entity_type": { "type": "string", "description": "2D query filter: Line|Circle|Arc|LwPolyline|Text." },
+        "text": { "type": "string", "description": "2D query filter: text content contains." },
         "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
-        "output": { "type": "string", "description": "export relative path; defaults to <name>.export.dxf." }
+        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf; the path must stay inside the workspace." },
+        "op": { "type": "string", "description": "Native typed operation name (feature.extrude, feature.boolean, feature.fillet, feature.shell, feature.pattern, ...). Native propose requires it; native measure may use it to name the measurement kind." },
+        "args": { "type": "string", "description": "JSON object string with the typed operation's arguments. Required for native propose (and the three_d_measure/three_d_propose aliases)." },
+        "payload": { "type": "string", "description": "JSON object string for native assembly/drawing/script/mesh actions (three_d_assembly, three_d_drawing) and for native query/export requests. Never contains file paths other than the guarded output/import fields above." }
       }
     }
     """#
@@ -604,54 +613,94 @@ public struct CadDocumentTool: AgentTool {
     }
 
     public func validate(_ args: CadDocumentArguments) throws {
-        if args.action == .capabilities { return }
+        if args.action == .capabilities, args.path == nil {
+            // Engine capability discovery without a document stays on the 2D
+            // engine; a `.floecad` path routes to the native kernel instead
+            // (never through the 2D DWG/DXF loader).
+            return
+        }
         guard let path = args.path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
               path.count <= 1024, !path.contains("\0") else {
             throw FloeError.validationFailed("path is required for \(args.action.rawValue)")
         }
+        let native = Self.isNativeRepresentation(path)
         switch args.action {
         case .capabilities:
             break
         case .read, .save, .export:
             break
+        case .status:
+            if let task = args.taskID, task.isEmpty {
+                throw FloeError.validationFailed("task_id must not be empty")
+            }
+        case .cancel:
+            guard let task = args.taskID, !task.isEmpty else {
+                throw FloeError.validationFailed("cancel requires task_id")
+            }
         case .preview:
             guard args.proposalID != nil else {
                 throw FloeError.validationFailed("preview requires proposal_id")
             }
-        case .apply:
+        case .apply, .threeDApply:
             guard args.proposalID != nil else {
-                throw FloeError.validationFailed("apply requires proposal_id")
+                throw FloeError.validationFailed("\(args.action.rawValue) requires proposal_id")
             }
             guard let grant = args.grantID, !grant.isEmpty else {
-                throw FloeError.validationFailed("apply requires a user-issued grant_id")
+                throw FloeError.validationFailed("\(args.action.rawValue) requires a user-issued grant_id")
             }
         case .query:
-            // A query must name a kind; "entities"/"text" additionally accept
-            // pagination/filter fields and "snap" requires one finite point.
-            // Without this the dispatcher rejected every legal query.
-            guard let kind = args.kind,
-                  ["entities", "text", "layers", "drawing", "snap"].contains(kind) else {
-                throw FloeError.validationFailed("query requires kind (entities|text|layers|drawing|snap)")
-            }
-            if kind == "snap" {
-                guard let point = args.points?.first, point.count >= 2,
-                      point[0].isFinite, point[1].isFinite else {
-                    throw FloeError.validationFailed("snap query requires a finite point")
+            if native {
+                guard let kind = args.kind, Self.nativeQueryScopes.contains(kind) else {
+                    throw FloeError.validationFailed(
+                        "native query requires kind (\(Self.nativeQueryScopes.sorted().joined(separator: "|")))")
+                }
+            } else {
+                // A query must name a kind; "entities"/"text" additionally accept
+                // pagination/filter fields and "snap" requires one finite point.
+                guard let kind = args.kind,
+                      ["entities", "text", "layers", "drawing", "snap"].contains(kind) else {
+                    throw FloeError.validationFailed("query requires kind (entities|text|layers|drawing|snap)")
+                }
+                if kind == "snap" {
+                    guard let point = args.points?.first, point.count >= 2,
+                          point[0].isFinite, point[1].isFinite else {
+                        throw FloeError.validationFailed("snap query requires a finite point")
+                    }
+                }
+                if let offset = args.offset, offset < 0 {
+                    throw FloeError.validationFailed("offset must be >= 0")
+                }
+                if let limit = args.limit, !(1...500).contains(limit) {
+                    throw FloeError.validationFailed("limit must be between 1 and 500")
                 }
             }
-            if let offset = args.offset, offset < 0 {
-                throw FloeError.validationFailed("offset must be >= 0")
-            }
-            if let limit = args.limit, !(1...500).contains(limit) {
-                throw FloeError.validationFailed("limit must be between 1 and 500")
-            }
         case .locate:
-            guard let handles = args.handles, handles.count == 1 else {
+            guard let handles = args.handles, handles.count == 1, handles[0].count <= 128 else {
                 throw FloeError.validationFailed("locate requires exactly one handle")
             }
         case .measure:
-            guard let kind = args.kind, ["distance", "angle", "radius", "perimeter", "area"].contains(kind) else {
-                throw FloeError.validationFailed("measure requires kind distance|angle|radius|perimeter|area")
+            if native {
+                guard let kind = args.op ?? args.kind,
+                      Self.nativeMeasureKinds.contains(kind) else {
+                    throw FloeError.validationFailed(
+                        "native measure requires kind (\(Self.nativeMeasureKinds.sorted().joined(separator: "|")))")
+                }
+                switch kind {
+                case "distance":
+                    guard args.points?.count == 2 else {
+                        throw FloeError.validationFailed("native distance measure needs two points")
+                    }
+                case "body", "mesh":
+                    guard args.handles?.count == 1 else {
+                        throw FloeError.validationFailed("native \(kind) measure needs one body handle")
+                    }
+                default:
+                    break
+                }
+            } else {
+                guard let kind = args.kind, ["distance", "angle", "radius", "perimeter", "area"].contains(kind) else {
+                    throw FloeError.validationFailed("measure requires kind distance|angle|radius|perimeter|area")
+                }
             }
         case .check:
             if let tolerance = args.tolerance, !(tolerance.isFinite && tolerance > 0) {
@@ -667,30 +716,54 @@ public struct CadDocumentTool: AgentTool {
                (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] == nil {
                 throw FloeError.validationFailed("args must be a JSON object string")
             }
-        case .threeDApply:
-            guard args.proposalID != nil else {
-                throw FloeError.validationFailed("three_d_apply requires proposal_id")
-            }
-            guard let grant = args.grantID, !grant.isEmpty else {
-                throw FloeError.validationFailed("three_d_apply requires a user-issued grant_id")
-            }
         case .propose:
-            guard let operations = args.operations, !operations.isEmpty else {
-                throw FloeError.validationFailed("propose requires at least one operation")
-            }
-            guard operations.count <= 64 else {
-                throw FloeError.validationFailed("propose supports at most 64 operations")
-            }
-            for operation in operations {
-                guard let name = operation.operation else {
-                    throw FloeError.validationFailed("every operation needs an operation name")
+            if native {
+                // Native proposals use the typed operation vocabulary; the
+                // representation decides, not the caller's wording.
+                guard let op = args.op, !op.isEmpty else {
+                    throw FloeError.validationFailed("native propose requires op (for example feature.extrude)")
                 }
-                guard Self.supportedOperations.contains(name) else {
-                    throw FloeError.validationFailed("unsupported CAD operation '\(name)'")
+                if let raw = args.args,
+                   (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] == nil {
+                    throw FloeError.validationFailed("args must be a JSON object string")
+                }
+            } else {
+                guard let operations = args.operations, !operations.isEmpty else {
+                    throw FloeError.validationFailed("propose requires at least one operation")
+                }
+                guard operations.count <= 64 else {
+                    throw FloeError.validationFailed("propose supports at most 64 operations")
+                }
+                for operation in operations {
+                    guard let name = operation.operation else {
+                        throw FloeError.validationFailed("every operation needs an operation name")
+                    }
+                    guard Self.supportedOperations.contains(name) else {
+                        throw FloeError.validationFailed("unsupported CAD operation '\(name)'")
+                    }
                 }
             }
         }
     }
+
+    /// True when the caller addressed a native `.floecad` package. The unified
+    /// actions route on this, so a representation change never silently runs
+    /// through the wrong engine.
+    public static func isNativeRepresentation(_ path: String?) -> Bool {
+        guard let path else { return false }
+        return (path as NSString).pathExtension.lowercased() == "floecad"
+    }
+
+    /// Native read scopes served by `query` on a `.floecad` document.
+    public static let nativeQueryScopes: Set<String> = [
+        "bodies", "sketches", "constraints", "features", "edges", "faces",
+        "variables", "assembly", "drawings", "detail", "snapshot",
+    ]
+
+    /// Native deterministic measurements served by `measure`.
+    public static let nativeMeasureKinds: Set<String> = [
+        "body", "distance", "bounds", "dof", "interference", "mesh", "rebuild",
+    ]
 
     /// The document access for one execution. A verified Canvas staged
     /// document (seeded from the Drawing Assistant binding at launch, never
@@ -773,13 +846,26 @@ public struct CadDocumentTool: AgentTool {
         try Self.authorizeDocumentPath(args.path, context: context)
         try await host.authorizeAccess(access: access)
         let requestID = args.requestID ?? context.toolCallID ?? context.runID.uuidString
+        // Unified representation routing: a `.floecad` package is answered by
+        // the native kernel and never by the 2D DWG/DXF loader.
+        let native = Self.isNativeRepresentation(args.path)
 
         switch args.action {
         case .capabilities:
+            if native {
+                let reply = try await host.threeDAction(
+                    documentID: args.path!, requestJSON: #"{"kind":"capabilities"}"#, access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(reply)", 24_000))
+            }
             let caps = try await host.capabilities(access: access)
             return ToolExecutionOutput(digesting: bounded("cad.document capabilities: \(caps)", 24_000))
 
         case .read:
+            if native {
+                let reply = try await host.threeDAction(
+                    documentID: args.path!, requestJSON: #"{"kind":"snapshot"}"#, access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document read: \(reply)", 48_000))
+            }
             let snapshot = try await host.snapshot(documentID: args.path!, access: access)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -787,16 +873,35 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded("cad.document read: \(json)", 24_000))
 
         case .query:
+            if native {
+                let request = try nativeQueryRequest(args)
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document query: \(reply)", 48_000))
+            }
             let request = try queryRequest(args)
             let reply = try await host.query(documentID: args.path!, requestJSON: request, access: access)
             return ToolExecutionOutput(digesting: bounded("cad.document query: \(reply)", 48_000))
 
         case .locate:
+            if native {
+                let request = try jsonString(["kind": "locate",
+                                              "payload": ["handle": args.handles![0]]])
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document locate: \(reply)", 8_000))
+            }
             let request = jsonString(["operation": "locate", "handle": args.handles![0]])
             let reply = try await host.query(documentID: args.path!, requestJSON: request, access: access)
             return ToolExecutionOutput(digesting: bounded("cad.document locate: \(reply)", 8_000))
 
         case .measure:
+            if native {
+                let request = try nativeMeasureRequest(args)
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document measure: \(reply)", 8_000))
+            }
             // Exact engine arity per kind, checked BEFORE the worker so the
             // model receives a structured message instead of a worker
             // exception. These strings mirror the engine's own errors.
@@ -838,11 +943,37 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded("cad.document measure: \(reply)", 8_000))
 
         case .check:
+            if native {
+                let payload: [String: Any] = ["tolerance": args.tolerance ?? 0.001]
+                let request = try jsonString(["kind": "check", "payload": payload])
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document check: \(reply)", 48_000))
+            }
             let request = jsonString(["operation": "check", "tolerance": args.tolerance ?? 0.001])
             let reply = try await host.query(documentID: args.path!, requestJSON: request, access: access)
             return ToolExecutionOutput(digesting: bounded("cad.document check: \(reply)", 48_000))
 
+        case .status, .cancel:
+            guard native else {
+                throw FloeError.validationFailed(
+                    "\(args.action.rawValue) is available for native .floecad documents only")
+            }
+            var payload: [String: Any] = [:]
+            if let task = args.taskID { payload["task_id"] = task }
+            let request = try jsonString(["kind": args.action.rawValue, "payload": payload])
+            let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                    access: access)
+            return ToolExecutionOutput(digesting: bounded("cad.document \(args.action.rawValue): \(reply)", 24_000))
+
         case .propose:
+            if native {
+                let request = try Self.threeDRequestJSON(kind: "propose", args: args)
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document propose: \(reply)", 16_000),
+                                           requiresUserAction: true)
+            }
             let snapshot = try await host.snapshot(documentID: args.path!, access: access)
             guard snapshot.editable else {
                 throw FloeError.validationFailed("this drawing has unresolved read diagnostics; editing is disabled")
@@ -863,6 +994,13 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded(summary, 8_000), requiresUserAction: true)
 
         case .preview:
+            if native {
+                guard let id = args.proposalID else { throw FloeError.notFound("CAD proposal") }
+                let request = try jsonString(["kind": "preview", "proposal_id": id.uuidString])
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document preview: \(reply)", 32_000))
+            }
             guard let id = args.proposalID,
                   let proposal = try await host.loadProposal(id: id, access: access) else {
                 throw FloeError.notFound("CAD proposal")
@@ -874,6 +1012,18 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded("cad.document preview: \(json)", 32_000))
 
         case .apply:
+            if native {
+                guard let id = args.proposalID, let grant = args.grantID, !grant.isEmpty else {
+                    throw FloeError.unauthorized
+                }
+                let request = try jsonString(["kind": "apply",
+                                              "proposal_id": id.uuidString,
+                                              "grant_id": grant,
+                                              "request_id": requestID])
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document apply: \(reply)", 16_000))
+            }
             guard let id = args.proposalID else {
                 throw FloeError.notFound("CAD proposal")
             }
@@ -909,6 +1059,11 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded("cad.document apply: \(json)", 16_000))
 
         case .save:
+            if native {
+                let reply = try await host.threeDAction(documentID: args.path!,
+                                                        requestJSON: #"{"kind":"save"}"#, access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document save: \(reply)", 16_000))
+            }
             let snapshot = try await host.snapshot(documentID: args.path!, access: access)
             let receipt = try await host.save(documentID: args.path!, expectedSHA256: snapshot.sha256,
                                               requestID: requestID, access: access)
@@ -918,6 +1073,15 @@ public struct CadDocumentTool: AgentTool {
             return ToolExecutionOutput(digesting: bounded("cad.document save: \(json)", 16_000))
 
         case .export:
+            if native {
+                let output = args.output ?? Self.defaultNativeExportPath(for: args.path!)
+                let payload: [String: Any] = ["output": output,
+                                              "format": (output as NSString).pathExtension.lowercased()]
+                let request = try jsonString(["kind": "export", "payload": payload])
+                let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
+                                                        access: access)
+                return ToolExecutionOutput(digesting: bounded("cad.document export: \(reply)", 16_000))
+            }
             let output = args.output ?? Self.defaultExportPath(for: args.path!)
             let receipt = try await host.export(documentID: args.path!, relativeOutput: output, access: access)
             let encoder = JSONEncoder()
@@ -961,6 +1125,56 @@ public struct CadDocumentTool: AgentTool {
         let directory = (path as NSString).deletingLastPathComponent
         let file = "\(base.isEmpty ? "drawing" : base).export.dxf"
         return directory.isEmpty ? file : "\(directory)/\(file)"
+    }
+
+    /// Native export defaults to an exact STEP copy beside the package; the
+    /// host validates the format against the output extension and refuses a
+    /// mesh-only downgrade unless the caller names a mesh format.
+    static func defaultNativeExportPath(for path: String) -> String {
+        let name = (path as NSString).lastPathComponent
+        let base = (name as NSString).deletingPathExtension
+        let directory = (path as NSString).deletingLastPathComponent
+        let file = "\(base.isEmpty ? "part" : base).export.step"
+        return directory.isEmpty ? file : "\(directory)/\(file)"
+    }
+
+    /// Native `query` request: one read scope from `nativeQueryScopes` plus
+    /// bounded paging/filter fields.
+    private func nativeQueryRequest(_ args: CadDocumentArguments) throws -> String {
+        guard let kind = args.kind, Self.nativeQueryScopes.contains(kind) else {
+            throw FloeError.validationFailed(
+                "native query requires kind (\(Self.nativeQueryScopes.sorted().joined(separator: "|")))")
+        }
+        var payload: [String: Any] = ["scope": kind]
+        if let offset = args.offset { payload["offset"] = max(0, offset) }
+        if let limit = args.limit { payload["limit"] = min(500, max(1, limit)) }
+        if let value = args.layer { payload["layer"] = value }
+        if let value = args.text { payload["text"] = value }
+        return jsonString(["kind": "query", "payload": payload])
+    }
+
+    /// Native `measure` request: deterministic kernel measurements over the
+    /// document (body, distance, bounds, DOF, interference, mesh health,
+    /// rebuild status). No view/render values are measured.
+    private func nativeMeasureRequest(_ args: CadDocumentArguments) throws -> String {
+        guard let kind = args.op ?? args.kind, Self.nativeMeasureKinds.contains(kind) else {
+            throw FloeError.validationFailed(
+                "native measure requires kind (\(Self.nativeMeasureKinds.sorted().joined(separator: "|")))")
+        }
+        var payload: [String: Any] = ["kind": kind]
+        switch kind {
+        case "body", "mesh":
+            payload["bodyID"] = args.handles!.first!
+        case "distance":
+            payload["points"] = args.points!.map { Array($0.prefix(3)) }
+        case "bounds":
+            payload["bodyIDs"] = args.handles ?? []
+        case "interference":
+            payload["toleranceMM"] = args.tolerance ?? 1e-6
+        default:
+            break
+        }
+        return jsonString(["kind": "measure", "payload": payload])
     }
 
     private func queryRequest(_ args: CadDocumentArguments) throws -> String {

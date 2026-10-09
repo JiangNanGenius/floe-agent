@@ -5,24 +5,27 @@ struct SnappingSettingsSection: View {
 
     var body: some View {
         Section {
-            Toggle("Grid", isOn: $settings.snapToGrid)
+            Toggle(FloeCADStrings.label("cad.ui.snapping.grid", "Grid"), isOn: $settings.snapToGrid)
                 .accessibilityIdentifier("SnapToGridToggle")
-            Toggle("Sketch Guide Lines", isOn: $settings.snapToSketchGuidelines)
+            Toggle(FloeCADStrings.label("cad.ui.snapping.sketchGuideLines", "Sketch Guide Lines"),
+                   isOn: $settings.snapToSketchGuidelines)
                 .accessibilityIdentifier("SnapToSketchGuidelinesToggle")
-            Toggle("Sketch Guidepoints", isOn: $settings.snapToSketchGuidepoints)
+            Toggle(FloeCADStrings.label("cad.ui.snapping.sketchGuidepoints", "Sketch Guidepoints"),
+                   isOn: $settings.snapToSketchGuidepoints)
                 .accessibilityIdentifier("SnapToSketchGuidepointsToggle")
-            Toggle("Face Guidepoints", isOn: $settings.snapToFaceGuidepoints)
+            Toggle(FloeCADStrings.label("cad.ui.snapping.faceGuidepoints", "Face Guidepoints"),
+                   isOn: $settings.snapToFaceGuidepoints)
                 .accessibilityIdentifier("SnapToFaceGuidepointsToggle")
             HStack {
-                Text("Snapping Hints")
+                Text(FloeCADStrings.label("cad.ui.snapping.hints", "Snapping Hints"))
                 Spacer()
                 Toggle("", isOn: $settings.showSnapHints)
                     .labelsHidden()
-                    .accessibilityLabel("Snapping Hints")
+                    .accessibilityLabel(FloeCADStrings.label("cad.ui.snapping.hints", "Snapping Hints"))
                     .accessibilityIdentifier("ShowSnapHintsToggle")
             }
         } header: {
-            Text("Snapping")
+            Text(FloeCADStrings.label("cad.settings.snap.title", "Snapping"))
         } footer: {
             Text("Snap to grid steps, sketch points, or the corners and edges of the face you are sketching on. Hints label the snap without changing it. Auto-Constrain separately controls inferred geometric relationships.")
         }

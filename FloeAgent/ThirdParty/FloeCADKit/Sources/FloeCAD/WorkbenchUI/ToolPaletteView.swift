@@ -117,9 +117,9 @@ struct ToolPaletteView: View {
         // Offset Edge sits with the sketch tools, matching the manual's order
         // (…Polygon, Offset Edge, …). Sketch-only: there is nothing to offset
         // from outside a sketch, so it is absent from the body-mode group.
-        + [.item(sketchTool("Offset", "square.on.square.dashed", .offset)),
-           .item(sketchTool("Trim", "scissors", .trim)),
-           .item(sketchTool("Project", "square.on.square.dashed", .project)),
+        + [.item(sketchTool("cad.ui.tool.offset", "Offset", "square.on.square.dashed", .offset)),
+           .item(sketchTool("cad.ui.tool.trim", "Trim", "scissors", .trim)),
+           .item(sketchTool("cad.ui.tool.project", "Project", "square.on.square.dashed", .project)),
            .group(constrainGroup),
            .group(symbolGroup),
            .item(constructItem),
@@ -133,36 +133,38 @@ struct ToolPaletteView: View {
     // MARK: - Groups
 
     private var sketchGroup: ToolGroup {
-        ToolGroup(id: "Sketch", label: "Sketch", icon: "pencil.line", items: drawItems + [
-            sketchTool("Project", "square.on.square.dashed", .project),
+        ToolGroup(id: "Sketch", label: FloeCADStrings.text("cad.ui.tool.sketch", "Sketch"),
+                  icon: "pencil.line", items: drawItems + [
+            sketchTool("cad.ui.tool.project", "Project", "square.on.square.dashed", .project),
         ])
     }
 
     private var modifyGroup: ToolGroup {
-        ToolGroup(id: "Modify", label: "Modify", icon: "cube", items: [
-            modifyItem("Extrude", "arrow.up.to.line", .extrude, "ExtrudeButton"),
-            modifyItem("Revolve", "arrow.trianglehead.2.clockwise.rotate.90", .revolve, "RevolveButton"),
-            modifyItem("Sweep", "scribble.variable", .sweep, "SweepButton"),
-            modifyItem("Loft", "square.stack.3d.up", .loft, "LoftButton"),
-            modifyItem("Helix", "tornado", .helix, "HelixButton"),
-            toggleItem("Chamfer", "square.on.circle", "ChamferButton",
+        ToolGroup(id: "Modify", label: FloeCADStrings.text("cad.ui.tool.modify", "Modify"),
+                  icon: "cube", items: [
+            modifyItem("cad.ui.tool.extrude", "Extrude", "arrow.up.to.line", .extrude, "ExtrudeButton"),
+            modifyItem("cad.ui.tool.revolve", "Revolve", "arrow.trianglehead.2.clockwise.rotate.90", .revolve, "RevolveButton"),
+            modifyItem("cad.ui.tool.sweep", "Sweep", "scribble.variable", .sweep, "SweepButton"),
+            modifyItem("cad.ui.tool.loft", "Loft", "square.stack.3d.up", .loft, "LoftButton"),
+            modifyItem("cad.ui.tool.helix", "Helix", "tornado", .helix, "HelixButton"),
+            toggleItem("cad.ui.tool.chamfer", "Chamfer", "square.on.circle", "ChamferButton",
                        active: isMode { if case .pickingBlendEdges(.chamfer) = $0 { return true }; return false },
                        enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,
                        begin: { viewModel.beginBlend(.chamfer) }, cancel: { viewModel.cancelBlend() }),
-            toggleItem("Fillet", "circle.circle", "FilletButton",
+            toggleItem("cad.ui.tool.fillet", "Fillet", "circle.circle", "FilletButton",
                        active: isMode { if case .pickingBlendEdges(.fillet) = $0 { return true }; return false },
                        enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,
                        begin: { viewModel.beginBlend(.fillet) }, cancel: { viewModel.cancelBlend() }),
-            toggleItem("Shell", "cube.transparent", "ShellButton",
+            toggleItem("cad.ui.tool.shell", "Shell", "cube.transparent", "ShellButton",
                        active: isMode { if case .pickingShellFaces = $0 { return true }; return false },
                        enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,
                        begin: { viewModel.beginShell() }, cancel: { viewModel.cancelShell() }),
-            toggleItem("Replace Face", "arrow.up.and.down.square", "ReplaceFaceButton",
+            toggleItem("cad.ui.tool.replaceFace", "Replace Face", "arrow.up.and.down.square", "ReplaceFaceButton",
                        active: isMode { if case .pickingReplaceFace = $0 { return true }; return false },
                        enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,
                        begin: { viewModel.beginReplaceFace() },
                        cancel: { viewModel.cancelReplaceFace() }),
-            toggleItem("Delete Face", "square.slash", "DeleteFaceButton",
+            toggleItem("cad.ui.tool.deleteFace", "Delete Face", "square.slash", "DeleteFaceButton",
                        active: isMode { if case .pickingDeleteFaces = $0 { return true }; return false },
                        enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,
                        begin: { viewModel.beginDeleteFace() },
@@ -171,30 +173,32 @@ struct ToolPaletteView: View {
     }
 
     private var transformGroup: ToolGroup {
-        ToolGroup(id: "Transform", label: "Transform", icon: "move.3d", items: [
-            toggleItem("Scale", "arrow.down.left.and.arrow.up.right", "ScaleButton",
+        ToolGroup(id: "Transform", label: FloeCADStrings.text("cad.ui.tool.transform", "Transform"),
+                  icon: "move.3d", items: [
+            toggleItem("cad.ui.tool.scale", "Scale", "arrow.down.left.and.arrow.up.right", "ScaleButton",
                        active: viewModel.isScaleToolActive,
                        enabled: !viewModel.selection.isEmpty, tint: .purple,
                        begin: { viewModel.beginScaleTool() }, cancel: { viewModel.cancelScaleTool() }),
-            ToolItem(id: "Mirror", label: "Mirror", icon: "rectangle.on.rectangle",
+            ToolItem(id: "Mirror", label: FloeCADStrings.text("cad.ui.tool.mirror", "Mirror"),
+                     icon: "rectangle.on.rectangle",
                      enabled: viewModel.selection.count == 1, menu: .mirror),
-            toggleItem("Move", "arrow.up.and.down.and.arrow.left.and.right", "TranslateButton",
+            toggleItem("cad.ui.tool.move", "Move", "arrow.up.and.down.and.arrow.left.and.right", "TranslateButton",
                        active: viewModel.isMoveToolActive,
                        enabled: !viewModel.selection.isEmpty, tint: .purple,
                        begin: { viewModel.beginMoveTool() }, cancel: { viewModel.cancelMoveTool() }),
-            toggleItem("Rotate", "arrow.clockwise", "RotateAxisButton",
+            toggleItem("cad.ui.tool.rotate", "Rotate", "arrow.clockwise", "RotateAxisButton",
                        active: viewModel.isRotateToolActive,
                        enabled: !viewModel.selection.isEmpty, tint: .purple,
                        begin: { viewModel.beginRotateTool() }, cancel: { viewModel.cancelRotateTool() }),
-            toggleItem("Align", "point.3.connected.trianglepath.dotted", "AlignButton",
+            toggleItem("cad.ui.tool.align", "Align", "point.3.connected.trianglepath.dotted", "AlignButton",
                        active: isMode { if case .aligning = $0 { return true }; return false },
                        enabled: viewModel.session.document.bodies.count >= 2, tint: .purple,
                        begin: { viewModel.beginAlignPick() }, cancel: { viewModel.cancelAlign() }),
-            toggleItem("Split", "square.split.1x2", "SplitButton",
+            toggleItem("cad.ui.tool.split", "Split", "square.split.1x2", "SplitButton",
                        active: isMode { if case .pickingSplitCutter = $0 { return true }; return false },
                        enabled: viewModel.selection.count == 1, tint: .purple,
                        begin: { viewModel.beginSplitCutterPick() }, cancel: { viewModel.cancelSplitCutterPick() }),
-            toggleItem("Pattern", "square.grid.3x3", "PatternButton",
+            toggleItem("cad.ui.tool.pattern", "Pattern", "square.grid.3x3", "PatternButton",
                        active: isMode { if case .patterning = $0 { return true }; return false },
                        enabled: viewModel.canBeginPattern, tint: .blue,
                        begin: { viewModel.beginPattern() }, cancel: { viewModel.cancelPattern() }),
@@ -202,19 +206,23 @@ struct ToolPaletteView: View {
     }
 
     private var combineGroup: ToolGroup {
-        ToolGroup(id: "Combine", label: "Combine", icon: "square.on.square.dashed", items: [
-            booleanItem("Union", "plus.square.on.square", .union),
-            booleanItem("Subtract", "minus.square", .subtract),
-            booleanItem("Intersect", "square.on.square.intersection.dashed", .intersect),
+        ToolGroup(id: "Combine", label: FloeCADStrings.text("cad.ui.tool.combine", "Combine"),
+                  icon: "square.on.square.dashed", items: [
+            booleanItem("cad.ui.tool.union", "Union", "plus.square.on.square", .union),
+            booleanItem("cad.ui.tool.subtract", "Subtract", "minus.square", .subtract),
+            booleanItem("cad.ui.tool.intersect", "Intersect", "square.on.square.intersection.dashed", .intersect),
         ])
     }
 
     private var constrainGroup: ToolGroup {
-        ToolGroup(id: "Constrain", label: "Constrain", icon: "link", items: [
-            ToolItem(id: "Constrain", label: "Constrain", icon: "link",
+        ToolGroup(id: "Constrain", label: FloeCADStrings.text("cad.ui.tool.constrain", "Constrain"),
+                  icon: "link", items: [
+            ToolItem(id: "Constrain", label: FloeCADStrings.text("cad.ui.tool.constrain", "Constrain"),
+                     icon: "link",
                      enabled: viewModel.mode.isSketching,
                      accessibilityID: "ConstraintsMenu", menu: .constrain),
-            ToolItem(id: "Dimension", label: "Dimension", icon: "ruler",
+            ToolItem(id: "Dimension", label: FloeCADStrings.text("cad.ui.tool.dimension", "Dimension"),
+                     icon: "ruler",
                      enabled: viewModel.canDimensionSelection,
                      accessibilityID: "DimensionButton",
                      run: { viewModel.beginDimensionForSelection() },
@@ -223,11 +231,14 @@ struct ToolPaletteView: View {
     }
 
     private var symbolGroup: ToolGroup {
-        ToolGroup(id: "Symbol", label: "Symbol", icon: "rectangle.stack", items: [
-            ToolItem(id: "Symbol", label: "Symbol", icon: "rectangle.stack.badge.plus",
+        ToolGroup(id: "Symbol", label: FloeCADStrings.text("cad.ui.tool.symbol", "Symbol"),
+                  icon: "rectangle.stack", items: [
+            ToolItem(id: "Symbol", label: FloeCADStrings.text("cad.ui.tool.symbol", "Symbol"),
+                     icon: "rectangle.stack.badge.plus",
                      enabled: viewModel.canMakeSymbol, accessibilityID: "MakeSymbolButton",
                      run: { viewModel.showMakeSymbolPrompt = true }),
-            ToolItem(id: "Insert", label: "Insert", icon: "rectangle.stack",
+            ToolItem(id: "Insert", label: FloeCADStrings.text("cad.ui.tool.insert", "Insert"),
+                     icon: "rectangle.stack",
                      enabled: viewModel.mode.isSketching && !viewModel.session.document.symbols.isEmpty,
                      active: viewModel.pendingSymbolID != nil,
                      accessibilityID: "InsertSymbolMenu", menu: .insert),
@@ -237,51 +248,56 @@ struct ToolPaletteView: View {
     // MARK: - Standalone items
 
     private var drawItems: [ToolItem] {
-        [sketchTool("Line", "line.diagonal", .line),
-         sketchTool("Rectangle", "rectangle", .rect),
-         sketchTool("Circle", "circle", .circle),
-         sketchTool("Arc", "point.topleft.down.to.point.bottomright.curvepath", .arc),
-         sketchTool("Ellipse", "oval", .ellipse),
-         sketchTool("Polygon", "hexagon", .polygon),
-         sketchTool("Text", "textformat", .text)]
+        [sketchTool("cad.ui.tool.line", "Line", "line.diagonal", .line),
+         sketchTool("cad.ui.tool.rectangle", "Rectangle", "rectangle", .rect),
+         sketchTool("cad.ui.tool.circle", "Circle", "circle", .circle),
+         sketchTool("cad.ui.tool.arc", "Arc", "point.topleft.down.to.point.bottomright.curvepath", .arc),
+         sketchTool("cad.ui.tool.ellipse", "Ellipse", "oval", .ellipse),
+         sketchTool("cad.ui.tool.polygon", "Polygon", "hexagon", .polygon),
+         sketchTool("cad.ui.tool.text", "Text", "textformat", .text)]
     }
 
     /// Add Axis (spec §6.2). Construction geometry, so it sits with the
     /// reference tools rather than inside Modify — nothing it makes is a body.
     private var axisItem: ToolItem {
-        toggleItem("Axis", "line.diagonal.arrow", "AxisButton",
+        toggleItem("cad.ui.tool.axis", "Axis", "line.diagonal.arrow", "AxisButton",
                    active: isMode { if case .pickingAxisReferences = $0 { return true }; return false },
                    enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,
                    begin: { viewModel.beginAxisTool() }, cancel: { viewModel.cancelAxisTool() })
     }
 
     private var measureItem: ToolItem {
-        ToolItem(id: "Measure", label: "Measure", icon: "ruler",
+        ToolItem(id: "Measure", label: FloeCADStrings.text("cad.ui.tool.measure", "Measure"),
+                 icon: "ruler",
                  active: isMode { if case .measuring = $0 { return true }; return false },
                  accessibilityID: "MeasureButton", run: { viewModel.toggleMeasure() })
     }
 
     private var materialItem: ToolItem {
-        ToolItem(id: "Material", label: "Material", icon: "paintpalette",
+        ToolItem(id: "Material", label: FloeCADStrings.text("cad.ui.tool.material", "Material"),
+                 icon: "paintpalette",
                  enabled: !viewModel.selection.isEmpty, accessibilityID: "MaterialButton",
                  run: { viewModel.showMaterialSheet = true })
     }
 
     private var selectItem: ToolItem {
-        ToolItem(id: "Select", label: "Select", icon: "cursorarrow.and.square.on.square.dashed",
+        ToolItem(id: "Select", label: FloeCADStrings.text("cad.ui.tool.select", "Select"),
+                 icon: "cursorarrow.and.square.on.square.dashed",
                  active: viewModel.selectModeActive, accessibilityID: "SelectModeButton",
                  run: { viewModel.toggleSelectMode() })
     }
 
     private var constructItem: ToolItem {
-        ToolItem(id: "Construct", label: "Construct", icon: "square.dashed",
+        ToolItem(id: "Construct", label: FloeCADStrings.text("cad.ui.tool.construct", "Construct"),
+                 icon: "square.dashed",
                  enabled: viewModel.mode.isSketching && !viewModel.selectedSketchEntityIDs.isEmpty,
                  active: viewModel.selectionIsConstruction, accessibilityID: "ConstructionButton",
                  run: { viewModel.toggleConstructionOnSelection() })
     }
 
     private var deleteItem: ToolItem {
-        ToolItem(id: "Delete", label: "Delete", icon: "trash",
+        ToolItem(id: "Delete", label: FloeCADStrings.text("cad.ui.common.delete", "Delete"),
+                 icon: "trash",
                  enabled: viewModel.mode.isSketching
                     ? (!viewModel.selectedSketchEntityIDs.isEmpty || viewModel.hasSketchGlyphSelection)
                     : (!viewModel.selection.isEmpty || viewModel.selectedImage != nil
@@ -291,14 +307,14 @@ struct ToolPaletteView: View {
 
     // MARK: - Item builders
 
-    private func sketchTool(_ label: String, _ icon: String, _ tool: SketchTool) -> ToolItem {
+    private func sketchTool(_ key: String, _ label: String, _ icon: String, _ tool: SketchTool) -> ToolItem {
         let active: Bool = {
             if case .sketching(_, let current) = viewModel.mode { return current == tool }
             return false
         }()
         // Tapping the active tool deselects it (same toggle as CreateTool):
         // with no tool armed, empty-space drags orbit the sketch view.
-        return ToolItem(id: label, label: label, icon: icon, active: active,
+        return ToolItem(id: label, label: FloeCADStrings.text(key, label), icon: icon, active: active,
                         accessibilityID: tool == .rect ? "Rect" : nil,
                         run: {
                             if active {
@@ -309,29 +325,30 @@ struct ToolPaletteView: View {
                         })
     }
 
-    private func modifyItem(_ label: String, _ icon: String, _ tool: CreateTool, _ axid: String) -> ToolItem {
-        ToolItem(id: label, label: label, icon: icon,
+    private func modifyItem(_ key: String, _ label: String, _ icon: String,
+                            _ tool: CreateTool, _ axid: String) -> ToolItem {
+        ToolItem(id: label, label: FloeCADStrings.text(key, label), icon: icon,
                  enabled: viewModel.hasExtrudableProfile,
                  active: viewModel.pendingCreateTool == tool, activeTint: .blue,
                  accessibilityID: axid,
                  run: { viewModel.pendingCreateTool == tool ? viewModel.cancelCreate() : viewModel.beginCreate(tool) })
     }
 
-    private func booleanItem(_ label: String, _ icon: String, _ kind: BooleanKind) -> ToolItem {
+    private func booleanItem(_ key: String, _ label: String, _ icon: String, _ kind: BooleanKind) -> ToolItem {
         let isArming: Bool = {
             if case .pickingBooleanTool(let current, _) = viewModel.mode { return current == kind }
             return false
         }()
-        return ToolItem(id: label, label: label, icon: icon,
+        return ToolItem(id: label, label: FloeCADStrings.text(key, label), icon: icon,
                         enabled: viewModel.selection.count == 1 || isArming,
                         active: isArming, activeTint: .purple,
                         run: { isArming ? viewModel.cancelBooleanPicking() : viewModel.armBoolean(kind) })
     }
 
-    private func toggleItem(_ label: String, _ icon: String, _ axid: String,
+    private func toggleItem(_ key: String, _ label: String, _ icon: String, _ axid: String,
                             active: Bool, enabled: Bool, tint: Color,
                             begin: @escaping () -> Void, cancel: @escaping () -> Void) -> ToolItem {
-        ToolItem(id: label, label: label, icon: icon,
+        ToolItem(id: label, label: FloeCADStrings.text(key, label), icon: icon,
                  enabled: enabled || active, active: active, activeTint: tint,
                  accessibilityID: axid, run: { active ? cancel() : begin() })
     }
@@ -432,7 +449,7 @@ struct ToolPaletteView: View {
                 .accessibilityIdentifier("DimensionKind-" + kind.rawValue)
             }
         } label: {
-            paletteIcon("ruler", label: "Dimension")
+            paletteIcon("ruler", label: FloeCADStrings.text("cad.ui.tool.dimension", "Dimension"))
                 .foregroundStyle(Color.primary)
         }
         .disabled(!viewModel.canDimensionSelection)
@@ -441,9 +458,9 @@ struct ToolPaletteView: View {
 
     private func dimensionKindTitle(_ kind: DimensionKind) -> String {
         switch kind {
-        case .distance: "Absolute"
-        case .horizontal: "Horizontal"
-        case .vertical: "Vertical"
+        case .distance: FloeCADStrings.text("cad.ui.dimension.absolute", "Absolute")
+        case .horizontal: FloeCADStrings.text("cad.ui.constraint.horizontal", "Horizontal")
+        case .vertical: FloeCADStrings.text("cad.ui.constraint.vertical", "Vertical")
         default: EditorViewModel.dimensionTitle(.init(kind: kind, refs: [], value: 0))
         }
     }
@@ -457,7 +474,7 @@ struct ToolPaletteView: View {
                 }
             }
         } label: {
-            paletteIcon("rectangle.on.rectangle", label: "Mirror")
+            paletteIcon("rectangle.on.rectangle", label: FloeCADStrings.text("cad.ui.tool.mirror", "Mirror"))
                 .foregroundStyle(Color.primary)
         }
         .disabled(viewModel.selection.count != 1)
@@ -473,7 +490,7 @@ struct ToolPaletteView: View {
                 }
             }
         } label: {
-            paletteIcon("rectangle.stack", label: "Insert")
+            paletteIcon("rectangle.stack", label: FloeCADStrings.text("cad.ui.tool.insert", "Insert"))
                 .foregroundStyle(armed ? Color.blue : Color.primary)
         }
         .disabled(!viewModel.mode.isSketching || viewModel.session.document.symbols.isEmpty)
@@ -486,42 +503,46 @@ struct ToolPaletteView: View {
 
     private var constraintsMenu: some View {
         Menu {
-            constraintItem("Coincident", .coincident, key: "c")
-            constraintItem("Horizontal", .horizontal, key: "h")
-            constraintItem("Vertical", .vertical, key: "v")
-            constraintItem("Parallel", .parallel, key: "p")
-            constraintItem("Perpendicular", .perpendicular, key: "e")
-            constraintItem("Equal Length", .equalLength, key: "q")
-            constraintItem("Equal Radius", .equalRadius, key: "r")
-            constraintItem("Concentric", .concentric, key: "o")
-            constraintItem("Midpoint", .midpoint, key: "m")
-            constraintItem("Symmetric", .symmetric, key: "y")
-            constraintItem("Tangent", .tangent, key: "t")
-            constraintItem("Colinear", .colinear, key: "l")
-            constraintItem("Lock", .fixed, key: "k")
+            constraintItem("cad.ui.constraint.coincident", "Coincident", .coincident, key: "c")
+            constraintItem("cad.ui.constraint.horizontal", "Horizontal", .horizontal, key: "h")
+            constraintItem("cad.ui.constraint.vertical", "Vertical", .vertical, key: "v")
+            constraintItem("cad.ui.constraint.parallel", "Parallel", .parallel, key: "p")
+            constraintItem("cad.ui.constraint.perpendicular", "Perpendicular", .perpendicular, key: "e")
+            constraintItem("cad.ui.constraint.equalLength", "Equal Length", .equalLength, key: "q")
+            constraintItem("cad.ui.constraint.equalRadius", "Equal Radius", .equalRadius, key: "r")
+            constraintItem("cad.ui.constraint.concentric", "Concentric", .concentric, key: "o")
+            constraintItem("cad.ui.constraint.midpoint", "Midpoint", .midpoint, key: "m")
+            constraintItem("cad.ui.constraint.symmetric", "Symmetric", .symmetric, key: "y")
+            constraintItem("cad.ui.constraint.tangent", "Tangent", .tangent, key: "t")
+            constraintItem("cad.ui.constraint.colinear", "Colinear", .colinear, key: "l")
+            constraintItem("cad.ui.constraint.lock", "Lock", .fixed, key: "k")
 
             Divider()
-            Button("Delete Constraint") { viewModel.deleteSelectedConstraint() }
+            Button(FloeCADStrings.label("cad.ui.constraint.delete", "Delete Constraint")) {
+                viewModel.deleteSelectedConstraint()
+            }
                 .disabled(viewModel.selectedConstraintID == nil)
                 .accessibilityIdentifier("DeleteConstraintItem")
 
             Divider()
-            Button("Auto-Constrain Settings…") { viewModel.showConstraintSettings = true }
+            Button(FloeCADStrings.label("cad.ui.constraint.autoSettings", "Auto-Constrain Settings…")) {
+                viewModel.showConstraintSettings = true
+            }
                 .accessibilityIdentifier("ConstraintSettingsItem")
         } label: {
-            paletteIcon("link", label: "Constrain")
+            paletteIcon("link", label: FloeCADStrings.text("cad.ui.tool.constrain", "Constrain"))
                 .foregroundStyle(Color.primary)
         }
         .disabled(!viewModel.mode.isSketching)
         .accessibilityIdentifier("ConstraintsMenu")
     }
 
-    private func constraintItem(_ label: String, _ kind: SketchConstraintKind, key: KeyEquivalent) -> some View {
+    private func constraintItem(_ translationKey: String, _ label: String, _ kind: SketchConstraintKind, key: KeyEquivalent) -> some View {
         Button {
             viewModel.applyConstraint(kind)
             expandedGroupID = nil
         } label: {
-            Text("\(EditorViewModel.constraintCode(kind))   \(label)")
+            Text("\(EditorViewModel.constraintCode(kind))   \(FloeCADStrings.text(translationKey, label))")
         }
         .keyboardShortcut(key, modifiers: [.shift])
         .disabled(!viewModel.canApplyConstraint(kind))

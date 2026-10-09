@@ -1,21 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
-// FloeApp — native CAD (FloeCAD) bridge for the `cad.document` 3D actions.
+// FloeApp — native CAD (FloeCAD) bridge for the `cad.document` native actions.
 //
 // The bridge owns the open FloeCAD documents (keyed by canonical path) and the
 // proposal service. It answers the generic request envelope the tool sends:
 //
-//   {"kind":"snapshot"}                          -> summary + state JSON
-//   {"kind":"measure","payload":{...}}           -> deterministic measurement
-//   {"kind":"propose","op":"feature.extrude",
-//    "args":{...},"summary":"..."}               -> proposal record JSON
-//   {"kind":"apply","proposal_id":"...",
-//    "grant_id":"..."}                           -> apply receipt JSON
+//   {"kind":"capabilities"}                        -> kernel + action surface
+//   {"kind":"snapshot"}                            -> summary + state JSON
+//   {"kind":"query","payload":{"scope":...}}       -> scoped model JSON
+//   {"kind":"locate","payload":{"handle":...}}     -> body/face/edge location
+//   {"kind":"check","payload":{...}}               -> model+assembly+drawing check
+//   {"kind":"measure","payload":{...}}             -> deterministic measurement
+//   {"kind":"measure","op":"interference",...}     -> assembly measurements
+//   {"kind":"assembly","payload":{"action":...}}   -> CADAssemblyService
+//   {"kind":"drawing","payload":{"action":...}}    -> CADDrawingService
+//   {"kind":"script","payload":{"action":...}}     -> CADScriptService
+//   {"kind":"mesh","payload":{"action":...}}       -> CADMeshService
+//   {"kind":"propose","op":"feature.extrude",...}  -> proposal record JSON
+//   {"kind":"preview","proposal_id":"..."}         -> stored proposal preview
+//   {"kind":"save"}                                -> commit receipt (CAS)
+//   {"kind":"apply","proposal_id":"...","grant_id":"..."} -> apply receipt JSON
 //
 // Propose never writes: it evaluates on a throwaway copy. Apply requires a
-// single-use grant; grants are issued here only from the interactive
-// confirmation banner (`pending`), never from a model-supplied value.
+// single-use grant; grants are issued by CadDocumentCenter only from the
+// interactive confirmation banner (`pending`), never from a model value.
 //
-// SPDX-License-Identifier: MPL-2.0
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -38,8 +46,31 @@ final class FloeCAD3DBridge {
     private var proposalDocument: [UUID: URL] = [:]
     private let service = CADProposalService()
 
+    /// One service bundle per open document: assembly/drawing/script/mesh keep
+    /// their in-memory bookkeeping (script status, last pages) across calls,
+    /// and the live editor and the assistant share exactly one instance.
+    private struct NativeServices {
+        let assembly: CADAssemblyService
+        let drawing: CADDrawingService
+        let script: CADScriptService
+        let mesh: CADMeshService
+    }
+
+    private var services: [String: NativeServices] = [:]
+
     private func key(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private func nativeServices(for url: URL, document: FloeCADDocument) -> NativeServices {
+        let k = key(url)
+        if let existing = services[k] { return existing }
+        let bundle = NativeServices(assembly: CADAssemblyService(document: document),
+                                    drawing: CADDrawingService(document: document),
+                                    script: CADScriptService(document: document),
+                                    mesh: CADMeshService(document: document))
+        services[k] = bundle
+        return bundle
     }
 
     private func document(at url: URL) async throws -> FloeCADDocument {
@@ -87,6 +118,7 @@ final class FloeCAD3DBridge {
             return
         }
         documents[key] = nil
+        services[key] = nil
         document.close()
     }
 
@@ -98,22 +130,134 @@ final class FloeCAD3DBridge {
                                    message: "Native CAD request must be a JSON object with a kind.")
         }
         let document = try await document(at: url)
+        let native = nativeServices(for: url, document: document)
         switch kind {
+        case "capabilities":
+            return try jsonString(capabilitiesObject(document))
+
         case "snapshot":
             return try jsonString([
                 "ok": true,
                 "summary": summaryObject(document),
                 "state": jsonObject(document.snapshotJSON()),
             ])
-        case "measure":
+
+        case "query":
             let payload = request["payload"] as? [String: Any] ?? [:]
-            let outcome = document.measureJSON(payload)
+            let scope = payload["scope"] as? String ?? "snapshot"
+            if scope == "assembly" {
+                let reply = await native.assembly.handleAsync(action: "report", args: [:])
+                return try jsonString(["ok": reply["ok"] as? Bool ?? false, "result": reply])
+            }
+            if scope == "drawings" {
+                let reply = native.drawing.handle(action: "pages", args: [:])
+                return try jsonString(["ok": reply["ok"] as? Bool ?? false, "result": reply])
+            }
+            let outcome = document.nativeQueryJSON(payload)
             return try jsonString([
                 "ok": outcome.isOK,
                 "result": jsonObject(outcome.payload),
                 "error": outcome.errorCode ?? "",
                 "message": outcome.message ?? "",
             ])
+
+        case "locate":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            let outcome = document.nativeLocateJSON(payload)
+            return try jsonString([
+                "ok": outcome.isOK,
+                "result": jsonObject(outcome.payload),
+                "error": outcome.errorCode ?? "",
+                "message": outcome.message ?? "",
+            ])
+
+        case "check":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            let outcome = document.nativeCheckJSON(payload)
+            var object = (jsonObject(outcome.payload) as? [String: Any]) ?? [:]
+            object["assembly"] = await native.assembly.handleAsync(action: "report", args: [:])
+            object["drawings"] = native.drawing.handle(action: "pages", args: [:])
+            object["ok"] = outcome.isOK
+            return try jsonString(object)
+
+        case "measure":
+            // Accept both the unified envelope (op + args) and the legacy
+            // payload-only form, so the 2D-style and native-style calls agree.
+            var payload = request["payload"] as? [String: Any] ?? [:]
+            if let op = request["op"] as? String {
+                payload["kind"] = payload["kind"] as? String ?? op
+                if let args = request["args"] as? [String: Any] {
+                    for (k, v) in args where payload[k] == nil { payload[k] = v }
+                }
+            }
+            let measured = payload["kind"] as? String ?? "body"
+            switch measured {
+            case "dof":
+                let reply = await native.assembly.handleAsync(action: "dof", args: payload)
+                return try jsonString(["ok": reply["ok"] as? Bool ?? false, "result": reply])
+            case "interference":
+                let reply = await native.assembly.handleAsync(action: "interference", args: payload)
+                return try jsonString(["ok": reply["ok"] as? Bool ?? false, "result": reply])
+            case "rebuild":
+                let outcome = document.nativeCheckJSON(payload)
+                let result = (jsonObject(outcome.payload) as? [String: Any]) ?? [:]
+                let model = result["model"] as? [String: Any] ?? [:]
+                return try jsonString(["ok": true,
+                                       "result": ["kind": "rebuild",
+                                                  "rebuildErrors": model["rebuildErrors"] ?? [],
+                                                  "issues": result["issues"] ?? []]])
+            case "mesh":
+                let bodyID = payload["bodyID"] as? String ?? ""
+                let outcome = document.nativeCheckJSON(payload)
+                let result = (jsonObject(outcome.payload) as? [String: Any]) ?? [:]
+                let bodies = (result["model"] as? [String: Any])?["bodies"] as? [[String: Any]] ?? []
+                guard let row = bodies.first(where: { $0["id"] as? String == bodyID }) else {
+                    throw CADDocumentError(code: "unknown_body",
+                                           message: "mesh measure needs a bodyID from the snapshot.")
+                }
+                return try jsonString(["ok": true, "result": ["kind": "mesh", "body": row]])
+            default:
+                let outcome = document.measureJSON(payload)
+                return try jsonString([
+                    "ok": outcome.isOK,
+                    "result": jsonObject(outcome.payload),
+                    "error": outcome.errorCode ?? "",
+                    "message": outcome.message ?? "",
+                ])
+            }
+
+        case "assembly":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            let action = payload["action"] as? String ?? "report"
+            var args = payload
+            args["action"] = nil
+            let reply = await native.assembly.handleAsync(action: action, args: args)
+            return try jsonString(reply)
+
+        case "drawing":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            let action = payload["action"] as? String ?? "pages"
+            var args = payload
+            args["action"] = nil
+            let reply = native.drawing.handle(action: action, args: args)
+            return try jsonString(reply)
+
+        case "script":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            let action = payload["action"] as? String ?? "list"
+            var args = payload
+            args["action"] = nil
+            let reply = await native.script.handle(action: action, args: args)
+            return try jsonString(reply)
+
+        case "mesh":
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            let action = payload["action"] as? String ?? "combine"
+            var args = payload
+            args["action"] = nil
+            let reply = native.mesh.handle(action: action, args: args)
+            return try jsonString(reply)
+
         case "propose":
             guard let op = request["op"] as? String else {
                 throw CADDocumentError(code: "missing_op", message: "propose requires op.")
@@ -133,6 +277,45 @@ final class FloeCAD3DBridge {
                 "proposal": proposalObject ?? [:],
                 "message": "Proposal drafted on a throwaway copy; confirm it in the CAD workbench to apply.",
             ])
+
+        case "preview":
+            guard let raw = request["proposal_id"] as? String,
+                  let proposalID = UUID(uuidString: raw) else {
+                throw CADDocumentError(code: "bad_request", message: "preview requires proposal_id.")
+            }
+            guard let record = pending.first(where: { $0.id == proposalID }) else {
+                throw CADDocumentError(code: "unknown_proposal",
+                                       message: "No pending native CAD proposal \(raw).")
+            }
+            let previewData = try JSONEncoder().encode(record.preview)
+            let preview = (try? JSONSerialization.jsonObject(with: previewData)) as? [String: Any] ?? [:]
+            return try jsonString([
+                "ok": true,
+                "proposal_id": record.id.uuidString,
+                "summary": record.summary,
+                "base_revision": record.baseRevision,
+                "base_content_sha256": record.baseContentSHA256,
+                "preview": preview,
+            ])
+
+        case "save":
+            let outcome = await document.save()
+            guard outcome.succeeded else {
+                return try jsonString([
+                    "ok": false,
+                    "error": "save_failed",
+                    "message": outcome.error ?? "The document could not be committed.",
+                    "revision": outcome.revision,
+                    "content_sha256": outcome.contentSHA256,
+                ])
+            }
+            return try jsonString([
+                "ok": true,
+                "revision": outcome.revision,
+                "content_sha256": outcome.contentSHA256,
+                "message": "Committed the native CAD package.",
+            ])
+
         case "apply":
             // Authority lives in CadDocumentCenter's shared grant store; the
             // bridge must never consume a grant on its own. The host handles
@@ -141,19 +324,44 @@ final class FloeCAD3DBridge {
                 code: "grant_authority",
                 message: "Native CAD apply must be authorized by CadDocumentCenter; "
                        + "the proposal service does not consume grants itself.")
-        case "assembly", "drawing":
-            // Explicit not-yet-wired answer: the persisted model exists, the
-            // service surface does not. Never report success.
-            return try jsonString([
-                "ok": false,
-                "error": "not_implemented",
-                "message": "\\(kind) operations are not wired to a service in this build; "
-                         + "the model type is persisted and round-trips, but no edit/export is offered yet.",
-            ])
+
         default:
             throw CADDocumentError(code: "unknown_kind",
                                    message: "Unknown native CAD request kind '\(kind)'.")
         }
+    }
+
+    // MARK: Capabilities
+
+    private func capabilitiesObject(_ document: FloeCADDocument) -> [String: Any] {
+        let summary = document.summary()
+        return [
+            "ok": true,
+            "representation": "floecad",
+            "kernel": ["name": "OpenCASCADE",
+                       "version": FloeCADDocument.kernelVersion],
+            "schema_version": summary.schemaVersion,
+            "unit": summary.unit ?? "mm",
+            "read_only": summary.isReadOnly,
+            "actions": ["read", "query", "locate", "measure", "check",
+                        "propose", "preview", "apply", "save", "export",
+                        "status", "cancel"],
+            "operation_names": FloeCADDocument.nativeOperationNames,
+            "assembly_actions": ["report", "instances", "addInstance", "removeInstance",
+                                 "setTransform", "setVisible", "addConstraint",
+                                 "removeConstraint", "suppressConstraint", "solve",
+                                 "dof", "interference", "sourceUpdate", "clear"],
+            "drawing_actions": ["pages", "addPage", "updatePage", "removePage",
+                                "standardSheet", "project", "dimensions", "export"],
+            "script_actions": ["list", "put", "remove", "preview", "apply", "status"],
+            "mesh_actions": ["combine", "boolean", "transform", "recomputeNormals",
+                             "boundary", "repair", "simplify", "material", "text", "image"],
+            "limits": ["max_pairs": 32,
+                       "script_source_bytes": 65536,
+                       "script_wall_clock_seconds": 10,
+                       "script_triangles": 200000,
+                       "mesh_input_triangles": 500000],
+        ]
     }
 
     // MARK: Interactive grant loop (UI only)
@@ -195,6 +403,59 @@ final class FloeCAD3DBridge {
 
     func noteError(_ message: String) {
         lastMessage = message
+    }
+
+    // MARK: Native export / import (host-guarded callers)
+
+    struct NativeExportResult: Sendable {
+        let data: Data
+        let note: String
+        let revision: Int
+    }
+
+    /// Exact/format export bytes for the open document. Runs on the main
+    /// actor with the shared live session; the host owns path resolution,
+    /// writing and verification.
+    func exportNativeData(at url: URL, format: String, pageID: UUID?) async throws -> NativeExportResult {
+        let document = try await document(at: url)
+        switch document.nativeExportData(format: format, pageID: pageID) {
+        case .success(let (data, note)):
+            return NativeExportResult(data: data, note: note, revision: document.revision)
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    struct NativeImportResult: Sendable {
+        let bodyIDs: [String]
+        let names: [String]
+        let revision: Int
+        let contentSHA256: String
+    }
+
+    /// Imports exact STEP or mesh bytes as one undoable body add and commits.
+    /// The host reads the bytes through its guarded workspace resolver; the
+    /// bridge never opens a path on its own.
+    func importNativeData(at url: URL, data: Data, format: String,
+                          fileName: String?, unitScale: Double?) async throws -> NativeImportResult {
+        let document = try await document(at: url)
+        let outcome = document.nativeImportData(data, format: format,
+                                                fileName: fileName, unitScale: unitScale)
+        guard outcome.isOK else {
+            throw CADDocumentError(code: outcome.errorCode ?? "import_failed",
+                                   message: outcome.message ?? "The import failed.")
+        }
+        let save = await document.save()
+        guard save.succeeded else {
+            throw CADDocumentError(code: "save_failed",
+                                   message: save.error ?? "The imported geometry could not be committed.")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: outcome.payload)) as? [String: Any]
+        let imported = object?["imported"] as? [[String: Any]] ?? []
+        return NativeImportResult(bodyIDs: imported.compactMap { $0["bodyID"] as? String },
+                                  names: imported.compactMap { $0["name"] as? String },
+                                  revision: save.revision,
+                                  contentSHA256: save.contentSHA256)
     }
 
     func discard(proposalID: UUID) {

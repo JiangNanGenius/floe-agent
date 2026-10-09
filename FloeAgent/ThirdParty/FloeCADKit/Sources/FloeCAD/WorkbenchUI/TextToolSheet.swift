@@ -27,31 +27,32 @@ struct TextToolSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Text", text: $content)
+                TextField(FloeCADStrings.text("cad.ui.tool.text", "Text"), text: $content)
                     .accessibilityIdentifier("TextContentField")
-                LabeledContent("Height (mm)") {
-                    TextField("Height", value: $heightMM, format: .number)
+                LabeledContent(FloeCADStrings.label("cad.ui.text.heightMM", "Height (mm)")) {
+                    TextField(FloeCADStrings.text("cad.ui.text.height", "Height"),
+                              value: $heightMM, format: .number)
                         .keyboardType(.decimalPad)
                         .multilineTextAlignment(.trailing)
                         .accessibilityIdentifier("TextHeightField")
                 }
-                Picker("Font", selection: $fontName) {
+                Picker(FloeCADStrings.label("cad.ui.text.font", "Font"), selection: $fontName) {
                     ForEach(Self.fontNames, id: \.self) { name in
                         Text(name).tag(name)
                     }
                 }
                 .accessibilityIdentifier("TextFontPicker")
             }
-            .navigationTitle("Text")
+            .navigationTitle(FloeCADStrings.label("cad.ui.tool.text", "Text"))
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) { dismiss() }
                         .accessibilityIdentifier("TextCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
+                    Button(FloeCADStrings.label("cad.ui.text.add", "Add")) {
                         onCommit(content, heightMM, fontName)
                         dismiss()
                     }

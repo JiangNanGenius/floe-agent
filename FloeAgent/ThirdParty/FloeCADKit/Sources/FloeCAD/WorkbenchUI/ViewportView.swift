@@ -9,6 +9,15 @@
 import SwiftUI
 import MetalKit
 
+/// User-visible, recoverable viewport startup failure. A missing Metal device
+/// or a shader library that fails validation must never assert/blank the
+/// editor; the document stays safe and the alert explains what happened.
+enum CADViewportStartupError {
+    static let message = "The 3D viewport could not start on this device "
+        + "(Metal shaders unavailable). Your document is safe — reopen the "
+        + "workbench or report this build."
+}
+
 struct ViewportView: UIViewRepresentable {
     let viewModel: EditorViewModel
     /// The tool palette's frame (global coordinates) when the viewport should
@@ -59,7 +68,11 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
     func attach(to view: MTKView) {
         guard let context = RenderContext() else {
-            assertionFailure("Metal is unavailable")
+            // Never crash or render blank silently: a Metal/shader failure is
+            // surfaced through the editor's recoverable alert; the document is
+            // untouched and the rest of the workbench stays usable.
+            let detail = RenderContext.lastLibraryError.map { " [\($0)]" } ?? ""
+            viewModel.errorMessage = CADViewportStartupError.message + detail
             return
         }
         context.configure(view: view)

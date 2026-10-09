@@ -21,12 +21,14 @@ struct ConstraintSettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("Always Show Dimensions", isOn: $settings.alwaysShowDimensions)
+                    Toggle(FloeCADStrings.label("cad.ui.constraints.alwaysDimensions", "Always Show Dimensions"),
+                           isOn: $settings.alwaysShowDimensions)
                         .accessibilityIdentifier("AlwaysShowDimensionsToggle")
-                    Toggle("Always Show Constraints", isOn: $settings.alwaysShowConstraints)
+                    Toggle(FloeCADStrings.label("cad.ui.constraints.alwaysConstraints", "Always Show Constraints"),
+                           isOn: $settings.alwaysShowConstraints)
                         .accessibilityIdentifier("AlwaysShowConstraintsToggle")
                 } header: {
-                    Text("Visibility")
+                    Text(FloeCADStrings.label("cad.ui.constraints.visibility", "Visibility"))
                 } footer: {
                     Text("When off, annotations follow selected geometry. Turn on to show all annotations in visible sketches, including after leaving sketch mode.")
                 }
@@ -34,7 +36,8 @@ struct ConstraintSettingsView: View {
                 SnappingSettingsSection(settings: settings)
 
                 Section {
-                    Picker("Keep in place", selection: $settings.anchoredSketchEntity) {
+                    Picker(FloeCADStrings.label("cad.ui.constraints.keepInPlace", "Keep in place"),
+                           selection: $settings.anchoredSketchEntity) {
                         ForEach(AnchoredSketchEntity.allCases, id: \.self) { choice in
                             Text(choice.title).tag(choice)
                         }
@@ -42,59 +45,60 @@ struct ConstraintSettingsView: View {
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("AnchoredSketchEntityPicker")
                 } header: {
-                    Text("Anchored Sketch Entity")
+                    Text(FloeCADStrings.label("cad.ui.constraints.anchoredHeader", "Anchored Sketch Entity"))
                 } footer: {
                     Text("Choose whether the first or last selected entity stays in place when applying a constraint. Existing constraints take priority.")
                 }
 
                 Section {
-                    Toggle("Auto-Constrain", isOn: $viewModel.autoConstrainSettings.enabled)
+                    Toggle(FloeCADStrings.label("cad.ui.constraints.autoConstrain", "Auto-Constrain"),
+                           isOn: $viewModel.autoConstrainSettings.enabled)
                         .accessibilityIdentifier("AutoConstrainToggle")
                 } footer: {
                     Text("Infer sketch constraints automatically while you draw.")
                 }
 
                 if viewModel.autoConstrainSettings.enabled {
-                    Section("Inferences") {
+                    Section(FloeCADStrings.label("cad.ui.constraints.inferences", "Inferences")) {
                         Toggle(
-                            "Horizontal / Vertical",
+                            FloeCADStrings.label("cad.ui.constraints.horizontalVertical", "Horizontal / Vertical"),
                             isOn: $viewModel.autoConstrainSettings.horizontalVertical
                         )
                         .accessibilityIdentifier("AutoConstrainHVToggle")
 
                         Toggle(
-                            "Snap to Points",
+                            FloeCADStrings.label("cad.ui.constraints.snapToPoints", "Snap to Points"),
                             isOn: $viewModel.autoConstrainSettings.pointSnap
                         )
                         .accessibilityIdentifier("AutoConstrainPointSnapToggle")
 
                         Toggle(
-                            "Parallel / Perpendicular",
+                            FloeCADStrings.label("cad.ui.constraints.parallelPerpendicular", "Parallel / Perpendicular"),
                             isOn: $viewModel.autoConstrainSettings.parallelPerpendicular
                         )
                         .accessibilityIdentifier("AutoConstrainParallelPerpToggle")
 
                         Toggle(
-                            "Tangent",
+                            FloeCADStrings.label("cad.ui.constraint.tangent", "Tangent"),
                             isOn: $viewModel.autoConstrainSettings.tangent
                         )
                         .accessibilityIdentifier("AutoConstrainTangentToggle")
 
                         Toggle(
-                            "Equal Length",
+                            FloeCADStrings.label("cad.ui.constraint.equalLength", "Equal Length"),
                             isOn: $viewModel.autoConstrainSettings.equal
                         )
                         .accessibilityIdentifier("AutoConstrainEqualToggle")
                         }
 
-                    Section("Tolerance") {
+                    Section(FloeCADStrings.label("cad.ui.constraints.tolerance", "Tolerance")) {
                         Stepper(
                             value: $viewModel.autoConstrainSettings.angleToleranceDeg,
                             in: 1...15,
                             step: 1
                         ) {
                             HStack {
-                                Text("Angle Snap")
+                                Text(FloeCADStrings.label("cad.ui.constraints.angleSnap", "Angle Snap"))
                                 Spacer(minLength: 8)
                                 Text("\(Int(viewModel.autoConstrainSettings.angleToleranceDeg.rounded()))°")
                                     .font(.callout.monospacedDigit())
@@ -106,12 +110,12 @@ struct ConstraintSettingsView: View {
                     }
                 }
             }
-            .navigationTitle("Constraints")
+            .navigationTitle(FloeCADStrings.label("cad.ui.items.constraints", "Constraints"))
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
+                    Button(FloeCADStrings.label("cad.ui.common.done", "Done")) {
                         viewModel.showConstraintSettings = false
                     }
                     .accessibilityIdentifier("ConstraintSettingsDone")

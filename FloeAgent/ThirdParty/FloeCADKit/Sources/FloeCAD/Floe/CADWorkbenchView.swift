@@ -15,13 +15,15 @@ import SwiftUI
 /// saving policy and the assistant entry points.
 public struct FloeCADWorkbenchView: View {
     private let document: FloeCADDocument
+    private let canvasActions: CADCanvasActions?
 
-    public init(document: FloeCADDocument) {
+    public init(document: FloeCADDocument, canvasActions: CADCanvasActions? = nil) {
         self.document = document
+        self.canvasActions = canvasActions
     }
 
     public var body: some View {
-        FloeCADEditorView(document: document)
+        FloeCADEditorView(document: document, canvasActions: canvasActions)
     }
 }
 
@@ -35,22 +37,27 @@ struct CADQuickSettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Display") {
-                    Picker("Units", selection: $settings.unit) {
+                Section(FloeCADStrings.label("cad.settings.display", "Display")) {
+                    Picker(FloeCADStrings.label("cad.settings.units", "Units"),
+                           selection: $settings.unit) {
                         ForEach(DisplayUnit.allCases, id: \.self) { unit in
                             Text(unit.rawValue).tag(unit)
                         }
                     }
-                    Picker("Circular dimensions", selection: $settings.circularAnnotations) {
+                    Picker(FloeCADStrings.label("cad.settings.circularDimensions", "Circular dimensions"),
+                           selection: $settings.circularAnnotations) {
                         ForEach(CircularAnnotations.allCases, id: \.self) { style in
                             Text(style.title).tag(style)
                         }
                     }
                 }
-                Section("Sketch annotations") {
-                    Toggle("Always show dimensions", isOn: $settings.alwaysShowDimensions)
-                    Toggle("Always show constraints", isOn: $settings.alwaysShowConstraints)
-                    Picker("Anchored entity", selection: $settings.anchoredSketchEntity) {
+                Section(FloeCADStrings.label("cad.settings.sketchAnnotations", "Sketch annotations")) {
+                    Toggle(FloeCADStrings.label("cad.settings.alwaysDimensions", "Always show dimensions"),
+                           isOn: $settings.alwaysShowDimensions)
+                    Toggle(FloeCADStrings.label("cad.settings.alwaysConstraints", "Always show constraints"),
+                           isOn: $settings.alwaysShowConstraints)
+                    Picker(FloeCADStrings.label("cad.settings.anchoredEntity", "Anchored entity"),
+                           selection: $settings.anchoredSketchEntity) {
                         ForEach(AnchoredSketchEntity.allCases, id: \.self) { entity in
                             Text(entity.title).tag(entity)
                         }
@@ -58,11 +65,11 @@ struct CADQuickSettingsSheet: View {
                 }
                 SnappingSettingsSection(settings: settings)
             }
-            .navigationTitle("CAD Settings")
+            .navigationTitle(FloeCADStrings.label("cad.settings.title", "CAD Settings"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button(FloeCADStrings.label("cad.settings.done", "Done")) { dismiss() }
                 }
             }
         }

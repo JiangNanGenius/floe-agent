@@ -27,14 +27,14 @@ struct MeshUnitPromptSheet: View {
         NavigationStack {
             List {
                 Section {
-                    LabeledContent("File", value: probe.fileName)
-                    LabeledContent("Contents",
+                    LabeledContent(FloeCADStrings.label("cad.ui.meshImport.file", "File"), value: probe.fileName)
+                    LabeledContent(FloeCADStrings.label("cad.ui.meshImport.contents", "Contents"),
                                    value: "\(probe.parts.count) part\(probe.parts.count == 1 ? "" : "s"), "
                                         + "\(probe.triangleCount.formatted()) triangles")
                     // Up here with the file facts so the consequence of the
                     // choice stays in view: a form sheet shows the five unit
                     // rows and nothing below them without scrolling.
-                    LabeledContent("Imported size") {
+                    LabeledContent(FloeCADStrings.label("cad.ui.meshImport.importedSize", "Imported size")) {
                         Text(probe.sizeDescription(for: unit))
                             .monospacedDigit()
                             .accessibilityIdentifier("MeshUnitResult")
@@ -43,7 +43,7 @@ struct MeshUnitPromptSheet: View {
                     Text(probe.unitNote)
                 }
 
-                Section("Units in the file") {
+                Section(FloeCADStrings.label("cad.ui.meshImport.unitsInFile", "Units in the file")) {
                     ForEach(MeshImportUnit.allCases) { candidate in
                         Button {
                             unit = candidate
@@ -59,7 +59,7 @@ struct MeshUnitPromptSheet: View {
                                 }
                                 Spacer()
                                 if candidate == probe.detectedUnit {
-                                    Text("Detected")
+                                    Text(FloeCADStrings.label("cad.ui.meshImport.detected", "Detected"))
                                         .font(.caption.weight(.semibold))
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
@@ -82,16 +82,16 @@ struct MeshUnitPromptSheet: View {
                     }
                 }
             }
-            .navigationTitle("Import Units")
+            .navigationTitle(FloeCADStrings.label("cad.ui.meshImport.title", "Import Units"))
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) { dismiss() }
                         .accessibilityIdentifier("MeshUnitCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Import") {
+                    Button(FloeCADStrings.label("cad.ui.common.import", "Import")) {
                         onImport(unit)
                         dismiss()
                     }

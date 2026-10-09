@@ -41,6 +41,9 @@
 #include <BRepFilletAPI_LocalOperation.hxx>
 #include <STEPControl_Writer.hxx>
 #include <STEPControl_Reader.hxx>
+#include <IGESControl_Reader.hxx>
+#include <IGESControl_Writer.hxx>
+#include <IGESControl_Controller.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <ShapeUpgrade_ShapeDivideContinuity.hxx>
@@ -570,6 +573,29 @@ static OCCTRenderMesh *TessellateShape(const TopoDS_Shape &solid,
 - (NSInteger)planar { return _planar; }
 - (NSInteger)cylindrical { return _cylindrical; }
 - (NSInteger)other { return _other; }
+@end
+
+// IGES keeps solids and surfaces apart (see OCCTBridge.h): the reader's
+// output is not "a solid" the way STEP's is, and calling a shell a solid
+// would let it into booleans/blends it is not valid for.
+@interface OCCTIGESImport () {
+@public
+    NSArray<OCCTShape *> *_solids;
+    NSArray<OCCTShape *> *_surfaces;
+    NSArray<NSNumber *> *_solidFaceCounts;
+    NSArray<NSNumber *> *_surfaceFaceCounts;
+    BOOL _readSucceeded;
+    NSInteger _rootCount;
+}
+@end
+
+@implementation OCCTIGESImport
+- (NSArray<OCCTShape *> *)solids { return _solids; }
+- (NSArray<OCCTShape *> *)surfaces { return _surfaces; }
+- (NSArray<NSNumber *> *)solidFaceCounts { return _solidFaceCounts; }
+- (NSArray<NSNumber *> *)surfaceFaceCounts { return _surfaceFaceCounts; }
+- (BOOL)readSucceeded { return _readSucceeded; }
+- (NSInteger)rootCount { return _rootCount; }
 @end
 
 @implementation OCCTRenderMesh
@@ -3638,6 +3664,106 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
     return out;
 }
 
+// MARK: - IGES import (spec §12.1 / §12.2)
+
+static NSInteger OS3DFaceCount(const TopoDS_Shape &shape) {
+    NSInteger count = 0;
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) ++count;
+    return count;
+}
+
+// The file has already been staged at `path`. Reads it through OCCT's IGES
+// reader and fills the output arrays by classification:
+//
+// - A root containing at least one TopAbs_SOLID is emitted as its solids,
+//   one handle each (the same per-root split `readSTEPFromPath:` does). Only
+//   the solids are kept: the root's other children (if any) are faces OF
+//   those solids and would duplicate their geometry.
+// - Any other root — a shell, an isolated face, a compound of faces — is
+//   emitted WHOLE to the surface list. IGES exports commonly carry surfaces
+//   only, and a shell is not a solid: downstream boolean/blend/shell ops are
+//   not valid for it, so it must not enter the solid list.
+//
+// Every candidate passes the same finite-bounds gate and one-heal
+// (`ShapeFix_Shape`) validation the STEP import uses, so a corrupt root
+// cannot seed a body. Returns NO when the reader refused the file; an empty
+// model then reads as `readSucceeded` with `rootCount == 0`.
+static BOOL OS3DReadIGES(const char *path,
+                         NSMutableArray<OCCTShape *> *solids,
+                         NSMutableArray<OCCTShape *> *surfaces,
+                         NSMutableArray<NSNumber *> *solidFaceCounts,
+                         NSMutableArray<NSNumber *> *surfaceFaceCounts,
+                         NSInteger *rootCount) {
+    // The reader's own constructor registers the IGES norm; the explicit
+    // call documents the dependency and is a no-op after the first time.
+    IGESControl_Controller::Init();
+    IGESControl_Reader reader;
+    if (reader.ReadFile(path) != IFSelect_RetDone) return NO;
+    reader.TransferRoots();
+    *rootCount = (NSInteger)reader.NbShapes();
+    for (Standard_Integer i = 1; i <= reader.NbShapes(); ++i) {
+        const TopoDS_Shape shape = reader.Shape(i);
+        if (shape.IsNull() || !OS3DFiniteBounds(shape)) continue;
+        TopExp_Explorer solidExplorer(shape, TopAbs_SOLID);
+        if (solidExplorer.More()) {
+            for (; solidExplorer.More(); solidExplorer.Next()) {
+                const TopoDS_Shape valid = OS3DHealAndValidate(solidExplorer.Current());
+                if (valid.IsNull()) continue;
+                OCCTShape *w = [OCCTShape new];
+                w->_shape = valid;
+                [solids addObject:w];
+                [solidFaceCounts addObject:@(OS3DFaceCount(valid))];
+            }
+        } else {
+            const TopoDS_Shape valid = OS3DHealAndValidate(shape);
+            if (valid.IsNull()) continue;
+            OCCTShape *w = [OCCTShape new];
+            w->_shape = valid;
+            [surfaces addObject:w];
+            [surfaceFaceCounts addObject:@(OS3DFaceCount(valid))];
+        }
+    }
+    return YES;
+}
+
++ (nullable OCCTIGESImport *)readIGESFromData:(NSData *)data {
+    if (data.length == 0) return nil;
+    // The IGES work library implements ReadFile only (its inherited
+    // ReadStream is the default "unsupported" stub), so the caller's bytes
+    // are staged in the system temporary directory for the read and removed
+    // again on every path out. STEP import does the same staging on the
+    // Swift side; keeping it here lets Swift hand over the original bytes.
+    NSString *name = [NSString stringWithFormat:@"floe-iges-%@.igs",
+                      [NSUUID UUID].UUIDString];
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
+    if (![data writeToFile:path atomically:YES]) return nil;
+
+    NSMutableArray<OCCTShape *> *solids = [NSMutableArray array];
+    NSMutableArray<OCCTShape *> *surfaces = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *solidFaceCounts = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *surfaceFaceCounts = [NSMutableArray array];
+    NSInteger rootCount = 0;
+    BOOL readOK = NO;
+    BOOL threw = NO;
+    try {
+        readOK = OS3DReadIGES(path.fileSystemRepresentation, solids, surfaces,
+                              solidFaceCounts, surfaceFaceCounts, &rootCount);
+    } catch (...) {
+        threw = YES;
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+    if (threw) return nil;
+
+    OCCTIGESImport *result = [OCCTIGESImport new];
+    result->_solids = solids;
+    result->_surfaces = surfaces;
+    result->_solidFaceCounts = solidFaceCounts;
+    result->_surfaceFaceCounts = surfaceFaceCounts;
+    result->_readSucceeded = readOK;
+    result->_rootCount = readOK ? rootCount : 0;
+    return result;
+}
+
 // MARK: - Geometry health (docs/FREECAD_PLAYBOOK.md D1)
 
 // Enumerator-derived name for a BRepCheck status. Written from the OCCT enum
@@ -4144,6 +4270,27 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
 #if DEBUG
 + (void)debugSetBooleanUnmergedFallbackEnabled:(BOOL)enabled {
     gOS3DBooleanUnmergedFallback = enabled;
+}
+
++ (BOOL)debugWriteIGESShapes:(NSArray<OCCTShape *> *)shapes
+                      toPath:(NSString *)path
+                    brepMode:(BOOL)brepMode {
+    if (shapes.count == 0 || path.length == 0) return NO;
+    try {
+        // BRep mode (1) keeps a solid an IGES BRep solid (ManifoldSolid), so
+        // the read-back still classifies it as a solid; face mode (0)
+        // decomposes it into trimmed surfaces — the surface-only file the
+        // import classification tests need. Units are millimetres, matching
+        // the document model.
+        IGESControl_Writer writer("MM", brepMode ? 1 : 0);
+        for (OCCTShape *s in shapes) {
+            if (s == nil || s->_shape.IsNull()) continue;
+            if (!writer.AddShape(s->_shape)) return NO;
+        }
+        return writer.Write(path.fileSystemRepresentation) ? YES : NO;
+    } catch (...) {
+        return NO;
+    }
 }
 
 + (nullable OCCTShape *)debugInvalidOpenBoxWithSize:(double)size {

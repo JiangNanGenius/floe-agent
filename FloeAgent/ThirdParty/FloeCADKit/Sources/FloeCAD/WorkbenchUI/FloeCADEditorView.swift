@@ -86,19 +86,23 @@ struct MeshExportOptionsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Toggle("Separate File per Body", isOn: $perBodyFiles)
+                Toggle(FloeCADStrings.label("cad.ui.export.separateFiles", "Separate File per Body"),
+                       isOn: $perBodyFiles)
                     .accessibilityIdentifier("ExportPerBodyToggle")
             }
-            .navigationTitle("\(formatName) Export")
+            .navigationTitle(String(
+                format: FloeCADStrings.text("cad.ui.export.meshTitle", "%@ Export"),
+                formatName
+            ))
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) { dismiss() }
                         .accessibilityIdentifier("MeshExportCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Export") {
+                    Button(FloeCADStrings.label("cad.ui.common.export", "Export")) {
                         onExport(perBodyFiles)
                         dismiss()
                     }
@@ -186,11 +190,19 @@ extension DisplayMode {
 /// native SF Symbols and system type.
 struct FloeCADEditorView: View {
     let document: FloeCADDocument
+    /// Host-injected Canvas actions; nil in standalone/qualification hosts.
+    var canvasActions: CADCanvasActions? = nil
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: EditorViewModel?
     @State private var exportDocument: ExportDocument?
     @State private var showItemsPanel = false
+    /// Canvas result banner (`CADCanvasActionResult`); shown in a safe-area
+    /// inset so the toolbar entry always has visible feedback.
+    @State private var canvasActionMessage: (kind: CADCanvasActionResult.Kind, text: String)?
+    @State private var isCanvasActionRunning = false
+    /// Floe workbench tools (assembly / drawings / ShapeScript / mesh) sheet.
+    @State private var showWorkbenchTools = false
         @State private var pendingMeshImport: MeshImportProbe?
     @State private var didHandleDebugImport = false
     @State private var showSettings = false
@@ -784,28 +796,28 @@ struct FloeCADEditorView: View {
     /// Toolbar Import menu (STL/DXF files, inserted images).
     private func importMenu(_ viewModel: EditorViewModel) -> some View {
         Menu {
-            Button("STL File…") {
+            Button(FloeCADStrings.label("cad.ui.import.stlFile", "STL File…")) {
                 importRequest = .stl
                 showImporter = true
             }
             .accessibilityIdentifier("ImportSTL")
             // DXF import (plan §B14): entities join a ground-plane
             // sketch as one undo step.
-            Button("DXF File…") {
+            Button(FloeCADStrings.label("cad.ui.import.dxfFile", "DXF File…")) {
                 importRequest = .dxf
                 showImporter = true
             }
             .accessibilityIdentifier("ImportDXF")
             // STEP import (spec §12.1): solids arrive analytic, so an imported
             // part can be filleted/shelled/booleaned like a native one.
-            Button("STEP File…") {
+            Button(FloeCADStrings.label("cad.ui.import.stepFile", "STEP File…")) {
                 importRequest = .step
                 showImporter = true
             }
             .accessibilityIdentifier("ImportSTEP")
             // Textured meshes: glTF/GLB, USDZ, OBJ with its MTL and images, .blend,
             // or a zip holding any of them. Parts become mesh bodies.
-            Button("OBJ / glTF / USDZ / Blender…") {
+            Button(FloeCADStrings.label("cad.ui.import.meshFile", "OBJ / glTF / USDZ / Blender…")) {
                 importRequest = .mesh
                 showImporter = true
             }
@@ -813,17 +825,17 @@ struct FloeCADEditorView: View {
             Divider()
             // Insert Image (plan §B10, spec §6.3): the picked
             // picture waits for a plane tap (ground by default).
-            Button("Image from Photos…") {
+            Button(FloeCADStrings.label("cad.ui.import.imagePhotos", "Image from Photos…")) {
                 showPhotoPicker = true
             }
             .accessibilityIdentifier("InsertImagePhotos")
-            Button("Image from Files…") {
+            Button(FloeCADStrings.label("cad.ui.import.imageFiles", "Image from Files…")) {
                 importRequest = .image
                 showImporter = true
             }
             .accessibilityIdentifier("InsertImageFiles")
         } label: {
-            Label("Import", systemImage: "square.and.arrow.down")
+            Label(FloeCADStrings.label("cad.ui.common.import", "Import"), systemImage: "square.and.arrow.down")
         }
         .accessibilityIdentifier("ImportMenu")
     }
@@ -899,7 +911,7 @@ struct FloeCADEditorView: View {
             // variables, assembly and drawings. Mesh exports above are
             // geometry-only; this commits the versioned package (off-main,
             // revision-guarded) that reopens as a live document.
-            Button("Save Project") {
+            Button(FloeCADStrings.label("cad.ui.export.saveProject", "Save Project")) {
                 Task {
                     let outcome = await document.save()
                     if let error = outcome.error {
@@ -909,13 +921,13 @@ struct FloeCADEditorView: View {
             }
             .accessibilityIdentifier("SaveProjectButton")
             Divider()
-            Button("PNG Screenshot…") {
+            Button(FloeCADStrings.label("cad.ui.export.pngScreenshot", "PNG Screenshot…")) {
                 showScreenshotOptions = true
             }
             // AR Quick Look presentation is host-provided UI in Floe; the
             // USDZ export itself stays in the menu above.
         } label: {
-            Label("Export", systemImage: "square.and.arrow.up")
+            Label(FloeCADStrings.label("cad.ui.common.export", "Export"), systemImage: "square.and.arrow.up")
         }
         .accessibilityIdentifier("ExportMenu")
     }
@@ -1648,27 +1660,63 @@ struct FloeCADEditorView: View {
                     Button {
                         viewModel.showHistoryPanel.toggle()
                     } label: {
-                        Label("History", systemImage: "clock.arrow.circlepath")
+                        Label(FloeCADStrings.label("cad.toolbar.history", "History"),
+                              systemImage: "clock.arrow.circlepath")
                     }
                     .accessibilityIdentifier("HistoryButton")
 
                     Button {
                         viewModel.showVariablesPanel.toggle()
                     } label: {
-                        Label("Variables", systemImage: "function")
+                        Label(FloeCADStrings.label("cad.toolbar.variables", "Variables"),
+                              systemImage: "function")
                     }
                     .accessibilityIdentifier("VariablesButton")
 
                     Button {
                         showItemsPanel.toggle()
                     } label: {
-                        Label("Items", systemImage: "sidebar.trailing")
+                        Label(FloeCADStrings.label("cad.toolbar.items", "Items"),
+                              systemImage: "sidebar.trailing")
                     }
                     .accessibilityIdentifier("ItemsButton")
 
                     importMenu(viewModel)
 
                     exportMenu(viewModel)
+
+                    Button {
+                        showWorkbenchTools = true
+                    } label: {
+                        Label(FloeCADStrings.label("cad.workbench.tools", "CAD Tools"),
+                              systemImage: "square.grid.2x2")
+                    }
+                    .accessibilityIdentifier("CADWorkbenchToolsButton")
+
+                    // Canvas integration (host-injected). "Apply to canvas"
+                    // replaces the ORIGINAL bound node's asset; "Make variant"
+                    // is the ONLY path that creates a new node. Both appear
+                    // only when the host installed the corresponding action.
+                    if let actions = canvasActions, actions.applyToCanvas != nil {
+                        Button {
+                            runCanvasAction(actions.applyToCanvas)
+                        } label: {
+                            Label(FloeCADStrings.label("cad.canvas.apply", "Apply to canvas"),
+                                  systemImage: "rectangle.on.rectangle.angled")
+                        }
+                        .disabled(isCanvasActionRunning)
+                        .accessibilityIdentifier("CADApplyToCanvasButton")
+                    }
+                    if let actions = canvasActions, actions.makeVariant != nil {
+                        Button {
+                            runCanvasAction(actions.makeVariant)
+                        } label: {
+                            Label(FloeCADStrings.label("cad.canvas.variant", "Make variant"),
+                                  systemImage: "plus.square.on.square")
+                        }
+                        .disabled(isCanvasActionRunning)
+                        .accessibilityIdentifier("CADMakeVariantButton")
+                    }
 
                     // Command Search (spec §8.4). A toolbar button, not just
                     // the X / ⌘F chords: without one the launcher would be
@@ -1713,6 +1761,12 @@ struct FloeCADEditorView: View {
             .sheet(isPresented: $showSettings) {
                 CADQuickSettingsSheet()
             }
+            .sheet(isPresented: $showWorkbenchTools) {
+                CADWorkbenchToolsPanel(document: document, viewModel: viewModel,
+                                       canvasActions: canvasActions)
+                    .presentationDetents([.medium, .large])
+                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            }
     }
 
     /// The one Import-menu completion handler; `importRequest` says which
@@ -1752,6 +1806,7 @@ struct FloeCADEditorView: View {
     @ViewBuilder
     private func editorContent(_ viewModel: EditorViewModel) -> some View {
         viewportChrome(viewModel)
+            .safeAreaInset(edge: .bottom) { canvasActionStatusBar }
             // ONE importer for every Import-menu entry (see `ImportRequest`).
             .fileImporter(
                 isPresented: $showImporter,
@@ -1943,5 +1998,58 @@ struct FloeCADEditorView: View {
                         "Saving failed — recent changes may not be stored. (\(saveError))"
                 }
             }
+    }
+
+    // MARK: - Canvas actions (host-injected)
+
+    /// Runs one injected Canvas action against the live document. The host
+    /// closure owns export, asset persistence and the atomic Canvas commit;
+    /// its result message (success or refusal) is shown above the bottom bar.
+    private func runCanvasAction(_ operation: CADCanvasActions.Operation?) {
+        guard let operation, !isCanvasActionRunning else { return }
+        isCanvasActionRunning = true
+        canvasActionMessage = nil
+        Task { @MainActor in
+            let result = await operation(document, document.url)
+            canvasActionMessage = (result.kind, result.message)
+            isCanvasActionRunning = false
+        }
+    }
+
+    @ViewBuilder
+    private var canvasActionStatusBar: some View {
+        if isCanvasActionRunning {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(FloeCADStrings.label("cad.canvas.working", "Updating the canvas…"))
+                    .font(.footnote)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+            .accessibilityIdentifier("CADCanvasActionStatus")
+        } else if let canvasActionMessage {
+            HStack(spacing: 8) {
+                Image(systemName: canvasActionMessage.kind == .success
+                      ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                    .foregroundStyle(canvasActionMessage.kind == .success ? .green : .orange)
+                Text(canvasActionMessage.text)
+                    .font(.footnote)
+                Spacer(minLength: 8)
+                Button {
+                    self.canvasActionMessage = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("CADCanvasActionDismiss")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+            .accessibilityIdentifier("CADCanvasActionStatus")
+        }
     }
 }

@@ -30,8 +30,11 @@ struct NumericInputBar: View {
         if applyExtrudeDistanceText() {
             viewModel.commitTool()
         } else {
-            viewModel.errorMessage =
-                "Couldn't read \"\(extrudeDistanceText)\" as a distance."
+            viewModel.errorMessage = String(
+                format: FloeCADStrings.text("cad.ui.extrude.readDistance",
+                                            "Couldn't read \"%@\" as a distance."),
+                extrudeDistanceText
+            )
         }
     }
 
@@ -123,7 +126,7 @@ struct NumericInputBar: View {
 
                 Spacer()
             } actions: {
-                Button("Done") {
+                Button(FloeCADStrings.label("cad.ui.common.done", "Done")) {
                     commit()
                     viewModel.finishEditing()
                 }
@@ -146,20 +149,20 @@ struct NumericInputBar: View {
     /// badge (scales a duplicate), commit via Apply or an empty-grid tap.
     private var scaleBar: some View {
         AdaptiveBar {
-            Text("Scale")
+            Text(FloeCADStrings.label("cad.ui.tool.scale", "Scale"))
                 .font(.headline)
                 .fixedSize()
             BarHint("Uniform, about the body pivot")
 
             HStack(spacing: 6) {
-                Text("Factor")
+                Text(FloeCADStrings.label("cad.ui.scale.factor", "Factor"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
                 // A multiplier, not a length — `.plain` so the display unit
                 // never scales it.
                 ExpressionValueField(
-                    placeholder: "Factor",
+                    placeholder: FloeCADStrings.text("cad.ui.scale.factor", "Factor"),
                     value: Binding(
                         get: { viewModel.scalePendingFactor },
                         set: { viewModel.scalePendingFactor = $0 }
@@ -172,7 +175,7 @@ struct NumericInputBar: View {
                 )
             }
 
-            Button("Copy") {
+            Button(FloeCADStrings.label("cad.ui.scale.copy", "Copy")) {
                 viewModel.scaleCopyOnCommit.toggle()
             }
             .buttonStyle(.bordered)
@@ -181,10 +184,10 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelScaleEntry()
             }
-            Button("Apply") {
+            Button(FloeCADStrings.label("cad.ui.common.apply", "Apply")) {
                 viewModel.commitScale(factor: viewModel.scalePendingFactor)
             }
             .buttonStyle(.borderedProminent)
@@ -196,18 +199,18 @@ struct NumericInputBar: View {
     /// drags scrub in 5° steps, typed values are exact.
     private var rotateAxisBar: some View {
         AdaptiveBar {
-            Text("Rotate")
+            Text(FloeCADStrings.label("cad.ui.tool.rotate", "Rotate"))
                 .font(.headline)
                 .fixedSize()
             BarHint("Drag to rotate (5° steps), or type an angle")
 
             HStack(spacing: 6) {
-                Text("Angle")
+                Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
                 ExpressionValueField(
-                    placeholder: "Angle",
+                    placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
                     value: Binding(
                         get: { viewModel.rotateAxisState?.angleDegrees ?? 0 },
                         set: { viewModel.setRotateAngle($0) }
@@ -222,10 +225,10 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelRotateAxis()
             }
-            Button("Apply") {
+            Button(FloeCADStrings.label("cad.ui.common.apply", "Apply")) {
                 viewModel.commitRotateAxis()
             }
             .buttonStyle(.borderedProminent)
@@ -246,14 +249,14 @@ struct NumericInputBar: View {
         // with neither of its numbers visible. Compact width gives them their
         // own row instead; regular width keeps the original single row.
         return AdaptiveBar(showsFooter: isCompact) {
-            Text("Pattern")
+            Text(FloeCADStrings.label("cad.ui.tool.pattern", "Pattern"))
                 .font(.headline)
                 .fixedSize()
 
             if !isCompact { patternPickers(axisChoices) }
 
             HStack(spacing: 6) {
-                Text("Count")
+                Text(FloeCADStrings.label("cad.ui.common.count", "Count"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
@@ -261,7 +264,7 @@ struct NumericInputBar: View {
                 // way in. The range lives in `clamp` rather than the setter so
                 // the field knows about it too.
                 ExpressionValueField(
-                    placeholder: "Count",
+                    placeholder: FloeCADStrings.text("cad.ui.common.count", "Count"),
                     value: Binding(
                         get: { Double(viewModel.patternState?.count ?? 3) },
                         set: { viewModel.patternState?.count = Int($0.rounded()) }
@@ -275,7 +278,7 @@ struct NumericInputBar: View {
 
             if state.kind == .linear {
                 HStack(spacing: 6) {
-                    Text("Spacing")
+                    Text(FloeCADStrings.label("cad.ui.common.spacing", "Spacing"))
                         .font(.caption)
                         .foregroundStyle(.barLabel)
                         .fixedSize()
@@ -283,7 +286,7 @@ struct NumericInputBar: View {
                     // conversion itself, so wrapping in `unit.binding` here
                     // would convert twice.
                     ExpressionValueField(
-                        placeholder: "Spacing",
+                        placeholder: FloeCADStrings.text("cad.ui.common.spacing", "Spacing"),
                         value: Binding(
                             get: { viewModel.patternState?.spacing ?? 6 },
                             set: { viewModel.patternState?.spacing = $0 }
@@ -296,12 +299,12 @@ struct NumericInputBar: View {
                 }
             } else {
                 HStack(spacing: 6) {
-                    Text("Angle")
+                    Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                         .font(.caption)
                         .foregroundStyle(.barLabel)
                         .fixedSize()
                     ExpressionValueField(
-                        placeholder: "Angle",
+                        placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
                         value: Binding(
                             get: { viewModel.patternState?.totalAngle ?? 360 },
                             set: { viewModel.patternState?.totalAngle = $0 }
@@ -316,10 +319,10 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelPattern()
             }
-            Button("Apply") {
+            Button(FloeCADStrings.label("cad.ui.common.apply", "Apply")) {
                 viewModel.commitPattern()
             }
             .buttonStyle(.borderedProminent)
@@ -477,11 +480,11 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Delete", role: .destructive) {
+            Button(FloeCADStrings.label("cad.ui.common.delete", "Delete"), role: .destructive) {
                 viewModel.deleteImage(image.id)
             }
             .accessibilityIdentifier("ImageDelete")
-            Button("Done") {
+            Button(FloeCADStrings.label("cad.ui.common.done", "Done")) {
                 viewModel.selectedImageID = nil
             }
             .buttonStyle(.borderedProminent)
@@ -493,18 +496,18 @@ struct NumericInputBar: View {
 
     private var polygonBar: some View {
         AdaptiveBar {
-            Text("Polygon")
+            Text(FloeCADStrings.label("cad.ui.tool.polygon", "Polygon"))
                 .font(.headline)
                 .fixedSize()
             BarHint("Drag from center to a vertex")
 
             HStack(spacing: 6) {
-                Text("Sides")
+                Text(FloeCADStrings.label("cad.ui.polygon.sides", "Sides"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
                 ExpressionValueField(
-                    placeholder: "Sides",
+                    placeholder: FloeCADStrings.text("cad.ui.polygon.sides", "Sides"),
                     value: Binding(
                         get: { Double(viewModel.polygonSides) },
                         set: { viewModel.polygonSides = Int($0.rounded()) }
@@ -514,8 +517,7 @@ struct NumericInputBar: View {
                     width: 60,
                     identifier: "PolygonSidesField"
                 )
-                Stepper(
-                    "Sides",
+                Stepper(FloeCADStrings.label("cad.ui.polygon.sides", "Sides"),
                     value: Binding(
                         get: { viewModel.polygonSides },
                         set: { viewModel.polygonSides = min(max($0, 3), 64) }
@@ -532,7 +534,7 @@ struct NumericInputBar: View {
     /// Radial push/pull on a cylinder edits the diameter (Shapr3D Offset Face).
     private func diameterBar(_ context: EditorViewModel.ToolContext, radius: Double) -> some View {
         AdaptiveBar {
-            Text("Diameter")
+            Text(FloeCADStrings.label("cad.ui.diameter.title", "Diameter"))
                 .font(.headline)
                 .fixedSize()
             HStack(spacing: 6) {
@@ -541,7 +543,7 @@ struct NumericInputBar: View {
                     .foregroundStyle(.barLabel)
                     .fixedSize()
                 ExpressionValueField(
-                    placeholder: "Diameter",
+                    placeholder: FloeCADStrings.text("cad.ui.diameter.title", "Diameter"),
                     value: Binding(
                         get: { 2 * (radius + (viewModel.toolContext?.distance ?? 0)) },
                         set: { viewModel.setExtrudeDistance($0 / 2 - radius) }
@@ -555,8 +557,8 @@ struct NumericInputBar: View {
             }
             Spacer()
         } actions: {
-            Button("Cancel") { viewModel.cancelTool() }
-            Button("Apply") { viewModel.commitTool() }
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) { viewModel.cancelTool() }
+            Button(FloeCADStrings.label("cad.ui.common.apply", "Apply")) { viewModel.commitTool() }
                 .buttonStyle(.borderedProminent)
         }
     }
@@ -570,16 +572,16 @@ struct NumericInputBar: View {
 
     private func extrudeBarBody(_ context: EditorViewModel.ToolContext) -> some View {
         AdaptiveBar {
-            Text("Extrude")
+            Text(FloeCADStrings.label("cad.ui.tool.extrude", "Extrude"))
                 .font(.headline)
                 .fixedSize()
 
             HStack(spacing: 6) {
-                Text("Distance")
+                Text(FloeCADStrings.label("cad.ui.common.distance", "Distance"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
-                TextField("Distance", text: $extrudeDistanceText)
+                TextField(FloeCADStrings.text("cad.ui.common.distance", "Distance"), text: $extrudeDistanceText)
                 .keyboardType(.numbersAndPunctuation)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
@@ -632,13 +634,13 @@ struct NumericInputBar: View {
                     }
                 }
             } label: {
-                Label("End", systemImage: "arrow.down.to.line")
+                Label(FloeCADStrings.label("cad.ui.extrude.end", "End"), systemImage: "arrow.down.to.line")
                     .labelStyle(.titleOnly)
             }
             .accessibilityIdentifier("ExtrudeEndMenu")
 
             // Symmetric sides: distance is per-side, total depth 2×.
-            Button("Symmetric") {
+            Button(FloeCADStrings.label("cad.ui.extrude.symmetric", "Symmetric")) {
                 viewModel.setExtrudeSymmetric(!context.symmetric)
             }
             .buttonStyle(.bordered)
@@ -650,34 +652,38 @@ struct NumericInputBar: View {
             // Sketch profiles can revolve about one of their lines, sweep
             // along a path, loft to more profiles, or coil into a helix.
             if context.sketchID != nil {
-                Button("Revolve") {
+                Button(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve")) {
                     viewModel.beginRevolveAxisPick()
                 }
-                Button("Sweep") {
+                Button(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep")) {
                     viewModel.beginSweepPathPick()
                 }
-                Button("Loft") {
+                Button(FloeCADStrings.label("cad.ui.tool.loft", "Loft")) {
                     viewModel.beginLoftProfilePick()
                 }
-                Button("Helix") {
+                Button(FloeCADStrings.label("cad.ui.tool.helix", "Helix")) {
                     viewModel.showHelixOptions = true
                 }
             }
             // Face pulls can become an offset construction plane instead.
             if context.sourceBody != nil {
-                Button("Offset Plane") {
+                Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
                     viewModel.beginOffsetPlane()
                 }
             }
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
-            Button("Extrude") {
+            Button(FloeCADStrings.label("cad.ui.tool.extrude", "Extrude")) {
                 // Whatever is in the field is what the person means, even
                 // without a Return first.
                 if extrudeDistanceFocused || extrudeDistanceText != extrudeDistanceDisplay(context.distance) {
                     guard applyExtrudeDistanceText() else {
-                        viewModel.errorMessage = "Couldn't read \"\(extrudeDistanceText)\" as a distance."
+                        viewModel.errorMessage = String(
+                            format: FloeCADStrings.text("cad.ui.extrude.readDistance",
+                                                        "Couldn't read \"%@\" as a distance."),
+                            extrudeDistanceText
+                        )
                         return
                     }
                 }
@@ -687,11 +693,11 @@ struct NumericInputBar: View {
         } footer: {
             // Boolean badge: manual result override (spec §4.1).
             HStack(spacing: 8) {
-                Text("Result")
+                Text(FloeCADStrings.label("cad.ui.extrude.result", "Result"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
-                Picker("Result", selection: Binding(
+                Picker(FloeCADStrings.label("cad.ui.extrude.result", "Result"), selection: Binding(
                     get: { viewModel.toolContext?.booleanOverride ?? .auto },
                     set: { viewModel.setBooleanOverride($0) }
                 )) {
@@ -715,7 +721,7 @@ struct NumericInputBar: View {
     private func sweepBar(_ context: EditorViewModel.ToolContext) -> some View {
         let count = context.sweepPathEntityIDs.count
         return AdaptiveBar {
-            Text("Sweep")
+            Text(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep"))
                 .font(.headline)
                 .fixedSize()
             Text(count == 0
@@ -727,10 +733,10 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelSweepPathPick()
             }
-            Button("Sweep") {
+            Button(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep")) {
                 viewModel.commitTool()
             }
             .buttonStyle(.borderedProminent)
@@ -744,7 +750,7 @@ struct NumericInputBar: View {
     private func loftBar(_ context: EditorViewModel.ToolContext) -> some View {
         let count = context.loftProfiles.count
         return AdaptiveBar {
-            Text("Loft")
+            Text(FloeCADStrings.label("cad.ui.tool.loft", "Loft"))
                 .font(.headline)
                 .fixedSize()
             Text("\(count) section\(count == 1 ? "" : "s") — tap more profile fills")
@@ -754,10 +760,10 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelLoftProfilePick()
             }
-            Button("Loft") {
+            Button(FloeCADStrings.label("cad.ui.tool.loft", "Loft")) {
                 viewModel.commitTool()
             }
             .buttonStyle(.borderedProminent)
@@ -768,18 +774,18 @@ struct NumericInputBar: View {
 
     private func offsetPlaneBar(_ context: EditorViewModel.ToolContext) -> some View {
         AdaptiveBar {
-            Text("Offset Plane")
+            Text(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane"))
                 .font(.headline)
                 .fixedSize()
             BarHint("Drag the arrow, or type a distance")
 
             HStack(spacing: 6) {
-                Text("Distance")
+                Text(FloeCADStrings.label("cad.ui.common.distance", "Distance"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
                 ExpressionValueField(
-                    placeholder: "Distance",
+                    placeholder: FloeCADStrings.text("cad.ui.common.distance", "Distance"),
                     value: Binding(
                         get: { viewModel.toolContext?.distance ?? 0 },
                         set: { viewModel.setOffsetPlaneDistance($0) }
@@ -794,10 +800,10 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
-            Button("Add Plane") {
+            Button(FloeCADStrings.label("cad.ui.extrude.addPlane", "Add Plane")) {
                 viewModel.commitTool()
             }
             .buttonStyle(.borderedProminent)
@@ -806,18 +812,18 @@ struct NumericInputBar: View {
 
     private func revolveBar(_ context: EditorViewModel.ToolContext) -> some View {
         AdaptiveBar {
-            Text("Revolve")
+            Text(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve"))
                 .font(.headline)
                 .fixedSize()
             BarHint("Drag to sweep, or type an angle")
 
             HStack(spacing: 6) {
-                Text("Angle")
+                Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
                     .fixedSize()
                 ExpressionValueField(
-                    placeholder: "Angle",
+                    placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
                     value: Binding(
                         get: { viewModel.toolContext?.angle ?? 360 },
                         set: { viewModel.setRevolveAngle($0) }
@@ -832,10 +838,10 @@ struct NumericInputBar: View {
 
             Spacer()
         } actions: {
-            Button("Cancel") {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
-            Button("Revolve") {
+            Button(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve")) {
                 viewModel.commitTool()
             }
             .buttonStyle(.borderedProminent)
@@ -906,32 +912,35 @@ struct HelixOptionsSheet: View {
                 // display unit like every other length in the app; they used to
                 // be bare numbers that silently meant millimetres. Turns is a
                 // count, so it stays `.plain`.
-                LabeledContent("Radius") {
+                LabeledContent(FloeCADStrings.label("cad.ui.helix.radius", "Radius")) {
                     ExpressionValueField(
-                        placeholder: "Radius", value: $radius, kind: .length,
+                        placeholder: FloeCADStrings.text("cad.ui.helix.radius", "Radius"),
+                        value: $radius, kind: .length,
                         clamp: 0.001...1e6, width: 90, identifier: "HelixRadius")
                 }
-                LabeledContent("Pitch") {
+                LabeledContent(FloeCADStrings.label("cad.ui.helix.pitch", "Pitch")) {
                     ExpressionValueField(
-                        placeholder: "Pitch", value: $pitch, kind: .length,
+                        placeholder: FloeCADStrings.text("cad.ui.helix.pitch", "Pitch"),
+                        value: $pitch, kind: .length,
                         clamp: 0.001...1e6, width: 90, identifier: "HelixPitch")
                 }
-                LabeledContent("Turns") {
+                LabeledContent(FloeCADStrings.label("cad.ui.helix.turns", "Turns")) {
                     ExpressionValueField(
-                        placeholder: "Turns", value: $turns, kind: .plain,
+                        placeholder: FloeCADStrings.text("cad.ui.helix.turns", "Turns"),
+                        value: $turns, kind: .plain,
                         clamp: 0.01...1000, width: 90, identifier: "HelixTurns")
                 }
             }
-            .navigationTitle("Helix")
+            .navigationTitle(FloeCADStrings.label("cad.ui.tool.helix", "Helix"))
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) { dismiss() }
                         .accessibilityIdentifier("HelixCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
+                    Button(FloeCADStrings.label("cad.ui.helix.create", "Create")) {
                         onCreate(radius, pitch, turns)
                         dismiss()
                     }

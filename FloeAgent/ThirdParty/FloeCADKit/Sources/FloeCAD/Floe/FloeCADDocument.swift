@@ -46,7 +46,7 @@ public nonisolated struct CADCommandOutcome: Sendable {
     public var isOK: Bool { status >= 200 && status < 300 }
 }
 
-public nonisolated struct CADDocumentError: Error, LocalizedError {
+public nonisolated struct CADDocumentError: Error, LocalizedError, Sendable {
     public var code: String
     public var message: String
     public var errorDescription: String? { message }
@@ -174,8 +174,8 @@ public final class FloeCADDocument {
             sketchCount: document.sketches.count,
             featureCount: document.features.nodes.count,
             variableCount: document.variables.count,
-            hasAssembly: project.assemblyData != nil,
-            drawingPageCount: (try? CADDrawingSet.decode(from: project.drawingsData))?.pages.count ?? 0,
+            hasAssembly: session.document.assemblyData != nil,
+            drawingPageCount: (try? CADDrawingSet.decode(from: session.document.drawingsData))?.pages.count ?? 0,
             isReadOnly: isReadOnly
         )
     }

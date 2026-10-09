@@ -522,6 +522,7 @@ targets:
       - path: Tests/FloeAppTests/WorkbenchExportDeliveryTests.swift
       - path: Tests/FloeAppTests/CadWebEngineSessionTests.swift
       - path: Tests/FloeAppTests/FloeCADWorkbenchTests.swift
+      - path: Tests/FloeAppTests/NativeCADProposalAuthorityTests.swift
       - path: Tests/FloeAppTests/EngineeringWebSessionReparentTests.swift
       - path: Tests/FloeAgentUITests/IDERunSourceStagingTests.swift
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift

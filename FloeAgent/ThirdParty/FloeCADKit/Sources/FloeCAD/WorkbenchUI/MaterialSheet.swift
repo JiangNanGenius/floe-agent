@@ -32,7 +32,7 @@ struct MaterialSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Presets") {
+                Section(FloeCADStrings.label("cad.ui.material.presets", "Presets")) {
                     LazyVGrid(columns: Self.gridColumns, spacing: 10) {
                         ForEach(MaterialPreset.library) { preset in
                             presetSwatch(preset)
@@ -40,31 +40,32 @@ struct MaterialSheet: View {
                     }
                     .padding(.vertical, 4)
                 }
-                Section("Custom") {
-                    ColorPicker("Color", selection: $color, supportsOpacity: false)
+                Section(FloeCADStrings.label("cad.ui.material.custom", "Custom")) {
+                    ColorPicker(FloeCADStrings.label("cad.ui.material.color", "Color"),
+                                selection: $color, supportsOpacity: false)
                         .accessibilityIdentifier("MaterialColorPicker")
                     sliderRow(
-                        "Metallic", value: $metallic,
+                        FloeCADStrings.text("cad.ui.material.metallic", "Metallic"), value: $metallic,
                         sliderID: "MaterialMetallicSlider",
                         valueID: "MaterialMetallicValue"
                     )
                     sliderRow(
-                        "Roughness", value: $roughness,
+                        FloeCADStrings.text("cad.ui.material.roughness", "Roughness"), value: $roughness,
                         sliderID: "MaterialRoughnessSlider",
                         valueID: "MaterialRoughnessValue"
                     )
                 }
             }
-            .navigationTitle("Material")
+            .navigationTitle(FloeCADStrings.label("cad.ui.tool.material", "Material"))
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) { dismiss() }
                         .accessibilityIdentifier("MaterialCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Apply") {
+                    Button(FloeCADStrings.label("cad.ui.common.apply", "Apply")) {
                         onApply(currentSpec)
                         dismiss()
                     }

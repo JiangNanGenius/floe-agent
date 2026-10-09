@@ -122,6 +122,30 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                         normalX:(double)nx normalY:(double)ny normalZ:(double)nz;
 @end
 
+/// Result of reading an IGES file. IGES is a SURFACE-exchange format: a file
+/// may describe closed solids, but just as often carries only shells or
+/// isolated faces. The two are kept honestly apart — a surface must never be
+/// presented as a solid body — so callers can apply the solid-only operations
+/// (boolean, fillet, shell) to `solids` alone.
+@interface OCCTIGESImport : NSObject
+/// Closed-solid roots, one handle per TopAbs_SOLID (healed and validated;
+/// roots that still fail validation were dropped).
+@property (nonatomic, readonly) NSArray<OCCTShape *> *solids;
+/// Everything that is NOT a solid: shells, faces, or compounds without a
+/// solid sub-shape. Empty when the file held only solids.
+@property (nonatomic, readonly) NSArray<OCCTShape *> *surfaces;
+/// Parallel to `solids`: the TopAbs_FACE count of each imported solid.
+@property (nonatomic, readonly) NSArray<NSNumber *> *solidFaceCounts;
+/// Parallel to `surfaces`: the TopAbs_FACE count of each imported surface.
+@property (nonatomic, readonly) NSArray<NSNumber *> *surfaceFaceCounts;
+/// NO when the reader refused the bytes outright (format/IO error); YES when
+/// the file parsed, even if transfer produced nothing.
+@property (nonatomic, readonly) BOOL readSucceeded;
+/// Root shapes the reader produced after transfer, before validation dropped
+/// any — 0 means "parsed but nothing to transfer".
+@property (nonatomic, readonly) NSInteger rootCount;
+@end
+
 @interface OCCTBridge : NSObject
 
 /// OCCT version string (e.g. "7.8.1") — proves the library linked and runs.
@@ -558,6 +582,16 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// caller reports an unreadable/unsupported file rather than crashing.
 + (NSArray<OCCTShape *> *)readSTEPFromPath:(NSString *)path;
 
+/// Read IGES bytes through OCCT's IGES reader (`IGESControl_Reader`), then
+/// heal-and-validate every transferred root exactly the way STEP import does
+/// and classify what survives as solids vs surfaces (see `OCCTIGESImport`).
+/// Nil only when the bytes could not even be staged for reading; an
+/// unreadable file comes back as `readSucceeded == NO` and an empty file as
+/// `rootCount == 0`, so the caller can report either honestly. The bytes are
+/// staged in the system temporary directory for the read (the IGES work
+/// library has no stream reader) and removed again.
++ (nullable OCCTIGESImport *)readIGESFromData:(NSData *)data;
+
 // MARK: - Geometry health + capture replay (docs/FREECAD_PLAYBOOK.md D1/D2)
 
 /// Deep validity report over a shape — the "Check Geometry" pipeline every
@@ -598,6 +632,16 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// so a test can reach the path behind it: the loosened-heal refusal. DEBUG
 /// only.
 + (void)debugSetBooleanUnmergedFallbackEnabled:(BOOL)enabled;
+/// Test support only: write `shapes` to an IGES file. `brepMode` YES writes
+/// them through the IGES BRep translator (a solid stays an IGES BRep solid);
+/// NO decomposes them into loose faces, which is how a surface-only IGES file
+/// is produced for the reader's solid-vs-surface classification tests. No
+/// product feature exports IGES yet — this exists so the import path can be
+/// exercised end to end against a file written by OCCT itself. NO on failure.
+/// DEBUG only.
++ (BOOL)debugWriteIGESShapes:(NSArray<OCCTShape *> *)shapes
+                      toPath:(NSString *)path
+                    brepMode:(BOOL)brepMode;
 #endif
 
 /// Serialize a solid to OCCT's BRep text format, so the analytic geometry can be

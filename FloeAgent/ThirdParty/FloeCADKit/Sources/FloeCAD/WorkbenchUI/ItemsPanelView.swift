@@ -36,26 +36,30 @@ struct ItemsPanelView: View {
                 panelHeader
 
                 if !tree.isEmpty {
-                    sectionHeader("Folders", dropsToTopLevel: false)
+                    sectionHeader(FloeCADStrings.text("cad.ui.items.folders", "Folders"), dropsToTopLevel: false)
                     ForEach(tree.children(of: nil)) { folder in
                         folderRows(folder, depth: 0, tree: tree)
                     }
                 }
 
-                sectionHeader("Bodies")
+                sectionHeader(FloeCADStrings.text("cad.ui.items.bodies", "Bodies"))
                 let looseBodies = document.bodies.filter { !filed.contains(.body($0.id)) }
                 if looseBodies.isEmpty {
-                    emptyRow(document.bodies.isEmpty ? "No bodies yet" : "All bodies are in folders")
+                    emptyRow(document.bodies.isEmpty
+                             ? FloeCADStrings.text("cad.ui.items.noBodies", "No bodies yet")
+                             : "All bodies are in folders")
                 }
                 ForEach(looseBodies) { body in
                     itemRow(.body(body.id), depth: 0, tree: tree)
                 }
 
-                sectionHeader("Sketches")
+                sectionHeader(FloeCADStrings.text("cad.ui.items.sketches", "Sketches"))
                 let sketches = viewModel.itemSketches
                 let looseSketches = sketches.filter { !filed.contains(.sketch($0.id)) }
                 if looseSketches.isEmpty {
-                    emptyRow(sketches.isEmpty ? "No sketches yet" : "All sketches are in folders")
+                    emptyRow(sketches.isEmpty
+                             ? FloeCADStrings.text("cad.ui.items.noSketches", "No sketches yet")
+                             : "All sketches are in folders")
                 }
                 ForEach(looseSketches) { sketch in
                     itemRow(.sketch(sketch.id), depth: 0, tree: tree)
@@ -65,9 +69,9 @@ struct ItemsPanelView: View {
                 if viewModel.mode.isSketching {
                     let constraints = viewModel.activeSketchConstraintRows
                     let dimensions = viewModel.activeSketchDimensionRows
-                    sectionHeader("Constraints", dropsToTopLevel: false)
+                    sectionHeader(FloeCADStrings.text("cad.ui.items.constraints", "Constraints"), dropsToTopLevel: false)
                     if constraints.isEmpty && dimensions.isEmpty {
-                        emptyRow("No constraints yet")
+                        emptyRow(FloeCADStrings.text("cad.ui.items.noConstraints", "No constraints yet"))
                     }
                     ForEach(constraints, id: \.id) { row in
                         ConstraintRowView(
@@ -89,36 +93,42 @@ struct ItemsPanelView: View {
                     }
                 }
 
-                sectionHeader("Images")
+                sectionHeader(FloeCADStrings.text("cad.ui.items.images", "Images"))
                 let looseImages = document.images.filter { !filed.contains(.image($0.id)) }
                 if looseImages.isEmpty {
-                    emptyRow(document.images.isEmpty ? "No images yet" : "All images are in folders")
+                    emptyRow(document.images.isEmpty
+                             ? FloeCADStrings.text("cad.ui.items.noImages", "No images yet")
+                             : "All images are in folders")
                 }
                 ForEach(looseImages) { image in
                     itemRow(.image(image.id), depth: 0, tree: tree)
                 }
 
-                sectionHeader("Planes")
+                sectionHeader(FloeCADStrings.text("cad.ui.items.planes", "Planes"))
                 let loosePlanes = document.planes.filter { !filed.contains(.plane($0.id)) }
                 if loosePlanes.isEmpty {
-                    emptyRow(document.planes.isEmpty ? "No planes yet" : "All planes are in folders")
+                    emptyRow(document.planes.isEmpty
+                             ? FloeCADStrings.text("cad.ui.items.noPlanes", "No planes yet")
+                             : "All planes are in folders")
                 }
                 ForEach(loosePlanes) { plane in
                     itemRow(.plane(plane.id), depth: 0, tree: tree)
                 }
 
-                sectionHeader("Axes")
+                sectionHeader(FloeCADStrings.text("cad.ui.items.axes", "Axes"))
                 let looseAxes = document.axes.filter { !filed.contains(.axis($0.id)) }
                 if looseAxes.isEmpty {
-                    emptyRow(document.axes.isEmpty ? "No axes yet" : "All axes are in folders")
+                    emptyRow(document.axes.isEmpty
+                             ? FloeCADStrings.text("cad.ui.items.noAxes", "No axes yet")
+                             : "All axes are in folders")
                 }
                 ForEach(looseAxes) { axis in
                     itemRow(.axis(axis.id), depth: 0, tree: tree)
                 }
 
-                sectionHeader("Symbols", dropsToTopLevel: false)
+                sectionHeader(FloeCADStrings.text("cad.ui.items.symbols", "Symbols"), dropsToTopLevel: false)
                 if document.symbols.isEmpty {
-                    emptyRow("No symbols yet")
+                    emptyRow(FloeCADStrings.text("cad.ui.items.noSymbols", "No symbols yet"))
                 }
                 // Symbols (plan §B16, spec §1.16): reusable sketch groups.
                 // Not scene items, so no visibility eye, Zoom to, or folders.
@@ -151,7 +161,7 @@ struct ItemsPanelView: View {
 
     private var panelHeader: some View {
         HStack {
-            Text("Items")
+            Text(FloeCADStrings.label("cad.toolbar.items", "Items"))
                 .font(.subheadline.weight(.semibold))
             Spacer()
             Button {
@@ -163,7 +173,7 @@ struct ItemsPanelView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Color.primary)
             .help("New Folder — with the selected bodies, when there are any")
-            .accessibilityLabel("New Folder")
+            .accessibilityLabel(FloeCADStrings.label("cad.ui.items.newFolder", "New Folder"))
             .accessibilityIdentifier("ItemsNewFolderButton")
         }
         .padding(.horizontal, 8)
@@ -274,7 +284,9 @@ struct ItemsPanelView: View {
             guard let index = document.planes.firstIndex(where: { $0.id == id }) else { return nil }
             let plane = document.planes[index]
             return ItemRowView(
-                icon: "square.3.layers.3d", name: "Plane \(index + 1)", isHidden: plane.isHidden,
+                icon: "square.3.layers.3d",
+                name: FloeCADStrings.text("cad.ui.items.planeName", "Plane") + " \(index + 1)",
+                isHidden: plane.isHidden,
                 renameable: false, isSelected: viewModel.selectedPlane?.id == id,
                 depth: depth, dragPayload: payload, moveTargets: targets,
                 onMove: onMove, onNewFolder: onNewFolder,
@@ -299,7 +311,9 @@ struct ItemsPanelView: View {
 
     private func moveTargets(forItem key: DocumentItemKey, tree: ItemFolderTree) -> [ItemsMoveTarget] {
         let current = tree.folder(containing: key)
-        return [ItemsMoveTarget(id: nil, title: "Top Level", depth: 0, isCurrent: current == nil)]
+        return [ItemsMoveTarget(id: nil,
+                                title: FloeCADStrings.text("cad.ui.items.topLevel", "Top Level"),
+                                depth: 0, isCurrent: current == nil)]
             + tree.flattened().map {
                 ItemsMoveTarget(id: $0.folder.id, title: $0.folder.name, depth: $0.depth + 1,
                                 isCurrent: $0.folder.id == current)
@@ -309,7 +323,9 @@ struct ItemsPanelView: View {
     private func moveTargets(forFolder id: ItemFolderID, tree: ItemFolderTree) -> [ItemsMoveTarget] {
         let parent = tree.parent(of: id)
         let excluded = Set([id] + tree.descendants(of: id).map(\.id))
-        return [ItemsMoveTarget(id: nil, title: "Top Level", depth: 0, isCurrent: parent == nil)]
+        return [ItemsMoveTarget(id: nil,
+                                title: FloeCADStrings.text("cad.ui.items.topLevel", "Top Level"),
+                                depth: 0, isCurrent: parent == nil)]
             + tree.flattened().filter { !excluded.contains($0.folder.id) }.map {
                 ItemsMoveTarget(id: $0.folder.id, title: $0.folder.name, depth: $0.depth + 1,
                                 isCurrent: $0.folder.id == parent)
@@ -475,7 +491,7 @@ private struct FolderRowView: View {
                 .font(.system(size: 15))
                 .frame(width: 20)
                 .foregroundStyle(isHidden ? Color.barLabelDim : Color.accentColor)
-            TextField("Folder", text: $draft)
+            TextField(FloeCADStrings.text("cad.ui.items.folderPlaceholder", "Folder"), text: $draft)
                 .textFieldStyle(.plain)
                 .autocorrectionDisabled()
                 .onSubmit { onRename(draft) }
@@ -500,7 +516,8 @@ private struct FolderRowView: View {
             Button {
                 onNewSubfolder()
             } label: {
-                Label("New Subfolder", systemImage: "folder.badge.plus")
+                Label(FloeCADStrings.label("cad.ui.items.newSubfolder", "New Subfolder"),
+                      systemImage: "folder.badge.plus")
             }
             Menu {
                 ForEach(moveTargets, id: \.menuID) { target in
@@ -516,17 +533,19 @@ private struct FolderRowView: View {
                     .disabled(target.isCurrent)
                 }
             } label: {
-                Label("Move to Folder", systemImage: "folder")
+                Label(FloeCADStrings.label("cad.ui.items.moveToFolder", "Move to Folder"), systemImage: "folder")
             }
             Button {
                 onRemove()
             } label: {
-                Label("Remove Folder", systemImage: "folder.badge.minus")
+                Label(FloeCADStrings.label("cad.ui.items.removeFolder", "Remove Folder"),
+                      systemImage: "folder.badge.minus")
             }
             Button(role: .destructive) {
                 onDeleteAll()
             } label: {
-                Label("Delete Folder and Items", systemImage: "trash")
+                Label(FloeCADStrings.label("cad.ui.items.deleteFolderAndItems", "Delete Folder and Items"),
+                      systemImage: "trash")
             }
     }
 }
@@ -631,7 +650,7 @@ private struct ItemRowView: View {
                 .frame(width: 24)
                 .foregroundStyle(isHidden ? Color.barLabelDim : Color.barLabel)
             if renameable && (!nameTapSelects || isRenaming) {
-                TextField("Name", text: $draft)
+                TextField(FloeCADStrings.text("cad.ui.common.name", "Name"), text: $draft)
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
                     .focused($renameFocused)
@@ -684,14 +703,15 @@ private struct ItemRowView: View {
                     initialRenameSelectionPending = true
                     isRenaming = true
                 } label: {
-                    Label("Rename", systemImage: "pencil")
+                    Label(FloeCADStrings.label("cad.ui.items.rename", "Rename"), systemImage: "pencil")
                 }
             }
             if showsZoom {
                 Button {
                     onZoom()
                 } label: {
-                    Label("Zoom to", systemImage: "arrow.up.left.and.arrow.down.right")
+                    Label(FloeCADStrings.label("cad.ui.items.zoomTo", "Zoom to"),
+                          systemImage: "arrow.up.left.and.arrow.down.right")
                 }
             }
             if let onMove, !moveTargets.isEmpty {
@@ -713,17 +733,18 @@ private struct ItemRowView: View {
                         Button {
                             onNewFolder()
                         } label: {
-                            Label("New Folder with Item", systemImage: "folder.badge.plus")
+                            Label(FloeCADStrings.label("cad.ui.items.newFolderWithItem", "New Folder with Item"),
+                                  systemImage: "folder.badge.plus")
                         }
                     }
                 } label: {
-                    Label("Move to Folder", systemImage: "folder")
+                    Label(FloeCADStrings.label("cad.ui.items.moveToFolder", "Move to Folder"), systemImage: "folder")
                 }
             }
             Button(role: .destructive) {
                 onDelete()
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label(FloeCADStrings.label("cad.ui.common.delete", "Delete"), systemImage: "trash")
             }
     }
 }

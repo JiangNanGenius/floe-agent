@@ -37,6 +37,16 @@ nonisolated struct DesignDocument: Sendable {
     /// `DocumentSession.save` (wired in task B1), mirroring the feature path.
     var variables: [Variable] = []
 
+    /// Floe workbench record blobs (assembly, drawings, ShapeScript records).
+    /// They live on the document — not only on `Project` — so record edits are
+    /// undoable/redoable `DocumentCommand`s exactly like geometry, and one
+    /// composite transaction can update geometry AND its records together.
+    /// `DocumentSession.save` writes them back to the project columns, which
+    /// the package store slices into `document.json` verbatim.
+    var assemblyData: Data? = nil
+    var drawingsData: Data? = nil
+    var scriptsData: Data? = nil
+
     /// Monotonic revision source for mesh changes (GPU cache invalidation).
     private var revisionCounter: UInt64 = 0
 

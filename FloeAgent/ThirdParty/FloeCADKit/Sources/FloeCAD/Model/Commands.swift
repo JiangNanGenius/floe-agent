@@ -168,6 +168,40 @@ struct CompositeCommand: DocumentCommand {
     }
 }
 
+/// Replaces the assembly record blob as one undoable step. The blob is
+/// document state (`DesignDocument.assemblyData`); `DocumentSession.save`
+/// mirrors it onto the project column the package store persists. Wrapping it
+/// in a command is what lets an assembly edit be undone/redone and composed
+/// atomically with geometry changes.
+struct SetAssemblyDataCommand: DocumentCommand {
+    let title = "Assembly"
+    let before: Data?
+    let after: Data?
+
+    func apply(to document: inout DesignDocument) { document.assemblyData = after }
+    func revert(in document: inout DesignDocument) { document.assemblyData = before }
+}
+
+/// Same contract for the drawing-set blob.
+struct SetDrawingsDataCommand: DocumentCommand {
+    let title = "Drawings"
+    let before: Data?
+    let after: Data?
+
+    func apply(to document: inout DesignDocument) { document.drawingsData = after }
+    func revert(in document: inout DesignDocument) { document.drawingsData = before }
+}
+
+/// Same contract for the ShapeScript record blob.
+struct SetScriptsDataCommand: DocumentCommand {
+    let title = "Scripts"
+    let before: Data?
+    let after: Data?
+
+    func apply(to document: inout DesignDocument) { document.scriptsData = after }
+    func revert(in document: inout DesignDocument) { document.scriptsData = before }
+}
+
 struct AddSketchEntityCommand: DocumentCommand {
     let title = "Sketch"
     let sketchID: SketchID

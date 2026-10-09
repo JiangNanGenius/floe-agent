@@ -16,6 +16,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeLocalModelCatalog
+import FloeCAD
 
 final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -57,6 +58,12 @@ struct FloeAgentApp: App {
     init() {
         // Apply the saved in-app language before any catalog lookup.
         FloeL10n.bootstrap()
+        // Route Floe-owned CAD workbench chrome to the same catalog. A missing
+        // key falls back to the panel's English text.
+        FloeCADStrings.localizer = { key in
+            let value = FloeL10n.localized(key: key)
+            return value == key ? nil : value
+        }
         let environment = AppEnvironment.live()
         let router = AppRouter()
         _environment = StateObject(wrappedValue: environment)
@@ -76,6 +83,12 @@ struct FloeAgentApp: App {
                     // Synthetic media workbench fixture for primary CUA
                     // acceptance on iPad and iPhone.
                     WorkbenchUITestHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-fixture"),
+                          ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                    // Deterministic native CAD fixture: the REAL workbench on a
+                    // 100×60×10 plate with a Ø10 through-hole. No workspace,
+                    // grant or credential setup required.
+                    CADWorkbenchFixtureHarness()
                 } else {
                     RootView()
                 }

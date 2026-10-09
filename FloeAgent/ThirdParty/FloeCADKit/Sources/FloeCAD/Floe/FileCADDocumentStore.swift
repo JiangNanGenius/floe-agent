@@ -142,6 +142,7 @@ struct CADDocumentRecord: Codable, Sendable {
     var itemFolders: Data?
     var assembly: Data?
     var drawings: Data?
+    var scripts: Data?
 }
 
 /// Everything a commit needs, in a `Sendable` value: cheap to build on the
@@ -276,6 +277,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         project.tolerance = manifest.tolerance
         project.assemblyData = document.assembly
         project.drawingsData = document.drawings
+        project.scriptsData = document.scripts
         if manifest.thumbnailSHA256 != nil {
             project.thumbnail = try? Data(contentsOf: root.appendingPathComponent("blobs/thumbnail.img"))
         }
@@ -364,7 +366,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             folderID: project.folderID,
             itemFolders: project.itemFoldersData,
             assembly: project.assemblyData,
-            drawings: project.drawingsData
+            drawings: project.drawingsData,
+            scripts: project.scriptsData
         )
         var blobs: [String: Data] = [:]
 

@@ -1,5 +1,5 @@
 {
-  "originHash" : "a8bf039234d85dfa17f67b089368386f4b01fc35043857ed7f7cc70b8ec109e4",
+  "originHash" : "75afbd9d272490cf2f763498370de05d8b8ccd45274ac11c469a3cbfb1516ebe",
   "pins" : [
     {
       "identity" : "euclid",
@@ -8,6 +8,50 @@
       "state" : {
         "revision" : "a123b1cbbb5b7aab49a8b57e12783f7bd39f0cac",
         "version" : "0.9.6"
+      }
+    },
+    {
+      "identity" : "lrucache",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nicklockwood/LRUCache.git",
+      "state" : {
+        "revision" : "f0570e943ea4445d258113ba73f50cb2b7e564ac",
+        "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "shapescript",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nicklockwood/ShapeScript.git",
+      "state" : {
+        "revision" : "cda3024b2f17ac06aef23aae7ddcf39c217c6237"
+      }
+    },
+    {
+      "identity" : "svgpath",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nicklockwood/SVGPath.git",
+      "state" : {
+        "revision" : "892e57b71c26937863a53a7459051ef329cfd6b4",
+        "version" : "1.3.1"
+      }
+    },
+    {
+      "identity" : "swift-cmark",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-cmark.git",
+      "state" : {
+        "revision" : "08ddb528923cc1a6527e02b7a1aee9e516ca749a",
+        "version" : "0.9.0"
+      }
+    },
+    {
+      "identity" : "swift-markdown",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-markdown.git",
+      "state" : {
+        "revision" : "25cb61d3482054b09ae76ca4f281b1bfe7fe5a43",
+        "version" : "0.9.0"
       }
     }
   ],

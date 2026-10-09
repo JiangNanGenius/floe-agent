@@ -19,9 +19,9 @@ struct VariablesPanelView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                sectionHeader("Variables")
+                sectionHeader(FloeCADStrings.text("cad.toolbar.variables", "Variables"))
                 if viewModel.variableRows.isEmpty {
-                    emptyRow("No variables yet")
+                    emptyRow(FloeCADStrings.text("cad.ui.variables.noVariables", "No variables yet"))
                 }
                 ForEach(viewModel.variableRows) { row in
                     VariableRowView(
@@ -33,7 +33,8 @@ struct VariablesPanelView: View {
                     )
                 }
                 Button(action: viewModel.addVariable) {
-                    Label("Add Variable", systemImage: "plus")
+                    Label(FloeCADStrings.label("cad.ui.variables.addVariable", "Add Variable"),
+                          systemImage: "plus")
                         .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.plain)
@@ -83,7 +84,7 @@ private struct VariableRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                TextField("name", text: $nameDraft)
+                TextField(FloeCADStrings.text("cad.ui.variables.namePlaceholder", "name"), text: $nameDraft)
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -93,7 +94,7 @@ private struct VariableRowView: View {
                 Text("=")
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                TextField("expression", text: $exprDraft)
+                TextField(FloeCADStrings.text("cad.ui.variables.expressionPlaceholder", "expression"), text: $exprDraft)
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -106,7 +107,7 @@ private struct VariableRowView: View {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 14))
                         .foregroundStyle(.orange)
-                        .help(row.errorText ?? "Error")
+                        .help(row.errorText ?? FloeCADStrings.text("cad.ui.common.error", "Error"))
                         .accessibilityIdentifier("VariableError-\(row.name)")
                 }
                 Button(action: onDelete) {

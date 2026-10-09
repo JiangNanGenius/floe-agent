@@ -107,7 +107,9 @@ nonisolated enum DisplayUnit: String, CaseIterable, Codable, Sendable {
 nonisolated enum CircularAnnotations: String, CaseIterable, Codable, Sendable {
     case radiusAndDiameter, alwaysRadius
     var title: String {
-        self == .alwaysRadius ? "Always Radius" : "Radius and Diameter"
+        self == .alwaysRadius
+            ? FloeCADStrings.text("cad.ui.prefs.circularAlwaysRadius", "Always Radius")
+            : FloeCADStrings.text("cad.ui.prefs.circularRadiusAndDiameter", "Radius and Diameter")
     }
 }
 
@@ -118,8 +120,8 @@ nonisolated enum AnchoredSketchEntity: String, CaseIterable, Codable, Sendable {
 
     var title: String {
         switch self {
-        case .firstSelected: "First Selected"
-        case .lastSelected: "Last Selected"
+        case .firstSelected: FloeCADStrings.text("cad.ui.prefs.anchoredFirstSelected", "First Selected")
+        case .lastSelected: FloeCADStrings.text("cad.ui.prefs.anchoredLastSelected", "Last Selected")
         }
     }
 }

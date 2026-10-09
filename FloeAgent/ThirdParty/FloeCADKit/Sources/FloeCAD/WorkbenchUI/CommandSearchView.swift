@@ -84,7 +84,7 @@ struct CommandSearchView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.barLabel)
-            TextField("Search commands", text: $query)
+            TextField(FloeCADStrings.text("cad.ui.search.placeholder", "Search commands"), text: $query)
                 .textFieldStyle(.plain)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -118,8 +118,10 @@ struct CommandSearchView: View {
         let rows = results
         if rows.isEmpty {
             Text(query.isEmpty
-                 ? "Type to search, or pick a recent command."
-                 : "No command matches “\(query)”.")
+                 ? FloeCADStrings.text("cad.ui.search.emptyHint",
+                                        "Type to search, or pick a recent command.")
+                 : String(format: FloeCADStrings.text("cad.ui.search.noMatch",
+                                                      "No command matches “%@”."), query))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -176,7 +178,11 @@ struct CommandSearchView: View {
     private func run(_ command: AppCommand?) {
         guard let command else { return }
         if !viewModel.runCommandFromSearch(command.id) {
-            refusal = "“\(command.title)” isn't available right now."
+            refusal = String(
+                format: FloeCADStrings.text("cad.ui.search.unavailable",
+                                            "“%@” isn't available right now."),
+                command.title
+            )
         }
     }
 }

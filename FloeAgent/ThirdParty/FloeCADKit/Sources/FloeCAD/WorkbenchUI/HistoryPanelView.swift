@@ -17,9 +17,9 @@ struct HistoryPanelView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                sectionHeader("History")
+                sectionHeader(FloeCADStrings.text("cad.toolbar.history", "History"))
                 if viewModel.historyRows.isEmpty {
-                    emptyRow("No features yet")
+                    emptyRow(FloeCADStrings.text("cad.ui.history.noFeatures", "No features yet"))
                 }
                 ForEach(Array(viewModel.historyRows.enumerated()), id: \.element.id) { index, row in
                     // Subtle divider marking where rollback begins: the first
@@ -94,7 +94,8 @@ struct HistoryPanelView: View {
                 Button {
                     viewModel.clearRollback()
                 } label: {
-                    Label("Return to Latest", systemImage: "arrow.uturn.forward")
+                    Label(FloeCADStrings.label("cad.ui.history.returnToLatest", "Return to Latest"),
+                          systemImage: "arrow.uturn.forward")
                         .font(.caption2.weight(.semibold))
                         .labelStyle(.titleAndIcon)
                 }
@@ -113,7 +114,7 @@ struct HistoryPanelView: View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.uturn.backward.circle")
                 .font(.system(size: 11))
-            Text("Rolled back")
+            Text(FloeCADStrings.label("cad.ui.history.rolledBack", "Rolled back"))
                 .font(.caption2.weight(.semibold))
             VStack { Divider() }
         }
@@ -214,7 +215,7 @@ private struct HistoryRowView: View {
                     .font(.caption).padding(6)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
-            .accessibilityLabel("Reorder")
+            .accessibilityLabel(FloeCADStrings.label("cad.ui.history.reorder", "Reorder"))
             .accessibilityIdentifier("HistoryDragHandle-\(row.name)")
     }
 
@@ -232,7 +233,7 @@ private struct HistoryRowView: View {
                     .frame(width: 24)
                     .foregroundStyle(dimmed ? Color.barLabelDim : Color.barLabel)
                 VStack(alignment: .leading, spacing: 1) {
-                    TextField("Name", text: $draft)
+                    TextField(FloeCADStrings.text("cad.ui.common.name", "Name"), text: $draft)
                         .textFieldStyle(.plain)
                         .autocorrectionDisabled()
                         .onSubmit { onRename(draft) }
@@ -243,7 +244,7 @@ private struct HistoryRowView: View {
                             .font(.caption2)
                             .foregroundStyle(.barLabelDim)
                         if row.isRolledBack {
-                            Text("· rolled back")
+                            Text(FloeCADStrings.label("cad.ui.history.rolledBackInline", "· rolled back"))
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.tint)
                                 .accessibilityIdentifier("HistoryRolledBack-\(row.name)")
@@ -255,7 +256,7 @@ private struct HistoryRowView: View {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 14))
                         .foregroundStyle(.orange)
-                        .help(row.errorText ?? "Error")
+                        .help(row.errorText ?? FloeCADStrings.text("cad.ui.common.error", "Error"))
                         .accessibilityIdentifier("HistoryError-\(row.name)")
                 }
                 Button(action: onToggleSuppressed) {
@@ -396,7 +397,7 @@ private struct HistoryRowView: View {
             if row.isPattern {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
-                        Text("Count")
+                        Text(FloeCADStrings.label("cad.ui.common.count", "Count"))
                             .font(.caption2)
                             .foregroundStyle(.barLabel)
                         TextField("", text: $countText)
@@ -437,7 +438,7 @@ private struct HistoryRowView: View {
 
                     if row.patternIsCircular == true {
                         HStack(spacing: 4) {
-                            Text("Angle")
+                            Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                                 .font(.caption2)
                                 .foregroundStyle(.barLabel)
                             TextField("", text: $angleText)
@@ -470,7 +471,7 @@ private struct HistoryRowView: View {
                         }
                     } else {
                         HStack(spacing: 4) {
-                            Text("Spacing")
+                            Text(FloeCADStrings.label("cad.ui.common.spacing", "Spacing"))
                                 .font(.caption2)
                                 .foregroundStyle(.barLabel)
                             TextField("", text: $spacingText)
@@ -518,12 +519,14 @@ private struct HistoryRowView: View {
             Button {
                 onZoom()
             } label: {
-                Label("Zoom to", systemImage: "arrow.up.left.and.arrow.down.right")
+                Label(FloeCADStrings.label("cad.ui.items.zoomTo", "Zoom to"),
+                      systemImage: "arrow.up.left.and.arrow.down.right")
             }
             Button {
                 onRollbackHere()
             } label: {
-                Label("Roll Back to Here", systemImage: "arrow.uturn.backward")
+                Label(FloeCADStrings.label("cad.ui.history.rollBackHere", "Roll Back to Here"),
+                      systemImage: "arrow.uturn.backward")
             }
             .accessibilityIdentifier("RollbackHere-\(row.name)")
             if let onEditReferences {
@@ -539,7 +542,7 @@ private struct HistoryRowView: View {
             Button(role: .destructive) {
                 onDelete()
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label(FloeCADStrings.label("cad.ui.common.delete", "Delete"), systemImage: "trash")
             }
         }
         }

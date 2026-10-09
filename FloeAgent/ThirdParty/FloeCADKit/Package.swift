@@ -18,7 +18,13 @@ let package = Package(
     ],
     dependencies: [
         // Pinned to the exact revision used by upstream OpenShape3D 30b3c7c.
-        .package(url: "https://github.com/nicklockwood/Euclid.git", exact: "0.9.6")
+        .package(url: "https://github.com/nicklockwood/Euclid.git", exact: "0.9.6"),
+        // ShapeScript interpreter 1.11.6 (MIT), pinned to the reviewed master
+        // revision. Evaluated headlessly for generated mesh geometry; imports
+        // are refused by the delegate and evaluation is deadline/geometry
+        // bounded (see Kernel/ShapeScriptKit.swift).
+        .package(url: "https://github.com/nicklockwood/ShapeScript.git",
+                 revision: "cda3024b2f17ac06aef23aae7ddcf39c217c6237")
     ],
     targets: [
         // OCCT 7.8.1 static slices, built by upstream scripts/build_occt_ios.sh.
@@ -48,7 +54,8 @@ let package = Package(
             dependencies: [
                 "OCCTShim",
                 "OCCT",
-                .product(name: "Euclid", package: "Euclid")
+                .product(name: "Euclid", package: "Euclid"),
+                .product(name: "ShapeScript", package: "ShapeScript")
             ],
             path: "Sources/FloeCAD",
             exclude: [

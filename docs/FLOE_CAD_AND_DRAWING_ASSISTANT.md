@@ -222,9 +222,9 @@ independent.
 | Sketch (constraints/dimensions/solver), exact 3D features (primitives, extrude, revolve, sweep/helix, loft, boolean, pattern, mirror, fillet/chamfer/shell/draft, face push-pull/move/offset, section) | implemented via the vendored kernel; the fixture/STEP and proposal suites exercise a subset (extrude/boolean/measure/rebuild). Full per-feature matrix not re-run here |
 | Save/reopen, STEP export/import | implemented + tested (fixture); IGES import not wired |
 | AI `cad.document` 3D actions, propose/apply gate, shared live session | implemented; app build + focused test pass |
-| Assembly service (instances/constraints/DOF/interference) and drawing service (views/scale/PDF/SVG/DXF) | **not implemented** — persisted models exist; `three_d_assembly`/`three_d_drawing` answer `not_implemented` |
-| ShapeScript interpreter, Euclid mesh tooling UI, Canvas creation path | **not integrated** (Euclid is linked through the kernel; script/mesh/Canvas work remains) |
-| Workbench UI localization (en/zh-Hans) | **open** — the imported editor chrome is still English-only |
+| Assembly service (instances/constraints/DOF/interference) and drawing service (views/scale/PDF/SVG/DXF) | **superseded 2026-10-10 (part 2)**: both implemented and tested — see the continuation section below |
+| ShapeScript interpreter, Euclid mesh tooling UI, Canvas creation path | **partly superseded 2026-10-10 (part 2)**: ShapeScript + mesh services/UI implemented and tested; the native→Canvas entry remains open |
+| Workbench UI localization (en/zh-Hans) | **in progress 2026-10-10 (part 2)**: Floe-owned chrome and the new panels are bilingual; imported editor internals and several toolbar/menu strings remain English |
 | Real-model provider end-to-end (`describe→measure→propose→confirm→save/reopen/export`) | **not run** — no real provider session was exercised here; the host/UI loop exists and the plan-gate path is unit-tested with a clone, but primary must run it on device/review |
 | Physical-device / CUA acceptance, performance baseline (first paint/frame/peak memory/rebuild) | **not run** — remains with the primary agent |
 
@@ -255,3 +255,115 @@ UI 提案确认回路。已运行证据：包内 12/12 测试（含 100×60×10 
 （单位/拓扑/圆柱/体积）及 4 个篡改用例、完整 App 编译与定向 App 测试。**未完成**：装配与
 出图服务、ShapeScript/网格/画布创建链路、工作台中英文本地化、真机与真实模型端到端验收、
 性能基线。以上均未发布，发布与最终验收由主协调者执行。
+
+---
+
+## Native FloeCAD continuation — unreleased work, 2026-10-10 (part 2)
+
+Status: **implemented in the worktree and locally verified; not merged, not tagged, not
+published.** Branch `codex/content-upgrade-20261009`. This section records the continuation
+that closes the assembly/drawing/script/mesh services, the unified `cad.document` routing,
+the reviewed permission/ownership fixes and the workbench UI entry points. Everything here is
+still unreleased; primary-agent CUA/device acceptance is required.
+
+### What was added
+
+- **Assembly service** (`CADAssemblyService`): shared/independent instances (body-lifecycle
+  commands), constraints (fixed/coaxial/planar align/distance/angle), an iterative projection
+  solver with invalid-reference vs conflicting separation, approximate DOF reporting, typed
+  `sourceRevision` tracking and exact interference. Exact interference serializes the placed
+  B-reps on the main actor and runs OCCT booleans on owned deserialized copies in a detached
+  task; task cancellation and the document revision/change count are re-checked before a
+  result is accepted (late results are discarded). A test-only probe asserts the worker ran
+  off the main actor.
+- **Drawing service** (`CADDrawingService`): independent pages (front/top/side/iso/section/
+  detail), real orthographic and section projection, linear/diameter/radius dimensions and
+  centerlines, and vector PDF/SVG/R12-DXF exports (real projected geometry, no screenshots).
+  Pages carry typed `detailOrigin`/`detailSizeMM` (never aliased into the section plane) and
+  an ordered per-source content/placement fingerprint; `CADDrawingSet` has an explicit schema
+  version with legacy decode defaults.
+- **ShapeScript + mesh** (`ShapeScriptKit`, `CADScriptService`, `CADMeshService`): pinned
+  interpreter `cda3024…` (1.11.6) evaluated headlessly with a refusing delegate (no imports,
+  no host file reads), source/time/triangle limits and task cancellation; script records are
+  result-bound by a render-mesh SHA-256 (manual edits/undo are detected; apply refuses or
+  explicitly forks/rebuilds); mesh combine/boolean/transform/normals/boundary/repair/simplify/
+  material/image operations keep analytic B-reps unless the caller explicitly forces a mesh
+  downgrade.
+- **Unified `cad.document` routing**: the schema enum now equals the runtime `CadDocumentAction`
+  cases (including `three_d_*`, `status`, `cancel`, `op`/`args`/`payload`/`task_id`); `.floecad`
+  paths route read/query/locate/measure/check/propose/preview/apply/save/export/status/cancel to
+  the native kernel and never through the 2D DWG/DXF loader (capability discovery included).
+- **Permission/ownership contract** (review fixes): native apply re-checks the recorded
+  propose-time access identity AND the canonical target before reserving a grant; grants use
+  the same reserve → commit/release two-phase semantics as the 2D path with idempotent
+  receipts; mutating assembly/drawing/script/mesh payload actions are refused
+  (`proposal_required`) and reachable only through propose → preview → UI grant → apply;
+  durable task records store environment/owner/document and `status`/`cancel` are scoped to
+  that exact ownership (foreign owners get notFound/unauthorized).
+- **Workbench tools panel** (`CADWorkbenchPanels.swift`): one toolbar sheet with Assembly /
+  Drawings / ShapeScript / Mesh panels driving the same services; `FloeCADStrings` routes
+  Floe-owned chrome through the host localization catalog.
+- **Deterministic fixture launch** (DEBUG only): `-ui-testing --ui-test-cad-fixture` opens the
+  real workbench on a 100×60×10 mm plate with an internal Ø10 through-hole built through the
+  typed command vocabulary.
+
+### Verification actually run (2026-10-10, part 2)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| `FloeCADKit` package tests | `xcodebuild test -scheme FloeCADKit` (Xcode 27A266a, iPad Air 13-inch M4 simulator) | **37/37 passed** (assembly 9, drawing 8, script+mesh 9, plate/hole fixture 1, proposal 6, store recovery 4) |
+| Full App compile (simulator arm64) | `xcodebuild build -project FloeAgent.xcodeproj -scheme FloeAgent …` | **BUILD SUCCEEDED** |
+| Focused App tests | `-only-testing:FloeAppTests/NativeCADProposalAuthorityTests -only-testing:FloeAppTests/FloeCADWorkbenchTests` | **5/5 passed**: cross-document/cross-task apply denial, failed-apply reservation release, direct payload mutation denial + proposal route, ownership-scoped status/cancel, facade create→save→reopen |
+| Independent STEP reader / tamper tests | `python3 scripts/verify_step_independent.py`, `test_verify_step_independent.py` | retained from part 1 (5/5); still a restricted fixture check, not general STEP compatibility |
+
+### Fixture launch recipe (primary CUA)
+
+```sh
+# Debug simulator build already installed, or build/install it:
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild -project FloeAgent.xcodeproj -scheme FloeAgent \
+  -destination 'platform=iOS Simulator,name=iPad Air 13-inch (M4)' \
+  -derivedDataPath ~/Library/Caches/CodexBuild/floe-cad/DerivedData/app \
+  ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build
+
+# Launch with the deterministic CAD fixture (real workbench, no workspace,
+# no grants, no credentials):
+xcrun simctl launch <booted-device-udid> org.floeagent.ios \
+  -ui-testing --ui-test-cad-fixture
+```
+
+The harness rebuilds the package deterministically on each launch. Expected part:
+volume 60000 − 250π ≈ 59214.6 mm³ (check via the AI `cad.document` measure path or the
+viewport info bar). Then exercise: Assembly (place instance, solve, DOF, interference),
+Drawings (standard sheet, project, dimensions, PDF/SVG/DXF), ShapeScript (preview/apply),
+Mesh (boolean on a mesh copy). Debug-only: no release code path can create this fixture.
+
+### Completion matrix update (honest)
+
+| Area | State |
+| --- | --- |
+| Versioned `.floecad` kernel, atomic commit, CAS, undo/redo, off-main save | implemented + tested |
+| Sketch/parametric features, analytic B-rep, STEP export, plate+hole fixture | implemented + tested (part 1) |
+| Assembly service (instances/constraints/DOF/interference/source update) | implemented + tested; exact interference off-main on owned copies; UI panel present |
+| Drawing service (pages/views/dimensions/PDF/SVG/DXF) | implemented + tested (real projected geometry); UI panel present |
+| ShapeScript + mesh operations | implemented + tested (headless, bounded, sandboxed) |
+| Unified `cad.document` routing + schema | implemented; App tests cover native routing; SwiftPM workbench tests for schema/routing in this worktree |
+| Workbench tools panel + Floe-owned localization | panel implemented; 216 new `cad.*` keys (panels/settings/toolbar + 173 editor-chrome keys) bilingual en/zh-Hans; remaining imported-editor internals (EditorViewModel labels, materials, some footers) still English |
+| Canvas child-project entry from the native workbench | implemented: "Apply to canvas" (PNG asset, original bound node updated atomically, identity/name/position/size/edges preserved) and explicit "Make variant" (new node + generatedFrom edge); no binding → explicit refusal, no parallel node path; planner tests 7/7 |
+| IGES import | implemented: real OCCT IGES reader (solids vs surfaces classified honestly, B-rep kept only for solids); round-trip and refusal tests 5/5; no IGES export |
+| Durable status/cancel jobs + ownership scoping | implemented + tested; proposal notification outbox durability for native 3D proposals is in-process only (2D path keeps its journal) |
+| CUA viewport crash (SIGTRAP, 2026-10-10) | fixed: package shader library is compiled/validated explicitly (host default.metallib no longer selected first) and a missing library surfaces a recoverable alert; `ViewportRenderTests` 2/2 cover context + attach + draw |
+| Physical-device / CUA acceptance, real-provider end-to-end, performance baseline | **not run** — primary agent owns device/CUA/provider acceptance (fixture recipe below) |
+
+### 中文摘要（2026-10-10 续作，未发布）
+
+本轮完成装配服务（实例/约束/求解/自由度/干涉/源更新；精确干涉在主线程序列化 B-rep 后于
+分离任务中对自有副本执行，带取消与修订检查）、出图服务（独立页面/投影/尺寸/中心线/PDF/
+SVG/DXF 真实几何）、ShapeScript 无头求值与脚本结果绑定、网格操作，统一 `cad.document`
+路由与模式（`.floecad` 不再经过二维加载器），并按评审意见修复权限：直接 mutation 载荷被
+拒绝、提案/授权/预留/幂等回执、任务记录按环境/所有者/文档隔离、失败回执如实记录。工作台
+工具面板、原生画布入口（更新原节点 / 显式变体）、IGES 实体/曲面导入与中英文案已接入；
+模拟器 CUA 视口崩溃（宿主 default.metallib 被误选、管线缺失后断言）已修复并有视口初始化/渲染
+测试。已运行：包内 44/44、完整 App 编译成功、定向 App 测试 5/5、工作台 schema/路由 22/22、
+画布规划器 7/7。未完成：导入编辑器剩余内部文案（EditorViewModel 标签、材料名等）中文化、
+原生提案通知持久化 outbox、真机/真实模型/性能验收；均未发布。

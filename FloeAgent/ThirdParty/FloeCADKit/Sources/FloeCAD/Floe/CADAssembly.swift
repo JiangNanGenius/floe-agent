@@ -46,6 +46,13 @@ public nonisolated struct CADAssemblyInstance: Codable, Sendable, Equatable, Ide
     public var isIndependentCopy: Bool
     /// Body created for an independent copy (nil for shared instances).
     public var copiedBodyID: UUID?
+    /// `meshRevision` of the placed body at the last solve/refresh, used to
+    /// detect a stale source part. Optional so assembly JSON written before
+    /// this field existed still decodes; nil reads as "unrecorded".
+    /// Revisions are session-scoped (they are re-minted on document load), so
+    /// a reopened document legitimately reports every instance stale until the
+    /// next `sourceUpdate` apply.
+    public var sourceRevision: UInt64?
 
     public init(id: UUID = UUID(),
                 name: String,
@@ -53,7 +60,8 @@ public nonisolated struct CADAssemblyInstance: Codable, Sendable, Equatable, Ide
                 transform: CADTransform = .identity,
                 isHidden: Bool = false,
                 isIndependentCopy: Bool = false,
-                copiedBodyID: UUID? = nil) {
+                copiedBodyID: UUID? = nil,
+                sourceRevision: UInt64? = nil) {
         self.id = id
         self.name = name
         self.bodyID = bodyID
@@ -61,6 +69,7 @@ public nonisolated struct CADAssemblyInstance: Codable, Sendable, Equatable, Ide
         self.isHidden = isHidden
         self.isIndependentCopy = isIndependentCopy
         self.copiedBodyID = copiedBodyID
+        self.sourceRevision = sourceRevision
     }
 }
 

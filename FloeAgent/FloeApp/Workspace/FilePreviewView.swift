@@ -73,7 +73,14 @@ struct FilePreviewView: View {
                     Text(loadError)
                 }
             } else if let floecadDocument {
-                FloeCADWorkbenchView(document: floecadDocument)
+                // The Canvas entry path (Apply to canvas / Make variant) is
+                // host-injected: FloeCADKit never sees app Canvas types. The
+                // closures export a real projected drawing page and commit
+                // through the same atomic patch primitives as the 2D flow.
+                FloeCADWorkbenchView(
+                    document: floecadDocument,
+                    canvasActions: CADCanvasActionBridge.actions(
+                        assetStore: environment.creativeAssetStore))
                     .safeAreaInset(edge: .top) { nativeCADProposalBanner }
             } else if let engineeringPackage {
                 if isEngineeringFullScreen {
