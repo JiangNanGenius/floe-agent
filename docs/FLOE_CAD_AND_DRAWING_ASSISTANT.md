@@ -647,6 +647,7 @@ current one.
 | Full App build (simulator) | `xcodebuild build …` | **BUILD SUCCEEDED** |
 | Viewport baseline (simulator) | perf test log | firstPaint 25.6 ms, avg frame 9.5 ms, worst 25.6 ms, RSS 817→826 MB (49 bodies incl. 2 instances) |
 | CUA fixture | `xcrun simctl launch <iPad> org.floeagent.ios -ui-testing --ui-test-cad-fixture` | fixture now carries TWO separated instances (Plate A at origin, Plate B at x=140) for the primary pass |
+| Final device artifact (unsigned) | `xcodebuild build … -destination 'generic/platform=iOS' … CODE_SIGNING_ALLOWED=NO` from commit `3a7a03c9` (clean tree) | **BUILD SUCCEEDED**; binary SHA-256 `d5ee1b9b…dd397c`, dSYM DWARF SHA-256 `b07edd15…3eed9`, UUIDs match (`56596D9C-A192-3C6F-9CEC-847A28258EAF`); artifact + provenance under `Local/evidence/cad-part4/device-artifact-3a7a03c9/` |
 
 ### Current completion matrix (2026-10-10, part 4) — supersedes earlier tables
 
