@@ -48,6 +48,7 @@
 		1757E635A68CC4F02FEE012B /* CanvasGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 615A8177FD0D62C875B5688B /* CanvasGeometry.swift */; };
 		17803F69FD25F626A646267F /* MailSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1D2F99E9E151908419336F /* MailSettingsView.swift */; };
 		17C3C71EDCDEDB585CA63FF8 /* SettingsActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B115F54C03CD39CDBDCABC /* SettingsActions.swift */; };
+		181C028D7604E273FBB5B794 /* OfficeSelectedObjectSaveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D7142BCE7885AECB1430A26 /* OfficeSelectedObjectSaveTests.swift */; };
 		1A3518834841B087FC3D0694 /* ConversationBatchManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4D444391A1A5C38A59A2C54 /* ConversationBatchManagementView.swift */; };
 		1A6FCCA07D564C59EC82DBBF /* HostEditorViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D4C7AAC317C256EEB4AFAD /* HostEditorViewModel.swift */; };
 		1AA6526911DD256899CB8CDA /* RemoteImageTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DBCBE0360D88F15438CA23F /* RemoteImageTools.swift */; };
@@ -237,6 +238,7 @@
 		90C63942E9AF35955B3FA0B9 /* CreativeAssetIngestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */; };
 		912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */; };
 		91EA3DEC4908CCC6F47A53C3 /* LayoutPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB38C0A73749F36D4220FE3F /* LayoutPreferences.swift */; };
+		9233A31C6990563129C25B2B /* floe-sim-qual.pptx in Resources */ = {isa = PBXBuildFile; fileRef = 316DA0723AA58D762AD5EF3E /* floe-sim-qual.pptx */; };
 		92B24B94472F24426637372F /* dashB.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 35B5A41ABFA2589E38D1E784 /* dashB.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		93988B422674C07884228520 /* IDELanguageRunPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 056D48997010E93B1EA2BD84 /* IDELanguageRunPolicy.swift */; };
 		93FBA12D3BE2E1BCF61C8A5A /* FloeVideoTranscriptionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B88B3B92169B66C2BF9343 /* FloeVideoTranscriptionProvider.swift */; };
@@ -534,6 +536,7 @@
 		1C287E153A9FCF3172F45CF4 /* FloeShellBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FloeShellBridge.mm; sourceTree = "<group>"; };
 		1C6BC21C486387EBE3A38BF8 /* LuaShellInstallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LuaShellInstallTests.swift; sourceTree = "<group>"; };
 		1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
+		1D7142BCE7885AECB1430A26 /* OfficeSelectedObjectSaveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeSelectedObjectSaveTests.swift; sourceTree = "<group>"; };
 		1DCEDA85D7E0A5B195344E38 /* VoiceInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInput.swift; sourceTree = "<group>"; };
 		20554886B0FDA45513A6ECF9 /* FloeAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FloeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2133CA3987123469C54657B5 /* WorkbenchImagePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchImagePreview.swift; sourceTree = "<group>"; };
@@ -1170,6 +1173,7 @@
 				57E8DF48A4B14C35313776F0 /* IDEMarkdownOutlineTests.swift */,
 				03667B0F672BB8254A12AAD8 /* OfficeEditEntryAckTests.swift */,
 				86170DEFDF34F4E46569FBF7 /* OfficePresentationOpeningTests.swift */,
+				1D7142BCE7885AECB1430A26 /* OfficeSelectedObjectSaveTests.swift */,
 				10322F1AACB009AEA33B46F8 /* SourceControlRootIdentityTests.swift */,
 				8CB790C64F8C073F710D9710 /* WorkbenchAIReviewTests.swift */,
 				C90C965CEE827B76E1CFC4FD /* WorkbenchExportDeliveryTests.swift */,
@@ -1857,6 +1861,7 @@
 			buildConfigurationList = F14E9C1E4DEA6B7A7BE01668 /* Build configuration list for PBXNativeTarget "FloeAppTests" */;
 			buildPhases = (
 				81016BCB0766F95B3EBA2E3B /* Sources */,
+				978E5DBE9209524A04763075 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -2035,6 +2040,14 @@
 			files = (
 				A16EA4F8F7ABAAB3FF45E521 /* RARFixtures.LICENSE.txt in Resources */,
 				84188E25F6555E00B1B2AECB /* floe-sim-qual.pptx in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		978E5DBE9209524A04763075 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9233A31C6990563129C25B2B /* floe-sim-qual.pptx in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2420,6 +2433,7 @@
 				C82EE9A6396C642A1E0D0F17 /* OfficeBridgeStateTests.swift in Sources */,
 				DE2C5D4018784A2043FEE1E1 /* OfficeEditEntryAckTests.swift in Sources */,
 				5A30E1D4F62F7C8D84B39A5D /* OfficePresentationOpeningTests.swift in Sources */,
+				181C028D7604E273FBB5B794 /* OfficeSelectedObjectSaveTests.swift in Sources */,
 				4A812D9D0082904ECFCB9984 /* RARFixtures.generated.swift in Sources */,
 				AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */,
 				6120F47170CBD36FD1EB9CFF /* ShellCoreUtilityTests.swift in Sources */,
