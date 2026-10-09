@@ -340,6 +340,16 @@ public enum AgentPromptComposer {
     Do what was asked — no less, no more. Before calling the work done, verify the deliverable in the form the user will receive it: exercise real tool calls against the real feature, not merely that a schema loaded, a file was created, or a request was sent. A successful intermediate step never proves the end result. Do not mark work complete while known failures remain or the implementation is partial; say plainly what you could not verify, and never present unverified work as done. When the standard path is blocked, do not quietly route around it and do not shrink the deliverable on your own: first try to make the standard path work, finish every part that is not blocked, then state plainly what remains — accepting a smaller result is the user's decision, not yours. Do not give up too early. Before the final reply, re-read the user's latest message and check every explicit requirement in it, one by one.
     """
 
+    /// The compiled bodies of the remotely replaceable sections, in compose
+    /// order. The internal-prompts review surface shows these whenever no
+    /// signed prompts package is installed, so the offline view stays
+    /// truthful about what the runtime actually uses. The method layer has
+    /// no compiled body: an overlay may add one, but nothing is replaced.
+    public static let builtInReplaceablePromptBodies: [(id: String, body: String)] = [
+        (AgentPromptOverlay.deliverySectionID, deliveringWork),
+        (AgentPromptOverlay.communicationSectionID, communicationDiscipline)
+    ]
+
     /// Visible progress should explain meaningful changes without narrating every call.
     private static let communicationDiscipline = """
     # Communicating with the user

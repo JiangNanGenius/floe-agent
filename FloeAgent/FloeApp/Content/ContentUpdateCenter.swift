@@ -21,6 +21,7 @@ import SwiftUI
 import FloeCore
 import FloeSkills
 import FloeProviders
+import FloeAgentRuntime
 
 @MainActor
 final class ContentUpdateCenter: ObservableObject {
@@ -79,14 +80,23 @@ final class ContentUpdateCenter: ObservableObject {
     nonisolated static let providerPackageID = "floe.providers.compatibility"
     nonisolated static let providerCatalogPath = "ProviderCatalog.json"
     nonisolated static let promptsPackageID = "floe.prompts.core"
+
+    /// Version of the prompt sections compiled into the app. This is a
+    /// content version (not the app marketing version): bump it whenever the
+    /// compiled method/communication/delivery sections change so app-upgrade
+    /// comparison and frozen-run selection treat built-in prompts as an
+    /// explicit, versioned content source.
+    nonisolated static let builtInPromptsVersion = "1.0.0"
     nonisolated static let maximumBatchEntries = 16
 
     /// App-bundle baselines. A strictly newer built-in version deactivates an
     /// installed copy (retained in history) so the app-owned content wins;
     /// equal versions keep the installed copy because published bytes are
-    /// immutable.
+    /// immutable. Only actually bundled, consumed kinds appear here; no
+    /// package is invented for unconsumed types.
     nonisolated static let builtInBaselines: [String: String] = [
-        providerPackageID: "1.1.0"
+        providerPackageID: "1.1.0",
+        promptsPackageID: builtInPromptsVersion
     ]
 
     /// Declarative content may never require credentials. Script runtimes are
@@ -120,7 +130,10 @@ final class ContentUpdateCenter: ObservableObject {
     private var helpFileCache: [String: [String: Data]] = [:]
 
     private let networkMonitor = NWPathMonitor()
-    private var onWiFi = true
+    /// Unknown until the monitor reports its first update. Conservative for
+    /// WiFi-only automatic downloads: `false` never allows a download.
+    private var onWiFi = false
+    private var onWiFiKnown = false
 
     init(environment: AppEnvironment, root: URL? = nil) {
         self.environment = environment
@@ -152,7 +165,11 @@ final class ContentUpdateCenter: ObservableObject {
         }
         networkMonitor.pathUpdateHandler = { [weak self] path in
             let wifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
-            Task { @MainActor [weak self] in self?.onWiFi = wifi }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.onWiFi = wifi
+                self.onWiFiKnown = true
+            }
         }
         networkMonitor.start(queue: DispatchQueue(label: "org.floeagent.content.network"))
         if let resolvedError {
@@ -263,12 +280,17 @@ final class ContentUpdateCenter: ObservableObject {
 
     func checkAutomaticallyIfDue() async {
         await ensureLoaded()
-        guard automaticChecksEnabled else { return }
-        if let retryAfter = state?.retryAfter, retryAfter > Date() { return }
-        if let lastCheck, Date().timeIntervalSince(lastCheck) < 24 * 3_600 { return }
+        guard ContentUpdatePolicy.automaticCheckDue(
+            lastCheck: lastCheck,
+            retryAfter: state?.retryAfter,
+            now: Date(),
+            automaticChecksEnabled: automaticChecksEnabled
+        ) else { return }
         await checkForUpdates(force: false)
     }
 
+    /// `force: true` is reserved for explicit user actions (button,
+    /// pull-to-refresh); every other caller respects the cooldown/backoff.
     func checkForUpdates(force: Bool) async {
         await ensureLoaded()
         guard let store else {
@@ -278,9 +300,11 @@ final class ContentUpdateCenter: ObservableObject {
         guard !isChecking else { return }
         let now = Date()
         if !force {
-            if let retryAfter = state?.retryAfter, retryAfter > now { return }
-            if let lastCheck, now.timeIntervalSince(lastCheck) < 24 * 3_600 { return }
-            if !automaticChecksEnabled { return }
+            guard ContentUpdatePolicy.manualCheckAllowed(
+                retryAfter: state?.retryAfter,
+                now: now,
+                lastCheck: lastCheck
+            ), automaticChecksEnabled else { return }
         }
         isChecking = true
         errorMessage = nil
@@ -342,7 +366,11 @@ final class ContentUpdateCenter: ObservableObject {
             } else {
                 guard autoUpdateDeclarativeContent else { continue }
             }
-            guard !(automaticDownloadOnWiFiOnly && !onWiFi) else { continue }
+            guard ContentUpdatePolicy.automaticDownloadAllowed(
+                wifiOnly: automaticDownloadOnWiFiOnly,
+                onWiFiKnown: onWiFiKnown,
+                onWiFi: onWiFi
+            ) else { continue }
             do {
                 try await commitEntries([id], snapshot: snapshot, store: store)
                 FloeLogger(category: .app).info("contentAutoUpdated id=\(id) version=\(entry.version)")
@@ -370,12 +398,9 @@ final class ContentUpdateCenter: ObservableObject {
     }
 
     private func scheduleRetry(store: ContentUpdateStore, now: Date) async {
-        let base: TimeInterval = 15 * 60
-        let capped: TimeInterval = 24 * 3_600
-        let prior = state?.retryAfter ?? now
-        let next = min(prior.addingTimeInterval(base * 2), now.addingTimeInterval(capped))
+        let next = ContentUpdatePolicy.nextRetry(priorRetryAfter: state?.retryAfter, now: now)
         do {
-            _ = try await store.recordCheckFailure(retryAfter: max(next, now.addingTimeInterval(base)))
+            _ = try await store.recordCheckFailure(retryAfter: next)
             state = await store.currentState()
         } catch {
             errorMessage = Self.describe(error)
@@ -506,6 +531,12 @@ final class ContentUpdateCenter: ObservableObject {
 
     /// Reads the active installed provider package; falls back to the
     /// app-bundled catalog only when nothing signed is installed.
+    ///
+    /// Boundary: the catalog serves add-time provider discovery only. Runs
+    /// never consume it — a run's provider/model configuration is copied at
+    /// launch, so there is deliberately no run-scoped mutable catalog
+    /// accessor (a previous `providerCatalogIndex(forRunID:)` had no caller
+    /// and was removed rather than left as a speculative path).
     func providerCatalogIndex() -> ProviderCatalogIndex? {
         providerCatalogCache ?? ProviderCatalogIndex.loadBundled()
     }
@@ -540,19 +571,37 @@ final class ContentUpdateCenter: ObservableObject {
     }
 
     /// Validated signed-content overlay frozen for this run. Creating the run
-    /// snapshot also freezes app-bundled bytes (provider catalog) so recovery
-    /// never substitutes a newer bundle for a task that started earlier.
+    /// snapshot also freezes the compiled built-in prompt bodies (as a
+    /// package-shaped payload) so a run that started on built-in prompts
+    /// resumes with byte-identical content even after an app upgrade changes
+    /// the compiled bodies.
     func runtimePromptOverlay(runID: UUID, locale: String) async -> AgentPromptOverlay {
         guard let store else { return .empty }
         do {
             let snapshot = try await store.runSnapshot(
                 runID: runID,
                 builtInVersions: Self.builtInBaselines,
-                builtInPayloads: builtInPayloadsForSnapshot()
+                builtInPayloads: builtInPromptsPayloadForSnapshot()
             )
-            guard let directory = snapshot.directories[Self.promptsPackageID] else { return .empty }
-            let files = try await store.files(directory: directory)
-            return try ContentPackageCodec.runtimePromptOverlay(in: files, locale: locale)
+            if let directory = snapshot.directories[Self.promptsPackageID] {
+                let files = try await store.files(directory: directory)
+                return try ContentPackageCodec.runtimePromptOverlay(in: files, locale: locale)
+            }
+            if let frozen = snapshot.builtInDirectories?[Self.promptsPackageID] {
+                // Started on built-in prompts: the frozen compiled bodies are
+                // the run's content. The freeze stores the package bytes as
+                // `payload`; feed them to the exact package codec/overlay
+                // validation path as an installed package's content.json.
+                let files = try await store.files(directory: frozen)
+                guard let payload = files["payload"] else { return .empty }
+                return try ContentPackageCodec.runtimePromptOverlay(
+                    in: ["content.json": payload], locale: locale
+                )
+            }
+            // Legacy snapshot without frozen prompt bytes: the current
+            // compiled bodies are the only source. Snapshots created from
+            // this version onward always carry the freeze payload.
+            return .empty
         } catch {
             FloeLogger(category: .app).warning(
                 "contentPromptOverlay failed run=\(runID.uuidString): \(error.localizedDescription)"
@@ -561,46 +610,52 @@ final class ContentUpdateCenter: ObservableObject {
         }
     }
 
-    private func builtInPayloadsForSnapshot() -> [String: Data] {
-        guard installed[Self.providerPackageID] == nil else { return [:] }
-        guard let url = Bundle.main.url(forResource: "ProviderCatalog", withExtension: "json"),
-              let data = try? Data(contentsOf: url) else { return [:] }
-        return [Self.providerPackageID: data]
+    /// Compiled built-in prompt sections packaged in the signed prompts
+    /// schema shape for run freezing.
+    private func builtInPromptsPayloadForSnapshot() -> [String: Data] {
+        let sections = AgentPromptComposer.builtInReplaceablePromptBodies.map { id, body in
+            BuiltInPromptFreeze.section(id: id, compiledBody: body)
+        }
+        guard let payload = try? BuiltInPromptFreeze.contentJSON(sections: sections) else { return [:] }
+        return [Self.promptsPackageID: payload]
     }
 
-    /// Run-scoped provider catalog. A resumed run never substitutes a new
-    /// app bundle for the version it started with: installed bytes first,
-    /// then the frozen built-in copy written when the run started.
-    func providerCatalogIndex(forRunID runID: UUID) async -> ProviderCatalogIndex? {
-        guard let store else { return providerCatalogIndex() }
-        do {
-            let snapshot = try await store.runSnapshot(
-                runID: runID,
-                builtInVersions: Self.builtInBaselines,
-                builtInPayloads: builtInPayloadsForSnapshot()
+    /// Compiled built-in prompt sections, shown by the review UI whenever no
+    /// signed prompts package is installed so the offline surface reflects
+    /// what the runtime actually uses.
+    func builtInPromptSections() -> [ContentPackageCodec.PromptSection] {
+        AgentPromptComposer.builtInReplaceablePromptBodies.map { id, body in
+            let section = BuiltInPromptFreeze.section(id: id, compiledBody: body)
+            return ContentPackageCodec.PromptSection(
+                id: section.id,
+                title: ["en": section.title],
+                body: ["en": section.body]
             )
-            if let directory = snapshot.directories[Self.providerPackageID] {
-                let files = try await store.files(directory: directory)
-                if let data = files[Self.providerCatalogPath],
-                   let index = try? ProviderCatalogIndex.validated(from: data) {
-                    return index
-                }
-            }
-            if let frozen = snapshot.builtInDirectories?[Self.providerPackageID] {
-                let files = try await store.files(directory: frozen)
-                if let data = files["payload"],
-                   let index = try? ProviderCatalogIndex.validated(from: data) {
-                    return index
-                }
-            }
-            // Legacy snapshot without frozen bytes: use the current bundle
-            // only when the recorded baseline still matches.
-            let recordedBaseline = snapshot.builtInVersions?[Self.providerPackageID]
-            let currentBaseline = Self.builtInBaselines[Self.providerPackageID]
-            guard recordedBaseline == currentBaseline else { return nil }
-            return ProviderCatalogIndex.loadBundled()
+        }
+    }
+
+    /// The effective prompts content version for the currently selected
+    /// source: installed package wins; otherwise the compiled built-in
+    /// content version.
+    func effectivePromptsVersion() -> String {
+        installed[Self.promptsPackageID]?.version ?? Self.builtInPromptsVersion
+    }
+
+    // MARK: - Run snapshot lifecycle
+
+    /// Releases the frozen content snapshot for a run that reached a final,
+    /// non-recoverable state (`completed`, or any run whose conversation is
+    /// being deleted). Checkpointed and failed runs keep their snapshots:
+    /// both stay resumable via Continue, and recovery must never substitute
+    /// newer content for what the run started with.
+    func releaseRunSnapshot(_ runID: UUID) async {
+        guard let store else { return }
+        do {
+            try await store.releaseRunSnapshot(runID: runID)
         } catch {
-            return nil
+            FloeLogger(category: .app).warning(
+                "contentReleaseSnapshot failed run=\(runID.uuidString): \(error.localizedDescription)"
+            )
         }
     }
 
@@ -618,6 +673,11 @@ final class ContentUpdateCenter: ObservableObject {
 
     static func describe(_ error: Error) -> String {
         switch error {
+        case FloeError.syncUnavailable:
+            // The shared connector phrases its failure for the skill source;
+            // this is the content feed, so surface a content-specific,
+            // localized reason instead of the raw English skill wording.
+            return FloeL10n.l("content.update.error.unavailable")
         case SignedContentFailure.signature:
             return FloeL10n.l("content.update.error.signature")
         case SignedContentFailure.feed:

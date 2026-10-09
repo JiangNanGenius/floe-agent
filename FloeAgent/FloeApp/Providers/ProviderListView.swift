@@ -79,6 +79,12 @@ struct ProviderListView: View {
         .task { await viewModel.load() }
         .refreshable { await viewModel.load() }
         .confirmationDialog("providers.provider_list_view.add_model_provider", isPresented: $showsProviderTypePicker) {
+            if catalog != nil {
+                // Discovery lives in the same catalog sheet as the toolbar
+                // route; no second editor is created.
+                Button("providers.add_from_catalog") { showsCatalogAdd = true }
+                    .accessibilityIdentifier("providers.add_from_catalog.menu")
+            }
             Button("providers.provider_list_view.chat_model_provider") { presentedEditor = .new(.conversation) }
             Button("providers.provider_list_view.image_generation_editing_provider") { presentedEditor = .new(.image) }
             Button("providers.provider_list_view.video_generation_provider") { presentedEditor = .new(.video) }
@@ -116,6 +122,10 @@ struct ProviderListView: View {
                         showsCatalogAdd = false
                     }
                 )
+                // Page-sized presentation (same as the editor sheet) keeps
+                // search and filters visible instead of a compact sheet
+                // dominated by the keyboard.
+                .presentationSizing(.page)
             }
         }
         .alert(

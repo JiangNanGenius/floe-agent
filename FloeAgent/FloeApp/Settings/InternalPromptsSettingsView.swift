@@ -8,6 +8,11 @@
 // rollback; this view renders its state and never parses, verifies or
 // compares versions itself. The safety/permission rules below are compiled
 // into the app and are deliberately not editable or remotely updateable.
+//
+// Failure presentation: a failed check — automatic, pull-to-refresh or
+// button — is an inline status, never a modal alert; built-in content stays
+// active regardless, and the section list keeps showing the compiled
+// built-in sections when no signed package is installed.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -18,6 +23,11 @@ struct InternalPromptsSettingsView: View {
     @ObservedObject var center: ContentUpdateCenter
 
     private static let contentID = "floe.prompts.core"
+
+    /// True when the most recent failure came from an explicit user action
+    /// (pull-to-refresh or Check Now); such a failure offers an inline
+    /// retry. Background-check failures stay informational only.
+    @State private var manualFailure = false
 
     private var installedRecord: ContentUpdateCenter.InstalledRecord? {
         center.installed[Self.contentID]
@@ -34,22 +44,23 @@ struct InternalPromptsSettingsView: View {
     var body: some View {
         Form {
             statusSection
+            if let error = center.errorMessage {
+                inlineErrorSection(error)
+            }
             sectionsSection
             fixedRulesSection
         }
         .navigationTitle(FloeL10n.l("settings.section.internal_prompts"))
         .task {
             center.load()
-            await center.checkForUpdates(force: true)
+            manualFailure = false
+            // A normal visit respects the cooldown/backoff; only explicit
+            // user actions force a check.
+            await center.checkAutomaticallyIfDue()
         }
-        .refreshable { await center.checkForUpdates(force: true) }
-        .alert("settings.content_updates.error.title", isPresented: Binding(
-            get: { center.errorMessage != nil },
-            set: { if !$0 { center.errorMessage = nil } }
-        )) {
-            Button("workspace.workspace_canvas_view.done", role: .cancel) {}
-        } message: {
-            Text(center.errorMessage ?? "")
+        .refreshable {
+            manualFailure = true
+            await center.checkForUpdates(force: true)
         }
         .accessibilityIdentifier("settings.internal_prompts")
     }
@@ -78,10 +89,17 @@ struct InternalPromptsSettingsView: View {
                         .textSelection(.enabled)
                 }
             } else {
+                // The built-in prompts content is versioned independently of
+                // the app marketing version; the digest belongs to signed
+                // packages only, so the compiled source is named instead.
                 LabeledContent("settings.internal_prompts.built_in_version") {
-                    Text("v\(center.appVersion)")
+                    Text("v\(center.effectivePromptsVersion())")
                         .font(FloeTheme.Typography.evidence)
                         .textSelection(.enabled)
+                }
+                LabeledContent("settings.internal_prompts.built_in_source") {
+                    Text(FloeL10n.l("settings.internal_prompts.built_in_source.value"))
+                        .font(FloeTheme.Typography.evidence)
                 }
             }
             LabeledContent("settings.internal_prompts.available_version") {
@@ -89,11 +107,7 @@ struct InternalPromptsSettingsView: View {
                     .font(FloeTheme.Typography.evidence)
                     .textSelection(.enabled)
             }
-            LabeledContent("settings.internal_prompts.source_index") {
-                Text(OfficialContentHub.indexPath)
-                    .font(FloeTheme.Typography.evidence)
-                    .textSelection(.enabled)
-            }
+            sourceRow
             actionRow
             if let last = center.lastCheck {
                 Text(FloeL10n.l(
@@ -112,6 +126,47 @@ struct InternalPromptsSettingsView: View {
         } header: {
             Text("settings.internal_prompts.status.header")
         }
+    }
+
+    /// The content feed is the official content hub; the repository, ref and
+    /// signed index path are technical details under a disclosure, not the
+    /// primary label (and never a "skill feed" — this is declarative content).
+    private var sourceRow: some View {
+        LabeledContent("settings.internal_prompts.source") {
+            Text(FloeL10n.l("settings.internal_prompts.source.value"))
+                .font(FloeTheme.Typography.evidence)
+        }
+        .accessibilityIdentifier("settings.internal_prompts.source")
+    }
+
+    private var sourceDetailsSection: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                technicalRow("settings.internal_prompts.source.repository",
+                             "\(OfficialContentHub.owner)/\(OfficialContentHub.repository)")
+                technicalRow("settings.internal_prompts.source.ref", "main")
+                technicalRow("settings.internal_prompts.source.index", OfficialContentHub.indexPath)
+                technicalRow("settings.internal_prompts.source.signature", OfficialContentHub.signaturePath)
+                if let commit = center.providerCatalogCommit {
+                    technicalRow("settings.internal_prompts.source.pinned_commit",
+                                 String(commit.prefix(12)))
+                }
+            }
+            .padding(.vertical, 4)
+        } label: {
+            Text("settings.internal_prompts.source.details")
+                .font(FloeTheme.Typography.body)
+        }
+        .accessibilityIdentifier("settings.internal_prompts.source.details.toggle")
+    }
+
+    private func technicalRow(_ key: LocalizedStringKey, _ value: String) -> some View {
+        LabeledContent(key) {
+            Text(value)
+                .font(FloeTheme.Typography.evidence)
+                .textSelection(.enabled)
+        }
+        .font(.caption)
     }
 
     private var actionRow: some View {
@@ -137,6 +192,7 @@ struct InternalPromptsSettingsView: View {
                     .accessibilityIdentifier("settings.internal_prompts.action.rollback")
                 }
                 Button("settings.content_updates.check_now") {
+                    manualFailure = true
                     Task { await center.checkForUpdates(force: true) }
                 }
                 .buttonStyle(.bordered)
@@ -178,6 +234,34 @@ struct InternalPromptsSettingsView: View {
         }
     }
 
+    // MARK: - Inline (nonmodal) failure status
+
+    private func inlineErrorSection(_ message: String) -> some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(message)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                    Text(FloeL10n.l("settings.content_updates.error.built_in_active"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if manualFailure {
+                        Button("settings.content_updates.error.retry") {
+                            Task { await center.checkForUpdates(force: true) }
+                        }
+                        .font(.caption)
+                        .accessibilityIdentifier("settings.internal_prompts.action.retry")
+                    }
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityIdentifier("settings.internal_prompts.inline_error")
+    }
+
     // MARK: - Published sections (read-only)
 
     private var promptLocale: String {
@@ -192,8 +276,27 @@ struct InternalPromptsSettingsView: View {
         Section {
             let sections = center.promptSections()
             if sections.isEmpty {
-                Text("settings.internal_prompts.sections.empty")
-                    .foregroundStyle(.secondary)
+                // No signed package installed (or the network was never
+                // available): show the compiled built-in sections, which are
+                // exactly what the runtime uses in that state.
+                let builtIn = center.builtInPromptSections()
+                if builtIn.isEmpty {
+                    Text("settings.internal_prompts.sections.empty")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(builtIn, id: \.id) { section in
+                        DisclosureGroup {
+                            Text(localizedText(section.body))
+                                .font(FloeTheme.Typography.body)
+                                .textSelection(.enabled)
+                        } label: {
+                            Text(localizedText(section.title))
+                                .font(FloeTheme.Typography.section)
+                        }
+                        .accessibilityIdentifier("settings.internal_prompts.section.\(section.id)")
+                    }
+                    sourceDetailsSection
+                }
             } else {
                 ForEach(sections, id: \.id) { section in
                     DisclosureGroup {
@@ -206,12 +309,20 @@ struct InternalPromptsSettingsView: View {
                     }
                     .accessibilityIdentifier("settings.internal_prompts.section.\(section.id)")
                 }
+                sourceDetailsSection
             }
         } header: {
             Text("settings.internal_prompts.sections.header")
         } footer: {
-            Text("settings.internal_prompts.sections.footer")
+            Text(sectionsFooter)
         }
+    }
+
+    private var sectionsFooter: String {
+        if center.promptSections().isEmpty {
+            return FloeL10n.l("settings.internal_prompts.sections.footer.built_in")
+        }
+        return FloeL10n.l("settings.internal_prompts.sections.footer")
     }
 
     // MARK: - Fixed code-owned rules

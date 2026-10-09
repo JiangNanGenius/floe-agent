@@ -155,7 +155,7 @@ struct ProviderCatalogAddView: View {
                 .lineLimit(1)
                 if entry.availability == .unsupported,
                    let reason = entry.unsupportedReason {
-                    Text(reason)
+                    Text(Self.localizedUnsupportedReason(reason))
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(FloeTheme.pending)
                 }
@@ -212,6 +212,30 @@ struct ProviderCatalogAddView: View {
     }
 
     // MARK: - Labels
+
+    /// Known capability-failure reasons map to localized strings (matched on
+    /// stable tokens so minor catalog wording edits do not break the mapping);
+    /// unknown reasons stay readable through a localized wrapper with the
+    /// raw detail, never a bare English string.
+    static func localizedUnsupportedReason(_ reason: String) -> String {
+        let normalized = reason.lowercased()
+        let key: String
+        if normalized.contains("oauth device flow") {
+            key = "providers.catalog.unsupported.oauth_device_flow"
+        } else if normalized.contains("deployment-specific endpoint") || normalized.contains("api-version") {
+            key = "providers.catalog.unsupported.deployment_endpoint"
+        } else if normalized.contains("sigv4") {
+            key = "providers.catalog.unsupported.sigv4"
+        } else if normalized.contains("service-account") || normalized.contains("service account") {
+            key = "providers.catalog.unsupported.service_account"
+        } else {
+            return FloeL10n.l(
+                "providers.catalog.unsupported.generic",
+                String(reason.prefix(120))
+            )
+        }
+        return FloeL10n.l(key)
+    }
 
     private func filterLabel(_ filter: ProviderCatalogFilter) -> LocalizedStringKey {
         switch filter {

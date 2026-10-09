@@ -2661,6 +2661,12 @@ final class ConversationCenter: ObservableObject {
             )
         }
         runTasks[runID] = nil
+        if terminalState == "completed" {
+            // Final, non-recoverable: the frozen content snapshot can never
+            // be resumed into, so release it. Failed/checkpointed runs keep
+            // theirs (Continue resumes them).
+            await environment.contentUpdateCenter.releaseRunSnapshot(runID)
+        }
         if localModelID != nil {
             await environment.localModelRuntime.releaseForTask(
                 taskID: runID,
@@ -3314,6 +3320,12 @@ final class ConversationCenter: ObservableObject {
         }
         pendingApprovals.removeAll { conversationIDs.contains($0.conversationID) }
 
+        // The runs are being deleted: no resume is possible, so every frozen
+        // content snapshot for the conversation's runs is released now.
+        for runID in durableRunIDs {
+            await environment.contentUpdateCenter.releaseRunSnapshot(runID)
+        }
+
         for id in conversationIDs {
             let ownerLabel = try await environment.conversationStore.conversation(id: id)?.title
                 ?? FloeL10n.l("remote.conversation_center.deleted_tasks")
@@ -3592,6 +3604,11 @@ final class ConversationCenter: ObservableObject {
                 taskID: service.runID,
                 reason: snapshot.stateName
             )
+        }
+        if succeeded {
+            // A completed run is final; its frozen content snapshot can
+            // never be resumed into.
+            await environment.contentUpdateCenter.releaseRunSnapshot(service.runID)
         }
         await environment.subagentRunnerRegistry.remove(runID: service.runID)
         publishSession(service.conversationID)

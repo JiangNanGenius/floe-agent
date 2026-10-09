@@ -196,6 +196,69 @@ struct ContentUpdateStoreTests {
         #expect(await store.currentState().runSnapshots[runID.uuidString] == nil)
     }
 
+    @Test("A built-in prompt freeze survives an app-upgrade baseline change on resume")
+    func builtInPromptFreezeSurvivesBaselineChange() async throws {
+        let store = try Self.makeStore()
+        let promptsID = "floe.prompts.core"
+        let v1Body = "# Communicating with the user\nBuilt-in v1 text."
+        let v2Body = "# Communicating with the user\nBuilt-in v2 text after upgrade."
+        let v1 = try BuiltInPromptFreeze.contentJSON(sections: [
+            .init(id: "floe.prompts.core.communication", title: "Communicating", body: v1Body)
+        ])
+        let v2 = try BuiltInPromptFreeze.contentJSON(sections: [
+            .init(id: "floe.prompts.core.communication", title: "Communicating", body: v2Body)
+        ])
+        let runID = UUID()
+
+        // Run starts on built-in prompts (baseline 1.0.0).
+        let snapshot = try await store.runSnapshot(
+            runID: runID,
+            builtInVersions: [promptsID: "1.0.0"],
+            builtInPayloads: [promptsID: v1]
+        )
+        let frozenDirectory = try #require(snapshot.builtInDirectories?[promptsID])
+
+        // App upgrade: the bundle now reports baseline 2.0.0 and different
+        // compiled bodies. Resume must still see the ORIGINAL bytes.
+        let resumed = try await store.runSnapshot(
+            runID: runID,
+            builtInVersions: [promptsID: "2.0.0"],
+            builtInPayloads: [promptsID: v2]
+        )
+        #expect(resumed.builtInDirectories?[promptsID] == frozenDirectory)
+        #expect(resumed.builtInVersions?[promptsID] == "1.0.0")
+
+        let files = try await store.files(directory: frozenDirectory)
+        let payload = try #require(files["payload"])
+        let overlay = try ContentPackageCodec.runtimePromptOverlay(
+            in: ["content.json": payload], locale: "en"
+        )
+        #expect(overlay.communication == v1Body)
+        #expect(overlay.communication != v2Body)
+
+        // Release is the only lifecycle that drops the freeze.
+        _ = try await store.releaseRunSnapshot(runID: runID)
+        #expect(await store.currentState().runSnapshots[runID.uuidString] == nil)
+    }
+
+    @Test("Built-in prompt freeze sections round-trip through the package codec")
+    func builtInPromptFreezeRoundTrips() async throws {
+        let compiled = "# Delivering work\nVerify the deliverable."
+        let section = BuiltInPromptFreeze.section(
+            id: "floe.prompts.core.delivery", compiledBody: compiled
+        )
+        #expect(section.title == "Delivering work")
+        #expect(section.body == compiled)
+        let payload = try BuiltInPromptFreeze.contentJSON(sections: [section])
+        let files = ["content.json": payload]
+        let parsed = ContentPackageCodec.promptSections(in: files)
+        #expect(parsed.count == 1)
+        #expect(parsed.first?.id == "floe.prompts.core.delivery")
+        #expect(parsed.first?.body["en"] == compiled)
+        let overlay = try ContentPackageCodec.runtimePromptOverlay(in: files, locale: "en")
+        #expect(overlay.delivery == compiled)
+    }
+
     @Test("A version digest stays immutable after rollback (persistent ledger)")
     func ledgerBlocksRecycledVersion() async throws {
         let store = try Self.makeStore()

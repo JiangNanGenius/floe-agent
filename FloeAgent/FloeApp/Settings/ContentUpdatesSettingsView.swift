@@ -17,27 +17,61 @@ import FloeProviders
 struct ContentUpdatesSettingsView: View {
     @ObservedObject var center: ContentUpdateCenter
 
+    /// True when the most recent failure came from an explicit user action;
+    /// such a failure offers an inline retry. Background failures stay
+    /// informational.
+    @State private var manualFailure = false
+
     var body: some View {
         Form {
             policySection
+            if let error = center.errorMessage {
+                inlineErrorSection(error)
+            }
             contentSections
             providerCatalogSection
         }
         .navigationTitle(FloeL10n.l("settings.content_updates.title"))
         .task {
             center.load()
+            manualFailure = false
+            // A normal visit respects the cooldown/backoff; only explicit
+            // user actions force a check.
+            await center.checkAutomaticallyIfDue()
+        }
+        .refreshable {
+            manualFailure = true
             await center.checkForUpdates(force: true)
         }
-        .refreshable { await center.checkForUpdates(force: true) }
-        .alert("settings.content_updates.error.title", isPresented: Binding(
-            get: { center.errorMessage != nil },
-            set: { if !$0 { center.errorMessage = nil } }
-        )) {
-            Button("workspace.workspace_canvas_view.done", role: .cancel) {}
-        } message: {
-            Text(center.errorMessage ?? "")
-        }
         .accessibilityIdentifier("settings.content_updates")
+    }
+
+    // MARK: - Inline (nonmodal) failure status
+
+    private func inlineErrorSection(_ message: String) -> some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(message)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                    Text(FloeL10n.l("settings.content_updates.error.built_in_active"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if manualFailure {
+                        Button("settings.content_updates.error.retry") {
+                            Task { await center.checkForUpdates(force: true) }
+                        }
+                        .font(.caption)
+                        .accessibilityIdentifier("settings.content_updates.action.retry")
+                    }
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityIdentifier("settings.content_updates.inline_error")
     }
 
     // MARK: - Policy
