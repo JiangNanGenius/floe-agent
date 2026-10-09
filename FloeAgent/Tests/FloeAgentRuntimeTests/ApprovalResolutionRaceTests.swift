@@ -34,7 +34,8 @@ struct ApprovalResolutionRaceTests {
     private func makeRuntime(
         adapter: MockAdapter,
         executor: MockExecutor,
-        audit: MockAuditSink = MockAuditSink()
+        audit: MockAuditSink = MockAuditSink(),
+        sink: (any AgentEventSink)? = nil
     ) -> FloeAgentRuntime {
         let provider = TestFixtures.localhostProvider()
         return FloeAgentRuntime(
@@ -51,7 +52,7 @@ struct ApprovalResolutionRaceTests {
             executor: executor,
             auditSink: audit,
             checkpointStore: MockCheckpointStore(),
-            sink: MockSink()
+            sink: sink ?? MockSink()
         )
     }
 
@@ -156,5 +157,127 @@ struct ApprovalResolutionRaceTests {
         await runtime.resolveApproval(.deny(reason: "stale tap"))
         #expect(executor.executedCalls.count == 1)
         #expect(await runtime.state.name == "completed")
+    }
+
+    /// Deterministically reproduces the production stall mechanism: the
+    /// runtime publishes `.waitingApproval` (state is set, the durable sink
+    /// publish of the run state + approval event is still in flight) and a
+    /// human decision / cancellation arrives before the escalation wait
+    /// installs its continuation. Before the mailbox fix a decision was
+    /// silently dropped and the run parked forever — the same *shape* as the
+    /// observed evidence (approval event persisted, no execution, run later
+    /// wedged in `cancelling`), though the historic logs alone do not prove
+    /// this exact interleaving.
+    private final class GatedApprovalPublishSink: AgentEventSink, @unchecked Sendable {
+        let entered = AsyncLock(false)
+        let release = AsyncLock(false)
+        let cancellingEntered = AsyncLock(false)
+        func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
+            if state.name == "cancelling" {
+                cancellingEntered.withLock { $0 = true }
+                return
+            }
+            guard state.name == "waitingApproval" else { return }
+            entered.withLock { $0 = true }
+            while !release.withLock({ $0 }) {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {}
+    }
+
+    @Test("A decision racing the approval publish is applied, not dropped")
+    func decisionRacingPublishIsApplied() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "call_race_publish")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerSideEffectingEcho(in: executor)
+        let sink = GatedApprovalPublishSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, sink: sink)
+        let finished = AsyncLock(false)
+
+        let startTask = startFlagged(runtime, finished: finished)
+        guard await waitUntil({ sink.entered.withLock { $0 } }) else {
+            Issue.record("Runtime never published waitingApproval")
+            startTask.cancel()
+            sink.release.withLock { $0 = true }
+            return
+        }
+        // Publish still blocked: state is waitingApproval but the
+        // continuation is not installed. A pre-fix runtime drops this
+        // decision and parks forever.
+        await runtime.resolveApproval(allowDecision())
+        #expect(await runtime.state.name == "waitingApproval")
+        sink.release.withLock { $0 = true }
+
+        var settled = await waitUntil { finished.withLock { $0 } }
+        if !settled {
+            await runtime.cancel()
+            settled = await waitUntil { finished.withLock { $0 } }
+        }
+        if settled { _ = try? await startTask.value }
+        #expect(settled, "A decision racing the publish must not park the run")
+        #expect(executor.executedCalls.count == 1)
+        #expect(await runtime.state.name == "completed")
+    }
+
+    @Test("Cancellation racing the approval publish settles to checkpointed, never wedges in cancelling")
+    func cancelRacingPublishSettles() async throws {
+        let adapter = MockAdapter()
+        let call = try TestFixtures.toolCall(id: "call_race_cancel")
+        adapter.script = [
+            [.toolRequest(call)],
+            [.completed(AgentEvent.CompletionInfo(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        registerSideEffectingEcho(in: executor)
+        let audit = MockAuditSink()
+        let sink = GatedApprovalPublishSink()
+        let runtime = makeRuntime(adapter: adapter, executor: executor, audit: audit, sink: sink)
+        let finished = AsyncLock(false)
+
+        let startTask = startFlagged(runtime, finished: finished)
+        guard await waitUntil({ sink.entered.withLock { $0 } }) else {
+            Issue.record("Runtime never published waitingApproval")
+            startTask.cancel()
+            sink.release.withLock { $0 = true }
+            return
+        }
+        // Start cancellation, then gate the release of the blocked approval
+        // publish on the observable cancelling transition so the
+        // interleaving is deterministic: cancel commits before the parked
+        // escalation resumes.
+        let cancelFinished = AsyncLock(false)
+        let cancelTask = Task {
+            await runtime.cancel()
+            cancelFinished.withLock { $0 = true }
+        }
+        guard await waitUntil({ sink.cancellingEntered.withLock { $0 } }) else {
+            Issue.record("Cancel never committed the cancelling transition")
+            sink.release.withLock { $0 = true }
+            startTask.cancel()
+            return
+        }
+        // Pre-fix: the continuation is not installed when cancel expires the
+        // approval, the escalation later parks forever, and cancel wedges
+        // awaiting the parked stream task — the run never leaves cancelling.
+        sink.release.withLock { $0 = true }
+
+        let settled = await waitUntil(timeout: 8) { finished.withLock { $0 } }
+        if settled { _ = try? await startTask.value }
+        #expect(settled, "Cancel racing the publish must still settle the run")
+        #expect(await runtime.state.name == "checkpointed")
+        #expect(executor.executedCalls.isEmpty)
+        // The expired approval is audited so recovery never replays it.
+        #expect(audit.entries.contains { $0.decision.hasPrefix("deny:cancelled") || $0.decision.hasPrefix("deny") })
+        // cancel() itself must return; a bounded wait keeps a regression
+        // from wedging the whole suite.
+        let cancelSettled = await waitUntil(timeout: 8) { cancelFinished.withLock { $0 } }
+        #expect(cancelSettled, "cancel() must return instead of awaiting a parked run forever")
+        if cancelSettled { _ = try? await cancelTask.value }
     }
 }

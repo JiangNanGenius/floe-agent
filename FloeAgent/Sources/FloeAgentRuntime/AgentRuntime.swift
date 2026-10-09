@@ -544,6 +544,23 @@ public actor FloeAgentRuntime {
     /// approval.
     private var approvalContinuation: CheckedContinuation<ApprovalDecision, Never>?
 
+    /// Human decision that arrived after the `.waitingApproval` state was
+    /// published but before the escalation wait installed
+    /// `approvalContinuation`. The actor serializes publish → decision →
+    /// install, so without this mailbox a fast decision used to be dropped
+    /// silently and the run parked forever (observed as an approval that the
+    /// user granted but which never executed, until the run wedged in
+    /// `cancelling` because `cancel()` awaited a parked stream task).
+    private var bufferedApprovalDecision: ApprovalDecision?
+
+    /// Set by `cancel()` when an approval escalation may still be in flight
+    /// (the state publish has not returned, or `policy.decide` has not
+    /// returned), i.e. the continuation is not installed yet. The escalation
+    /// wait consumes this one-shot flag and denies instead of parking on a
+    /// continuation nobody will resume. Resetting after consumption keeps a
+    /// later resume-from-checkpoint escalation askable.
+    private var approvalWaitInterrupted = false
+
     public init(
         configuration: Configuration,
         adapter: any ProviderAdapter,
@@ -787,7 +804,15 @@ public actor FloeAgentRuntime {
         streamTask = nil
         // 2. Stop the in-flight tool cooperatively.
         cancellationToken.cancel()
-        // 3. Expire any pending approval and audit it.
+        // 3. Expire any pending approval and audit it. The escalation wait may
+        // not have installed its continuation yet: the state publish can still
+        // be awaiting its sink, or `policy.decide` can still be running. Flag
+        // the interruption (one-shot, consumed by the wait) and drop any
+        // decision that raced the publish, so a late wait denies instead of
+        // parking on a continuation nobody will resume while `cancel()` owns
+        // the terminal transition.
+        bufferedApprovalDecision = nil
+        approvalWaitInterrupted = true
         if let continuation = approvalContinuation {
             approvalContinuation = nil
             continuation.resume(returning: .deny(reason: "cancelled"))
@@ -953,6 +978,11 @@ public actor FloeAgentRuntime {
         }
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
+        // A resumed run starts a fresh escalation lifecycle: any interruption
+        // flag or buffered decision from a pre-cancel wait must not deny a
+        // legitimately re-asked approval.
+        approvalWaitInterrupted = false
+        bufferedApprovalDecision = nil
         replayableToolHistory = checkpoint.replayedToolPairs ?? []
         // A resumed run keeps the cross-task continuation contract: a
         // successful history lookup committed before or during the
@@ -1108,6 +1138,14 @@ public actor FloeAgentRuntime {
         if let continuation = approvalContinuation {
             approvalContinuation = nil
             continuation.resume(returning: decision)
+        } else if bufferedApprovalDecision == nil {
+            // Racing the escalation wait: the state is already published (the
+            // UI card is visible and durable) but the continuation is not
+            // installed while the transition's sink publish is still in
+            // flight. Buffer the first decision — the wait consumes it
+            // instead of parking. A duplicate tap while buffered is ignored,
+            // keeping the first human decision authoritative.
+            bufferedApprovalDecision = decision
         }
     }
 
@@ -2478,9 +2516,23 @@ public actor FloeAgentRuntime {
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
             await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
-            let humanDecision = await withCheckedContinuation {
-                (continuation: CheckedContinuation<ApprovalDecision, Never>) in
-                approvalContinuation = continuation
+            // Consume a decision that raced the publish above, or an
+            // interruption installed by `cancel()` while the publish was in
+            // flight, before parking on the continuation. Both checks and the
+            // install below run in one uninterrupted actor turn, so a
+            // decision can never fall between them.
+            let humanDecision: ApprovalDecision
+            if approvalWaitInterrupted {
+                approvalWaitInterrupted = false
+                humanDecision = .deny(reason: "cancelled")
+            } else if let buffered = bufferedApprovalDecision {
+                bufferedApprovalDecision = nil
+                humanDecision = buffered
+            } else {
+                humanDecision = await withCheckedContinuation {
+                    (continuation: CheckedContinuation<ApprovalDecision, Never>) in
+                    approvalContinuation = continuation
+                }
             }
             guard case .waitingApproval = state else {
                 return .denied(reason: "Cancelled while waiting for approval", decision: "deny:cancelled")
