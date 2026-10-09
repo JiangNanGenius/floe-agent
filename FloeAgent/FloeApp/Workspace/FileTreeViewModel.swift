@@ -12,6 +12,8 @@ import Foundation
 import SwiftUI
 import FloeWorkspace
 import FloeTools
+import FloeCore
+import FloeCAD
 
 /// One node in the lazily loaded directory tree.
 struct FileTreeNode: Identifiable, Hashable, Sendable {
@@ -160,6 +162,46 @@ final class FileTreeViewModel: ObservableObject {
         let path = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
         try center.createDirectory(relativePath: path)
         await loadRoot()
+    }
+
+    /// Production creation of a native `.floecad` document through the
+    /// versioned package store (the same `FloeCADDocument.create` the
+    /// workbench opens later — no fixture, no manufactured JSON). Refuses
+    /// cloud/network workspaces (native CAD commits packages locally), names
+    /// are sanitized to a unique `<name>.floecad`, and the created relative
+    /// path is returned so the caller can select it.
+    @discardableResult
+    func createNativeCADDocument(parent relativePath: String, name: String) async throws -> String {
+        guard !center.isCloudWorkspacePath(relativePath.isEmpty ? "." : relativePath),
+              !center.isNetworkWorkspacePath(relativePath.isEmpty ? "." : relativePath),
+              let service = center.fileService else {
+            throw FloeError.validationFailed(
+                FloeL10n.l("workspace.file_tree_view.cad_needs_local_workspace"))
+        }
+        let stem = name.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+        guard !stem.isEmpty else {
+            throw FloeError.validationFailed(
+                FloeL10n.l("workspace.file_tree_view.cad_document_name"))
+        }
+        let base = stem.hasSuffix(".floecad") ? stem : "\(stem).floecad"
+        // Unique-ify against the guard-resolved tree (never overwrite).
+        func relative(_ file: String) -> String {
+            relativePath.isEmpty ? file : "\(relativePath)/\(file)"
+        }
+        var candidate = base
+        var serial = 2
+        while pathExists(relative(candidate)) {
+            candidate = "\((base as NSString).deletingPathExtension) \(serial).floecad"
+            serial += 1
+        }
+        let relative = relative(candidate)
+        let url = try service.guardResolver.resolve(relative)
+        _ = try await FloeCADDocument.create(at: url,
+                                             name: (candidate as NSString).deletingPathExtension)
+        await loadRoot()
+        return relative
     }
 
     /// Deletes a node and reloads the tree.

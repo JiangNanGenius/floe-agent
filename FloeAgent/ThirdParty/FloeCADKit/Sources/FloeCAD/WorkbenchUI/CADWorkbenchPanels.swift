@@ -33,6 +33,29 @@ public enum FloeCADStrings {
         return value.isEmpty ? fallback : value
     }
 
+    /// Localized format string with `%@` substitution (same placeholder
+    /// convention as the host catalog), e.g.
+    /// `FloeCADStrings.format("cad.error.import", "Couldn't import “%@”.", name)`.
+    nonisolated public static func format(_ key: String, _ fallback: String,
+                                          _ arguments: Any...) -> String {
+        let template = text(key, fallback)
+        var result = ""
+        var iterator = arguments.makeIterator()
+        var index = template.startIndex
+        while index < template.endIndex {
+            let next = template.index(after: index)
+            if template[index] == "%", next < template.endIndex, template[next] == "@",
+               let argument = iterator.next() {
+                result += String(describing: argument)
+                index = template.index(after: next)
+            } else {
+                result.append(template[index])
+                index = next
+            }
+        }
+        return result
+    }
+
     /// SwiftUI label text.
     nonisolated public static func label(_ key: String, _ fallback: String) -> LocalizedStringKey {
         LocalizedStringKey(text(key, fallback))
@@ -517,42 +540,112 @@ struct CADWorkbenchToolsPanel: View {
 
     /// The Canvas entry path, visible in the same panel the other CAD tools
     /// live in: "Apply to canvas" updates the ORIGINAL bound node;
-    /// "Make variant" is the only action that creates a new node.
+    /// "Make variant" creates a new node FROM a bound one; "Add to canvas"
+    /// creates the FIRST node in an explicitly picked destination — no
+    /// first-canvas guessing, no contradictory dead end.
     @ViewBuilder
     private var canvasSection: some View {
-        HStack(spacing: 8) {
-            if let apply = canvasActions?.applyToCanvas {
-                Button {
-                    run(apply)
-                } label: {
-                    Label(FloeCADStrings.label("cad.canvas.apply", "Apply to canvas"),
-                          systemImage: "rectangle.on.rectangle.angled")
-                        .font(.caption)
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 8) {
+                if let apply = canvasActions?.applyToCanvas {
+                    Button {
+                        run(apply)
+                    } label: {
+                        Label(FloeCADStrings.label("cad.canvas.apply", "Apply to canvas"),
+                              systemImage: "rectangle.on.rectangle.angled")
+                            .font(.caption)
+                    }
+                    .disabled(isCanvasActionRunning)
+                    .accessibilityIdentifier("CADApplyToCanvasButton")
                 }
-                .disabled(isCanvasActionRunning)
-                .accessibilityIdentifier("CADApplyToCanvasButton")
-            }
-            if let variant = canvasActions?.makeVariant {
-                Button {
-                    run(variant)
-                } label: {
-                    Label(FloeCADStrings.label("cad.canvas.variant", "Make variant"),
-                          systemImage: "plus.square.on.square")
-                        .font(.caption)
+                if let variant = canvasActions?.makeVariant {
+                    Button {
+                        run(variant)
+                    } label: {
+                        Label(FloeCADStrings.label("cad.canvas.variant", "Make variant"),
+                              systemImage: "plus.square.on.square")
+                            .font(.caption)
+                    }
+                    .disabled(isCanvasActionRunning)
+                    .accessibilityIdentifier("CADMakeVariantButton")
                 }
-                .disabled(isCanvasActionRunning)
-                .accessibilityIdentifier("CADMakeVariantButton")
+                if canvasActions?.createNode != nil {
+                    Button {
+                        presentCreatePicker()
+                    } label: {
+                        Label(FloeCADStrings.label("cad.canvas.add", "Add to canvas"),
+                              systemImage: "plus.rectangle.on.rectangle")
+                            .font(.caption)
+                    }
+                    .disabled(isCanvasActionRunning)
+                    .accessibilityIdentifier("CADAddToCanvasButton")
+                }
+                if isCanvasActionRunning {
+                    ProgressView().controlSize(.small)
+                }
             }
-            if isCanvasActionRunning {
-                ProgressView().controlSize(.small)
+            if let canvasMessage {
+                Text(canvasMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 330, alignment: .trailing)
             }
         }
-        if let canvasMessage {
-            Text(canvasMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 330, alignment: .leading)
+        .sheet(isPresented: $showCreatePicker) {
+            createTargetPicker
         }
+    }
+
+    @State private var showCreatePicker = false
+    @State private var createChoices: [CADCanvasActions.TargetChoice] = []
+    @State private var createRequest: ((FloeCADDocument, URL, CADCanvasActions.TargetChoice) async -> CADCanvasActionResult)?
+
+    private func presentCreatePicker() {
+        guard let targets = canvasActions?.createTargets,
+              let createNode = canvasActions?.createNode else { return }
+        let choices = targets()
+        guard !choices.isEmpty else {
+            canvasMessage = FloeCADStrings.text("cad.canvas.noTargets",
+                                                "No canvas is available to add this document to.")
+            return
+        }
+        createChoices = choices
+        createRequest = createNode
+        showCreatePicker = true
+    }
+
+    /// Explicit destination picker: one row per canvas document the host
+    /// offers; tapping a row performs the create against exactly that target.
+    private var createTargetPicker: some View {
+        NavigationStack {
+            List(createChoices) { choice in
+                Button {
+                    showCreatePicker = false
+                    let request = createRequest
+                    guard let request else { return }
+                    isCanvasActionRunning = true
+                    canvasMessage = nil
+                    Task { @MainActor in
+                        let result = await request(document, document.url, choice)
+                        canvasMessage = result.message
+                        isCanvasActionRunning = false
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(choice.title)
+                        if let documentTitle = choice.documentTitle {
+                            Text(documentTitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("CADCreateTarget-\(choice.id)")
+            }
+            .navigationTitle(FloeCADStrings.text("cad.canvas.pickDestination", "Pick a canvas"))
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
     }
 
     private func run(_ operation: @escaping CADCanvasActions.Operation) {

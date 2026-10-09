@@ -48,7 +48,35 @@ enum CADCanvasActionBridge {
             },
             makeVariant: { document, url in
                 await makeVariant(document: document, url: url, assetStore: assetStore)
+            },
+            createTargets: {
+                Self.explicitCreateTargets()
+            },
+            createNode: { document, url, choice in
+                await createNodeInCanvas(document: document, url: url,
+                                         choice: choice, assetStore: assetStore)
             })
+    }
+
+    /// Every canvas document the user can explicitly pick — no "first canvas"
+    /// guessing. The token encodes canvas + document; `createNodeInCanvas`
+    /// parses it back and validates both still exist before writing.
+    private static func explicitCreateTargets() -> [CADCanvasActions.TargetChoice] {
+        var choices: [CADCanvasActions.TargetChoice] = []
+        for summary in WorkspaceCanvasRegistry.summaries() {
+            guard let project = try? WorkspaceCanvasRegistry.project(canvasID: summary.id) else { continue }
+            for document in project.documents {
+                choices.append(CADCanvasActions.TargetChoice(
+                    id: "\(summary.id.uuidString)|\(document.id.uuidString)",
+                    title: summary.name,
+                    documentTitle: document.name))
+            }
+        }
+        return choices.sorted { lhs, rhs in
+            lhs.title == rhs.title
+                ? (lhs.documentTitle ?? "") < (rhs.documentTitle ?? "")
+                : lhs.title < rhs.title
+        }
     }
 
     // MARK: Apply (update the ORIGINAL bound node)
@@ -65,9 +93,12 @@ enum CADCanvasActionBridge {
             guard let located = try locateTarget(packageURL: url),
                   let node = located.project.documents
                     .flatMap(\.nodes).first(where: { $0.id == located.nodeID }) else {
+                // Actionable, not a dead end: the explicit "Add to canvas"
+                // route in the tools panel creates the first node in a canvas
+                // the user picks; only then do Apply/Variant apply to it.
                 return .status(canvasLocalized(
-                    "画布中没有引用该 CAD 文档的节点；请先用“创建分支”新建节点，或从文件导入该 .floecad 到画布。",
-                    "No canvas node references this CAD document yet. Use \"Make variant\" to create one, or import the .floecad into a canvas first."))
+                    "画布中没有引用该 CAD 文档的节点。请使用工具面板中的“添加到画布”，选择目标画布后创建第一个节点。",
+                    "No canvas node references this CAD document yet. Use \"Add to Canvas\" in the tools panel and pick a destination to create the first node."))
             }
             let reference = try await persistRender(exported, document: document,
                                                     node: node, assetStore: assetStore)
@@ -113,9 +144,12 @@ enum CADCanvasActionBridge {
             guard let located = try locateTarget(packageURL: url),
                   let sourceNode = located.project.documents
                     .flatMap(\.nodes).first(where: { $0.id == located.nodeID }) else {
+                // A variant branches FROM a bound node; without one the
+                // actionable route is "Add to Canvas" first (explicit pick),
+                // never an invented source.
                 return .status(canvasLocalized(
-                    "画布中没有引用该 CAD 文档的节点；请先将该 .floecad 导入画布，再创建分支。",
-                    "No canvas node references this CAD document yet. Import the .floecad into a canvas first, then create the variant."))
+                    "没有可分支的原节点。请先用“添加到画布”选择目标画布创建第一个节点，再从此节点创建分支。",
+                    "There is no bound node to branch from. Use \"Add to Canvas\" first and pick a destination; then create the variant from that node."))
             }
             let reference = try await persistRender(exported, document: document,
                                                     node: sourceNode, assetStore: assetStore)
@@ -148,6 +182,69 @@ enum CADCanvasActionBridge {
             return .success(canvasLocalized(
                 "已创建画布分支节点；原节点保持不变。",
                 "A canvas variant node was created; the original is unchanged."))
+        } catch {
+            return .status(error.localizedDescription)
+        }
+    }
+
+    // MARK: Create the FIRST node (explicit destination)
+
+    /// Creates the first Canvas node for this package in the user's explicit
+    /// pick. The node binds to the package by `sourcePath` + content hash
+    /// metadata (the live asset is the exported render), so a later "Apply to
+    /// canvas" resolves it through the recorded binding — never by guessing.
+    private static func createNodeInCanvas(
+        document: FloeCADDocument,
+        url: URL,
+        choice: CADCanvasActions.TargetChoice,
+        assetStore: CreativeAssetStore
+    ) async -> CADCanvasActionResult {
+        do {
+            let parts = choice.id.split(separator: "|").map(String.init)
+            guard parts.count == 2,
+                  let canvasID = UUID(uuidString: parts[0]),
+                  let documentID = UUID(uuidString: parts[1]) else {
+                return .status(canvasLocalized(
+                    "画布目标已失效，请重新选择。",
+                    "The canvas destination is no longer valid; please pick again."))
+            }
+            let exported = try await exportPNG(document: document, url: url)
+            // Refuse when a binding appeared between the pick and the write:
+            // the explicit create must never shadow an existing node.
+            if let existing = try locateTarget(packageURL: url) {
+                return .status(canvasLocalized(
+                    "画布“\(existing.project.name)”已有引用该文档的节点；请改用“更新画布”或“创建分支”。",
+                    "Canvas \"\(existing.project.name)\" already has a node referencing this document; use Apply or Make variant instead."))
+            }
+            let render = try await persistRender(exported, document: document,
+                                                 node: nil, assetStore: assetStore)
+            let position = CanvasPoint(x: 120, y: 120)
+            let operation = try CADCanvasNodePlanner.createPatch(
+                sourcePath: sourcePathKey(packageURL: url),
+                sourceAssetHash: document.contentSHA256,
+                renderedAsset: render,
+                position: position,
+                size: CanvasSize(width: 420, height: 300),
+                text: document.name,
+                extraMetadata: [
+                    "editor": "native-cad",
+                    "cadFormat": "floecad",
+                    "appliedRevision": String(document.revision),
+                    "appliedContentHash": exported.hash,
+                ])
+            guard try await commit(operations: [operation],
+                             nodeID: nil,
+                             canvasID: canvasID,
+                             documentID: documentID,
+                             assetStore: assetStore) != nil else {
+                throw CADDocumentError(code: "canvas_write_failed",
+                                       message: canvasLocalized(
+                                           "画布写入失败；未创建节点。",
+                                           "The canvas write failed; no node was created."))
+            }
+            return .success(canvasLocalized(
+                "已在所选画布中创建 CAD 节点；之后可用“更新画布”或“创建分支”。",
+                "A CAD node was created in the chosen canvas; use Apply or Make variant from here."))
         } catch {
             return .status(error.localizedDescription)
         }

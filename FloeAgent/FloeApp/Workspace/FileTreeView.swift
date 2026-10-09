@@ -29,6 +29,9 @@ struct FileTreeView: View {
     @State private var showingNewFolder = false
     @State private var newFolderParent = ""
     @State private var newFolderName = ""
+    @State private var showingNewCAD = false
+    @State private var newCADParent = ""
+    @State private var newCADName = ""
     @State private var showingRename = false
     @State private var renameTarget: FileTreeNode?
     @State private var renameName = ""
@@ -64,6 +67,28 @@ struct FileTreeView: View {
         .toolbar {
             if showsToolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            newCADParent = ""
+                            newCADName = ""
+                            showingNewCAD = true
+                        } label: {
+                            Label("workspace.file_tree_view.new_cad_document",
+                                  systemImage: "cube.transparent")
+                        }
+                        .accessibilityIdentifier("fileTree.newCADDocument")
+                        Button {
+                            newFolderParent = ""
+                            newFolderName = ""
+                            showingNewFolder = true
+                        } label: {
+                            Label("workspace.file_tree_view.new_folder",
+                                  systemImage: "folder.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityIdentifier("fileTree.createMenu")
                     Button(selecting ? "workspace.file_tree_view.done_selecting" : "workspace.file_tree_view.select", systemImage: "checklist") {
                         selecting.toggle(); selection.removeAll()
                     }
@@ -111,6 +136,13 @@ struct FileTreeView: View {
             TextField("workspace.file_tree_view.folder_name", text: $newFolderName)
             Button("settings.git_hub_settings_view.create") { Task { await createFolder() } }
             Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+        }
+        .alert("workspace.file_tree_view.new_cad_document", isPresented: $showingNewCAD) {
+            TextField("workspace.file_tree_view.cad_document_name", text: $newCADName)
+            Button("settings.git_hub_settings_view.create") { Task { await createCADDocument() } }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+        } message: {
+            Text("workspace.file_tree_view.new_cad_document_message")
         }
         .alert("workspace.file_tree_view.rename", isPresented: $showingRename) {
             TextField("workspace.file_tree_view.new_name", text: $renameName)
@@ -224,6 +256,13 @@ struct FileTreeView: View {
             } label: {
                 Label("workspace.file_tree_view.new_folder", systemImage: "folder.badge.plus")
             }
+            Button {
+                newCADParent = node.relativePath
+                newCADName = ""
+                showingNewCAD = true
+            } label: {
+                Label("workspace.file_tree_view.new_cad_document", systemImage: "cube.transparent")
+            }
         }
         Button {
             renameTarget = node
@@ -255,6 +294,21 @@ struct FileTreeView: View {
         guard !name.isEmpty else { return }
         do {
             try await viewModel.createDirectory(parent: newFolderParent, name: name)
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    /// Production native CAD creation: builds the `.floecad` package through
+    /// the versioned store and opens it immediately so the user lands in the
+    /// workbench (sketch → solid → save all work from here).
+    private func createCADDocument() async {
+        let name = newCADName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let relative = try await viewModel.createNativeCADDocument(
+                parent: newCADParent, name: name)
+            onSelectFile(relative)
         } catch {
             operationError = error.localizedDescription
         }

@@ -38,6 +38,7 @@ public enum CADCanvasNodePlanner {
         case notCADNode
         case missingAsset
         case missingSourceHash
+        case missingSourcePath
         case sourceChanged
         case emptyRender
         case historyUnsupported
@@ -52,6 +53,8 @@ public enum CADCanvasNodePlanner {
                 return FloeL10n.l("core.canvas_copy_fork_planner.this_node_has_no_local_drawing")
             case .missingSourceHash:
                 return FloeL10n.l("core.canvas_copy_fork_planner.the_drawing_is_missing_its_content")
+            case .missingSourcePath:
+                return "The CAD document has no source path to bind the canvas node to."
             case .sourceChanged:
                 return FloeL10n.l("core.canvas_copy_fork_planner.the_node_drawing_changed_during_editing")
             case .emptyRender:
@@ -130,6 +133,53 @@ public enum CADCanvasNodePlanner {
         return CanvasPatchOperation(
             kind: .update,
             nodeID: liveNode.id,
+            asset: renderedAsset,
+            metadata: metadata)
+    }
+
+    /// Explicit "Add to canvas" when NO node references the source package
+    /// yet: ONE `.create` patch for a `.file` node bound to the package
+    /// through its metadata (sourcePath + sourceHash), with the exported
+    /// render as its live asset and a seeded CAD revision history. No source
+    /// node is read or modified, and no `generatedFrom` edge is invented —
+    /// the destination canvas/document is the caller's explicit choice.
+    public static func createPatch(
+        sourcePath: String,
+        sourceAssetHash: String,
+        renderedAsset: CanvasAssetReference,
+        position: CanvasPoint,
+        size: CanvasSize,
+        text: String? = nil,
+        extraMetadata: [String: String] = [:]
+    ) throws -> CanvasPatchOperation {
+        guard !sourcePath.isEmpty else { throw Refusal.missingSourcePath }
+        guard !sourceAssetHash.isEmpty else { throw Refusal.missingSourceHash }
+        guard let renderHash = renderedAsset.contentHash, !renderHash.isEmpty,
+              let renderPath = renderedAsset.localRelativePath, !renderPath.isEmpty else {
+            throw Refusal.emptyRender
+        }
+        var metadata = extraMetadata
+        metadata[MetadataKeys.sourcePath] = sourcePath
+        metadata[MetadataKeys.sourceHash] = sourceAssetHash
+        metadata[MetadataKeys.editor] = "native-cad"
+        let seed = CanvasDrawingRevision(
+            assetID: renderedAsset.id,
+            contentHash: renderHash,
+            relativePath: renderPath,
+            byteCount: renderedAsset.byteCount ?? 0,
+            kind: .original,
+            label: nil)
+        if let history = try? CanvasDrawingRevisionHistory.metadata([seed]) {
+            metadata[CanvasDrawingRevisionHistory.metadataKey] =
+                history[CanvasDrawingRevisionHistory.metadataKey]
+        }
+        return CanvasPatchOperation(
+            kind: .create,
+            nodeID: UUID(),
+            nodeKind: .file,
+            text: text,
+            position: position,
+            size: size,
             asset: renderedAsset,
             metadata: metadata)
     }

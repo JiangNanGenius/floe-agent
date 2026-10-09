@@ -55,15 +55,41 @@ public struct CADCanvasActionResult: Sendable {
 public final class CADCanvasActions {
     public typealias Operation = @MainActor (FloeCADDocument, URL) async -> CADCanvasActionResult
 
+    /// An explicit Canvas destination the user picked — never a guessed
+    /// "first canvas". `id` is an opaque host token (the host parses it back
+    /// in `createNode`); `title`/`documentTitle` are already localized.
+    public struct TargetChoice: Identifiable, Sendable, Equatable {
+        public let id: String
+        public let title: String
+        public let documentTitle: String?
+        public init(id: String, title: String, documentTitle: String? = nil) {
+            self.id = id
+            self.title = title
+            self.documentTitle = documentTitle
+        }
+    }
+
     /// Update the ORIGINAL bound Canvas node in place (identity, name,
     /// position, size and edges preserved). Nil hides the entry.
     public let applyToCanvas: Operation?
     /// Create a NEW Canvas node for this result; the original node is never
     /// modified. Nil hides the entry.
     public let makeVariant: Operation?
+    /// Explicit destinations for `createNode` (nil hides the entry). The host
+    /// returns only canvases the current user/workspace owns.
+    public let createTargets: (@MainActor () -> [TargetChoice])?
+    /// Create the FIRST Canvas node for this package in an explicitly picked
+    /// destination. This is the actionable route out of "no node references
+    /// this document yet" — no first-canvas guessing.
+    public let createNode: (@MainActor (FloeCADDocument, URL, TargetChoice) async -> CADCanvasActionResult)?
 
-    public init(applyToCanvas: Operation? = nil, makeVariant: Operation? = nil) {
+    public init(applyToCanvas: Operation? = nil,
+                makeVariant: Operation? = nil,
+                createTargets: (@MainActor () -> [TargetChoice])? = nil,
+                createNode: (@MainActor (FloeCADDocument, URL, TargetChoice) async -> CADCanvasActionResult)? = nil) {
         self.applyToCanvas = applyToCanvas
         self.makeVariant = makeVariant
+        self.createTargets = createTargets
+        self.createNode = createNode
     }
 }
