@@ -49,40 +49,48 @@ struct TerminalPollCadenceTests {
             let bytes: Int
             let at: ContinuousClock.Instant
         }
-        private let lock = NSLock()
-        private var queue: [UInt8] = []
-        private(set) var log: [LogEvent] = []
+        /// Scripted shell state; the mock's protocol methods are all async,
+        /// so an actor is the simplest correct protection.
+        actor State {
+            var queue: [UInt8] = []
+            var log: [LogEvent] = []
+            func drain(maxBytes: Int) -> [UInt8] {
+                let bytes = Array(queue.prefix(maxBytes))
+                queue.removeFirst(bytes.count)
+                return bytes
+            }
+            func appendLog(_ event: LogEvent) { log.append(event) }
+            func appendOutput(_ bytes: [UInt8]) { queue.append(contentsOf: bytes) }
+        }
+        private let state = State()
         /// Compressed blocking window per exchange (ms).
         var simulatedWaitMs: Int = 5
 
-        func record(_ kind: String, bytes: Int) {
-            lock.lock()
-            log.append(.init(kind: kind, bytes: bytes, at: .now))
-            lock.unlock()
+        func record(_ kind: String, bytes: Int) async {
+            await state.appendLog(.init(kind: kind, bytes: bytes, at: .now))
         }
-        var events: [LogEvent] { lock.lock(); defer { lock.unlock() }; return log }
+        var events: [LogEvent] {
+            get async { await state.log }
+        }
 
         func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
-            .exited(0, "", "", nil, 0, 0)
+            .exited(code: 0, stdout: "", stderr: "", truncated: false, stderrTruncated: false, durationMs: 0)
         }
 
         func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
-            record("open", bytes: 0)
+            await record("open", bytes: 0)
             return ShellOpenResult(sessionID: request.sessionID, initialOutput: "", alive: true)
         }
 
         func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
             if let input = request.input, !input.isEmpty {
-                record("write", bytes: input.utf8.count)
+                await record("write", bytes: input.utf8.count)
                 // Scripted echo shell: whatever arrives becomes output.
-                lock.lock(); queue.append(contentsOf: input.utf8); lock.unlock()
+                await state.appendOutput(Array(input.utf8))
             }
             try? await Task.sleep(for: .milliseconds(simulatedWaitMs))
-            lock.lock()
-            let chunk = Array(queue.prefix(max(1, min(request.maxBytes, 64 * 1024))))
-            queue.removeFirst(chunk.count)
-            lock.unlock()
-            record("read", bytes: chunk.count)
+            let chunk: [UInt8] = await state.drain(maxBytes: max(1, min(request.maxBytes, 64 * 1024)))
+            await record("read", bytes: chunk.count)
             return ShellExchangeResult(
                 output: String(decoding: chunk, as: UTF8.self),
                 alive: true,
@@ -92,16 +100,14 @@ struct TerminalPollCadenceTests {
             )
         }
 
-        func closeSession(sessionID: String) async { record("close", bytes: 0) }
-        func signalSession(sessionID: String, signal: ShellSignal) async { record("signal:\(signal.rawValue)", bytes: 0) }
+        func closeSession(sessionID: String) async { await record("close", bytes: 0) }
+        func signalSession(sessionID: String, signal: ShellSignal) async { await record("signal:\(signal.rawValue)", bytes: 0) }
         func resizeSession(sessionID: String, columns: Int, rows: Int) async {}
 
         /// Queues `byteCount` bytes of sustained output (a `cat big.txt`
         /// equivalent) before the next read.
-        func scriptOutput(_ byteCount: Int) {
-            lock.lock()
-            queue.append(contentsOf: [UInt8](repeating: UInt8(ascii: "x"), count: byteCount))
-            lock.unlock()
+        func scriptOutput(_ byteCount: Int) async {
+            await state.appendOutput([UInt8](repeating: UInt8(ascii: "x"), count: byteCount))
         }
     }
 
@@ -127,7 +133,7 @@ struct TerminalPollCadenceTests {
         // Run the visible-loop body once: it must flush the pending key
         // without any idle backoff (input present → immediate exchange).
         await owner.pollOnceForTesting()
-        let wrote = backend.events.last { $0.kind == "write" }
+        let wrote = await backend.events.last { $0.kind == "write" }
         guard let wrote else {
             Issue.record("Pending input was never written to the backend")
             return
@@ -149,12 +155,13 @@ struct TerminalPollCadenceTests {
             Issue.record("Mock session did not open (environment lease unavailable in this test host)")
             return
         }
-        backend.scriptOutput(256 * 1024)
+        await backend.scriptOutput(256 * 1024)
         let start = ContinuousClock.now
         var drained = 0
         while drained < 256 * 1024 {
             await owner.pollOnceForTesting()
-            drained = backend.events.filter { $0.kind == "read" }.reduce(0) { $0 + $1.bytes }
+            let readEvents = await backend.events.filter { $0.kind == "read" }
+            drained = readEvents.reduce(0) { $0 + $1.bytes }
             if start.duration(to: .now) > .seconds(30) {
                 Issue.record("Drain stalled at \(drained) bytes"); break
             }
