@@ -140,6 +140,49 @@ final class CADIGESTests: XCTestCase {
         XCTAssertEqual(bodyCount(), 1)
     }
 
+    /// A file that carries BOTH a closed solid and a loose surface must
+    /// import both roots: the solid as an exact analytic body, the surface as
+    /// a render-only body — never "solids only, surfaces dropped".
+    func testMixedSolidAndSurfaceIGESPreservesBothRoots() throws {
+        let solid = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 20, depth: 30, height: 40), placement: .identity))
+        let donor = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 10, depth: 10, height: 10), placement: .identity))
+        let face = try XCTUnwrap(OCCTKernel.debugStandaloneFace(from: donor),
+                                 "the donor box must yield a standalone face")
+        let url = workDir.appendingPathComponent("mixed.igs")
+        XCTAssertTrue(OCCTKernel.debugWriteIGES([solid, face], to: url, brepMode: true),
+                      "the mixed IGES fixture could not be written")
+        let data = try Data(contentsOf: url)
+
+        let outcome = importOutcome(data, fileName: "Mixed")
+        XCTAssertTrue(outcome.isOK,
+                      "mixed IGES import failed (\(outcome.status)) \(outcome.errorCode ?? ""): "
+                        + "\(outcome.message ?? "")")
+        let payload = object(outcome)
+        XCTAssertEqual(payload["solidsImported"] as? Int, 1,
+                       "the closed solid must import as an exact body")
+        XCTAssertGreaterThanOrEqual(payload["surfacesImported"] as? Int ?? 0, 1,
+                                    "the loose surface must be preserved, not dropped")
+        let rows = try XCTUnwrap(payload["imported"] as? [[String: Any]])
+        XCTAssertEqual(bodyCount(), rows.count, "every imported root becomes one body")
+        let solidRow = try XCTUnwrap(rows.first { $0["kind"] as? String == "solid" })
+        XCTAssertEqual(solidRow["analyticBRep"] as? Bool, true)
+        let surfaceRow = try XCTUnwrap(rows.first { $0["kind"] as? String == "surface" })
+        XCTAssertEqual(surfaceRow["analyticBRep"] as? Bool, false,
+                       "a surface must never be reported as an analytic solid")
+        let solidBody = try XCTUnwrap(
+            document.session.document.bodies.first { $0.brep != nil },
+            "the solid body must carry its exact B-rep")
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(solidBody.brep)), 24_000.0, accuracy: 1e-3)
+        // Each imported body is its own undo step (same granularity as the
+        // other mesh imports); every step comes off cleanly.
+        for expected in (0..<rows.count).reversed() {
+            document.session.undo()
+            XCTAssertEqual(bodyCount(), expected)
+        }
+    }
+
     /// Face-mode round trip: an IGES file that carries only surfaces must
     /// import as render-only bodies, honestly reported as surfaces — never as
     /// analytic solids.

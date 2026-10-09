@@ -1073,12 +1073,16 @@ nonisolated enum OCCTKernel {
     }
 
 #if DEBUG
+    /// DEBUG-only test support: the first face of `handle` as a standalone
+    /// shape, so a fixture can carry a solid AND a loose surface in one IGES
+    /// file (mixed-root classification coverage).
+    static func debugStandaloneFace(from handle: BRepHandle) -> BRepHandle? {
+        guard let face = OCCTBridge.debugStandaloneFace(from: handle.shape) else { return nil }
+        return BRepHandle(face)
+    }
+
     /// Test support only: write `handles` to an IGES file through OCCT's own
-    /// IGES writer. `brepMode` true writes them as IGES BRep (solids stay
-    /// solids on read-back); false decomposes them into loose faces, which is
-    /// how the import tests produce a surface-only file. No product feature
-    /// exports IGES, so this exists solely for the import tests. Debug builds
-    /// only, matching the bridge's `debugWriteIGESShapes:toPath:brepMode:`.
+    /// writer; see the bridge for the mode semantics. Debug builds only.
     static func debugWriteIGES(_ handles: [BRepHandle], to url: URL,
                                brepMode: Bool) -> Bool {
         guard !handles.isEmpty else { return false }

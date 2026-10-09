@@ -328,18 +328,27 @@ public final class CADScriptService {
         }
 
         // Result binding: the record's output body must still contain exactly
-        // the mesh the last apply produced. A live hash mismatch is a manual
-        // edit or an undo; it is never silently overwritten.
+        // the mesh the last apply produced, and the document must still be at
+        // the revision that apply committed. A live hash mismatch is a manual
+        // edit or an undo; a revision mismatch is ANY other committed change.
+        // Neither is silently overwritten — re-applying stale script output
+        // over someone else's edit is exactly the corruption this gate exists
+        // to prevent.
         let existing = record.outputBodyID.flatMap { output in
             document.session.document.bodies.first { $0.id.raw == output }
         }
         if let existing, conflict == .auto {
             let liveHash = Self.renderHash(existing.render)
-            if liveHash != record.outputRenderSHA256 {
+            let hashMismatch = liveHash != record.outputRenderSHA256
+            let revisionMismatch = record.outputDocumentRevision
+                .map { $0 != document.revision } ?? false
+            if hashMismatch || revisionMismatch {
+                let reason = hashMismatch
+                    ? "The script's output body '\(existing.name)' was edited (or the apply was undone) since the last run."
+                    : "The document changed (revision \(record.outputDocumentRevision ?? -1) → \(document.revision)) since the script's last apply."
                 return Self.fail(
                     "output_changed",
-                    "The script's output body '\(existing.name)' was edited (or the apply was undone) "
-                    + "since the last run. Re-run with conflict=fork to keep the edited body and create "
+                    "\(reason) Re-run with conflict=fork to keep the current state and create "
                     + "a new script output, or conflict=rebuild to overwrite it explicitly.")
             }
         }

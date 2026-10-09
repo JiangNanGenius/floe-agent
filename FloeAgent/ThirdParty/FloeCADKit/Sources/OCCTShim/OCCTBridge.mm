@@ -4293,6 +4293,19 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
     }
 }
 
++ (nullable OCCTShape *)debugStandaloneFaceFrom:(OCCTShape *)shape {
+    if (shape == nil || shape->_shape.IsNull()) return nil;
+    try {
+        TopExp_Explorer ex(shape->_shape, TopAbs_FACE);
+        if (!ex.More()) return nil;
+        OCCTShape *out = [OCCTShape new];
+        out->_shape = ex.Current();
+        return out;
+    } catch (...) {
+        return nil;
+    }
+}
+
 + (nullable OCCTShape *)debugInvalidOpenBoxWithSize:(double)size {
     if (size <= 0) return nil;
     try {

@@ -642,6 +642,10 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 + (BOOL)debugWriteIGESShapes:(NSArray<OCCTShape *> *)shapes
                       toPath:(NSString *)path
                     brepMode:(BOOL)brepMode;
+/// DEBUG-only test support: the first TopAbs_FACE of a shape as a standalone
+/// shape, for mixed solid+surface IGES fixtures. Nil when the shape has no
+/// face or the copy fails.
++ (nullable OCCTShape *)debugStandaloneFaceFrom:(OCCTShape *)shape;
 #endif
 
 /// Serialize a solid to OCCT's BRep text format, so the analytic geometry can be

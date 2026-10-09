@@ -233,6 +233,51 @@ final class CADScriptAndMeshTests: XCTestCase {
         reopened.close()
     }
 
+    /// The recorded `outputDocumentRevision` is enforced, not just stored:
+    /// after ANY committed document change (here an unrelated import + save,
+    /// with the script output body itself untouched), an automatic re-apply
+    /// is refused until the caller explicitly chooses fork or rebuild.
+    func testScriptApplyEnforcesRecordedDocumentRevision() async throws {
+        let document = try await makeDocument("ScriptRevision")
+        let service = CADScriptService(document: document)
+        let put = await service.handle(action: "put", args: [
+            "name": "Cube", "source": "cube { size 4 }",
+        ])
+        let scriptID = try XCTUnwrap((put["script"] as? [String: Any])?["id"] as? String)
+        let applied = await service.handle(action: "apply", args: ["id": scriptID])
+        XCTAssertEqual(applied["ok"] as? Bool, true, applied["message"] as? String ?? "")
+        let outputID = try XCTUnwrap(applied["outputBodyID"] as? String)
+        var save = await document.save()
+        XCTAssertTrue(save.succeeded, save.error ?? "")
+
+        // An unrelated committed change moves the document past the recorded
+        // revision; the script output body itself stays byte-identical.
+        let importOutcome = document.nativeImportData(
+            STLExporter.binarySTL(bodies: [try XCTUnwrap(
+                document.session.document.bodies.first { $0.id.raw.uuidString == outputID })]),
+            format: "stl", fileName: "copy.stl", unitScale: nil)
+        XCTAssertTrue(importOutcome.isOK, importOutcome.message ?? "")
+        save = await document.save()
+        XCTAssertTrue(save.succeeded, save.error ?? "")
+
+        // Auto re-apply refuses on the revision rule alone (hash unchanged).
+        let refused = await service.handle(action: "apply", args: ["id": scriptID])
+        XCTAssertEqual(refused["ok"] as? Bool, false)
+        XCTAssertEqual(refused["error"] as? String, "output_changed")
+        let listAfter = await service.handle(action: "list", args: [:])
+        let scriptsAfter = try XCTUnwrap(listAfter["scripts"] as? [[String: Any]])
+        let recordedRevision = try XCTUnwrap(scriptsAfter.first?["outputDocumentRevision"] as? Int)
+        XCTAssertGreaterThan(document.revision, recordedRevision)
+        XCTAssertTrue((refused["message"] as? String)?.contains("revision") == true,
+                      "the refusal must name the revision rule: \(refused["message"] ?? "")")
+
+        // rebuild is the explicit choice and updates the binding in place.
+        let rebuilt = await service.handle(action: "apply",
+                                           args: ["id": scriptID, "conflict": "rebuild"])
+        XCTAssertEqual(rebuilt["ok"] as? Bool, true, rebuilt["message"] as? String ?? "")
+        XCTAssertEqual(rebuilt["outputBodyID"] as? String, outputID)
+    }
+
     // MARK: 6. Boolean volumes
 
     func testMeshBooleanUnionSubtractAndEmptyRefusal() async throws {
