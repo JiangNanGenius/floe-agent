@@ -5,12 +5,14 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import Testing
+import FloeModels
 @testable import FloeApp
 
 @Suite("FloeApp.ApprovalCardRegistry")
+@MainActor
 struct ApprovalCardRegistryTests {
-    private func makeApproval(runID: UUID, callID: String) -> PendingApproval {
-        PendingApproval(
+    private func makeApproval(runID: UUID, callID: String) throws -> PendingApproval {
+        try PendingApproval(
             runID: runID,
             conversationID: UUID(),
             toolCall: ToolCall(
@@ -28,13 +30,15 @@ struct ApprovalCardRegistryTests {
     }
 
     @Test("Equal call IDs in two runs never retire each other")
-    func equalCallIDsAcrossRunsAreIndependent() {
+    func equalCallIDsAcrossRunsAreIndependent() throws {
         let runA = UUID(), runB = UUID()
-        let cardA = makeApproval(runID: runA, callID: "call_dup")
-        let cardB = makeApproval(runID: runB, callID: "call_dup")
+        let cardA = try makeApproval(runID: runA, callID: "call_dup")
+        let cardB = try makeApproval(runID: runB, callID: "call_dup")
         var registry = ApprovalCardRegistry()
-        #expect(registry.beginResolution(cardA))
-        #expect(registry.beginResolution(cardB))
+        let beganA = registry.beginResolution(cardA)
+        let beganB = registry.beginResolution(cardB)
+        #expect(beganA)
+        #expect(beganB)
         registry.arm(cardA)
         registry.arm(cardB)
         registry.endResolution(cardA)
@@ -42,25 +46,30 @@ struct ApprovalCardRegistryTests {
 
         // A receipt for run A retires only A's card.
         let retiredA = registry.retire(runID: runA, callID: "call_dup")
+        let countAfterA = registry.awaiting.count
+        let retiredB = registry.retire(runID: runB, callID: "call_dup")
+        let countAfterB = registry.awaiting.count
         #expect(retiredA?.runID == runA)
-        #expect(registry.awaiting.count == 1)
-        #expect(registry.retire(runID: runB, callID: "call_dup")?.runID == runB)
-        #expect(registry.awaiting.isEmpty)
+        #expect(countAfterA == 1)
+        #expect(retiredB?.runID == runB)
+        #expect(countAfterB == 0)
     }
 
     @Test("A receipt cannot retire an unknown run's card")
-    func unknownRunReceiptIsIgnored() {
+    func unknownRunReceiptIsIgnored() throws {
         var registry = ApprovalCardRegistry()
-        let card = makeApproval(runID: UUID(), callID: "call_x")
+        let card = try makeApproval(runID: UUID(), callID: "call_x")
         registry.arm(card)
-        #expect(registry.retire(runID: UUID(), callID: "call_x") == nil)
-        #expect(registry.awaiting.count == 1)
+        let retired = registry.retire(runID: UUID(), callID: "call_x")
+        let remaining = registry.awaiting.count
+        #expect(retired == nil)
+        #expect(remaining == 1)
     }
 
     @Test("Arming before suspension keeps a fast receipt from being lost")
-    func earlyReceiptIsNotLost() {
+    func earlyReceiptIsNotLost() throws {
         var registry = ApprovalCardRegistry()
-        let card = makeApproval(runID: UUID(), callID: "call_fast")
+        let card = try makeApproval(runID: UUID(), callID: "call_fast")
         // Arm happens before the (simulated) suspension: the receipt racing
         // the resolution still finds the card.
         registry.arm(card)
@@ -69,33 +78,75 @@ struct ApprovalCardRegistryTests {
     }
 
     @Test("A rejected resolution disarms only its own card")
-    func rejectDisarmsOnlyOwnCard() {
+    func rejectDisarmsOnlyOwnCard() throws {
         var registry = ApprovalCardRegistry()
-        let card = makeApproval(runID: UUID(), callID: "call_rej")
+        let card = try makeApproval(runID: UUID(), callID: "call_rej")
         registry.arm(card)
         registry.disarm(card)
-        #expect(registry.awaiting.isEmpty)
-        // Disarming an already-retired card is a harmless no-op.
+        let afterDisarm = registry.awaiting.isEmpty
         registry.disarm(card)
-        #expect(registry.awaiting.isEmpty)
+        let afterSecond = registry.awaiting.isEmpty
+        #expect(afterDisarm)
+        #expect(afterSecond)
+    }
+
+    @Test("The production retirement path cannot remove another run's same-id card")
+    func productionRetireScopesByRunAndCall() throws {
+        let runA = UUID(), runB = UUID()
+        var pending = [
+            try makeApproval(runID: runA, callID: "call_dup"),
+            try makeApproval(runID: runB, callID: "call_dup")
+        ]
+        // Hoisted out of #expect autoclosures: the production helper is
+        // main-actor isolated and inout mutation cannot happen inside them.
+        let retired = ConversationCenter.retireApprovalCard(
+            runID: runA, callID: "call_dup", from: &pending
+        )
+        let countAfterRetire = pending.count
+        let firstRun = pending.first?.runID
+        // Unknown run+call retires nothing.
+        let unknownRetired = ConversationCenter.retireApprovalCard(
+            runID: UUID(), callID: "call_dup", from: &pending
+        )
+        let countAfterUnknown = pending.count
+        #expect(retired?.runID == runA)
+        #expect(countAfterRetire == 1)
+        #expect(firstRun == runB)
+        #expect(unknownRetired == nil)
+        #expect(countAfterUnknown == 1)
+    }
+
+    @Test("Pending membership checks are run-scoped, not id-scoped")
+    func productionMembershipScopesByRunAndCall() throws {
+        let runA = UUID(), runB = UUID()
+        let cards = [
+            try makeApproval(runID: runA, callID: "call_dup"),
+            try makeApproval(runID: runB, callID: "call_dup")
+        ]
+        let containsA = cards.contains(where: { $0.matches(runID: runA, callID: "call_dup") })
+        let containsUnknown = cards.contains(where: { $0.matches(runID: UUID(), callID: "call_dup") })
+        #expect(containsA)
+        #expect(!containsUnknown)
     }
 
     @Test("The moved-on sweep retires only the run whose pending call changed")
-    func sweepScopesByRunAndPendingCall() {
+    func sweepScopesByRunAndPendingCall() throws {
         var registry = ApprovalCardRegistry()
         let runA = UUID(), runB = UUID()
-        let movedA = makeApproval(runID: runA, callID: "call_a")
-        let staysB = makeApproval(runID: runB, callID: "call_b")
+        let movedA = try makeApproval(runID: runA, callID: "call_a")
+        let staysB = try makeApproval(runID: runB, callID: "call_b")
         registry.arm(movedA)
         registry.arm(staysB)
 
         // Run A moved on to a different pending call; run B still waits on
         // its own call.
         let retired = registry.sweepMovedOn(runID: runA, pendingCallID: "call_next")
+        let remaining = registry.awaiting.count
+        let sweepB = registry.sweepMovedOn(runID: runB, pendingCallID: "call_b")
         #expect(retired.count == 1)
         #expect(retired.first?.id == "call_a")
-        #expect(registry.awaiting.count == 1)
-        #expect(registry.sweepMovedOn(runID: runB, pendingCallID: "call_b").isEmpty)
+        #expect(remaining == 1)
+        #expect(sweepB.isEmpty)
     }
 }
 #endif

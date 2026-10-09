@@ -51,6 +51,23 @@ private actor AuxiliaryVisionResultLatch {
     }
 }
 
+extension ConversationCenter {
+    /// Production card retirement predicate: removes exactly the card whose
+    /// runID+callID matches, even when another run carries the same call id.
+    /// Internal and static so the exact production path is unit-testable
+    /// without a full center environment.
+    static func retireApprovalCard(
+        runID: UUID,
+        callID: String,
+        from pending: inout [PendingApproval]
+    ) -> PendingApproval? {
+        guard let index = pending.firstIndex(where: { $0.matches(runID: runID, callID: callID) }) else {
+            return nil
+        }
+        return pending.remove(at: index)
+    }
+}
+
 /// Run-scoped approval-card retirement state. Model call ids are not
 /// guaranteed unique across concurrent runs, so every key is (runID, callID).
 /// Cards are armed before any suspension, retire only on a durable-record
@@ -132,6 +149,12 @@ struct PendingApproval: Identifiable, Hashable, Sendable {
     let workspaceID: UUID?
 
     var id: String { toolCall.id }
+
+    /// Exact card identity. Model call ids are NOT unique across concurrent
+    /// runs; every membership/removal predicate must match runID+callID.
+    func matches(runID: UUID, callID: String) -> Bool {
+        self.runID == runID && self.id == callID
+    }
 
     /// Human-readable scope description for the approval card.
     var scopeDescription: String {
@@ -3716,7 +3739,9 @@ final class ConversationCenter: ObservableObject {
     /// forever — sweep is cleanup, never evidence of a recorded decision.
     func resolve(_ approval: PendingApproval, decision: ApprovalDecision) async {
         guard let service = runServices[approval.runID] else { return }
-        guard pendingApprovals.contains(where: { $0.id == approval.id }) else { return }
+        guard pendingApprovals.contains(where: {
+            $0.matches(runID: approval.runID, callID: approval.id)
+        }) else { return }
         // Dedupe and arm both happen before the first suspension.
         guard approvalCards.beginResolution(approval) else { return }
         approvalCards.arm(approval)
@@ -3738,7 +3763,9 @@ final class ConversationCenter: ObservableObject {
             approvalCards.disarm(approval)
             let stillPending = await service.snapshot().pendingApproval?.toolCall.id == approval.toolCall.id
             if !stillPending {
-                pendingApprovals.removeAll { $0.id == approval.id }
+                Self.retireApprovalCard(
+                    runID: approval.runID, callID: approval.id, from: &pendingApprovals
+                )
             }
         }
         publishSession(approval.conversationID)
@@ -3748,7 +3775,7 @@ final class ConversationCenter: ObservableObject {
     /// owning run (the event observer knows the service's runID).
     private func retireApprovalOnReceipt(runID: UUID, callID: String) {
         guard let approval = approvalCards.retire(runID: runID, callID: callID) else { return }
-        pendingApprovals.removeAll { $0.id == approval.id }
+        Self.retireApprovalCard(runID: approval.runID, callID: approval.id, from: &pendingApprovals)
         publishSession(approval.conversationID)
     }
 
@@ -3761,7 +3788,7 @@ final class ConversationCenter: ObservableObject {
             pendingCallID: snapshot.pendingApproval?.toolCall.id
         )
         for approval in retired {
-            pendingApprovals.removeAll { $0.id == approval.id }
+            Self.retireApprovalCard(runID: approval.runID, callID: approval.id, from: &pendingApprovals)
             publishSession(approval.conversationID)
         }
     }
