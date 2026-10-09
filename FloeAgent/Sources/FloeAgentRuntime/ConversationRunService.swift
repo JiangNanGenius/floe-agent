@@ -539,8 +539,12 @@ public actor ConversationRunService {
 
     /// Resolves a pending human approval. `callID` is the id of the tool call
     /// the decision was requested for; the runtime ignores decisions whose
-    /// call no longer matches the pending approval.
-    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async {
+    /// call no longer matches the pending approval. Returns true exactly when
+    /// the decision was accepted into the run (the caller may then retire the
+    /// approval card); false means nothing was accepted and the card must
+    /// stay actionable.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async -> Bool {
         await runtime.resolveApproval(decision, for: callID)
     }
 

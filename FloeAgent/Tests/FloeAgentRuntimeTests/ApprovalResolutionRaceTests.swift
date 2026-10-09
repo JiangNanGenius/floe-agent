@@ -106,8 +106,10 @@ struct ApprovalResolutionRaceTests {
         }
         // A double tap / duplicate delivery: the first allow is authoritative,
         // the second decision must not execute the tool again or override it.
-        await runtime.resolveApproval(allowDecision(), for: "call_repeat")
-        await runtime.resolveApproval(.deny(reason: "duplicate tap"), for: "call_repeat")
+        let firstAccepted = await runtime.resolveApproval(allowDecision(), for: "call_repeat")
+        #expect(firstAccepted, "The first decision must be acknowledged as accepted")
+        let duplicateAccepted = await runtime.resolveApproval(.deny(reason: "duplicate tap"), for: "call_repeat")
+        #expect(!duplicateAccepted, "A duplicate decision must be rejected, never look accepted")
 
         var settled = await waitUntil { finished.withLock { $0 } }
         if !settled {
@@ -327,13 +329,15 @@ struct ApprovalResolutionRaceTests {
         }
         // A stale duplicate for the first card must not authorize the
         // second tool, whether it arrives while parked…
-        await runtime.resolveApproval(allowDecision(), for: "call_first")
+        let staleAccepted = await runtime.resolveApproval(allowDecision(), for: "call_first")
+        #expect(!staleAccepted, "A stale decision must be rejected, never look accepted")
         try? await Task.sleep(for: .milliseconds(150))
         #expect(executor.executedCalls.count == 1)
         #expect(await runtime.state.name == "waitingApproval")
         // …and the correct decision for the second call still executes
         // exactly once.
-        await runtime.resolveApproval(allowDecision(), for: "call_second")
+        let secondAccepted = await runtime.resolveApproval(allowDecision(), for: "call_second")
+        #expect(secondAccepted, "The matching decision must be acknowledged as accepted")
         var settled = await waitUntil { finished.withLock { $0 } }
         if !settled {
             await runtime.cancel()
@@ -379,12 +383,14 @@ struct ApprovalResolutionRaceTests {
         // The second publish is blocked. A stale duplicate for the first
         // call arrives now: it must be rejected by call identity instead of
         // being buffered for the second escalation.
-        await runtime.resolveApproval(allowDecision(), for: "call_pub_first")
+        let staleAccepted = await runtime.resolveApproval(allowDecision(), for: "call_pub_first")
+        #expect(!staleAccepted, "A stale decision during publish must be rejected")
         sink.releaseThrough(2)
         try? await Task.sleep(for: .milliseconds(150))
         #expect(executor.executedCalls.count == 1)
         #expect(await runtime.state.name == "waitingApproval")
-        await runtime.resolveApproval(allowDecision(), for: "call_pub_second")
+        let secondAccepted = await runtime.resolveApproval(allowDecision(), for: "call_pub_second")
+        #expect(secondAccepted, "The matching decision must be acknowledged as accepted")
         var settled = await waitUntil { finished.withLock { $0 } }
         if !settled {
             await runtime.cancel()

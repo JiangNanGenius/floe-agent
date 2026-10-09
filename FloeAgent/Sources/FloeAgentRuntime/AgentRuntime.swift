@@ -1145,25 +1145,34 @@ public actor FloeAgentRuntime {
     /// `callID` must be the id of the call the decision was requested for:
     /// the current `.waitingApproval` gate matches it exactly, and decisions
     /// targeting any other call (stale card, double tap after resolution)
-    /// are ignored so they can never authorize a different tool.
-    /// waitingApproval → executingTool (allow) or → streamingModel (deny,
-    /// result injected back into the model context).
-    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async {
-        guard case .waitingApproval = state else { return }
+    /// are rejected so they can never authorize a different tool.
+    ///
+    /// Returns true exactly when the decision was bound to the pending
+    /// approval — resumed into the escalation, or buffered while its publish
+    /// is in flight. The caller must keep the approval visible until true is
+    /// returned: a false result means nothing was accepted. An accepted
+    /// allow is durably recorded by the existing pre-dispatch checkpoint and
+    /// grant persistence before any side effect runs; an accepted deny is
+    /// audited into the run events.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async -> Bool {
+        guard case .waitingApproval = state else { return false }
         switch approvalGate {
         case .waiting(let current):
-            guard current == callID, let continuation = approvalContinuation else { return }
+            guard current == callID, let continuation = approvalContinuation else { return false }
             approvalContinuation = nil
             continuation.resume(returning: decision)
+            return true
         case .publishing(let current):
             // The publish is still in flight (durable sink write); the
             // continuation is not installed yet. Buffer only a decision for
             // this exact escalation — the wait below consumes it instead of
             // parking. An earlier buffered decision stays authoritative.
-            guard current == callID, bufferedApprovalDecision == nil else { return }
+            guard current == callID, bufferedApprovalDecision == nil else { return false }
             bufferedApprovalDecision = (callID, decision)
+            return true
         case .idle:
-            return
+            return false
         }
     }
 

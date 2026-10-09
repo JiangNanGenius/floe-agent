@@ -99,6 +99,12 @@ public struct ContentPackageCodec: Sendable {
         public let id: String
         public let title: [String: String]
         public let body: [String: String]
+
+        public init(id: String, title: [String: String], body: [String: String]) {
+            self.id = id
+            self.title = title
+            self.body = body
+        }
     }
 
     /// Builds the validated runtime overlay for one locale from an installed

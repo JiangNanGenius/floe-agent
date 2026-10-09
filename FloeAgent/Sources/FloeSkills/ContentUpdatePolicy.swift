@@ -11,11 +11,13 @@ import Foundation
 public enum ContentUpdatePolicy {
     /// Cooldown between automatic checks.
     public static let checkCooldown: TimeInterval = 24 * 3_600
-    /// Base backoff after a failed check.
+    /// Base backoff step added on every failed check.
     public static let retryBase: TimeInterval = 15 * 60
     /// Maximum backoff window measured from `now`.
     public static let retryCap: TimeInterval = 24 * 3_600
-    /// Exponential multiplier applied to the prior backoff.
+    /// Multiplier applied to the base step; the schedule is deliberately
+    /// additive (each failure steps `base * multiplier` beyond the prior
+    /// deadline), not exponential.
     public static let retryMultiplier: TimeInterval = 2
 
     /// Whether an automatic check may run now: enabled, outside the check
@@ -56,9 +58,9 @@ public enum ContentUpdatePolicy {
         return onWiFiKnown && onWiFi
     }
 
-    /// Next backoff deadline after a failed check: exponential growth from
-    /// the prior backoff, capped at `retryCap` from `now`, never earlier
-    /// than `retryBase` from `now`.
+    /// Next backoff deadline after a failed check. The deliberate schedule is
+    /// additive: the new deadline is `base * multiplier` beyond the prior
+    /// deadline, capped at `cap` from `now` and floored at `base` from `now`.
     public static func nextRetry(
         priorRetryAfter: Date?,
         now: Date,
