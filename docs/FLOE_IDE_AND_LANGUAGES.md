@@ -1,5 +1,12 @@
 # Full-screen IDE and language integration
 
+## Current workbench / 当前工作台 · 2026-10-09
+
+The native SwiftUI/UIKit workbench provides files/search/Git, multiple editor buffers, Markdown preview, terminals and web-service previews. Local Python/Node run in the selected TinyEMU Linux environment. A web-service script reads `PORT`; readiness requires an HTTP response. Closing its panel preserves the owned service, while terminating the App requires restarting it.
+
+终端全屏与内嵌面板共用会话；隐藏不结束进程。端口规则绑定明确环境，保存规则不等于监听成功；浏览器接管期间模型不能控制当前浏览器，交还后再观察并继续。详见[手册](USER_GUIDE.zh-CN.md)与[端口契约](FLOE_PORT_MANAGEMENT.md)。Older dated evidence below applies only to its source revision.
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Updated 2026-09-15. Candidate implementation; no new TestFlight delivery claim.

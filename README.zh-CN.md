@@ -18,7 +18,9 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-![Floe Agent 在 iPad 上的新建任务界面](docs/images/floe-agent-new-task-ipad.webp)
+[![Floe iPad 应用首页：从任务开始工作。](docs/assets/guide/home.jpg)](docs/USER_GUIDE.zh-CN.md)
+
+*Floe iPad 应用首页：从任务开始工作。*
 
 <p align="center">
   <a href="https://www.floe-agent.com/add/feather"><img src="docs/images/badge-add-to-feather.svg" alt="添加到 Feather" width="190"></a>
@@ -36,7 +38,11 @@ Floe Agent 把一次模型对话组织成一条可持续的任务。每次发送
 
 [完整使用手册](docs/USER_GUIDE.zh-CN.md) · [官网文档](https://www.floe-agent.com/docs/zh.html) · [版本状态](docs/CURRENT_STATUS.md)
 
-最近已记录的内部交付为 **1.7.14（255）**；当前 **1.7.18（259）为未发布候选**，正在完整 CI 验证。TestFlight 当前审批、到期与组可用性以 Apple 实时状态为准；旧送审记录不表示本候选已交付。历史证据见[发布档案](docs/releases/README.md)。
+当前源码为 **1.7.24（265）**。安装渠道分别核对：内部 TestFlight、公测审核、GitHub IPA 与添加源不代表同一交付状态。以[当前版本与核验日期](docs/CURRENT_STATUS.md)为统一入口；历史记录不保证今天仍可安装。
+
+### 创作与工程工作区
+
+手记支持独立资料、搜索和文档助手；Office 编辑、二维 DWG/DXF 与图纸助手、画布及图像/视频工作台共享服务，但保持各自工程与撤销状态。AI 修改先提案、预览和确认，结果需保存重开核对。格式支持、引擎层待真机项目与限制见[能力表](docs/FLOE_1_7_24_CREATIVE_TOOLS.md)。
 
 ### 手记、Office 与本地语音
 
@@ -85,7 +91,7 @@ flowchart LR
 
 ### TestFlight
 
-Floe Agent **1.7.14（build 255）**已核实可在 **Floe QA 内部 TestFlight 测试组**安装：不可变标签 `v1.7.14` 对应 Apple `VALID`、未过期、受众 `APP_STORE_ELIGIBLE` 且 `IN_BETA_TESTING`（[核验记录](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889)）。详见 [Build 255 交付记录](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md)；真机行为仍待验收。
+当前源码为 **1.7.24（265）**。安装渠道分别核对：内部 TestFlight、公测审核、GitHub IPA 与添加源不代表同一交付状态。以[当前版本与核验日期](docs/CURRENT_STATUS.md)为统一入口；历史记录不保证今天仍可安装。
 
 ### 未签名 IPA
 
@@ -110,7 +116,7 @@ Gitee 仅保留源码与 Release 的单向同步，不作为软件下载加速�
 - Feather：`https://www.floe-agent.com/add/feather` → `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
 - AltStore：`https://www.floe-agent.com/add/altstore` → `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
 
-也可以把源地址直接粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此 README 徽章指向官方 HTTPS 入口：由官网完成自定义 scheme 启动，并在无法打开时显示清晰的手动回退，而不是死链。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)；GitHub 提供未签名 IPA、校验文件和来源证明，TestFlight 为独立分发渠道。2026-09-24 只读复核：两个入口均返回 HTTP 200，包含精确深链与手动回退内容；已发布 feed 的最新条目为 1.7.0（227），其未签名 IPA SHA-256 与 GitHub 预发布一致；GitHub Markdown API 仍会把两种链接写法都过滤为纯文本——GitHub 本身无法承载 add-source 动作，HTTPS 入口仍是唯一可点击的快速添加路径。
+也可以把源地址直接粘贴到对应 App 的软件源界面。GitHub 的 Markdown 过滤会移除 `feather://` 与 `altstore://` 链接，因此 README 徽章指向官方 HTTPS 入口：由官网完成自定义 scheme 启动，并在无法打开时显示清晰的手动回退，而不是死链。手动源地址与独立验证的发布流程见 [Floe 安装源说明](docs/FEATHER_SOURCE.md)；GitHub 提供未签名 IPA、校验文件和来源证明，TestFlight 为独立分发渠道。安装前请核对[当前渠道状态](docs/CURRENT_STATUS.md)。
 
 ### 从源码构建
 
@@ -205,7 +211,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 | --- | --- | --- |
 | 产品使用 | [使用指南](docs/USER_GUIDE.zh-CN.md) | [User guide](docs/USER_GUIDE.md) |
 | 下一版状态 | [实施状态与验证边界](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md) | Same document includes a Simplified Chinese summary |
-| 当前状态 | [Build 227 交付](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_227.md) · [Build 225 上一交付](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_225.md) | [Build 227 delivery](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_227.md) · [Build 225 previous delivery](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_225.md) |
+| 当前状态 / Current status | [渠道与核验日期](docs/CURRENT_STATUS.md) | [Channels and verification dates](docs/CURRENT_STATUS.md) |
 | 架构 | [架构总览（双语术语）](docs/ARCHITECTURE_OVERVIEW.md) | [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md) |
 | 参与开发 | [贡献指南](CONTRIBUTING.zh-CN.md) | [Contributing](CONTRIBUTING.md) |
 | 安全 | [安全策略](SECURITY.zh-CN.md) | [Security policy](SECURITY.md) |
@@ -227,7 +233,7 @@ Floe Agent **不提供**托管模型代理、Floe 账户、远程中继、广告
 
 准备进行大型或安全敏感改动前，请阅读[贡献指南](CONTRIBUTING.zh-CN.md)，并先创建 Issue 说明用户问题、范围、安全影响和验证方法。安全漏洞请按[安全策略](SECURITY.zh-CN.md)私下报告。
 
-Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。App 只保留一个法律入口：**设置 → 诊断与关于 → 第三方开源许可**，其中完整呈现 TinyEMU/slirp 全文及其他所有随包声明，并附带版本与来源的构件摘要；仓库中由脚本生成的记录仍为 [`FloeAgent/LICENSES-THIRD-PARTY.md`](FloeAgent/LICENSES-THIRD-PARTY.md)。**Build 227** 把原先单独的 TinyEMU 页面合并进这一入口。
+Floe Agent 原创代码采用 [Mozilla Public License 2.0](LICENSE)；第三方组件保留各自许可证与声明。App 只保留一个法律入口：**设置 → 诊断与关于 → 第三方开源许可**，其中完整呈现 TinyEMU/slirp 全文及其他所有随包声明，并附带版本与来源的构件摘要；仓库中由脚本生成的记录仍为 [第三方许可清单 / Third-party inventory](FloeAgent/FloeApp/Resources/Licenses/third-party-inventory.json)。**Build 227** 把原先单独的 TinyEMU 页面合并进这一入口。
 
 1.7 界面更新加入「通用 → 自动/日间/夜间」外观、项目与会话容器管理，以及可折叠的思考与工具调用组。功能可用性和测试版验收进展见[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)。
 

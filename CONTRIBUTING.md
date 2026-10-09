@@ -6,13 +6,13 @@ Thank you for helping build Floe Agent. The project ships prerelease builds, its
 
 ## Floe 1.7 integration workflow
 
-The integration branch is `codex/floe-1-7-integration-20260912`. Read the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [build/acceptance guide](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Preserve unqualified changes, reproductions and recovery evidence; reconcile overlapping changes individually.
+Start from the actual current `main` checkout and inspect status and active worktrees; create a scoped `codex/` branch when needed. Read the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [build/acceptance guide](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Preserve unqualified changes, reproductions and recovery evidence; reconcile overlapping changes individually.
 
-Use focused local tests and cloud App builds. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output. Runtime lock checks must remain read-only. Generated Xcode changes must match `project.yml`. Uploading an artifact is not release acceptance.
+Use focused local tests and relevant local App builds; cloud CI supplies independent checks and release workflows. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output. Runtime lock checks must remain read-only. Generated Xcode changes must match `project.yml`. Uploading an artifact is not release acceptance.
 
 ## Before you start
 
-1. Read the [product overview](PRODUCT.md), [development plan](docs/DEVELOPMENT_PLAN.md), and [security policy](SECURITY.md).
+1. Read the [product overview](PRODUCT.md), [current status](docs/CURRENT_STATUS.md), and [security policy](SECURITY.md).
 2. Search existing issues and pull requests for related work.
 3. Open an issue before a large feature, dependency change, architecture change, or security-sensitive change.
 4. Keep pull requests focused and explain the user impact, trade-offs, security impact, and verification evidence.
@@ -21,7 +21,7 @@ Do not open a public issue for a vulnerability. Follow the private process in [S
 
 ## Development checkout
 
-Use `main` for the shared baseline and the integration branch above for 1.7 work:
+Use the current `main` baseline:
 
 ```bash
 git clone https://github.com/JiangNanGenius/floe-agent.git
@@ -35,7 +35,7 @@ Requirements are a full Xcode installation with Swift 6.2 and the iOS 26 SDK or 
 ```bash
 swift build
 swift test
-xcodegen generate
+bash scripts/gen_project.sh
 ```
 
 Some iOS-only targets require Xcode rather than a command-line Swift toolchain.

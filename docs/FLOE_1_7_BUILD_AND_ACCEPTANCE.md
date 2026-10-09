@@ -1,8 +1,15 @@
 # Floe 1.7 构建与验收 / Build and acceptance
 
+## Current build policy / 当前构建策略 · 2026-10-09
+
+Use the actual checkout, installed SDK and `project.yml`. Local focused tests and App builds are preferred when resources permit; cloud CI provides independent checks and release workflows. Use an internal-SSD cache isolated by checkout/toolchain/target, start heavy compilation at six jobs, and preserve artifacts and original failures before cleanup. Swift 6 concurrency changes require SIL/object or full App compilation, not typecheck alone.
+
+当前构建策略以仓库 AGENTS 为准。Build 265 使用 Xcode 27A266a / iPhoneOS 27.0 的本地设备产物并复用签名上传；下面 Xcode 26.6 双 SDK 流水线说明是旧版本流程快照，不是所有发布的强制路线。不可变源码、产物哈希、签名、Apple 处理、组可用性及真机验收分别记录。
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
-Build 229 is the current internal delivery. Immutable tag `v1.7.0-beta.86` binds source `b06b0b0e42008e8ea5c6b402ab146c99e2bcf328`. [Release run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) built with Xcode 26.6, retained the unsigned IPA (739,485,403 bytes; SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`), uploaded the signed build and published the GitHub prerelease. Apple build `3aecdb89-1cca-4192-9b32-1493d72ad3fe` is `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group; [prepare run 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863) read back both beta-note locales and [verify run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) confirmed group availability. Build 229 changes Office session recovery and failed MLX-container reuse, but these flows have not passed physical-iPad acceptance. Dual-core Linux remains gated at one vCPU after a correctness defect was found in an experimental acceleration path. The earlier Build 224/226 failures remain historical records. See [Build 229 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md) and [delivery record](releases/testflight/TESTFLIGHT_1.7.0_BETA.md).
+Historical delivery: Build 229 was the internal delivery recorded below. Immutable tag `v1.7.0-beta.86` binds source `b06b0b0e42008e8ea5c6b402ab146c99e2bcf328`. [Release run 36239956371](https://github.com/JiangNanGenius/floe-agent/actions/runs/36239956371) built with Xcode 26.6, retained the unsigned IPA (739,485,403 bytes; SHA-256 `5cd022eb612d89f1d94b91594b747000404cec3f247b8508e89a83e88436124d`), uploaded the signed build and published the GitHub prerelease. Apple build `3aecdb89-1cca-4192-9b32-1493d72ad3fe` is `VALID`, unexpired and `IN_BETA_TESTING` in the sole private Floe QA group; [prepare run 36242606863](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242606863) read back both beta-note locales and [verify run 36242653374](https://github.com/JiangNanGenius/floe-agent/actions/runs/36242653374) confirmed group availability. Build 229 changes Office session recovery and failed MLX-container reuse, but these flows have not passed physical-iPad acceptance. Dual-core Linux remains gated at one vCPU after a correctness defect was found in an experimental acceleration path. The earlier Build 224/226 failures remain historical records. See [Build 229 notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_229.md) and [delivery record](releases/testflight/TESTFLIGHT_1.7.0_BETA.md).
 
 本说明适用于 1.7 整合分支；完整验收状态以[实施记录](FLOE_1_7_IMPLEMENTATION_STATUS.md)为准。最低系统为 iOS/iPadOS 26，数据库迁移至 v44。重型 App 构建与归档放在云端，本地仅做定向验证。正式发布不属于本轮自动动作。
 
@@ -20,8 +27,8 @@ Build 229 is the current internal delivery. Immutable tag `v1.7.0-beta.86` binds
 export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
 bash FloeAgent/scripts/bootstrap_native_components.sh
 python3 FloeAgent/scripts/audit_native_runtime_free.py --project
-swift test --package-path FloeAgent/Qualification --scratch-path FloeAgent/.build --force-resolved-versions --jobs 2
-swift build --package-path FloeAgent --target FloeExecution --force-resolved-versions --jobs 2
+swift test --package-path FloeAgent/Qualification --scratch-path "$HOME/Library/Caches/CodexBuild/Floe/main/xcode27/qualification" --force-resolved-versions --jobs 6
+swift build --package-path FloeAgent --target FloeExecution --force-resolved-versions --jobs 6
 ```
 
 Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输入：本地 Python/Node 在每个环境的 TinyEMU Linux 客体中运行，`audit_native_runtime_free.py` 会阻止原生 Python/Node 标记重新回到工程或安装包。退役的构建配方（锁定运行时引导、ios-wheelhouse、Node 工具）归档在 `FloeAgent/ThirdParty/NativeRuntimeArchive/`，不接入构建。Qualification 为环境、软件包、媒体和后台任务迁移提供独立测试入口，避免完整 App/MLX 构建。共享 `.build` 的 SwiftPM 命令串行执行。
@@ -34,7 +41,7 @@ Phase 2（TinyEMU 迁移）后没有随包的原生 CPython/NodeMobile 构建输
 
 推送固定提交后检查 CI 的 Linux、开发 SDK 和发布 SDK 作业。每项记录提交 SHA、Xcode/SDK、测试结果、失败日志和产物。重跑使用同一提交；代码变化后结果属于新提交。构建产物上传、签名归档、App Store Connect 处理、TestFlight 可安装分别记录。
 
-当前发布流水线先固定并校验标签，再并行验证 SDK 27 源码和 Xcode 26.6（17F113，实际 SDK 26.5）的上传构建。每个 SDK 只编译一次模拟器测试宿主，App 回归和 iPad／iPhone UI 使用 test-without-building；两套设备 Release 构建仍保留。两边均成功后，签名作业核对上传候选产物的 SHA-256、源码提交、包标识及版本号，复用已验证的应用，不再编译。`#if compiler(>=6.4)` 控制的 27 专属实现不会出现在这份上传包中，例如手记的新笔迹选择接口会走兼容选区入口。SDK 27 组件图不能用来证明 TestFlight 包含全部 27 专属能力；上传后记录中必须注明实际工具链。
+历史双 SDK 发布流水线先固定并校验标签，再并行验证 SDK 27 源码和 Xcode 26.6（17F113，实际 SDK 26.5）的上传构建。每个 SDK 只编译一次模拟器测试宿主，App 回归和 iPad／iPhone UI 使用 test-without-building；两套设备 Release 构建仍保留。两边均成功后，签名作业核对上传候选产物的 SHA-256、源码提交、包标识及版本号，复用已验证的应用，不再编译。`#if compiler(>=6.4)` 控制的 27 专属实现不会出现在这份上传包中，例如手记的新笔迹选择接口会走兼容选区入口。SDK 27 组件图不能用来证明 TestFlight 包含全部 27 专属能力；上传后记录中必须注明实际工具链。
 
 ## 完整验收门槛
 

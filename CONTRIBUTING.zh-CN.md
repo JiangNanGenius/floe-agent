@@ -8,13 +8,13 @@
 
 ## Floe 1.7 integration workflow
 
-当前整合分支为 `codex/floe-1-7-integration-20260912`。先阅读[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)与[构建验收说明](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)，保留未验收修改、复现输入和恢复证据。不要用整分支覆盖重叠修改。
+先检查实际 main、工作区状态与活动 worktree；需要新分支时使用聚焦任务的 `codex/` 分支。先阅读[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)与[构建验收说明](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)，保留未验收修改、复现输入和恢复证据。不要用整分支覆盖重叠修改。
 
-Use focused local tests and cloud App builds. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output; do not turn an artifact upload into a release claim. Runtime lock check mode must remain read-only. Generated Xcode changes must match `project.yml`.
+Use focused local tests and relevant local App builds; cloud CI supplies independent checks and release workflows. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output; do not turn an artifact upload into a release claim. Runtime lock check mode must remain read-only. Generated Xcode changes must match `project.yml`.
 
 ## 开始之前
 
-1. 阅读[产品定位](PRODUCT.md)、[开发计划](docs/DEVELOPMENT_PLAN.md)、[架构总览](docs/ARCHITECTURE_OVERVIEW.md)和[安全策略](SECURITY.zh-CN.md)。
+1. 阅读[产品定位](PRODUCT.md)、[当前状态](docs/CURRENT_STATUS.md)、[架构总览](docs/ARCHITECTURE_OVERVIEW.md)和[安全策略](SECURITY.zh-CN.md)。
 2. 搜索已有 Issue 和 Pull Request，避免重复工作。
 3. 大型功能、依赖、架构、数据库或安全边界改动应先创建 Issue。
 4. PR 保持聚焦，并说明用户影响、取舍、安全影响和验证证据。
@@ -23,15 +23,14 @@ Use focused local tests and cloud App builds. Update both language guides when u
 
 ## 开发环境
 
-当前 1.2.x 实现在 `agent/alpha-daily` 分支维护。选择基础分支前先查看最新 Release 或已打开的 Pull Request：
+以当前 main 为基线，保留已有修改；安装渠道以当前版本状态为准：
 
 ```bash
 git clone https://github.com/JiangNanGenius/floe-agent.git
 cd floe-agent
-git switch agent/alpha-daily
 cd FloeAgent
 brew install xcodegen
-xcodegen generate
+bash scripts/gen_project.sh
 scripts/local_build.sh
 ```
 
@@ -40,7 +39,7 @@ scripts/local_build.sh
 ```bash
 swift build
 swift test
-xcodegen generate
+bash scripts/gen_project.sh
 ```
 
 部分 iOS-only 目标需要完整 Xcode 而非命令行 Swift 工具链。

@@ -1,5 +1,10 @@
 # Creative Mode, Canvas, and Artifact Architecture
 
+## Current child-project contract · 2026-10-09
+
+Canvas owns stable project/document/node/asset links. Image, video and CAD editors work inside that ownership: finishing updates the same node; creating a variant preserves a source link. CAD remains vector data. Durable drafts survive closing, and file-backed backup includes media projects, assets, CAD drafts and revisions. Notes keeps independent storage, selection, undo and assistant conversations. See [tool contracts](FLOE_1_7_24_CREATIVE_TOOLS.md); older roadmap sections below do not imply completion.
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 [简体中文](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.zh-CN.md) · [User guide](USER_GUIDE.md) · [Architecture overview](ARCHITECTURE_OVERVIEW.md)

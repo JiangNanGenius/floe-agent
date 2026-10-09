@@ -1,5 +1,13 @@
 # Floe 1.7 兼容性说明 / Compatibility
 
+## Creative formats / 创作格式 · 2026-10-09
+
+- 2D DWG/DXF: native editing and confirmed AI proposals; 3D, blocks, external references, splines and proxy entities remain read-only. 二维图纸可编辑；复杂只读内容不展平。
+- DOCX/XLSX/PPTX: package-level operations and engine commands have different qualification tiers. Native engine dispatch is not proof of saved layout fidelity. 原生引擎命令仍须按格式保存重开验收。
+- Notes exports PDF and `.floenote`; Canvas backup includes media projects, CAD drafts and revision assets. 手记导出与画布备份不是同一种文件；完整 App 恢复交互仍待验收。
+- Refer to the [format capability table](FLOE_1_7_24_CREATIVE_TOOLS.md) and [channel status](CURRENT_STATUS.md), not the App source version alone.
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 本页是当前资格边界，不是已发布能力清单。详细逐项制作与真机验收仍未完成；[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)记录进度。

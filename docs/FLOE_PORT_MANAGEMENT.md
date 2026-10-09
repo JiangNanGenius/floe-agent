@@ -1,6 +1,6 @@
 # Port management / 端口管理
 
-Candidate contract for 1.7.22 (263); see [release status](CURRENT_STATUS.md).
+Port contract introduced in 1.7.22 (263); see [release status](CURRENT_STATUS.md).
 
 ## `linux.port`
 

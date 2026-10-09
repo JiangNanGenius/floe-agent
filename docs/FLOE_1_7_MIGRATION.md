@@ -1,5 +1,12 @@
 # Floe 1.7 迁移与恢复 / Migration and recovery
 
+## Creative projects / 创作工程 · 2026-10-09
+
+Flat image/video edits migrate to typed media child projects on first opening. Keep the original and verify reopening before removing a backup. Canvas backup includes media child-project files, assets, pending CAD drafts and accepted revision assets; the 19 focused backup tests do not replace full-App restore acceptance.
+
+旧图像/视频编辑首次打开时迁移为类型化子工程；保留原文件并核对重开。画布备份已包含 CAD 草稿和修订素材，定向测试与完整 App 恢复验收分开。手记 `.floenote` 导出保留独立资料归属，不依赖原聊天继续存在。
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 1.7 尚未完成迁移验收。本页区分已有机制与上线前必须完成的步骤，不应据此直接迁移唯一一份用户数据。详见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。

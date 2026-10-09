@@ -1,6 +1,13 @@
+<!-- docs-updated: 2026-10-09 -->
 # 当前版本与验证状态 / Current release and verification status
 
-更新时间 / Updated: 2026-10-08. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+文档更新时间 / Document updated: 2026-10-09. 本页区分已记录交付与未发布候选，不保证 TestFlight 的实时审核/到期状态；安装前以 App Store Connect/TestFlight 当前显示为准。This page separates recorded delivery from candidates; check TestFlight for current approval and expiration.
+
+## 渠道只读复核 / Channel readback · 2026-10-09
+
+- GitHub Releases 与 Feather 源实时读取：最新公开 App 预发布与源条目均为 **1.7.19（260）**。GitHub 的 latest 稳定版为 1.7.0（241）；不能用 latest 稳定版端点代替预发布查询。Live GitHub and Feather readback: newest public App prerelease/feed entry is **1.7.19 (260)**; the stable latest endpoint returns 1.7.0 (241).
+- Apple GET-only 核验（2026-10-09）：Build 265 为 `VALID`、未过期，内部 `IN_BETA_TESTING`，publictest1 外部状态 `WAITING_FOR_BETA_REVIEW`，检查 issues 为空。Apple readback confirms VALID, unexpired, internal availability and external review still pending; no submission or membership was changed. [只读核验 / Readback](https://github.com/JiangNanGenius/floe-agent/actions/runs/37872109678).
+- 官网与源码版本不等于全部渠道同时可安装。Gitee 仅作源码与发行记录同步，不作为 App 下载加速或 Linux 自动回退。Website/source version does not establish installation availability across channels. Gitee synchronizes source and releases; it is not an App accelerator or automatic Linux fallback.
 
 ## 1.7.24（265）内部可用，公测待审 / Internal available, external review pending
 

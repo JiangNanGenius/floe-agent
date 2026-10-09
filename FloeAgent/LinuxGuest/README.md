@@ -6,8 +6,8 @@ This directory is the **guest half** of the Floe Linux environment backend
 startup/mount material the guest image needs. The host half lives in
 `Sources/FloeExecution/Linux/` and `FloeApp/Execution/LinuxGuestBackend.swift`;
 the wire contract is documented in
-[`docs/FLOE_LINUX_GUEST_BACKEND.md`](../../../docs/FLOE_LINUX_GUEST_BACKEND.md)
-and [`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../../docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md).
+[`docs/FLOE_LINUX_GUEST_BACKEND.md`](../../docs/FLOE_LINUX_GUEST_BACKEND.md)
+and [`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md).
 
 | Path | Purpose |
 | --- | --- |
@@ -68,7 +68,7 @@ per-package Debian corresponding sources. The
 [`component-image-ci`](../../.github/workflows/component-image-ci.yml)
 workflow runs both on `ubuntu-latest` and uploads the zip, `manifest.json`
 (the `LinuxGuestImage` schema) and evidence artifacts; nothing is published.
-Details, gates and honest limits: [build guide](../../../docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md).
+Details, gates and honest limits: [build guide](../../docs/FLOE_LINUX_GUEST_IMAGE_BUILD.md).
 
 ## Boot
 
@@ -222,7 +222,7 @@ user's command through the guest's own `/bin/sh -c`, unchanged.
   honest ERR + END 125 instead of a silent hang.
 
 PTY sessions and background services are documented in
-[`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../../docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md)
+[`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md)
 (agreed with the host worker). The runner implements both:
 `FLOE-OPEN`/`FLOE-IN`/`FLOE-SIGNAL`/`FLOE-CLOSE` for interactive terminals and
 `FLOE-SPAWN`/`FLOE-KILL`/`FLOE-ALIVE` for detached services that append to a

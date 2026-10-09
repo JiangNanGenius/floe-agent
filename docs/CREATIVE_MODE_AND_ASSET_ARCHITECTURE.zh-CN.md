@@ -1,5 +1,10 @@
 # 创意模式、画布与资料库：产品与实施计划
 
+## 当前子工程契约 · 2026-10-09
+
+画布持有稳定的项目／文档／节点／素材关联。图片、视频、CAD 编辑器在这一归属下工作：“完成”更新原节点，“制作变体”保留来源关联；CAD 保持矢量。持久草稿在关闭后保留，文件化备份包含媒体工程、素材、CAD 草稿和修订。手记的存储、选区、撤销与助手会话保持独立。见[工具契约](FLOE_1_7_24_CREATIVE_TOOLS.md)；下文历史路线图不表示所有规划均已完成。
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 [English](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md) · [使用指南](USER_GUIDE.zh-CN.md) · [架构总览](ARCHITECTURE_OVERVIEW.md)

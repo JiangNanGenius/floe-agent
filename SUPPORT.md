@@ -4,7 +4,7 @@ Floe Agent support is community and best-effort. Prerelease, development, and un
 
 ## 1.7 问题报告 / Upgrade reports
 
-Floe 1.7 remains under integration. Check [status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [compatibility](docs/FLOE_1_7_COMPATIBILITY.md) first. For environment/package failures, include the layer, package version, failed stage and sanitized error. For media failures, include input codec, dimensions, frame rate, channels, requested operations and whether the output reopens. Distinguish model catalog visibility, installation, loading and successful inference.
+Installation channels and acceptance differ; check [current delivery](docs/CURRENT_STATUS.md). Check [status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [compatibility](docs/FLOE_1_7_COMPATIBILITY.md) first. For environment/package failures, include the layer, package version, failed stage and sanitized error. For media failures, include input codec, dimensions, frame rate, channels, requested operations and whether the output reopens. Distinguish model catalog visibility, installation, loading and successful inference.
 
 Include the exact commit/build and device/SDK. Preserve recoverable copies and failed transaction evidence; follow [recovery guidance](docs/FLOE_1_7_MIGRATION.md) before deleting state. Never attach credentials or private media without reviewing the export.
 
@@ -16,3 +16,6 @@ Include the exact commit/build and device/SDK. Preserve recoverable copies and f
 - For background, voice, browser, or provider failures, identify the phase and attach a redacted diagnostics export when possible.
 
 Never include API keys, passwords, private keys, hostnames, personal files, or other secrets. Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
+
+
+For CAD, Office, Notes or media issues, include the original format, whether an AI proposal was confirmed, and whether save/reopen or backup/restore changed the result. Use synthetic files or redact content before sharing.

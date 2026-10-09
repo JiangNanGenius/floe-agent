@@ -1,10 +1,17 @@
 # Floe Agent Architecture Overview
 
+## Current architecture / 当前架构 · 2026-10-09
+
+The current source is 1.7.24 (265), with persistence schema v44. `FloeWorkbench` owns `cad.document`, `FloeDocuments` owns the shared `document.office.edit` command catalog, and media projects retain their own durable state. UI and AI routes share capabilities and revision checks; Notes, Canvas and task conversations retain separate ownership and undo histories. Proposals require user confirmation before applying. Release state is maintained in [CURRENT_STATUS](CURRENT_STATUS.md).
+
+当前源码中的图纸助手、Office 与手记提案使用各自的持久状态、修订校验和确认流程；共享服务不等于共享编辑状态。画布媒体子工程备份包含素材、CAD 草稿与修订，完整恢复交互及原生 Office 引擎的真机验收分别记录。
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 [README](../README.md) · [简体中文 README](../README.zh-CN.md) · [User guide](USER_GUIDE.md)
 
-This page describes the Floe 1.7 integration architecture (schema v44). The delivered internal build is **1.7.0 (227)** (immutable tag `v1.7.0-beta.84`, source `9c756864`; Apple `VALID` and `IN_BETA_TESTING` verified 2026-09-24); `main` also carries unreleased post-227 source repairs, whose implemented/pending boundaries are recorded in [next-release status](FLOE_1_7_NEXT_RELEASE_STATUS.md) and [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md), while the [Build 227 release notes](releases/notes/RELEASE_NOTES_1.7.0_BUILD_227.md) describe the delivered runtime behavior. Open Build 227 iPad regressions — MLX local-model crashes in ordinary chat and benchmark, a rendered PPT/PPTX preview that stalls at the edit entry, and Word/Excel/PPT documents opened from the IDE file tree stuck on the opening indicator — are not fixed by those source changes. Older audit and delivery documents retain their historical meaning.
+Historical baseline: older build references below apply to their dated source. Current delivery is linked above.
 
 ## Floe 1.7 integration boundaries
 
@@ -12,7 +19,7 @@ This page describes the Floe 1.7 integration architecture (schema v44). The deli
 
 Resolution order is session, project, shared, then base, with an explicit write layer. The integration is not complete across all Python/WASM/install paths. Environment separation is dependency/data/lifecycle layering, not a security sandbox for native code in the same process.
 
-Local Python, Node.js, shell commands and services run inside each environment's TinyEMU Linux guest; the App bundles no native Python, Node or Ruby payload, and the retired in-process CPython/NodeMobile recipes are archived under `FloeAgent/ThirdParty/NativeRuntimeArchive/` and blocked by `FloeAgent/scripts/audit_native_runtime_free.py`. First use of a Linux-required entry point runs one shared prepare/download/verify/install/start job and resumes the original command; the guest configures and reports its own network. Signed WASI commands remain a separate capability class. Media transcode/audio conversion use bounded processing and verified temporary outputs. Unconnected enhancement runners are not registered as available tools. Package transactions stage and verify payloads before journaled file changes; current fixture coverage and remaining gaps are tracked in [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md).
+Local Python, Node.js, shell commands and services run inside each environment's TinyEMU Linux guest; the App bundles no native Python, Node or Ruby payload, and the retired in-process CPython/NodeMobile recipes are archived under `FloeAgent/ThirdParty/NativeRuntimeArchive/` and blocked by `FloeAgent/scripts/audit_native_runtime_free.py`. First use of a Linux-required entry point runs one shared prepare/download/verify/install/start job and resumes the original command; the guest configures and reports its own network. Retired native/WASI package routes are not advertised as usable tools. Media transcode/audio conversion use bounded processing and verified temporary outputs. Unconnected enhancement runners are not registered as available tools. Package transactions stage and verify payloads before journaled file changes; current fixture coverage and remaining gaps are tracked in [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md).
 
 ## Domain vocabulary / 领域术语
 
@@ -41,7 +48,7 @@ flowchart TB
     REMOTE["SSH · PTY · forwarding · VNC"]
     FILES["Private/Files workspaces · change artifacts · global font library"]
     GIT["Local Git · GitHub · cloud Git"]
-    LINUX["TinyEMU Linux guest · shared venv/npm · signed WASI catalog"]
+    LINUX["TinyEMU Linux guest · shared venv/npm"]
 
     UI --> CENTER
     CENTER --> RUNTIME

@@ -1,5 +1,8 @@
 # Floe 1.7 变更草稿 / Unreleased changes
 
+> 历史实施记录 / Historical implementation record. 以下候选、运行时路线和交付状态仅适用于记录当时；当前操作见[中文手册](USER_GUIDE.zh-CN.md) / [English manual](USER_GUIDE.md)，安装与验证见[当前状态](CURRENT_STATUS.md)。Do not treat these historical plans or checks as current availability.
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 本稿记录整轮 1.7 的实现和未完成范围。1.7.0（172）已交付 Floe QA 内部 TestFlight，Apple VALID / IN_BETA_TESTING 已确认。SDK 27 的源码回归与双端手记 UI 用例通过；上传 SDK 构建设备包成功，本次按用户要求跳过该 SDK 的模拟器验收。正式发布另行安排，真机验收由用户安装后完成。精确测试范围见[实施状态](FLOE_1_7_IMPLEMENTATION_STATUS.md)。

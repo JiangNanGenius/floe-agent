@@ -18,7 +18,9 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](FloeAgent/Package.swift)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
-![Floe Agent new-task workspace on iPad](docs/images/floe-agent-new-task-ipad.webp)
+[![Floe on iPad — start a task from the app home screen.](docs/assets/guide/home.jpg)](docs/USER_GUIDE.md)
+
+*Floe on iPad — start a task from the app home screen.*
 
 <p align="center">
   <a href="https://www.floe-agent.com/add/feather"><img src="docs/images/badge-add-to-feather.svg" alt="Add to Feather" width="190"></a>
@@ -36,7 +38,11 @@ Floe Agent turns a model conversation into a durable task. Each message continue
 
 [Detailed user manual](docs/USER_GUIDE.md) · [Website documentation](https://www.floe-agent.com/docs/en.html) · [Version status](docs/CURRENT_STATUS.md)
 
-The last recorded internal delivery is **1.7.14 (255)**. **1.7.18 (259) is an unreleased candidate** undergoing full CI. Current TestFlight approval, expiration and group availability must be checked with Apple; historical submissions do not deliver this candidate. See the [release archive](docs/releases/README.md).
+Current source is **1.7.24 (265)**. Internal TestFlight, external review, GitHub IPA and source feeds have separate delivery states. Use [current status and verification dates](docs/CURRENT_STATUS.md) as the canonical reference; historical records do not guarantee availability today.
+
+### Creative and engineering workspaces
+
+Notes offers independent material, search and a document assistant. Office, 2D DWG/DXF with Drawing Assistant, Canvas and image/video workbenches share services while keeping their own project and undo state. AI edits use proposals, previews and confirmation; verify saved results by reopening. See the [capability table](docs/FLOE_1_7_24_CREATIVE_TOOLS.md) for formats and device-only qualification limits.
 
 ### Notes, Office and local speech
 
@@ -87,7 +93,7 @@ The app normally opens directly into **New Task**. Sending the first message cre
 
 ### TestFlight
 
-Floe Agent **1.7.14 (build 255)** is verified available to the **Floe QA internal TestFlight group**: Apple reports `VALID`, unexpired, audience `APP_STORE_ELIGIBLE` and `IN_BETA_TESTING` for immutable tag `v1.7.14` ([verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/37227667889)). See the [Build 255 delivery record](docs/releases/testflight/TESTFLIGHT_1.7.14_BETA.md); physical iPad behavior remains to be accepted.
+Current source is **1.7.24 (265)**. Internal TestFlight, external review, GitHub IPA and source feeds have separate delivery states. Use [current status and verification dates](docs/CURRENT_STATUS.md) as the canonical reference; historical records do not guarantee availability today.
 
 ### Unsigned IPA
 
@@ -112,7 +118,7 @@ The stable Floe feed is published at `https://raw.githubusercontent.com/JiangNan
 - Feather: `https://www.floe-agent.com/add/feather` → `feather://source/https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json`
 - AltStore: `https://www.floe-agent.com/add/altstore` → `altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json`
 
-You can also paste the source URL directly into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the README badges point at the official HTTPS endpoints, which perform the custom-scheme launch and always render a readable fallback instead of a dead link. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md). Re-checked read-only on 2026-09-24: both endpoints answered HTTP 200 with the exact deep link plus the manual fallback, the published feed's newest entry is 1.7.0 (227) with the same unsigned-IPA SHA-256 as the GitHub prerelease, and the GitHub Markdown API still stripped both link forms to plain text — GitHub itself cannot host the add-source action, so the HTTPS endpoints remain the only clickable quick-add path.
+You can also paste the source URL directly into the app's Sources screen. GitHub's Markdown sanitizer removes `feather://` and `altstore://` links, so the README badges point at the official HTTPS endpoints, which perform the custom-scheme launch and always render a readable fallback instead of a dead link. The independently verified publishing process and manual source URL are described in the [source guide](docs/FEATHER_SOURCE.md). Check [current channel status](docs/CURRENT_STATUS.md) before installation.
 
 ### Build from source
 
@@ -211,7 +217,7 @@ Floe Agent does **not** provide a hosted model proxy, Floe account, remote relay
 | --- | --- | --- |
 | Product use | [User guide](docs/USER_GUIDE.md) | [使用指南](docs/USER_GUIDE.zh-CN.md) |
 | Next-release status | [Implementation status and verification boundaries](docs/FLOE_1_7_NEXT_RELEASE_STATUS.md) | 同一文档含简体中文摘要 |
-| Current status | [Build 227 delivery](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_227.md) · [Build 225 previous delivery](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_225.md) | [Build 227 交付](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_227.md) · [Build 225 上一交付](docs/releases/notes/RELEASE_NOTES_1.7.0_BUILD_225.md) |
+| 当前状态 / Current status | [渠道与核验日期](docs/CURRENT_STATUS.md) | [Channels and verification dates](docs/CURRENT_STATUS.md) |
 | Architecture | [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md) | Bilingual diagrams and terminology in the same document |
 | Development | [Contributing](CONTRIBUTING.md) | [贡献指南](CONTRIBUTING.zh-CN.md) |
 | Security | [Security policy](SECURITY.md) | [安全策略](SECURITY.zh-CN.md) |
@@ -234,7 +240,7 @@ Dated release records, qualification evidence and implementation plans live unde
 
 Before a large or security-sensitive change, read [CONTRIBUTING.md](CONTRIBUTING.md) and open an issue describing the user problem, scope, security impact, and verification plan. Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md).
 
-Original Floe Agent code is licensed under the [Mozilla Public License 2.0](LICENSE). Third-party components retain their own licenses and notices. The app shows one legal entry — **Settings → Diagnostics & About → Third-Party Licenses** — which reproduces the complete TinyEMU/slirp notices and every other bundled dependency notice, including a component summary with versions and sources; the generated repository record remains [`FloeAgent/LICENSES-THIRD-PARTY.md`](FloeAgent/LICENSES-THIRD-PARTY.md). **Build 227** consolidates the formerly separate TinyEMU screen into this single entry.
+Original Floe Agent code is licensed under the [Mozilla Public License 2.0](LICENSE). Third-party components retain their own licenses and notices. The app shows one legal entry — **Settings → Diagnostics & About → Third-Party Licenses** — which reproduces the complete TinyEMU/slirp notices and every other bundled dependency notice, including a component summary with versions and sources; the generated repository record remains [第三方许可清单 / Third-party inventory](FloeAgent/FloeApp/Resources/Licenses/third-party-inventory.json). **Build 227** consolidates the formerly separate TinyEMU screen into this single entry.
 
 The 1.7 UI continuation adds General → Automatic/Light/Dark appearance, project/conversation container management, and foldable reasoning/tool batches. Availability and beta qualification are tracked in the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md).
 

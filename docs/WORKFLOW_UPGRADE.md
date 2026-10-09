@@ -1,5 +1,8 @@
 # Editing and workflow upgrade / 编辑与工作流升级
 
+> 历史实施记录 / Historical implementation record. 以下候选、运行时路线和交付状态仅适用于记录当时；当前操作见[中文手册](USER_GUIDE.zh-CN.md) / [English manual](USER_GUIDE.md)，安装与验证见[当前状态](CURRENT_STATUS.md)。Do not treat these historical plans or checks as current availability.
+
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 > **历史页面 / Historical page.** 下表与状态行记录 1.5.3（134）时期的升级范围和当时剩余项；

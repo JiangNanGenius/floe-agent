@@ -18,3 +18,6 @@ Include the exact commit/build and device/SDK. Preserve recoverable copies and f
 - 后台、语音、浏览器或服务商问题应注明失败阶段，并尽量附上从设置导出的脱敏诊断。
 
 不要提交 API Key、密码、私钥、主机名、个人文件或其他秘密。安全漏洞请按[安全策略](SECURITY.zh-CN.md)私下报告。
+
+
+CAD、Office、手记或媒体问题请说明原始格式、是否确认 AI 提案、保存重开或备份恢复后的差异。分享前使用合成文件或脱敏内容。

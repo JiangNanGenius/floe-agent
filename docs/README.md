@@ -7,7 +7,7 @@
 - [完整中文使用手册](USER_GUIDE.zh-CN.md) / [English user manual](USER_GUIDE.md)：20 章操作步骤、排障与数据保护。
 - [版本与验证状态](CURRENT_STATUS.md)：已记录交付、当前候选和待验收边界。
 - [官网中文版](https://www.floe-agent.com/docs/zh.html) / [Website English manual](https://www.floe-agent.com/docs/en.html)：与仓库手册同源。
-- [文档更新清单](DOCUMENTATION_REFRESH_20261005.md)：本次覆盖范围；[旧版手册](history/USER_GUIDE.zh-CN.pre-20261005.md)保留旧截图和记录。
+- [文档更新清单](DOCUMENTATION_REFRESH_20261009.md)：本次覆盖范围；[旧版手册](history/USER_GUIDE.zh-CN.pre-20261005.md)保留旧截图和记录。
 - [发布档案](releases/README.md)：逐版本原始证据，不作为当前可安装状态的实时查询。
 
 ## 当前有效（阅读与维护入口）
@@ -36,11 +36,11 @@
 | [TOOL_CLOSURE_IMPLEMENTATION.md](TOOL_CLOSURE_IMPLEMENTATION.md) | 工具闭环实现 |
 | `../FloeAgent/docs/`（本地资料，未随仓库分发） | 工程侧架构（HARNESS_PROMPT_PROTOCOL 等） |
 | [../FloeAgent/README.md](../FloeAgent/README.md) | 构建说明与模块图 |
-| [../skill-hub/](../skill-hub/) / [../ios-wheelhouse/](../ios-wheelhouse/) | 官方技能中心 / 已封存的 iOS wheel 产线（不再随 App 分发原生载荷，见 [Phase 2 迁移](PHASE2_migration.md)） |
+| [../skill-hub/](../skill-hub/) / `ios-wheelhouse/`（本地历史配方） | 官方技能中心 / 已封存的 iOS wheel 产线（不再随 App 分发原生载荷，见 [Phase 2 迁移](PHASE2_migration.md)） |
 | [Floe 1.7 图像编辑器集成](FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md) / [视频编辑器集成](FLOE_1_7_VIDEO_EDITOR_INTEGRATION.md) | 媒体编辑来源、接入状态与验证边界 |
 | [媒体工作台（1.7.23／264）](FLOE_MEDIA_WORKBENCH.md) | 统一图像/视频工作台：版本化项目、渲染器、`media.project` 工具契约与已执行验证 |
-| [CAD 引擎、cad.document 与画布子工程（1.7.24／265 候选）](FLOE_CAD_AND_DRAWING_ASSISTANT.md) | 二维 CAD 引擎能力、无界面 Worker 宿主、`cad.document` 契约、画布绑定/分支语义与图像/视频细化（候选，未发布） |
-| [创作工具契约与格式能力表（1.7.24／265 候选，中英）](FLOE_1_7_24_CREATIVE_TOOLS.md) | 共享 discover→read→propose→confirm→apply→verify 契约，`cad.document`/`document.office.edit`/手记/`media.project` 模式与示例，图纸助手，以及区分已验证/引擎层待真机/不支持的 CAD 与 Office 真实格式能力表 |
+| [CAD 引擎、cad.document 与画布子工程（1.7.24／265）](FLOE_CAD_AND_DRAWING_ASSISTANT.md) | 二维 CAD 引擎能力、无界面 Worker 宿主、`cad.document` 契约、画布绑定/分支语义与图像/视频细化（安装状态见 CURRENT_STATUS） |
+| [创作工具契约与格式能力表（1.7.24／265，中英）](FLOE_1_7_24_CREATIVE_TOOLS.md) | 共享 discover→read→propose→confirm→apply→verify 契约，`cad.document`/`document.office.edit`/手记/`media.project` 模式与示例，图纸助手，以及区分已验证/引擎层待真机/不支持的 CAD 与 Office 真实格式能力表 |
 | [截图档案](evidence/floe-1.7/SCREENSHOTS.md) | 界面截图与对应证据 |
 
 ## 发布档案（只追加、不回改）
@@ -66,4 +66,4 @@
 - 每版发布在 `releases/notes/` 新增 `RELEASE_NOTES_<版本>.md`（含 `### 简体中文` 与 `### English` 两节）与对应核验记录。
 - 已过时的结论就地加"历史"横幅，不删除（保留考古上下文）。
 
-- [Port management and linux.port / 端口管理](FLOE_PORT_MANAGEMENT.md) — candidate 1.7.22 contract; current availability is tracked separately.
+- [Port management and linux.port / 端口管理](FLOE_PORT_MANAGEMENT.md) — 1.7.22 contract; installation availability is tracked in CURRENT_STATUS.

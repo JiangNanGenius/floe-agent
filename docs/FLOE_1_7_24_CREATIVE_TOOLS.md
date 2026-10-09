@@ -1,3 +1,4 @@
+<!-- docs-updated: 2026-10-09 -->
 # Floe 1.7.24 (265) creative tool contracts and format capability table
 
 Status (2026-10-08): implementation merged into `main`; immutable tag `v1.7.24`
