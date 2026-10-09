@@ -1,4 +1,5 @@
 import Foundation
+import FloeCore
 
 /// Composes replaceable instruction layers for one activation. Mode changes
 /// replace the mode layer instead of accumulating contradictory historical
@@ -13,6 +14,12 @@ public enum AgentPromptComposer {
         activePlan: PlanDraft? = nil,
         activeGoal: ConversationGoal? = nil,
         compactForLocal: Bool = false,
+        /// Validated signed-content overlay. Only the method layer (inserted
+        /// after the base agent), the communication discipline and the
+        /// delivery contract can be replaced; every permission, approval and
+        /// tool-protocol layer stays compiled. Compact local runs ignore the
+        /// overlay to preserve their hard envelope budget.
+        overlay: AgentPromptOverlay = .empty,
         /// Per-section heuristic-token allowance for the optional data
         /// layers (soul, profile, plan, goal) on a local run. Each present
         /// layer is head/tail-clipped with an explicit marker so the layer
@@ -20,19 +27,23 @@ public enum AgentPromptComposer {
         /// verbatim cloud behaviour.
         localSectionBudgetTokens: Int? = nil
     ) -> String {
-        var layers = [
-            immutableRuntime,
-            baseAgent,
-            toolsAvailable ? operatingProtocol : toolFreeProtocol,
-            capabilityRoutingProtocol,
-            stepSettlementProtocol,
-            contextContinuityProtocol,
-            failureProtocol,
-            deliveringWork,
-            communicationDiscipline,
-            harnessMessages,
-            modeLayer(mode, toolsAvailable: toolsAvailable)
-        ]
+        var layers: [String] = [immutableRuntime, baseAgent]
+        if !compactForLocal {
+            if let method = overlay.method {
+                layers.append("# Task method\n\(method)")
+            }
+            layers.append(contentsOf: [
+                toolsAvailable ? operatingProtocol : toolFreeProtocol,
+                capabilityRoutingProtocol,
+                stepSettlementProtocol,
+                contextContinuityProtocol,
+                failureProtocol,
+                overlay.delivery ?? deliveringWork,
+                overlay.communication ?? communicationDiscipline,
+                harnessMessages,
+                modeLayer(mode, toolsAvailable: toolsAvailable)
+            ])
+        }
         if compactForLocal {
             layers = [localRuntimeContract, localModeLayer(mode, toolsAvailable: toolsAvailable)]
         }

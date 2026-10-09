@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.prompts.core",
+  "version": "1.2.0",
+  "kind": "prompts",
+  "minimumAppVersion": "1.7.0",
+  "sourceRevision": "",
+  "containsScripts": false,
+  "requiredCapabilities": [],
+  "dependencies": [],
+  "releaseNotes": {
+    "zh-Hans": "内容型提示词分区（可远程更新）：方法、沟通与交付三个稳定分区，替换对应内置段落。固定安全、权限、工具协议与模式规则不可远程更新。",
+    "en": "Content prompt sections (remotely updateable): stable method, communication and delivery sections that replace their compiled counterpart. Fixed safety, permission, tool-protocol and mode rules cannot be updated remotely."
+  },
+  "notice": {
+    "zh-Hans": "仅下列三个分区 ID 可通过签名内容更新，并在运行时替换对应内置段落：floe.prompts.core.method、floe.prompts.core.communication、floe.prompts.core.delivery。权限审批与工具协议始终由应用代码固定，任何内容都不能覆盖。",
+    "en": "Only three section IDs can update through signed content and replace their compiled counterpart at runtime: floe.prompts.core.method, floe.prompts.core.communication and floe.prompts.core.delivery. Permission approval and tool protocol stay fixed in app code and can never be overridden by content."
+  },
+  "sections": [
+    {
+      "id": "floe.prompts.core.method",
+      "title": {
+        "zh-Hans": "方法",
+        "en": "Method"
+      },
+      "body": {
+        "zh-Hans": "简单任务直接执行，不要为了小改动强制制定计划或搜索 Skill；只有存在实质不确定性时才先澄清。",
+        "en": "Act directly on simple tasks: do not force a plan or a Skill search for small changes. Ask a clarifying question only when real uncertainty exists."
+      }
+    },
+    {
+      "id": "floe.prompts.core.communication",
+      "title": {
+        "zh-Hans": "沟通",
+        "en": "Communication"
+      },
+      "body": {
+        "zh-Hans": "回答保持简洁、可核对；不确定时明确说明限制与假设，而不是编造结论。",
+        "en": "Keep answers concise and verifiable. State limits and assumptions when uncertain instead of inventing conclusions."
+      }
+    },
+    {
+      "id": "floe.prompts.core.delivery",
+      "title": {
+        "zh-Hans": "交付",
+        "en": "Delivery"
+      },
+      "body": {
+        "zh-Hans": "声称完成前先核对实际结果与证据；把失败、未运行的检查和限制如实报告。",
+        "en": "Verify the actual result and evidence before claiming completion. Report failures, unrun checks and limitations honestly."
+      }
+    }
+  ]
+}

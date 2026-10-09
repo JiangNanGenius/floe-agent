@@ -23,13 +23,15 @@ struct ProviderEditorView: View {
     init(
         center: ConversationCenter,
         existing: ProviderProfile?,
-        initialRole: ProviderServiceRole? = nil
+        initialRole: ProviderServiceRole? = nil,
+        initialCatalogEntry: ProviderCatalogEntry? = nil
     ) {
         _viewModel = StateObject(
             wrappedValue: ProviderEditorViewModel(
                 center: center,
                 existing: existing,
-                initialRole: initialRole
+                initialRole: initialRole,
+                catalogEntry: initialCatalogEntry
             )
         )
     }
@@ -142,6 +144,12 @@ struct ProviderEditorView: View {
             }
             .accessibilityLabel("providers.preset")
             .accessibilityIdentifier("providers.preset")
+        } footer: {
+            if let catalogPresetID = viewModel.catalogPresetID {
+                Text(FloeL10n.l("providers.catalog.preset_footer", catalogPresetID))
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

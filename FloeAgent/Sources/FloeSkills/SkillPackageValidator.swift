@@ -9,7 +9,16 @@ public struct SkillPackageValidator: Sendable {
         self.limits = limits
     }
 
-    public func validate(packageAt rootURL: URL) throws -> ValidatedSkillPackage {
+    /// Validates one skill package. Traditional packages may omit
+    /// `floe.json`: their manifest is derived from SKILL.md and the script
+    /// inventory, or supplied as an external sidecar (`manifestOverride`)
+    /// whose bytes never enter the package, so the upstream canonical digest
+    /// and version stay exactly as published.
+    public func validate(
+        packageAt rootURL: URL,
+        requireManifest: Bool = true,
+        manifestOverride: SkillManifest? = nil
+    ) throws -> ValidatedSkillPackage {
         let root = rootURL.standardizedFileURL
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -24,25 +33,52 @@ public struct SkillPackageValidator: Sendable {
         guard inventory.contains(where: { $0.relativePath == "SKILL.md" }) else {
             throw SkillValidationError.missingRequiredFile("SKILL.md")
         }
-        guard inventory.contains(where: { $0.relativePath == "floe.json" }) else {
+        let hasManifest = inventory.contains(where: { $0.relativePath == "floe.json" })
+        guard hasManifest || manifestOverride != nil || !requireManifest else {
             throw SkillValidationError.missingRequiredFile("floe.json")
         }
 
         let skillURL = root.appendingPathComponent("SKILL.md", isDirectory: false)
-        let manifestURL = root.appendingPathComponent("floe.json", isDirectory: false)
         let skillData = try Data(floeContentsOf: skillURL, options: [.mappedIfSafe])
-        let manifestData = try Data(floeContentsOf: manifestURL, options: [.mappedIfSafe])
         guard skillData.count <= limits.maximumSkillMarkdownBytes else {
             throw SkillValidationError.fileTooLarge(path: "SKILL.md", limit: limits.maximumSkillMarkdownBytes)
         }
-        guard manifestData.count <= limits.maximumManifestBytes else {
-            throw SkillValidationError.fileTooLarge(path: "floe.json", limit: limits.maximumManifestBytes)
-        }
 
         let metadata = try parseSkillMarkdown(skillData)
-        let manifest = try parseManifest(manifestData)
-        guard metadata.name == manifest.id else {
-            throw SkillValidationError.invalidManifest("id must match SKILL.md name")
+        let manifest: SkillManifest
+        if hasManifest {
+            let manifestURL = root.appendingPathComponent("floe.json", isDirectory: false)
+            let manifestData = try Data(floeContentsOf: manifestURL, options: [.mappedIfSafe])
+            guard manifestData.count <= limits.maximumManifestBytes else {
+                throw SkillValidationError.fileTooLarge(path: "floe.json", limit: limits.maximumManifestBytes)
+            }
+            manifest = try parseManifest(manifestData)
+            guard metadata.name == manifest.id else {
+                throw SkillValidationError.invalidManifest("id must match SKILL.md name")
+            }
+        } else if let manifestOverride {
+            // Sidecar manifest from Floe's own installation record. It is
+            // validated with the same schema contract as a packaged one but
+            // never stored inside the package.
+            guard metadata.name == manifestOverride.id else {
+                throw SkillValidationError.invalidManifest("sidecar id must match SKILL.md name")
+            }
+            guard manifestOverride.schemaVersion == 1 else {
+                throw SkillValidationError.unsupportedSchema(manifestOverride.schemaVersion)
+            }
+            guard SemanticVersion(manifestOverride.version) != nil else {
+                throw SkillValidationError.invalidVersion(manifestOverride.version)
+            }
+            guard Set(manifestOverride.capabilities).count == manifestOverride.capabilities.count,
+                  Set(manifestOverride.tools).count == manifestOverride.tools.count,
+                  Set(manifestOverride.platforms).count == manifestOverride.platforms.count,
+                  !manifestOverride.platforms.isEmpty else {
+                throw SkillValidationError.invalidManifest("sidecar manifest lists must be unique and non-empty")
+            }
+            for tool in manifestOverride.tools { try validateToolName(tool) }
+            manifest = manifestOverride
+        } else {
+            manifest = try Self.traditionalManifest(metadata: metadata, files: inventory)
         }
         let capabilities = try Set(manifest.capabilities.map { raw in
             guard let capability = SkillCapability(rawValue: raw) else {
@@ -73,6 +109,54 @@ public struct SkillPackageValidator: Sendable {
             supportedPlatforms: platforms,
             files: inventory,
             canonicalSHA256: digest
+        )
+    }
+
+    /// Derives a conservative manifest for a traditional package that has no
+    /// `floe.json`. Only runtimes the app already owns are inferred:
+    ///  * Pure Python → the audited on-device `python.local` runtime.
+    ///  * Shell and/or Node (including mixed Python) → the existing task
+    ///    environment (`exec.shell`), which runs in the selected local Linux
+    ///    guest or an authorized remote host. No new engine is introduced.
+    /// JavaScriptCore is never inferred; it requires an explicit manifest,
+    /// and unknown file types fail closed instead of guessing.
+    static func traditionalManifest(metadata: SkillMetadata, files: [SkillFile]) throws -> SkillManifest {
+        let scripts = files.filter { $0.relativePath.hasPrefix("scripts/") }
+        let extensions = Set(scripts.map {
+            URL(fileURLWithPath: $0.relativePath).pathExtension.lowercased()
+        })
+        if scripts.isEmpty || extensions.isEmpty {
+            guard scripts.isEmpty else {
+                throw SkillValidationError.incompatibleScriptRuntime(
+                    "scripts/ contains entries with no usable file extension"
+                )
+            }
+            return SkillManifest(id: metadata.name, version: "1.0.0")
+        }
+        let python = Set(["py"])
+        let taskEnvironment = Set(["sh", "js", "mjs"])
+        if extensions.isSubset(of: python) {
+            return SkillManifest(
+                id: metadata.name,
+                version: "1.0.0",
+                capabilities: [SkillCapability.localPython.rawValue],
+                tools: ["exec.localPython"],
+                scriptRuntime: .localPython
+            )
+        }
+        guard extensions.isSubset(of: python.union(taskEnvironment)) else {
+            let unknown = extensions.subtracting(python.union(taskEnvironment)).sorted().first ?? ""
+            throw SkillValidationError.unsupportedFile("scripts/*.\(unknown)")
+        }
+        // Shell/Node, and mixed Python + Shell/Node, run through the selected
+        // execution environment; the manifest declares the environment tool
+        // rather than demanding a remote host.
+        return SkillManifest(
+            id: metadata.name,
+            version: "1.0.0",
+            capabilities: [SkillCapability.remoteExecution.rawValue],
+            tools: ["exec.shell"],
+            scriptRuntime: .remote
         )
     }
 
@@ -419,6 +503,23 @@ public struct SkillPackageValidator: Sendable {
             withUnsafeBytes(of: &length) { hasher.update(data: Data($0)) }
             hasher.update(data: pathBytes)
             let data = try Data(floeContentsOf: root.appendingPathComponent(file.relativePath), options: [.mappedIfSafe])
+            var dataLength = UInt64(data.count).bigEndian
+            withUnsafeBytes(of: &dataLength) { hasher.update(data: Data($0)) }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Canonical digest over in-memory files, matching the on-disk algorithm
+    /// exactly (length-prefixed path + bytes, sorted by path).
+    public static func canonicalDigest(files: [String: Data]) -> String {
+        var hasher = SHA256()
+        for name in files.keys.sorted() {
+            guard let data = files[name] else { continue }
+            let pathBytes = Data(name.utf8)
+            var length = UInt64(pathBytes.count).bigEndian
+            withUnsafeBytes(of: &length) { hasher.update(data: Data($0)) }
+            hasher.update(data: pathBytes)
             var dataLength = UInt64(data.count).bigEndian
             withUnsafeBytes(of: &dataLength) { hasher.update(data: Data($0)) }
             hasher.update(data: data)

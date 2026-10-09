@@ -973,11 +973,16 @@ final class ConversationCenter: ObservableObject {
         let personalization: RuntimePersonalizationContext
         let activePlan: PlanDraft?
         let activeGoal: ConversationGoal?
+        /// Run-frozen, remotely updateable prompt overlay. The snapshot is
+        /// created on first use for this run, so resume keeps the same content
+        /// version and never substitutes a newer app bundle.
+        let contentOverlay: AgentPromptOverlay
         if runSurface == .canvas {
             skills = .none
             personalization = RuntimePersonalizationContext()
             activePlan = nil
             activeGoal = nil
+            contentOverlay = .empty
         } else {
             skills = await environment.skillsCenter.runtimeSelection(runID: runID)
             personalization = await runtimePersonalizationContext(
@@ -989,6 +994,10 @@ final class ConversationCenter: ObservableObject {
                 .latestPlan(conversationID: conversationID)
             activeGoal = try? await environment.intelligenceStore
                 .goals(conversationID: conversationID).first(where: { !$0.status.isTerminal })
+            contentOverlay = await environment.contentUpdateCenter.runtimePromptOverlay(
+                runID: runID,
+                locale: FloeL10n.currentLanguageCode
+            )
         }
         let taskPolicyToolNames: Set<String>? = {
             let hasExplicitRestriction = taskPolicy.allowedToolNames != nil
@@ -1179,6 +1188,7 @@ final class ConversationCenter: ObservableObject {
                     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n\n"),
+                contentOverlay: contentOverlay,
                 memoryContext: personalization.memory,
                 soulContext: personalization.soul,
                 userProfileContext: personalization.profile,

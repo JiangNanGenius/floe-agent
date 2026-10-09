@@ -54,6 +54,9 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
     /// User-facing display name (e.g. "DeepSeek", "公司网关"). Defaults to the
     /// preset/kind label when unset; never sent on the wire.
     public var displayName: String?
+    /// Stable id of the imported provider catalog entry this profile was
+    /// created from (e.g. "deepseek"). `nil` marks a legacy/manual record.
+    public var presetID: String?
     /// Reference to the API key in Keychain. `nil` means unauthenticated
     /// endpoint (e.g. local inference).
     public var secretRef: SecretReference?
@@ -79,6 +82,7 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
         wireProtocol: ModelProtocol,
         baseURL: URL,
         displayName: String? = nil,
+        presetID: String? = nil,
         secretRef: SecretReference? = nil,
         region: String? = nil,
         nonSecretHeaders: [String: String] = [:],
@@ -94,6 +98,7 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
         self.wireProtocol = wireProtocol
         self.baseURL = baseURL
         self.displayName = displayName
+        self.presetID = presetID
         self.secretRef = secretRef
         self.region = region
         self.nonSecretHeaders = nonSecretHeaders

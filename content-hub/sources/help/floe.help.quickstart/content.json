@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.help.quickstart",
+  "version": "1.0.0",
+  "kind": "help",
+  "minimumAppVersion": "1.7.0",
+  "sourceRevision": "",
+  "containsScripts": false,
+  "requiredCapabilities": [],
+  "dependencies": [],
+  "releaseNotes": {
+    "zh-Hans": "首版快速上手帮助包，包含英文与简体中文文档。",
+    "en": "First quickstart help package with English and Simplified Chinese documents."
+  },
+  "title": {
+    "zh-Hans": "Floe 快速上手",
+    "en": "Floe quickstart"
+  },
+  "documents": {
+    "zh-Hans": "index.zh-Hans.md",
+    "en": "index.md"
+  }
+}

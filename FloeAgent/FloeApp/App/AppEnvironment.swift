@@ -157,6 +157,7 @@ final class AppEnvironment: ObservableObject {
     private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
     private lazy var _skillsCenter = SkillsCenter(environment: self)
+    private lazy var _contentUpdateCenter = ContentUpdateCenter(environment: self)
     private lazy var _memoryCenter = MemoryCenter(environment: self)
     private lazy var _memoryDreamService = MemoryDreamService(environment: self)
     private lazy var _skillDreamService = SkillDreamService(environment: self)
@@ -216,6 +217,8 @@ final class AppEnvironment: ObservableObject {
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }
     var skillsCenter: SkillsCenter { _skillsCenter }
+    /// Signed declarative-content updates (prompts/help/templates/providers).
+    var contentUpdateCenter: ContentUpdateCenter { _contentUpdateCenter }
     var memoryCenter: MemoryCenter { _memoryCenter }
     var memoryDreamService: MemoryDreamService { _memoryDreamService }
     var skillDreamService: SkillDreamService { _skillDreamService }
@@ -986,6 +989,9 @@ final class AppEnvironment: ObservableObject {
         // Bundled domain skills: seed/upgrade in the background; failures are
         // logged inside the seeder and never block startup.
         if shouldSeedBundledSkills { Task { await skillsCenter.seedBuiltinDomainSkills() } }
+        // Signed declarative content: foreground check at most once per day.
+        // Failures are logged inside the center and never block startup.
+        Task { await contentUpdateCenter.checkAutomaticallyIfDue() }
         // Durable memory.
         registerTaskChecklistTools(store: TaskChecklistStore(database: database))
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in

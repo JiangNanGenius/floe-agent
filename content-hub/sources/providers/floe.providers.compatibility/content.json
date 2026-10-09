@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.providers.compatibility",
+  "version": "1.1.0",
+  "kind": "providers",
+  "minimumAppVersion": "1.7.0",
+  "sourceRevision": "",
+  "containsScripts": false,
+  "requiredCapabilities": [],
+  "dependencies": [],
+  "releaseNotes": {
+    "zh-Hans": "提供商兼容性映射 + 官方 ProviderCatalog 目录：随包分发经校验的目录文档，安装后由同一签名事务生效。",
+    "en": "Provider compatibility mapping plus the official ProviderCatalog: the validated catalog document ships in-package and activates through the same signed transaction."
+  },
+  "privacy": {
+    "zh-Hans": "本包不包含 API 密钥、令牌或带凭据的地址；凭据只保存在已批准的凭据存储中。",
+    "en": "This package contains no API keys, tokens or credential-bearing URLs; credentials live only in approved credential storage."
+  },
+  "wireProtocols": [
+    {
+      "id": "openai-responses",
+      "swiftValue": "openAIResponses",
+      "description": {
+        "zh-Hans": "OpenAI Responses 线协议，支持推理强度与思考控制。",
+        "en": "OpenAI Responses wire protocol with reasoning-effort and thinking controls."
+      }
+    },
+    {
+      "id": "openai-chat-completions",
+      "swiftValue": "openAIChatCompletions",
+      "description": {
+        "zh-Hans": "OpenAI Chat Completions 兼容线协议，多数兼容网关使用该格式。",
+        "en": "OpenAI Chat Completions compatible wire protocol used by most compatible gateways."
+      }
+    },
+    {
+      "id": "anthropic-messages",
+      "swiftValue": "anthropicMessages",
+      "description": {
+        "zh-Hans": "Anthropic Messages 线协议，支持思考预算与强度字段。",
+        "en": "Anthropic Messages wire protocol with thinking budget and effort fields."
+      }
+    }
+  ],
+  "providerMappings": [
+    {
+      "id": "openai",
+      "displayName": "OpenAI",
+      "defaultProtocol": "openai-responses",
+      "supportedProtocols": [
+        "openai-responses",
+        "openai-chat-completions"
+      ],
+      "authStyle": "bearer",
+      "supportsModelDiscovery": true
+    },
+    {
+      "id": "anthropic",
+      "displayName": "Anthropic",
+      "defaultProtocol": "anthropic-messages",
+      "supportedProtocols": [
+        "anthropic-messages"
+      ],
+      "authStyle": "api-key-header",
+      "supportsModelDiscovery": true
+    },
+    {
+      "id": "volcengine-ark",
+      "displayName": "Volcengine Ark",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-chat-completions"
+      ],
+      "authStyle": "bearer",
+      "supportsModelDiscovery": true
+    },
+    {
+      "id": "alibaba-studio",
+      "displayName": "DashScope (Alibaba Cloud Bailian)",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-chat-completions"
+      ],
+      "authStyle": "bearer",
+      "supportsModelDiscovery": true
+    },
+    {
+      "id": "google-gemini-images",
+      "displayName": "Google Gemini Images",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-chat-completions"
+      ],
+      "authStyle": "api-key-header",
+      "supportsModelDiscovery": false,
+      "notes": {
+        "zh-Hans": "仅用于图像生成，使用原生 generateContent 图像契约。",
+        "en": "Image generation only, using the native generateContent image contract."
+      }
+    },
+    {
+      "id": "local",
+      "displayName": "On-device models",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-chat-completions"
+      ],
+      "authStyle": "none",
+      "supportsModelDiscovery": true
+    },
+    {
+      "id": "custom",
+      "displayName": "Custom compatible endpoint",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-responses",
+        "openai-chat-completions",
+        "anthropic-messages"
+      ],
+      "authStyle": "bearer",
+      "supportsModelDiscovery": true
+    }
+  ],
+  "catalog": "ProviderCatalog.json",
+  "catalogNotice": {
+    "zh-Hans": "ProviderCatalog.json 与内置资源一致，且必须通过应用内严格校验后才会生效；目录不包含任何密钥或带凭据的地址。",
+    "en": "ProviderCatalog.json matches the bundled resource and only activates after the app-side strict validation gate; the catalog contains no keys or credential-bearing URLs."
+  }
+}

@@ -63,6 +63,7 @@ final class SkillsCenter: ObservableObject {
             catalogPackages = verified
             lastCatalogCheck = Date()
             catalogError = nil
+            await autoApplySamePermissionUpdatesIfEnabled()
         } catch is CancellationError {
         } catch { catalogError = FloeL10n.l("skills.skills_center.updates_cannot_be_checked_right_now") }
     }
@@ -73,15 +74,64 @@ final class SkillsCenter: ObservableObject {
         return version
     }
 
+    /// Applies reviewed same-permission updates automatically when the user
+    /// enabled scripted auto-updates (the shared content-update preference).
+    /// Permission *expansion* is never applied automatically: the candidate
+    /// stays staged for explicit review, preserving the fixed approval
+    /// boundary. Skills with no known immutable source are skipped.
+    func autoApplySamePermissionUpdatesIfEnabled() async {
+        guard UserDefaults.standard.object(
+            forKey: ContentUpdateCenter.scriptedAutoInstallDefaultsKey
+        ) as? Bool == true else { return }
+        let skills = (try? await environment.skillStore.all()) ?? []
+        for skill in skills {
+            guard availableVersion(for: skill) != nil else { continue }
+            let source: GitHubSkillSource?
+            if OfficialSkillHub.skillIDs.contains(skill.id) {
+                source = try? OfficialSkillHub.source()
+            } else {
+                source = lastGitHubSource(skillID: skill.id)
+            }
+            guard let source else { continue }
+            await checkGitHubUpgrade(skill: skill, source: source)
+            guard let candidate = pendingUpgrade else { continue }
+            guard candidate.addedCapabilities.isEmpty, candidate.addedTools.isEmpty else {
+                // Permission expansion needs explicit authorization; keep the
+                // staged candidate visible instead of applying it.
+                FloeLogger(category: .app).info(
+                    "skillAutoUpdateDeferred id=\(skill.id) addedCaps=\(candidate.addedCapabilities.count) addedTools=\(candidate.addedTools.count)"
+                )
+                continue
+            }
+            await applyReviewedUpgrade()
+        }
+    }
+
     private struct UpgradeJournal: Codable {
         var oldSkill: PersistedSkill
         var oldGrants: [String]
         var oldPermissions: [PersistedSkillPermission]?
         var newDigest: String
+        /// Floe sidecar manifest for the new package when the upstream source
+        /// has no `floe.json` (traditional skills). Optional for back-compat.
+        var newManifestJSON: String?
         var source: GitHubSkillSource
         var commit: String
         var phase: String
         var createdAt: Date
+    }
+
+    /// The Floe-owned sidecar manifest is the persisted skill row itself; it
+    /// is never written into the package, so upstream bytes and digests stay
+    /// exactly as published.
+    private static func sidecarManifest(for skill: PersistedSkill) -> SkillManifest? {
+        guard let data = skill.manifestJSON.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(SkillManifest.self, from: data)
+    }
+
+    private static func manifestOverride(fromJSON json: String?) -> SkillManifest? {
+        guard let json, let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(SkillManifest.self, from: data)
     }
 
     func checkGitHubUpgrade(skill: PersistedSkill, source: GitHubSkillSource) async {
@@ -90,7 +140,7 @@ final class SkillsCenter: ObservableObject {
                 throw FloeError.validationFailed("System guides update only with the app")
             }
             self.cancelUpgrade()
-            let current = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest)
+            let current = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill))
             let staging = FileManager.default.temporaryDirectory.appendingPathComponent("floe-upgrade-\(UUID().uuidString)")
             do {
                 let connector = self.environment.sourceControlCenter
@@ -125,7 +175,7 @@ final class SkillsCenter: ObservableObject {
         guard DomainSkillLibrary.all.first(where: { $0.id == candidate.snapshot.package.manifest.id })?.exposed != false else {
             throw FloeError.validationFailed("System guides update only with the app")
         }
-        _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256)
+        _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256, manifestOverride: candidate.snapshot.package.manifest)
         try await requireCompatibility(candidate.snapshot.package)
         pendingUpgrade = candidate
         upgradeStagingRoot = staging
@@ -150,13 +200,14 @@ final class SkillsCenter: ObservableObject {
             defer { self.packageMutationInProgress = false }
             guard let current = try await self.environment.skillStore.all().first(where: { $0.id == candidate.snapshot.package.manifest.id }),
                   current.rewrittenDigest == candidate.expectedInstalledDigest else { throw SkillUpgradeError.localConflict }
-            let currentSnapshot = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: current.rewrittenDigest)
-            _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256)
+            let currentSnapshot = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current))
+            _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256, manifestOverride: candidate.snapshot.package.manifest)
             let history = self.installationRoot.appendingPathComponent(".upgrade-history/\(UUID().uuidString)")
-            try Self.writeSnapshot(currentSnapshot, at: history.appendingPathComponent("previous"))
+            try Self.writeSnapshot(currentSnapshot, at: history.appendingPathComponent("previous"), manifest: Self.sidecarManifest(for: current))
             let grants = try await self.environment.skillStore.allowedCapabilities(skillID: current.id)
             let permissions = try await self.environment.skillStore.permissions(skillID: current.id)
             var journal = UpgradeJournal(oldSkill: current, oldGrants: grants.sorted(), oldPermissions: permissions, newDigest: candidate.snapshot.package.canonicalSHA256,
+                newManifestJSON: String(data: (try? JSONEncoder().encode(candidate.snapshot.package.manifest)) ?? Data(), encoding: .utf8),
                 source: candidate.source, commit: candidate.commit, phase: "prepared", createdAt: Date())
             try self.writeJournal(journal, at: history)
             let sourceURL = URL(string: "https://github.com/\(candidate.source.owner)/\(candidate.source.repository)/blob/\(candidate.commit)/\(candidate.source.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!)")!
@@ -164,7 +215,7 @@ final class SkillsCenter: ObservableObject {
                 try await self.installCanonicalPackage(at: staging, sourceURL: sourceURL,
                     sourceDigest: candidate.snapshot.package.canonicalSHA256, rewriteModelID: "github-reviewed-\(candidate.commit)",
                     initialStatus: current.status, replaceExisting: true, callerHoldsMutationLock: true, verifiedUpgrade: candidate)
-                _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest)
+                _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
                 journal.phase = "complete"
                 try self.writeJournal(journal, at: history)
                 self.cancelUpgrade()
@@ -184,7 +235,7 @@ final class SkillsCenter: ObservableObject {
             guard let (path, journal) = journals.first, skill.rewrittenDigest == journal.newDigest,
                   let current = try await self.environment.skillStore.all().first(where: { $0.id == skill.id }), current.rewrittenDigest == journal.newDigest
             else { throw SkillUpgradeError.localConflict }
-            _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest)
+            _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
             try await self.restoreUpgrade(journal, at: path)
         }
     }
@@ -193,14 +244,23 @@ final class SkillsCenter: ObservableObject {
         try JSONEncoder().encode(journal).write(to: root.appendingPathComponent("transaction.json"), options: .atomic)
     }
 
-    private static func writeSnapshot(_ snapshot: SkillContentSnapshot, at root: URL) throws {
+    private static func writeSnapshot(
+        _ snapshot: SkillContentSnapshot,
+        at root: URL,
+        manifest: SkillManifest?
+    ) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         for (path, bytes) in snapshot.files {
             let target = root.appendingPathComponent(path)
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try bytes.write(to: target, options: .atomic)
         }
-        _ = try SkillContentSnapshot(root: root, expectedDigest: snapshot.package.canonicalSHA256)
+        // Traditional snapshots have no packaged floe.json; the sidecar is
+        // supplied so verification checks bytes, not synthesized metadata.
+        let written = try SkillPackageValidator().validate(packageAt: root, manifestOverride: manifest)
+        guard written.canonicalSHA256 == snapshot.package.canonicalSHA256 else {
+            throw SkillValidationError.digestMismatch
+        }
     }
 
     private func upgradeJournals() throws -> [(URL, UpgradeJournal)] {
@@ -216,13 +276,13 @@ final class SkillsCenter: ObservableObject {
     }
 
     private func restoreUpgrade(_ journal: UpgradeJournal, at path: URL) async throws {
-        let previous = try SkillContentSnapshot(root: path.appendingPathComponent("previous"), expectedDigest: journal.oldSkill.rewrittenDigest)
+        let previous = try SkillContentSnapshot(root: path.appendingPathComponent("previous"), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill))
         var restoring = journal; restoring.phase = "rollingBack"
         try writeJournal(restoring, at: path)
         let destination = installationRoot.appendingPathComponent(journal.oldSkill.id)
         let quarantine = path.appendingPathComponent("interrupted-\(UUID().uuidString)")
         if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.moveItem(at: destination, to: quarantine) }
-        try Self.writeSnapshot(previous, at: destination)
+        try Self.writeSnapshot(previous, at: destination, manifest: Self.sidecarManifest(for: journal.oldSkill))
         try await environment.skillStore.save(journal.oldSkill, grantCapabilities: journal.oldGrants, replaceGrants: true,
             restoringPermissions: journal.oldPermissions)
         var restored = journal; restored.phase = "rolledBack"
@@ -236,7 +296,7 @@ final class SkillsCenter: ObservableObject {
         for (path, journal) in try upgradeJournals() where journal.phase == "prepared" || journal.phase == "rollingBack" {
             let row = try await environment.skillStore.all().first { $0.id == journal.oldSkill.id }
             if journal.phase == "prepared", row?.rewrittenDigest == journal.newDigest,
-               (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(journal.oldSkill.id), expectedDigest: journal.newDigest)) != nil {
+               (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(journal.oldSkill.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))) != nil {
                 var completed = journal; completed.phase = "complete"
                 try writeJournal(completed, at: path)
             } else { try await restoreUpgrade(journal, at: path) }
@@ -250,15 +310,15 @@ final class SkillsCenter: ObservableObject {
     @Published private(set) var builtinSeedFailures: [String: String] = [:]
 
     private func snapshot(for skill: PersistedSkill, runID: UUID?) throws -> SkillContentSnapshot {
-        guard let runID else { return try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest) }
+        guard let runID else { return try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill)) }
         let root = installationRoot.appendingPathComponent(".run-snapshots/\(runID.uuidString)/\(skill.id)")
         let digestURL = root.appendingPathComponent("digest")
         if FileManager.default.fileExists(atPath: digestURL.path) {
             let digest = try String(contentsOf: digestURL, encoding: .utf8)
-            return try SkillContentSnapshot(root: root.appendingPathComponent("package"), expectedDigest: digest)
+            return try SkillContentSnapshot(root: root.appendingPathComponent("package"), expectedDigest: digest, manifestOverride: Self.sidecarManifest(for: skill))
         }
-        let snapshot = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest)
-        try Self.writeSnapshot(snapshot, at: root.appendingPathComponent("package"))
+        let snapshot = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill))
+        try Self.writeSnapshot(snapshot, at: root.appendingPathComponent("package"), manifest: Self.sidecarManifest(for: skill))
         try Data(snapshot.package.canonicalSHA256.utf8).write(to: digestURL, options: .atomic)
         return snapshot
     }
@@ -386,12 +446,21 @@ final class SkillsCenter: ObservableObject {
                 throw FloeError.validationFailed("Skill Finder response is unavailable or too large")
             }
             let sourceEnvelope = try JSONDecoder().decode(FinderEnvelope.self, from: data)
+            // A manifest-less envelope is a traditional package: derive the
+            // manifest deterministically on-device rather than asking a model
+            // to invent authority. The derived manifest is only a routing and
+            // capability ceiling; the normal permission gates still apply.
+            let resolvedSource = sourceEnvelope.manifest == nil
+                ? try Self.derivingManifest(for: sourceEnvelope)
+                : sourceEnvelope
             let envelope = try await self.rewriteForCurrentDevice(
-                sourceEnvelope, sourceURL: url, modelID: rewriteModelID
+                resolvedSource, sourceURL: url, modelID: rewriteModelID
             )
-            guard Set(envelope.manifest.capabilities).isSubset(of: Set(sourceEnvelope.manifest.capabilities)),
-                  Set(envelope.manifest.tools).isSubset(of: Set(sourceEnvelope.manifest.tools)),
-                  envelope.files == sourceEnvelope.files else {
+            guard let sourceManifest = resolvedSource.manifest,
+                  let rewrittenManifest = envelope.manifest,
+                  Set(rewrittenManifest.capabilities).isSubset(of: Set(sourceManifest.capabilities)),
+                  Set(rewrittenManifest.tools).isSubset(of: Set(sourceManifest.tools)),
+                  envelope.files == resolvedSource.files else {
                 throw FloeError.validationFailed("The rewrite attempted to expand skill permissions")
             }
             let sourceDigest = FloeDigest.sha256Hex(data)
@@ -413,7 +482,7 @@ final class SkillsCenter: ObservableObject {
                 self.pendingInstallation = PendingInstallation(
                     sourceURL: url,
                     skillMarkdown: envelope.skillMarkdown,
-                    manifest: envelope.manifest,
+                    manifest: rewrittenManifest,
                     files: envelope.files,
                     capabilityNames: package.declaredCapabilities.map(\.rawValue).sorted(),
                     toolNames: package.manifest.tools.sorted(),
@@ -423,6 +492,50 @@ final class SkillsCenter: ObservableObject {
                 )
             }
         }
+    }
+
+    /// Validates a local traditional package (SKILL.md with optional
+    /// `floe.json` and scripts/references/assets/agents) and installs it.
+    /// Floe's derived manifest is written only into the managed install copy;
+    /// the source directory is never modified.
+    func installTraditionalPackage(at url: URL, sourceURL: URL) async {
+        await perform {
+            let package = try SkillPackageValidator().validate(packageAt: url, requireManifest: false)
+            try await self.requireCompatibility(package)
+            let temporary = FileManager.default.temporaryDirectory
+                .appendingPathComponent("floe-traditional-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+            for file in package.files {
+                let data = try Data(
+                    floeContentsOf: url.appendingPathComponent(file.relativePath),
+                    options: [.mappedIfSafe]
+                )
+                let destination = temporary.appendingPathComponent(file.relativePath)
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try data.write(to: destination, options: .atomic)
+            }
+            try await self.installCanonicalPackage(
+                at: temporary, sourceURL: sourceURL,
+                sourceDigest: package.canonicalSHA256
+            )
+        }
+    }
+
+    private static func derivingManifest(for source: FinderEnvelope) throws -> FinderEnvelope {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-traditional-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try materialize(source, at: temporary)
+        let package = try SkillPackageValidator().validate(packageAt: temporary, requireManifest: false)
+        return FinderEnvelope(
+            skillMarkdown: source.skillMarkdown,
+            manifest: package.manifest,
+            files: source.files
+        )
     }
 
     func confirmPendingInstallation() async {
@@ -609,7 +722,7 @@ final class SkillsCenter: ObservableObject {
                 throw FloeError.validationFailed("Official skills update only through reviewed signed GitHub packages; create a custom skill with a different ID for local instructions")
             }
             let validator = SkillPackageValidator()
-            let original = try validator.validate(packageAt: packageURL)
+            let original = try validator.validate(packageAt: packageURL, manifestOverride: Self.sidecarManifest(for: skill))
             guard original.canonicalSHA256 == request.expectedDigest else { throw SkillStoreConflict.changedOrMissing }
             let originalMarkdown = try String(contentsOf: packageURL.appendingPathComponent("SKILL.md"), encoding: .utf8)
             let normalized = originalMarkdown.replacingOccurrences(of: "\r\n", with: "\n")
@@ -621,11 +734,11 @@ final class SkillsCenter: ObservableObject {
             defer { try? FileManager.default.removeItem(at: temporary) }
             try FileManager.default.copyItem(at: packageURL, to: temporary)
             try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
-            let updated = try validator.validate(packageAt: temporary)
+            let updated = try validator.validate(packageAt: temporary, manifestOverride: Self.sidecarManifest(for: skill))
             let provenance = SkillInstallProvenance(sourceURL: URL(string: "floe-creator://local/\(skill.id)")!, originalSHA256: original.canonicalSHA256, expectedRewrittenSHA256: updated.canonicalSHA256, rewriteModelID: "instruction-update", compatibilitySummary: "Only instruction body changed; scripts and permissions preserved")
             let metadata = InstructionUpdateMetadata(store: environment.skillStore, markdown: markdown, expectedDigest: request.expectedDigest)
             _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
-                .installRewrittenPackage(at: temporary, provenance: provenance, replaceExisting: true)
+                .installRewrittenPackage(at: temporary, provenance: provenance, replaceExisting: true, manifestOverride: Self.sidecarManifest(for: skill))
         }
         await load()
         return "status=applied id=\(skill.id) action=\(request.action.rawValue); use skill.read for the current digest"
@@ -784,6 +897,29 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    /// Validates a canonical package. For a traditional manifest-less skill
+    /// the deterministic manifest is materialized as a Floe sidecar inside
+    /// the staging copy only; the upstream source is never modified.
+    /// Validates a canonical package. A traditional manifest-less package is
+    /// validated with its derived sidecar manifest and the package bytes are
+    /// left untouched: the sidecar lives only in Floe's installation record,
+    /// so the upstream canonical digest and version are preserved.
+    private static func prepareCanonicalPackage(
+        at url: URL,
+        override: SkillManifest?
+    ) throws -> (package: ValidatedSkillPackage, override: SkillManifest?) {
+        let validator = SkillPackageValidator()
+        if let override {
+            return (try validator.validate(packageAt: url, manifestOverride: override), override)
+        }
+        let manifestURL = url.appendingPathComponent("floe.json")
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            return (try validator.validate(packageAt: url), nil)
+        }
+        let derived = try validator.validate(packageAt: url, requireManifest: false)
+        return (derived, derived.manifest)
+    }
+
     private func installCanonicalPackage(
         at url: URL,
         sourceURL: URL,
@@ -793,13 +929,14 @@ final class SkillsCenter: ObservableObject {
         replaceExisting: Bool = false,
         callerHoldsMutationLock: Bool = false,
         bundledSeed: Bool = false,
-        verifiedUpgrade: SkillUpgradeCandidate? = nil
+        verifiedUpgrade: SkillUpgradeCandidate? = nil,
+        manifestOverride: SkillManifest? = nil
     ) async throws {
         guard callerHoldsMutationLock || !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
         packageMutationInProgress = true
         defer { if !callerHoldsMutationLock { packageMutationInProgress = false } }
-        let validator = SkillPackageValidator()
-        let package = try validator.validate(packageAt: url)
+        let prepared = try Self.prepareCanonicalPackage(at: url, override: manifestOverride)
+        let package = prepared.package
         if DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }), !bundledSeed {
             guard OfficialSkillHub.skillIDs.contains(package.manifest.id),
                   let verifiedUpgrade,
@@ -833,7 +970,7 @@ final class SkillsCenter: ObservableObject {
         // isn't in the correct format") as a user-facing error banner.
         let markdownData = try Data(floeContentsOf: url.appendingPathComponent("SKILL.md"))
         let markdown = String(decoding: markdownData, as: UTF8.self)
-        let manifestData = try Data(floeContentsOf: url.appendingPathComponent("floe.json"))
+        let manifestData = try JSONEncoder().encode(package.manifest)
         let capabilities = try String(data: JSONEncoder().encode(package.manifest.capabilities), encoding: .utf8) ?? "[]"
         var compatibilityObject: [String: Any] = [
             "status": "compatible",
@@ -869,7 +1006,10 @@ final class SkillsCenter: ObservableObject {
         // still pass the normal approval and catastrophic-action gates.
         let metadata = InitialSkillMetadata(store: environment.skillStore, skill: skill, capabilities: package.declaredCapabilities.map(\.rawValue))
         _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
-            .installRewrittenPackage(at: url, provenance: provenance, replaceExisting: replaceExisting)
+            .installRewrittenPackage(
+                at: url, provenance: provenance, replaceExisting: replaceExisting,
+                manifestOverride: prepared.override
+            )
     }
 
     private struct InitialSkillMetadata: SkillInstallationMetadataStore {
@@ -967,10 +1107,12 @@ final class SkillsCenter: ObservableObject {
             to: root.appendingPathComponent("SKILL.md"),
             options: .atomic
         )
-        try JSONEncoder().encode(envelope.manifest).write(
-            to: root.appendingPathComponent("floe.json"),
-            options: .atomic
-        )
+        if let manifest = envelope.manifest {
+            try JSONEncoder().encode(manifest).write(
+                to: root.appendingPathComponent("floe.json"),
+                options: .atomic
+            )
+        }
         let prefix = root.standardizedFileURL.path + "/"
         for (relativePath, contents) in envelope.files {
             guard !relativePath.isEmpty, !relativePath.hasPrefix("/"),
@@ -992,6 +1134,10 @@ final class SkillsCenter: ObservableObject {
 
     private func requireCompatibility(_ package: ValidatedSkillPackage) async throws {
         let hasRemoteHost = ((try? await environment.remoteHostStore.hosts()) ?? []).isEmpty == false
+        // The selected task environment can be the app's local Linux guest or
+        // an authorized remote host; shell/Node scripts reuse that existing
+        // environment rather than requiring a remote connection.
+        let hasTaskEnvironment = hasRemoteHost || environment.linuxGuestService != nil
         var supported: Set<SkillCapability> = [
             .workspaceRead, .workspaceWrite, .workspaceDelete, .network,
             .browserObserve, .browserInteract
@@ -999,14 +1145,14 @@ final class SkillsCenter: ObservableObject {
         if case .available = await environment.localPythonProbe.probe() {
             supported.insert(.localPython)
         }
-        if hasRemoteHost { supported.insert(.remoteExecution) }
+        if hasTaskEnvironment { supported.insert(.remoteExecution) }
         let environmentSnapshot = SkillRuntimeEnvironment(
             platform: .iOS,
             supportedCapabilities: supported,
             registeredTools: Set(ToolCatalog.allDescriptors.map(\.name)).subtracting(supported.contains(.localPython) ? [] : [LocalPythonTool.name]),
             // JavaScriptCore availability is not an executable tool.
             supportsJavaScriptCore: false,
-            hasRemoteExecutionHost: hasRemoteHost
+            hasRemoteExecutionHost: hasTaskEnvironment
         )
         let compatibility = SkillCompatibility.evaluate(package, in: environmentSnapshot)
         guard compatibility.isRunnable else {
@@ -1082,12 +1228,15 @@ final class SkillsCenter: ObservableObject {
 
     private struct FinderEnvelope: Codable {
         var skillMarkdown: String
-        var manifest: SkillManifest
+        /// Optional: a traditional package may ship only SKILL.md later, or
+        /// omit the manifest in this envelope; Floe derives it deterministically
+        /// and writes the sidecar only into its own managed install copy.
+        var manifest: SkillManifest?
         var files: [String: String]
 
         init(
             skillMarkdown: String,
-            manifest: SkillManifest,
+            manifest: SkillManifest?,
             files: [String: String] = [:]
         ) {
             self.skillMarkdown = skillMarkdown
@@ -1100,7 +1249,7 @@ final class SkillsCenter: ObservableObject {
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             skillMarkdown = try container.decode(String.self, forKey: .skillMarkdown)
-            manifest = try container.decode(SkillManifest.self, forKey: .manifest)
+            manifest = try container.decodeIfPresent(SkillManifest.self, forKey: .manifest)
             files = try container.decodeIfPresent([String: String].self, forKey: .files) ?? [:]
         }
     }

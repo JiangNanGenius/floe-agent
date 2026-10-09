@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, providers, auxiliary, localModels, canvas, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics
+    case general, personalization, internalPrompts, providers, auxiliary, localModels, canvas, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics
 
     var id: String { rawValue }
 
@@ -24,6 +24,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .general: "settings.section.general"
         case .personalization: "settings.settings_root_view.memories_personalization"
+        case .internalPrompts: "settings.section.internal_prompts"
         case .providers: "settings.section.providers"
         case .auxiliary: "settings.section.auxiliary"
         case .webSearch: "websearch.title"
@@ -48,6 +49,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .general: "gearshape"
         case .personalization: "person.crop.circle.badge.checkmark"
+        case .internalPrompts: "text.badge.checkmark"
         case .providers: "antenna.radiowaves.left.and.right"
         case .auxiliary: "photo.badge.plus"
         case .webSearch: "magnifyingglass"
@@ -169,11 +171,20 @@ struct SettingsRootView: View {
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
         case .general:
-            GeneralSettingsView(center: environment.settingsCenter)
+            GeneralSettingsView(
+                center: environment.settingsCenter,
+                contentUpdates: environment.contentUpdateCenter
+            )
         case .personalization:
             MemoryView(center: environment.memoryCenter)
+        case .internalPrompts:
+            InternalPromptsSettingsView(center: environment.contentUpdateCenter)
         case .providers:
-            ProvidersSettingsView(center: environment.conversationCenter)
+            ProvidersSettingsView(
+                center: environment.conversationCenter,
+                catalog: environment.contentUpdateCenter.providerCatalogIndex(),
+                onRefreshCatalog: { await environment.contentUpdateCenter.refreshProviderCatalog() }
+            )
         case .auxiliary:
             AuxiliarySettingsView(center: environment.conversationCenter)
         case .webSearch:

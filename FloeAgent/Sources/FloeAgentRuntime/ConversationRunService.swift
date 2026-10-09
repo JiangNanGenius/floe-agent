@@ -103,6 +103,12 @@ public actor ConversationRunService {
     private let dynamicApprovalPolicy: DynamicApprovalPolicy
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
+    /// True once a provider text delta was dropped or shortened because
+    /// `streamedTextLimitBytes` was full. The completion path persists an
+    /// explicit truncation notice before the terminal event so lost output
+    /// is never silent. Reset only when a replayed attempt discards the
+    /// partial stream entirely.
+    private var streamedTextCapped = false
     /// Text generated since the previous durable interaction boundary.
     /// Each segment is persisted before the tool event that follows it.
     private var unflushedAssistantSegment = ""
@@ -182,6 +188,8 @@ public actor ConversationRunService {
         public var availableToolNames: Set<String>?
         /// Validated installed SKILL.md instructions selected for this run.
         public var skillInstructions: String?
+        /// Validated signed-content prompt overlay frozen for this run.
+        public var contentOverlay: AgentPromptOverlay
         /// Bounded durable memory projection. This is always framed as data,
         /// never as authority or executable instructions.
         public var memoryContext: String?
@@ -209,6 +217,7 @@ public actor ConversationRunService {
             executionTarget: String? = nil,
             availableToolNames: Set<String>? = nil,
             skillInstructions: String? = nil,
+            contentOverlay: AgentPromptOverlay = .empty,
             memoryContext: String? = nil,
             soulContext: String? = nil,
             userProfileContext: String? = nil,
@@ -224,6 +233,7 @@ public actor ConversationRunService {
             self.executionTarget = executionTarget
             self.availableToolNames = availableToolNames
             self.skillInstructions = skillInstructions
+            self.contentOverlay = contentOverlay
             self.memoryContext = memoryContext
             self.soulContext = soulContext
             self.userProfileContext = userProfileContext
@@ -562,6 +572,7 @@ public actor ConversationRunService {
             // checkpoint is replayed, otherwise the recovered answer would
             // concatenate a partial prefix and appear twice.
             streamedText = ""
+            streamedTextCapped = false
             unflushedAssistantSegment = ""
             unpublishedAnswerText = ""
             reasoningText = ""
@@ -819,7 +830,12 @@ public actor ConversationRunService {
                 streamedText += accepted
                 unflushedAssistantSegment += accepted
                 unpublishedAnswerText += accepted
+                if accepted.utf8.count < delta.text.utf8.count {
+                    streamedTextCapped = true
+                }
                 scheduleAnswerPush()
+            } else if !delta.text.isEmpty {
+                streamedTextCapped = true
             }
             scheduleRecoveryPoint()
         case .reasoningSummary(let summary):
@@ -1054,6 +1070,28 @@ public actor ConversationRunService {
                 )
             } else {
                 logger.info("finalAnswerVerified run=\(runID.uuidString) result=confirmed")
+            }
+            // The byte safety cap rejected real provider output. Persist one
+            // non-fatal notice ahead of the terminal marker so the shortened
+            // reply is never silent. `.notice` is deliberately not `.error`:
+            // the run succeeded and must not render as a failed task. This
+            // deliberately does not retry the provider or raise the model's
+            // configured limit.
+            if streamedTextCapped {
+                logger.warning(
+                    "finalOutputTruncated run=\(runID.uuidString) receivedBytes=\(streamedText.utf8.count) limitBytes=\(streamedTextLimitBytes)"
+                )
+                _ = await appendEventReliably(
+                    runID: runID,
+                    kind: .notice,
+                    payloadJSON: Self.jsonPayload([
+                        "message": "outputTruncated",
+                        "receivedBytes": String(streamedText.utf8.count),
+                        "limitBytes": String(streamedTextLimitBytes)
+                    ]),
+                    boundary: "outputTruncated",
+                    completionCritical: false
+                )
             }
             if durabilityFailure == nil {
                 let terminalPersisted = await appendEventReliably(
@@ -1813,6 +1851,7 @@ public actor ConversationRunService {
             activePlan: context?.activePlan,
             activeGoal: context?.activeGoal,
             compactForLocal: compactForLocal,
+            overlay: context?.contentOverlay ?? .empty,
             localSectionBudgetTokens: localSectionBudgetTokens
         )
     }

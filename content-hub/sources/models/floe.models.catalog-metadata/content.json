@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.models.catalog-metadata",
+  "version": "1.0.0",
+  "kind": "models",
+  "minimumAppVersion": "1.7.0",
+  "sourceRevision": "",
+  "containsScripts": false,
+  "requiredCapabilities": [],
+  "dependencies": [],
+  "releaseNotes": {
+    "zh-Hans": "首版模型元数据说明：记录能力与推理强度对照，不包含模型权重或下载地址。",
+    "en": "First model metadata notes: capability and reasoning-effort guidance, with no model weights or download URLs."
+  },
+  "notice": {
+    "zh-Hans": "本包只描述元数据约定，不改变本机已保存的模型能力覆盖值。",
+    "en": "This package describes metadata conventions only; it never overrides locally saved model capability values."
+  },
+  "reasoningEfforts": [
+    {
+      "id": "automatic",
+      "description": {
+        "zh-Hans": "由模型默认行为决定；不发送额外推理控制字段。",
+        "en": "Leave the model default in place; no extra reasoning field is sent."
+      }
+    },
+    {
+      "id": "low",
+      "description": {
+        "zh-Hans": "低强度；部分提供商映射为 high。",
+        "en": "Low effort; some providers map it to high."
+      }
+    },
+    {
+      "id": "medium",
+      "description": {
+        "zh-Hans": "中强度；部分提供商映射为 high。",
+        "en": "Medium effort; some providers map it to high."
+      }
+    },
+    {
+      "id": "high",
+      "description": {
+        "zh-Hans": "高强度；支持显式推理字段的提供商直接使用。",
+        "en": "High effort; used directly where the provider exposes an explicit field."
+      }
+    },
+    {
+      "id": "maximum",
+      "description": {
+        "zh-Hans": "最高强度；按提供商映射为 max 或 high。",
+        "en": "Maximum effort; mapped to max or high depending on the provider."
+      }
+    }
+  ],
+  "capabilityNotes": [
+    {
+      "id": "output-token-default",
+      "description": {
+        "zh-Hans": "模型发现结果默认按 8192 输出 token 记录；实际上限以提供商返回的能力覆盖为准。",
+        "en": "Discovered models record an 8192 output-token default; a saved capability override from the provider wins."
+      }
+    },
+    {
+      "id": "deepseek-aliasing",
+      "description": {
+        "zh-Hans": "DeepSeek V4 仅接受 high/max；low 与 medium 会为 OpenAI 客户端兼容而映射为 high。",
+        "en": "DeepSeek V4 accepts only high/max; low and medium alias to high for OpenAI-client compatibility."
+      }
+    }
+  ]
+}

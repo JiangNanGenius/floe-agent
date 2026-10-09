@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.templates.report",
+  "version": "1.0.0",
+  "kind": "templates",
+  "minimumAppVersion": "1.7.0",
+  "sourceRevision": "",
+  "containsScripts": false,
+  "requiredCapabilities": [],
+  "dependencies": [],
+  "releaseNotes": {
+    "zh-Hans": "首版报告模板，提供中英双语说明与可直接使用的 Markdown 结构。",
+    "en": "First report template with bilingual guidance and a ready-to-use Markdown structure."
+  },
+  "title": {
+    "zh-Hans": "报告模板",
+    "en": "Report template"
+  },
+  "template": "report.md"
+}

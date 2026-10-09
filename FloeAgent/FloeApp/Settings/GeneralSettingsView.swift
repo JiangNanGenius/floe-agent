@@ -13,8 +13,16 @@ import FloeCore
 
 struct GeneralSettingsView: View {
     @ObservedObject var center: SettingsCenter
+    /// Optional content-update center. Present when the settings center hosts
+    /// this view; other call sites remain valid without it.
+    var contentUpdates: ContentUpdateCenter?
     @AppStorage(VoiceRecognitionLanguage.defaultsKey)
     private var voiceLanguage = VoiceRecognitionLanguage.automatic.rawValue
+
+    init(center: SettingsCenter, contentUpdates: ContentUpdateCenter? = nil) {
+        self.center = center
+        self.contentUpdates = contentUpdates
+    }
 
     var body: some View {
         Form {
@@ -72,6 +80,21 @@ struct GeneralSettingsView: View {
                 Text("settings.general_settings_view.when_on_an_extra_self_check")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let contentUpdates {
+                Section("settings.content_updates.section") {
+                    NavigationLink {
+                        ContentUpdatesSettingsView(center: contentUpdates)
+                    } label: {
+                        Label("settings.content_updates.row", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("settings.general.content_updates")
+                    Text("settings.content_updates.footer")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("settings.general.accessibility") {

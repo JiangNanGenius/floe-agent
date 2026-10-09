@@ -519,6 +519,82 @@ struct ConversationRunServiceTests {
         #expect(events.last?.id == terminal.id)
     }
 
+    @Test("Output beyond the byte safety cap persists a truncation notice, never a silent drop")
+    func streamedTextCapPersistsTruncationNotice() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "Capped", createdAt: Date(), updatedAt: Date()
+        ))
+        let limits = ModelLimits(contextTokens: 128_000, maxOutputTokens: 1)
+        let cap = limits.clientOutputSafetyBytes
+        let providerID = UUID()
+        let model = ModelProfile(
+            providerID: providerID,
+            remoteModelID: "tiny-output-model",
+            displayName: "Tiny Output",
+            limits: limits,
+            capabilities: [.text, .tools]
+        )
+        // The runtime grants each model turn its own byte allowance, so the
+        // service cap is only reachable cumulatively: one tool boundary plus
+        // a second turn whose combined text exceeds the cap while every
+        // single turn stays within it.
+        let call = try TestFixtures.toolCall(id: "cap_tool")
+        let perTurn = cap / 2 + 1_024
+        let adapter = MockAdapter()
+        adapter.script = [
+            [
+                .textDelta(.init(text: String(repeating: "a", count: perTurn))),
+                .toolRequest(call)
+            ],
+            [
+                .textDelta(.init(text: String(repeating: "b", count: perTurn))),
+                .completed(.init(stopReason: .endTurn))
+            ]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = ToolCatalog.Descriptor(
+            name: call.toolName, riskLabels: [], isSideEffecting: false
+        )
+        let service = ConversationRunService(
+            configuration: FloeAgentRuntime.Configuration(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: model
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "write more than the cap")
+
+        // The received prefix is persisted whole, bounded by the cap.
+        let messages = try await conversationStore.messages(conversationID: conversationID)
+        let assistant = try #require(messages.last(where: { $0.role == "assistant" }))
+        #expect(!assistant.content.isEmpty)
+        #expect(assistant.content.utf8.count == cap)
+        #expect(assistant.content.prefix(perTurn).allSatisfy { $0 == "a" })
+
+        // One explicit notice is durable before the terminal marker, rendered
+        // as a warning (never `.error`, so the completed run stays successful),
+        // and the truncated reply is not reported as noFinalText.
+        let events = try await runStore.events(runID: service.runID)
+        let truncation = try #require(events.first {
+            $0.kind == .notice && $0.payloadJSON.contains("outputTruncated")
+        })
+        #expect(truncation.payloadJSON.contains("\"receivedBytes\":\"\(cap)\""))
+        #expect(truncation.payloadJSON.contains("\"limitBytes\":\"\(cap)\""))
+        #expect(!events.contains { $0.kind == .error && $0.payloadJSON.contains("noFinalText") })
+        let terminal = try #require(events.last(where: { $0.kind == .terminal }))
+        #expect(truncation.sequence < terminal.sequence)
+        #expect(events.last?.id == terminal.id)
+        #expect(try await runStore.run(id: service.runID)?.state == "completed")
+    }
+
     @Test("A provider error persists a structured, redacted error record")
     func persistedError() async throws {
         let (conversationStore, runStore) = try await makeStores()

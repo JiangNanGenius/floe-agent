@@ -67,7 +67,12 @@ struct ModelEditorView: View {
                     } header: {
                         Text("model.section.reasoning")
                     } footer: {
-                        Text("model.reasoning.hint")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("model.reasoning.hint")
+                            if model.remoteModelID.lowercased().contains("deepseek") {
+                                Text("providers.model_editor.reasoning.deepseek_medium_note")
+                            }
+                        }
                     }
                 }
                 if serviceRole == .conversation {

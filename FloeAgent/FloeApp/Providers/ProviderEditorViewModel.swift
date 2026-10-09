@@ -78,6 +78,9 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published var candidateModels: [ModelProfile] = []
     @Published var selectedModelIDs: Set<UUID> = []
     @Published var defaultModelID: UUID?
+    /// Stable provider-catalog identity for profiles created from the
+    /// catalog. Nil for manual/legacy providers, which persist no presetID.
+    @Published private(set) var catalogPresetID: String?
 
     // MARK: - Status
 
@@ -104,7 +107,8 @@ final class ProviderEditorViewModel: ObservableObject {
     init(
         center: ConversationCenter,
         existing: ProviderProfile?,
-        initialRole: ProviderServiceRole? = nil
+        initialRole: ProviderServiceRole? = nil,
+        catalogEntry: ProviderCatalogEntry? = nil
     ) {
         self.center = center
         self.existing = existing
@@ -121,6 +125,7 @@ final class ProviderEditorViewModel: ObservableObject {
             self.enabled = existing.isEnabled
             self.syncEnabled = existing.secretRef?.synchronizable ?? true
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
+            self.catalogPresetID = existing.presetID
         } else {
             self.providerID = UUID()
             let preset = Self.presets(for: self.serviceRole)[0]
@@ -128,6 +133,10 @@ final class ProviderEditorViewModel: ObservableObject {
             self.selectedProtocol = preset.defaultProtocol
             self.displayName = preset.displayName
             self.baseURLString = preset.defaultBaseURL.absoluteString
+            self.catalogPresetID = nil
+        }
+        if existing == nil, let catalogEntry {
+            applyCatalogEntry(catalogEntry)
         }
     }
 
@@ -145,6 +154,27 @@ final class ProviderEditorViewModel: ObservableObject {
         }
         baseURLString = preset.defaultBaseURL.absoluteString
         selectedProtocol = preset.defaultProtocol
+    }
+
+    /// Pre-fills the editor from one official-catalog entry. The entry's
+    /// kind selects the closest shipped adapter preset; the catalog identity
+    /// is remembered so `buildProfile()` persists it as `presetID`.
+    func applyCatalogEntry(_ entry: ProviderCatalogEntry) {
+        switch entry.kind {
+        case .local, .custom:
+            selectedPreset = ProviderPreset.all.first { $0.id == .custom } ?? .custom
+        default:
+            selectedPreset = ProviderPreset.all.first { $0.kind == entry.kind } ?? .custom
+        }
+        selectedProtocol = entry.defaultProtocol
+        displayName = entry.name
+        if let baseURL = entry.baseURL {
+            baseURLString = baseURL.absoluteString
+        }
+        // DeepSeek rejects dotted tool names; the catalog flag (or its known
+        // preset identity) turns the compatibility rewrite on.
+        toolNameCompatibility = entry.toolNameCompatibility || entry.presetID == "deepseek"
+        catalogPresetID = entry.presetID
     }
 
     var availableProtocols: [ModelProtocol] { selectedPreset.supportedProtocols }
@@ -227,6 +257,7 @@ final class ProviderEditorViewModel: ObservableObject {
             wireProtocol: selectedProtocol,
             baseURL: url,
             displayName: trimmedName.isEmpty ? nil : trimmedName,
+            presetID: existing?.presetID ?? catalogPresetID,
             secretRef: secretRef,
             nonSecretHeaders: Self.parseHeaders(nonSecretHeadersText),
             isEnabled: enabled,

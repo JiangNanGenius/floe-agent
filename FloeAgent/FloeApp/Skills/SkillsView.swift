@@ -6,6 +6,8 @@ import FloeTools
 import FloeSkills
 
 import FloeCore
+import UniformTypeIdentifiers
+
 struct SkillsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var center: SkillsCenter
@@ -16,6 +18,11 @@ struct SkillsView: View {
     @State private var showingFinder = false
     @State private var pendingRemoval: PersistedSkill?
     @State private var updatingSkill: PersistedSkill?
+    @State private var showingFolderImporter = false
+    /// Shared scripted auto-update policy; the same defaults value is managed
+    /// by Settings → Content updates. Never a second copy.
+    @AppStorage(ContentUpdateCenter.scriptedAutoInstallDefaultsKey)
+    private var autoScriptedUpdates = false
 
     init(center: SkillsCenter, mcpCenter: MCPSettingsCenter = .shared) {
         self.center = center
@@ -75,7 +82,16 @@ struct SkillsView: View {
                 }
                 Section {
                     Button("plugins.import", systemImage: "square.and.arrow.down") { showingFinder = true }
+                    Button("skills.import_folder", systemImage: "folder") { showingFolderImporter = true }
                     Button("skills.creator", systemImage: "plus") { showingCreator = true }
+                }
+                Section {
+                    Toggle("skills.auto_scripted_updates.label", isOn: $autoScriptedUpdates)
+                        .accessibilityIdentifier("skills.auto_scripted_updates")
+                } header: {
+                    Text("skills.auto_scripted_updates.title")
+                } footer: {
+                    Text("skills.auto_scripted_updates.footer")
                 }
             }
             Section("connectors.title") {
@@ -147,6 +163,15 @@ struct SkillsView: View {
                 Button("skills.creator", systemImage: "plus") { showingCreator = true }
             }
         }
+        .fileImporter(
+            isPresented: $showingFolderImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                Task { await importTraditionalFolder(url) }
+            }
+        }
         .task { await center.load(); await center.refreshOfficialCatalog() }
         .refreshable { await center.load(); await center.refreshOfficialCatalog(force: true) }
         .sheet(isPresented: $showingCreator) { SkillCreatorSheet(center: center) }
@@ -163,6 +188,24 @@ struct SkillsView: View {
                 if let skill = pendingRemoval { Task { await center.remove(skill) } }
                 pendingRemoval = nil
             }
+        }
+    }
+    /// Imports a traditional skill folder (SKILL.md, optional floe.json,
+    /// scripts/references/assets/agents). The source directory is copied to a
+    /// temporary location; installation never executes scripts and never
+    /// writes Floe metadata back into the user's folder.
+    private func importTraditionalFolder(_ url: URL) async {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-skill-import-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            try FileManager.default.copyItem(at: url, to: temporary)
+            guard let source = URL(string: "floe-folder://local/\(url.lastPathComponent)") else { return }
+            await center.installTraditionalPackage(at: temporary, sourceURL: source)
+        } catch {
+            center.errorMessage = error.localizedDescription
         }
     }
 }

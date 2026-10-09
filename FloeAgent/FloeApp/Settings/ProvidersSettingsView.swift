@@ -9,12 +9,21 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeProviders
 
 struct ProvidersSettingsView: View {
     let center: ConversationCenter
+    /// Validated provider catalog plus its refresh action. Both default to
+    /// nil so the manual-only call sites keep compiling unchanged.
+    var catalog: ProviderCatalogIndex? = nil
+    var onRefreshCatalog: (() async -> Void)? = nil
 
     var body: some View {
-        ProviderListView(center: center)
+        ProviderListView(
+            center: center,
+            catalog: catalog,
+            onRefreshCatalog: onRefreshCatalog
+        )
     }
 }
 #endif
