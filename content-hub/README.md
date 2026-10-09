@@ -19,8 +19,8 @@ immutable published bytes and Ed25519 trust root (`official-2026-09`).
 content-hub/
   build.py                 builder, signer and verifier / 构建、签名与校验
   public-key.json          pinned trust root (same as skill-hub) / 固定信任根
-  index.json               catalog (unsigned until the coordinator signs)
-  index.sig                coordinator-produced Ed25519 envelope / 协调者签名
+  index.json               signed catalog / 签名索引
+  index.sig                Actions-produced Ed25519 envelope / Actions 签名
   sources/<kind>/<id>/     content.json plus payload files / 源包
   packages/<id>/<version>/<id>.zip
   test_build.py            offline unit tests / 离线单元测试
@@ -124,10 +124,12 @@ uses the fixture's own public key.
 提交即为不可变版本，禁止移动标签或替换已发布包。App 按提交解析并验证全部字节，
 绝不从网络信任新密钥；更换信任根必须随 App 版本发布，与 skill-hub 相同。
 
-The committed `content-hub/index.json` is unsigned in the working tree because
-the real signing key is an Actions secret; `content-hub/index.sig` must be
-produced by the coordinator before publishing. No signature is fabricated with
-the official key id.
+The official index and packages are signed through the existing hub workflow.
+After editing sources, run the publisher again before release; `--check` must
+pass for the exact committed bytes. Do not fabricate a signature or commit a
+private signing key. The first content publication was verified in Actions run
+[37877603979](https://github.com/JiangNanGenius/floe-agent/actions/runs/37877603979).
 
-由于真实签名密钥是 Actions 机密，工作树中的 `content-hub/index.json` 处于未签名
-状态；发布前必须由协调者生成 `content-hub/index.sig`，不得用官方 keyID 伪造签名。
+正式索引与包通过现有内容中心工作流签名。修改源内容后，发布前需要重新运行签名，
+并对确切提交字节执行 `--check`。禁止伪造签名或提交签名私钥。
+首轮内容发布已由上述 Actions 运行完成签名与校验；App 实际更新仍需独立验收。
