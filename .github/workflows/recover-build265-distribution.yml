@@ -1,0 +1,63 @@
+name: Recover retained Build 265 distribution
+
+# A byte-for-byte transport recovery, not an App build or TestFlight upload.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: retained-build265-distribution
+  cancel-in-progress: false
+jobs:
+  recover:
+    if: github.repository == 'JiangNanGenius/floe-agent' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: JiangNanGenius/floe-agent
+    steps:
+      - name: Restore exact retained IPA and upload to the existing draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/floe-build265-transfer"
+          mkdir -p "$work"
+          trap 'rm -rf "$work"' EXIT
+          cd "$work"
+          test "$(gh api repos/$GH_REPO/commits/v1.7.24 --jq .sha)" = 246d6c038f0a3f7ec7d7d9f7e19d074f13601bec
+          test "$(gh api repos/$GH_REPO/releases/406671785 --jq .draft)" = true
+          curl -fL --retry 3 --max-time 300 https://github.com/JiangNanGenius/floe-agent/releases/download/v1.7.0/Floe-Agent-1.7.0-build241-unsigned.ipa -o base.ipa
+          echo 'd97d8f3c6b82390b0484afbe1df103094947e92903ed14af71269a2411e4c5ca  base.ipa' | sha256sum -c -
+          python3 - <<'PY'
+          import json,subprocess
+          assets=json.loads(subprocess.check_output(['gh','api','repos/JiangNanGenius/floe-agent/releases/406671785/assets'],text=True))
+          with open('delta.zst','wb') as output:
+              for i in range(3):
+                  name=f'build265-transport-delta.part-{i:02d}'
+                  asset=next(a for a in assets if a['name']==name and a['state']=='uploaded')
+                  subprocess.run(['gh','api',f'repos/JiangNanGenius/floe-agent/releases/assets/{asset["id"]}','-H','Accept: application/octet-stream'],stdout=output,check=True)
+          PY
+          echo '8cbe7fad13a33ac4a3564f1da8766acb877e35fa7ea8546275fe1b9c96a9016c  delta.zst' | sha256sum -c -
+          ipa=Floe-Agent-1.7.24-build265-unsigned.ipa
+          zstd -d -M2048MB --patch-from=base.ipa delta.zst -o "$ipa"
+          echo "976e34ad5801f30fd5805c4f0904c06e94e64ad3489e265d1c0e0d0fa7ffaccb  $ipa" | sha256sum -c -
+          python3 - <<'PY'
+          import json,plistlib,re,subprocess,zipfile
+          name='Floe-Agent-1.7.24-build265-unsigned.ipa'
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              assert not any('_CodeSignature' in n.split('/') or n.endswith('/embedded.mobileprovision') for n in z.namelist())
+              info=[n for n in z.namelist() if re.fullmatch(r'Payload/[^/]+\.app/Info\.plist',n)]
+              assert len(info)==1
+              p=plistlib.loads(z.read(info[0]))
+              assert (p['CFBundleIdentifier'],p['CFBundleShortVersionString'],p['CFBundleVersion'])==('org.floeagent.ios','1.7.24','265')
+          release=json.loads(subprocess.check_output(['gh','api','repos/JiangNanGenius/floe-agent/releases/406671785'],text=True))
+          assert release['draft'] and release['tag_name']=='v1.7.24'
+          existing=next((a for a in release['assets'] if a['name']==name),None)
+          if existing:
+              assert existing['digest']=='sha256:976e34ad5801f30fd5805c4f0904c06e94e64ad3489e265d1c0e0d0fa7ffaccb' and existing['size']==742263554
+          else:
+              subprocess.run(['gh','release','upload','v1.7.24',name],check=True)
+          PY
+          echo 'Exact retained Build 265 IPA restored and uploaded to draft; no App build, signing, TestFlight upload or release publication.' >> "$GITHUB_STEP_SUMMARY"
