@@ -256,7 +256,8 @@ jobs:
             'floe_qa_visibility': 'not_verified',
         }
         (root / 'TestFlightExport/TESTFLIGHT-SUMMARY.txt').write_text(
-            json.dumps(summary, indent=2) + '\n')
+            ''.join(key + '=' + str(value).replace('\r', '\\r').replace('\n', '\\n') + '\n'
+                    for key, value in summary.items()))
         SUMMARY
     - name: Upload TestFlight evidence
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
