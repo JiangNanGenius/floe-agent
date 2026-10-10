@@ -200,4 +200,93 @@ struct DesignDecisionOutboxTests {
         #expect(await counter.value == 0)
         #expect(await reopened.pendingIntents().count == 1)
     }
+
+    // MARK: - Full operation fingerprint + dedupe
+
+    @Test func prepareIfNewDedupesExactFingerprintAndRejectsDifferentPayload() async throws {
+        let url = makeURL()
+        let outbox = DesignDecisionOutbox(fileURL: url)
+        let first = DesignDecisionIntent(
+            canvasID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            nodeID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            candidateID: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            conversationID: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            decision: "adopted",
+            operationID: "op-adopt",
+            mode: "updateOriginal",
+            baseRevisionID: "rev-1",
+            expectedCanvasRevision: 7
+        )
+        let prepared = try await outbox.prepareIfNew(first)
+        #expect(prepared.isNew == true)
+        // Same operation, same full fingerprint: dedupe (no second intent).
+        let duplicate = try await outbox.prepareIfNew(first)
+        #expect(duplicate.isNew == false)
+        #expect(duplicate.intent.id == first.id)
+        #expect(await outbox.pendingIntents().count == 1)
+        // Same operationID, DIFFERENT mode/base: a distinct fingerprint and a
+        // distinct record (the caller's CAS then resolves the real replay).
+        let changed = DesignDecisionIntent(
+            canvasID: first.canvasID, nodeID: first.nodeID, candidateID: first.candidateID,
+            conversationID: first.conversationID, decision: first.decision,
+            operationID: first.operationID,
+            mode: "variant",
+            baseRevisionID: "rev-1",
+            expectedCanvasRevision: 7
+        )
+        #expect(changed.fingerprint != first.fingerprint)
+        let second = try await outbox.prepareIfNew(changed)
+        #expect(second.isNew == true)
+        #expect(await outbox.pendingIntents().count == 2)
+    }
+
+    @Test func preparesAcrossReopenAreDedupedByFingerprint() async throws {
+        let url = makeURL()
+        let outbox = DesignDecisionOutbox(fileURL: url)
+        let value = DesignDecisionIntent(
+            canvasID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            nodeID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            candidateID: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            conversationID: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            decision: "rejected",
+            operationID: "op-reject",
+            mode: nil,
+            baseRevisionID: "rev-2",
+            expectedCanvasRevision: 3
+        )
+        _ = try await outbox.prepareIfNew(value)
+        // Relaunch: a fresh actor over the same file dedupes the EXACT
+        // operation instead of preparing a second delivery.
+        let reopened = DesignDecisionOutbox(fileURL: url)
+        let duplicate = try await reopened.prepareIfNew(value)
+        #expect(duplicate.isNew == false)
+        #expect(duplicate.intent.fingerprint == value.fingerprint)
+        #expect(await reopened.pendingIntents().count == 1)
+    }
+
+    @Test func legacyEnvelopeWithoutFingerprintDecodesAndBackfillsIdentity() async throws {
+        let url = makeURL()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // An intent written by an older build: no mode/base/expected/fingerprint.
+        let legacy = """
+        {"schemaVersion":1,"intents":[{"id":"11111111-1111-1111-1111-111111111111","canvasID":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","nodeID":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","candidateID":"cccccccc-cccc-cccc-cccc-cccccccccccc","conversationID":"dddddddd-dddd-dddd-dddd-dddddddddddd","decision":"adopted","operationID":"op-legacy","phase":"committing","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}
+        """
+        try Data(legacy.utf8).write(to: url)
+        let outbox = DesignDecisionOutbox(fileURL: url)
+        #expect(await outbox.unavailableReason == nil)
+        let pending = await outbox.pendingIntents()
+        #expect(pending.count == 1)
+        let decoded = try #require(pending.first)
+        #expect(decoded.mode == nil)
+        #expect(decoded.baseRevisionID == nil)
+        #expect(decoded.expectedCanvasRevision == nil)
+        // The fingerprint is deterministically backfilled.
+        let expected = DesignDecisionIntent.makeFingerprint(
+            canvasID: decoded.canvasID, nodeID: decoded.nodeID, candidateID: decoded.candidateID,
+            conversationID: decoded.conversationID, decision: decoded.decision,
+            operationID: decoded.operationID, mode: nil, baseRevisionID: nil,
+            expectedCanvasRevision: nil
+        )
+        #expect(decoded.fingerprint == expected)
+    }
 }

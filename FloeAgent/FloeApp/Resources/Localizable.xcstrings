@@ -80549,6 +80549,23 @@
           }
         }
       }
+    },
+    "design.panel.use_current_node": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use current node content"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用当前节点内容"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

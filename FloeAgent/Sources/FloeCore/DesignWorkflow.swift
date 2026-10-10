@@ -31,8 +31,81 @@ public enum DesignContentType: String, Codable, Sendable, CaseIterable {
     case cad
 }
 
+/// Project (canvas) level brief/spec authority. Stored ON the CanvasProject
+/// itself — not a parallel store — so every update commits through the same
+/// Canvas revision CAS. The full-payload identity is a SHA-256 over the
+/// canonical encoded payload: a later apply of a DIFFERENT payload has a
+/// different identity and is never deduped against an older one, while an
+/// exact replay is an idempotent no-op. Nodes that inherit are recorded so
+/// unrelated node edits can never change which payload is authoritative.
+public struct DesignProjectAuthority: Codable, Sendable, Equatable, Hashable {
+    public var brief: DesignBrief?
+    public var spec: DesignSpec?
+    /// Full-payload identity: SHA-256 over the canonical brief+spec payload.
+    public var contentSHA256: String
+    public var updatedAt: Date
+    /// Bounded project-level replay keys: operationID → full-payload identity.
+    /// A replayed operation whose identity differs is a changed request and
+    /// must be rejected, never silently deduped against the old payload.
+    public var appliedOperations: [String: String]
+    /// Nodes whose design subdocument carries this exact payload.
+    public var inheritedNodeIDs: [String]
+
+    public init(
+        brief: DesignBrief? = nil,
+        spec: DesignSpec? = nil,
+        contentSHA256: String,
+        updatedAt: Date = Date(),
+        appliedOperations: [String: String] = [:],
+        inheritedNodeIDs: [String] = []
+    ) {
+        self.brief = brief
+        self.spec = spec
+        self.contentSHA256 = contentSHA256
+        self.updatedAt = updatedAt
+        self.appliedOperations = appliedOperations
+        self.inheritedNodeIDs = inheritedNodeIDs
+    }
+
+    /// Canonical full-payload identity. The identity covers every field a
+    /// node would inherit (brief + the complete spec, including rawMarkdown),
+    /// so "same operationID, different payload" can never replay the old one.
+    public static func identity(brief: DesignBrief?, spec: DesignSpec?) -> String {
+        struct Payload: Codable {
+            let goal: String?
+            let audience: String?
+            let constraints: [String]
+            let palette: [String]?
+            let typography: String?
+            let layout: String?
+            let spacing: String?
+            let brandAssetRefs: [String]?
+            let voice: String?
+            let prohibitions: [String]?
+            let rawMarkdown: String?
+        }
+        let payload = Payload(
+            goal: brief?.goal,
+            audience: brief?.audience,
+            constraints: brief?.constraints ?? [],
+            palette: spec?.palette,
+            typography: spec?.typography,
+            layout: spec?.layout,
+            spacing: spec?.spacing,
+            brandAssetRefs: spec?.brandAssetRefs,
+            voice: spec?.voice,
+            prohibitions: spec?.prohibitions,
+            rawMarkdown: spec?.rawMarkdown
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = (try? encoder.encode(payload)) ?? Data()
+        return FloeDigest.sha256Hex(data)
+    }
+}
+
 /// The brief stage: the user's goal, audience and constraints.
-public struct DesignBrief: Codable, Sendable, Equatable {
+public struct DesignBrief: Codable, Sendable, Equatable, Hashable {
     public var goal: String
     public var audience: String?
     public var constraints: [String]
@@ -49,7 +122,7 @@ public struct DesignBrief: Codable, Sendable, Equatable {
 /// Optional design spec. Only the values the user/template actually set are
 /// stored; everything else stays nil so the UI can omit it and so a spec can be
 /// exported as human-editable DESIGN.md without inventing empty sections.
-public struct DesignSpec: Codable, Sendable, Equatable {
+public struct DesignSpec: Codable, Sendable, Equatable, Hashable {
     public var palette: [String]?
     public var typography: String?
     public var layout: String?
@@ -207,6 +280,10 @@ public enum DesignRevisionOrigin: String, Codable, Sendable {
     case adopt
     case restore
     case variant
+    /// Frozen from content that already exists on the Canvas node (text,
+    /// retained asset bytes, CAD/Office workspace document) without an
+    /// external export/reimport.
+    case currentNode
 }
 
 public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {

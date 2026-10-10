@@ -94,18 +94,72 @@ final class DesignWorkflowPanelModel: ObservableObject {
 
     func updateBrief(goal: String, audience: String?, constraints: [String]) async {
         guard let nodeID, let revision = snapshot?.canvasRevision else { return }
-        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
-            DesignWorkflowEngine.updateBrief(
-                DesignBrief(goal: goal, audience: audience, constraints: constraints),
-                in: &design
+        let authority = try? await service.projectAuthority(canvasID: canvasID)
+        do {
+            _ = try await service.applyProjectAuthority(
+                canvasID: canvasID,
+                expectedRevision: revision,
+                operationID: "project-brief-\(UUID().uuidString.lowercased())",
+                brief: DesignBrief(goal: goal, audience: audience, constraints: constraints),
+                spec: design?.spec ?? authority?.spec,
+                inheritToExistingNodes: true
             )
+            snapshot = try await service.snapshot(canvasID: canvasID, nodeID: nodeID)
+            lastSavedAt = Date()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
         }
     }
 
     func updateSpec(_ spec: DesignSpec) async {
         guard let nodeID, let revision = snapshot?.canvasRevision else { return }
-        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
-            DesignWorkflowEngine.updateSpec(spec, in: &design)
+        let authority = try? await service.projectAuthority(canvasID: canvasID)
+        do {
+            _ = try await service.applyProjectAuthority(
+                canvasID: canvasID,
+                expectedRevision: revision,
+                operationID: "project-spec-\(UUID().uuidString.lowercased())",
+                brief: design?.brief ?? authority?.brief,
+                spec: spec,
+                inheritToExistingNodes: true
+            )
+            snapshot = try await service.snapshot(canvasID: canvasID, nodeID: nodeID)
+            lastSavedAt = Date()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
+        }
+    }
+
+    /// Freezes whatever content already exists on this node into a design
+    /// revision (text body, retained asset bytes, or the bound CAD/Office
+    /// workspace document) — no external export/reimport. Precise reasons
+    /// surface for content that is not available.
+    func useCurrentNode() async {
+        guard let nodeID, let revision = snapshot?.canvasRevision, let environment else { return }
+        do {
+            let outcome = try await DesignWorkflowActions.useCurrentNode(
+                service: service,
+                adapters: environment.designAdapterCenter,
+                environment: environment,
+                caller: .trustedUI,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: revision,
+                operationID: "current-node-\(UUID().uuidString.lowercased())",
+                displayName: nil
+            )
+            snapshot = outcome.snapshot
+            lastSavedAt = Date()
+            errorMessage = nil
+        } catch let unavailable as DesignWorkflowActions.CurrentNodeUnavailable {
+            errorMessage = unavailable.reason
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
         }
     }
 
@@ -119,6 +173,7 @@ final class DesignWorkflowPanelModel: ObservableObject {
                 canvasID: canvasID,
                 nodeID: nodeID,
                 expectedRevision: revision,
+                operationID: "template-\(template.id)-\(template.contentSHA256.prefix(16))",
                 template: template
             )
             lastSavedAt = Date()
@@ -130,61 +185,44 @@ final class DesignWorkflowPanelModel: ObservableObject {
     }
 
     func importDesignMarkdown(_ markdown: String) async {
-        guard let nodeID, let revision = snapshot?.canvasRevision else { return }
-        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
-            DesignWorkflowEngine.updateSpec(DesignMDCodec.parse(markdown), in: &design)
-        }
+        let parsed = DesignMDCodec.parse(markdown)
+        await updateSpec(parsed)
     }
 
-    /// The canvas-level (project) spec: the newest spec across every
-    /// design subdocument on this canvas. New node designs inherit it, and
-    /// `propagateSpec` pushes the current node's spec to all of them, so the
-    /// brief/spec applies at the Canvas engineering level rather than
-    /// unrelated per-node projects.
+    /// The canvas-level (project) brief/spec authority stored ON the Canvas
+    /// project itself. New node designs inherit it; unrelated node edits can
+    /// never change which payload is authoritative.
     func canvasSharedSpec() async -> DesignSpec? {
-        guard let project = try? await FileCanvasDocumentRepository().project(canvasID: canvasID) else { return nil }
-        var newest: DesignSpec? = nil
-        var newestDate = Date.distantPast
-        for document in project.documents {
-            for node in document.nodes {
-                guard let design = try? DesignCanvasMetadata.decode(
-                    node.metadata[DesignCanvasMetadata.key],
-                    nodeID: node.id.uuidString.lowercased()
-                ), let spec = design.spec, design.updatedAt > newestDate else { continue }
-                newest = spec
-                newestDate = design.updatedAt
-            }
-        }
-        return newest
+        try? await service.projectAuthority(canvasID: canvasID)?.spec
     }
 
-    /// Pushes the current node's spec to every design subdocument on the
-    /// canvas (per-node CAS, conflict-safe: a conflicting node is skipped
-    /// and reported, never overwritten blindly).
+    /// Applies the current node's spec to the Canvas project authority in ONE
+    /// project CAS: the authority record AND every existing design
+    /// subdocument inherit the payload in the same commit. Repeated identical
+    /// payloads dedupe (no revision bump); conflicting revisions are
+    /// reported, never overwritten blindly.
     @discardableResult
     func propagateSpecToCanvas() async -> (updated: Int, skipped: Int) {
-        guard let nodeID, let spec = design?.spec else { return (0, 0) }
-        guard let project = try? await FileCanvasDocumentRepository().project(canvasID: canvasID) else { return (0, 0) }
-        var updated = 0
-        var skipped = 0
-        for document in project.documents {
-            for node in document.nodes where node.id != nodeID {
-                guard node.metadata[DesignCanvasMetadata.key] != nil else { continue }
-                do {
-                    _ = try await service.mutate(
-                        canvasID: canvasID, nodeID: node.id,
-                        expectedRevision: project.revision,
-                        operationID: "propagate-spec-\(node.id.uuidString.lowercased())"
-                    ) { design in
-                        DesignWorkflowEngine.updateSpec(spec, in: &design)
-                    }
-                    updated += 1
-                } catch {
-                    skipped += 1
-                }
-            }
+        guard let nodeID, let revision = snapshot?.canvasRevision else { return (0, 0) }
+        let existing = try? await service.projectAuthority(canvasID: canvasID)
+        guard let spec = design?.spec ?? existing?.spec else { return (0, 0) }
+        do {
+            let result = try await service.applyProjectAuthority(
+                canvasID: canvasID,
+                expectedRevision: revision,
+                operationID: "project-spec-\(UUID().uuidString.lowercased())",
+                brief: design?.brief ?? existing?.brief,
+                spec: spec,
+                inheritToExistingNodes: true
+            )
+            snapshot = try await service.snapshot(canvasID: canvasID, nodeID: nodeID)
+            errorMessage = nil
+            return (result.updatedNodeIDs.count, result.skippedNodeIDs.count)
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
+            return (0, 0)
         }
-        return (updated, skipped)
     }
 
     /// Exports the current spec as DESIGN.md (unknown sections preserved).
@@ -193,9 +231,11 @@ final class DesignWorkflowPanelModel: ObservableObject {
         return DesignMDCodec.export(spec).data(using: .utf8)
     }
 
-    /// UI parity: the SAME shared adoption path as `canvas.designAdopt` —
-    /// one CAS commit for metadata + real node content, then the durable
-    /// notice to the ORIGINATING assistant conversation.
+    /// UI parity: the SAME shared adoption transaction as
+    /// `canvas.designAdopt` — replay/origin/grant checks, durable intent
+    /// (full fingerprint) BEFORE the CAS, one CAS commit for metadata + real
+    /// node content, then the throwing durable notice to the ORIGINATING
+    /// assistant conversation (acknowledged only after it persists).
     func adopt(candidateID: String, mode: DesignAdoptMode) async {
         guard let nodeID, let revision = snapshot?.canvasRevision, let environment else { return }
         let outcome = await DesignWorkflowActions.adopt(
@@ -203,6 +243,8 @@ final class DesignWorkflowPanelModel: ObservableObject {
             adapters: environment.designAdapterCenter,
             environment: environment,
             caller: .trustedUI,
+            outbox: DesignDecisionOutbox.shared,
+            sink: Self.durableSink(environment: environment),
             canvasID: canvasID,
             nodeID: nodeID,
             expectedRevision: revision,
@@ -211,13 +253,21 @@ final class DesignWorkflowPanelModel: ObservableObject {
             mode: mode
         )
         switch outcome {
-        case .succeeded(let snapshot, _, _):
+        case .succeeded(let snapshot, _, _, _, let deliveryError):
             self.snapshot = snapshot
             lastSavedAt = Date()
-            errorMessage = nil
-            await notifyDecision(candidateID: candidateID, decision: "adopted")
             candidatePreviews[candidateID] = nil
+            if let deliveryError {
+                // Content committed; the notice is durable-pending and a
+                // launch reconcile delivers it. Keep the adoption but surface
+                // the delivery state instead of claiming full delivery.
+                errorMessage = deliveryError
+            } else {
+                errorMessage = nil
+            }
         case .failed(let error):
+            // Preserve the failure across the canonical refresh; reload for
+            // the next retry but keep the actionable error visible.
             errorMessage = error.localizedDescription
             await reload()
         }
@@ -235,21 +285,40 @@ final class DesignWorkflowPanelModel: ObservableObject {
     }
 
     func reject(candidateID: String) async {
-        guard let nodeID, let revision = snapshot?.canvasRevision, environment != nil else { return }
+        guard let nodeID, let revision = snapshot?.canvasRevision, let environment else { return }
         do {
             snapshot = try await DesignWorkflowActions.reject(
-                service: service, caller: .trustedUI,
+                service: service,
+                caller: .trustedUI,
+                outbox: DesignDecisionOutbox.shared,
+                sink: Self.durableSink(environment: environment),
                 canvasID: canvasID, nodeID: nodeID,
                 expectedRevision: revision, operationID: UUID().uuidString.lowercased(),
                 candidateID: candidateID
             )
             lastSavedAt = Date()
             errorMessage = nil
-            await notifyDecision(candidateID: candidateID, decision: "rejected")
             candidatePreviews[candidateID] = nil
         } catch {
+            // Preserve the failure across the canonical refresh.
             errorMessage = error.localizedDescription
             await reload()
+        }
+    }
+
+    /// The REAL durable ingress for panel-initiated decisions: queued runtime
+    /// input on the ORIGINATING conversation + idempotent transcript upsert.
+    /// It THROWS (the shared action acknowledges the outbox only after this
+    /// actually persists) — never `try?`.
+    private static func durableSink(environment: AppEnvironment) -> @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void {
+        { conversationID, proposalID, decision, revision, sha256 in
+            try await environment.conversationCenter.recordProposalDecision(
+                conversationID: conversationID,
+                proposalID: proposalID,
+                decision: "design-candidate-\(decision)",
+                revision: revision,
+                sha256: sha256
+            )
         }
     }
 
@@ -511,46 +580,6 @@ final class DesignWorkflowPanelModel: ObservableObject {
         }
     }
 
-    /// Durable, structured decision notice to the ORIGINATING assistant
-    /// conversation recorded on the candidate (never the currently selected
-    /// chat).
-    private func notifyDecision(candidateID: String, decision: String) async {
-        guard let environment, let templateRoot = DesignTemplateStore.defaultRoot() else { return }
-        _ = templateRoot
-        let sha = design.flatMap { project -> String? in
-            guard let candidate = project.candidate(candidateID) else { return nil }
-            return project.artifacts.flatMap(\.revisions)
-                .first(where: { $0.id == candidate.proposedRevisionID })?
-                .contentSHA256
-        }
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        let outbox = DesignDecisionOutbox(fileURL: support?
-            .appendingPathComponent("FloeAgent/DesignDecisions/outbox.json")
-            ?? URL(fileURLWithPath: "/dev/null/design-decisions-unavailable"))
-        await DesignWorkflowActions.recordDecision(
-            outbox: outbox,
-            environment: environment,
-            decisionSink: { conversationID, proposalID, decision, revision, sha256 in
-                // The REAL durable ingress: queued runtime input on the
-                // originating conversation + idempotent transcript upsert.
-                try? await environment.conversationCenter.recordProposalDecision(
-                    conversationID: conversationID,
-                    proposalID: proposalID,
-                    decision: "design-candidate-\(decision)",
-                    revision: revision,
-                    sha256: sha256
-                )
-            },
-            canvasID: canvasID,
-            candidateID: candidateID,
-            decision: decision,
-            revision: snapshot?.canvasRevision,
-            sha256: sha,
-            operationID: "panel-\(candidateID)-\(decision)",
-            conversationID: nil
-        )
-    }
-
     /// Honest built-in templates: capabilities list only what the template
     /// truly supports; inputs/dependencies/formats/license are real.
     static let builtInTemplates: [DesignTemplateManifest] = [
@@ -782,6 +811,10 @@ struct DesignWorkflowPanel: View {
                         }
                         Button("design.panel.import_source") { showsSourceImporter = true }
                             .buttonStyle(.bordered)
+                        Button("design.panel.use_current_node") {
+                            Task { await model.useCurrentNode() }
+                        }
+                        .buttonStyle(.bordered)
                         if let sourceImportError {
                             Text(sourceImportError).font(.caption2).foregroundStyle(.red)
                         }

@@ -12,13 +12,18 @@
 //   run→canvas authorization; the panel passes nil (its service instance has
 //   no authorization closure).
 // - Candidate origin is persisted at PROPOSAL time (originating
-//   conversation/environment); notices go to THAT identity — never the
-//   currently selected chat, never a first-conversation fallback.
-// - Durable decision intents are prepared BEFORE the CAS and acked only after
-//   confirmed delivery; a delivery failure leaves the intent pending for
-//   launch-time reconcile.
+//   conversation/environment on the candidate record). Notices go to THAT
+//   identity — never the currently selected chat, never a first-conversation
+//   fallback. A candidate with no persisted origin FAILS and stays pending.
+// - The durable decision intent (full operation fingerprint + exact node) is
+//   prepared BEFORE the CAS. The durable ingress sink THROWS on failure; the
+//   intent is acknowledged only after confirmed delivery, so a crash/failure
+//   leaves the decision pending for launch-time reconcile.
 // - Missing payload bytes / unsupported content abort BEFORE the CAS: the
 //   candidate stays pending and the caller gets the error.
+// - Repeated decisions dedupe on the FULL fingerprint (operationID + node +
+//   candidate + origin + decision + mode + base + expected canvas revision),
+//   both through design-level operation replay and the durable ledger.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -38,8 +43,21 @@ enum DesignWorkflowActions {
     }
 
     enum AdoptionOutcome: Sendable {
-        case succeeded(DesignCanvasService.Snapshot, contentApplied: Bool, contentNote: String)
+        /// Content committed. `deliveryError` is non-nil when the candidate
+        /// was adopted but the durable notice to the originating task could
+        /// not be delivered (it stays in the outbox for reconcile — never a
+        /// false "delivered" success).
+        case succeeded(DesignCanvasService.Snapshot, contentApplied: Bool, contentNote: String, replayed: Bool = false, deliveryError: String? = nil)
         case failed(Error)
+    }
+
+    /// Optional user-grant gate for run callers. The panel passes nil.
+    /// Validation runs only for a genuinely NEW operation (after replay and
+    /// origin checks, before intent prepare/CAS); consumption runs only after
+    /// the CAS committed, so a failed/conflicted CAS never burns the grant.
+    struct GrantGate: @unchecked Sendable {
+        let validate: @MainActor @Sendable () async -> Bool
+        let consume: @MainActor @Sendable () async -> Void
     }
 
     private static func runID(for caller: Caller) -> UUID? {
@@ -49,70 +67,78 @@ enum DesignWorkflowActions {
         }
     }
 
-    /// Durable decision intent + delivery, shared by UI and tools. Returns
-    /// false (with no fallback) when the candidate has no persisted
-    /// originating conversation or delivery fails.
-    @discardableResult
-    static func recordDecision(
-        outbox: DesignDecisionOutbox,
-        environment: AppEnvironment,
-        decisionSink: @escaping @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async -> Void,
+    // MARK: - Origin resolution
+
+    /// The EXACT node + originating task for a candidate. The candidate is
+    /// read from the design subdocument of `nodeID` on `canvasID` (the
+    /// precise target the action addresses). A missing candidate or a
+    /// candidate with no persisted originating conversation THROWS: the
+    /// decision stays pending and is never routed to the current chat.
+    static func resolveDecisionTarget(
+        canvasID: UUID,
+        nodeID: UUID,
+        candidateID: String,
+        snapshot: DesignCanvasService.Snapshot?
+    ) throws -> (candidate: DesignCandidate, conversationID: UUID) {
+        guard let design = snapshot?.design,
+              let candidate = design.candidate(candidateID),
+              snapshot?.nodeID == nodeID else {
+            throw FloeError.validationFailed("Candidate no longer exists on this canvas node; the decision stays pending")
+        }
+        guard let raw = candidate.originConversationID,
+              let origin = UUID(uuidString: raw) else {
+            throw FloeError.validationFailed(
+                "This proposal has no originating task recorded; its outcome cannot be delivered, so the candidate stays pending"
+            )
+        }
+        return (candidate, origin)
+    }
+
+    /// Cross-canvas lookup used by launch reconcile: finds the node whose
+    /// design subdocument owns the candidate, if any.
+    static func locateCandidate(
         canvasID: UUID,
         candidateID: String,
-        decision: String,
+        repository: CanvasDocumentRepository = FileCanvasDocumentRepository()
+    ) async -> (nodeID: UUID, design: DesignProject, candidate: DesignCandidate)? {
+        guard let project = try? await repository.project(canvasID: canvasID) else { return nil }
+        for document in project.documents {
+            for node in document.nodes {
+                guard let design = try? DesignCanvasMetadata.decode(
+                    node.metadata[DesignCanvasMetadata.key],
+                    nodeID: node.id.uuidString.lowercased()
+                ), let candidate = design.candidate(candidateID) else { continue }
+                return (node.id, design, candidate)
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Durable delivery
+
+    /// Delivers the decision through the throwing durable ingress sink, then
+    /// acknowledges the intent ONLY after success. A sink failure is returned
+    /// (the intent remains `.committing` for reconcile), never swallowed.
+    @discardableResult
+    static func deliver(
+        intent: DesignDecisionIntent,
         revision: Int64?,
         sha256: String?,
-        operationID: String,
-        conversationID: UUID?
-    ) async -> Bool {
-        // The ORIGINATING task is the identity persisted on the candidate at
-        // proposal time — never the currently selected conversation.
-        guard let candidateUUID = UUID(uuidString: candidateID) else { return false }
-        let recorded: UUID? = await {
-            // Search all nodes' design subdocuments for the candidate.
-            guard let project = try? await FileCanvasDocumentRepository().project(canvasID: canvasID) else { return nil }
-            for document in project.documents {
-                for node in document.nodes {
-                    guard let design = try? DesignCanvasMetadata.decode(
-                        node.metadata[DesignCanvasMetadata.key],
-                        nodeID: node.id.uuidString.lowercased()
-                    ), let candidate = design.candidate(candidateID) else { continue }
-                    if let raw = candidate.originConversationID, let uuid = UUID(uuidString: raw) {
-                        return uuid
-                    }
-                }
-            }
-            return nil
-        }()
-        guard let target = recorded ?? conversationID else { return false }
-        // Durable intent BEFORE any dependent mutation completes.
-        let intent: DesignDecisionIntent?
+        sink: @escaping @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void
+    ) async -> Error? {
+        guard let conversationID = UUID(uuidString: intent.conversationID),
+              let candidateUUID = UUID(uuidString: intent.candidateID) else {
+            return FloeError.validationFailed("Durable decision has an invalid target")
+        }
         do {
-            intent = try await outbox.prepare(DesignDecisionIntent(
-                canvasID: canvasID.uuidString.lowercased(),
-                nodeID: "shared",
-                candidateID: candidateID,
-                conversationID: target.uuidString.lowercased(),
-                decision: decision,
-                operationID: operationID
-            ))
+            try await sink(conversationID, candidateUUID, intent.decision, revision, sha256)
+            return nil
         } catch {
-            return false
+            return error
         }
-        await DesignDecisionNotifier.notify(
-            conversationID: target, candidateID: candidateID,
-            decision: decision, revision: revision, sha256: sha256,
-            sink: decisionSink
-        )
-        if let intent {
-            do {
-                try await outbox.markDelivered(id: intent.id)
-            } catch {
-                return false
-            }
-        }
-        return true
     }
+
+    // MARK: - Adopt (one shared transaction)
 
     /// Adopts a candidate: ONE Canvas CAS commit advances the design metadata
     /// AND the real node content (verified payload through the material
@@ -125,28 +151,52 @@ enum DesignWorkflowActions {
         adapters: DesignAdapterCenter,
         environment: AppEnvironment,
         caller: Caller,
+        outbox: DesignDecisionOutbox,
+        sink: @escaping @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void,
         canvasID: UUID,
         nodeID: UUID,
         expectedRevision: Int64,
         operationID: String,
         candidateID: String,
         mode: DesignAdoptMode,
-        expectedArtifactRevisionID: String? = nil
+        expectedArtifactRevisionID: String? = nil,
+        grant: GrantGate? = nil
     ) async -> AdoptionOutcome {
         let runID = self.runID(for: caller)
         do {
             let preRead = try await service.snapshot(runID: runID, canvasID: canvasID, nodeID: nodeID)
+            // Replay is resolved BEFORE grant validation or any side effect.
+            if preRead.design?.hasApplied(operationID: operationID) == true {
+                return try replayAdoption(
+                    preRead: preRead, candidateID: candidateID, mode: mode
+                )
+            }
             guard let candidate = preRead.design?.candidate(candidateID),
                   let artifact = preRead.design?.artifact(candidate.artifactID),
                   let proposed = artifact.revision(candidate.proposedRevisionID) else {
                 return .failed(FloeError.validationFailed("Candidate or its proposed revision no longer exists"))
+            }
+            // Origin resolution FAILS CLOSED: no fallback to the current chat.
+            let origin: UUID
+            do {
+                origin = try resolveDecisionTarget(
+                    canvasID: canvasID, nodeID: nodeID, candidateID: candidateID, snapshot: preRead
+                ).conversationID
+            } catch {
+                return .failed(error)
+            }
+            // A user grant is required for run callers and validated only for
+            // genuinely new operations.
+            if let grant, await !grant.validate() {
+                return .failed(FloeError.validationFailed(
+                    "Adoption grant is missing, expired or bound to a different candidate/revision"
+                ))
             }
             guard proposed.payloadRelativePath != nil else {
                 // Adoption without retained payload bytes is NOT an adoption:
                 // fail before the CAS and keep the candidate pending.
                 return .failed(FloeError.validationFailed("The proposed revision has no retained payload; the candidate stays pending"))
             }
-            let update: DesignCanvasContentApplicator.PreparedUpdate
             let bytes: Data
             do {
                 bytes = try await adapters.verifiedRevisionBytes(
@@ -154,10 +204,9 @@ enum DesignWorkflowActions {
                     revisionID: proposed.id, expectedContentSHA256: proposed.contentSHA256
                 )
             } catch {
-                // Missing/corrupt payload: abort BEFORE the CAS so the
-                // candidate stays pending.
                 return .failed(error)
             }
+            let update: DesignCanvasContentApplicator.PreparedUpdate
             do {
                 update = try await DesignCanvasContentApplicator.prepare(
                     nodeKind: preRead.nodeKind, bytes: bytes,
@@ -182,6 +231,43 @@ enum DesignWorkflowActions {
             } else {
                 contentNote = "applied"
             }
+            // Durable intent BEFORE the CAS, with the FULL fingerprint. A
+            // persistence failure aborts the adoption rather than risking a
+            // lost decision; an identical recorded decision dedupes.
+            let intent = DesignDecisionIntent(
+                canvasID: canvasID.uuidString.lowercased(),
+                nodeID: nodeID.uuidString.lowercased(),
+                candidateID: candidateID,
+                conversationID: origin.uuidString.lowercased(),
+                decision: "adopted",
+                operationID: operationID,
+                mode: mode.rawValue,
+                baseRevisionID: candidate.baseRevisionID,
+                expectedCanvasRevision: expectedRevision
+            )
+            let prepared: DesignDecisionIntent
+            do {
+                let result = try await outbox.prepareIfNew(intent)
+                if !result.isNew, result.intent.phase == .recorded {
+                    return try replayAdoption(preRead: preRead, candidateID: candidateID, mode: mode)
+                }
+                prepared = result.intent
+            } catch {
+                return .failed(error)
+            }
+            // Stage the variant node identity and (for document-backed
+            // content) its OWN revision file BEFORE the CAS, so the variant
+            // node — not the original — owns the new binding.
+            let variantNodeID: UUID? = mode == .variant ? UUID() : nil
+            let variantRevision: DesignWorkspace.RevisionFile? = try {
+                guard mode == .variant, update.documentRevision != nil, let variantNodeID else {
+                    return nil
+                }
+                return try DesignWorkspace.writeRevisionFile(
+                    bytes: bytes, canvasID: canvasID, nodeID: variantNodeID,
+                    format: update.documentRevisionFormat ?? "bin"
+                )
+            }()
             let snapshot: DesignCanvasService.Snapshot
             do {
                 snapshot = try await service.mutateProject(
@@ -202,25 +288,29 @@ enum DesignWorkflowActions {
                     throw FloeError.validationFailed("Canvas node disappeared during adoption")
                 }
                 do {
-                    if let revision = update.documentRevision,
-                       let revisionFormat = update.documentRevisionFormat {
-                        // ONE CAS flips the binding reference to the
-                        // fully-verified revision file (never an in-place
-                        // overwrite of the editor's document).
-                        design.workspaceBinding = DesignWorkspaceBinding(
-                            workspaceRootPath: DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path,
-                            relativeDocumentPath: revision.relativePath,
-                            format: revisionFormat
-                        )
-                    }
                     switch mode {
                     case .updateOriginal:
+                        if let revision = update.documentRevision,
+                           let revisionFormat = update.documentRevisionFormat {
+                            // ONE CAS flips the binding reference to the
+                            // fully-verified revision file (never an in-place
+                            // overwrite of the editor's document).
+                            design.workspaceBinding = DesignWorkspaceBinding(
+                                workspaceRootPath: DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path,
+                                relativeDocumentPath: revision.relativePath,
+                                format: revisionFormat
+                            )
+                        }
                         designApplyContentUpdate(update, to: &project.documents[documentIndex].nodes[nodeIndex])
                     case .variant:
+                        guard let variantNodeID else {
+                            throw FloeError.validationFailed("Variant node identity was not staged")
+                        }
                         let variant = designApplyVariantUpdate(
                             update,
                             from: project.documents[documentIndex].nodes[nodeIndex],
-                            into: &project.documents[documentIndex].nodes
+                            into: &project.documents[documentIndex].nodes,
+                            id: variantNodeID
                         )
                         guard let candidateIndex = design.candidates.firstIndex(where: { $0.id == candidateID }) else {
                             throw FloeError.validationFailed("Candidate disappeared during variant adoption")
@@ -230,57 +320,183 @@ enum DesignWorkflowActions {
                             throw FloeError.validationFailed("Variant artifact missing after adoption")
                         }
                         design.artifacts[adoptedIndex].canvasNodeID = variant.id.uuidString.lowercased()
+                        // The variant node gets its OWN design subdocument:
+                        // copied brief/spec and — for document-backed content
+                        // — its own workspace binding/revision file. The
+                        // original node's binding is never retargeted.
+                        var variantDesign = DesignProject(
+                            nodeID: variant.id.uuidString.lowercased(),
+                            contentType: design.contentType,
+                            brief: design.brief,
+                            spec: design.spec
+                        )
+                        variantDesign.template = design.template
+                        if let variantRevision {
+                            variantDesign.workspaceBinding = DesignWorkspaceBinding(
+                                workspaceRootPath: DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path,
+                                relativeDocumentPath: variantRevision.relativePath,
+                                format: update.documentRevisionFormat ?? "bin"
+                            )
+                        }
+                        variantDesign.artifacts = [adopted]
+                        variantDesign.appliedOperationIDs = [operationID]
+                        if let variantIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == variant.id }) {
+                            let raw = try DesignCanvasMetadata.encode(variantDesign)
+                            project.documents[documentIndex].nodes[variantIndex].metadata[DesignCanvasMetadata.key] = raw
+                        }
                     }
                 }
                 }
             } catch {
                 // CAS failed: only an orphan revision file remains
-                // (recyclable); the editor's document is untouched.
+                // (recyclable); the editor's document is untouched. Cancel
+                // the fresh intent so reconcile does not deliver a decision
+                // that never committed (best effort; on failure reconcile
+                // re-checks exact state and cancels it then).
+                if prepared.phase == .committing { try? await outbox.cancel(id: prepared.id) }
                 return .failed(error)
             }
+            // Consume the single-use grant only AFTER the transaction
+            // succeeded, so a failed CAS never burns it.
+            await grant?.consume()
             // Post-CAS stable-alias publish for existing editors (journaled,
-            // hash-protected; the revision file stays authoritative).
+            // hash-protected; the revision file stays authoritative). The
+            // variant node's alias is published for ITS OWN binding.
+            var aliasError: Error?
             if let revision = update.documentRevision,
                let revisionFormat = update.documentRevisionFormat {
                 do {
-                    try DesignWorkspace.publishStableAlias(
-                        canvasID: canvasID, nodeID: nodeID,
-                        revision: revision, format: revisionFormat
-                    )
+                    if mode == .variant {
+                        if let variantNodeID, let variantRevision {
+                            try DesignWorkspace.publishStableAlias(
+                                canvasID: canvasID, nodeID: variantNodeID,
+                                revision: variantRevision, format: revisionFormat
+                            )
+                        }
+                    } else {
+                        try DesignWorkspace.publishStableAlias(
+                            canvasID: canvasID, nodeID: nodeID,
+                            revision: revision, format: revisionFormat
+                        )
+                    }
                 } catch {
-                    return .failed(error)
+                    aliasError = error
                 }
             }
+            // Durable delivery to the ORIGINATING task; ack only on success.
+            let deliveryError = await Self.deliver(
+                intent: prepared, revision: snapshot.canvasRevision,
+                sha256: proposed.contentSHA256, sink: sink
+            )
+            if deliveryError == nil {
+                try? await outbox.markDelivered(id: prepared.id)
+            }
+            if let aliasError { return .failed(aliasError) }
             return .succeeded(
                 snapshot,
                 contentApplied: true,
-                contentNote: contentNote
+                contentNote: contentNote,
+                deliveryError: deliveryError?.localizedDescription
             )
         } catch {
             return .failed(error)
         }
     }
 
+    /// Strict replay: the recorded candidate must be in the exact terminal
+    /// state THIS request would have produced (same candidate, same base,
+    /// mode encoded by variant-artifact presence).
+    private static func replayAdoption(
+        preRead: DesignCanvasService.Snapshot,
+        candidateID: String,
+        mode: DesignAdoptMode
+    ) throws -> AdoptionOutcome {
+        guard let candidate = preRead.design?.candidate(candidateID),
+              candidate.status == .adopted,
+              (mode == .variant) == (candidate.variantArtifactID != nil) else {
+            throw FloeError.validationFailed(
+                "operationID was already applied to a different request; idempotency replay requires identical arguments"
+            )
+        }
+        return .succeeded(preRead, contentApplied: false, contentNote: "replayed", replayed: true)
+    }
+
+    // MARK: - Reject (one shared transaction)
+
     /// Rejects a candidate without touching the artifact. Run callers are
-    /// authorized through their runID.
+    /// authorized through their runID. The durable decision uses the exact
+    /// same ledger ordering as adoption.
+    @discardableResult
     static func reject(
         service: DesignCanvasService,
         caller: Caller,
+        outbox: DesignDecisionOutbox,
+        sink: @escaping @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void,
         canvasID: UUID,
         nodeID: UUID,
         expectedRevision: Int64,
         operationID: String,
         candidateID: String
     ) async throws -> DesignCanvasService.Snapshot {
-        try await service.mutate(
-            runID: runID(for: caller),
-            canvasID: canvasID,
-            nodeID: nodeID,
-            expectedRevision: expectedRevision,
-            operationID: operationID
-        ) { design in
-            try DesignWorkflowEngine.rejectCandidate(in: &design, candidateID: candidateID)
+        let runID = runID(for: caller)
+        let preRead = try await service.snapshot(runID: runID, canvasID: canvasID, nodeID: nodeID)
+        if preRead.design?.hasApplied(operationID: operationID) == true {
+            guard let recorded = preRead.design?.candidate(candidateID),
+                  recorded.status == .rejected else {
+                throw FloeError.validationFailed("operationID was already applied to a different request")
+            }
+            return preRead
         }
+        let candidate = try resolveDecisionTarget(
+            canvasID: canvasID, nodeID: nodeID, candidateID: candidateID, snapshot: preRead
+        )
+        let proposedSHA = preRead.design.flatMap { design -> String? in
+            design.artifacts
+                .flatMap(\.revisions)
+                .first(where: { $0.id == candidate.candidate.proposedRevisionID })?
+                .contentSHA256
+        }
+        let intent = DesignDecisionIntent(
+            canvasID: canvasID.uuidString.lowercased(),
+            nodeID: nodeID.uuidString.lowercased(),
+            candidateID: candidateID,
+            conversationID: candidate.conversationID.uuidString.lowercased(),
+            decision: "rejected",
+            operationID: operationID,
+            mode: nil,
+            baseRevisionID: candidate.candidate.baseRevisionID,
+            expectedCanvasRevision: expectedRevision
+        )
+        let prepared: DesignDecisionIntent
+        do {
+            let result = try await outbox.prepareIfNew(intent)
+            if !result.isNew, result.intent.phase == .recorded { return preRead }
+            prepared = result.intent
+        }
+        let snapshot: DesignCanvasService.Snapshot
+        do {
+            snapshot = try await service.mutate(
+                runID: runID,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: expectedRevision,
+                operationID: operationID
+            ) { design in
+                try DesignWorkflowEngine.rejectCandidate(in: &design, candidateID: candidateID)
+            }
+        } catch {
+            if prepared.phase == .committing { try? await outbox.cancel(id: prepared.id) }
+            throw error
+        }
+        let deliveryError = await Self.deliver(
+            intent: prepared, revision: snapshot.canvasRevision,
+            sha256: proposedSHA, sink: sink
+        )
+        if deliveryError == nil {
+            try? await outbox.markDelivered(id: prepared.id)
+        }
+        if let deliveryError { throw deliveryError }
+        return snapshot
     }
 
     /// Restores a previous revision: the design metadata AND the real node
@@ -309,7 +525,7 @@ enum DesignWorkflowActions {
         let bytes: Data
         do {
             bytes = try await adapters.verifiedRevisionBytes(
-                canvasID: canvasID, nodeID: nodeID, artifactID: artifact.id,
+                canvasID: canvasID, nodeID: nodeID, artifactID: artifactID,
                 revisionID: target.id, expectedContentSHA256: target.contentSHA256
             )
         } catch {
@@ -367,6 +583,233 @@ enum DesignWorkflowActions {
         return snapshot
     }
 
+    // MARK: - Use current node (freeze existing content)
+
+    /// Why the current node's existing content cannot be frozen.
+    struct CurrentNodeUnavailable: Error, LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
+    }
+
+    struct CurrentNodeOutcome: Sendable {
+        let snapshot: DesignCanvasService.Snapshot
+        let artifactID: String
+        let revisionID: String
+        let format: String
+        let byteCount: Int
+        let contentSHA256: String
+        let replayed: Bool
+    }
+
+    /// Freezes the content ALREADY on the Canvas node into a design revision:
+    /// text/markdown body, the node's retained asset bytes, or the
+    /// CAD/Office workspace document the node is bound to. No external
+    /// export/reimport is needed, and the mutable editor state/drafts are not
+    /// touched (the stored document files are read, not rewritten). Every
+    /// path uses the existing guards (artifact authority, canonical
+    /// workspace binding) and reports a precise reason when unavailable.
+    static func useCurrentNode(
+        service: DesignCanvasService,
+        adapters: DesignAdapterCenter,
+        environment: AppEnvironment,
+        caller: Caller,
+        canvasID: UUID,
+        nodeID: UUID,
+        expectedRevision: Int64,
+        operationID: String,
+        displayName: String?
+    ) async throws -> CurrentNodeOutcome {
+        let runID = runID(for: caller)
+        let snapshot = try await service.snapshot(runID: runID, canvasID: canvasID, nodeID: nodeID)
+        let node = try await service.node(runID: runID, canvasID: canvasID, nodeID: nodeID)
+        let contentType = snapshot.design?.contentType
+            ?? DesignContentTypeMapper.contentType(for: node.kind)
+        let source: (bytes: Data, format: String, name: String)
+        switch node.kind {
+        case .text, .stickyNote:
+            let text = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                throw CurrentNodeUnavailable(reason: "This node has no text content to freeze yet")
+            }
+            let format = contentType == .notes ? "md" : "txt"
+            source = (Data(node.text.utf8), format, node.title ?? "node-text")
+        case .image, .video, .file, .audio:
+            if let asset = node.asset, let relative = asset.localRelativePath, !relative.isEmpty {
+                let root = try FloeArtifactStore.root()
+                let fileURL = root.appendingPathComponent(relative)
+                guard !relative.split(separator: "/").contains("..") else {
+                    throw CurrentNodeUnavailable(reason: "The node asset path is not a safe artifact path")
+                }
+                let bytes: Data
+                do {
+                    bytes = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+                } catch {
+                    throw CurrentNodeUnavailable(reason: "The node's retained asset bytes are missing on disk")
+                }
+                guard !bytes.isEmpty else {
+                    throw CurrentNodeUnavailable(reason: "The node's retained asset is empty")
+                }
+                if let expected = asset.contentHash, !expected.isEmpty {
+                    guard FloeDigest.sha256Hex(bytes) == expected.lowercased() else {
+                        throw CurrentNodeUnavailable(reason: "The node's asset bytes do not match their recorded digest")
+                    }
+                }
+                // Format discipline: prefer the real file extension, then the
+                // recorded MIME, then the content-type default.
+                let ext = (relative as NSString).pathExtension.lowercased()
+                let mimeExt: String = {
+                    switch asset.mimeType?.lowercased() {
+                    case "image/png": return "png"
+                    case "image/jpeg", "image/jpg": return "jpg"
+                    case "image/webp": return "webp"
+                    case "image/gif": return "gif"
+                    case "image/heic": return "heic"
+                    case "video/mp4": return "mp4"
+                    case "video/quicktime": return "mov"
+                    case "application/pdf": return "pdf"
+                    default: return ""
+                    }
+                }()
+                let format = !ext.isEmpty ? ext : (mimeExt.isEmpty ? "bin" : mimeExt)
+                source = (bytes, format, asset.sourceURL?.lastPathComponent ?? (node.title ?? "node-asset"))
+                break
+            }
+            // No retained asset: fall through to the explicit unavailable
+            // error below (Office/CAD nodes with a binding are handled next).
+            fallthrough
+        case .scene3D, .card, .shape, .group, .generationTask:
+            // CAD/Office freeze: the node's explicit workspace binding is the
+            // authority. Reads are re-derived through the canonical guard.
+            if let design = snapshot.design,
+               let binding = try await DesignWorkspace.canonicalBinding(
+                   design.workspaceBinding, canvasID: canvasID, nodeID: nodeID
+               ) {
+                let url = URL(fileURLWithPath: binding.documentAbsolutePath)
+                guard let bytes = try? Data(contentsOf: url, options: [.mappedIfSafe]), !bytes.isEmpty else {
+                    throw CurrentNodeUnavailable(reason: "The bound \(binding.format.uppercased()) document is missing or empty")
+                }
+                source = (bytes, binding.format, url.lastPathComponent)
+                break
+            }
+            if node.kind == .scene3D,
+               let key = node.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath],
+               key.hasPrefix(CanvasCADStorage.keyPrefix),
+               let packageURL = CanvasCADStorage.packageURL(forKey: key) {
+                guard let bytes = try? Data(contentsOf: packageURL, options: [.mappedIfSafe]), !bytes.isEmpty else {
+                    throw CurrentNodeUnavailable(reason: "The bound CAD package is missing or empty")
+                }
+                let format = packageURL.pathExtension.lowercased()
+                source = (bytes, format.isEmpty ? "bin" : format, packageURL.lastPathComponent)
+                break
+            }
+            throw CurrentNodeUnavailable(
+                reason: "This \(contentType.rawValue) node has no retained content to freeze: bind a workspace document or import a source first"
+            )
+        }
+        // An adapter must exist for this content type; its real parser
+        // verifies the frozen bytes before they become a revision.
+        guard let adapter = adapters.adapter(for: contentType) else {
+            throw FloeError.validationFailed("No design adapter is connected for \(contentType.rawValue)")
+        }
+        try await adapter.verifyExportReopen(bytes: source.bytes, format: source.format)
+
+        // Replay: same operation returns the recorded current-node revision
+        // without publishing another payload.
+        if snapshot.design?.hasApplied(operationID: operationID) == true {
+            if let recorded = Self.recordedCurrentNodeRevision(
+                matching: FloeDigest.sha256Hex(source.bytes), in: snapshot.design
+            ) {
+                return CurrentNodeOutcome(
+                    snapshot: snapshot,
+                    artifactID: recorded.artifactID,
+                    revisionID: recorded.revisionID,
+                    format: source.format,
+                    byteCount: source.bytes.count,
+                    contentSHA256: recorded.contentSHA256,
+                    replayed: true
+                )
+            }
+            throw FloeError.validationFailed("operationID '\(operationID)' was already applied with different content; idempotency replay requires the identical node content")
+        }
+        let digest = FloeDigest.sha256Hex(source.bytes)
+        let artifactID = snapshot.design?.artifacts.first(where: {
+            $0.canvasNodeID == nodeID.uuidString.lowercased()
+        })?.id ?? UUID().uuidString.lowercased()
+        let revisionID = UUID().uuidString.lowercased()
+        // Stage + publish the immutable payload BEFORE the CAS (same ordering
+        // as imports): the committed revision never points at missing bytes.
+        let staged = try adapters.stageRevisionPayload(
+            canvasID: canvasID, nodeID: nodeID, artifactID: artifactID,
+            revisionID: revisionID, bytes: source.bytes, expectedContentSHA256: digest
+        )
+        try adapters.commitRevisionPayload(staged)
+        let updated: DesignCanvasService.Snapshot
+        do {
+            updated = try await service.mutate(
+                runID: runID,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: expectedRevision,
+                operationID: operationID
+            ) { design in
+                if design.artifact(artifactID) == nil {
+                    let identity = DesignArtifactIdentity(
+                        name: displayName ?? source.name,
+                        positionX: node.position.x, positionY: node.position.y,
+                        width: node.size.width, height: node.size.height,
+                        connections: []
+                    )
+                    DesignWorkflowEngine.addArtifact(
+                        DesignArtifact(
+                            id: artifactID,
+                            contentType: contentType,
+                            canvasNodeID: nodeID.uuidString.lowercased(),
+                            identity: identity
+                        ),
+                        to: &design
+                    )
+                }
+                _ = try DesignWorkflowEngine.registerRevision(
+                    in: &design,
+                    artifactID: artifactID,
+                    contentSHA256: digest,
+                    origin: .currentNode,
+                    payloadRelativePath: staged.relativePath,
+                    payloadFormat: source.format,
+                    revisionID: revisionID
+                )
+            }
+        } catch {
+            // Only this call's exact orphan payload is removed.
+            try? adapters.removeRevisionPayload(
+                canvasID: canvasID, nodeID: nodeID, artifactID: artifactID, revisionID: revisionID
+            )
+            throw error
+        }
+        return CurrentNodeOutcome(
+            snapshot: updated,
+            artifactID: artifactID,
+            revisionID: revisionID,
+            format: source.format,
+            byteCount: source.bytes.count,
+            contentSHA256: digest,
+            replayed: updated.operationReplayed
+        )
+    }
+
+    private static func recordedCurrentNodeRevision(
+        matching digest: String, in design: DesignProject?
+    ) -> (artifactID: String, revisionID: String, contentSHA256: String)? {
+        guard let design else { return nil }
+        for artifact in design.artifacts {
+            for revision in artifact.revisions
+            where revision.origin == .currentNode && revision.contentSHA256 == digest && revision.payloadRelativePath != nil {
+                return (artifactID: artifact.id, revisionID: revision.id, contentSHA256: revision.contentSHA256)
+            }
+        }
+        return nil
+    }
+
     /// Applies a template: the manifest is recorded AND the stored payload
     /// (DESIGN.md) is parsed into the spec — both in one CAS. A stored
     /// template whose payload is missing/corrupt THROWS (never a silent
@@ -379,6 +822,7 @@ enum DesignWorkflowActions {
         canvasID: UUID,
         nodeID: UUID,
         expectedRevision: Int64,
+        operationID: String,
         template: DesignTemplateManifest
     ) async throws -> DesignCanvasService.Snapshot {
         var spec: DesignSpec? = nil
@@ -393,11 +837,18 @@ enum DesignWorkflowActions {
             do {
                 record = try templateStore.loadUser(id: template.id)
             } catch {
-                throw FloeError.validationFailed("Template '\\(template.name)' payload is unavailable: \\(error.localizedDescription)")
+                throw FloeError.validationFailed("Template '\(template.name)' payload is unavailable: \(error.localizedDescription)")
             }
             guard !record.payload.isEmpty,
                   let markdown = String(data: record.payload, encoding: .utf8) else {
-                throw FloeError.validationFailed("Template '\\(template.name)' has no readable DESIGN.md payload")
+                throw FloeError.validationFailed("Template '\(template.name)' has no readable DESIGN.md payload")
+            }
+            // The stored bytes must match the manifest's claimed digest: a
+            // manifest-only or tampered template never applies silently.
+            guard FloeDigest.sha256Hex(record.payload) == template.contentSHA256 else {
+                throw FloeError.validationFailed(
+                    "Template '\(template.name)' payload does not match its recorded digest"
+                )
             }
             spec = DesignMDCodec.parse(markdown)
         }
@@ -407,7 +858,7 @@ enum DesignWorkflowActions {
             canvasID: canvasID,
             nodeID: nodeID,
             expectedRevision: expectedRevision,
-            operationID: UUID().uuidString.lowercased()
+            operationID: operationID
         ) { design in
             design.template = template
             if let specToApply { DesignWorkflowEngine.updateSpec(specToApply, in: &design) }

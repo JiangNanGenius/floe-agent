@@ -918,6 +918,9 @@ public struct CanvasAssistantSession: Sendable, Codable, Identifiable, Hashable 
 }
 
 public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
+    // The project brief/spec field below is additive and optional; older
+    // builds ignore the unknown key, so the package schema version stays 7
+    // (see CanvasProjectCodec's accepted range).
     public static let currentSchemaVersion = 7
 
     public var id: UUID
@@ -936,6 +939,10 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
     public var viewports: [UUID: CanvasViewportState]
     public var revision: Int64
     public var sync: CanvasSyncSettings
+    /// Canvas-level design brief/spec authority (design workflow). Optional
+    /// and additive; older packages decode with nil, and older builds simply
+    /// ignore the unknown key.
+    public var designProjectAuthority: DesignProjectAuthority?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -947,7 +954,9 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         selectedAssistantSessionID: UUID? = nil,
         agentConversationIDsByDocument: [UUID: UUID] = [:],
         viewports: [UUID: CanvasViewportState] = [:], revision: Int64 = 0,
-        sync: CanvasSyncSettings = .init(), createdAt: Date = Date(),
+        sync: CanvasSyncSettings = .init(),
+        designProjectAuthority: DesignProjectAuthority? = nil,
+        createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id; self.schemaVersion = schemaVersion; self.workspaceID = workspaceID
@@ -958,6 +967,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         self.selectedAssistantSessionID = selectedAssistantSessionID
         self.agentConversationIDsByDocument = agentConversationIDsByDocument
         self.viewports = viewports; self.revision = revision; self.sync = sync
+        self.designProjectAuthority = designProjectAuthority
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
@@ -966,6 +976,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         case agentConversationID, assistantSessions, selectedAssistantSessionID
         case agentConversationIDsByDocument
         case viewports, revision, sync, createdAt, updatedAt
+        case designProjectAuthority
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -993,6 +1004,11 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         ) ?? [:]
         revision = try values.decodeIfPresent(Int64.self, forKey: .revision) ?? 0
         sync = try values.decodeIfPresent(CanvasSyncSettings.self, forKey: .sync) ?? .init()
+        // Additive design authority: absent in older packages (nil) and
+        // unknown to older builds (ignored on their decode).
+        designProjectAuthority = try values.decodeIfPresent(
+            DesignProjectAuthority.self, forKey: .designProjectAuthority
+        )
         createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         if agentConversationIDsByDocument.isEmpty,

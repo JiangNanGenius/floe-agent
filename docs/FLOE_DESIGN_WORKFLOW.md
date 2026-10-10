@@ -1,6 +1,6 @@
 # Design workflow (brief → spec → revisions → feedback → candidate → adopt → export)
 
-Status: the full loop is implemented on the existing Canvas/editor services: brief/spec/DESIGN.md → import/generate where the real editor supports it → anchored feedback → revision-bound candidates → compare/adopt that updates the **actual node content in one Canvas CAS commit** → verified export with real reopen parsers. Canvas remains the owner of the project graph. Capabilities not genuinely connected (office/presentation canvas files) say so with reasons.
+Status: the full loop is implemented on the existing Canvas/editor services: brief/spec/DESIGN.md → import/generate where the real editor supports it → anchored feedback → revision-bound candidates → compare/adopt that updates the **actual node content in one Canvas CAS commit** → verified export with real reopen parsers. Canvas remains the owner of the project graph. Capabilities not genuinely connected (office/presentation canvas files) say so with reasons. Last updated: 2026-10-10 (project-spec authority, current-node source entry, single durable decision transaction, template payload/digest authority, variant binding).
 
 ## Model / where things live
 
@@ -10,11 +10,12 @@ Status: the full loop is implemented on the existing Canvas/editor services: bri
 | DESIGN.md import/edit/export | `FloeAgent/Sources/FloeCore/DesignMDCodec.swift` |
 | Subdocument codec (binding + bounds) | `FloeAgent/Sources/FloeCore/DesignCanvasMetadata.swift` |
 | Capability registry | `FloeAgent/Sources/FloeCore/DesignCapabilities.swift` |
-| Canvas-authority service + adoption grants | `FloeAgent/FloeApp/Workspace/DesignCanvasService.swift` |
+| Canvas-authority service + adoption grants | `FloeAgent/Sources/FloeCore/DesignCanvasService.swift` |
+| Shared UI/tool transaction (decide, apply template, use current node) | `FloeAgent/FloeApp/Workspace/DesignWorkflowActions.swift` |
 | Agent tools (`canvas.design*`) | `FloeAgent/FloeApp/Workspace/DesignAgentTools.swift` |
 | Panel (separate view) | `FloeAgent/FloeApp/Workspace/DesignWorkflowPanel.swift` |
 
-Design state is a **typed subdocument of the bound Canvas node** (node metadata key `canvas.design`), persisted only through the existing `FileCanvasDocumentRepository` + `CanvasProjectFileWriter` compare-and-swap authority — so backup, sync, fork and revision-conflict handling are the Canvas ones. There is **no independent design store, gallery or project identity**: the node ID is the only identity, it is required, verified on decode, and a binding mismatch fails closed. Node, connections and layout stay in `CanvasProject`.
+Design state is a **typed subdocument of the bound Canvas node** (node metadata key `canvas.design`), persisted only through the existing `FileCanvasDocumentRepository` + `CanvasProjectFileWriter` compare-and-swap authority — so backup, sync, fork and revision-conflict handling are the Canvas ones. There is **no independent design store, gallery or project identity**: the node ID is the only identity, it is required, verified on decode, and a binding mismatch fails closed. Node, connections and layout stay in `CanvasProject`. The canvas-level project brief/spec authority lives **on the `CanvasProject` itself** (`designProjectAuthority`, an additive optional field; old packages decode with nil) — not a parallel store.
 
 ## Lifecycle guarantees
 
@@ -28,6 +29,10 @@ Design state is a **typed subdocument of the bound Canvas node** (node metadata 
 - **DESIGN.md is preserved.** Known sections round-trip; the preamble and every unknown section are re-emitted verbatim (byte-stable re-export, verified by test).
 - **Persistence is safe.** Writes go through the Canvas CAS (one revision advance per mutation); the subdocument is schema-versioned and bounded (2 MiB); a newer schema or binding mismatch fails closed; operation IDs are recorded for idempotent replay.
 - **Templates** carry honest capabilities/inputs/dependencies/formats/license/source/hash/version and an optional rollback version+hash. The signed content service remains the install channel; the registry here only describes what is connected.
+- **Project (canvas) brief/spec authority.** `canvas.designSetProjectSpec` (tool) and the panel's brief/spec/propagate actions write the authority in ONE Canvas project CAS: the authority record and every existing design subdocument inherit the payload in the same commit, and new subdocuments inherit on creation. Replay is keyed by operationID **and the full-payload identity** (a changed payload under a reused operation ID is rejected; an identical payload dedupes without a revision bump). Unrelated node edits never change which payload is authoritative, and frozen runs keep their recorded spec hash.
+- **Use current node.** `canvas.designUseCurrentNode` (tool) and the panel's “Use current node content” freeze content that already exists on the node — text/markdown body, retained asset bytes, or the bound CAD/Office workspace document — into a `currentNode` revision through the existing adapter guards, with no external export/reimport. Missing content fails with a precise reason; mutable editor state/drafts are not touched.
+- **Durable decisions.** Panel and tool adoption/rejection share one transaction (`DesignWorkflowActions`): candidate origin is resolved from the candidate's persisted originating task (a missing origin fails closed — never a fallback to the current chat); a durable outbox intent with the exact node + full operation fingerprint (candidate/decision/operation/mode/base/expected revision) is written BEFORE the CAS; the throwing durable ingress is acknowledged only after it persists, so a crash or failed delivery leaves the decision pending for launch reconcile. Repeated decisions dedupe by fingerprint.
+- **Signed templates.** Materialization verifies the canonical package digest against the signed entry, requires the `DESIGN.md` entrypoint, reads the license from a real LICENSE file (otherwise explicitly unspecified), follows rollback/removal through reconciliation, and refuses to apply a template whose stored payload does not match its manifest digest.
 
 ## Typed adapter capabilities (actual state)
 
@@ -47,7 +52,7 @@ Adoption always updates the real node: media/file nodes get a new verified asset
 
 ## Agent tools
 
-`canvas.designGetState`, `canvas.designCapabilities`, `canvas.designCreate`, `canvas.designUpdateBrief`, `canvas.designUpdateSpec`, `canvas.designRegisterRevision`, `canvas.designImportSource` (payload published before one CAS commit; replay returns the recorded result, changed arguments are rejected), `canvas.designExportRevision` (recorded format only, real reopen validation), `canvas.designAddFeedback`, `canvas.designPropose`, `canvas.designAdopt` (replay is checked **before** the consumed grant; the durable decision outbox records the intent before the CAS and launch reconcile repairs crashes), `canvas.designReject`, `canvas.designRestore` (restores real node content).
+`canvas.designGetState`, `canvas.designCapabilities`, `canvas.designCreate`, `canvas.designUpdateBrief`, `canvas.designUpdateSpec`, `canvas.designGetProjectSpec`, `canvas.designSetProjectSpec`, `canvas.designRegisterRevision`, `canvas.designImportSource` (payload published before one CAS commit; replay returns the recorded result, changed arguments are rejected), `canvas.designUseCurrentNode`, `canvas.designExportRevision` (recorded format only, real reopen validation), `canvas.designAddFeedback`, `canvas.designPropose`, `canvas.designAdopt` (replay is checked **before** the consumed grant; the durable decision outbox records the intent before the CAS and launch reconcile repairs crashes), `canvas.designReject`, `canvas.designRestore` (restores real node content).
 
 All take explicit `canvasID` + `nodeID` (+ `expectedRevision` and an `operationID` for mutations); they read/write only through the Canvas authority. `adopt` additionally requires a `grantID` from a single-use, expiring user grant minted by the panel (`DesignAdoptionGrantStore`) — the agent cannot self-adopt. `adopt`/`restore` are side-effecting and approval-gated. Input data cannot grant permissions.
 
@@ -61,7 +66,7 @@ Built-in templates ship with the app; user templates are stored in `Application 
 
 ## Tests
 
-Beyond the engine suites: whole-project adoption (real node content in one CAS, layout preserved, replay skips content work), the decision outbox (first write/reopen, corrupt/newer-schema read-only with observable errors, pending never pruned, hard cap), the payload store (traversal/symlink/overwrite/cross-canvas), template persistence, and FloeAppTests integration (image end-to-end import→adopt→export, notes text adoption, cross-task capture fail-closed).
+Beyond the engine suites: whole-project adoption (real node content in one CAS, layout preserved, replay skips content work), project-spec authority (three nodes inherited in one commit, repeated different payloads, changed operation payload rejected, stale revision conflict, unrelated node edit, frozen run preserved, new-node inheritance, reopen), the decision outbox (full fingerprint dedupe across relaunch, legacy-envelope backfill, first write/reopen, corrupt/newer-schema read-only with observable errors, pending never pruned, hard cap), the payload store (traversal/symlink/overwrite/cross-canvas), template persistence and signed-package digest authority, the retained-image evidence policy (real PNG/JPEG/WebP/GIF bytes, MIME spoof, over-limit pre-decode rejection, duplicate/two-result attribution, Chat/Responses/Anthropic serialization), and FloeAppTests integration (image end-to-end import→adopt→export with delivery-failure reconcile, missing-origin fail-closed, project-spec tools across three nodes, use-current-node text + precise unavailable reasons, cross-task capture fail-closed).
 
 ## Open gates
 

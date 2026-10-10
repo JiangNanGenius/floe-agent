@@ -1655,8 +1655,17 @@ public actor FloeAgentRuntime {
             return
         }
         if configuration.model.capabilities.contains(.vision) {
+            // Every supported artifact from this dispatch's tool results
+            // reaches the provider exactly once: duplicates (same path+bytes)
+            // are collapsed, and the shared ProviderImageEvidencePolicy is the
+            // single authority for which types are attached.
+            var seenEvidence: Set<String> = []
             let evidence = pendingToolResults.flatMap(\.artifacts)
-                .compactMap(Self.providerImageEvidence)
+                .compactMap { artifact -> ProviderContentPart? in
+                    let key = "\(artifact.relativePath)|\(artifact.sha256.lowercased())"
+                    guard seenEvidence.insert(key).inserted else { return nil }
+                    return Self.providerImageEvidence(artifact)
+                }
             if !evidence.isEmpty {
                 contentMessages.append(ProviderMessage(
                     role: "user",
@@ -1888,27 +1897,42 @@ public actor FloeAgentRuntime {
         return .init(kind: .malformed, providerMessage: String(message.prefix(500)))
     }
 
-    private static func providerImageEvidence(
+    static func providerImageEvidence(
         _ artifact: ToolArtifactReference
     ) -> ProviderContentPart? {
-        guard artifact.mimeType == "image/jpeg" || artifact.mimeType == "image/png",
-              artifact.byteCount > 0, artifact.byteCount <= 8 * 1024 * 1024,
-              (artifact.relativePath.hasPrefix("BrowserArtifacts/")
-                || artifact.relativePath.hasPrefix("GeneratedImages/")
-                || artifact.relativePath.hasPrefix("VNCArtifacts/")),
-              !artifact.relativePath.split(separator: "/").contains("..")
-        else { return nil }
         guard let support = try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false
         ) else { return nil }
         let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+        return providerImageEvidence(artifact, root: root)
+    }
+
+    /// Root-injected variant for tests; the same validation runs in
+    /// production with the Application Support root.
+    static func providerImageEvidence(
+        _ artifact: ToolArtifactReference,
+        root: URL
+    ) -> ProviderContentPart? {
+        // The shared policy is the single authority for provider-supported
+        // image types (PNG/JPEG/WebP/GIF) and the inline byte budget.
+        guard let canonicalMIME = ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType),
+              artifact.byteCount > 0,
+              artifact.byteCount <= ProviderImageEvidencePolicy.maximumImageBytes,
+              (artifact.relativePath.hasPrefix("BrowserArtifacts/")
+                || artifact.relativePath.hasPrefix("GeneratedImages/")
+                || artifact.relativePath.hasPrefix("VNCArtifacts/")),
+              !artifact.relativePath.split(separator: "/").contains("..")
+        else { return nil }
         let url = root.appendingPathComponent(artifact.relativePath)
         guard let data = try? Data(floeContentsOf: url, options: [.mappedIfSafe]),
               data.count == artifact.byteCount else { return nil }
+        // The real bytes must belong to the declared family: a MIME spoof
+        // (e.g. GIF bytes declared image/png) never reaches the provider.
+        guard ProviderImageEvidencePolicy.sniffedMIME(data) == canonicalMIME else { return nil }
         let digest = FloeDigest.sha256Hex(data)
         guard digest == artifact.sha256.lowercased() else { return nil }
-        return .imageData(mimeType: artifact.mimeType, base64: data.base64EncodedString())
+        return .imageData(mimeType: canonicalMIME, base64: data.base64EncodedString())
     }
 
     private func handleToolArgumentsProgress(attempt: Int) async {

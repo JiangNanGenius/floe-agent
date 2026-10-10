@@ -316,6 +316,173 @@ private struct DesignUpdateSpecTool: AgentTool {
     }
 }
 
+private struct DesignProjectSpecTool: AgentTool {
+    struct Arguments: Decodable, Sendable { var canvasID: String }
+    static let name = "canvas.designGetProjectSpec"
+    static let toolDescription = "Read the canvas-level design brief/spec authority (the payload every new design node inherits), with its full-payload identity and the nodes that currently carry it."
+    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"}},"required":["canvasID"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    let service: DesignCanvasService
+    func validate(_ args: Arguments) throws {
+        _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+        try await service.requireAuthorization(runID: context.runID, canvasID: canvasID)
+        guard let authority = try await service.projectAuthority(canvasID: canvasID) else {
+            return DesignToolOutput.make(["configured": false])
+        }
+        var result: [String: Any] = [
+            "configured": true,
+            "contentSHA256": authority.contentSHA256,
+            "inheritedNodeIDs": authority.inheritedNodeIDs,
+            "updatedAt": ISO8601DateFormatter().string(from: authority.updatedAt)
+        ]
+        if let brief = authority.brief {
+            result["brief"] = ["goal": brief.goal, "audience": brief.audience ?? "", "constraints": brief.constraints]
+        }
+        if let spec = authority.spec {
+            result["spec"] = [
+                "sha256": spec.sha256,
+                "palette": spec.palette ?? [],
+                "typography": spec.typography ?? "",
+                "layout": spec.layout ?? "",
+                "spacing": spec.spacing ?? "",
+                "brandAssetRefs": spec.brandAssetRefs ?? [],
+                "voice": spec.voice ?? "",
+                "prohibitions": spec.prohibitions ?? [],
+                "hasRawMarkdown": spec.rawMarkdown != nil
+            ]
+        }
+        return DesignToolOutput.make(result)
+    }
+}
+
+private struct DesignSetProjectSpecTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var canvasID: String; var expectedRevision: Int64; var operationID: String
+        var goal: String?; var audience: String?; var constraints: [String]?
+        var palette: [String]?; var typography: String?; var layout: String?; var spacing: String?
+        var brandAssetRefs: [String]?; var voice: String?; var prohibitions: [String]?
+        var designMarkdown: String?
+        var inheritToExistingNodes: Bool?
+    }
+    static let name = "canvas.designSetProjectSpec"
+    static let toolDescription = "Set the canvas-level design brief/spec authority in ONE Canvas project CAS. Every existing design subdocument inherits the payload in the same commit (or only the authority is set when inheritToExistingNodes=false); new nodes inherit it when their design subdocument is created. Replaying the same operationID with a different payload is rejected; repeating the identical payload dedupes without a revision bump."
+    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"goal":{"type":"string"},"audience":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"palette":{"type":"array","items":{"type":"string"}},"typography":{"type":"string"},"layout":{"type":"string"},"spacing":{"type":"string"},"brandAssetRefs":{"type":"array","items":{"type":"string"}},"voice":{"type":"string"},"prohibitions":{"type":"string"},"designMarkdown":{"type":"string"},"inheritToExistingNodes":{"type":"boolean"}},"required":["canvasID","expectedRevision","operationID"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .internalState
+    let service: DesignCanvasService
+    func validate(_ args: Arguments) throws {
+        _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+        guard !args.operationID.isEmpty else { throw FloeError.validationFailed("operationID is required") }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+        let existing = try await service.projectAuthority(canvasID: canvasID)
+        var spec: DesignSpec
+        if let markdown = args.designMarkdown {
+            spec = DesignMDCodec.parse(markdown)
+            spec.palette = args.palette ?? spec.palette
+            spec.typography = args.typography ?? spec.typography
+            spec.layout = args.layout ?? spec.layout
+            spec.spacing = args.spacing ?? spec.spacing
+            spec.brandAssetRefs = args.brandAssetRefs ?? spec.brandAssetRefs
+            spec.voice = args.voice ?? spec.voice
+            spec.prohibitions = args.prohibitions ?? spec.prohibitions
+        } else {
+            spec = DesignSpec(
+                palette: args.palette ?? existing?.spec?.palette,
+                typography: args.typography ?? existing?.spec?.typography,
+                layout: args.layout ?? existing?.spec?.layout,
+                spacing: args.spacing ?? existing?.spec?.spacing,
+                brandAssetRefs: args.brandAssetRefs ?? existing?.spec?.brandAssetRefs,
+                voice: args.voice ?? existing?.spec?.voice,
+                prohibitions: args.prohibitions ?? existing?.spec?.prohibitions,
+                rawMarkdown: existing?.spec?.rawMarkdown
+            )
+        }
+        let brief: DesignBrief?
+        if args.goal != nil || existing?.brief != nil {
+            brief = DesignBrief(
+                goal: args.goal ?? existing?.brief?.goal ?? "",
+                audience: args.audience ?? existing?.brief?.audience,
+                constraints: args.constraints ?? existing?.brief?.constraints ?? []
+            )
+        } else {
+            brief = nil
+        }
+        let result = try await service.applyProjectAuthority(
+            runID: context.runID,
+            canvasID: canvasID,
+            expectedRevision: args.expectedRevision,
+            operationID: args.operationID,
+            brief: brief,
+            spec: spec,
+            inheritToExistingNodes: args.inheritToExistingNodes ?? true
+        )
+        return DesignToolOutput.make([
+            "configured": true,
+            "operationReplayed": result.operationReplayed,
+            "canvasRevision": result.canvasRevision,
+            "contentSHA256": result.authority.contentSHA256,
+            "updatedNodeCount": result.updatedNodeIDs.count,
+            "skippedNodeCount": result.skippedNodeIDs.count
+        ])
+    }
+}
+
+private struct DesignUseCurrentNodeTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        var canvasID: String; var nodeID: String; var expectedRevision: Int64; var operationID: String
+        var displayName: String?
+    }
+    static let name = "canvas.designUseCurrentNode"
+    static let toolDescription = "Freeze the content ALREADY on this Canvas node into a design revision: the node's text/markdown body, its retained asset bytes, or the CAD/Office workspace document it is bound to. No external export/reimport is required; the stored document files are read (never rewritten), so mutable editor state/drafts survive. When the node has no retained content the tool fails with the exact reason. Requires approval."
+    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"displayName":{"type":"string"}},"required":["canvasID","nodeID","expectedRevision","operationID"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles, .persistsPersonalData]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .internalState
+    let service: DesignCanvasService
+    let adapters: DesignAdapterCenter
+    let environment: AppEnvironment
+    func validate(_ args: Arguments) throws {
+        _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
+        _ = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
+        guard !args.operationID.isEmpty else { throw FloeError.validationFailed("operationID is required") }
+    }
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let outcome: DesignWorkflowActions.CurrentNodeOutcome
+        do {
+            outcome = try await DesignWorkflowActions.useCurrentNode(
+                service: service,
+                adapters: adapters,
+                environment: environment,
+                caller: .run(context.runID),
+                canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
+                nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
+                expectedRevision: args.expectedRevision,
+                operationID: args.operationID,
+                displayName: args.displayName
+            )
+        } catch let unavailable as DesignWorkflowActions.CurrentNodeUnavailable {
+            throw FloeError.validationFailed(unavailable.reason)
+        }
+        return DesignToolOutput.make([
+            "usedCurrentNode": true,
+            "operationReplayed": outcome.replayed,
+            "artifactID": outcome.artifactID,
+            "revisionID": outcome.revisionID,
+            "format": outcome.format,
+            "byteCount": outcome.byteCount,
+            "contentSHA256": outcome.contentSHA256,
+            "state": DesignToolOutput.state(outcome.snapshot)
+        ])
+    }
+}
+
 private struct DesignRegisterRevisionTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var canvasID: String; var nodeID: String; var expectedRevision: Int64; var operationID: String
@@ -593,25 +760,33 @@ private struct DesignImportSourceTool: AgentTool {
             allowed: Self.allowedSourceNamespaces,
             maxBytes: 64 * 1_024 * 1_024
         )
-        // 4. Adapter validation with the real editor boundary + digest.
-        let imported = try await adapter.importSource(fileURL: sourceURL, canvasID: canvasID, nodeID: nodeID)
-        let digest = FloeDigest.sha256Hex(imported.bytes)
-        // Replay fingerprint: return the recorded import for the identical
-        // request; reject a changed request reusing the operationID.
+        // 4. Replay fingerprint BEFORE any side effect (no adapter import, no
+        // asset ingestion, no payload publish): hash the exact source bytes
+        // and return the recorded import for the identical request; reject a
+        // changed request reusing the operationID.
+        let sourceData = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
+        let sourceDigest = FloeDigest.sha256Hex(sourceData)
         if design.design?.hasApplied(operationID: args.operationID) == true {
-            if let recorded = Self.recordedRevision(matching: digest, in: design.design) {
+            if let recorded = Self.recordedRevision(matching: sourceDigest, in: design.design) {
                 return DesignToolOutput.make([
                     "imported": true, "operationReplayed": true,
                     "artifactID": recorded.artifactID, "revisionID": recorded.revisionID,
-                    "contentSHA256": digest, "format": imported.format,
-                    "byteCount": imported.bytes.count
+                    "contentSHA256": sourceDigest,
+                    "format": (args.sourceRelativePath as NSString).pathExtension.lowercased(),
+                    "byteCount": sourceData.count
                 ])
             }
             throw FloeError.validationFailed("operationID '\(args.operationID)' was already applied with different content; idempotency replay requires the identical request")
         }
+        // 5. Adapter validation with the real editor boundary + digest.
+        let imported = try await adapter.importSource(fileURL: sourceURL, canvasID: canvasID, nodeID: nodeID)
+        // The adapter's verified bytes are the recorded payload. For
+        // byte-preserving adapters they equal the source digest; format
+        // adapters (PDF gate) re-report their validated bytes.
+        let digest = FloeDigest.sha256Hex(imported.bytes)
         let artifactID = args.artifactID ?? UUID().uuidString.lowercased()
         let revisionID = UUID().uuidString.lowercased()
-        // 5. Stage then PUBLISH the immutable payload BEFORE the CAS, so an
+        // 6. Stage then PUBLISH the immutable payload BEFORE the CAS, so an
         // interrupted run never leaves a committed revision pointing at
         // missing bytes. Revision paths are UUID-unique, so the publish can
         // only collide with our own replay (identical bytes = no-op).
@@ -844,7 +1019,7 @@ private struct DesignAdoptTool: AgentTool {
     let grants: DesignAdoptionAuthorization
     let adapters: DesignAdapterCenter
     let environment: AppEnvironment
-    let decisionSink: @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async -> Void
+    let decisionSink: @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void
     let decisionOutbox: DesignDecisionOutbox
     func validate(_ args: Arguments) throws {
         _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
@@ -858,108 +1033,56 @@ private struct DesignAdoptTool: AgentTool {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
         let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
-        // Replay is checked BEFORE grant validation: a recorded operation must
-        // return its recorded result even though the single-use grant was
-        // consumed by the original (successful) run.
-        let preRead = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
         let mode = DesignAdoptMode(rawValue: args.mode ?? "updateOriginal") ?? .updateOriginal
-        if preRead.design?.hasApplied(operationID: args.operationID) == true {
-            // Real fingerprint: the recorded candidate must be in the exact
-            // terminal state THIS request would have produced: same
-            // candidate, same baseline, and the mode encoded by the presence
-            // of a variant artifact. A same operationID with changed
-            // arguments is rejected.
-            guard let recorded = preRead.design?.candidate(args.candidateID),
-                  recorded.status == .adopted,
-                  recorded.baseRevisionID == args.baselineRevisionID,
-                  (mode == .variant) == (recorded.variantArtifactID != nil) else {
-                throw FloeError.validationFailed("operationID '\(args.operationID)' was already applied to a different request; idempotency replay requires identical arguments")
-            }
-            return DesignToolOutput.make(DesignToolOutput.state(preRead))
-        }
-        // New operation: the user grant is required.
-        guard await grants.validate(
-            id: args.grantID, canvasID: canvasID, nodeID: nodeID,
-            candidateID: args.candidateID, baselineRevisionID: args.baselineRevisionID
-        ) else {
-            throw FloeError.validationFailed("Adoption grant is missing, expired or bound to a different candidate/revision")
-        }
-        guard let candidate = preRead.design?.candidate(args.candidateID),
-              let artifact = preRead.design?.artifact(candidate.artifactID),
-              let proposed = artifact.revision(candidate.proposedRevisionID) else {
-            throw FloeError.validationFailed("Candidate or its proposed revision no longer exists")
-        }
-        // Durable decision intent BEFORE the CAS: a crash after the commit is
-        // recovered by reconcile (deliver+ack), never lost.
-        var intent: DesignDecisionIntent?
-        if let conversationID = context.conversationID {
-            // Durable intent before the CAS; a persistence failure aborts
-            // the adoption rather than risking a lost decision.
-            intent = try await decisionOutbox.prepare(DesignDecisionIntent(
-                canvasID: canvasID.uuidString.lowercased(),
-                nodeID: nodeID.uuidString.lowercased(),
-                candidateID: args.candidateID,
-                conversationID: conversationID.uuidString.lowercased(),
-                decision: "adopted",
-                operationID: args.operationID
-            ))
-        }
-        // The shared production path: ONE CAS for metadata + real content
-        // (the UI uses the exact same DesignWorkflowActions.adopt).
+        // The single shared production transaction (same code as the panel):
+        // replay/origin/grant checks → durable intent (full fingerprint)
+        // BEFORE the CAS → ONE content+metadata CAS → grant consume →
+        // throwing durable ingress, ack only after confirmed delivery.
         let outcome = await DesignWorkflowActions.adopt(
             service: service,
             adapters: adapters,
             environment: environment,
             caller: .run(context.runID),
+            outbox: decisionOutbox,
+            sink: decisionSink,
             canvasID: canvasID,
             nodeID: nodeID,
             expectedRevision: args.expectedRevision,
             operationID: args.operationID,
             candidateID: args.candidateID,
             mode: mode,
-            expectedArtifactRevisionID: args.expectedArtifactRevisionID
+            expectedArtifactRevisionID: args.expectedArtifactRevisionID,
+            grant: DesignWorkflowActions.GrantGate(
+                validate: { [grants] in
+                    await grants.validate(
+                        id: args.grantID, canvasID: canvasID, nodeID: nodeID,
+                        candidateID: args.candidateID, baselineRevisionID: args.baselineRevisionID
+                    )
+                },
+                consume: { [grants] in
+                    _ = await grants.consume(
+                        id: args.grantID, canvasID: canvasID, nodeID: nodeID,
+                        candidateID: args.candidateID, baselineRevisionID: args.baselineRevisionID
+                    )
+                }
+            )
         )
-        let snapshot: DesignCanvasService.Snapshot
         switch outcome {
-        case .succeeded(let value, _, _):
-            snapshot = value
-        case .failed(let error):
-            if DesignDecisionNotifier.isRevisionConflict(error) {
-                await notifyDecision(
-                    conversationID: context.conversationID, candidateID: args.candidateID,
-                    decision: "conflicted", revision: args.expectedRevision, sha256: proposed.contentSHA256
-                )
+        case .succeeded(let snapshot, _, _, let replayed, let deliveryError):
+            // The decision intent is acknowledged ONLY after the durable
+            // ingress persists; a delivery failure keeps it pending for
+            // launch reconcile and is reported (never a false delivered).
+            var payload = DesignToolOutput.state(snapshot)
+            payload["operationReplayed"] = replayed
+            payload["decisionDelivered"] = deliveryError == nil
+            if let deliveryError {
+                payload["decisionDeliveryPending"] = true
+                payload["decisionDeliveryError"] = deliveryError
             }
-            if let intent { try? await decisionOutbox.cancel(id: intent.id) }
+            return DesignToolOutput.make(payload)
+        case .failed(let error):
             throw error
         }
-        // Consume only after the transaction succeeded, so a failed CAS does not
-        // burn the user's grant.
-        _ = await grants.consume(
-            id: args.grantID, canvasID: canvasID, nodeID: nodeID,
-            candidateID: args.candidateID, baselineRevisionID: args.baselineRevisionID
-        )
-        await notifyDecision(
-            conversationID: context.conversationID, candidateID: args.candidateID,
-            decision: "adopted", revision: snapshot.canvasRevision, sha256: proposed.contentSHA256
-        )
-        if let intent {
-            // Ack only after the awaited sink completed; a failure leaves the
-            // intent .committing for launch-time reconcile.
-            try? await decisionOutbox.markDelivered(id: intent.id)
-        }
-        return DesignToolOutput.make(DesignToolOutput.state(snapshot))
-    }
-
-    private func notifyDecision(
-        conversationID: UUID?, candidateID: String, decision: String,
-        revision: Int64?, sha256: String?
-    ) async {
-        await DesignDecisionNotifier.notify(
-            conversationID: conversationID, candidateID: candidateID,
-            decision: decision, revision: revision, sha256: sha256,
-            sink: decisionSink
-        )
     }
 }
 
@@ -975,7 +1098,7 @@ private struct DesignRejectTool: AgentTool {
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let service: DesignCanvasService
-    let decisionSink: @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async -> Void
+    let decisionSink: @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void
     let decisionOutbox: DesignDecisionOutbox
     func validate(_ args: Arguments) throws {
         _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
@@ -985,59 +1108,18 @@ private struct DesignRejectTool: AgentTool {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
         let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
-        let preRead = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
-        if preRead.design?.hasApplied(operationID: args.operationID) == true {
-            guard let recorded = preRead.design?.candidate(args.candidateID), recorded.status == .rejected else {
-                throw FloeError.validationFailed("operationID '\(args.operationID)' was already applied to a different request")
-            }
-            return DesignToolOutput.make(DesignToolOutput.state(preRead))
-        }
-        let proposedSHA = preRead.design.flatMap { project -> String? in
-            guard let candidate = project.candidate(args.candidateID) else { return nil }
-            return project.artifacts
-                .flatMap(\.revisions)
-                .first(where: { $0.id == candidate.proposedRevisionID })?
-                .contentSHA256
-        }
-        var intent: DesignDecisionIntent?
-        if let conversationID = context.conversationID {
-            intent = try await decisionOutbox.prepare(DesignDecisionIntent(
-                canvasID: canvasID.uuidString.lowercased(),
-                nodeID: nodeID.uuidString.lowercased(),
-                candidateID: args.candidateID,
-                conversationID: conversationID.uuidString.lowercased(),
-                decision: "rejected",
-                operationID: args.operationID
-            ))
-        }
-        let snapshot: DesignCanvasService.Snapshot
-        do {
-            snapshot = try await service.mutate(
-                runID: context.runID,
-                canvasID: canvasID,
-                nodeID: nodeID,
-                expectedRevision: args.expectedRevision,
-                operationID: args.operationID
-            ) { design in
-                try DesignWorkflowEngine.rejectCandidate(in: &design, candidateID: args.candidateID)
-            }
-        } catch {
-            if DesignDecisionNotifier.isRevisionConflict(error) {
-                await DesignDecisionNotifier.notify(
-                    conversationID: context.conversationID, candidateID: args.candidateID,
-                    decision: "conflicted", revision: args.expectedRevision, sha256: proposedSHA,
-                    sink: decisionSink
-                )
-            }
-            if let intent { try? await decisionOutbox.cancel(id: intent.id) }
-            throw error
-        }
-        await DesignDecisionNotifier.notify(
-            conversationID: context.conversationID, candidateID: args.candidateID,
-            decision: "rejected", revision: snapshot.canvasRevision, sha256: proposedSHA,
-            sink: decisionSink
+        // The single shared reject transaction (same code as the panel).
+        let snapshot = try await DesignWorkflowActions.reject(
+            service: service,
+            caller: .run(context.runID),
+            outbox: decisionOutbox,
+            sink: decisionSink,
+            canvasID: canvasID,
+            nodeID: nodeID,
+            expectedRevision: args.expectedRevision,
+            operationID: args.operationID,
+            candidateID: args.candidateID
         )
-        if let intent { try? await decisionOutbox.markDelivered(id: intent.id) }
         return DesignToolOutput.make(DesignToolOutput.state(snapshot))
     }
 }
@@ -1119,37 +1201,12 @@ extension DesignCapabilityRegistry {
 
 // MARK: - Durable decision notices
 //
-// Adopt/reject/conflict outcomes are recorded as durable, structured events on
-// the ORIGINATING conversation only (the shared proposal-decision ingress used
-// by the CAD/Notes flows), never on any other conversation. The content is a
+// Adopt/reject outcomes are recorded as durable, structured events on the
+// ORIGINATING conversation only (the shared proposal-decision ingress used by
+// the CAD/Notes flows), never on any other conversation. The content is a
 // structured decision only; model-authored proposal text is never repeated.
-
-enum DesignDecisionNotifier {
-    /// Records a durable, structured decision event on the ORIGINATING
-    /// conversation only, AWAITED (never fire-and-forget): the sink is the
-    /// shared persistent proposal-decision ingress (durable runtime-input
-    /// enqueue + transcript upsert keyed by (conversation, proposal,
-    /// decision)), so a crash after the Canvas CAS cannot lose the decision.
-    static func notify(
-        conversationID: UUID?,
-        candidateID: String,
-        decision: String,
-        revision: Int64?,
-        sha256: String?,
-        sink: @escaping @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async -> Void
-    ) async {
-        guard let conversationID, let candidateUUID = UUID(uuidString: candidateID) else { return }
-        await sink(conversationID, candidateUUID, decision, revision, sha256)
-    }
-
-    static func isRevisionConflict(_ error: Error) -> Bool {
-        guard let floe = error as? FloeError else { return false }
-        if case .validationFailed(let message) = floe {
-            return message.contains("revision conflict")
-        }
-        return false
-    }
-}
+// Delivery is the throwing, awaited sink inside DesignWorkflowActions; a
+// failed sink keeps the outbox intent pending for launch-time reconcile.
 
 /// Registers the design tool family against the shared Canvas authority. The
 /// authorization closure resolves whether a run may touch a canvas (app wiring
@@ -1162,7 +1219,7 @@ func registerDesignAgentTools(
     authorize: @escaping DesignCanvasService.CanvasAuthorization,
     repository: CanvasDocumentRepository = FileCanvasDocumentRepository(),
     grants: DesignAdoptionAuthorization = .shared,
-    decisionSink: @escaping @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async -> Void = { _, _, _, _, _ in },
+    decisionSink: @escaping @MainActor @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void = { _, _, _, _, _ in },
     decisionOutbox: DesignDecisionOutbox = .shared,
     registry: ToolRunnerRegistry = .shared
 ) {
@@ -1172,8 +1229,11 @@ func registerDesignAgentTools(
     ToolCatalog.register(DesignCreateTool.self); registry.register(DesignCreateTool(service: service))
     ToolCatalog.register(DesignUpdateBriefTool.self); registry.register(DesignUpdateBriefTool(service: service))
     ToolCatalog.register(DesignUpdateSpecTool.self); registry.register(DesignUpdateSpecTool(service: service))
+    ToolCatalog.register(DesignProjectSpecTool.self); registry.register(DesignProjectSpecTool(service: service))
+    ToolCatalog.register(DesignSetProjectSpecTool.self); registry.register(DesignSetProjectSpecTool(service: service))
     ToolCatalog.register(DesignRegisterRevisionTool.self); registry.register(DesignRegisterRevisionTool(service: service))
     ToolCatalog.register(DesignImportSourceTool.self); registry.register(DesignImportSourceTool(service: service, adapters: adapters))
+    ToolCatalog.register(DesignUseCurrentNodeTool.self); registry.register(DesignUseCurrentNodeTool(service: service, adapters: adapters, environment: environment))
     ToolCatalog.register(DesignExportRevisionTool.self); registry.register(DesignExportRevisionTool(service: service, adapters: adapters))
     ToolCatalog.register(DesignAddFeedbackTool.self); registry.register(DesignAddFeedbackTool(service: service))
     ToolCatalog.register(DesignProposeTool.self); registry.register(DesignProposeTool(service: service, adapters: adapters))

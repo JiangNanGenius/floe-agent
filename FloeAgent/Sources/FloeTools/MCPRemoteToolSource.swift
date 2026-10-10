@@ -398,9 +398,10 @@ public actor MCPRemoteClient {
         if let root = try? artifactRootProvider() {
             let extracted = Self.imageArtifacts(from: result, root: root)
             artifacts = extracted.artifacts
-            if extracted.rejectedCount > 0 {
+            if !extracted.rejections.isEmpty {
                 summary += "\n[MCP: \(extracted.artifacts.count) image(s) attached as artifacts, "
-                    + "\(extracted.rejectedCount) image(s) not attached (unsupported type or over the size limit)]"
+                    + "\(extracted.rejections.count) image(s) not attached ("
+                    + extracted.rejections.prefix(3).joined(separator: "; ") + ")]"
             } else if !extracted.artifacts.isEmpty {
                 summary += "\n[MCP: \(extracted.artifacts.count) image(s) attached as artifacts]"
             }
@@ -414,36 +415,59 @@ public actor MCPRemoteClient {
     }
 
     /// Decode `tools/call` image content into verified artifacts under
-    /// `GeneratedImages/`. Only PNG/JPEG/WebP/GIF are accepted (the MIME types
-    /// the provider wire actually supports); each is size-capped and its bytes
-    /// are re-read and SHA-256 verified before it is reported.
+    /// `GeneratedImages/`. The shared ProviderImageEvidencePolicy decides
+    /// which declared MIME types the provider wire actually supports, checks
+    /// the base64 length BEFORE decoding (never allocating an over-limit
+    /// payload), sniff-checks the bytes against the declared type, and each
+    /// stored artifact's bytes are re-read and SHA-256 verified. Duplicate
+    /// images in one result attach once; every rejection carries an explicit
+    /// reason.
     static func imageArtifacts(
         from result: Any?,
         root: URL
-    ) -> (artifacts: [ToolArtifactReference], rejectedCount: Int) {
+    ) -> (artifacts: [ToolArtifactReference], rejections: [String]) {
         guard let object = result as? [String: Any],
               let content = object["content"] as? [[String: Any]] else {
-            return ([], 0)
+            return ([], [])
         }
-        let maximumImageBytes = 8 * 1_024 * 1_024
-        let maximumTotalBytes = 16 * 1_024 * 1_024
-        let maximumImages = 4
         var artifacts: [ToolArtifactReference] = []
-        var rejected = 0
+        var rejections: [String] = []
+        var seenDigests: Set<String> = []
         var totalBytes = 0
+        var imageIndex = 0
         for item in content {
             guard (item["type"] as? String) == "image" else { continue }
-            guard artifacts.count < maximumImages,
-                  let mime = (item["mimeType"] as? String)?.lowercased(),
-                  let base64 = item["data"] as? String,
-                  let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]),
-                  data.count <= maximumImageBytes,
-                  totalBytes + data.count <= maximumTotalBytes,
-                  let fileExtension = Self.imageFileExtension(for: mime) else {
-                rejected += 1
+            imageIndex += 1
+            guard let mime = item["mimeType"] as? String, let base64 = item["data"] as? String else {
+                rejections.append("image \(imageIndex) missing mimeType/data")
+                continue
+            }
+            // Validate BEFORE the count limit so every rejection carries its
+            // precise reason (spoof/oversize/unsupported), never a masked
+            // "too many images"; the count limit then drops valid extras.
+            let validation = ProviderImageEvidencePolicy.validate(declaredMIME: mime, base64: base64)
+            guard case .valid(let canonicalMIME, let data) = validation else {
+                let reason = ProviderImageEvidencePolicy.rejectionReason(validation) ?? "invalid image"
+                rejections.append("image \(imageIndex): \(reason)")
+                continue
+            }
+            if artifacts.count >= ProviderImageEvidencePolicy.maximumImages {
+                rejections.append("image \(imageIndex) over the \(ProviderImageEvidencePolicy.maximumImages)-image limit")
+                continue
+            }
+            guard totalBytes + data.count <= ProviderImageEvidencePolicy.maximumTotalBytes else {
+                rejections.append("image \(imageIndex): over the total result image budget")
                 continue
             }
             let sha = FloeDigest.sha256Hex(data)
+            guard !seenDigests.contains(sha) else {
+                // Identical bytes already attached from this result.
+                continue
+            }
+            guard let fileExtension = ProviderImageEvidencePolicy.fileExtension(forMIME: canonicalMIME) else {
+                rejections.append("image \(imageIndex): unsupported image type \(canonicalMIME)")
+                continue
+            }
             let relativePath = "GeneratedImages/mcp-\(String(sha.prefix(32))).\(fileExtension)"
             let directory = root.appendingPathComponent("GeneratedImages", isDirectory: true)
             let fileName = "mcp-\(String(sha.prefix(32))).\(fileExtension)"
@@ -456,33 +480,28 @@ public actor MCPRemoteClient {
                 // Re-read and verify before reporting the artifact.
                 let stored = try Data(contentsOf: destination)
                 guard FloeDigest.sha256Hex(stored) == sha, stored.count == data.count else {
-                    rejected += 1
+                    rejections.append("image \(imageIndex): stored bytes failed re-verification")
                     continue
                 }
             } catch {
-                rejected += 1
+                rejections.append("image \(imageIndex): could not store image bytes")
                 continue
             }
             totalBytes += data.count
+            seenDigests.insert(sha)
             artifacts.append(ToolArtifactReference(
                 id: UUID(),
                 relativePath: relativePath,
-                mimeType: mime == "image/jpg" ? "image/jpeg" : mime,
+                mimeType: canonicalMIME,
                 byteCount: data.count,
                 sha256: sha
             ))
         }
-        return (artifacts, rejected)
+        return (artifacts, rejections)
     }
 
     static func imageFileExtension(for mime: String) -> String? {
-        switch mime {
-        case "image/png": return "png"
-        case "image/jpeg", "image/jpg": return "jpg"
-        case "image/webp": return "webp"
-        case "image/gif": return "gif"
-        default: return nil
-        }
+        ProviderImageEvidencePolicy.fileExtension(forMIME: mime)
     }
 
     private func ensureLegacyInitialized() async throws {

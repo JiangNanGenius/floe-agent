@@ -826,10 +826,14 @@ final class AppEnvironment: ObservableObject {
             },
             decisionSink: { [weak self] conversationID, proposalID, decision, revision, sha256 in
                 // The shared durable proposal-decision ingress: queued runtime
-                // input on the originating conversation + idempotent transcript
-                // upsert. No other conversation is touched.
-                guard let environment = self else { return }
-                try? await environment.conversationCenter.recordProposalDecision(
+                // input on the originating conversation + idempotent
+                // transcript upsert. Errors PROPAGATE: the caller keeps the
+                // outbox intent pending for launch-time reconcile rather than
+                // falsely acknowledging a delivery that did not persist.
+                guard let environment = self else {
+                    throw FloeError.internalError("App environment unavailable for decision delivery")
+                }
+                try await environment.conversationCenter.recordProposalDecision(
                     conversationID: conversationID,
                     proposalID: proposalID,
                     decision: "design-candidate-\(decision)",
@@ -848,16 +852,25 @@ final class AppEnvironment: ObservableObject {
                     guard let canvasID = UUID(uuidString: intent.canvasID),
                           let nodeID = UUID(uuidString: intent.nodeID) else { return .unavailable }
                     let service = DesignCanvasService(repository: FileCanvasDocumentRepository())
+                    // The intent names the EXACT node owning the candidate.
                     // Lookup failure is NEVER mistaken for "not committed".
                     guard let design = try? await service.designState(canvasID: canvasID, nodeID: nodeID) else {
                         return .unavailable
                     }
-                    // Exact fingerprint: the recorded operation must be applied
-                    // AND the candidate must be in the terminal state the
-                    // intent recorded. A candidate terminal state alone can
-                    // belong to a later unrelated operation.
+                    // Exact fingerprint: the recorded operation must be
+                    // applied AND the candidate must be in the terminal state
+                    // the intent recorded (adopt/reject + matching base). A
+                    // candidate terminal state alone can belong to a later
+                    // unrelated operation.
                     guard design.hasApplied(operationID: intent.operationID),
                           let candidate = design.candidate(intent.candidateID) else {
+                        return .notCommitted
+                    }
+                    if let base = intent.baseRevisionID, candidate.baseRevisionID != base {
+                        return .notCommitted
+                    }
+                    if intent.decision == "adopted", intent.mode == DesignAdoptMode.variant.rawValue,
+                       candidate.variantArtifactID == nil {
                         return .notCommitted
                     }
                     switch (candidate.status, intent.decision) {
@@ -870,8 +883,12 @@ final class AppEnvironment: ObservableObject {
                 },
                 deliver: { [self] intent, decision in
                     guard let conversationID = UUID(uuidString: intent.conversationID),
-                          let candidateUUID = UUID(uuidString: intent.candidateID) else { return }
-                    try? await conversationCenter.recordProposalDecision(
+                          let candidateUUID = UUID(uuidString: intent.candidateID) else {
+                        throw FloeError.validationFailed("Durable decision has an invalid target")
+                    }
+                    // THROWS: reconcile catches and keeps the intent pending
+                    // until the durable ingress actually persists.
+                    try await conversationCenter.recordProposalDecision(
                         conversationID: conversationID,
                         proposalID: candidateUUID,
                         decision: "design-candidate-\(decision)",
@@ -1478,8 +1495,23 @@ final class AppEnvironment: ObservableObject {
                 }
                 UserDefaults.standard.set(false, forKey: "canvas.materials.posterLayout")
             }
-            if ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
+            // Onboarding-only test reset: flips the persisted onboarding
+            // marker so the setup guide shows again. NON-DESTRUCTIVE: it
+            // never touches existing providers, models or Keychain secrets,
+            // because the shared review simulator and user devices may hold
+            // real configuration. Deleting user configuration requires the
+            // separate, explicitly destructive flag below, which no regular
+            // test passes.
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)
+            }
+            // DESTRUCTIVE test-only reset for a THROWAWAY simulator/CI runner
+            // only: wipes all provider/model configuration so a test can
+            // exercise first-run setup. Never used by the shared review
+            // device; not implied by any other flag.
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-delete-all-providers") {
                 for provider in try await configurationStore.providers() {
                     try await configurationStore.deleteProvider(id: provider.id)
                 }

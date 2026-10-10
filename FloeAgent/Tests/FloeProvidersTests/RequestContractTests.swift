@@ -977,6 +977,62 @@ struct RequestContractTests {
         #expect(anthropicA.messages.last?.content.first == .toolResult(toolUseID: "read", content: "Actual receipt", isError: false))
     }
 
+    @Test("Every provider-supported image MIME serializes on Chat, Responses and Anthropic wires")
+    func allSupportedImageMIMEsSerialize() throws {
+        // Real tiny images for each provider-supported type: PNG / JPEG /
+        // WebP / GIF all traverse the same ProviderContentPart path the
+        // runtime uses for retained tool artifacts.
+        let cases: [(mime: String, base64: String)] = [
+            ("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4z8DAwPAfAAcAAf9+CLHQAAAAAElFTkSuQmCC"),
+            ("image/jpeg", "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wAARCAABAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD5q1b/AJCt3/13f/0I0UUV/XWT/wDIvof4I/8ApKPMzX/fq3+KX5s//9k="),
+            ("image/webp", "UklGRh4AAABXRUJQVlA4TBEAAAAvAQAAAA8Q87//8x8OMqL/AQA="),
+            ("image/gif", "R0lGODdhAgABAIEAAP8AAAAA/wAAAAAAACwAAAAAAgABAAAIBQABBAgIADs=")
+        ]
+        for (mime, base64) in cases {
+            let providerID = UUID()
+            let model = ModelProfile(
+                providerID: providerID, remoteModelID: "vision-model", displayName: "Vision",
+                limits: ModelLimits(contextTokens: 8_000, maxOutputTokens: 256),
+                capabilities: [.vision]
+            )
+            let provider = ProviderProfile(
+                id: providerID, kind: .custom, wireProtocol: .openAIResponses,
+                baseURL: try #require(URL(string: "https://example.invalid/v1"))
+            )
+            let request = ProviderStreamRequest(
+                provider: provider, model: model,
+                contentMessages: [
+                    ProviderMessage(role: "user", content: [.text("Inspect"), .imageData(mimeType: mime, base64: base64)])
+                ]
+            )
+            // Responses: the exact data URL preserves the MIME.
+            let responses = try #require(
+                (try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))["input"] as? [[String: Any]])?.first
+            )
+            let responseContent = try #require(responses["content"] as? [[String: Any]])
+            let imagePart = try #require(responseContent.first { $0["type"] as? String == "input_image" })
+            #expect((imagePart["image_url"] as? String)?.hasPrefix("data:\(mime);base64,") == true)
+            // Chat: same data URL family.
+            let chat = try #require(
+                (try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))["messages"] as? [[String: Any]])?.first
+            )
+            let chatContent = try #require(chat["content"] as? [[String: Any]])
+            let chatImage = try #require(chatContent.first { $0["type"] as? String == "image_url" })
+            let chatURL = try #require((chatImage["image_url"] as? [String: Any])?["url"] as? String)
+            #expect(chatURL.hasPrefix("data:\(mime);base64,"))
+            // Anthropic: media_type is the declared MIME and the bytes are the
+            // exact payload.
+            let anthropic = try #require(
+                (try jsonObject(AnthropicMessagesAdapter().buildBody(from: request))["messages"] as? [[String: Any]])?.first
+            )
+            let anthropicContent = try #require(anthropic["content"] as? [[String: Any]])
+            let anthropicImage = try #require(anthropicContent.first { $0["type"] as? String == "image" })
+            let source = try #require(anthropicImage["source"] as? [String: Any])
+            #expect(source["media_type"] as? String == mime)
+            #expect(source["data"] as? String == base64)
+        }
+    }
+
     private func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {
         let data = try JSONEncoder().encode(value)
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])

@@ -1097,15 +1097,17 @@ func designApplyContentUpdate(_ update: DesignCanvasContentApplicator.PreparedUp
 }
 
 /// Creates the actual variant node (same document) carrying the new content;
-/// layout is copied with a small offset so both remain visible.
+/// layout is copied with a small offset so both remain visible. The caller may
+/// pre-assign the node id (deterministic pre-CAS revision-file staging).
 @discardableResult
 func designApplyVariantUpdate(
     _ update: DesignCanvasContentApplicator.PreparedUpdate,
     from node: CanvasNode,
-    into nodes: inout [CanvasNode]
+    into nodes: inout [CanvasNode],
+    id: UUID = UUID()
 ) -> CanvasNode {
     var variant = node
-    variant.id = UUID()
+    variant.id = id
     variant.position = .init(x: node.position.x + 40, y: node.position.y + 40)
     variant.generationJobID = nil
     designApplyContentUpdate(update, to: &variant)
@@ -1116,39 +1118,73 @@ func designApplyVariantUpdate(
 // MARK: - Signed templates (existing signed content-update service)
 
 /// Maps installed signed content-update entries of kind `templates` onto
-/// `DesignTemplateManifest` (read-only view). Version/hash/license/rollback
-/// come from the signed content authority; install/update/rollback run
-/// through the existing ContentUpdate flows, never a parallel system.
+/// `DesignTemplateManifest` records materialized into the design template
+/// library. Install/update/rollback/version/hash stay owned by the
+/// ContentUpdate authority; this layer only mirrors the ACTIVE package with
+/// verified authority:
+/// - the canonical package digest (`SignedContentArchive.canonicalDigest`)
+///   must equal the signed entry's `contentDigest`;
+/// - the template payload is the declared entrypoint file `DESIGN.md`
+///   (present and non-empty) — never an arbitrary first file;
+/// - the license comes from a real LICENSE file in the package, otherwise it
+///   stays explicitly unspecified (never invented);
+/// - when an entry is rolled back the mirrored record follows the restored
+///   active version; when an entry is removed the mirrored record is removed
+///   (no stale signed template survives).
 @MainActor
 enum DesignSignedTemplateSource {
-    /// Materializes templates installed by the SIGNED content-update service
-    /// (kind `.templates`) into the design template library as read-only
-    /// `.signedContent` records: the panel, engine and tools treat them like
-    /// any template, while install/update/rollback/version/hash/license stay
-    /// owned by the ContentUpdate authority. Called after content updates and
-    /// when the design panel refreshes.
+    /// Signed-package entrypoint for design templates.
+    static let entrypoint = "DESIGN.md"
+    /// License candidates inside a signed package (first match wins).
+    static let licenseNames = ["LICENSE", "LICENSE.txt", "LICENSE.md", "license.txt"]
+
+    /// Materializes the currently ACTIVE signed template packages into the
+    /// design template library as read-only `.signedContent` records and
+    /// reconciles records whose entry disappeared. Called after content
+    /// updates and when the design panel refreshes.
     @discardableResult
     static func refresh(environment: AppEnvironment) async -> Int {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         guard let store = try? ContentUpdateStore(root: support.appendingPathComponent("FloeAgent/ContentUpdates", isDirectory: true)),
               let templateRoot = DesignTemplateStore.defaultRoot() else { return 0 }
-        let state = try await store.currentState()
+        let state = await store.currentState()
         let templates = DesignTemplateStore(root: templateRoot)
+        var activeTemplateIDs: Set<String> = []
         var materialized = 0
         for stored in state.entries.values where stored.entry.kind == .templates {
-            let manifest = map(entry: stored, history: state.history[stored.entry.id] ?? [])
-            // Payload = the installed package bytes (DESIGN.md spec/template).
+            guard var mapped = map(entry: stored) else { continue }
             let payload = (try? await store.files(id: stored.entry.id)) ?? [:]
-            let body = payload["DESIGN.md"] ?? payload.values.first ?? Data()
-            guard !body.isEmpty else { continue }
-            // Hash discipline: the manifest hash must match the real payload
-            // bytes; the signed entry's contentDigest is the authority.
-            guard FloeDigest.sha256Hex(body) == manifest.contentSHA256 else { continue }
-            var signed = manifest
+            // Digest authority: canonical package digest must equal the
+            // signed entry's contentDigest (a per-file hash is not the
+            // package identity).
+            guard !payload.isEmpty,
+                  SignedContentArchive.canonicalDigest(payload) == stored.entry.contentDigest.lowercased() else {
+                continue
+            }
+            // Entrypoint authority: DESIGN.md must exist and be readable.
+            // `saveUser` recomputes the manifest hash from these exact bytes,
+            // so the applied payload always matches its recorded digest.
+            guard let body = payload[entrypoint], !body.isEmpty,
+                  String(data: body, encoding: .utf8) != nil else { continue }
+            // License authority: the first real LICENSE file in the package;
+            // otherwise explicitly unspecified — never invented.
+            if let license = Self.license(from: payload) {
+                mapped.license = license
+            }
+            var signed = mapped
             signed.origin = .signedContent
-            if let _ = try? templates.saveUser(manifest: signed, payload: body) {
+            if let record = try? templates.saveUser(manifest: signed, payload: body) {
+                activeTemplateIDs.insert(record.id)
                 materialized += 1
+            }
+        }
+        // Removal reconciliation: mirrored records whose signed entry is no
+        // longer active are removed, so a deactivated/removed package leaves
+        // no stale template behind.
+        for record in templates.userTemplates() where record.manifest.origin == .signedContent {
+            if !activeTemplateIDs.contains(record.manifest.id) {
+                try? templates.removeUser(id: record.manifest.id)
             }
         }
         return materialized
@@ -1156,19 +1192,22 @@ enum DesignSignedTemplateSource {
 
     static func installedTemplates(environment: AppEnvironment) async -> [DesignTemplateManifest] {
         _ = await refresh(environment: environment)
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
         guard let templateRoot = DesignTemplateStore.defaultRoot() else { return [] }
         let templates = DesignTemplateStore(root: templateRoot)
         return (try? templates.userTemplates().map(\.manifest).filter { $0.origin == .signedContent }) ?? []
     }
 
-    static func map(entry stored: ContentUpdateState.StoredEntry, history: [ContentUpdateState.StoredEntry]) -> DesignTemplateManifest {
+    /// Deterministic mapping of ONE signed entry. Returns nil when the entry
+    /// declares no recognizable design content type (never guesses).
+    /// `rollbackVersion` is deliberately NOT embedded here: the mirrored
+    /// version directory must stay byte-stable across refreshes, and the
+    /// ContentUpdate authority owns rollback history. The manifest hash is
+    /// recomputed by the template store from the verified DESIGN.md payload.
+    static func map(entry stored: ContentUpdateState.StoredEntry) -> DesignTemplateManifest? {
         let entry = stored.entry
-        let contentType = DesignContentType(rawValue: entry.requiredCapabilities
-            .first(where: { DesignContentType(rawValue: $0) != nil }) ?? "") ?? .webpage
-        let installedVersion = stored.entry.version
-        let rollbackVersion = history.first.map(\.entry.version)
+        guard let contentType = entry.requiredCapabilities
+            .compactMap({ DesignContentType(rawValue: $0) })
+            .first else { return nil }
         return DesignTemplateManifest(
             id: "signed.\(entry.id)",
             name: entry.id,
@@ -1177,13 +1216,26 @@ enum DesignSignedTemplateSource {
             inputs: entry.dependencies,
             dependencies: entry.dependencies,
             outputFormats: [],
-            license: "Signed content (official feed)",
+            license: "Not specified by the signed package",
             source: entry.sourceRevision,
-            version: installedVersion,
-            contentSHA256: entry.contentDigest,
-            rollbackVersion: rollbackVersion,
+            version: entry.version,
+            contentSHA256: entry.contentDigest.lowercased(),
+            rollbackVersion: nil,
             origin: .signedContent
         )
+    }
+
+    /// The first real license text inside a signed package, when present.
+    static func license(from payload: [String: Data]) -> String? {
+        for name in licenseNames {
+            if let data = payload[name],
+               let text = String(data: data, encoding: .utf8)?
+                   .trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                return String(text.prefix(500))
+            }
+        }
+        return nil
     }
 }
 

@@ -42,12 +42,24 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
 
     public let id: String
     public let canvasID: String
+    /// The EXACT node whose design subdocument owns the candidate (never a
+    /// shared literal — reconcile must resolve the precise target).
     public let nodeID: String
     public let candidateID: String
     /// The ORIGINATING task the notice belongs to.
     public let conversationID: String
     public let decision: String
     public let operationID: String
+    /// Full operation fingerprint, persisted BEFORE the CAS so a relaunch
+    /// reconcile can confirm the exact request committed (mode + base
+    /// /// revision + canvas revision the caller expected). Absent on records
+    /// written by older builds (reconcile then falls back to candidate
+    /// terminal state only).
+    public let mode: String?
+    public let baseRevisionID: String?
+    public let expectedCanvasRevision: Int64?
+    /// Deterministic fingerprint over the complete operation identity.
+    public let fingerprint: String
     public var phase: Phase
     public let createdAt: Date
     public var updatedAt: Date
@@ -60,6 +72,9 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         conversationID: String,
         decision: String,
         operationID: String,
+        mode: String? = nil,
+        baseRevisionID: String? = nil,
+        expectedCanvasRevision: Int64? = nil,
         phase: Phase = .committing,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -71,9 +86,77 @@ public struct DesignDecisionIntent: Codable, Sendable, Equatable, Identifiable {
         self.conversationID = conversationID
         self.decision = decision
         self.operationID = operationID
+        self.mode = mode
+        self.baseRevisionID = baseRevisionID
+        self.expectedCanvasRevision = expectedCanvasRevision
+        self.fingerprint = DesignDecisionIntent.makeFingerprint(
+            canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+            conversationID: conversationID, decision: decision,
+            operationID: operationID, mode: mode, baseRevisionID: baseRevisionID,
+            expectedCanvasRevision: expectedCanvasRevision
+        )
         self.phase = phase
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// Canonical SHA-256 over the COMPLETE operation identity. Two decisions
+    /// sharing an operationID but differing in any target/mode/base field
+    /// produce distinct fingerprints and can never be mistaken for a replay.
+    public static func makeFingerprint(
+        canvasID: String, nodeID: String, candidateID: String,
+        conversationID: String, decision: String, operationID: String,
+        mode: String?, baseRevisionID: String?, expectedCanvasRevision: Int64?
+    ) -> String {
+        let canonical = [
+            "canvas", canvasID.lowercased(),
+            "node", nodeID.lowercased(),
+            "candidate", candidateID,
+            "conversation", conversationID.lowercased(),
+            "decision", decision,
+            "operation", operationID,
+            "mode", mode ?? "",
+            "base", baseRevisionID ?? "",
+            "expectedRevision", expectedCanvasRevision.map(String.init) ?? ""
+        ].joined(separator: "\u{1f}")
+        return FloeDigest.sha256Hex(Data(canonical.utf8))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, canvasID, nodeID, candidateID, conversationID, decision
+        case operationID, mode, baseRevisionID, expectedCanvasRevision
+        case fingerprint, phase, createdAt, updatedAt
+    }
+
+    /// Older builds wrote intents without `mode/baseRevisionID/
+    /// expectedCanvasRevision/fingerprint`. Decode them unchanged and
+    /// backfill the fingerprint so reconcile keeps working (it simply cannot
+    /// enforce the newer exact-fingerprint checks for those records).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        canvasID = try c.decode(String.self, forKey: .canvasID)
+        nodeID = try c.decode(String.self, forKey: .nodeID)
+        candidateID = try c.decode(String.self, forKey: .candidateID)
+        conversationID = try c.decode(String.self, forKey: .conversationID)
+        decision = try c.decode(String.self, forKey: .decision)
+        operationID = try c.decode(String.self, forKey: .operationID)
+        mode = try c.decodeIfPresent(String.self, forKey: .mode)
+        baseRevisionID = try c.decodeIfPresent(String.self, forKey: .baseRevisionID)
+        expectedCanvasRevision = try c.decodeIfPresent(Int64.self, forKey: .expectedCanvasRevision)
+        phase = try c.decode(Phase.self, forKey: .phase)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        if let stored = try c.decodeIfPresent(String.self, forKey: .fingerprint) {
+            fingerprint = stored
+        } else {
+            fingerprint = Self.makeFingerprint(
+                canvasID: canvasID, nodeID: nodeID, candidateID: candidateID,
+                conversationID: conversationID, decision: decision,
+                operationID: operationID, mode: mode, baseRevisionID: baseRevisionID,
+                expectedCanvasRevision: expectedCanvasRevision
+            )
+        }
     }
 }
 
@@ -181,6 +264,20 @@ public actor DesignDecisionOutbox {
         return envelope.intents.filter { $0.phase == .committing }
     }
 
+    /// Whether the EXACT operation (full fingerprint) already has a record,
+    /// regardless of phase. Used to dedupe repeated decisions: an adopt or
+    /// reject replayed with identical targets/mode/base must not prepare a
+    /// second intent (which would double-deliver to the originating task).
+    public func hasRecord(fingerprint: String) -> Bool {
+        record(fingerprint: fingerprint) != nil
+    }
+
+    /// The most recent record carrying this exact fingerprint, when any.
+    public func record(fingerprint: String) -> DesignDecisionIntent? {
+        guard case .loaded(let envelope) = state else { return nil }
+        return envelope.intents.last { $0.fingerprint == fingerprint }
+    }
+
     /// Atomically persists the intent, THEN records it in memory. Any write
     /// failure throws and leaves both disk and memory unchanged.
     @discardableResult
@@ -197,6 +294,18 @@ public actor DesignDecisionOutbox {
         try persist(next)
         state = .loaded(Self.compacted(next))
         return intent
+    }
+
+    /// Dedupe-safe preparation: when an intent with the EXACT fingerprint
+    /// already exists, the existing record is returned (no duplicate intent,
+    /// no revision of phase); otherwise the new intent is persisted. The
+    /// returned `isNew` tells the caller whether to run the CAS+delivery.
+    @discardableResult
+    public func prepareIfNew(_ intent: DesignDecisionIntent) throws -> (intent: DesignDecisionIntent, isNew: Bool) {
+        if let existing = record(fingerprint: intent.fingerprint) {
+            return (existing, false)
+        }
+        return (try prepare(intent), true)
     }
 
     /// Marks the intent delivered. A delivery failure throws and leaves the
