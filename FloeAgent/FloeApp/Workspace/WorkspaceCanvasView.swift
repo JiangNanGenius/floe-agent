@@ -5654,31 +5654,7 @@ struct WorkspaceCanvasView: View {
                 artifactImportPoint = nil
             }
         }
-        .task {
-            if canvasOnboardingVersion < 1 { showsCanvasOnboarding = true }
-            // Retry CAD drafts whose durable flush failed on a previous view:
-            // the recovery center owns those live sessions until they land.
-            await CanvasDrawingDraftRecoveryCenter.shared.retryAll()
-            store.configureSync(
-                store: environment.canvasSyncOperationStore,
-                assetStore: environment.creativeAssetStore,
-                globalEnabled: globalCanvasSyncEnabled
-            )
-            restoreViewport()
-            await store.synchronizeFromCloud(environment.canvasCloudAssetService)
-            while !Task.isCancelled {
-                // Notifications are the fast path; disk revision reconciliation
-                // recovers a missed callback without requiring a canvas switch.
-                store.reloadExternalChange(force: false)
-                let canvasID = store.project.id
-                if let jobs = try? await MediaGenerationJobStore(database: environment.database)
-                    .jobs(canvasID: canvasID) {
-                    canvasJobs = jobs
-                    store.applyMediaJobs(jobs)
-                }
-                do { try await Task.sleep(for: .seconds(2)) } catch { break }
-            }
-        }
+        .task { await runCanvasBackgroundLoop() }
         .onDisappear {
             // The canvas is going away: flush unsaved CAD edits to their
             // durable staged drafts, then release every web view/server.
@@ -5747,6 +5723,36 @@ struct WorkspaceCanvasView: View {
             Button("workspace.workspace_canvas_view.done", role: .cancel) { inkInterpretationError = nil }
         } message: {
             Text(inkInterpretationError ?? "common.unknown_error")
+        }
+    }
+
+    /// One-time canvas setup plus the 2s external-revision reconciliation loop.
+    /// Extracted from the view body: the inline `.task` closure exceeded the
+    /// Xcode 26.6 type-check budget for a single expression.
+    @MainActor
+    private func runCanvasBackgroundLoop() async {
+        if canvasOnboardingVersion < 1 { showsCanvasOnboarding = true }
+        // Retry CAD drafts whose durable flush failed on a previous view:
+        // the recovery center owns those live sessions until they land.
+        await CanvasDrawingDraftRecoveryCenter.shared.retryAll()
+        store.configureSync(
+            store: environment.canvasSyncOperationStore,
+            assetStore: environment.creativeAssetStore,
+            globalEnabled: globalCanvasSyncEnabled
+        )
+        restoreViewport()
+        await store.synchronizeFromCloud(environment.canvasCloudAssetService)
+        while !Task.isCancelled {
+            // Notifications are the fast path; disk revision reconciliation
+            // recovers a missed callback without requiring a canvas switch.
+            store.reloadExternalChange(force: false)
+            let canvasID = store.project.id
+            if let jobs = try? await MediaGenerationJobStore(database: environment.database)
+                .jobs(canvasID: canvasID) {
+                canvasJobs = jobs
+                store.applyMediaJobs(jobs)
+            }
+            do { try await Task.sleep(for: .seconds(2)) } catch { break }
         }
     }
 

@@ -56,6 +56,19 @@ struct FileTreeView: View {
     @State private var compressBanner: String?
 
     var body: some View {
+        fileTreeWithDestructiveAlerts
+            .alert("chat.conversation_list_view.action_failed", isPresented: operationErrorBinding) {
+                Button("workspace.office_document_editor_view.ok", role: .cancel) {}
+            } message: {
+                Text(operationError ?? "")
+            }
+    }
+
+    // The modifier chain used to be one expression; Xcode 26.6's type checker
+    // gave up on it ("unable to type-check this expression in reasonable
+    // time"). Splitting it into small chained expressions changes no behavior.
+
+    private var fileTreeBase: some View {
         VStack(spacing: 0) {
             if let compressBanner {
                 compressBannerView(compressBanner)
@@ -109,73 +122,84 @@ struct FileTreeView: View {
         .onChange(of: compressFormatID) { oldValue, newValue in
             updateCompressNameExtension(from: oldValue, to: newValue)
         }
-        .sheet(item: $exportedURL) { url in FileTreeShareSheet(url: url) }
-        .sheet(isPresented: $showingCompress) { compressSheet }
-        .confirmationDialog("workspace.file_tree_view.delete_the_selected_files", isPresented: $deletingBatch, titleVisibility: .visible) {
-            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
-                Task {
-                    busy = true
-                    let failures = await viewModel.deleteBatch(selection)
-                    selection = Set(failures.keys)
-                    operationError = failures.isEmpty ? nil : failures.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }.joined(separator: "\n")
-                    busy = false
+    }
+
+    private var fileTreeWithSheets: some View {
+        fileTreeBase
+            .sheet(item: $exportedURL) { url in FileTreeShareSheet(url: url) }
+            .sheet(isPresented: $showingCompress) { compressSheet }
+            .confirmationDialog("workspace.file_tree_view.delete_the_selected_files", isPresented: $deletingBatch, titleVisibility: .visible) {
+                Button("workspace.workspace_canvas_view.delete", role: .destructive) {
+                    Task {
+                        busy = true
+                        let failures = await viewModel.deleteBatch(selection)
+                        selection = Set(failures.keys)
+                        operationError = failures.isEmpty ? nil : failures.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+                        busy = false
+                    }
                 }
+            } message: { Text("workspace.file_tree_view.the_folder_includes_all_of_its") }
+    }
+
+    private var fileTreeWithEntryAlerts: some View {
+        fileTreeWithSheets
+            .alert("workspace.file_tree_view.move_file", isPresented: movingNodeBinding) {
+                TextField("workspace.file_tree_view.destination_path_including_file_name", text: $destinationPath)
+                Button("workspace.file_tree_view.move") {
+                    guard let node = movingNode else { return }
+                    let destination = destinationPath
+                    movingNode = nil
+                    Task { do { try await viewModel.move(node, to: destination) } catch { operationError = error.localizedDescription } }
+                }
+                Button("action.cancel", role: .cancel) { movingNode = nil }
+            } message: { Text("workspace.file_tree_view.enter_a_destination_path_inside_the") }
+            .alert("workspace.file_tree_view.new_folder", isPresented: $showingNewFolder) {
+                TextField("workspace.file_tree_view.folder_name", text: $newFolderName)
+                Button("settings.git_hub_settings_view.create") { Task { await createFolder() } }
+                Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
             }
-        } message: { Text("workspace.file_tree_view.the_folder_includes_all_of_its") }
-        .alert("workspace.file_tree_view.move_file", isPresented: Binding(get: { movingNode != nil }, set: { if !$0 { movingNode = nil } })) {
-            TextField("workspace.file_tree_view.destination_path_including_file_name", text: $destinationPath)
-            Button("workspace.file_tree_view.move") {
-                guard let node = movingNode else { return }
-                let destination = destinationPath
-                movingNode = nil
-                Task { do { try await viewModel.move(node, to: destination) } catch { operationError = error.localizedDescription } }
+            .alert("workspace.file_tree_view.new_cad_document", isPresented: $showingNewCAD) {
+                TextField("workspace.file_tree_view.cad_document_name", text: $newCADName)
+                Button("settings.git_hub_settings_view.create") { Task { await createCADDocument() } }
+                Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
+            } message: {
+                Text("workspace.file_tree_view.new_cad_document_message")
             }
-            Button("action.cancel", role: .cancel) { movingNode = nil }
-        } message: { Text("workspace.file_tree_view.enter_a_destination_path_inside_the") }
-        .alert("workspace.file_tree_view.new_folder", isPresented: $showingNewFolder) {
-            TextField("workspace.file_tree_view.folder_name", text: $newFolderName)
-            Button("settings.git_hub_settings_view.create") { Task { await createFolder() } }
-            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
-        }
-        .alert("workspace.file_tree_view.new_cad_document", isPresented: $showingNewCAD) {
-            TextField("workspace.file_tree_view.cad_document_name", text: $newCADName)
-            Button("settings.git_hub_settings_view.create") { Task { await createCADDocument() } }
-            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
-        } message: {
-            Text("workspace.file_tree_view.new_cad_document_message")
-        }
-        .alert("workspace.file_tree_view.rename", isPresented: $showingRename) {
-            TextField("workspace.file_tree_view.new_name", text: $renameName)
-            Button("workspace.file_tree_view.ok") { Task { await rename() } }
-            Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
-        }
-        .alert("workspace.file_tree_view.confirm_deletion",
-            isPresented: Binding(
-                get: { pendingDelete != nil },
-                set: { if !$0 { pendingDelete = nil } }
-            ),
-            presenting: pendingDelete
-        ) { node in
-            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
-                pendingDelete = nil
-                Task { await deleteNode(node) }
+            .alert("workspace.file_tree_view.rename", isPresented: $showingRename) {
+                TextField("workspace.file_tree_view.new_name", text: $renameName)
+                Button("workspace.file_tree_view.ok") { Task { await rename() } }
+                Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
             }
-            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingDelete = nil }
-        } message: { node in
-            Text(node.isDirectory
-                ? FloeL10n.l("workspace.file_tree_view.and_all_of_its_contents_will", node.name)
-                : FloeL10n.l("workspace.file_tree_view.will_be_deleted_this_cannot_be", node.name))
-        }
-        .alert("chat.conversation_list_view.action_failed",
-            isPresented: Binding(
-                get: { operationError != nil },
-                set: { if !$0 { operationError = nil } }
-            )
-        ) {
-            Button("workspace.office_document_editor_view.ok", role: .cancel) {}
-        } message: {
-            Text(operationError ?? "")
-        }
+    }
+
+    private var fileTreeWithDestructiveAlerts: some View {
+        fileTreeWithEntryAlerts
+            .alert("workspace.file_tree_view.confirm_deletion",
+                isPresented: pendingDeleteBinding,
+                presenting: pendingDelete
+            ) { node in
+                Button("workspace.workspace_canvas_view.delete", role: .destructive) {
+                    pendingDelete = nil
+                    Task { await deleteNode(node) }
+                }
+                Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingDelete = nil }
+            } message: { node in
+                Text(node.isDirectory
+                    ? FloeL10n.l("workspace.file_tree_view.and_all_of_its_contents_will", node.name)
+                    : FloeL10n.l("workspace.file_tree_view.will_be_deleted_this_cannot_be", node.name))
+            }
+    }
+
+    private var movingNodeBinding: Binding<Bool> {
+        Binding(get: { movingNode != nil }, set: { if !$0 { movingNode = nil } })
+    }
+
+    private var pendingDeleteBinding: Binding<Bool> {
+        Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+    }
+
+    private var operationErrorBinding: Binding<Bool> {
+        Binding(get: { operationError != nil }, set: { if !$0 { operationError = nil } })
     }
 
     private var searchField: some View {
