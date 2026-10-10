@@ -631,7 +631,10 @@ struct DesignWorkflowIntegrationTests {
             ], context: context(conversationID: nil))
             Issue.record("expected empty-node failure")
         } catch {
-            #expect(error.localizedDescription.contains("no text content"))
+            // The reason is localized through the shared catalog; assert
+            // against the resolved value instead of fixed English text.
+            let expected = FloeL10n.l("design.error.current_node_no_text")
+            #expect(error.localizedDescription.contains(expected))
         }
         // Unbound CAD node → precise unavailable reason.
         let cadHarness = try await makeCadNodeHarness()
@@ -644,7 +647,8 @@ struct DesignWorkflowIntegrationTests {
             ], context: context(conversationID: nil))
             Issue.record("expected unbound CAD failure")
         } catch {
-            #expect(error.localizedDescription.contains("no retained content"))
+            let expected = FloeL10n.l("design.error.current_node_none", "cad")
+            #expect(error.localizedDescription.contains(expected))
         }
     }
 

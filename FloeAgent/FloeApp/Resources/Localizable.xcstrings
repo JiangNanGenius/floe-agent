@@ -80566,6 +80566,210 @@
           }
         }
       }
+    },
+    "design.error.notes_format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notes revisions must be Markdown or plain text (md/txt), not .%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手记修订必须是 Markdown 或纯文本（md/txt），不能是 .%@"
+          }
+        }
+      }
+    },
+    "design.error.current_node_no_text": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This node has no text content to freeze yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此节点尚无可冻结的文本内容"
+          }
+        }
+      }
+    },
+    "design.error.current_node_builtin_empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The %@ node has no content to freeze yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 节点尚无可冻结的内容"
+          }
+        }
+      }
+    },
+    "design.error.current_node_builtin_unsupported": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The %@ built-in node has no retained text source that can be frozen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置 %@ 节点没有可冻结的已留存文本来源"
+          }
+        }
+      }
+    },
+    "design.error.current_node_unsafe_asset_path": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The node asset path is not a safe artifact path"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "节点素材路径不是安全的构件路径"
+          }
+        }
+      }
+    },
+    "design.error.current_node_asset_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The node's retained asset bytes are missing on disk"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "节点已留存的素材字节在磁盘上缺失"
+          }
+        }
+      }
+    },
+    "design.error.current_node_asset_empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The node's retained asset is empty"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "节点已留存的素材为空"
+          }
+        }
+      }
+    },
+    "design.error.current_node_asset_digest": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The node's asset bytes do not match their recorded digest"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "节点素材字节与记录的摘要不匹配"
+          }
+        }
+      }
+    },
+    "design.error.current_node_bound_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The bound %@ document is missing or empty"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绑定的 %@ 文档缺失或为空"
+          }
+        }
+      }
+    },
+    "design.error.current_node_cad_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The bound CAD package is missing or empty"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绑定的 CAD 包缺失或为空"
+          }
+        }
+      }
+    },
+    "design.error.current_node_none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This %@ node has no retained content to freeze: bind a workspace document or import a source first"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 %@ 节点没有可冻结的已留存内容：请先绑定工作区文档或导入来源"
+          }
+        }
+      }
+    },
+    "design.error.adopt_builtin_format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A %@ card can only adopt %@ content, not .%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 卡片只能采纳 %@ 内容，不能采纳 .%@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

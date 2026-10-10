@@ -20,7 +20,9 @@
 // through this layer.
 
 import Foundation
+#if canImport(ObjectiveC)
 import ObjectiveC
+#endif
 
 public enum FloeL10n {
     /// UserDefaults key shared with `SettingsCenter` ("floe.settings.language").
@@ -485,6 +487,7 @@ public enum FloeL10n {
 
     // MARK: - Bundle proxy
 
+    #if canImport(ObjectiveC)
     fileprivate enum BundleProxy {
         /// Registered host bundles whose lookups are redirected (main bundle).
         nonisolated(unsafe) static var registeredTargets = NSHashTable<Bundle>.weakObjects()
@@ -541,8 +544,24 @@ public enum FloeL10n {
         _ = installProxy
         BundleProxy.register(Bundle.main)
     }
+    #else
+    // Portable (non-Darwin, e.g. Linux) fallback: method swizzling and
+    // NSHashTable are ObjectiveC-runtime facilities that do not exist there.
+    // Lookup already goes through the explicit lproj tables in `lookup(key:)`,
+    // so localization resolution keeps working without Bundle interception.
+    fileprivate enum BundleProxy {
+        static func register(_ bundle: Bundle) {}
+        static func isRegistered(_ bundle: Bundle) -> Bool { false }
+    }
+
+    /// No-op on platforms without the Objective-C runtime.
+    public static func installBundleProxyIfNeeded() {
+        BundleProxy.register(Bundle.main)
+    }
+    #endif
 }
 
+#if canImport(ObjectiveC)
 extension Bundle {
     @objc func floe_proxyLocalizedString(forKey key: String, value: String?, table tableName: String?) -> String {
         // Only intercept first-party catalog lookups on registered hosts.
@@ -571,6 +590,7 @@ extension Bundle {
         return floe_proxyLocalizedString(forKey: key, value: value, table: tableName)
     }
 }
+#endif
 
 public extension Notification.Name {
     /// Posted after the active app language changes; object is the language code.

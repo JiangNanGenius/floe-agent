@@ -666,8 +666,11 @@ private struct DesignProposeTool: AgentTool {
         // later adoption/export may not be the first place invalid bytes are
         // detected (Office OOXML parse, CAD same-engine reparse, media
         // decoders).
-        let proposedContentType = preRead.design?.contentType
-            ?? DesignContentTypeMapper.contentType(for: preRead.nodeKind)
+        let proposedContentType = DesignContentTypeMapper.effectiveContentType(
+            existing: preRead.design?.contentType,
+            kind: preRead.nodeKind,
+            metadata: preRead.nodeMetadata
+        )
         guard let proposedAdapter = await adapters.adapter(for: proposedContentType) else {
             throw FloeError.validationFailed("No design adapter is connected for \(proposedContentType.rawValue)")
         }
@@ -760,8 +763,11 @@ private struct DesignImportSourceTool: AgentTool {
         let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
         // 1. Authorize run -> canvas BEFORE touching the source file.
         let design = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
-        let contentType = design.design?.contentType
-            ?? DesignContentTypeMapper.contentType(for: design.nodeKind)
+        let contentType = DesignContentTypeMapper.effectiveContentType(
+            existing: design.design?.contentType,
+            kind: design.nodeKind,
+            metadata: design.nodeMetadata
+        )
         guard let adapter = await adapters.adapter(for: contentType) else {
             throw FloeError.validationFailed("No design adapter is connected for \(contentType.rawValue)")
         }

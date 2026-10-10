@@ -394,8 +394,11 @@ final class DesignWorkflowPanelModel: ObservableObject {
         guard let nodeID, let revision = snapshot?.canvasRevision, let environment else {
             throw FloeError.invalidConfiguration("Design environment is unavailable")
         }
-        let contentType = design?.contentType
-            ?? DesignContentTypeMapper.contentType(for: snapshot?.nodeKind ?? .file)
+        let contentType = DesignContentTypeMapper.effectiveContentType(
+            existing: design?.contentType,
+            kind: snapshot?.nodeKind ?? .file,
+            metadata: snapshot?.nodeMetadata ?? [:]
+        )
         guard let adapter = await environment.designAdapterCenter.adapter(for: contentType) else {
             throw FloeError.validationFailed("No design adapter is connected for \(contentType.rawValue)")
         }

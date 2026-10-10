@@ -1,10 +1,12 @@
 # Storage diagnostics and safe cleanup / 储存空间诊断与安全清理
 
+<!-- docs-updated: 2026-10-10 -->
+
 Status: implemented in source, focused tests pass, **not yet device-accepted**. This document describes the current behavior. It does not claim the Settings figures match iOS Storage exactly — see “Honesty” below. Last updated: 2026-10-10 (corrected to the shipped code: no apparent-size cause claim, no logical=configured claim, no one-hour whole-`tmp` cleaner).
 
 ## Why this exists / 背景
 
-Settings → Data Management previously summed overlapping roots (Library + Documents + tmp) without identity dedup, so items could be counted more than once and the number could diverge from iPad Settings. Why the physical device showed a large discrepancy is **not established**; the previous inspector already read host-allocated size keys (`totalFileAllocatedSize`) for the totals it displayed. The rewrite replaces guesswork with a transparent, categorized, deduplicated measurement and an ownership-aware cleaner.
+The physical-device discrepancy has **not yet been reproduced or assigned a confirmed cause**. The previous inspector already read host-allocated size keys (`totalFileAllocatedSize`); it is therefore incorrect to attribute the discrepancy to logical lengths alone. The shared census adds explicit root and file-identity deduplication, mutually exclusive categories, partial-scan reporting and clone-sharing estimates. These mechanisms can now be checked against a privacy-preserving snapshot on the affected device without deleting user data.
 
 ## The engine / 计量引擎
 

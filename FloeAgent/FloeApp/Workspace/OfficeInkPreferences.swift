@@ -12,14 +12,36 @@
 import Foundation
 import SwiftUI
 import Observation
+#if canImport(FloeCore)
 import FloeCore
-import FloeCore
+#endif
 
 /// Inline en/zh strings for the app-owned Office ink surface, mirroring the
 /// `IDELanguageRunText` pattern used elsewhere in Workspace. The primary agent
 /// may move these keys into `Localizable.xcstrings`.
 enum OfficeInkText {
-    static var isChinese: Bool { FloeL10n.isChinese }
+    static var isChinese: Bool {
+        #if canImport(FloeCore)
+        // App/extension builds: FloeL10n is the single source of truth
+        // (saved preference, app-group mirror, launch-argument override and
+        // canonical system-language resolution).
+        FloeL10n.isChinese
+        #else
+        // Standalone qualification fixture only: this file is compiled with a
+        // plain `swiftc` by scripts/tests/test_office_ink_bridge.py where the
+        // FloeCore module is not on the search path. Mirror FloeL10n's
+        // resolution of the SAME persisted key; this branch is never compiled
+        // into the app, so production localization cannot regress here.
+        switch UserDefaults.standard.string(forKey: "floe.settings.language") {
+        case "zhHans":
+            return true
+        case "en":
+            return false
+        default:
+            return Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+        }
+        #endif
+    }
     static func t(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
 }
 

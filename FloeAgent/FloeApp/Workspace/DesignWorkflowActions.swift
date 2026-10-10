@@ -210,8 +210,11 @@ enum DesignWorkflowActions {
             // content type's connected reader BEFORE any CAS: hash equality
             // is integrity, not format proof (Office OOXML parse, CAD
             // same-engine reparse, media decoders).
-            let contentType = preRead.design?.contentType
-                ?? DesignContentTypeMapper.contentType(for: preRead.nodeKind)
+            let contentType = DesignContentTypeMapper.effectiveContentType(
+                existing: preRead.design?.contentType,
+                kind: preRead.nodeKind,
+                metadata: preRead.nodeMetadata
+            )
             guard let contentTypeAdapter = adapters.adapter(for: contentType) else {
                 return .failed(FloeError.validationFailed("No design adapter is connected for \(contentType.rawValue)"))
             }
@@ -232,7 +235,8 @@ enum DesignWorkflowActions {
                     contentSHA256: proposed.contentSHA256,
                     environment: environment,
                     canvasID: canvasID,
-                    nodeID: nodeID
+                    nodeID: nodeID,
+                    nodeMetadata: preRead.nodeMetadata
                 )
             } catch {
                 return .failed(error)
@@ -548,8 +552,11 @@ enum DesignWorkflowActions {
             throw error
         }
         // Real reopen before the CAS (same gate as adoption).
-        let restoreContentType = preRead.design?.contentType
-            ?? DesignContentTypeMapper.contentType(for: preRead.nodeKind)
+        let restoreContentType = DesignContentTypeMapper.effectiveContentType(
+            existing: preRead.design?.contentType,
+            kind: preRead.nodeKind,
+            metadata: preRead.nodeMetadata
+        )
         guard let restoreAdapter = adapters.adapter(for: restoreContentType) else {
             throw FloeError.validationFailed("No design adapter is connected for \(restoreContentType.rawValue)")
         }
@@ -566,7 +573,8 @@ enum DesignWorkflowActions {
                 contentSHA256: target.contentSHA256,
                 environment: environment,
                 canvasID: canvasID,
-                nodeID: nodeID
+                nodeID: nodeID,
+                nodeMetadata: preRead.nodeMetadata
             )
         } catch {
             throw error
@@ -614,6 +622,14 @@ enum DesignWorkflowActions {
     struct CurrentNodeUnavailable: Error, LocalizedError {
         let reason: String
         var errorDescription: String? { reason }
+
+        init(reason: String) { self.reason = reason }
+
+        /// Localized failure with catalog-key resolution at throw time so the
+        /// panel shows the active product language (never fixed English).
+        init(key: String, _ arguments: String...) {
+            self.reason = FloeL10n.localized(key: key, arguments: arguments)
+        }
     }
 
     struct CurrentNodeOutcome: Sendable {
@@ -647,36 +663,60 @@ enum DesignWorkflowActions {
         let runID = runID(for: caller)
         let snapshot = try await service.snapshot(runID: runID, canvasID: canvasID, nodeID: nodeID)
         let node = try await service.node(runID: runID, canvasID: canvasID, nodeID: nodeID)
-        let contentType = snapshot.design?.contentType
-            ?? DesignContentTypeMapper.contentType(for: node.kind)
+        let builtinPlugin = node.metadata[DesignContentTypeMapper.builtinPluginMetadataKey]
+        let isTextBodyBuiltin = builtinPlugin
+            .map { DesignContentTypeMapper.textBodyBuiltinPlugins.contains($0) } ?? false
+        let contentType = DesignContentTypeMapper.effectiveContentType(
+            existing: snapshot.design?.contentType, kind: node.kind, metadata: node.metadata
+        )
         let source: (bytes: Data, format: String, name: String)
         switch node.kind {
         case .text, .stickyNote:
             let text = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
-                throw CurrentNodeUnavailable(reason: "This node has no text content to freeze yet")
+                throw CurrentNodeUnavailable(key: "design.error.current_node_no_text")
             }
             let format = contentType == .notes ? "md" : "txt"
             source = (Data(node.text.utf8), format, node.title ?? "node-text")
+        case .card where isTextBodyBuiltin:
+            // Built-in Markdown / HTML / SVG card: the card text IS the typed
+            // source. Freeze the exact bytes under the plugin's recorded
+            // format; the adapter's real parser verifies them below.
+            let pluginID = builtinPlugin!
+            let text = node.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                throw CurrentNodeUnavailable(
+                    key: "design.error.current_node_builtin_empty", pluginID
+                )
+            }
+            guard let format = DesignContentTypeMapper.builtinPluginFormat(pluginID),
+                  DesignContentTypeMapper.builtinPluginContentType(pluginID) == contentType else {
+                // Unknown/non-text builtin must fail explicitly, never fall
+                // back to treating arbitrary card bytes as text.
+                throw CurrentNodeUnavailable(
+                    key: "design.error.current_node_builtin_unsupported", pluginID
+                )
+            }
+            source = (Data(node.text.utf8), format, node.title ?? "builtin-\(pluginID)")
         case .image, .video, .file, .audio:
             if let asset = node.asset, let relative = asset.localRelativePath, !relative.isEmpty {
                 let root = try FloeArtifactStore.root()
                 let fileURL = root.appendingPathComponent(relative)
                 guard !relative.split(separator: "/").contains("..") else {
-                    throw CurrentNodeUnavailable(reason: "The node asset path is not a safe artifact path")
+                    throw CurrentNodeUnavailable(key: "design.error.current_node_unsafe_asset_path")
                 }
                 let bytes: Data
                 do {
                     bytes = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
                 } catch {
-                    throw CurrentNodeUnavailable(reason: "The node's retained asset bytes are missing on disk")
+                    throw CurrentNodeUnavailable(key: "design.error.current_node_asset_missing")
                 }
                 guard !bytes.isEmpty else {
-                    throw CurrentNodeUnavailable(reason: "The node's retained asset is empty")
+                    throw CurrentNodeUnavailable(key: "design.error.current_node_asset_empty")
                 }
                 if let expected = asset.contentHash, !expected.isEmpty {
                     guard FloeDigest.sha256Hex(bytes) == expected.lowercased() else {
-                        throw CurrentNodeUnavailable(reason: "The node's asset bytes do not match their recorded digest")
+                        throw CurrentNodeUnavailable(key: "design.error.current_node_asset_digest")
                     }
                 }
                 // Format discipline: prefer the real file extension, then the
@@ -711,7 +751,9 @@ enum DesignWorkflowActions {
                ) {
                 let url = URL(fileURLWithPath: binding.documentAbsolutePath)
                 guard let bytes = try? Data(contentsOf: url, options: [.mappedIfSafe]), !bytes.isEmpty else {
-                    throw CurrentNodeUnavailable(reason: "The bound \(binding.format.uppercased()) document is missing or empty")
+                    throw CurrentNodeUnavailable(
+                        key: "design.error.current_node_bound_missing", binding.format.uppercased()
+                    )
                 }
                 source = (bytes, binding.format, url.lastPathComponent)
                 break
@@ -721,14 +763,22 @@ enum DesignWorkflowActions {
                key.hasPrefix(CanvasCADStorage.keyPrefix),
                let packageURL = CanvasCADStorage.packageURL(forKey: key) {
                 guard let bytes = try? Data(contentsOf: packageURL, options: [.mappedIfSafe]), !bytes.isEmpty else {
-                    throw CurrentNodeUnavailable(reason: "The bound CAD package is missing or empty")
+                    throw CurrentNodeUnavailable(key: "design.error.current_node_cad_missing")
                 }
                 let format = packageURL.pathExtension.lowercased()
                 source = (bytes, format.isEmpty ? "bin" : format, packageURL.lastPathComponent)
                 break
             }
+            // A built-in node without a recognized text body (e.g. panorama3D
+            // with no retained asset) reports its own precise reason instead
+            // of the generic content-type message.
+            if let pluginID = builtinPlugin, !isTextBodyBuiltin {
+                throw CurrentNodeUnavailable(
+                    key: "design.error.current_node_builtin_unsupported", pluginID
+                )
+            }
             throw CurrentNodeUnavailable(
-                reason: "This \(contentType.rawValue) node has no retained content to freeze: bind a workspace document or import a source first"
+                key: "design.error.current_node_none", contentType.rawValue
             )
         }
         // An adapter must exist for this content type; its real parser
@@ -775,7 +825,8 @@ enum DesignWorkflowActions {
                 canvasID: canvasID,
                 nodeID: nodeID,
                 expectedRevision: expectedRevision,
-                operationID: operationID
+                operationID: operationID,
+                contentType: contentType
             ) { design in
                 if design.artifact(artifactID) == nil {
                     let identity = DesignArtifactIdentity(

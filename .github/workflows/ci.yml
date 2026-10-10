@@ -752,6 +752,15 @@ jobs:
         run: |
           brew install xcodegen automake cmake
           scripts/bootstrap_native_components.sh
+          # Same pinned, hash-verified OCCT slices as the build-test leg:
+          # bootstrap_native_components.sh does not fetch OCCT, and the
+          # simulator xcframework slice is not committed. Without this step
+          # the Xcode 26.6 App compile fails on the missing simulator .a.
+          if [ -f FloeAgent/ThirdParty/FloeCADKit/bootstrap.py ]; then
+            env -u FLOECAD_LOCAL_RELINK python3 FloeAgent/ThirdParty/FloeCADKit/bootstrap.py
+          else
+            echo "FloeCADKit bootstrap.py not present; using tracked vendor slices"
+          fi
           scripts/gen_project.sh
           python3 scripts/audit_native_runtime_free.py --project
           swift package resolve

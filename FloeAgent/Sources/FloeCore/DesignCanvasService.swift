@@ -22,6 +22,56 @@ public enum DesignContentTypeMapper {
         case .card, .shape, .group, .generationTask, .audio: return .webpage
         }
     }
+
+    /// Node-metadata key marking a Canvas built-in source node
+    /// (`WorkspaceCanvasStore.addBuiltinNode(pluginID:)`): "markdown", "html",
+    /// "svg" or "panorama3D". The Canvas owns the key; the design workflow
+    /// reads it so a built-in card's typed text source is never confused with
+    /// an ordinary free-text card.
+    public static let builtinPluginMetadataKey = "builtinPlugin"
+
+    /// Built-in source plugins whose node `text` IS the typed source. The
+    /// panorama node is intentionally absent: it is an image/panorama node
+    /// backed by an asset, not a text source.
+    public static let textBodyBuiltinPlugins: Set<String> = ["markdown", "html", "svg"]
+
+    /// The design content type a built-in text-body plugin freezes/adopts as.
+    /// Markdown is notes (markdown bytes); HTML and SVG are webpage markup.
+    /// Unknown plugins return nil so callers fail explicitly.
+    public static func builtinPluginContentType(_ pluginID: String) -> DesignContentType? {
+        switch pluginID {
+        case "markdown": return .notes
+        case "html", "svg": return .webpage
+        default: return nil
+        }
+    }
+
+    /// The recorded source format of a built-in text-body plugin.
+    public static func builtinPluginFormat(_ pluginID: String) -> String? {
+        switch pluginID {
+        case "markdown": return "md"
+        case "html": return "html"
+        case "svg": return "svg"
+        default: return nil
+        }
+    }
+
+    /// Resolves the effective design content type for a node. An existing
+    /// design subdocument stays authoritative; otherwise a built-in
+    /// text-source card resolves to the plugin's real type (markdown→notes,
+    /// html/svg→webpage) instead of the generic card→webpage mapping.
+    public static func effectiveContentType(
+        existing: DesignContentType?,
+        kind: CanvasNodeKind,
+        metadata: [String: String]
+    ) -> DesignContentType {
+        if let existing { return existing }
+        if let pluginID = metadata[builtinPluginMetadataKey],
+           let pluginType = builtinPluginContentType(pluginID) {
+            return pluginType
+        }
+        return contentType(for: kind)
+    }
 }
 
 public actor DesignCanvasService {
@@ -35,6 +85,11 @@ public actor DesignCanvasService {
         public let canvasDocumentID: UUID?
         public let canvasRevision: Int64
         public let nodeKind: CanvasNodeKind
+        /// The bound node's metadata at snapshot time (e.g. the Canvas
+        /// built-in source marker `builtinPlugin`). Read-only context so
+        /// adoption can tell a built-in Markdown/HTML/SVG card from an
+        /// ordinary card without another repository read.
+        public let nodeMetadata: [String: String]
         public let design: DesignProject?
         public let operationReplayed: Bool
     }
@@ -75,6 +130,7 @@ public actor DesignCanvasService {
             canvasDocumentID: Self.document(containing: nodeID, in: project)?.id,
             canvasRevision: project.revision,
             nodeKind: node.kind,
+            nodeMetadata: node.metadata,
             design: design,
             operationReplayed: false
         )
@@ -126,6 +182,7 @@ public actor DesignCanvasService {
                 canvasDocumentID: containingDocumentID,
                 canvasRevision: project.revision,
                 nodeKind: node.kind,
+            nodeMetadata: node.metadata,
                 design: design,
                 operationReplayed: true
             )
@@ -141,6 +198,7 @@ public actor DesignCanvasService {
             return Snapshot(
                 canvasID: canvasID, nodeID: nodeID, canvasDocumentID: containingDocumentID,
                 canvasRevision: project.revision, nodeKind: node.kind,
+                nodeMetadata: node.metadata,
                 design: design, operationReplayed: true
             )
         }
@@ -159,6 +217,7 @@ public actor DesignCanvasService {
             canvasDocumentID: containingDocumentID,
             canvasRevision: project.revision,
             nodeKind: node.kind,
+            nodeMetadata: node.metadata,
             design: design,
             operationReplayed: false
         )
@@ -404,6 +463,7 @@ public actor DesignCanvasService {
                 canvasDocumentID: containingDocumentID,
                 canvasRevision: project.revision,
                 nodeKind: node.kind,
+            nodeMetadata: node.metadata,
                 design: design,
                 operationReplayed: true
             )
@@ -432,6 +492,7 @@ public actor DesignCanvasService {
             canvasDocumentID: containingDocumentID,
             canvasRevision: project.revision,
             nodeKind: node.kind,
+            nodeMetadata: node.metadata,
             design: design,
             operationReplayed: false
         )

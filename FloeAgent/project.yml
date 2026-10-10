@@ -507,6 +507,7 @@ targets:
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowIntegrationTests.swift
       - path: Tests/FloeAppTests/DesignAdapterReopenTests.swift
+      - path: Tests/FloeAppTests/DesignBuiltinNodeTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift
       - path: Tests/FloeAppTests/ApprovalCardRegistryTests.swift

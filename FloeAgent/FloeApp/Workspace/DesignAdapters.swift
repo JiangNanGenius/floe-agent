@@ -362,6 +362,24 @@ struct NotesDesignAdapter: DesignTypeAdapter {
         guard let importPort else { throw DesignAdapterError.unavailable("Notes import is not connected") }
         return try await importPort.importDesignSource(fileURL)
     }
+
+    /// Notes revisions are Markdown/plain text only. The format gate is
+    /// essential: without it SVG/HTML bytes imported under an `.svg`/`.html`
+    /// extension would pass the UTF-8 default and silently become notes.
+    func verifyExportReopen(bytes: Data, format: String) async throws {
+        let ext = format.lowercased()
+        guard Self.textFormats.contains(ext) else {
+            throw FloeError.validationFailed(
+                FloeL10n.l("design.error.notes_format", ext)
+            )
+        }
+        guard !bytes.isEmpty, String(data: bytes, encoding: .utf8) != nil else {
+            throw FloeError.validationFailed("Exported bytes are not valid UTF-8 text")
+        }
+    }
+
+    /// Recorded notes formats (extension, lowercased).
+    static let textFormats: Set<String> = ["md", "markdown", "txt"]
 }
 
 // MARK: - Webpage / prototype (browser snapshot revisions)
@@ -398,13 +416,82 @@ struct WebpageDesignAdapter: DesignTypeAdapter {
     }
 
     func verifyExportReopen(bytes: Data, format: String) async throws {
-        let text = String(data: bytes, encoding: .utf8)
-        guard format.lowercased() == "html" || format.lowercased() == "json" else {
-            throw FloeError.validationFailed("Web revisions export as their recorded format, not \(format)")
+        let ext = format.lowercased()
+        guard Self.textFormats.contains(ext) else {
+            throw FloeError.validationFailed("Web revisions export as html, svg or json, not \(format)")
         }
-        guard let text, !text.isEmpty else {
+        // Hard byte cap BEFORE any decode/parse, so a hostile oversized markup
+        // payload can never reach the XML parser (mirrors the 2 MiB design
+        // subdocument bound).
+        guard bytes.count <= Self.markupByteCap else {
+            throw FloeError.validationFailed("Exported \(format) markup exceeds the \(Self.markupByteCap)-byte limit")
+        }
+        guard !bytes.isEmpty, let text = String(data: bytes, encoding: .utf8) else {
             throw FloeError.validationFailed("Exported bytes are not valid \(format) content")
         }
+        if ext == "svg" {
+            // A real reopen: the bytes must parse as an XML/SVG document with
+            // an <svg> root. Arbitrary text renamed to .svg is rejected.
+            try Self.verifySVG(text)
+        }
+    }
+
+    private static let textFormats: Set<String> = ["html", "htm", "json", "svg"]
+    /// Upper bound for markup sources, enforced before decode/parse.
+    static let markupByteCap = 2 * 1024 * 1024
+
+    private static func verifySVG(_ text: String) throws {
+        let parser = SVGReopenParser()
+        guard parser.parse(text) else {
+            throw FloeError.validationFailed("Exported bytes are not a parseable SVG document")
+        }
+    }
+}
+
+/// Bounded XML parser used only to confirm that frozen/exported `.svg` bytes
+/// reopen as a real SVG document (a root `<svg>` element). It never renders,
+/// loads external entities or follows URLs, so untrusted markup cannot reach
+/// a web view through verification.
+private final class SVGReopenParser: NSObject, XMLParserDelegate {
+    private var sawSVGRoot = false
+    private var aborted = false
+
+    func parse(_ text: String) -> Bool {
+        guard let data = text.data(using: .utf8) else { return false }
+        let parser = XMLParser(data: data)
+        parser.delegate = self
+        parser.shouldProcessNamespaces = true
+        parser.shouldResolveExternalEntities = false
+        parser.externalEntityResolvingPolicy = .never
+        // Bounded, hostile-input parse.
+        guard parser.parse() else { return false }
+        return sawSVGRoot && !aborted
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let local = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        if local.caseInsensitiveCompare("svg") == .orderedSame {
+            sawSVGRoot = true
+        } else if !sawSVGRoot {
+            // The first element must be svg; anything else is not an SVG doc.
+            aborted = true
+            parser.abortParsing()
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        resolveExternalEntityName name: String,
+        systemID: String?
+    ) -> Data? {
+        // Never resolve external entities.
+        nil
     }
 }
 
@@ -1024,6 +1111,18 @@ enum DesignCanvasContentApplicator {
 
     static let provenancePrefix = "design.adopt."
 
+    /// Formats that may be written back into a text-body built-in card. These
+    /// match exactly what the node renders and what its design adapter
+    /// reopens: markdown cards take notes text, html/svg cards webpage markup.
+    static func builtinTextFormats(pluginID: String) -> Set<String> {
+        switch pluginID {
+        case "markdown": return ["md", "markdown", "txt"]
+        case "html": return ["html", "htm"]
+        case "svg": return ["svg"]
+        default: return []
+        }
+    }
+
     /// Ingests verified payload bytes into the shared material library so the
     /// node references REAL, reopenable content.
     static func prepare(
@@ -1035,13 +1134,16 @@ enum DesignCanvasContentApplicator {
         contentSHA256: String,
         environment: AppEnvironment,
         canvasID: UUID? = nil,
-        nodeID: UUID? = nil
+        nodeID: UUID? = nil,
+        nodeMetadata: [String: String] = [:]
     ) async throws -> PreparedUpdate {
         var update = PreparedUpdate(provenance: [
             "\(provenancePrefix)revision": candidateRevisionID,
             "\(provenancePrefix)sha256": contentSHA256,
             "\(provenancePrefix)format": format
         ])
+        let ext = format.lowercased()
+        let builtinPlugin = nodeMetadata[DesignContentTypeMapper.builtinPluginMetadataKey]
         switch nodeKind {
         case .image, .video:
             let type = UTType(filenameExtension: format.lowercased())
@@ -1082,6 +1184,24 @@ enum DesignCanvasContentApplicator {
                 )
             }
         case .text, .stickyNote:
+            guard let text = String(data: bytes, encoding: .utf8) else {
+                throw FloeError.validationFailed("The payload is not valid UTF-8 text for this node")
+            }
+            update.text = text
+        case .card where builtinPlugin.map({
+            DesignContentTypeMapper.textBodyBuiltinPlugins.contains($0)
+        }) == true:
+            // Built-in Markdown/HTML/SVG card: the card text is the typed
+            // source. Adopt only a format this exact plugin renders; a
+            // mismatch fails explicitly so, e.g., SVG bytes never become a
+            // Markdown note. The bytes were already parser-verified upstream.
+            let pluginID = builtinPlugin!
+            let allowed = Self.builtinTextFormats(pluginID: pluginID)
+            guard allowed.contains(ext) else {
+                throw FloeError.validationFailed(
+                    FloeL10n.l("design.error.adopt_builtin_format", pluginID, ext, allowed.sorted().joined(separator: "/"))
+                )
+            }
             guard let text = String(data: bytes, encoding: .utf8) else {
                 throw FloeError.validationFailed("The payload is not valid UTF-8 text for this node")
             }
