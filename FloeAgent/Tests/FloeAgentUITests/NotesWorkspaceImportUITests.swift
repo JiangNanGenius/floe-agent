@@ -2,6 +2,12 @@
 import XCTest
 import UIKit
 
+/// Captures the verified on-screen tap point of a menu row so the tap never
+/// depends on a second (potentially stale) accessibility frame read.
+private final class AXMenuPoint: @unchecked Sendable {
+    var center: CGPoint?
+}
+
 @MainActor
 final class NotesWorkspaceImportUITests: XCTestCase {
     func testOfficeHeaderAssistantSaveAndReopen() throws {
@@ -287,8 +293,10 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             .init(kind: "engineering", title: "封面验收-图纸-DWG", allowed: ["engineeringPreview"])
         ]
 
+        var firstWordRevision: Int?
         for cover in cases {
-            assertContentCover(app, cover: cover)
+            let parsed = assertContentCover(app, cover: cover)
+            if cover.title == "封面验收-Word" { firstWordRevision = parsed.revision }
             capture("notes-cover-\(cover.kind)-\(cover.title)")
         }
         capture("notes-content-covers")
@@ -297,8 +305,9 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         // Notes store (a save that advances the document revision), then assert
         // the reloaded card reports a strictly newer revision and still a real
         // content cover. A stale cached cover from the pre-rename revision
-        // would fail this.
-        let originalRevision = assertContentCover(
+        // would fail this. The loop above already asserted the Word cover, so
+        // reuse its revision instead of paying for a second reveal+poll.
+        let originalRevision = firstWordRevision ?? assertContentCover(
             app, cover: .init(kind: "office", title: "封面验收-Word", allowed: officeSources)).revision
         let renamedTitle = "封面验收-Word 修订"
         renameDocument(app, kind: "office", title: "封面验收-Word", to: renamedTitle)
@@ -434,7 +443,21 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             XCTAssertTrue(card.waitForExistence(timeout: 30), "card \(title) must exist", file: file, line: line)
             return card
         }
-        for _ in 0..<8 where !(card.exists && card.isHittable) { scroll.swipeDown() }
+        // Reset to the top, then sweep up. The grid re-sorts while covers
+        // regenerate (cards can move between cases), so a fixed start point is
+        // the only reliable order; a forward-first variant measured 2x slower
+        // on a fresh iPhone 17 Pro (219s vs 111s) because it swept away from
+        // the target and still needed the reset.
+        //
+        // The reset itself was the dominant cost on a loaded CI runner (up to
+        // eight swipeDowns at ~4s each per case). Use the system status-bar
+        // scroll-to-top gesture first; keep a bounded swipe fallback for
+        // layouts where the tap does not reach the scroll view.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)).tap()
+        Thread.sleep(forTimeInterval: 0.4)
+        if !(card.exists && card.isHittable) {
+            for _ in 0..<6 where !(card.exists && card.isHittable) { scroll.swipeDown() }
+        }
         let deadline = Date().addingTimeInterval(60)
         while !(card.exists && card.isHittable) && Date() < deadline { scroll.swipeUp() }
         XCTAssertTrue(card.exists && card.isHittable,
@@ -591,22 +614,29 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             // frame while XCTest reports no suggested AX activation point.
             // Tap the verified on-screen center; the destination assertions
             // below still require the import flow to open for real.
+            let menuPoint = AXMenuPoint()
             let menuReady = NSPredicate { _, _ in
                 let row = importWorkspace.frame
                 let screen = app.windows.firstMatch.frame
-                return row.width > 0 && row.height > 0 &&
-                    row.origin.x.isFinite && row.origin.y.isFinite &&
-                    screen.contains(CGPoint(x: row.midX, y: row.midY))
+                let candidate = CGPoint(x: row.midX, y: row.midY)
+                guard row.width > 0, row.height > 0,
+                      row.origin.x.isFinite, row.origin.y.isFinite,
+                      screen.contains(candidate) else { return false }
+                menuPoint.center = candidate
+                return true
             }
             let readiness = XCTNSPredicateExpectation(predicate: menuReady, object: importWorkspace)
             XCTAssertEqual(XCTWaiter.wait(for: [readiness], timeout: 10), .completed,
                            "the import menu must finish presenting before its coordinate tap")
-            let row = importWorkspace.frame
+            // Reuse the point the readiness predicate just verified: a second
+            // frame read can race the menu's layout and return a stale origin
+            // (observed as an on-screen assertion failure on a loaded runner
+            // even though the row was present).
             let screen = app.windows.firstMatch.frame
-            let center = CGPoint(x: row.midX, y: row.midY)
-            XCTAssertTrue(row.origin.x.isFinite && row.origin.y.isFinite &&
-                          row.width > 0 && row.height > 0 && screen.contains(center),
-                          "the workspace import menu row must be visible on screen")
+            guard let center = menuPoint.center else {
+                XCTFail("the workspace import menu row must be visible on screen")
+                throw CocoaError(.featureUnsupported)
+            }
             app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: center.x - screen.minX, dy: center.y - screen.minY))
                 .tap()
