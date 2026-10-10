@@ -1694,7 +1694,10 @@ struct NotesExportTool: AgentTool {
             let pages = try NoteExportSelection.pages(of: document, pageIDs: args.pageIDs)
             let artifact = try await NotesExport.pdf(document: document, pages: pages, store: store) { _, _ in }
             let artifactFolder = artifact.url.deletingLastPathComponent()
-            defer { try? FileManager.default.removeItem(at: artifactFolder) }
+            defer {
+                try? FileManager.default.removeItem(at: artifactFolder)
+                artifact.lease?.release()
+            }
             try context.cancellation.throwIfCancelled()
             try FileManager.default.copyItem(at: artifact.url, to: staging)
             guard let reopened = CGPDFDocument(staging as CFURL), reopened.numberOfPages == pages.count else {

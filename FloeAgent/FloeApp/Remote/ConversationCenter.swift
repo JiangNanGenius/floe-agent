@@ -321,15 +321,28 @@ final class ConversationCenter: ObservableObject {
 
     /// JSON Lines keeps export memory bounded and preserves native event order.
     /// It includes every persisted call/result, not only the UI's current page.
-    func exportStructuredConversation(conversationID: UUID) async throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("floe-task-\(UUID().uuidString).jsonl")
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: url)
+    /// Exports the structured transcript. The returned lease keeps the scratch
+    /// directory alive while the caller's share sheet holds the URL; the
+    /// caller must release it on sheet completion (or process death releases
+    /// it implicitly).
+    func exportStructuredConversation(conversationID: UUID) async throws -> (url: URL, lease: ScratchLeaseToken) {
+        // Owned scratch with a live cleanup lease: the export can take a while
+        // and must never be reclaimed mid-write. On success the lease is
+        // handed to the caller; on failure it is released here.
+        let scratch = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "task")
+        let scratchURL = scratch.url
+        var handle: FileHandle?
         var succeeded = false
         defer {
-            try? handle.close()
-            if !succeeded { try? FileManager.default.removeItem(at: url) }
+            try? handle?.close()
+            if !succeeded {
+                try? FileManager.default.removeItem(at: scratchURL)
+                scratch.lease.release()
+            }
         }
+        let url = scratchURL.appendingPathComponent("transcript.jsonl")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        handle = try FileHandle(forWritingTo: url)
         func scrub(_ value: Any) -> Any {
             if let text = value as? String {
                 if (text.hasPrefix("{") || text.hasPrefix("[")),
@@ -348,8 +361,8 @@ final class ConversationCenter: ObservableObject {
         }
         func write(_ object: [String: Any]) throws {
             let data = try JSONSerialization.data(withJSONObject: scrub(object), options: [.sortedKeys])
-            try handle.write(contentsOf: data)
-            try handle.write(contentsOf: Data([10]))
+            try handle?.write(contentsOf: data)
+            try handle?.write(contentsOf: Data([10]))
         }
         let iso = ISO8601DateFormatter()
         let encoder = JSONEncoder()
@@ -395,9 +408,10 @@ final class ConversationCenter: ObservableObject {
             }
         }
         try write(["type": "exportComplete", "runCount": runs.count, "messageCount": messages.count])
-        try handle.synchronize()
+        try handle?.synchronize()
         succeeded = true
-        return url
+        // Success: transfer lease ownership to the caller's share sheet.
+        return (url, scratch.lease)
     }
 
     /// Writes the launch-critical skip marker synchronously. Interactive

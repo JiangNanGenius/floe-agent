@@ -46,6 +46,10 @@ public struct StorageReport: Sendable, Equatable {
     public let changedOrVanishedCount: Int
     public let scanDuration: TimeInterval
     public let metricLabel: String
+    /// When the scan finished (measured, not the render time).
+    public let generatedAt: Date
+    /// Regular files visited by the census (measured progress figure).
+    public let filesScanned: Int
 
     public var combinedBytes: Int64 { bundleBytes + totalAllocatedBytes }
 }
@@ -97,7 +101,9 @@ public enum StorageReportBuilder {
             scanErrorCount: census.diagnostics.errorCount,
             changedOrVanishedCount: census.diagnostics.changedOrVanishedCount,
             scanDuration: census.diagnostics.duration,
-            metricLabel: census.diagnostics.metricLabel
+            metricLabel: census.diagnostics.metricLabel,
+            generatedAt: census.diagnostics.completedAt,
+            filesScanned: census.diagnostics.regularFileCount
         )
     }
 }

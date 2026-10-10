@@ -19,24 +19,50 @@ import Foundation
 /// Owners that can lend/deny cleanup permission. Every deletion needs an owner
 /// probe that positively proves the owner is idle.
 public enum StorageCleanupOwner: String, Sendable, CaseIterable {
-    /// The app's own tmp scratch.
+    /// Generic one-off app scratch (task transcripts, workspace diff staging).
     case temporary
     /// Floe component cache directories registered as regenerable.
     case floeCache
+    /// Notes assistant import/export/preview scratch.
+    case notes
+    /// Skill update/upgrade staging.
+    case skills
+    /// Office attachment/conversion staging.
+    case office
+    /// Media generation staging.
+    case media
+    /// Environment-owned roots (fallback container root, environment trash).
+    case environment
 }
 
-/// Live ownership probe. Implementations must fail closed (return false) when
-/// they cannot prove the owner is idle. Methods are async so the implementation
-/// can query real services (environment registry, model downloads, media jobs,
-/// editor/task leases) on every call instead of caching a snapshot.
+/// Live ownership probe. Implementations must fail closed (return false/nil)
+/// when they cannot prove the owner is idle. Methods are async so the
+/// implementation can query real services (environment registry, model
+/// downloads, media jobs, editor/task leases) on every call instead of caching
+/// a snapshot.
 @MainActor
 public protocol StorageCleanupAuthority: Sendable {
     /// True only when the owner is positively idle (no running task, no lease).
     /// Implementations query the real services on every call.
     func isOwnerIdle(_ owner: StorageCleanupOwner) async -> Bool
-    /// Per-item retaining probe consulted immediately before each removal.
+    /// Per-item retaining probe consulted during classification.
     /// Unregistered/unknown owners must be retained here.
     func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> Bool
+    /// Atomically claims the right to delete one exact item, coordinating with
+    /// the owner's live per-path leases so claiming cannot race a component
+    /// re-acquiring the same resource (no TOCTOU). Nil means "retain".
+    func claimDeletion(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> StorageCleanupDeletionClaim?
+    /// Releases a claim after the item was deleted or kept.
+    func releaseDeletionClaim(_ claim: StorageCleanupDeletionClaim) async
+}
+
+public extension StorageCleanupAuthority {
+    /// Default: no atomic claim coordination available — retain (fail closed).
+    func claimDeletion(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> StorageCleanupDeletionClaim? {
+        nil
+    }
+
+    func releaseDeletionClaim(_ claim: StorageCleanupDeletionClaim) async {}
 }
 
 /// A registered, regenerable, component-owned cleanup candidate.
@@ -57,6 +83,10 @@ public struct StorageCleanupCandidate: Sendable, Identifiable {
     public let olderThan: Date
     /// Names that are always retained even if the owner is idle.
     public let protectedNames: Set<String>
+    /// When non-empty, only direct children whose names start with one of these
+    /// prefixes are eligible at all. Foreign files inside an owned scratch
+    /// directory are retained, never removed.
+    public let requiredNamePrefixes: Set<String>
 
     public init(
         id: String,
@@ -67,7 +97,8 @@ public struct StorageCleanupCandidate: Sendable, Identifiable {
         kind: Kind,
         root: URL,
         olderThan: Date,
-        protectedNames: Set<String> = []
+        protectedNames: Set<String> = [],
+        requiredNamePrefixes: Set<String> = []
     ) {
         self.id = id
         self.owner = owner
@@ -78,6 +109,7 @@ public struct StorageCleanupCandidate: Sendable, Identifiable {
         self.root = root.standardizedFileURL
         self.olderThan = olderThan
         self.protectedNames = protectedNames
+        self.requiredNamePrefixes = requiredNamePrefixes
     }
 }
 
@@ -194,6 +226,12 @@ public enum StorageCleanup {
         for item in contents {
             let name = item.lastPathComponent
             if candidate.protectedNames.contains(name) {
+                scan.skippedProtected += 1
+                continue
+            }
+            if !candidate.requiredNamePrefixes.isEmpty,
+               !candidate.requiredNamePrefixes.contains(where: { name.hasPrefix($0) }) {
+                // A foreign file inside an owned scratch directory is retained.
                 scan.skippedProtected += 1
                 continue
             }
@@ -322,13 +360,21 @@ public enum StorageCleanup {
 
             for item in scan.eligible {
                 if isCancelled() { cancelled = true; break }
-                // Atomic revalidation immediately before deletion.
+                // Atomic revalidation immediately before deletion: the owner
+                // must still be idle AND the per-item claim must be granted
+                // atomically with respect to the owner's live leases.
                 guard await authority.isOwnerIdle(candidate.owner) else {
                     result.skippedOwnerBusyCount += 1
                     continue
                 }
                 if await authority.shouldRetain(itemURL: item, name: item.lastPathComponent, owner: candidate.owner) {
                     result.skippedProtectedCount += 1
+                    continue
+                }
+                guard let claim = await authority.claimDeletion(
+                    itemURL: item, name: item.lastPathComponent, owner: candidate.owner
+                ) else {
+                    result.skippedOwnerBusyCount += 1
                     continue
                 }
                 let bytes = allocatedBytes(of: item)
@@ -339,6 +385,7 @@ public enum StorageCleanup {
                 } catch {
                     result.failedCount += 1
                 }
+                await authority.releaseDeletionClaim(claim)
             }
             if cancelled { break }
         }

@@ -24,6 +24,11 @@ struct MindMapTopicInspector: View {
     private struct Preview: Identifiable {
         let id = UUID()
         let url: URL
+        /// Keeps the scratch copy alive while the preview is on screen; the
+        /// token is released when replaced or when the inspector disappears.
+        /// Nil only when the path had an in-flight deletion claim (never for a
+        /// fresh scratch directory).
+        let lease: ScratchLeaseToken?
     }
 
     init(session: NotesSession, document: NoteDocument, node: MindMapNode,
@@ -75,7 +80,12 @@ struct MindMapTopicInspector: View {
                     QuickLookView(url: item.url).navigationTitle(item.url.lastPathComponent)
                         .toolbar { ToolbarItem(placement: .topBarTrailing) { ShareLink(item: item.url) } }
                 }
-                .onDisappear { try? FileManager.default.removeItem(at: item.url.deletingLastPathComponent()) }
+                .onDisappear {
+                    // The sheet is gone: release the lease and remove the
+                    // scratch copy (no consumer can still be reading it).
+                    item.lease?.release()
+                    try? FileManager.default.removeItem(at: item.url.deletingLastPathComponent())
+                }
             }
             .alert("notes.mind_map_topic_inspector.topic_content", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("workspace.office_document_editor_view.ok") { error = nil }
@@ -183,18 +193,22 @@ struct MindMapTopicInspector: View {
         busy = true
         Task {
             defer { busy = false }
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-preview-\(UUID().uuidString)", isDirectory: true)
+            // Owned scratch leased to the preview itself: the file stays
+            // protected for exactly as long as the preview is shown.
+            let folder = try FloeScratch.makeDirectory(purpose: "notes")
+            let lease = await StorageCleanupLeaseCenter.shared.acquireToken(path: folder.path)
             do {
                 try attachment.validate()
                 let source = try await store.resourceURL(attachment.resourceID)
                 let destination = folder.appendingPathComponent(attachment.fileName)
                 try await Task.detached(priority: .userInitiated) {
-                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     try FileManager.default.copyItem(at: source, to: destination)
                 }.value
-                preview = Preview(url: destination)
+                preview?.lease?.release()
+                preview = Preview(url: destination, lease: lease)
             } catch {
                 try? FileManager.default.removeItem(at: folder)
+                lease?.release()
                 self.error = error.localizedDescription
             }
         }

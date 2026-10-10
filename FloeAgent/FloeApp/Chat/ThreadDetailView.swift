@@ -128,7 +128,7 @@ struct ThreadDetailView: View {
             }
             .onDisappear { viewModel.stopLiveUpdates() }
             .sheet(item: $structuredExport) { file in
-                TaskExportShareSheet(url: file.url)
+                TaskExportShareSheet(url: file.url, lease: file.lease)
             }
             .sheet(item: $editingPendingInput) { input in
                 PendingInputEditor(input: input) { text in
@@ -564,8 +564,8 @@ struct ThreadDetailView: View {
                     exporting = true
                     Task {
                         defer { exporting = false }
-                        if let url = await viewModel.exportStructuredConversation() {
-                            structuredExport = TaskExportFile(url: url)
+                        if let result = await viewModel.exportStructuredConversation() {
+                            structuredExport = TaskExportFile(url: result.url, lease: result.lease)
                         }
                     }
                 }.disabled(exporting)
@@ -1212,12 +1212,18 @@ private struct MessageBubble: View {
 private struct TaskExportFile: Identifiable {
     let id = UUID()
     let url: URL
+    let lease: ScratchLeaseToken
 }
 
 private struct TaskExportShareSheet: UIViewControllerRepresentable {
     let url: URL
+    let lease: ScratchLeaseToken
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            lease.release()
+        }
+        return controller
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

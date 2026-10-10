@@ -139,9 +139,10 @@ private struct OfficeAttachmentFolder: View {
             let url: URL
             if center.isCloudWorkspacePath(file.relativePath) || center.isNetworkWorkspacePath(file.relativePath) {
                 let bytes = try await center.readRemotePreview(relativePath: file.relativePath)
-                let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let leasedDirectory = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "office")
+                let directory = leasedDirectory.url
                 temporaryDirectory = directory
+                defer { leasedDirectory.lease.release() }
                 url = directory.appendingPathComponent((file.name as NSString).lastPathComponent)
                 try await Task.detached(priority: .userInitiated) { try bytes.write(to: url, options: .atomic) }.value
             } else {

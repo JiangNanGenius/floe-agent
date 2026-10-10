@@ -32,6 +32,12 @@ struct StorageCategoryDiagnostic: Identifiable, Sendable {
     private static let capacityDeltaThreshold: Int64 = 16 * 1024 * 1024
 }
 
+/// Category ids whose apparent size mixes sparse VM disk images with other
+/// files. The note under these rows states that the apparent figure is NOT
+/// the configured guest capacity (no per-VM capacity metadata exists here)
+/// and that guest use is only measurable inside the running guest.
+let vmDiskMixedCategoryIDs: Set<String> = ["environments", "linuxDisks"]
+
 /// Full snapshot consumed by Settings → Data Management. Carries only
 /// category/count/size/error metrics — never file paths, names or contents.
 struct StorageDiagnosticReport: Sendable {
@@ -45,6 +51,10 @@ struct StorageDiagnosticReport: Sendable {
     let changedOrVanishedCount: Int
     let scanDuration: TimeInterval
     let metricLabel: String
+    /// When the scan finished (from the census, not the render pass).
+    let generatedAt: Date
+    /// Regular files visited (measured progress figure).
+    let filesScanned: Int
 
     /// Backwards-compatible rollup for the existing overview rows.
     var combinedBytes: Int64 { bundleBytes + totalAllocatedBytes }
@@ -84,8 +94,12 @@ enum FloeStorageLayout {
 final class StorageDiagnosticService: ObservableObject {
     @Published private(set) var report: StorageDiagnosticReport?
     @Published private(set) var isScanning = false
-    @Published private(set) var scanProgress: Double?
+    /// Measured progress: regular files visited so far by the running census.
+    @Published private(set) var filesScanned = 0
     @Published private(set) var wasCancelled = false
+    /// True when the last scan failed for a reason other than cancellation, so
+    /// the UI can say so instead of presenting a silent zero state.
+    @Published private(set) var scanFailed = false
 
     private var currentTask: Task<StorageDiagnosticReport?, Never>?
 
@@ -98,42 +112,76 @@ final class StorageDiagnosticService: ObservableObject {
         guard !isScanning else { return report }
         isScanning = true
         wasCancelled = false
-        scanProgress = nil
+        scanFailed = false
+        filesScanned = 0
         defer {
             isScanning = false
-            scanProgress = nil
         }
 
-        let heartbeat = Task { @MainActor in
-            while !Task.isCancelled {
-                scanProgress = (scanProgress ?? 0) + 0.06
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            }
-        }
-
+        let progress = ProgressCounter()
         let task = Task.detached(priority: .utility) { () -> StorageDiagnosticReport? in
+            defer { progress.finish() }
             let census = StorageCensus(
                 roots: Self.roots(),
                 parentURL: Self.parentRoot(),
-                metricLabel: "storage.data_management.v2"
-            ) {
-                Task.isCancelled
-            }
+                metricLabel: "storage.data_management.v2",
+                isCancelled: { Task.isCancelled },
+                onProgress: { count in progress.update(count) }
+            )
             do {
                 let result = try census.run()
                 return Self.makeReport(from: result)
-            } catch StorageCensusError.cancelled {
-                return nil
             } catch {
                 return nil
             }
         }
         currentTask = task
-        let result = await task.value
-        heartbeat.cancel()
-        if Task.isCancelled || result == nil { wasCancelled = result == nil }
+        // Publish measured progress while the census runs (real file count,
+        // not a synthetic heartbeat). Caller cancellation propagates to the
+        // detached census through the cancellation handler; the polling loop
+        // exits immediately instead of sleeping again.
+        let result = await withTaskCancellationHandler {
+            while !progress.isFinished {
+                if task.isCancelled || Task.isCancelled { break }
+                let count = progress.value
+                if count != filesScanned { filesScanned = count }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            filesScanned = progress.value
+            return await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        if result == nil {
+            // Judge cancellation on the detached task that actually ran the
+            // census, never on the caller's task.
+            if task.isCancelled { wasCancelled = true } else { scanFailed = true }
+        }
         if let result { report = result }
         return result
+    }
+
+    /// Thread-safe counter for the census progress callback.
+    private final class ProgressCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        private var finished = false
+
+        func update(_ value: Int) {
+            lock.lock(); count = max(count, value); lock.unlock()
+        }
+
+        func finish() {
+            lock.lock(); finished = true; lock.unlock()
+        }
+
+        var value: Int {
+            lock.lock(); defer { lock.unlock() }; return count
+        }
+
+        var isFinished: Bool {
+            lock.lock(); defer { lock.unlock() }; return finished
+        }
     }
 
     // MARK: - Root / category mapping
@@ -261,7 +309,9 @@ final class StorageDiagnosticService: ObservableObject {
             scanErrorCount: report.scanErrorCount,
             changedOrVanishedCount: report.changedOrVanishedCount,
             scanDuration: report.scanDuration,
-            metricLabel: report.metricLabel
+            metricLabel: report.metricLabel,
+            generatedAt: report.generatedAt,
+            filesScanned: report.filesScanned
         )
     }
 
@@ -294,11 +344,16 @@ final class StorageDiagnosticService: ObservableObject {
 /// candidate; user data and recovery state that live under Caches are
 /// registered as *retained* with reasons and are never swept.
 enum FloeStorageCleanupRegistry {
+    /// Scratch forgotten by one-off components becomes eligible after a day;
+    /// anything newer is either still in use or too recent to prove idle.
+    static let scratchRetention: TimeInterval = 24 * 60 * 60
+
     /// Owned scratch directory. Only what Floe itself creates under this
-    /// directory is a candidate; arbitrary tmp content has unknown owners and is
-    /// never classified as owned regenerable scratch.
+    /// directory (through `FloeScratch.makeDirectory`) is a candidate;
+    /// arbitrary tmp content has unknown owners and is never classified as
+    /// owned regenerable scratch.
     static func ownedScratchRoot(temporary: URL = FloeStorageLayout.temporaryRoot) -> URL {
-        temporary.appendingPathComponent("FloeAgent", isDirectory: true)
+        FloeScratch.scratchRoot(temporary: temporary)
     }
 
     static func plan(
@@ -306,14 +361,61 @@ enum FloeStorageCleanupRegistry {
         temporary: URL = FloeStorageLayout.temporaryRoot,
         now: Date = Date()
     ) -> StorageCleanupPlan {
-        // No deletable candidates are registered by default: narrowing to a
-        // directory is not proof that its children are regenerable or unused by
-        // an editor/task owner. Components must opt in by registering a
-        // candidate together with a live owner probe (see StorageCleanup);
-        // everything unregistered is retained.
-        let candidates: [StorageCleanupCandidate] = []
-        var retained: [StorageCleanupRetained] = []
-        return StorageCleanupPlan(candidates: candidates, retained: retained, generatedAt: now)
+        let cutoff = now.addingTimeInterval(-scratchRetention)
+        // One deletable candidate: the dedicated scratch directory that every
+        // component's one-off working directories are created in. The whole
+        // tmp root is never a candidate; foreign files inside the scratch
+        // directory are retained by the name-prefix guard.
+        let scratchCandidate = StorageCleanupCandidate(
+            id: "floe.scratch",
+            owner: .temporary,
+            title: FloeL10n.l("settings.data_management_view.cleanup_scratch_title"),
+            purpose: FloeL10n.l("settings.data_management_view.cleanup_scratch_purpose"),
+            retentionReason: FloeL10n.l("settings.data_management_view.cleanup_scratch_retention"),
+            kind: .staleTemporary,
+            root: FloeScratch.scratchRoot(temporary: temporary),
+            olderThan: cutoff,
+            requiredNamePrefixes: Set(Self.scratchPurposes)
+        )
+        // Real user state that lives in tmp/caches-adjacent places, registered
+        // so the plan shows it with its reason instead of ever sweeping it.
+        var retained: [StorageCleanupRetained] = [
+            StorageCleanupRetained(
+                id: "floe.environmentFallbackRoot",
+                owner: .environment,
+                title: FloeL10n.l("settings.data_management_view.cleanup_environment_fallback"),
+                retentionReason: FloeL10n.l("settings.data_management_view.cleanup_environment_fallback_reason"),
+                root: FloeScratch.root(temporary: temporary)
+            ),
+            StorageCleanupRetained(
+                id: "floe.checkpoints",
+                owner: .temporary,
+                title: FloeL10n.l("settings.data_management_view.cleanup_checkpoints"),
+                retentionReason: FloeL10n.l("settings.data_management_view.cleanup_checkpoints_reason"),
+                root: temporary.appendingPathComponent("FloeAgent-Checkpoints", isDirectory: true)
+            )
+        ]
+        if let caches {
+            retained.append(StorageCleanupRetained(
+                id: "floe.cacheContainers",
+                owner: .floeCache,
+                title: FloeL10n.l("settings.data_management_view.cleanup_cache_containers"),
+                retentionReason: FloeL10n.l("settings.data_management_view.cleanup_cache_containers_reason"),
+                root: caches
+            ))
+        }
+        return StorageCleanupPlan(
+            candidates: [scratchCandidate],
+            retained: retained,
+            generatedAt: now
+        )
     }
+
+    /// Purposes whose scratch directories may be reclaimed. A scratch item
+    /// with any other prefix is foreign and retained. Must stay in sync with
+    /// the `purpose` argument of every `FloeScratch.makeDirectory` call site.
+    static let scratchPurposes: [String] = [
+        "task", "workspace", "skills", "conversion", "office", "notes", "media", "misc"
+    ]
 }
 #endif

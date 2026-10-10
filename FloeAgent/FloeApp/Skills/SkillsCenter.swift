@@ -32,6 +32,7 @@ final class SkillsCenter: ObservableObject {
     @Published var pendingInstallation: PendingInstallation?
     @Published private(set) var pendingUpgrade: SkillUpgradeCandidate?
     private var upgradeStagingRoot: URL?
+    private var upgradeStagingLease: ScratchLeaseToken?
 
     @Published private(set) var catalogPackages: [String: OfficialSkillHub.Package] = [:]
     @Published private(set) var isCheckingCatalog = false
@@ -141,7 +142,13 @@ final class SkillsCenter: ObservableObject {
             }
             self.cancelUpgrade()
             let current = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill))
-            let staging = FileManager.default.temporaryDirectory.appendingPathComponent("floe-upgrade-\(UUID().uuidString)")
+            // Owned, leased scratch: the staging tree can survive across the
+            // user's review window and must never be reclaimed mid-upgrade.
+            // The path is reserved (not pre-created): the staging routines
+            // contractually require a fresh, non-existent root.
+            let leasedStaging = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+            self.upgradeStagingLease = leasedStaging.lease
+            let staging = leasedStaging.url
             do {
                 let connector = self.environment.sourceControlCenter
                 let usesCredential = !OfficialSkillHub.skillIDs.contains(skill.id)
@@ -185,6 +192,8 @@ final class SkillsCenter: ObservableObject {
         pendingUpgrade = nil
         if let root = upgradeStagingRoot { try? FileManager.default.removeItem(at: root) }
         upgradeStagingRoot = nil
+        upgradeStagingLease?.release()
+        upgradeStagingLease = nil
     }
 
     func lastGitHubSource(skillID: String) -> GitHubSkillSource? {
@@ -730,8 +739,14 @@ final class SkillsCenter: ObservableObject {
                 throw FloeError.validationFailed("Skill frontmatter cannot be safely preserved")
             }
             let markdown = String(normalized[..<end.upperBound]) + request.instructions! + "\n"
-            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("floe-skill-update-\(UUID().uuidString)", isDirectory: true)
-            defer { try? FileManager.default.removeItem(at: temporary) }
+            // Reserved (not pre-created): `copyItem` requires a non-existent
+            // destination. Lease released in defer even on early failure.
+            let leasedScratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+            let temporary = leasedScratch.url
+            defer {
+                try? FileManager.default.removeItem(at: temporary)
+                leasedScratch.lease.release()
+            }
             try FileManager.default.copyItem(at: packageURL, to: temporary)
             try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
             let updated = try validator.validate(packageAt: temporary, manifestOverride: Self.sidecarManifest(for: skill))

@@ -27,6 +27,19 @@ private final class ScriptedCleanupAuthority: StorageCleanupAuthority {
     func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> Bool {
         retainNames.contains(name)
     }
+
+    /// Grants a deletion claim for every eligible item unless a name is in
+    /// `claimDeniedNames` (used to exercise the busy-skip path).
+    private var claimDeniedNames: Set<String> = []
+
+    @MainActor
+    func claimDeletion(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> StorageCleanupDeletionClaim? {
+        guard !claimDeniedNames.contains(name) else { return nil }
+        return StorageCleanupDeletionClaim(id: UUID(), path: itemURL.path)
+    }
+
+    @MainActor
+    func releaseDeletionClaim(_ claim: StorageCleanupDeletionClaim) async {}
 }
 
 @MainActor
@@ -174,5 +187,122 @@ private enum FloeStorageCleanupTestPlan {
                 )
             ]
         )
+    }
+}
+
+// MARK: - Lease center interleavings (critical review)
+
+@Suite("Cleanup lease coordination")
+struct StorageCleanupLeaseTests {
+    private func scratch(_ name: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("LeaseTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: false)
+    }
+
+    @Test func claimRejectedWhileLeasedAndViceVersa() async throws {
+        let center = StorageCleanupLeaseCenter()
+        let path = scratch("a.bin")
+        await center.acquire(path: path.path)
+        #expect(await center.claimForDeletion(path: path.path) == nil)
+        await center.release(path: path.path)
+        let claim = await center.claimForDeletion(path: path.path)
+        #expect(claim != nil)
+        // While the claim is held, (a) acquiring is rejected and (b) a
+        // duplicate/overlapping claim is rejected.
+        #expect(await center.acquire(path: path.path) == false)
+        #expect(await center.acquireToken(path: path.path) == nil)
+        #expect(await center.claimForDeletion(path: path.path) == nil)
+        await center.releaseClaim(claim!.id)
+        // After release both paths work again.
+        #expect(await center.acquire(path: path.path) == true)
+        await center.release(path: path.path)
+        #expect(await center.claimForDeletion(path: path.path) != nil)
+    }
+
+    @Test func descendantAndAncestorLeasesBlockDirectoryClaims() async throws {
+        let center = StorageCleanupLeaseCenter()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LeaseTests-\(UUID().uuidString)", isDirectory: true)
+        let parent = root.appendingPathComponent("dir", isDirectory: true)
+        let child = parent.appendingPathComponent("inner.txt")
+        // Lease on the child blocks a claim on the parent directory.
+        await center.acquire(path: child.path)
+        #expect(await center.claimForDeletion(path: parent.path) == nil)
+        await center.release(path: child.path)
+        // Lease on the parent blocks a claim on the child.
+        await center.acquire(path: parent.path)
+        #expect(await center.claimForDeletion(path: child.path) == nil)
+        await center.release(path: parent.path)
+        #expect(await center.claimForDeletion(path: parent.path) != nil)
+    }
+
+    @Test func referenceCountedLeasesDoNotUnprotectEachOther() async throws {
+        let center = StorageCleanupLeaseCenter()
+        let path = scratch("b.bin")
+        await center.acquire(path: path.path)
+        await center.acquire(path: path.path)
+        await center.release(path: path.path)
+        // One holder remains: still protected.
+        #expect(await center.claimForDeletion(path: path.path) == nil)
+        await center.release(path: path.path)
+        #expect(await center.claimForDeletion(path: path.path) != nil)
+    }
+
+    @Test func tokenAcquisitionDuringClaimIsRejected() async throws {
+        let center = StorageCleanupLeaseCenter()
+        let path = scratch("c.bin")
+        let claim = await center.claimForDeletion(path: path.path)
+        #expect(claim != nil)
+        // A consumer trying to take ownership mid-deletion is refused.
+        #expect(await center.acquireToken(path: path.path) == nil)
+        await center.releaseClaim(claim!.id)
+        let token = await center.acquireToken(path: path.path)
+        #expect(token != nil)
+        token?.release()
+    }
+
+    @Test func leasedScratchIsProtectedFromCleanupEngine() async throws {
+        let center = StorageCleanupLeaseCenter.shared
+        // Hermetic candidate root (not the global scratch root): only the two
+        // directories this test creates are eligible.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LeaseEngine-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let past = Date().addingTimeInterval(-7_200)
+        func makeOld(_ name: String) throws -> URL {
+            let dir = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.modificationDate: past], ofItemAtPath: dir.path)
+            return dir
+        }
+        let liveDir = try makeOld("notes-\(UUID().uuidString.lowercased())")
+        let staleDir = try makeOld("notes-\(UUID().uuidString.lowercased())")
+        let token = await center.acquireToken(path: liveDir.path)
+        #expect(token != nil)
+        let candidate = StorageCleanupCandidate(
+            id: "scratch", owner: .temporary, title: "t", purpose: "p", retentionReason: "r",
+            kind: .staleTemporary, root: root, olderThan: Date().addingTimeInterval(-3_600),
+            requiredNamePrefixes: ["notes"]
+        )
+        struct FailClosed: StorageCleanupAuthority {
+            func isOwnerIdle(_ owner: StorageCleanupOwner) async -> Bool { true }
+            func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> Bool { false }
+            func claimDeletion(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> StorageCleanupDeletionClaim? {
+                await StorageCleanupLeaseCenter.shared.claimForDeletion(path: itemURL.path)
+            }
+            func releaseDeletionClaim(_ claim: StorageCleanupDeletionClaim) async {
+                await StorageCleanupLeaseCenter.shared.releaseClaim(claim.id)
+            }
+        }
+        let plan = { StorageCleanupPlan(candidates: [candidate], retained: []) }
+        let outcome = await StorageCleanup.execute(plan: plan(), authority: FailClosed())
+        #expect(outcome.perCandidate["scratch"]?.deletedCount == 1) // only the unleased one
+        #expect(FileManager.default.fileExists(atPath: liveDir.path))
+        #expect(!FileManager.default.fileExists(atPath: staleDir.path))
+        token?.release()
+        let outcome2 = await StorageCleanup.execute(plan: plan(), authority: FailClosed())
+        #expect(outcome2.perCandidate["scratch"]?.deletedCount == 1)
+        #expect(!FileManager.default.fileExists(atPath: liveDir.path))
     }
 }

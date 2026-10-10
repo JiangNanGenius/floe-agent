@@ -15,6 +15,8 @@ struct DataManagementView: View {
     @State private var confirmsCleanup = false
     @State private var cleanupOutcome: StorageCleanupPlanResult?
     @State private var cleanupEstimateBytes: Int64 = 0
+    @State private var cleanupPerCandidateBytes: [String: Int64] = [:]
+    @State private var cleanupBusyCandidateIDs: [String] = []
     @State private var cleanupPlan = FloeStorageCleanupRegistry.plan()
     @State private var cleanupCancellation = CleanupCancellation()
     @AppStorage("creative.canvas.sync.enabled") private var canvasSyncEnabled = true
@@ -48,9 +50,13 @@ struct DataManagementView: View {
                     HStack {
                         ProgressView()
                         if storage.isScanning {
+                            Text(FloeL10n.l("settings.data_management_view.scanning_files", storage.filesScanned))
+                                .foregroundStyle(.secondary)
                             Button(role: .destructive) { storage.cancel() } label: {
                                 Text("settings.data_management_view.stop_scan")
                             }
+                        } else if storage.scanFailed {
+                            Text("settings.data_management_view.scan_failed").foregroundStyle(.secondary)
                         } else {
                             Text("settings.data_management_view.calculating_actual_usage").foregroundStyle(.secondary)
                         }
@@ -59,8 +65,18 @@ struct DataManagementView: View {
             } header: {
                 Text("settings.data_management_view.space_overview")
             } footer: {
-                if let report = storage.report, report.isSharedAllocationEstimate {
-                    Text("settings.data_management_view.shared_allocation_note")
+                if let report = storage.report {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(FloeL10n.l(
+                            "settings.data_management_view.scanned_at",
+                            Self.scanTimestampFormatter.string(from: report.generatedAt),
+                            report.filesScanned,
+                            String(format: "%.1f", report.scanDuration)
+                        )).font(.caption2).foregroundStyle(.secondary)
+                        if report.isSharedAllocationEstimate {
+                            Text("settings.data_management_view.shared_allocation_note")
+                        }
+                    }
                 }
             }
 
@@ -74,14 +90,27 @@ struct DataManagementView: View {
                                 bytes: category.allocatedBytes
                             )
                             if category.showsLogicalCapacity {
-                                Text(FloeL10n.l(
-                                    "settings.data_management_view.host_allocated",
-                                    ByteCountFormatter.string(fromByteCount: category.allocatedBytes, countStyle: .file)
+                                let allocatedText = ByteCountFormatter.string(
+                                    fromByteCount: category.allocatedBytes, countStyle: .file
+                                )
+                                let apparentText = ByteCountFormatter.string(
+                                    fromByteCount: category.logicalBytes, countStyle: .file
+                                )
+                                let caption = FloeL10n.l(
+                                    "settings.data_management_view.host_allocated", allocatedText
                                 ) + " · " + FloeL10n.l(
-                                    "settings.data_management_view.configured_capacity",
-                                    ByteCountFormatter.string(fromByteCount: category.logicalBytes, countStyle: .file)
-                                ))
-                                .font(.caption2).foregroundStyle(.secondary)
+                                    "settings.data_management_view.apparent_file_size", apparentText
+                                )
+                                Text(caption).font(.caption2).foregroundStyle(.secondary)
+                                if vmDiskMixedCategoryIDs.contains(category.id) {
+                                    // The logical figure here is the sum of
+                                    // apparent file lengths (disk images plus
+                                    // other files) — it is NOT the configured
+                                    // guest capacity, and guest use is only
+                                    // measurable inside the running guest.
+                                    Text("settings.data_management_view.vm_disk_capacity_note")
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                }
                             } else if category.isSharedEstimate {
                                 Text("settings.data_management_view.shared_allocation_note")
                                     .font(.caption2).foregroundStyle(.secondary)
@@ -167,10 +196,19 @@ struct DataManagementView: View {
                 ForEach(cleanupPlan.candidates) { candidate in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(candidate.title)
+                        Text(candidate.purpose).font(.caption).foregroundStyle(.secondary)
                         Text(candidate.retentionReason).font(.caption2).foregroundStyle(.secondary)
-                        Text(FloeL10n.l("settings.data_management_view.cleanup_eligible_bytes",
-                                        ByteCountFormatter.string(fromByteCount: cleanupEstimateBytes, countStyle: .file)))
-                            .font(.caption2).foregroundStyle(.tertiary)
+                        if cleanupBusyCandidateIDs.contains(candidate.id) {
+                            Text("settings.data_management_view.cleanup_owner_busy")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        } else {
+                            Text(FloeL10n.l("settings.data_management_view.cleanup_eligible_bytes",
+                                            ByteCountFormatter.string(
+                                                fromByteCount: cleanupPerCandidateBytes[candidate.id] ?? 0,
+                                                countStyle: .file
+                                            )))
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
                     }
                 }
             } header: {
@@ -331,6 +369,13 @@ struct DataManagementView: View {
         isReleasingCloudSpace = false
     }
 
+    private static let scanTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+
     private func importCanvasSyncPreferenceFromCloud() {
         let cloud = NSUbiquitousKeyValueStore.default
         guard cloud.object(forKey: "creative.canvas.sync.enabled") != nil else { return }
@@ -358,32 +403,54 @@ final class CleanupCancellation: @unchecked Sendable {
 }
 
 /// Live, fail-closed ownership probe. Every call re-queries the real services
-/// (environment registry, model downloads, unfinished media jobs); any query
-/// error or unknown owner fails closed so nothing is deleted.
+/// (environment registry, model downloads, unfinished media jobs) and the live
+/// per-resource lease center; any query error, held lease or unknown owner
+/// fails closed so nothing is deleted.
 @MainActor
 private final class AppStorageCleanupAuthority: StorageCleanupAuthority {
     private let environment: AppEnvironment
+    private let leases = StorageCleanupLeaseCenter.shared
 
     init(environment: AppEnvironment) {
         self.environment = environment
     }
 
     func isOwnerIdle(_ owner: StorageCleanupOwner) async -> Bool {
+        // Any live scratch lease (exact per-path) makes the owner busy.
+        if await leases.isLeasedUnder(root: FloeScratch.scratchRoot()) { return false }
         switch owner {
-        case .temporary, .floeCache:
+        case .temporary, .notes, .skills, .office, .media, .floeCache:
+            // Shared scratch: idle only while every heavy/shared consumer that
+            // writes under Floe-owned directories is provably quiet.
             guard let containers = try? await environment.environmentRegistry.all() else { return false }
             if containers.contains(where: { $0.state == .active }) { return false }
             if !environment.localModelsCenter.activeDownloads.isEmpty { return false }
             guard let unfinished = try? await MediaGenerationJobStore(database: environment.database)
                 .hasUnfinishedJobs() else { return false }
             return !unfinished
+        case .environment:
+            // Environment-owned roots are never deletable candidates today;
+            // report idle only when no environment is active at all.
+            guard let containers = try? await environment.environmentRegistry.all() else { return false }
+            return !containers.contains(where: { $0.state == .active })
         }
     }
 
     func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> Bool {
-        // Unknown/unregistered items are retained; the plan registers no
-        // deletable candidates until a component supplies a live owner probe.
-        true
+        // Classification-time filter: retain anything that is not positively
+        // one of our registered scratch items. Atomic protection for live
+        // directories lives in claimDeletion.
+        !FloeStorageCleanupRegistry.scratchPurposes.contains { name.hasPrefix("\($0)-") }
+    }
+
+    /// Atomic per-item deletion claim coordinated with the live lease center:
+    /// granted only while no component holds a lease on this exact path.
+    func claimDeletion(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> StorageCleanupDeletionClaim? {
+        await leases.claimForDeletion(path: itemURL.path)
+    }
+
+    func releaseDeletionClaim(_ claim: StorageCleanupDeletionClaim) async {
+        await leases.releaseClaim(claim.id)
     }
 }
 private struct ManagementRow: View {

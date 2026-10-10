@@ -219,9 +219,12 @@ final class NotesSession {
                 self.indexingDocumentID = document.id
                 do {
                     let source = try await store.resourceURL(resource)
-                    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("notes-index-\(UUID().uuidString)")
-                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                    defer { try? FileManager.default.removeItem(at: directory) }
+                    let leasedScratch = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "notes")
+                    let directory = leasedScratch.url
+                    defer {
+                        try? FileManager.default.removeItem(at: directory)
+                        leasedScratch.lease.release()
+                    }
                     let file = directory.appendingPathComponent("document").appendingPathExtension((document.officeFileName as NSString?)?.pathExtension ?? "")
                     // Immutable resources allow a cheap hard link; fallback is a bounded source copy.
                     do { try FileManager.default.linkItem(at: source, to: file) }
@@ -330,9 +333,12 @@ final class NotesSession {
     func createOffice(extension fileExtension: String, title: String, notebookID: UUID?) {
         enqueue { [self] in
             guard let store else { return }
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-office-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: folder) }
+            let leasedOffice = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "notes")
+            let folder = leasedOffice.url
+            defer {
+                try? FileManager.default.removeItem(at: folder)
+                leasedOffice.lease.release()
+            }
             let safeName = title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
             let file = folder.appendingPathComponent(safeName).appendingPathExtension(fileExtension)
             try await Task.detached(priority: .userInitiated) {

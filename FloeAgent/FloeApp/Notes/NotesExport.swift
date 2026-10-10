@@ -7,7 +7,14 @@ import FloeNotes
 
 import FloeCore
 @MainActor enum NotesExport {
-    struct Artifact: Identifiable { let id = UUID(); let url: URL }
+    /// A delivered export. `lease` keeps the scratch directory alive while a
+    /// consumer (share sheet) holds the URL; the consumer releases it on
+    /// dismissal/completion.
+    struct Artifact: Identifiable {
+        let id = UUID()
+        let url: URL
+        var lease: ScratchLeaseToken? = nil
+    }
 
     /// Pages are read and drawn one at a time. Cancelled/failed exports never
     /// expose a partial PDF. `pages` selects a subset (e.g. the current page);
@@ -16,10 +23,17 @@ import FloeCore
                     store: NotesStore, progress: (Int, Int) -> Void) async throws -> Artifact {
         guard document.kind == .notebook else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_export.export_the_office_pdf_from_the")) }
         try document.validate()
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-export-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // Owned scratch; a successful export is handed to the share sheet
+        // with a lease that keeps it alive until the sheet is dismissed.
+        let folder = try FloeScratch.makeDirectory(purpose: "notes")
+        let lease = await StorageCleanupLeaseCenter.shared.acquireToken(path: folder.path)
         var success = false
-        defer { if !success { try? FileManager.default.removeItem(at: folder) } }
+        defer {
+            if !success {
+                try? FileManager.default.removeItem(at: folder)
+                lease?.release()
+            }
+        }
         let temporary = folder.appendingPathComponent(".partial.pdf")
         guard let context = CGContext(temporary as CFURL, mediaBox: nil, [kCGPDFContextTitle: document.title] as CFDictionary) else {
             throw NoteError.invalidOperation(FloeL10n.l("notes.notes_export.could_not_create_the_pdf_check"))
@@ -90,10 +104,10 @@ import FloeCore
         let final = folder.appendingPathComponent(stem).appendingPathExtension("pdf")
         try FileManager.default.moveItem(at: temporary, to: final)
         success = true
-        return Artifact(url: final)
+        return Artifact(url: final, lease: lease)
     }
 
-    static func outline(document: NoteDocument) throws -> Artifact {
+    static func outline(document: NoteDocument) async throws -> Artifact {
         guard document.kind == .mindMap else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_agent_tools.this_content_is_not_a_mind")) }
         try document.validate()
         let children = Dictionary(grouping: document.nodes, by: \.parentID)
@@ -105,11 +119,11 @@ import FloeCore
             if !node.note.isEmpty { lines.append(indent + "  " + node.note.replacingOccurrences(of: "\n", with: "\n" + indent + "  ")) }
             stack.append(contentsOf: (children[node.id] ?? []).sorted { $0.order < $1.order }.reversed().map { ($0, depth + 1) })
         }
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-export-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let folder = try FloeScratch.makeDirectory(purpose: "notes")
         let url = folder.appendingPathComponent(fileName(document.title)).appendingPathExtension("md")
         try Data(lines.joined(separator: "\n").utf8).write(to: url, options: .atomic)
-        return Artifact(url: url)
+        let lease = await StorageCleanupLeaseCenter.shared.acquireToken(path: folder.path)
+        return Artifact(url: url, lease: lease)
     }
 
     static func fileName(_ name: String) -> String {
@@ -119,8 +133,16 @@ import FloeCore
 }
 struct NotesShareSheet: UIViewControllerRepresentable {
     let url: URL
+    /// Scratch lease transferred from the export; released when the share
+    /// interaction completes so cleanup can never reclaim a file the sheet
+    /// (or the app it hands the file to) may still be reading.
+    var lease: ScratchLeaseToken? = nil
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            lease?.release()
+        }
+        return controller
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

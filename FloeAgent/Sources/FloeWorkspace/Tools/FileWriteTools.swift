@@ -280,9 +280,12 @@ public struct WorkspaceApplyPatchTool: AgentTool {
             // the remote entity tag as the conflict precondition.
             let metadata = try await route.adapter.metadata(path: route.relativePath)
             let original = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxReadBytes)
-            let temporaryRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+            let leasedRoot = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "workspace")
+            let temporaryRoot = leasedRoot.url
+            defer {
+                try? FileManager.default.removeItem(at: temporaryRoot)
+                leasedRoot.lease.release()
+            }
             let temporaryFile = temporaryRoot.appendingPathComponent("remote.txt")
             try original.write(to: temporaryFile, options: .atomic)
             let temporaryService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: temporaryRoot, maxReadBytes: environment.maxReadBytes, maxWriteBytes: environment.maxWriteBytes))

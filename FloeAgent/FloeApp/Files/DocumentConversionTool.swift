@@ -188,8 +188,9 @@ enum DocumentFileConverter {
             return Result(data: rtf, warnings: warnings)
         }
         if target == "docx" {
-            let temp = FileManager.default.temporaryDirectory.appendingPathComponent("floe-convert-\(UUID()).docx")
-            defer { try? FileManager.default.removeItem(at: temp) }
+            let scratch = try FloeScratch.makeDirectory(purpose: "conversion")
+            let temp = scratch.appendingPathComponent("converted.docx")
+            defer { try? FileManager.default.removeItem(at: scratch) }
             try data.write(to: temp, options: .withoutOverwriting)
             _ = try OfficeDocumentService.inspect(url: temp)
         }

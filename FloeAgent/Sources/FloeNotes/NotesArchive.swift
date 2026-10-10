@@ -74,9 +74,12 @@ public enum NotesArchive {
     }
 
     public static func importDocuments(from source: URL, notebookID: UUID?, store: NotesStore) async throws -> [NoteDocument] {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("notes-import-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let leasedImport = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "notes")
+        let directory = leasedImport.url
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            leasedImport.lease.release()
+        }
         let worker = Task.detached(priority: .userInitiated) {
             let archive = try Archive(url: source, accessMode: .read)
             var paths: Set<String> = []; var count = 0

@@ -933,7 +933,7 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
-    func exportStructuredConversation() async -> URL? {
+    func exportStructuredConversation() async -> (url: URL, lease: ScratchLeaseToken)? {
         do { return try await center.exportStructuredConversation(conversationID: conversationID) }
         catch { actionError = FloeL10n.l("chat.thread_detail_view_model.export_did_not_finish", error.localizedDescription); return nil }
     }

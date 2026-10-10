@@ -353,7 +353,7 @@ struct NotesDocumentEditor: View {
             }
         }
         .sheet(item: $exportArtifact) { artifact in
-            NotesShareSheet(url: artifact.url)
+            NotesShareSheet(url: artifact.url, lease: artifact.lease)
         }
         .sheet(isPresented: $showPages) {
             NavigationStack {
@@ -548,17 +548,19 @@ struct NotesDocumentEditor: View {
             do {
                 if editable {
                     exportProgress = FloeL10n.l("notes.notes_document_editor.packaging_editable_note")
-                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("notes-export-\(UUID().uuidString)", isDirectory: true)
-                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    // Owned scratch handed to the share sheet with a lease that
+                    // keeps it alive until the sheet is dismissed.
+                    let folder = try FloeScratch.makeDirectory(purpose: "notes")
                     let url = folder.appendingPathComponent(NotesExport.fileName(snapshot.title)).appendingPathExtension("floenote")
                     do { try await NotesArchive.export(document: snapshot, store: store, to: url) }
                     catch { try? FileManager.default.removeItem(at: folder); throw error }
-                    exportArtifact = NotesExport.Artifact(url: url)
+                    let archiveLease = await StorageCleanupLeaseCenter.shared.acquireToken(path: folder.path)
+                    exportArtifact = NotesExport.Artifact(url: url, lease: archiveLease)
                 } else if snapshot.kind == .notebook {
                     exportArtifact = try await NotesExport.pdf(document: snapshot, store: store) { page, total in
                         exportProgress = FloeL10n.l("notes.notes_document_editor.exporting_page", page, total)
                     }
-                } else { exportArtifact = try NotesExport.outline(document: snapshot) }
+                } else { exportArtifact = try await NotesExport.outline(document: snapshot) }
             } catch is CancellationError {} catch { session.errorMessage = error.localizedDescription }
         }
     }
