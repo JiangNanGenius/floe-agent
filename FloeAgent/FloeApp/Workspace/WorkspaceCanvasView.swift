@@ -5428,6 +5428,14 @@ struct WorkspaceCanvasView: View {
     #endif
 
     var body: some View {
+        canvasWithHandwritingAlert
+    }
+
+    /// The canvas body used to be one ~290-line modifier chain; Xcode 26.6's
+    /// type checker gave up on it ("unable to type-check this expression in
+    /// reasonable time"). These small chained expressions preserve the exact
+    /// modifier order and behavior.
+    private var canvasChrome: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             documentSidebar
                 .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 300)
@@ -5441,6 +5449,10 @@ struct WorkspaceCanvasView: View {
                 : appAppearance == "light" ? .light
                 : appAppearance == "dark" ? .dark : nil
         )
+    }
+
+    private var canvasWithAlerts: some View {
+        canvasChrome
         .alert("workspace.workspace_canvas_view.the_canvas_could_not_be_saved", isPresented: Binding(
             get: { store.saveError != nil },
             set: { if !$0 { store.saveError = nil } }
@@ -5466,6 +5478,10 @@ struct WorkspaceCanvasView: View {
                 secondaryButton: .cancel()
             )
         }
+    }
+
+    private var canvasWithPresentations: some View {
+        canvasWithAlerts
         .sheet(isPresented: $showsMaterials) {
             NavigationStack {
                 CanvasMaterialLibraryView(allowedKinds: materialKindFilter) { asset, kind in
@@ -5590,6 +5606,10 @@ struct WorkspaceCanvasView: View {
                 assetStore: environment.creativeAssetStore,
                 onClose: { nativeCADPresentation = nil })
         }
+    }
+
+    private var canvasWithEditors: some View {
+        canvasWithPresentations
         .task(id: canvasCADFixtureIdentity) {
             // DEBUG fixture only (see CanvasCADEntryFixtureHarness): select
             // the seeded CAD node so the bottom contextual toolbar shows its
@@ -5654,6 +5674,10 @@ struct WorkspaceCanvasView: View {
                 artifactImportPoint = nil
             }
         }
+    }
+
+    private var canvasWithLifecycle: some View {
+        canvasWithEditors
         .task { await runCanvasBackgroundLoop() }
         .onDisappear {
             // The canvas is going away: flush unsaved CAD edits to their
@@ -5716,6 +5740,10 @@ struct WorkspaceCanvasView: View {
         }
         .onChange(of: canvasPreferences) { _, value in value.save() }
         .focusedValue(\.canvasKeyboardActions, keyboardActions)
+    }
+
+    private var canvasWithHandwritingAlert: some View {
+        canvasWithLifecycle
         .alert("workspace.workspace_canvas_view.could_not_organize_the_handwriting", isPresented: Binding(
             get: { inkInterpretationError != nil },
             set: { if !$0 { inkInterpretationError = nil } }
