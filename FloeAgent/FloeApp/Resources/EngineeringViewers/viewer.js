@@ -76,7 +76,17 @@ async function load(pkg){
   // read-only preview transitions to fullscreen editing — WITHOUT reloading
   // the page, so the existing engine state (geometry, camera) is preserved.
   const installEditSurface=async()=>{
-   if(!cad||cadEditor)return !!cadEditor;
+   if(cadEditor)return true;
+   if(!cad){
+    // Editing can be requested for a page whose read-only load never created
+    // the CAD engine (DXF previews only create it when config.canEdit), so
+    // create it on demand from the retained original bytes.
+    if(pkg.kind!=='dxf'&&pkg.kind!=='dwg')return false;
+    const {createCadEngine}=await import('./cad-editor.js');
+    cad=createCadEngine();
+    cadState=await cad.call('open',{bytes:originalBytes,format:pkg.kind});
+    source=cadState.dxf;cadInfo=cadState.info;
+   }
    const {installCadEditor}=await import('./cad-editor.js');
    cadInfo=cadInfo??cadState?.info;
    cadEditor=installCadEditor({engine:cad,initial:cadState?.info??cadInfo,render,viewer,zh,dark:!!config.dark,onDirty:dirty=>{
@@ -86,6 +96,10 @@ async function load(pkg){
    return true;
   };
   window.floeCadEnableEdit=async()=>{
+   // Fullscreen can enable editing while the first render is still parsing;
+   // wait (bounded) so the edit surface is installed instead of skipped.
+   const deadline=Date.now()+15000;
+   while(!finished&&!cad&&Date.now()<deadline){await new Promise(resolve=>setTimeout(resolve,40));}
    const ok=await installEditSurface();
    if(ok){
     // Re-render so any drawing-mode UI the editor installs becomes visible.

@@ -230,12 +230,23 @@ final class WorkspaceIDEUITests: XCTestCase {
         let edit = app.webViews.buttons["编辑"]
         XCTAssertTrue(edit.waitForExistence(timeout: 60)); edit.tap()
         let marker = "CAD-" + UUID().uuidString.prefix(8)
+        // The numeric draw controls create a default text entity; its content
+        // is then set through the entity properties so a unique marker can be
+        // verified after the native save and cold reopen.
         let add = app.webViews.buttons["文字"]
         XCTAssertTrue(add.waitForExistence(timeout: 10)); add.tap()
+        let dirty = app.webViews.staticTexts["有未保存的修改"]
+        XCTAssertTrue(dirty.waitForExistence(timeout: 20))
+        let selector = app.webViews.buttons["选择图元"]
+        XCTAssertTrue(selector.waitForExistence(timeout: 10)); selector.tap()
+        let textOption = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Text · "))
+            .firstMatch
+        XCTAssertTrue(textOption.waitForExistence(timeout: 10)); textOption.tap()
         let text = app.webViews.textFields["文字"]
         XCTAssertTrue(text.waitForExistence(timeout: 10)); text.tap(); text.typeText(String(marker))
-        app.webViews.buttons["添加文字"].tap()
-        let dirty = app.webViews.staticTexts["有未保存的修改"]
+        let setText = app.webViews.buttons["修改文字"]
+        XCTAssertTrue(setText.waitForExistence(timeout: 10)); setText.tap()
         XCTAssertTrue(dirty.waitForExistence(timeout: 20))
         app.webViews.buttons["保存"].tap()
         XCTAssertTrue(app.webViews.staticTexts["已保存，原版已保留"].waitForExistence(timeout: 30))
@@ -245,10 +256,18 @@ final class WorkspaceIDEUITests: XCTestCase {
         try openFile(app, ipad: ipad, name: "可编辑图纸验收.dwg")
         XCTAssertTrue(full.waitForExistence(timeout: 60)); full.tap()
         XCTAssertTrue(edit.waitForExistence(timeout: 60))
-        let review = app.webViews.buttons["AI 审图"]
+        let review = app.webViews.buttons["图纸助手"]
         XCTAssertTrue(review.waitForExistence(timeout: 10)); review.tap()
         XCTAssertTrue(app.buttons["engineering.review.send"].waitForExistence(timeout: 20))
-        app.buttons["engineering.review.evidence"].tap()
+        // The evidence control is the DisclosureGroup label (a StaticText on
+        // the current layout) and the review Form is lazy: scroll it into the
+        // realized window before tapping.
+        let evidenceToggle = app.staticTexts["engineering.review.evidence"]
+        for _ in 0..<6 {
+            if evidenceToggle.exists && evidenceToggle.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(evidenceToggle.waitForExistence(timeout: 10)); evidenceToggle.tap()
         let evidence = app.staticTexts["engineering.review.context"]
         XCTAssertTrue(evidence.waitForExistence(timeout: 10))
         XCTAssertTrue(evidence.label.contains(String(marker)), "Native cold readback must retain the saved text")

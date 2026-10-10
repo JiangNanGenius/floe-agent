@@ -687,10 +687,23 @@ final class CadLiveDraftRegistry {
             coordinator?.update(callbacks: error, onReview: onReview, onSave: onSave, onDirty: onDirty)
             // Capability upgrade (embedded read-only → fullscreen editable)
             // must NOT reload the page: enable editing inside the live page.
+            // The page may still be parsing when the upgrade arrives, so the
+            // JavaScript side waits (bounded) for the CAD engine and reports
+            // whether the edit surface was actually installed; a false result
+            // keeps the upgrade pending for the next attachment instead of
+            // silently losing the edit entry.
             if canEdit, !loadedCanEdit {
                 loadedCanEdit = true
-                web.evaluateJavaScript("window.floeCadEnableEdit && window.floeCadEnableEdit();",
-                                       completionHandler: nil)
+                // The page evaluates viewer.js asynchronously and may still be
+                // parsing when the upgrade arrives, so retry (bounded) until
+                // the edit surface confirms installation; a failure keeps the
+                // upgrade pending for the next attachment.
+                Task { @MainActor [weak self, weak web] in
+                    guard let self, let web else { return }
+                    if await self.installEditSurface(on: web) == false {
+                        self.loadedCanEdit = false
+                    }
+                }
             }
             return web
         }
@@ -762,6 +775,33 @@ final class CadLiveDraftRegistry {
     /// proposal into the live viewer.
     var isCADDirty: Bool {
         coordinator?.dirty ?? false
+    }
+
+    /// Asks the live page to install the CAD edit surface (embedded read-only
+    /// preview → fullscreen editable). viewer.js evaluates asynchronously and
+    /// the upgrade can arrive before it exists or while the first parse is
+    /// still running, so retry within a bounded window and await the actual
+    /// JavaScript result; returns whether the surface reported success.
+    @MainActor
+    func installEditSurface(on web: WKWebView) async -> Bool {
+        for _ in 0..<40 {
+            let installed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                web.callAsyncJavaScript(
+                    "if (typeof window.floeCadEnableEdit !== 'function') { return false; } return await window.floeCadEnableEdit();",
+                    arguments: [:],
+                    in: nil,
+                    in: .page
+                ) { result in
+                    switch result {
+                    case .success(let value): continuation.resume(returning: (value as? Bool) ?? false)
+                    case .failure: continuation.resume(returning: false)
+                    }
+                }
+            }
+            if installed { return true }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return false
     }
 
     /// Reconciles the visible CAD editor after a Drawing Assistant apply
