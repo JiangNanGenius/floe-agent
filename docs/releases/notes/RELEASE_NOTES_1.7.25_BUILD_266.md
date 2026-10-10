@@ -55,7 +55,7 @@ open. Cloud AI requires your configured provider. Proposed design edits
 require explicit confirmation; candidates never overwrite current content
 before adoption.
 
-## 中文
+## 简体中文
 
 - **画布设计流程。** 简报/规格/DESIGN.md → 导入或生成 → 锚定反馈 → 修订绑定的
   候选 → 比较 → 采纳（在**同一次 CAS 提交中更新真实画布节点内容**）→ 以真实格式
