@@ -1,6 +1,6 @@
 # Design workflow (brief → spec → revisions → feedback → candidate → adopt → export)
 
-Status: shared domain model, persistence, DESIGN.md codec and agent tools are implemented and unit-tested; **content-specific editor panels, adapters and verified export are not connected yet** and are reported as unavailable with concrete reasons. Canvas remains the owner of the project graph.
+Status: the full loop is implemented on the existing Canvas/editor services: brief/spec/DESIGN.md → import/generate where the real editor supports it → anchored feedback → revision-bound candidates → compare/adopt that updates the **actual node content in one Canvas CAS commit** → verified export with real reopen parsers. Canvas remains the owner of the project graph. Capabilities not genuinely connected (office/presentation canvas files) say so with reasons.
 
 ## Model / where things live
 
@@ -29,16 +29,25 @@ Design state is a **typed subdocument of the bound Canvas node** (node metadata 
 - **Persistence is safe.** Writes go through the Canvas CAS (one revision advance per mutation); the subdocument is schema-versioned and bounded (2 MiB); a newer schema or binding mismatch fails closed; operation IDs are recorded for idempotent replay.
 - **Templates** carry honest capabilities/inputs/dependencies/formats/license/source/hash/version and an optional rollback version+hash. The signed content service remains the install channel; the registry here only describes what is connected.
 
-## Typed adapter capabilities
+## Typed adapter capabilities (actual state)
 
-`DesignCapabilityRegistry` records only **actually connected** operations per content type. Every unavailable operation must carry a clear reason (`Not connected in this build` is the floor, with more specific reasons in the app). `canvas.designCapabilities` exposes this to the agent, and the app registers the honest default (`designCoreDefaults()`):
+`DesignCapabilityRegistry` records only **actually connected** operations per content type; every unavailable operation carries its real reason. `canvas.designCapabilities` re-resolves per call. Connected today:
 
-- Available for every type today: anchored feedback, revision-bound candidates, compare/adopt/reject/restore (payload-agnostic, persisted, callable).
-- Not connected yet: source import, generation, region editing, preview, source export, verified export — each with a per-type reason. No screenshot/PDF is ever presented as an editable original.
+| Type | Connected operations | Real path |
+|---|---|---|
+| image | import, generate (when a model is configured), preview, verified export | asset ingestion, media generation, CGImageSource reopen |
+| video | import, preview, verified export | ingestion, AVAsset reopen (time anchors) |
+| pdf | import, preview, verified export | ingestion, PDFKitGate reopen |
+| notes | import, preview, verified export | text/markdown bytes, UTF-8 reopen |
+| webpage/prototype | import, capture (as revision), verified export | browser capture bound to the exact task, locator-only snapshot |
+| cad | verified export (2D same-format, 3D exchange formats) | CadDocumentCenter; edits stay in the CAD proposal flow |
+| office/presentation | not connected for canvas-bound files | office proposal flow owns chat-task workspaces — stated as the reason |
+
+Adoption always updates the real node: media/file nodes get a new verified asset reference, text nodes get the text body, layout/connections are preserved; `variant` creates an actual new node. Revision payloads live in the shared artifact store (`DesignRevisions/<canvas>/<node>/<artifact>/<revision>`), are immutable (identical re-store is a replay, different bytes a conflict), and are published **before** the single CAS commit so a crash never leaves a revision pointing at missing bytes. Exports use the recorded format only — no conversion is claimed — and reopen with the real parser before "verified" is reported. No screenshot/PDF is ever presented as an editable original.
 
 ## Agent tools
 
-`canvas.designGetState`, `canvas.designCapabilities`, `canvas.designCreate`, `canvas.designUpdateBrief`, `canvas.designUpdateSpec`, `canvas.designRegisterRevision`, `canvas.designAddFeedback`, `canvas.designPropose`, `canvas.designAdopt`, `canvas.designReject`, `canvas.designRestore`.
+`canvas.designGetState`, `canvas.designCapabilities`, `canvas.designCreate`, `canvas.designUpdateBrief`, `canvas.designUpdateSpec`, `canvas.designRegisterRevision`, `canvas.designImportSource` (payload published before one CAS commit; replay returns the recorded result, changed arguments are rejected), `canvas.designExportRevision` (recorded format only, real reopen validation), `canvas.designAddFeedback`, `canvas.designPropose`, `canvas.designAdopt` (replay is checked **before** the consumed grant; the durable decision outbox records the intent before the CAS and launch reconcile repairs crashes), `canvas.designReject`, `canvas.designRestore` (restores real node content).
 
 All take explicit `canvasID` + `nodeID` (+ `expectedRevision` and an `operationID` for mutations); they read/write only through the Canvas authority. `adopt` additionally requires a `grantID` from a single-use, expiring user grant minted by the panel (`DesignAdoptionGrantStore`) — the agent cannot self-adopt. `adopt`/`restore` are side-effecting and approval-gated. Input data cannot grant permissions.
 
@@ -46,6 +55,14 @@ All take explicit `canvasID` + `nodeID` (+ `expectedRevision` and an `operationI
 
 `Tests/FloeCoreTests/DesignWorkflowTests.swift`: freezing, candidate-not-applied-until-adopt, no-op proposal rejection, variant branching, anchor staleness/relocation, resolution requiring a real change, revision conflicts, restore, DESIGN.md round-trip and spec hashing, canvas-subdocument binding/malformed/newer-schema safety, operation-ID dedup and capability honesty.
 
+## Templates
+
+Built-in templates ship with the app; user templates are stored in `Application Support/FloeAgent/DesignTemplates` with immutable version directories and atomic pointer swaps (rollback restores the real previous bytes). Templates delivered by the **signed content-update service** (kind `templates`) are materialized read-only into the same library with hash verification; install/update/rollback stay in Content Update settings. Template UI lives in the design panel (Creative), not Skills.
+
+## Tests
+
+Beyond the engine suites: whole-project adoption (real node content in one CAS, layout preserved, replay skips content work), the decision outbox (first write/reopen, corrupt/newer-schema read-only with observable errors, pending never pruned, hard cap), the payload store (traversal/symlink/overwrite/cross-canvas), template persistence, and FloeAppTests integration (image end-to-end import→adopt→export, notes text adoption, cross-task capture fail-closed).
+
 ## Open gates
 
-Content-specific adapters/panels and verified export remain to be implemented and device-accepted; the UI coordinator owns visual acceptance. See the private acceptance checklist for the current gate list.
+Office/presentation canvas adoption stays delegated to the office proposal flow; real-provider generation loops need configured credentials; visual acceptance and physical-device checks belong to the coordinator/user. See the private acceptance checklist.
