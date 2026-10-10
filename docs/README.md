@@ -39,6 +39,8 @@
 | [../skill-hub/](../skill-hub/) / `ios-wheelhouse/`（本地历史配方） | 官方技能中心 / 已封存的 iOS wheel 产线（不再随 App 分发原生载荷，见 [Phase 2 迁移](PHASE2_migration.md)） |
 | [Floe 1.7 图像编辑器集成](FLOE_1_7_IMAGE_EDITOR_INTEGRATION.md) / [视频编辑器集成](FLOE_1_7_VIDEO_EDITOR_INTEGRATION.md) | 媒体编辑来源、接入状态与验证边界 |
 | [媒体工作台（1.7.23／264）](FLOE_MEDIA_WORKBENCH.md) | 统一图像/视频工作台：版本化项目、渲染器、`media.project` 工具契约与已执行验证 |
+| [储存空间诊断与安全清理（中英）](FLOE_STORAGE_DIAGNOSTICS.md) | 稀疏/克隆感知的计量引擎、真实根清单、诚实上限估算、所有权安全清理；含[中文版](FLOE_STORAGE_DIAGNOSTICS.zh-CN.md) |
+| [设计流程（简报到导出，中英）](FLOE_DESIGN_WORKFLOW.md) | 冻结运行、锚定反馈、修订候选、采纳/拒绝/恢复、DESIGN.md 保留、能力诚实表；含[中文版](FLOE_DESIGN_WORKFLOW.zh-CN.md) |
 | [CAD 引擎、cad.document 与画布子工程（1.7.24／265）](FLOE_CAD_AND_DRAWING_ASSISTANT.md) | 二维 CAD 引擎能力、无界面 Worker 宿主、`cad.document` 契约、画布绑定/分支语义与图像/视频细化（安装状态见 CURRENT_STATUS） |
 | [创作工具契约与格式能力表（1.7.24／265，中英）](FLOE_1_7_24_CREATIVE_TOOLS.md) | 共享 discover→read→propose→confirm→apply→verify 契约，`cad.document`/`document.office.edit`/手记/`media.project` 模式与示例，图纸助手，以及区分已验证/引擎层待真机/不支持的 CAD 与 Office 真实格式能力表 |
 | [截图档案](evidence/floe-1.7/SCREENSHOTS.md) | 界面截图与对应证据 |
