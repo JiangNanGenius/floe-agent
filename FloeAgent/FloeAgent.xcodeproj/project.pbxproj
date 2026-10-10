@@ -268,6 +268,7 @@
 		967695332B9F848F92B213BF /* EngineeringNavigationRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41B6D4666AF686D918579F33 /* EngineeringNavigationRecovery.swift */; };
 		969E2E0B2506BF1A1752EADC /* IDERunSourceStagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6C9A70E7268FDFF23034963 /* IDERunSourceStagingTests.swift */; };
 		96E82AE4BDD74EF81543A495 /* AppearanceSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0E5940DD8BE562FA25E8D7 /* AppearanceSettingsSection.swift */; };
+		975210DE231CF38FA4774942 /* DesignAdapterReopenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B407869D6B20C61E00C30E0 /* DesignAdapterReopenTests.swift */; };
 		97D3E78758C847D8E6B7F1BB /* RARArchiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */; };
 		99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30E546884B42CDF2BB96931B /* UserMessageBubble.swift */; };
 		99F788D0AAAF6A6C9E837F53 /* WasmKitCommandRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 242B67EADC0B4180B59C9EAD /* WasmKitCommandRuntime.swift */; };
@@ -647,6 +648,7 @@
 		4AAB7ADF0A99AC10AA71F2A5 /* MediaEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaEditorView.swift; sourceTree = "<group>"; };
 		4B25959E4F8222EDB001D367 /* IDEActivityBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEActivityBar.swift; sourceTree = "<group>"; };
 		4B364052541A17BBD46A6C70 /* FloeAgent */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeAgent; path = .; sourceTree = SOURCE_ROOT; };
+		4B407869D6B20C61E00C30E0 /* DesignAdapterReopenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAdapterReopenTests.swift; sourceTree = "<group>"; };
 		4BC97385B4FE8D7E8A34BCD8 /* FloeCADHostChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeCADHostChrome.swift; sourceTree = "<group>"; };
 		4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsCenter.swift; sourceTree = "<group>"; };
 		4CEE00648E38D86422DF1B1F /* OfficeWorkspaceAttachmentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeWorkspaceAttachmentPicker.swift; sourceTree = "<group>"; };
@@ -1258,6 +1260,7 @@
 				FE6C8028BD08725BB2E7F7A4 /* CapabilityExecutionRouterTests.swift */,
 				F45D36BF6CCD7DE422A618F0 /* ComposerTests.swift */,
 				09764BE52F1D5879D0DD63EB /* ContentUpdateRealSignedFeedTests.swift */,
+				4B407869D6B20C61E00C30E0 /* DesignAdapterReopenTests.swift */,
 				99BF7EEAD430E5713C8A2CE4 /* DesignWorkflowIntegrationTests.swift */,
 				E8F8FC341EB79C0398024D88 /* EngineeringWebSessionReparentTests.swift */,
 				09CB04D2BFAC5929E4265F1F /* ExternalWorkspaceTemplateAccessTests.swift */,
@@ -2541,6 +2544,7 @@
 				A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */,
 				F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */,
 				1B09F214770EC590CB41E94B /* CreativeMediaModelsTests.swift in Sources */,
+				975210DE231CF38FA4774942 /* DesignAdapterReopenTests.swift in Sources */,
 				820ED2817BA1EE735C83425A /* DesignWorkflowIntegrationTests.swift in Sources */,
 				CE7891C1450EDF422FB13289 /* EngineeringWebSessionReparentTests.swift in Sources */,
 				BE3C6E177C8B0010918C0EDA /* EnvironmentLanguagePackageTests.swift in Sources */,

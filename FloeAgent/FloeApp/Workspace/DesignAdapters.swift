@@ -449,12 +449,32 @@ struct CADDesignAdapter: DesignTypeAdapter {
     }
 
     func verifyExportReopen(bytes: Data, format: String) async throws {
-        // CAD exports are verified at the engine boundary (the CAD center
-        // re-reads its own output and reports the digest); the bytes are a
-        // binary container this adapter does not parse further. Hash equality
-        // with the engine-reported digest is the real verification and is
-        // enforced by the export port.
-        guard !bytes.isEmpty else { throw FloeError.validationFailed("CAD export is empty") }
+        let ext = format.lowercased()
+        switch ext {
+        case "dwg", "dxf":
+            // REAL same-engine reparse: the exact exported bytes must open in
+            // a fresh disposable engine session. Hash equality with an
+            // earlier engine receipt is integrity, not format proof.
+            let check = CadWebEngineSession()
+            do {
+                try await check.start()
+                _ = try await check.open(bytes: bytes, format: ext)
+            } catch {
+                await check.shutdown()
+                throw FloeError.validationFailed(
+                    "Exported bytes are not a readable \(ext) drawing (same-engine reparse failed): \(error.localizedDescription)"
+                )
+            }
+            await check.shutdown()
+        default:
+            // No connected reader can reopen this CAD format from a single
+            // byte payload (exchange/mesh formats and native packages have no
+            // headless standalone parser in this build). Fail explicitly
+            // instead of accepting arbitrary non-empty bytes.
+            throw FloeError.validationFailed(
+                "No connected CAD reader can reopen .\(ext) bytes; refusing to claim a verified export for this format"
+            )
+        }
     }
 }
 
@@ -497,11 +517,27 @@ struct OfficeDesignAdapter: DesignTypeAdapter {
         )
     }
 
+    /// REAL OOXML reopen: the bytes are written to a scratch copy and parsed
+    /// by the existing bounded `OfficeDocumentService` package reader (required
+    /// package entries + member XML). Arbitrary non-empty bytes are never
+    /// accepted as a verified .docx/.xlsx/.pptx, and formats without a
+    /// connected Office reader fail explicitly.
     func verifyExportReopen(bytes: Data, format: String) async throws {
-        // Office export receipts are digest-verified by OfficeCommandCenter at
-        // capture; the immutable-payload hash equality in the export path is
-        // the verification. A non-empty sanity check only.
-        guard !bytes.isEmpty else { throw FloeError.validationFailed("Office export is empty") }
+        let ext = format.lowercased()
+        guard OfficeDocumentKind(rawValue: ext) != nil else {
+            throw FloeError.validationFailed("No connected Office reader supports .\(ext); refusing to treat non-empty bytes as a verified Office export")
+        }
+        let directory = try FloeScratch.makeDirectory(purpose: "media")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("verify.\(ext)")
+        try bytes.write(to: url, options: .atomic)
+        do {
+            _ = try OfficeDocumentService.inspect(url: url)
+        } catch {
+            throw FloeError.validationFailed(
+                "Exported bytes are not a readable \(ext) package: \(error.localizedDescription)"
+            )
+        }
     }
 }
 

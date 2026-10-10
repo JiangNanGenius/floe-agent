@@ -661,7 +661,22 @@ private struct DesignProposeTool: AgentTool {
         guard !format.isEmpty else {
             throw FloeError.validationFailed("payloadRelativePath must carry a format extension")
         }
-        // 3. Publish the immutable payload under the EXACT proposed revision
+        // 3. The proposed bytes must be really reopenable by this content
+        // type's connected reader BEFORE they are published as a revision:
+        // later adoption/export may not be the first place invalid bytes are
+        // detected (Office OOXML parse, CAD same-engine reparse, media
+        // decoders).
+        let proposedContentType = preRead.design?.contentType
+            ?? DesignContentTypeMapper.contentType(for: preRead.nodeKind)
+        guard let proposedAdapter = await adapters.adapter(for: proposedContentType) else {
+            throw FloeError.validationFailed("No design adapter is connected for \(proposedContentType.rawValue)")
+        }
+        do {
+            try await proposedAdapter.verifyExportReopen(bytes: data, format: format)
+        } catch {
+            throw FloeError.validationFailed("The proposed bytes are not a readable \(format) \(proposedContentType.rawValue) payload: \(error.localizedDescription)")
+        }
+        // 4. Publish the immutable payload under the EXACT proposed revision
         // identity BEFORE the CAS, so a crash never leaves a candidate whose
         // revision points at missing bytes.
         let proposedRevisionID = UUID().uuidString.lowercased()

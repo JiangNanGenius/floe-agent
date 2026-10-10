@@ -206,6 +206,22 @@ enum DesignWorkflowActions {
             } catch {
                 return .failed(error)
             }
+            // The verified revision bytes must be really reopenable by this
+            // content type's connected reader BEFORE any CAS: hash equality
+            // is integrity, not format proof (Office OOXML parse, CAD
+            // same-engine reparse, media decoders).
+            let contentType = preRead.design?.contentType
+                ?? DesignContentTypeMapper.contentType(for: preRead.nodeKind)
+            guard let contentTypeAdapter = adapters.adapter(for: contentType) else {
+                return .failed(FloeError.validationFailed("No design adapter is connected for \(contentType.rawValue)"))
+            }
+            do {
+                try await contentTypeAdapter.verifyExportReopen(
+                    bytes: bytes, format: proposed.payloadFormat ?? "bin"
+                )
+            } catch {
+                return .failed(error)
+            }
             let update: DesignCanvasContentApplicator.PreparedUpdate
             do {
                 update = try await DesignCanvasContentApplicator.prepare(
@@ -531,6 +547,15 @@ enum DesignWorkflowActions {
         } catch {
             throw error
         }
+        // Real reopen before the CAS (same gate as adoption).
+        let restoreContentType = preRead.design?.contentType
+            ?? DesignContentTypeMapper.contentType(for: preRead.nodeKind)
+        guard let restoreAdapter = adapters.adapter(for: restoreContentType) else {
+            throw FloeError.validationFailed("No design adapter is connected for \(restoreContentType.rawValue)")
+        }
+        try await restoreAdapter.verifyExportReopen(
+            bytes: bytes, format: target.payloadFormat ?? "bin"
+        )
         let update: DesignCanvasContentApplicator.PreparedUpdate
         do {
             update = try await DesignCanvasContentApplicator.prepare(
