@@ -219,9 +219,8 @@ final class StorageDiagnosticService: ObservableObject {
             "documents": (FloeL10n.l("settings.data_management_view.documents"), "doc")
         ]
 
-        // Pure arithmetic lives in FloeCore and is unit-tested; each bucket is
-        // counted exactly once there (caches/tmp are in the total but not listed
-        // as user-data categories).
+        // Pure arithmetic lives in FloeCore and is unit-tested; every measured
+        // bucket is listed exactly once so categories reconcile with the total.
         let report = StorageReportBuilder.build(
             census: result,
             bundleBytes: Self.bundleAllocatedBytes()
@@ -264,6 +263,30 @@ final class StorageDiagnosticService: ObservableObject {
             scanDuration: report.scanDuration,
             metricLabel: report.metricLabel
         )
+    }
+
+    /// Allocated size of the installed app bundle (read-only, shared with the
+    /// OS, sparse-aware).
+    nonisolated static func bundleAllocatedBytes() -> Int64 {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey, .isSymbolicLinkKey,
+            .fileAllocatedSizeKey, .totalFileAllocatedSizeKey
+        ]
+        let root = Bundle.main.bundleURL
+        let manager = FileManager.default
+        guard let enumerator = manager.enumerator(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  values.isSymbolicLink != true,
+                  values.isRegularFile == true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+        }
+        return total
     }
 }
 

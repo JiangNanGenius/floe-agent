@@ -85,7 +85,7 @@ final class DesignWorkflowPanelModel: ObservableObject {
     func authorizeAssistantAdoption(candidateID: String) async {
         guard let nodeID,
               let candidate = design?.candidate(candidateID) else { return }
-        _ = await DesignAdoptionGrantStore.shared.issue(
+        _ = await DesignAdoptionAuthorization.shared.issue(
             canvasID: canvasID, nodeID: nodeID,
             candidateID: candidateID,
             baselineRevisionID: candidate.baseRevisionID

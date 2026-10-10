@@ -425,13 +425,19 @@ private struct DesignAddFeedbackTool: AgentTool {
 private struct DesignProposeTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var canvasID: String; var nodeID: String; var expectedRevision: Int64; var operationID: String
-        var artifactID: String; var baseRevisionID: String?; var proposedContentSHA256: String
+        var artifactID: String; var baseRevisionID: String?
+        /// App-storage relative path of the proposed bytes. The tool reads and
+        /// hashes these bytes itself; a model-supplied hash is never trusted.
+        var payloadRelativePath: String
+        /// Optional caller-provided digest, rejected when it disagrees with the
+        /// bytes actually read.
+        var proposedContentSHA256: String?
         var summary: String; var diff: [String]?; var feedbackIDs: [String]?
     }
     static let name = "canvas.designPropose"
-    static let toolDescription = "Propose a revision-bound candidate. It never applies until the user adopts it (which additionally needs a user grant)."
-    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"artifactID":{"type":"string"},"baseRevisionID":{"type":"string"},"proposedContentSHA256":{"type":"string"},"summary":{"type":"string"},"diff":{"type":"array","items":{"type":"string"}},"feedbackIDs":{"type":"array","items":{"type":"string"}}},"required":["canvasID","nodeID","expectedRevision","operationID","artifactID","proposedContentSHA256","summary"],"additionalProperties":false}"#
-    static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
+    static let toolDescription = "Propose a revision-bound candidate from real app-storage bytes (the tool verifies the hash itself). It never applies until the user adopts it with a user grant."
+    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"artifactID":{"type":"string"},"baseRevisionID":{"type":"string"},"payloadRelativePath":{"type":"string"},"proposedContentSHA256":{"type":"string"},"summary":{"type":"string"},"diff":{"type":"array","items":{"type":"string"}},"feedbackIDs":{"type":"array","items":{"type":"string"}}},"required":["canvasID","nodeID","expectedRevision","operationID","artifactID","payloadRelativePath","summary"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles, .persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let service: DesignCanvasService
@@ -439,11 +445,23 @@ private struct DesignProposeTool: AgentTool {
         _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
         _ = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
         guard !args.operationID.isEmpty else { throw FloeError.validationFailed("operationID is required") }
-        guard args.proposedContentSHA256.count == 64 else {
-            throw FloeError.validationFailed("proposedContentSHA256 must be a SHA-256 hex digest")
+        guard !args.payloadRelativePath.isEmpty else {
+            throw FloeError.validationFailed("payloadRelativePath is required; proposals must point at real bytes")
         }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        // Resolve inside the artifact store (namespace + containment + size cap)
+        // and hash the real bytes. The model cannot propose an unverified hash.
+        let url = try FloeArtifactStore.resolve(
+            args.payloadRelativePath,
+            allowed: Set(ArtifactNamespace.allCases),
+            maxBytes: 64 * 1_024 * 1_024
+        )
+        let data = try Data(contentsOf: url)
+        let verifiedSHA = FloeDigest.sha256Hex(data)
+        if let claimed = args.proposedContentSHA256, claimed != verifiedSHA {
+            throw FloeError.validationFailed("proposedContentSHA256 does not match the payload bytes")
+        }
         let snapshot = try await service.mutate(
             runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
@@ -455,7 +473,7 @@ private struct DesignProposeTool: AgentTool {
                 in: &design,
                 artifactID: args.artifactID,
                 baseRevisionID: args.baseRevisionID,
-                proposedContentSHA256: args.proposedContentSHA256,
+                proposedContentSHA256: verifiedSHA,
                 summary: args.summary,
                 diff: args.diff ?? [],
                 feedbackIDs: args.feedbackIDs ?? []
@@ -477,7 +495,7 @@ private struct DesignAdoptTool: AgentTool {
     static let riskLabels: Set<RiskLabel> = [.writesFiles, .persistsPersonalData]
     static let isSideEffecting = true
     let service: DesignCanvasService
-    let grants: DesignAdoptionGrantStore
+    let grants: DesignAdoptionAuthorization
     func validate(_ args: Arguments) throws {
         _ = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
         _ = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
@@ -619,7 +637,7 @@ func registerDesignAgentTools(
     capabilities: DesignCapabilityRegistry,
     authorize: @escaping DesignCanvasService.CanvasAuthorization,
     repository: CanvasDocumentRepository = FileCanvasDocumentRepository(),
-    grants: DesignAdoptionGrantStore = .shared,
+    grants: DesignAdoptionAuthorization = .shared,
     registry: ToolRunnerRegistry = .shared
 ) {
     let service = DesignCanvasService(repository: repository, authorize: authorize)

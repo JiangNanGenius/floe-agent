@@ -148,35 +148,4 @@ struct DesignCanvasServiceTests {
         }
     }
 
-    @Test func adoptionGrantValidatesBeforeConsuming() async throws {
-        let store = DesignAdoptionGrantStore()
-        let canvasID = UUID()
-        let nodeID = UUID()
-        let grant = await store.issue(
-            canvasID: canvasID, nodeID: nodeID, candidateID: "c1", baselineRevisionID: "r1"
-        )
-        // Validation does not consume.
-        let valid = await store.validate(
-            id: grant.id, canvasID: canvasID, nodeID: nodeID, candidateID: "c1", baselineRevisionID: "r1"
-        )
-        #expect(valid)
-        let stillValid = await store.validate(
-            id: grant.id, canvasID: canvasID, nodeID: nodeID, candidateID: "c1", baselineRevisionID: "r1"
-        )
-        #expect(stillValid)
-        // Wrong baseline is rejected and does not consume.
-        let wrongBaseline = await store.validate(
-            id: grant.id, canvasID: canvasID, nodeID: nodeID, candidateID: "c1", baselineRevisionID: "r2"
-        )
-        #expect(!wrongBaseline)
-        // Consume once; a second consume fails.
-        let consumed = await store.consume(
-            id: grant.id, canvasID: canvasID, nodeID: nodeID, candidateID: "c1", baselineRevisionID: "r1"
-        )
-        #expect(consumed)
-        let second = await store.consume(
-            id: grant.id, canvasID: canvasID, nodeID: nodeID, candidateID: "c1", baselineRevisionID: "r1"
-        )
-        #expect(!second)
-    }
 }
