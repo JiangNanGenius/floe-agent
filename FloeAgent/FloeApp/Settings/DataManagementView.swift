@@ -33,7 +33,7 @@ struct DataManagementView: View {
 
     var body: some View {
         Form {
-            Section("settings.data_management_view.space_overview") {
+            Section {
                 if let report = storage.report {
                     StorageUsageRow(
                         title: FloeL10n.l("settings.data_management_view.floe_total_usage"),
@@ -56,6 +56,8 @@ struct DataManagementView: View {
                         }
                     }
                 }
+            } header: {
+                Text("settings.data_management_view.space_overview")
             } footer: {
                 if let report = storage.report, report.isSharedAllocationEstimate {
                     Text("settings.data_management_view.shared_allocation_note")
@@ -63,7 +65,7 @@ struct DataManagementView: View {
             }
 
             if let report = storage.report {
-                Section("settings.data_management_view.data_categories") {
+                Section {
                     ForEach(report.categories) { category in
                         VStack(alignment: .leading, spacing: 2) {
                             StorageUsageRow(
@@ -92,6 +94,8 @@ struct DataManagementView: View {
                     if let other = report.unattributed {
                         StorageUsageRow(title: other.name, icon: other.systemImage, bytes: other.allocatedBytes)
                     }
+                } header: {
+                    Text("settings.data_management_view.data_categories")
                 }
                 if report.scanErrorCount > 0 || report.changedOrVanishedCount > 0 {
                     Section {
@@ -155,6 +159,8 @@ struct DataManagementView: View {
                         icon: "textformat"
                     )
                 }
+            } header: {
+                Text("settings.data_management_view.manage")
             }
 
             Section {
@@ -173,13 +179,15 @@ struct DataManagementView: View {
                 Text("settings.data_management_view.cleanup_confirm_detail")
             }
 
-            Section("settings.data_management_view.cleanup_retained_header") {
+            Section {
                 ForEach(cleanupPlan.retained) { item in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.title)
                         Text(item.retentionReason).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
+            } header: {
+                Text("settings.data_management_view.cleanup_retained_header")
             }
 
             Section {
@@ -267,7 +275,7 @@ struct DataManagementView: View {
         }
         cleanupPlan = FloeStorageCleanupRegistry.plan()
         await storage.scan()
-        await refreshCleanupEstimate(authority: await makeCleanupAuthority())
+        await refreshCleanupEstimate(authority: AppStorageCleanupAuthority(environment: environment))
     }
 
     private func clean() async {
@@ -280,12 +288,12 @@ struct DataManagementView: View {
         // nothing (fail closed).
         cleanupCancellation = CleanupCancellation()
         let cancellation = cleanupCancellation
-        let authority = await makeCleanupAuthority()
+        let authority = AppStorageCleanupAuthority(environment: environment)
         let plan = FloeStorageCleanupRegistry.plan()
         cleanupPlan = plan
         let volumeBefore = Self.availableCapacityBytes()
         let outcome = await Task.detached(priority: .utility) {
-            StorageCleanup.execute(
+            await StorageCleanup.execute(
                 plan: plan,
                 authority: authority,
                 isCancelled: { cancellation.isCancelled }
@@ -300,28 +308,9 @@ struct DataManagementView: View {
         await storage.scan()
     }
 
-    private func makeCleanupAuthority() async -> AppStorageCleanupAuthority {
-        // Every probe fails closed: if the query errors we cannot prove the
-        // owner idle, so nothing is deleted.
-        let containers: [ContainerRecord]? = try? await environment.environmentRegistry.all()
-        let environmentActive = containers?.contains { $0.state == .active } ?? true
-        let modelDownloadsActive = await MainActor.run { !environment.localModelsCenter.activeDownloads.isEmpty }
-        let mediaActive: Bool
-        if let hasUnfinished = try? await MediaGenerationJobStore(database: environment.database)
-            .hasUnfinishedJobs() {
-            mediaActive = hasUnfinished
-        } else {
-            mediaActive = true
-        }
-        let idle = !environmentActive && !modelDownloadsActive && !mediaActive
-        return AppStorageCleanupAuthority(appIdle: idle)
-    }
-
     private func refreshCleanupEstimate(authority: AppStorageCleanupAuthority) async {
         let plan = FloeStorageCleanupRegistry.plan()
-        let estimate = await Task.detached(priority: .utility) {
-            StorageCleanup.estimate(plan: plan, authority: authority)
-        }.value
+        let estimate = await StorageCleanup.estimate(plan: plan, authority: authority)
         cleanupEstimateBytes = estimate.eligibleAllocatedBytes
     }
 
@@ -368,25 +357,35 @@ final class CleanupCancellation: @unchecked Sendable {
     }
 }
 
-/// Fail-closed ownership probe: only the app's own scratch is owned by this
-/// cleaner, and it is idle only when no environment, model download or media
-/// job is active. Any owner this authority cannot positively prove idle (or a
-/// probe error) results in nothing being deleted.
-private struct AppStorageCleanupAuthority: StorageCleanupAuthority {
-    let appIdle: Bool
+/// Live, fail-closed ownership probe. Every call re-queries the real services
+/// (environment registry, model downloads, unfinished media jobs); any query
+/// error or unknown owner fails closed so nothing is deleted.
+@MainActor
+private final class AppStorageCleanupAuthority: StorageCleanupAuthority {
+    private let environment: AppEnvironment
 
-    func isOwnerIdle(_ owner: StorageCleanupOwner) -> Bool {
+    init(environment: AppEnvironment) {
+        self.environment = environment
+    }
+
+    func isOwnerIdle(_ owner: StorageCleanupOwner) async -> Bool {
         switch owner {
         case .temporary, .floeCache:
-            return appIdle
+            guard let containers = try? await environment.environmentRegistry.all() else { return false }
+            if containers.contains(where: { $0.state == .active }) { return false }
+            if !environment.localModelsCenter.activeDownloads.isEmpty { return false }
+            guard let unfinished = try? await MediaGenerationJobStore(database: environment.database)
+                .hasUnfinishedJobs() else { return false }
+            return !unfinished
         }
     }
 
-    func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) -> Bool {
-        false
+    func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> Bool {
+        // Unknown/unregistered items are retained; the plan registers no
+        // deletable candidates until a component supplies a live owner probe.
+        true
     }
 }
-
 private struct ManagementRow: View {
     let title: String
     let detail: String

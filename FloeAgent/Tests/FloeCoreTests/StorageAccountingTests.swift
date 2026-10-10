@@ -202,4 +202,106 @@ struct StorageAccountingTests {
         #expect(report.diagnostics.errorCount == 0)
         #expect(report.diagnostics.regularFileCount >= 1)
     }
+
+    @Test func hardLinkAcrossCategoryAndRemainderCountsOnce() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let known = root.appendingPathComponent("Known", isDirectory: true)
+        try FileManager.default.createDirectory(at: known, withIntermediateDirectories: true)
+        let original = try write("shared.bin", bytes: 16_384, at: known)
+        // Hard link in the parent (unattributed) area.
+        try FileManager.default.linkItem(at: original, to: root.appendingPathComponent("shared-link.bin"))
+
+        let report = try StorageCensus(
+            roots: [StorageCensusRoot(id: "known", url: known)],
+            parentURL: root,
+            metricLabel: "test.cross-bucket"
+        ).run()
+        #expect(report.bucket("known")?.fileCount == 1)
+        // The remainder must not double count the hard-linked bytes.
+        #expect(report.unattributedCount == 0)
+        #expect(report.unattributedSize.allocatedBytes == 0)
+        #expect(report.diagnostics.dedupedFileCount == 1)
+        #expect(report.totalAllocatedBytes == (report.bucket("known")?.size.allocatedBytes ?? -1))
+    }
+
+    @Test func allocatedMeasurementNeverFallsBackToLogical() throws {
+        // Nonexistent path + no resource values: no verified measurement exists,
+        // so the result must be unmeasured 0 bytes — never the logical size.
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("does-not-exist-\(UUID().uuidString).bin")
+        let measurement = StorageCensus.allocatedMeasurement(at: missing, values: nil)
+        #expect(measurement.measured == false)
+        #expect(measurement.bytes == 0)
+    }
+
+    @Test func nestedWalkRootsAreTraversedOnce() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        _ = try write("top.bin", bytes: 1024, at: root)
+        _ = try write("child.bin", bytes: 1024, at: child)
+
+        let noParent = StorageCensus.normalizedWalkTrees(
+            roots: [
+                StorageCensusRoot(id: "app", url: root),
+                StorageCensusRoot(id: "child", url: child)
+            ],
+            parentURL: nil
+        )
+        #expect(noParent.count == 1)
+        #expect(noParent.first?.url.path == root.standardizedFileURL.path)
+
+        let parent = StorageCensus.normalizedWalkTrees(
+            roots: [
+                StorageCensusRoot(id: "app", url: root),
+                StorageCensusRoot(id: "child", url: child)
+            ],
+            parentURL: root
+        )
+        // The parent covers both roots; nothing outside it remains to walk.
+        #expect(parent.count == 1)
+    }
+
+    @Test func progressCallbackReportsScannedCount() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for i in 0..<5 { _ = try write("f\(i).bin", bytes: 512, at: root) }
+        final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var last = 0
+            func update(_ value: Int) { lock.lock(); last = value; lock.unlock() }
+        }
+        let box = Box()
+        let report = try StorageCensus(
+            roots: [StorageCensusRoot(id: "a", url: root)],
+            metricLabel: "t.progress",
+            onProgress: { box.update($0) }
+        ).run()
+        #expect(box.last == report.diagnostics.regularFileCount)
+    }
+
+    @Test func deniedSubtreeIsCountedAsError() throws {
+        let root = try makeTempDir()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                   ofItemAtPath: root.appendingPathComponent("denied").path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let denied = root.appendingPathComponent("denied", isDirectory: true)
+        try FileManager.default.createDirectory(at: denied, withIntermediateDirectories: true)
+        _ = try write("inside.bin", bytes: 512, at: denied)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: denied.path)
+
+        let report = try StorageCensus(
+            roots: [StorageCensusRoot(id: "a", url: root)],
+            metricLabel: "t.denied"
+        ).run()
+        // When the process really cannot read the subtree the enumerator must
+        // report an error rather than silently dropping it.
+        if (try? FileManager.default.contentsOfDirectory(atPath: denied.path)) == nil {
+            #expect(report.diagnostics.errorCount >= 1)
+        }
+    }
 }

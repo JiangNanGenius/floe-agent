@@ -238,8 +238,10 @@ jobs:
       # pre-cleanup checkouts with tracked slices still build.
       - name: Bootstrap pinned OCCT native slices
         run: |
+          # Official CI must always enforce pinned, hash-verified bytes: never
+          # inherit a developer's local-relink override.
           if [ -f FloeAgent/ThirdParty/FloeCADKit/bootstrap.py ]; then
-            python3 FloeAgent/ThirdParty/FloeCADKit/bootstrap.py
+            env -u FLOECAD_LOCAL_RELINK python3 FloeAgent/ThirdParty/FloeCADKit/bootstrap.py
           else
             echo "FloeCADKit bootstrap.py not present; using tracked vendor slices"
           fi

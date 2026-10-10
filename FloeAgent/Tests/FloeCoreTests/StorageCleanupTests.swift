@@ -2,8 +2,7 @@ import Foundation
 import Testing
 @testable import FloeCore
 
-private final class ScriptedCleanupAuthority: StorageCleanupAuthority, @unchecked Sendable {
-    private let lock = NSLock()
+private final class ScriptedCleanupAuthority: StorageCleanupAuthority {
     private var idle: Bool
     private var retainNames: Set<String>
     private var idleCallCount = 0
@@ -16,21 +15,21 @@ private final class ScriptedCleanupAuthority: StorageCleanupAuthority, @unchecke
         self.idleCallBudget = idleCallBudget
     }
 
-    func isOwnerIdle(_ owner: StorageCleanupOwner) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+    // MainActor isolation serializes access to the counters; no locks needed.
+    @MainActor
+    func isOwnerIdle(_ owner: StorageCleanupOwner) async -> Bool {
         idleCallCount += 1
         if let idleCallBudget, idleCallCount > idleCallBudget { return false }
         return idle
     }
 
-    func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return retainNames.contains(name)
+    @MainActor
+    func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> Bool {
+        retainNames.contains(name)
     }
 }
 
+@MainActor
 @Suite("Storage cleanup safety")
 struct StorageCleanupTests {
     private func makeRoot() throws -> URL {
@@ -61,7 +60,7 @@ struct StorageCleanupTests {
         )
     }
 
-    @Test func estimateFailsClosedWhenOwnerIsBusy() throws {
+    @Test func estimateFailsClosedWhenOwnerIsBusy() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         _ = try write("stale.bin", bytes: 4096, at: root, modified: Date.distantPast)
@@ -70,18 +69,18 @@ struct StorageCleanupTests {
             retained: []
         )
         let busy = ScriptedCleanupAuthority(idle: false)
-        let estimate = StorageCleanup.estimate(plan: plan, authority: busy)
+        let estimate = await StorageCleanup.estimate(plan: plan, authority: busy)
         #expect(estimate.eligibleAllocatedBytes == 0)
         #expect(estimate.eligibleItemCount == 0)
         #expect(estimate.busyCandidateIDs == ["candidate"])
 
-        let outcome = StorageCleanup.execute(plan: plan, authority: busy)
+        let outcome = await StorageCleanup.execute(plan: plan, authority: busy)
         #expect(outcome.perCandidate["candidate"]?.deletedCount == 0)
         #expect(outcome.busyCandidateIDs == ["candidate"])
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("stale.bin").path))
     }
 
-    @Test func executeDeletesOnlyEligibleItems() throws {
+    @Test func executeDeletesOnlyEligibleItems() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let cutoff = Date().addingTimeInterval(-3_600)
@@ -100,11 +99,11 @@ struct StorageCleanupTests {
             retained: []
         )
         let authority = ScriptedCleanupAuthority(idle: true, retainNames: ["keep.bin"])
-        let estimate = StorageCleanup.estimate(plan: plan, authority: authority)
+        let estimate = await StorageCleanup.estimate(plan: plan, authority: authority)
         #expect(estimate.eligibleItemCount == 1)
         #expect(estimate.eligibleAllocatedBytes >= 4096)
 
-        let outcome = StorageCleanup.execute(plan: plan, authority: authority)
+        let outcome = await StorageCleanup.execute(plan: plan, authority: authority)
         let result = try #require(outcome.perCandidate["candidate"])
         #expect(result.deletedCount == 1)
         #expect(result.skippedRecentCount >= 2) // recent.bin + activeDir (active child)
@@ -116,7 +115,7 @@ struct StorageCleanupTests {
         #expect(outcome.observedAllocatedChangeBytes >= 0)
     }
 
-    @Test func cacheParentRootIsRejected() {
+    @Test func cacheParentRootIsRejected() async {
         let caches = FileManager.default.temporaryDirectory.appendingPathComponent("Caches", isDirectory: true)
         let candidate = StorageCleanupCandidate(
             id: "bad", owner: .floeCache, title: "t", purpose: "p", retentionReason: "r",
@@ -124,11 +123,11 @@ struct StorageCleanupTests {
         )
         #expect(!StorageCleanup.isSweepSafe(candidate))
         let plan = StorageCleanupPlan(candidates: [candidate], retained: [])
-        let outcome = StorageCleanup.execute(plan: plan, authority: ScriptedCleanupAuthority())
+        let outcome = await StorageCleanup.execute(plan: plan, authority: ScriptedCleanupAuthority())
         #expect(outcome.rejectedCandidateIDs == ["bad"])
     }
 
-    @Test func ownerIsRevalidatedPerItem() throws {
+    @Test func ownerIsRevalidatedPerItem() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let cutoff = Date().addingTimeInterval(-3_600)
@@ -141,7 +140,7 @@ struct StorageCleanupTests {
         // First idle probe (candidate) and eligibility enumeration pass; the
         // per-item probe then reports busy, so nothing may be deleted.
         let authority = ScriptedCleanupAuthority(idle: true, idleCallBudget: 1)
-        let outcome = StorageCleanup.execute(plan: plan, authority: authority)
+        let outcome = await StorageCleanup.execute(plan: plan, authority: authority)
         let result = try #require(outcome.perCandidate["candidate"])
         #expect(result.deletedCount == 0)
         #expect(result.skippedOwnerBusyCount >= 1)

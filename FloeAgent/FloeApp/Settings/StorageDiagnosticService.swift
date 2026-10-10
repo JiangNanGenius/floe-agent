@@ -213,6 +213,8 @@ final class StorageDiagnosticService: ObservableObject {
             "linuxDisks": (FloeL10n.l("settings.data_management_view.virtual_machine_disks"), "internaldrive"),
             "runtimeV2": (FloeL10n.l("settings.data_management_view.runtime_images"), "shippingbox.and.arrow.backward"),
             "floeOther": (FloeL10n.l("settings.data_management_view.databases_configuration_and_other_data"), "cylinder"),
+            "caches": (FloeL10n.l("settings.data_management_view.rebuildable_caches"), "internaldrive"),
+            "temporary": (FloeL10n.l("settings.data_management_view.temporary_files_older_than_one_hour"), "clock.arrow.circlepath"),
             "library": (FloeL10n.l("settings.data_management_view.system_library_data"), "books.vertical"),
             "documents": (FloeL10n.l("settings.data_management_view.documents"), "doc")
         ]
@@ -281,49 +283,13 @@ enum FloeStorageCleanupRegistry {
         temporary: URL = FloeStorageLayout.temporaryRoot,
         now: Date = Date()
     ) -> StorageCleanupPlan {
-        var candidates: [StorageCleanupCandidate] = []
+        // No deletable candidates are registered by default: narrowing to a
+        // directory is not proof that its children are regenerable or unused by
+        // an editor/task owner. Components must opt in by registering a
+        // candidate together with a live owner probe (see StorageCleanup);
+        // everything unregistered is retained.
+        let candidates: [StorageCleanupCandidate] = []
         var retained: [StorageCleanupRetained] = []
-
-        // Only Floe's own scratch subdirectory, older than one hour, with the
-        // owner probe required to prove idle. If the directory does not exist
-        // the plan is effectively empty.
-        candidates.append(
-            StorageCleanupCandidate(
-                id: "floeScratch",
-                owner: .temporary,
-                title: FloeL10n.l("settings.data_management_view.floe_scratch_files"),
-                purpose: FloeL10n.l("settings.data_management_view.finished_scratch_left_in_temporary"),
-                retentionReason: FloeL10n.l("settings.data_management_view.recent_and_active_scratch_is_kept"),
-                kind: .staleTemporary,
-                root: ownedScratchRoot(temporary: temporary),
-                olderThan: now.addingTimeInterval(-3_600)
-            )
-        )
-
-        if let caches {
-            let floeCaches = caches.appendingPathComponent("FloeAgent", isDirectory: true)
-            retained.append(StorageCleanupRetained(
-                id: "promptLibrary",
-                owner: .floeCache,
-                title: FloeL10n.l("settings.data_management_view.prompt_library"),
-                retentionReason: FloeL10n.l("settings.data_management_view.prompt_library_retention"),
-                root: floeCaches.appendingPathComponent("PromptLibrary", isDirectory: true)
-            ))
-            retained.append(StorageCleanupRetained(
-                id: "diagnosticsLog",
-                owner: .floeCache,
-                title: FloeL10n.l("settings.data_management_view.diagnostics_log"),
-                retentionReason: FloeL10n.l("settings.data_management_view.diagnostics_log_retention"),
-                root: floeCaches.appendingPathComponent("diagnostics-log.json")
-            ))
-            retained.append(StorageCleanupRetained(
-                id: "pdfOperationJournal",
-                owner: .floeCache,
-                title: FloeL10n.l("settings.data_management_view.pdf_operation_journal"),
-                retentionReason: FloeL10n.l("settings.data_management_view.pdf_journal_retention"),
-                root: floeCaches.appendingPathComponent("pdf-operation-journal.jsonl")
-            ))
-        }
         return StorageCleanupPlan(candidates: candidates, retained: retained, generatedAt: now)
     }
 }

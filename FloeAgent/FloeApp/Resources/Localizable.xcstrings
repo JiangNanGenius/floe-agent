@@ -79512,6 +79512,57 @@
           }
         }
       }
+    },
+    "settings.data_management_view.unregistered_scratch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unregistered scratch (retained)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未注册暂存（保留）"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.unregistered_scratch_retention": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No component has registered a cleanup lease with a live owner probe, so this is retained."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚无组件注册带实时所有者探测的清理租约，因此保留。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_no_registered_candidates": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No deletable cleanup candidates are registered; unregistered scratch is retained. User data is never touched."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有已注册的可清理候选项；未注册暂存一律保留。绝不触碰用户数据。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

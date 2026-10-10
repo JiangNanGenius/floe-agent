@@ -26,12 +26,17 @@ public enum StorageCleanupOwner: String, Sendable, CaseIterable {
 }
 
 /// Live ownership probe. Implementations must fail closed (return false) when
-/// they cannot prove the owner is idle.
+/// they cannot prove the owner is idle. Methods are async so the implementation
+/// can query real services (environment registry, model downloads, media jobs,
+/// editor/task leases) on every call instead of caching a snapshot.
+@MainActor
 public protocol StorageCleanupAuthority: Sendable {
     /// True only when the owner is positively idle (no running task, no lease).
-    func isOwnerIdle(_ owner: StorageCleanupOwner) -> Bool
+    /// Implementations query the real services on every call.
+    func isOwnerIdle(_ owner: StorageCleanupOwner) async -> Bool
     /// Per-item retaining probe consulted immediately before each removal.
-    func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) -> Bool
+    /// Unregistered/unknown owners must be retained here.
+    func shouldRetain(itemURL: URL, name: String, owner: StorageCleanupOwner) async -> Bool
 }
 
 /// A registered, regenerable, component-owned cleanup candidate.
@@ -171,8 +176,8 @@ public enum StorageCleanup {
     static func scan(
         candidate: StorageCleanupCandidate,
         authority: StorageCleanupAuthority
-    ) -> CandidateScan {
-        guard authority.isOwnerIdle(candidate.owner) else {
+    ) async -> CandidateScan {
+        guard await authority.isOwnerIdle(candidate.owner) else {
             return CandidateScan(eligible: [], skippedRecent: 0, skippedProtected: 0, ownerIdle: false)
         }
         let manager = FileManager.default
@@ -212,7 +217,7 @@ public enum StorageCleanup {
                 scan.skippedRecent += 1
                 continue
             }
-            if authority.shouldRetain(itemURL: item, name: name, owner: candidate.owner) {
+            if await authority.shouldRetain(itemURL: item, name: name, owner: candidate.owner) {
                 scan.skippedProtected += 1
                 continue
             }
@@ -251,14 +256,14 @@ public enum StorageCleanup {
     public static func estimate(
         plan: StorageCleanupPlan,
         authority: StorageCleanupAuthority
-    ) -> StorageCleanupEstimate {
+    ) async -> StorageCleanupEstimate {
         var total: Int64 = 0
         var count = 0
         var perCandidate: [String: Int64] = [:]
         var busy: [String] = []
         for candidate in plan.candidates {
             guard isSweepSafe(candidate) else { continue }
-            let scan = scan(candidate: candidate, authority: authority)
+            let scan = await scan(candidate: candidate, authority: authority)
             guard scan.ownerIdle else {
                 busy.append(candidate.id)
                 perCandidate[candidate.id] = 0
@@ -284,7 +289,7 @@ public enum StorageCleanup {
         plan: StorageCleanupPlan,
         authority: StorageCleanupAuthority,
         isCancelled: @escaping @Sendable () -> Bool = { false }
-    ) -> StorageCleanupPlanResult {
+    ) async -> StorageCleanupPlanResult {
         let manager = FileManager.default
         let roots = plan.candidates.map { StorageCensusRoot(id: $0.id, url: $0.root) }
         let beforeReport = try? StorageCensus(roots: roots, metricLabel: "storage.cleanup.before").run()
@@ -307,7 +312,7 @@ public enum StorageCleanup {
                 continue
             }
             // Re-probe the owner for this candidate (never reuse a snapshot).
-            let scan = scan(candidate: candidate, authority: authority)
+            let scan = await scan(candidate: candidate, authority: authority)
             guard scan.ownerIdle else {
                 busy.append(candidate.id)
                 continue
@@ -318,11 +323,11 @@ public enum StorageCleanup {
             for item in scan.eligible {
                 if isCancelled() { cancelled = true; break }
                 // Atomic revalidation immediately before deletion.
-                guard authority.isOwnerIdle(candidate.owner) else {
+                guard await authority.isOwnerIdle(candidate.owner) else {
                     result.skippedOwnerBusyCount += 1
                     continue
                 }
-                if authority.shouldRetain(itemURL: item, name: item.lastPathComponent, owner: candidate.owner) {
+                if await authority.shouldRetain(itemURL: item, name: item.lastPathComponent, owner: candidate.owner) {
                     result.skippedProtectedCount += 1
                     continue
                 }

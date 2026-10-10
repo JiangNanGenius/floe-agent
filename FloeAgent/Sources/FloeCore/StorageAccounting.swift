@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Storage accounting primitives shared by Settings → Data Management, the
 /// Linux/environment managers, the local-model catalog and the asset stores.
@@ -10,28 +15,24 @@ import Foundation
 ///   *sparse* VM disk that has only written a fraction of that still reports the
 ///   full capacity here, so this is the configured/guest capacity, not host use.
 /// - ``StorageSize/allocatedBytes`` is the host-allocated size
-///   (`totalFileAllocatedSize`, including extents/cluster overhead; sparse-aware).
+///   (`totalFileAllocatedSize`/`fileAllocatedSize`, sparse-aware, with a verified
+///   `stat` `st_blocks` fallback). If neither is available the file's allocated
+///   size is reported as *unmeasured* — logical size is never substituted.
 ///
-/// Both are recorded; neither is asserted to be the same figure iOS shows in
-/// Settings → General → iPad|iPhone Storage, whose methodology is not published
-/// and may count app data, caches and purgeable space differently.
-///
-/// Two sharing effects matter and are handled differently:
+/// Sharing handling:
 ///
 /// - **Hard links and nested/overlapping scan roots** are the same on-disk bytes
-///   and are deduplicated *exactly* by file identity (device + inode), so they
-///   are never counted twice.
-/// - **APFS copy-on-write clones** (used for VM images/base slices) may share
-///   physical blocks across files with *distinct* inodes, and after divergence a
-///   clone may hold unique blocks. That sharing cannot be measured from `stat`,
-///   so such roots are still counted in full (no silent undercount) and the
-///   report is explicitly flagged as an upper estimate via
-///   ``StorageCensusReport/isSharedAllocationEstimate``. We never subtract on the
-///   basis of *potential* sharing.
+///   and are deduplicated *exactly* by file identity (device + inode) across
+///   every bucket, including the unattributed remainder. Walk trees are
+///   normalized so contained roots are not traversed twice.
+/// - **APFS copy-on-write clones** may share blocks across distinct inodes and
+///   cannot be measured from `stat`; clone-backed roots are counted in full and
+///   the report is flagged as an upper estimate. Nothing is subtracted for
+///   sharing that cannot be measured.
 public struct StorageSize: Sendable, Equatable {
     /// Apparent file length in bytes (sparse disks report their full capacity).
     public var logicalBytes: Int64
-    /// Host-allocated bytes including extents/cluster overhead (sparse-aware).
+    /// Host-allocated bytes; 0 when the allocated measurement was unavailable.
     public var allocatedBytes: Int64
 
     public init(logicalBytes: Int64, allocatedBytes: Int64) {
@@ -40,11 +41,18 @@ public struct StorageSize: Sendable, Equatable {
     }
 
     public static let zero = StorageSize(logicalBytes: 0, allocatedBytes: 0)
+
+    static func + (lhs: StorageSize, rhs: StorageSize) -> StorageSize {
+        StorageSize(
+            logicalBytes: lhs.logicalBytes + rhs.logicalBytes,
+            allocatedBytes: lhs.allocatedBytes + rhs.allocatedBytes
+        )
+    }
 }
 
 /// Stable on-disk identity used to deduplicate hard links and overlapping roots
 /// exactly (device + inode). APFS CoW *clones* have distinct inodes and are not
-/// collapsed here; see the file-level note about shared-allocation estimates.
+/// collapsed here.
 public struct StorageFileIdentity: Hashable, Sendable {
     public let device: UInt64
     public let inode: UInt64
@@ -62,17 +70,25 @@ public struct StorageScanDiagnostics: Sendable, Equatable {
     public var regularFileCount: Int
     public var directoryCount: Int
     public var symbolicLinkCount: Int
-    /// Files skipped because they were already counted via another root or a
+    /// Files skipped because they were already counted via another bucket or a
     /// hard link (exact, identity-based dedup).
     public var dedupedFileCount: Int
     /// Files that vanished or changed while being enumerated (benign race).
     public var changedOrVanishedCount: Int
-    /// Entries that could not be read (permission, I/O, corrupt resource value).
+    /// Entries or subtrees that could not be read (permission, I/O).
     public var errorCount: Int
+    /// Files whose identity could not be read; they cannot participate in dedup
+    /// and are counted with an uncertainty flag.
+    public var identityUnavailableCount: Int
+    /// Files whose allocated size could not be measured; logical size is never
+    /// substituted for allocated.
+    public var allocatedUnavailableCount: Int
     /// Wall-clock duration of the scan.
     public var duration: TimeInterval
     /// Stable label identifying which census produced these metrics.
     public var metricLabel: String
+    /// When the scan finished.
+    public var completedAt: Date
 
     public init(
         regularFileCount: Int = 0,
@@ -81,8 +97,11 @@ public struct StorageScanDiagnostics: Sendable, Equatable {
         dedupedFileCount: Int = 0,
         changedOrVanishedCount: Int = 0,
         errorCount: Int = 0,
+        identityUnavailableCount: Int = 0,
+        allocatedUnavailableCount: Int = 0,
         duration: TimeInterval = 0,
-        metricLabel: String = ""
+        metricLabel: String = "",
+        completedAt: Date = Date()
     ) {
         self.regularFileCount = regularFileCount
         self.directoryCount = directoryCount
@@ -90,8 +109,17 @@ public struct StorageScanDiagnostics: Sendable, Equatable {
         self.dedupedFileCount = dedupedFileCount
         self.changedOrVanishedCount = changedOrVanishedCount
         self.errorCount = errorCount
+        self.identityUnavailableCount = identityUnavailableCount
+        self.allocatedUnavailableCount = allocatedUnavailableCount
         self.duration = duration
         self.metricLabel = metricLabel
+        self.completedAt = completedAt
+    }
+
+    /// True when some measurement was unavailable and totals are therefore a
+    /// lower/uncertain bound rather than an exact figure.
+    public var hasMeasurementGaps: Bool {
+        errorCount > 0 || identityUnavailableCount > 0 || allocatedUnavailableCount > 0
     }
 }
 
@@ -102,9 +130,7 @@ public struct StorageCensusRoot: Sendable {
         /// Counted and reported as its own category.
         case category
         /// Counted in full and reported separately, but flagged as *potentially
-        /// sharing* APFS clone blocks (e.g. a content-addressed image store).
-        /// The bytes are still included in the total — clones can hold unique
-        /// blocks, so we never subtract for sharing we cannot measure.
+        /// sharing* APFS clone blocks. The bytes are still included in the total.
         case shared
     }
 
@@ -132,8 +158,7 @@ public struct StorageCensusRoot: Sendable {
     }
 }
 
-/// Per-root result. Byte values are unique to this bucket after identity dedup;
-/// files already claimed by an earlier/deeper root are not re-added.
+/// Per-root result. Byte values are unique to this bucket after identity dedup.
 public struct StorageCensusBucket: Sendable, Equatable, Identifiable {
     public let id: String
     public let attribution: StorageCensusRoot.Attribution
@@ -168,9 +193,8 @@ public struct StorageCensusReport: Sendable, Equatable {
     /// Size of files inside `parentURL` but outside every supplied root.
     public var unattributedSize: StorageSize
     public var unattributedCount: Int
-    /// True when the scan walked roots that commonly hold APFS CoW clones. In
-    /// that case allocated bytes are an upper estimate because clones share
-    /// blocks across distinct inodes and cannot be split honestly from `stat`.
+    /// True when clone-backed roots were walked; allocated bytes are an upper
+    /// estimate rather than an exact figure.
     public var isSharedAllocationEstimate: Bool
 
     public var totalAllocatedBytes: Int64 {
@@ -194,7 +218,7 @@ public enum StorageCensusError: Error, Equatable {
 
 /// One-shot, single-threaded census. Run it on a background task. It performs a
 /// single mutually-exclusive pass; hard links, nested roots and symlinks never
-/// cause double counting.
+/// cause double counting, and contained walk trees are not traversed twice.
 public struct StorageCensus: Sendable {
     public let roots: [StorageCensusRoot]
     /// Optional parent directory; files inside it but outside all roots are
@@ -203,6 +227,9 @@ public struct StorageCensus: Sendable {
     public let metricLabel: String
     /// Polled cooperatively for cancellation.
     public let isCancelled: @Sendable () -> Bool
+    /// Called periodically with the number of regular files scanned so the UI
+    /// can show measured progress instead of a synthetic animation.
+    public let onProgress: (@Sendable (Int) -> Void)?
 
     private static let resourceKeys: Set<URLResourceKey> = [
         .isRegularFileKey,
@@ -213,9 +240,21 @@ public struct StorageCensus: Sendable {
         .totalFileAllocatedSizeKey
     ]
 
-    /// Exact on-disk identity (device + inode) via Foundation attributes. Used
-    /// for hard-link/root-overlap dedup. Returns nil if attributes are
-    /// unreadable, in which case the file is counted without dedup metadata.
+    public init(
+        roots: [StorageCensusRoot],
+        parentURL: URL? = nil,
+        metricLabel: String = "storage.census",
+        isCancelled: @escaping @Sendable () -> Bool = { false },
+        onProgress: (@Sendable (Int) -> Void)? = nil
+    ) {
+        self.roots = roots
+        self.parentURL = parentURL?.standardizedFileURL.resolvingSymlinksInPath()
+        self.metricLabel = metricLabel
+        self.isCancelled = isCancelled
+        self.onProgress = onProgress
+    }
+
+    /// Exact on-disk identity (device + inode) via Foundation attributes.
     static func fileIdentity(at url: URL) -> StorageFileIdentity? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
             return nil
@@ -226,16 +265,74 @@ public struct StorageCensus: Sendable {
         return StorageFileIdentity(device: device, inode: inode)
     }
 
-    public init(
+    /// Host-allocated bytes with a verified `stat` fallback. Returns
+    /// `measured == false` when no reliable figure exists; the caller must never
+    /// substitute logical size.
+    static func allocatedMeasurement(at url: URL, values: URLResourceValues?) -> (bytes: Int64, measured: Bool) {
+        if let total = values?.totalFileAllocatedSize { return (Int64(total), true) }
+        if let allocated = values?.fileAllocatedSize { return (Int64(allocated), true) }
+        #if canImport(Darwin) || canImport(Glibc)
+        var info = stat()
+        if lstat(url.path, &info) == 0 {
+            return (Int64(info.st_blocks) * 512, true)
+        }
+        #endif
+        return (0, false)
+    }
+
+    private final class ErrorCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func increment() {
+            lock.lock()
+            count += 1
+            lock.unlock()
+        }
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return count
+        }
+    }
+
+    struct WalkTree { let url: URL; let includeHidden: Bool }
+
+    /// Normalize walk trees so a root contained in another tree is not traversed
+    /// twice; attribution still uses the full root list (deepest match wins).
+    static func normalizedWalkTrees(
         roots: [StorageCensusRoot],
-        parentURL: URL? = nil,
-        metricLabel: String = "storage.census",
-        isCancelled: @escaping @Sendable () -> Bool = { false }
-    ) {
-        self.roots = roots
-        self.parentURL = parentURL?.standardizedFileURL.resolvingSymlinksInPath()
-        self.metricLabel = metricLabel
-        self.isCancelled = isCancelled
+        parentURL: URL?
+    ) -> [WalkTree] {
+        var candidates: [WalkTree] = []
+        if let parentURL {
+            candidates.append(WalkTree(url: parentURL, includeHidden: true))
+            for root in roots where !Self.contains(parentURL, root.url) && root.url.path != parentURL.path {
+                candidates.append(WalkTree(url: root.url, includeHidden: root.includeHiddenFiles))
+            }
+        } else {
+            for root in roots {
+                candidates.append(WalkTree(url: root.url, includeHidden: root.includeHiddenFiles))
+            }
+        }
+        // Drop any tree contained in another candidate (compare standardized paths).
+        let paths = candidates.map { $0.url.standardizedFileURL.path }
+        var keep: [WalkTree] = []
+        for (index, tree) in candidates.enumerated() {
+            let path = paths[index]
+            let containedByOther = paths.enumerated().contains { otherIndex, otherPath in
+                otherIndex != index
+                    && otherPath != path
+                    && (path == otherPath || path.hasPrefix(otherPath + "/"))
+            }
+            if !containedByOther { keep.append(tree) }
+        }
+        return keep
+    }
+
+    private static func contains(_ parent: URL, _ child: URL) -> Bool {
+        let parentPath = parent.standardizedFileURL.path
+        let childPath = child.standardizedFileURL.path
+        return childPath.hasPrefix(parentPath + "/")
     }
 
     public func run() throws -> StorageCensusReport {
@@ -267,25 +364,14 @@ public struct StorageCensus: Sendable {
             return best?.index
         }
 
-        // Walk each physical tree once. A parent walk covers every root it
-        // contains; roots outside the parent (Caches/, tmp/) walk separately.
-        struct WalkTree { let url: URL; let includeHidden: Bool }
-        var trees: [WalkTree] = []
-        if let parentURL {
-            trees.append(WalkTree(url: parentURL, includeHidden: true))
-            for root in roots where !root.url.path.hasPrefix(prefix(parentURL)) && root.url.path != parentPath {
-                trees.append(WalkTree(url: root.url, includeHidden: root.includeHiddenFiles))
-            }
-        } else {
-            for root in roots { trees.append(WalkTree(url: root.url, includeHidden: root.includeHiddenFiles)) }
-        }
-
+        let trees = Self.normalizedWalkTrees(roots: roots, parentURL: parentURL)
         var unattributed = StorageSize.zero
         var unattributedCount = 0
-        var cloneLikeBucket = roots.contains { $0.potentiallyCloned }
+        let cloneLikeBucket = roots.contains { $0.potentiallyCloned }
 
-        // File identity -> root index that first claimed it. Makes hard links
-        // and nested/overlapping roots mutually exclusive exactly.
+        // File identity -> claiming attribution (-1 = unattributed remainder).
+        // Claiming happens for *every* counted file, so a hard link cannot be
+        // counted once as a category and again in the parent remainder.
         var claimedIdentity: [StorageFileIdentity: Int] = [:]
 
         for tree in trees {
@@ -294,11 +380,16 @@ public struct StorageCensus: Sendable {
 
             var options: FileManager.DirectoryEnumerationOptions = []
             if !tree.includeHidden { options.insert(.skipsHiddenFiles) }
+            let errorCounter = ErrorCounter()
 
             guard let enumerator = manager.enumerator(
                 at: tree.url,
                 includingPropertiesForKeys: Array(Self.resourceKeys),
-                options: options
+                options: options,
+                errorHandler: { _, _ in
+                    errorCounter.increment()
+                    return true
+                }
             ) else {
                 diagnostics.errorCount += 1
                 continue
@@ -330,48 +421,64 @@ public struct StorageCensus: Sendable {
                 }
                 guard values.isRegularFile == true else { continue }
 
-                let identity = Self.fileIdentity(at: itemURL)
                 let logical = Int64(values.fileSize ?? 0)
-                let allocated = Int64(values.totalFileAllocatedSize
-                                      ?? values.fileAllocatedSize
-                                      ?? values.fileSize ?? 0)
-                let size = StorageSize(logicalBytes: logical, allocatedBytes: allocated)
+                let allocated = Self.allocatedMeasurement(at: itemURL, values: values)
+                if !allocated.measured { diagnostics.allocatedUnavailableCount += 1 }
+                let size = StorageSize(logicalBytes: logical, allocatedBytes: allocated.bytes)
                 diagnostics.regularFileCount += 1
-
-                let path = itemURL.standardizedFileURL.path
-                guard let idx = rootIndex(for: path) else {
-                    if parentPath != nil {
-                        unattributed = StorageSize(
-                            logicalBytes: unattributed.logicalBytes + size.logicalBytes,
-                            allocatedBytes: unattributed.allocatedBytes + size.allocatedBytes
-                        )
-                        unattributedCount += 1
-                    }
-                    continue
+                if let onProgress, diagnostics.regularFileCount % 256 == 0 {
+                    onProgress(diagnostics.regularFileCount)
                 }
 
-                if let identity {
+                let path = itemURL.standardizedFileURL.path
+                let idx = rootIndex(for: path)
+                let attributionIndex: Int? = idx
+                    ?? (parentPath != nil ? -1 : nil)
+                guard let attributionIndex else { continue }
+
+                // Identity dedup across every bucket *and* the unattributed
+                // remainder: claim before attributing.
+                if let identity = Self.fileIdentity(at: itemURL) {
                     if let firstIndex = claimedIdentity[identity] {
                         diagnostics.dedupedFileCount += 1
-                        if firstIndex != idx {
-                            buckets[idx].sharedSize = StorageSize(
-                                logicalBytes: buckets[idx].sharedSize.logicalBytes + size.logicalBytes,
-                                allocatedBytes: buckets[idx].sharedSize.allocatedBytes + size.allocatedBytes
-                            )
+                        if let idx {
+                            if firstIndex == -1 {
+                                // The duplicate was first seen in the parent
+                                // remainder; move it to the category that owns
+                                // it so enumeration order cannot change totals.
+                                unattributed = StorageSize(
+                                    logicalBytes: max(0, unattributed.logicalBytes - size.logicalBytes),
+                                    allocatedBytes: max(0, unattributed.allocatedBytes - size.allocatedBytes)
+                                )
+                                unattributedCount = max(0, unattributedCount - 1)
+                                buckets[idx].size = buckets[idx].size + size
+                                buckets[idx].fileCount += 1
+                                claimedIdentity[identity] = idx
+                            } else if firstIndex != idx {
+                                buckets[idx].sharedSize = buckets[idx].sharedSize + size
+                            }
                         }
                         continue
                     }
-                    claimedIdentity[identity] = idx
+                    claimedIdentity[identity] = attributionIndex
+                } else {
+                    diagnostics.identityUnavailableCount += 1
                 }
-                buckets[idx].size = StorageSize(
-                    logicalBytes: buckets[idx].size.logicalBytes + size.logicalBytes,
-                    allocatedBytes: buckets[idx].size.allocatedBytes + size.allocatedBytes
-                )
-                buckets[idx].fileCount += 1
+
+                if attributionIndex >= 0 {
+                    buckets[attributionIndex].size = buckets[attributionIndex].size + size
+                    buckets[attributionIndex].fileCount += 1
+                } else {
+                    unattributed = unattributed + size
+                    unattributedCount += 1
+                }
             }
+            diagnostics.errorCount += errorCounter.value
         }
 
         diagnostics.duration = Date().timeIntervalSince(started)
+        diagnostics.completedAt = Date()
+        onProgress?(diagnostics.regularFileCount)
         return StorageCensusReport(
             buckets: buckets,
             diagnostics: diagnostics,

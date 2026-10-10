@@ -5,6 +5,7 @@
 import Crypto
 import Foundation
 import FloeCore
+import FloeModels
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -209,6 +210,8 @@ public actor MCPRemoteClient {
     private let credential: String?
     private let session: URLSession
     private let sessionDelegate: MCPNoRedirectSessionDelegate?
+    /// Where verified tool-result images are written (app storage root).
+    private let artifactRootProvider: @Sendable () throws -> URL
     /// True when this client created (and therefore owns) the URLSession.
     private let ownsSession: Bool
     private var transportEra = TransportEra.unknown
@@ -218,13 +221,17 @@ public actor MCPRemoteClient {
     private var headerBindingsByToolName: [String: [HeaderBinding]] = [:]
     /// Set by `disconnect()`; all further calls fail closed and no state is kept.
     private var disconnected = false
+    /// Bumped on every disconnect. In-flight requests capture it and refuse to
+    /// mutate session state or return success when it changed.
+    private var disconnectGeneration = 0
     /// Requests observed in flight (for diagnostics and teardown bookkeeping).
     private var inFlightRequestCount = 0
 
     public init(
         configuration: MCPServerConfiguration,
         credential: String?,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        artifactRootProvider: @escaping @Sendable () throws -> URL = { try FloeArtifactStore.root() }
     ) throws {
         try configuration.validate()
         if configuration.authentication != .none,
@@ -239,6 +246,7 @@ public actor MCPRemoteClient {
         }
         self.configuration = configuration
         self.credential = credential
+        self.artifactRootProvider = artifactRootProvider
         if let session {
             self.session = session
             self.sessionDelegate = nil
@@ -270,14 +278,12 @@ public actor MCPRemoteClient {
         sessionID = nil
         legacyInitialized = false
         headerBindingsByToolName = [:]
+        disconnectGeneration += 1
+        // Only a session we created may be invalidated: an injected session can
+        // be shared with other clients, so we never cancel its tasks globally.
+        // In-flight calls observe the generation bump and fail closed instead.
         if ownsSession {
             session.invalidateAndCancel()
-        } else {
-            // We do not own an injected session (tests/host); cancel its tasks
-            // without invalidating the caller-owned session object.
-            session.getAllTasks { tasks in
-                for task in tasks { task.cancel() }
-            }
         }
     }
 
@@ -382,24 +388,115 @@ public actor MCPRemoteClient {
         guard fullData.count <= Self.maximumResponseBytes else {
             throw MCPClientError.responseTooLarge(Self.maximumResponseBytes)
         }
-        let summary = Self.summary(from: result, fallback: fullData)
+        var summary = Self.summary(from: result, fallback: fullData)
         let digest = FloeDigest.sha256Hex(fullData)
         let isError = (result as? [String: Any])?["isError"] as? Bool ?? false
+        // Verified image results become digest-addressed artifacts so vision
+        // models can consume them; unsupported/oversized images are reported
+        // explicitly rather than silently dropped.
+        var artifacts: [ToolArtifactReference] = []
+        if let root = try? artifactRootProvider() {
+            let extracted = Self.imageArtifacts(from: result, root: root)
+            artifacts = extracted.artifacts
+            if extracted.rejectedCount > 0 {
+                summary += "\n[MCP: \(extracted.artifacts.count) image(s) attached as artifacts, "
+                    + "\(extracted.rejectedCount) image(s) not attached (unsupported type or over the size limit)]"
+            } else if !extracted.artifacts.isEmpty {
+                summary += "\n[MCP: \(extracted.artifacts.count) image(s) attached as artifacts]"
+            }
+        }
         return ToolExecutionOutput(
             summary: summary,
             fullOutputSHA256: digest,
-            exitStatus: isError ? 1 : 0
+            exitStatus: isError ? 1 : 0,
+            artifacts: artifacts
         )
+    }
+
+    /// Decode `tools/call` image content into verified artifacts under
+    /// `GeneratedImages/`. Only PNG/JPEG/WebP/GIF are accepted (the MIME types
+    /// the provider wire actually supports); each is size-capped and its bytes
+    /// are re-read and SHA-256 verified before it is reported.
+    static func imageArtifacts(
+        from result: Any?,
+        root: URL
+    ) -> (artifacts: [ToolArtifactReference], rejectedCount: Int) {
+        guard let object = result as? [String: Any],
+              let content = object["content"] as? [[String: Any]] else {
+            return ([], 0)
+        }
+        let maximumImageBytes = 8 * 1_024 * 1_024
+        let maximumTotalBytes = 16 * 1_024 * 1_024
+        let maximumImages = 4
+        var artifacts: [ToolArtifactReference] = []
+        var rejected = 0
+        var totalBytes = 0
+        for item in content {
+            guard (item["type"] as? String) == "image" else { continue }
+            guard artifacts.count < maximumImages,
+                  let mime = (item["mimeType"] as? String)?.lowercased(),
+                  let base64 = item["data"] as? String,
+                  let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]),
+                  data.count <= maximumImageBytes,
+                  totalBytes + data.count <= maximumTotalBytes,
+                  let fileExtension = Self.imageFileExtension(for: mime) else {
+                rejected += 1
+                continue
+            }
+            let sha = FloeDigest.sha256Hex(data)
+            let relativePath = "GeneratedImages/mcp-\(String(sha.prefix(32))).\(fileExtension)"
+            let directory = root.appendingPathComponent("GeneratedImages", isDirectory: true)
+            let fileName = "mcp-\(String(sha.prefix(32))).\(fileExtension)"
+            let destination = directory.appendingPathComponent(fileName)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                if !FileManager.default.fileExists(atPath: destination.path) {
+                    try data.write(to: destination, options: [.atomic])
+                }
+                // Re-read and verify before reporting the artifact.
+                let stored = try Data(contentsOf: destination)
+                guard FloeDigest.sha256Hex(stored) == sha, stored.count == data.count else {
+                    rejected += 1
+                    continue
+                }
+            } catch {
+                rejected += 1
+                continue
+            }
+            totalBytes += data.count
+            artifacts.append(ToolArtifactReference(
+                id: UUID(),
+                relativePath: relativePath,
+                mimeType: mime == "image/jpg" ? "image/jpeg" : mime,
+                byteCount: data.count,
+                sha256: sha
+            ))
+        }
+        return (artifacts, rejected)
+    }
+
+    static func imageFileExtension(for mime: String) -> String? {
+        switch mime {
+        case "image/png": return "png"
+        case "image/jpeg", "image/jpg": return "jpg"
+        case "image/webp": return "webp"
+        case "image/gif": return "gif"
+        default: return nil
+        }
     }
 
     private func ensureLegacyInitialized() async throws {
         guard !legacyInitialized else { return }
+        let generation = disconnectGeneration
         _ = try await legacyRequest(method: "initialize", params: [
             "protocolVersion": Self.legacyProtocolVersion,
             "capabilities": ["roots": ["listChanged": false]],
             "clientInfo": ["name": "Floe Agent", "version": "1"]
         ], requiresInitialization: false)
         try await legacyNotify(method: "notifications/initialized", params: [:])
+        guard !disconnected, generation == disconnectGeneration else {
+            throw MCPClientError.disconnected
+        }
         legacyInitialized = true
     }
 
@@ -409,32 +506,41 @@ public actor MCPRemoteClient {
         mirroredHeaders: [String: String] = [:]
     ) async throws -> Any? {
         guard !disconnected else { throw MCPClientError.disconnected }
-        let phase = Self.phase(for: method)
+        let generation = disconnectGeneration
+        let timeoutPhase = Self.timeoutPhase(for: method)
         do {
+            let result: Any?
             switch transportEra {
             case .current:
-                return try await currentRequest(method: method, params: params, mirroredHeaders: mirroredHeaders)
+                result = try await currentRequest(method: method, params: params, mirroredHeaders: mirroredHeaders)
             case .legacy:
-                return try await legacyRequest(method: method, params: params)
+                result = try await legacyRequest(method: method, params: params)
             case .unknown:
                 do {
-                    let result = try await currentRequest(
+                    let current = try await currentRequest(
                         method: method,
                         params: params,
                         mirroredHeaders: mirroredHeaders
                     )
+                    result = current
                     transportEra = .current
-                    return result
                 } catch let error as MCPClientError where Self.shouldFallBackToLegacy(error) {
                     transportEra = .legacy
                     try await ensureLegacyInitialized()
-                    return try await legacyRequest(method: method, params: params)
+                    result = try await legacyRequest(method: method, params: params)
                 }
             }
+            // A late response must not repopulate state or surface as success
+            // after a disconnect.
+            guard !disconnected, generation == disconnectGeneration else {
+                throw MCPClientError.disconnected
+            }
+            return result
         } catch {
-            // Distinguish cancellation from stall/timeout and label the phase so
-            // a failed connect/first-response is not reported as a call stall.
-            throw Self.normalized(error, phase: phase)
+            // `timeoutPhase` labels the MCP method group only; connection vs
+            // first-response vs stall are provider-side distinctions handled by
+            // the agent runtime watchdog, not by this transport.
+            throw Self.normalized(error, phase: timeoutPhase)
         }
     }
 
@@ -453,12 +559,14 @@ public actor MCPRemoteClient {
         return error
     }
 
-    static func phase(for method: String) -> String {
+    /// Timeout label limited to the MCP method group; it does not claim a
+    /// connection/first-response/stall distinction this transport cannot observe.
+    static func timeoutPhase(for method: String) -> String {
         switch method {
         case "tools/list": return "discover"
         case "tools/call": return "call"
         case "initialize": return "initialize"
-        default: return "connect"
+        default: return "request"
         }
     }
 
@@ -510,6 +618,9 @@ public actor MCPRemoteClient {
             requestID: id
         )
         if let newSessionID = response.value(forHTTPHeaderField: "Mcp-Session-Id"), !newSessionID.isEmpty {
+            // Guard against a late response repopulating session state after a
+            // disconnect/injected-session teardown.
+            guard !disconnected else { throw MCPClientError.disconnected }
             sessionID = newSessionID
         }
         return try Self.result(from: data, expectedRequestID: id)

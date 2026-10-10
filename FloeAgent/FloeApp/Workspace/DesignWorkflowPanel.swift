@@ -120,7 +120,7 @@ final class DesignWorkflowPanelModel: ObservableObject {
         nodeID: UUID,
         expectedRevision: Int64,
         contentType: DesignContentType? = nil,
-        _ body: @escaping (inout DesignProject) throws -> Void
+        _ body: @escaping @Sendable (inout DesignProject) throws -> Void
     ) async {
         do {
             snapshot = try await service.mutate(

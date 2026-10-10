@@ -171,7 +171,7 @@ public actor DesignCanvasService {
         expectedRevision: Int64,
         operationID: String,
         contentType: DesignContentType? = nil,
-        body: (inout DesignProject) throws -> Void
+        body: @Sendable (inout DesignProject) throws -> Void
     ) async throws -> Snapshot {
         guard !operationID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw FloeError.validationFailed("operationID is required")

@@ -43,14 +43,16 @@ struct StorageReportBuilderTests {
         #expect(report.totalAllocatedBytes == 100 + 200 + 50 + 80 + 25)
         #expect(report.combinedBytes == 10 + report.totalAllocatedBytes)
 
-        // Categories list excludes caches/tmp; they are not double counted.
+        // Categories list every measured bucket exactly once (including
+        // caches/tmp), so they reconcile with the total.
         let categoryIDs = report.categories.map(\.id)
-        #expect(!categoryIDs.contains("caches"))
-        #expect(!categoryIDs.contains("temporary"))
+        #expect(categoryIDs.contains("caches"))
+        #expect(categoryIDs.contains("temporary"))
         #expect(categoryIDs.contains("models"))
         #expect(categoryIDs.contains("runtimeV2"))
         let categoryTotal = report.categories.reduce(Int64(0)) { $0 + $1.allocatedBytes }
-        #expect(categoryTotal == 180)
+        #expect(categoryTotal == 430)
+        #expect(categoryTotal + (report.unattributed?.allocatedBytes ?? 0) == report.totalAllocatedBytes)
 
         // Shared bucket is flagged, not subtracted.
         #expect(report.categories.first { $0.id == "runtimeV2" }?.isSharedEstimate == true)

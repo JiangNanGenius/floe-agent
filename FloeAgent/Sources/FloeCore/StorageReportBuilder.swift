@@ -51,21 +51,18 @@ public struct StorageReport: Sendable, Equatable {
 }
 
 public enum StorageReportBuilder {
-    /// IDs of buckets that are real on-disk bytes but are presented as the
-    /// reclaimable estimate rather than as user-data categories.
-    public static let cleanupCategoryIDs: Set<String> = ["caches", "temporary"]
-
     public static func build(
         census: StorageCensusReport,
         bundleBytes: Int64,
         categoryIDs: Set<String>? = nil
     ) -> StorageReport {
         let includedIDs = categoryIDs ?? Set(census.buckets.map(\.id))
-        // A bucket is counted once in the total regardless of whether it is
-        // also listed as a category. Caches/tmp are included in the total.
+        // Every measured bucket is listed as its own mutually exclusive category
+        // (including caches/tmp) so the displayed categories reconcile with the
+        // total. The eligible-cleanup figure is computed separately from the
+        // cleanup plan and is a subset of what is shown here.
         var categories: [StorageReportCategory] = []
         for bucket in census.buckets where includedIDs.contains(bucket.id) {
-            if cleanupCategoryIDs.contains(bucket.id) { continue }
             guard bucket.exists || bucket.size.allocatedBytes > 0 || bucket.size.logicalBytes > 0 else { continue }
             categories.append(
                 StorageReportCategory(

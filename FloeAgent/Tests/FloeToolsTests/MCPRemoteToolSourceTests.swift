@@ -7,6 +7,7 @@ private final class MCPStubURLProtocol: URLProtocol, @unchecked Sendable {
         var status: Int
         var headers: [String: String]
         var body: Data
+        var delay: TimeInterval = 0
     }
 
     private static let lock = NSLock()
@@ -55,9 +56,16 @@ private final class MCPStubURLProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didFailWithError: MCPClientError.invalidResponse("missing test stub"))
             return
         }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !stub.body.isEmpty { client?.urlProtocol(self, didLoad: stub.body) }
-        client?.urlProtocolDidFinishLoading(self)
+        let deliver = {
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            if !stub.body.isEmpty { self.client?.urlProtocol(self, didLoad: stub.body) }
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+        if stub.delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + stub.delay, execute: deliver)
+        } else {
+            deliver()
+        }
     }
 
     override func stopLoading() {}
@@ -445,9 +453,10 @@ struct MCPRemoteToolSourceTests {
         } else {
             Issue.record("expected cancelled for CancellationError")
         }
-        #expect(MCPRemoteClient.phase(for: "tools/list") == "discover")
-        #expect(MCPRemoteClient.phase(for: "tools/call") == "call")
-        #expect(MCPRemoteClient.phase(for: "initialize") == "initialize")
+        #expect(MCPRemoteClient.timeoutPhase(for: "tools/list") == "discover")
+        #expect(MCPRemoteClient.timeoutPhase(for: "tools/call") == "call")
+        #expect(MCPRemoteClient.timeoutPhase(for: "initialize") == "initialize")
+        #expect(MCPRemoteClient.timeoutPhase(for: "other") == "request")
 
         let config = MCPServerConfiguration(
             displayName: "Example", endpoint: URL(string: "https://example.test/mcp")!
@@ -471,5 +480,102 @@ struct MCPRemoteToolSourceTests {
         } catch {
             Issue.record("unexpected non-MCP error \(error)")
         }
+    }
+
+
+    @Test("Disconnect does not cancel unrelated clients sharing a session")
+    func sharedSessionDisconnectIsPerClient() async throws {
+        MCPStubURLProtocol.prepare([
+            .init(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","tools":[{"name":"read-note","description":"Read","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}"#.utf8)
+            )
+        ])
+        let shared = session()
+        let configA = MCPServerConfiguration(displayName: "A", endpoint: URL(string: "https://a.example.test/mcp")!)
+        let configB = MCPServerConfiguration(displayName: "B", endpoint: URL(string: "https://b.example.test/mcp")!)
+        let clientA = try MCPRemoteClient(configuration: configA, credential: nil, session: shared)
+        let clientB = try MCPRemoteClient(configuration: configB, credential: nil, session: shared)
+
+        await clientA.disconnect()
+        let disconnectedA = await clientA.isDisconnected
+        #expect(disconnectedA)
+
+        // B must still be able to use the shared session (A never cancels tasks
+        // it does not own), while A fails closed.
+        let tools = try await clientB.discoverTools()
+        #expect(tools.map(\.remoteName) == ["read-note"])
+        do {
+            _ = try await clientA.discoverTools()
+            Issue.record("client A should fail closed after disconnect")
+        } catch let error as MCPClientError {
+            guard case .disconnected = error else {
+                Issue.record("unexpected error \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("Late response after disconnect cannot return success or repopulate state")
+    func lateResponseAfterDisconnectFailsClosed() async throws {
+        MCPStubURLProtocol.prepare([
+            .init(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","tools":[]}}"#.utf8),
+                delay: 0.6
+            )
+        ])
+        let config = MCPServerConfiguration(displayName: "Slow", endpoint: URL(string: "https://slow.example.test/mcp")!)
+        let client = try MCPRemoteClient(configuration: config, credential: nil, session: session())
+        let task = Task { try await client.discoverTools() }
+        try await Task.sleep(nanoseconds: 120_000_000)
+        await client.disconnect()
+        do {
+            _ = try await task.value
+            Issue.record("late response must not surface as success")
+        } catch let error as MCPClientError {
+            guard case .disconnected = error else {
+                Issue.record("unexpected error \(error)")
+                return
+            }
+        }
+        let tools = await (try? client.discoverTools()) ?? nil
+        #expect(tools == nil)
+    }
+
+    @Test("MCP image results become verified artifacts; unsupported types are reported")
+    func imageResultsBecomeArtifacts() async throws {
+        let tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        let response = #"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","mimeType":"image/png","data":"\#(tinyPNG)"},{"type":"image","mimeType":"image/bmp","data":"AAAA"}],"isError":false}}"#
+        MCPStubURLProtocol.prepare([
+            .init(
+                status: 200,
+                headers: ["Content-Type": "application/json"],
+                body: Data(response.utf8)
+            )
+        ])
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MCPArtifactTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = MCPServerConfiguration(displayName: "Images", endpoint: URL(string: "https://images.example.test/mcp")!)
+        let client = try MCPRemoteClient(
+            configuration: config, credential: nil, session: session(),
+            artifactRootProvider: { root }
+        )
+        let output = try await client.callTool(name: "screenshot", argumentsJSON: Data("{}".utf8))
+        #expect(output.artifacts.count == 1)
+        let artifact = try #require(output.artifacts.first)
+        #expect(artifact.mimeType == "image/png")
+        #expect(artifact.relativePath.hasPrefix("GeneratedImages/mcp-"))
+        #expect(artifact.relativePath.hasSuffix(".png"))
+        let fileURL = root.appendingPathComponent(artifact.relativePath)
+        let stored = try Data(contentsOf: fileURL)
+        #expect(stored.count == artifact.byteCount)
+        // SHA-256 of the known 68-byte 1x1 PNG payload, computed independently
+        // of the code under test.
+        #expect(artifact.sha256 == "63ef318d96b5d0d0ceba6e04a4e622b1158335cdc67c49e27839132c6f655058")
+        #expect(output.summary.contains("not attached"))
     }
 }
