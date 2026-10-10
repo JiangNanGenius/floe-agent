@@ -209,7 +209,6 @@ private struct DesignCreateTool: AgentTool {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
             runID: context.runID,
-            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,

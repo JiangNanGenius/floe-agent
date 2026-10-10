@@ -232,6 +232,18 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_release_preflight_versions.py
           python3 -m unittest discover -s scripts/tests -p test_native_runtime_free_audit.py
 
+      # Pinned OCCT native slices are large vendor binaries that are not committed;
+      # bootstrap.py fetches them from the pinned upstream and verifies SHA-256
+      # before an atomic install (idempotent no-op when already present). Guarded so
+      # pre-cleanup checkouts with tracked slices still build.
+      - name: Bootstrap pinned OCCT native slices
+        run: |
+          if [ -f FloeAgent/ThirdParty/FloeCADKit/bootstrap.py ]; then
+            python3 FloeAgent/ThirdParty/FloeCADKit/bootstrap.py
+          else
+            echo "FloeCADKit bootstrap.py not present; using tracked vendor slices"
+          fi
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen automake cmake

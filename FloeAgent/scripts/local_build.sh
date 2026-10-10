@@ -30,6 +30,14 @@ if [ "${SWIFTPM_NO_SANDBOX:-0}" = "1" ]; then
     SANDBOX_FLAG="--disable-sandbox"
 fi
 
+# Pinned OCCT slices are untracked vendor binaries: fetch + SHA-256 verify them
+# before building whenever the bootstrap manifest is present. Idempotent no-op
+# when the exact bytes are already installed; macOS-only (the app/CAD stack).
+if [ "$(uname -s)" = "Darwin" ] && [ -f ThirdParty/FloeCADKit/bootstrap.py ]; then
+    echo "== bootstrap pinned OCCT slices =="
+    python3 ThirdParty/FloeCADKit/bootstrap.py
+fi
+
 echo "== swift build (all SPM targets) =="
 swift build $SANDBOX_FLAG
 

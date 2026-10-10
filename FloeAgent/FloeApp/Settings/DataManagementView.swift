@@ -4,6 +4,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import FloeCore
+import FloeEnvironments
 import FloePersistence
 
 struct DataManagementView: View {
