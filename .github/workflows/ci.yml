@@ -239,9 +239,11 @@ jobs:
       - name: Bootstrap pinned OCCT native slices
         run: |
           # Official CI must always enforce pinned, hash-verified bytes: never
-          # inherit a developer's local-relink override.
-          if [ -f FloeAgent/ThirdParty/FloeCADKit/bootstrap.py ]; then
-            env -u FLOECAD_LOCAL_RELINK python3 FloeAgent/ThirdParty/FloeCADKit/bootstrap.py
+          # inherit a developer's local-relink override. Paths are relative to
+          # this job's working directory (FloeAgent); a repo-root-relative
+          # path here silently skips the bootstrap.
+          if [ -f ThirdParty/FloeCADKit/bootstrap.py ]; then
+            env -u FLOECAD_LOCAL_RELINK python3 ThirdParty/FloeCADKit/bootstrap.py
           else
             echo "FloeCADKit bootstrap.py not present; using tracked vendor slices"
           fi
@@ -756,8 +758,9 @@ jobs:
           # bootstrap_native_components.sh does not fetch OCCT, and the
           # simulator xcframework slice is not committed. Without this step
           # the Xcode 26.6 App compile fails on the missing simulator .a.
-          if [ -f FloeAgent/ThirdParty/FloeCADKit/bootstrap.py ]; then
-            env -u FLOECAD_LOCAL_RELINK python3 FloeAgent/ThirdParty/FloeCADKit/bootstrap.py
+          # Paths are relative to this job's working directory (FloeAgent).
+          if [ -f ThirdParty/FloeCADKit/bootstrap.py ]; then
+            env -u FLOECAD_LOCAL_RELINK python3 ThirdParty/FloeCADKit/bootstrap.py
           else
             echo "FloeCADKit bootstrap.py not present; using tracked vendor slices"
           fi
