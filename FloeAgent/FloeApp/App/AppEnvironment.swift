@@ -803,7 +803,18 @@ final class AppEnvironment: ObservableObject {
         // Design workflow tools (brief/spec/revisions/anchored feedback/
         // candidate/adopt/reject/restore) on the shared design project model.
         // Capability flags reflect this build's actually connected operations.
-        registerDesignAgentTools(capabilities: .designCoreDefaults())
+        // Authorization fails closed: a run may only touch the canvas its run
+        // context is bound to.
+        let designDatabase = database
+        registerDesignAgentTools(
+            capabilities: .designCoreDefaults(),
+            authorize: { runID, canvasID in
+                guard let runID else { return false }
+                let store = CanvasRunContextStore(database: designDatabase)
+                guard let context = try? await store.context(runID: runID) else { return false }
+                return context.canvasID == canvasID
+            }
+        )
         // Provider-backed semantic visual inspection plus generation through
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.

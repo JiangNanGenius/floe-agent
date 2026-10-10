@@ -79308,6 +79308,210 @@
           }
         }
       }
+    },
+    "settings.data_management_view.floe_scratch_files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe scratch files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 暂存文件"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.prompt_library": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prompt library (retained)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提示词库（保留）"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.prompt_library_retention": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "User-authored prompts; never treated as a cache."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用户创作的提示词，绝不当作缓存处理。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.diagnostics_log": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostics log (retained)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "诊断日志（保留）"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.diagnostics_log_retention": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic evidence kept on purpose."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有意保留的诊断证据。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.pdf_operation_journal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PDF operation journal (retained)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PDF 操作日志（保留）"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.pdf_journal_retention": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovery journal; deleting it could break PDF recovery."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复日志；删除可能破坏 PDF 恢复。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_plan_header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Planned cleanup (owner-probed)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理计划（按所有者探测）"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_retained_header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registered retained data (never deleted)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已注册保留数据（绝不删除）"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop cleaning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止清理"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_confirm_detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only items whose owner is proven idle at execution are removed. Retained registrations are never touched."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅删除执行时所有者已被证明空闲的项目；保留注册项绝不触碰。"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.cleanup_eligible_bytes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eligible now (owner-probed estimate): %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前符合条件（经所有者探测的估算）：%@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -206,6 +206,19 @@ public actor MediaGenerationJobStore {
         try await dueOwnedJobs(at: date, limit: limit).map(\.job)
     }
 
+    /// True when any media job is in a non-terminal state. Used by the
+    /// ownership-aware storage cleaner so an active media job protects scratch;
+    /// a query failure is the caller's signal to fail closed.
+    public func hasUnfinishedJobs() async throws -> Bool {
+        try await database.reader { db in
+            let count = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM media_generation_jobs
+                WHERE state NOT IN ('ready','failed','cancelled','expired')
+                """) ?? 0
+            return count > 0
+        }
+    }
+
     public func dueOwnedJobs(at date: Date = Date(), limit: Int = 24) async throws -> [OwnedMediaGenerationJob] {
         try await database.reader { db in
             try Row.fetchAll(db, sql: """

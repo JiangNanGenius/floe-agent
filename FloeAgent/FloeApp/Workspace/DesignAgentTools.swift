@@ -149,6 +149,7 @@ private struct DesignGetStateTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.snapshot(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
         )
@@ -207,6 +208,8 @@ private struct DesignCreateTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
+            runID: context.runID,
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -241,6 +244,7 @@ private struct DesignUpdateBriefTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -276,6 +280,7 @@ private struct DesignUpdateSpecTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -336,6 +341,7 @@ private struct DesignRegisterRevisionTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -398,6 +404,7 @@ private struct DesignAddFeedbackTool: AgentTool {
         default: anchor = .objectID(args.objectID ?? "")
         }
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -439,6 +446,7 @@ private struct DesignProposeTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -462,11 +470,11 @@ private struct DesignAdoptTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         var canvasID: String; var nodeID: String; var expectedRevision: Int64; var operationID: String
         var candidateID: String; var mode: String?; var expectedArtifactRevisionID: String?
-        var grantID: String
+        var baselineRevisionID: String; var grantID: String
     }
     static let name = "canvas.designAdopt"
-    static let toolDescription = "Adopt a pending candidate using a user-issued single-use grant: update the original node (default) or create a variant branch. Requires approval."
-    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"candidateID":{"type":"string"},"mode":{"type":"string","enum":["updateOriginal","variant"]},"expectedArtifactRevisionID":{"type":"string"},"grantID":{"type":"string"}},"required":["canvasID","nodeID","expectedRevision","operationID","candidateID","grantID"],"additionalProperties":false}"#
+    static let toolDescription = "Adopt a pending candidate using a user-issued single-use grant bound to its base revision: update the original node (default) or create a variant branch. Requires approval."
+    static let parametersJSON = #"{"type":"object","properties":{"canvasID":{"type":"string"},"nodeID":{"type":"string"},"expectedRevision":{"type":"integer"},"operationID":{"type":"string"},"candidateID":{"type":"string"},"mode":{"type":"string","enum":["updateOriginal","variant"]},"expectedArtifactRevisionID":{"type":"string"},"baselineRevisionID":{"type":"string"},"grantID":{"type":"string"}},"required":["canvasID","nodeID","expectedRevision","operationID","candidateID","baselineRevisionID","grantID"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.writesFiles, .persistsPersonalData]
     static let isSideEffecting = true
     let service: DesignCanvasService
@@ -476,17 +484,23 @@ private struct DesignAdoptTool: AgentTool {
         _ = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
         guard !args.operationID.isEmpty else { throw FloeError.validationFailed("operationID is required") }
         guard !args.grantID.isEmpty else { throw FloeError.validationFailed("grantID is required") }
+        guard !args.baselineRevisionID.isEmpty else {
+            throw FloeError.validationFailed("baselineRevisionID is required")
+        }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
         let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
-        guard await grants.consume(
-            id: args.grantID, canvasID: canvasID, nodeID: nodeID, candidateID: args.candidateID
+        // Validate (do not consume yet) before starting the transaction.
+        guard await grants.validate(
+            id: args.grantID, canvasID: canvasID, nodeID: nodeID,
+            candidateID: args.candidateID, baselineRevisionID: args.baselineRevisionID
         ) else {
-            throw FloeError.validationFailed("Adoption grant is missing, expired or bound to a different candidate")
+            throw FloeError.validationFailed("Adoption grant is missing, expired or bound to a different candidate/revision")
         }
         let mode = DesignAdoptMode(rawValue: args.mode ?? "updateOriginal") ?? .updateOriginal
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: canvasID,
             nodeID: nodeID,
             expectedRevision: args.expectedRevision,
@@ -499,6 +513,12 @@ private struct DesignAdoptTool: AgentTool {
                 expectedRevisionID: args.expectedArtifactRevisionID
             )
         }
+        // Consume only after the transaction succeeded, so a failed CAS does not
+        // burn the user's grant. A replay (already applied) also consumes it.
+        _ = await grants.consume(
+            id: args.grantID, canvasID: canvasID, nodeID: nodeID,
+            candidateID: args.candidateID, baselineRevisionID: args.baselineRevisionID
+        )
         return DesignToolOutput.make(DesignToolOutput.state(snapshot))
     }
 }
@@ -522,6 +542,7 @@ private struct DesignRejectTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -551,6 +572,7 @@ private struct DesignRestoreTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let snapshot = try await service.mutate(
+            runID: context.runID,
             canvasID: try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID"),
             nodeID: try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID"),
             expectedRevision: args.expectedRevision,
@@ -590,13 +612,18 @@ extension DesignCapabilityRegistry {
     }
 }
 
-/// Registers the design tool family against the shared Canvas authority.
+/// Registers the design tool family against the shared Canvas authority. The
+/// authorization closure resolves whether a run may touch a canvas (app wiring
+/// uses the existing canvas run context), so an arbitrary UUID cannot reach
+/// another canvas.
 func registerDesignAgentTools(
     capabilities: DesignCapabilityRegistry,
-    service: DesignCanvasService = DesignCanvasService(),
+    authorize: @escaping DesignCanvasService.CanvasAuthorization,
+    repository: CanvasDocumentRepository = FileCanvasDocumentRepository(),
     grants: DesignAdoptionGrantStore = .shared,
     registry: ToolRunnerRegistry = .shared
 ) {
+    let service = DesignCanvasService(repository: repository, authorize: authorize)
     ToolCatalog.register(DesignGetStateTool.self); registry.register(DesignGetStateTool(service: service))
     ToolCatalog.register(DesignCapabilitiesTool.self); registry.register(DesignCapabilitiesTool(registry: capabilities))
     ToolCatalog.register(DesignCreateTool.self); registry.register(DesignCreateTool(service: service))

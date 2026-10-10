@@ -244,7 +244,6 @@
 		88CDE2E5D7360F030FA978B3 /* WorkbenchEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B20E630A7185A0F5A14CD8 /* WorkbenchEnvironment.swift */; };
 		896228729C07DED7D28B1630 /* IDELanguageRunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4C5A9025E3F2EFAD8D1CE6 /* IDELanguageRunView.swift */; };
 		89B023C074580181D49D192A /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */; };
-		89BF8CF5001A578025DF3643 /* DesignCanvasService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9712BE4E768A87FEE120BB33 /* DesignCanvasService.swift */; };
 		8A1DC131203E20C7D4FCA1CB /* NotesOfficeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 931809561A553D3D4D78ABA6 /* NotesOfficeView.swift */; };
 		8A7DE1C18E6F48F78C0B3B79 /* NotesEngineeringCoverRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53DB8A733C897C4BC87129A9 /* NotesEngineeringCoverRenderer.swift */; };
 		8BDBF9D426DD621EA4ECB830 /* FloeExecution in Frameworks */ = {isa = PBXBuildFile; productRef = 59DBBD5C35D97EBB383798F6 /* FloeExecution */; };
@@ -768,7 +767,6 @@
 		96B20E630A7185A0F5A14CD8 /* WorkbenchEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchEnvironment.swift; sourceTree = "<group>"; };
 		96BF3F9C76C1DF1B6DFAED3A /* CadWebEngineSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CadWebEngineSession.swift; sourceTree = "<group>"; };
 		96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeAgentApp.swift; sourceTree = "<group>"; };
-		9712BE4E768A87FEE120BB33 /* DesignCanvasService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignCanvasService.swift; sourceTree = "<group>"; };
 		9745D7DF54A6CC20E16EAE57 /* WorkbenchVideoPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchVideoPanels.swift; sourceTree = "<group>"; };
 		97B9B3602FD264F0C21CE627 /* UsageStatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStatisticsView.swift; sourceTree = "<group>"; };
 		97C1CAAE94D19D174CC8D6BC /* OfficeCommandPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeCommandPanel.swift; sourceTree = "<group>"; };
@@ -1171,7 +1169,6 @@
 				0820216531ADA023BF4AC6B5 /* CodeEditorCore.swift */,
 				D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */,
 				EB2D99FAE5ED1501A26B933F /* DesignAgentTools.swift */,
-				9712BE4E768A87FEE120BB33 /* DesignCanvasService.swift */,
 				D41E44F63E6F2C36D2E51E9A /* DesignWorkflowPanel.swift */,
 				05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */,
 				E1A11E744F665711124AF4AE /* EngineeringFilePreview.swift */,
@@ -2243,7 +2240,6 @@
 				B2561307059E6C4776EC8B06 /* CredentialManageTool.swift in Sources */,
 				9484845FCE5ED5231B66713F /* DataManagementView.swift in Sources */,
 				B5B5BDFEC0A8503A436D2348 /* DesignAgentTools.swift in Sources */,
-				89BF8CF5001A578025DF3643 /* DesignCanvasService.swift in Sources */,
 				64C7876E6FD48478F53BB1FE /* DesignWorkflowPanel.swift in Sources */,
 				BEE09DF321378355A79E26BC /* DeviceFontStore.swift in Sources */,
 				D27117ADEB48A630EEF5C7E2 /* DiagnosticsAboutView.swift in Sources */,

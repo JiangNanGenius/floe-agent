@@ -14,6 +14,8 @@ struct DataManagementView: View {
     @State private var confirmsCleanup = false
     @State private var cleanupOutcome: StorageCleanupPlanResult?
     @State private var cleanupEstimateBytes: Int64 = 0
+    @State private var cleanupPlan = FloeStorageCleanupRegistry.plan()
+    @State private var cleanupCancellation = CleanupCancellation()
     @AppStorage("creative.canvas.sync.enabled") private var canvasSyncEnabled = true
     @State private var creativeStorage: CreativeStorageSummary?
     @State private var isReleasingCloudSpace = false
@@ -155,11 +157,42 @@ struct DataManagementView: View {
             }
 
             Section {
+                ForEach(cleanupPlan.candidates) { candidate in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(candidate.title)
+                        Text(candidate.retentionReason).font(.caption2).foregroundStyle(.secondary)
+                        Text(FloeL10n.l("settings.data_management_view.cleanup_eligible_bytes",
+                                        ByteCountFormatter.string(fromByteCount: cleanupEstimateBytes, countStyle: .file)))
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            } header: {
+                Text("settings.data_management_view.cleanup_plan_header")
+            } footer: {
+                Text("settings.data_management_view.cleanup_confirm_detail")
+            }
+
+            Section("settings.data_management_view.cleanup_retained_header") {
+                ForEach(cleanupPlan.retained) { item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                        Text(item.retentionReason).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section {
                 Button(role: .destructive) { confirmsCleanup = true } label: {
                     HStack {
                         Label("settings.data_management_view.safely_clean_caches_and_temporary_files", systemImage: "trash.slash")
                         Spacer()
-                        if isCleaning { ProgressView() }
+                        if isCleaning {
+                            ProgressView()
+                            Button("settings.data_management_view.cleanup_cancel") {
+                                cleanupCancellation.cancel()
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                 }
                 .disabled(isCleaning)
@@ -231,6 +264,7 @@ struct DataManagementView: View {
             orphanedAssetCount = orphans.count
             orphanedAssetBytes = orphans.reduce(0) { $0 + $1.byteCount }
         }
+        cleanupPlan = FloeStorageCleanupRegistry.plan()
         await storage.scan()
         await refreshCleanupEstimate(authority: await makeCleanupAuthority())
     }
@@ -243,11 +277,18 @@ struct DataManagementView: View {
         // Ownership is probed now, immediately before cleaning, and the cleaner
         // re-probes per candidate and per item. Unknown/busy owners delete
         // nothing (fail closed).
+        cleanupCancellation = CleanupCancellation()
+        let cancellation = cleanupCancellation
         let authority = await makeCleanupAuthority()
         let plan = FloeStorageCleanupRegistry.plan()
+        cleanupPlan = plan
         let volumeBefore = Self.availableCapacityBytes()
         let outcome = await Task.detached(priority: .utility) {
-            StorageCleanup.execute(plan: plan, authority: authority)
+            StorageCleanup.execute(
+                plan: plan,
+                authority: authority,
+                isCancelled: { cancellation.isCancelled }
+            )
         }.value
         var measured = outcome
         if let volumeBefore, let volumeAfter = Self.availableCapacityBytes() {
@@ -259,12 +300,17 @@ struct DataManagementView: View {
     }
 
     private func makeCleanupAuthority() async -> AppStorageCleanupAuthority {
-        let activeContainers = (try? await environment.environmentRegistry.all()) ?? []
-        let environmentActive = activeContainers.contains { $0.state == .active }
+        // Every probe fails closed: if the query errors we cannot prove the
+        // owner idle, so nothing is deleted.
+        let containers: [ContainerRecord]? = try? await environment.environmentRegistry.all()
+        let environmentActive = containers?.contains { $0.state == .active } ?? true
         let modelDownloadsActive = await MainActor.run { !environment.localModelsCenter.activeDownloads.isEmpty }
-        var mediaActive = true // fail closed when the probe errors
-        if let jobs = try? await MediaGenerationJobStore(database: environment.database).allJobs(limit: 200) {
-            mediaActive = jobs.contains { !$0.state.isTerminal }
+        let mediaActive: Bool
+        if let hasUnfinished = try? await MediaGenerationJobStore(database: environment.database)
+            .hasUnfinishedJobs() {
+            mediaActive = hasUnfinished
+        } else {
+            mediaActive = true
         }
         let idle = !environmentActive && !modelDownloadsActive && !mediaActive
         return AppStorageCleanupAuthority(appIdle: idle)
@@ -300,6 +346,24 @@ struct DataManagementView: View {
         guard cloud.object(forKey: "creative.canvas.sync.enabled") != nil else { return }
         let remoteValue = cloud.bool(forKey: "creative.canvas.sync.enabled")
         if canvasSyncEnabled != remoteValue { canvasSyncEnabled = remoteValue }
+    }
+}
+
+/// Cooperative cancellation box for the in-flight cleanup.
+final class CleanupCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
 

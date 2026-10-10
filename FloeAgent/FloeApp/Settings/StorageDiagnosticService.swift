@@ -87,7 +87,7 @@ final class StorageDiagnosticService: ObservableObject {
     @Published private(set) var scanProgress: Double?
     @Published private(set) var wasCancelled = false
 
-    private var currentTask: Task<Void, Never>?
+    private var currentTask: Task<StorageDiagnosticReport?, Never>?
 
     func cancel() {
         currentTask?.cancel()
@@ -106,7 +106,7 @@ final class StorageDiagnosticService: ObservableObject {
 
         let heartbeat = Task { @MainActor in
             while !Task.isCancelled {
-                scanProgress = (scanProgress ?? 0).adding(0.06)
+                scanProgress = (scanProgress ?? 0) + 0.06
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
@@ -138,14 +138,14 @@ final class StorageDiagnosticService: ObservableObject {
 
     // MARK: - Root / category mapping
 
-    private static func parentRoot() -> URL? {
+    nonisolated private static func parentRoot() -> URL? {
         // Library is the single mutually-exclusive parent: it contains both
         // Application Support/FloeAgent and Caches. Documents/ and tmp/ are
         // walked separately because they are not under Library.
         FloeStorageLayout.libraryRoot()
     }
 
-    private static func roots() -> [StorageCensusRoot] {
+    nonisolated private static func roots() -> [StorageCensusRoot] {
         let support = FloeStorageLayout.floeAgentRoot()
         func app(_ component: String) -> URL? {
             support?.appendingPathComponent(component, isDirectory: true)
@@ -196,7 +196,7 @@ final class StorageDiagnosticService: ObservableObject {
         return roots
     }
 
-    private static func makeReport(from result: StorageCensusReport) -> StorageDiagnosticReport {
+    nonisolated private static func makeReport(from result: StorageCensusReport) -> StorageDiagnosticReport {
         let names: [String: (String, String)] = [
             "models": (FloeL10n.l("localmodels.title"), "cpu"),
             "workspaces": (FloeL10n.l("settings.data_management_view.private_workspace"), "folder.badge.gearshape"),
@@ -269,6 +269,13 @@ final class StorageDiagnosticService: ObservableObject {
 /// candidate; user data and recovery state that live under Caches are
 /// registered as *retained* with reasons and are never swept.
 enum FloeStorageCleanupRegistry {
+    /// Owned scratch directory. Only what Floe itself creates under this
+    /// directory is a candidate; arbitrary tmp content has unknown owners and is
+    /// never classified as owned regenerable scratch.
+    static func ownedScratchRoot(temporary: URL = FloeStorageLayout.temporaryRoot) -> URL {
+        temporary.appendingPathComponent("FloeAgent", isDirectory: true)
+    }
+
     static func plan(
         caches: URL? = FloeStorageLayout.cachesRoot(),
         temporary: URL = FloeStorageLayout.temporaryRoot,
@@ -277,17 +284,18 @@ enum FloeStorageCleanupRegistry {
         var candidates: [StorageCleanupCandidate] = []
         var retained: [StorageCleanupRetained] = []
 
-        // Stale app scratch only, older than one hour, owner-probed and
-        // revalidated per item. The root is the app's own tmp directory.
+        // Only Floe's own scratch subdirectory, older than one hour, with the
+        // owner probe required to prove idle. If the directory does not exist
+        // the plan is effectively empty.
         candidates.append(
             StorageCleanupCandidate(
-                id: "temporary",
+                id: "floeScratch",
                 owner: .temporary,
-                title: FloeL10n.l("settings.data_management_view.temporary_files_older_than_one_hour"),
+                title: FloeL10n.l("settings.data_management_view.floe_scratch_files"),
                 purpose: FloeL10n.l("settings.data_management_view.finished_scratch_left_in_temporary"),
                 retentionReason: FloeL10n.l("settings.data_management_view.recent_and_active_scratch_is_kept"),
                 kind: .staleTemporary,
-                root: temporary,
+                root: ownedScratchRoot(temporary: temporary),
                 olderThan: now.addingTimeInterval(-3_600)
             )
         )
@@ -297,22 +305,22 @@ enum FloeStorageCleanupRegistry {
             retained.append(StorageCleanupRetained(
                 id: "promptLibrary",
                 owner: .floeCache,
-                title: "Prompt library",
-                retentionReason: "User-authored prompts; never treated as a cache",
+                title: FloeL10n.l("settings.data_management_view.prompt_library"),
+                retentionReason: FloeL10n.l("settings.data_management_view.prompt_library_retention"),
                 root: floeCaches.appendingPathComponent("PromptLibrary", isDirectory: true)
             ))
             retained.append(StorageCleanupRetained(
                 id: "diagnosticsLog",
                 owner: .floeCache,
-                title: "Diagnostics log",
-                retentionReason: "Diagnostic evidence kept on purpose",
+                title: FloeL10n.l("settings.data_management_view.diagnostics_log"),
+                retentionReason: FloeL10n.l("settings.data_management_view.diagnostics_log_retention"),
                 root: floeCaches.appendingPathComponent("diagnostics-log.json")
             ))
             retained.append(StorageCleanupRetained(
                 id: "pdfOperationJournal",
                 owner: .floeCache,
-                title: "PDF operation journal",
-                retentionReason: "Recovery journal; deleting it could break PDF recovery",
+                title: FloeL10n.l("settings.data_management_view.pdf_operation_journal"),
+                retentionReason: FloeL10n.l("settings.data_management_view.pdf_journal_retention"),
                 root: floeCaches.appendingPathComponent("pdf-operation-journal.jsonl")
             ))
         }

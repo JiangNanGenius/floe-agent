@@ -21,7 +21,7 @@ final class DesignWorkflowPanelModel: ObservableObject {
     let canvasID: UUID
     let nodeID: UUID?
 
-    private let service = DesignCanvasService()
+    private let service = DesignCanvasService(repository: FileCanvasDocumentRepository())
     private let capabilities = DesignCapabilityRegistry.designCoreDefaults()
 
     init(canvasID: UUID, nodeID: UUID?) {
@@ -48,7 +48,9 @@ final class DesignWorkflowPanelModel: ObservableObject {
     func createDesign(type: DesignContentType, goal: String, audience: String?) async {
         guard let nodeID, let revision = snapshot?.canvasRevision else { return }
         guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
+        // The user's selected content type must be the one stored; the node-kind
+        // mapping is only a fallback for agent-created subdocuments.
+        await mutate(nodeID: nodeID, expectedRevision: revision, contentType: type) { design in
             DesignWorkflowEngine.updateBrief(
                 DesignBrief(goal: goal, audience: audience, constraints: []),
                 in: &design
@@ -81,9 +83,12 @@ final class DesignWorkflowPanelModel: ObservableObject {
     }
 
     func authorizeAssistantAdoption(candidateID: String) async {
-        guard let nodeID else { return }
+        guard let nodeID,
+              let candidate = design?.candidate(candidateID) else { return }
         _ = await DesignAdoptionGrantStore.shared.issue(
-            canvasID: canvasID, nodeID: nodeID, candidateID: candidateID
+            canvasID: canvasID, nodeID: nodeID,
+            candidateID: candidateID,
+            baselineRevisionID: candidate.baseRevisionID
         )
         authorizedCandidateID = candidateID
     }
