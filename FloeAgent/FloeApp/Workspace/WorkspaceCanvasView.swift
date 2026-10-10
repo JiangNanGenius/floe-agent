@@ -5506,7 +5506,7 @@ struct WorkspaceCanvasView: View {
                 .environmentObject(environment)
         }
         .sheet(isPresented: $showsDesignWorkflow) {
-            DesignWorkflowPanel(canvasID: store.project.id, nodeID: selectedNodeIDs.first)
+            DesignWorkflowPanel(canvasID: store.project.id, nodeID: selectedNodeIDs.first, environment: environment)
         }
         .sheet(isPresented: $showsCanvasOnboarding) {
             CanvasOnboardingView {

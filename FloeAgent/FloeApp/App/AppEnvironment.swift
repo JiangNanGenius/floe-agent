@@ -236,6 +236,12 @@ final class AppEnvironment: ObservableObject {
     var speechService: SpeechService { _speechService }
     var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
     var mediaGenerationService: MediaGenerationService { _mediaGenerationService }
+    /// Design workflow adapters bound to the real editor/asset services.
+    lazy var designAdapterCenter: DesignAdapterCenter = {
+        let center = DesignAdapterCenter(adapters: Self.makeDesignAdapters(environment: self))
+        center.bind(environment: self)
+        return center
+    }()
     var creativeAssetStore: CreativeAssetStore { _creativeAssetStore }
     var workbenchCenter: WorkbenchCenter { _workbenchCenter }
     var cadDocumentCenter: CadDocumentCenter { _cadDocumentCenter }
@@ -807,14 +813,74 @@ final class AppEnvironment: ObservableObject {
         // context is bound to.
         let designDatabase = database
         registerDesignAgentTools(
-            capabilities: .designCoreDefaults(),
+            capabilities: { [weak self] in
+                self?.designAdapterCenter.capabilityRegistry() ?? .designCoreDefaults()
+            },
+            adapters: designAdapterCenter,
+            environment: self,
             authorize: { runID, canvasID in
                 guard let runID else { return false }
                 let store = CanvasRunContextStore(database: designDatabase)
                 guard let context = try? await store.context(runID: runID) else { return false }
                 return context.canvasID == canvasID
-            }
+            },
+            decisionSink: { [weak self] conversationID, proposalID, decision, revision, sha256 in
+                // The shared durable proposal-decision ingress: queued runtime
+                // input on the originating conversation + idempotent transcript
+                // upsert. No other conversation is touched.
+                guard let environment = self else { return }
+                try? await environment.conversationCenter.recordProposalDecision(
+                    conversationID: conversationID,
+                    proposalID: proposalID,
+                    decision: "design-candidate-\(decision)",
+                    revision: revision,
+                    sha256: sha256
+                )
+            },
+            decisionOutbox: DesignDecisionOutbox.shared
         )
+        // Launch recovery for design decisions whose delivery crashed between
+        // the Canvas CAS commit and the durable notice (the intent was
+        // persisted before the CAS, so the decision is never lost).
+        Task { [self] in
+            await DesignDecisionOutbox.shared.reconcile(
+                terminalDecision: { intent in
+                    guard let canvasID = UUID(uuidString: intent.canvasID),
+                          let nodeID = UUID(uuidString: intent.nodeID) else { return .unavailable }
+                    let service = DesignCanvasService(repository: FileCanvasDocumentRepository())
+                    // Lookup failure is NEVER mistaken for "not committed".
+                    guard let design = try? await service.designState(canvasID: canvasID, nodeID: nodeID) else {
+                        return .unavailable
+                    }
+                    // Exact fingerprint: the recorded operation must be applied
+                    // AND the candidate must be in the terminal state the
+                    // intent recorded. A candidate terminal state alone can
+                    // belong to a later unrelated operation.
+                    guard design.hasApplied(operationID: intent.operationID),
+                          let candidate = design.candidate(intent.candidateID) else {
+                        return .notCommitted
+                    }
+                    switch (candidate.status, intent.decision) {
+                    case (.adopted, "adopted"): return .committed("adopted")
+                    case (.rejected, "rejected"): return .committed("rejected")
+                    case (.superseded, "rejected"): return .committed("rejected")
+                    case (.pending, _): return .notCommitted
+                    default: return .notCommitted
+                    }
+                },
+                deliver: { [self] intent, decision in
+                    guard let conversationID = UUID(uuidString: intent.conversationID),
+                          let candidateUUID = UUID(uuidString: intent.candidateID) else { return }
+                    try? await conversationCenter.recordProposalDecision(
+                        conversationID: conversationID,
+                        proposalID: candidateUUID,
+                        decision: "design-candidate-\(decision)",
+                        revision: nil,
+                        sha256: nil
+                    )
+                }
+            )
+        }
         // Provider-backed semantic visual inspection plus generation through
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.
@@ -1516,6 +1582,30 @@ final class AppEnvironment: ObservableObject {
             persistenceReady = false
             bootstrapError = error.localizedDescription
         }
+    }
+
+    /// Design adapters bound to the real services of this environment.
+    @MainActor
+    private static func makeDesignAdapters(environment: AppEnvironment) -> [DesignContentType: any DesignTypeAdapter] {
+        let importPort = CreativeAssetDesignImportPort(environment: environment)
+        let generationPort = MediaGenerationDesignPort(environment: environment)
+        let cadPort = CanvasCADDesignExportPort(environment: environment)
+        let capturePort = BrowserPageCapturePort(environment: environment)
+        return [
+            .image: ImageDesignAdapter(importPort: importPort, generationPort: generationPort),
+            .video: VideoDesignAdapter(importPort: importPort),
+            .pdf: PDFDesignAdapter(importPort: importPort),
+            .notes: NotesDesignAdapter(importPort: importPort),
+            .webpage: WebpageDesignAdapter(kind: .webpage, importPort: importPort, capturePort: capturePort),
+            .prototype: WebpageDesignAdapter(kind: .prototype, importPort: importPort, capturePort: capturePort),
+            .cad: CADDesignAdapter(exportPort: cadPort),
+            // Office and presentation content changes flow through the office
+            // proposal system bound to chat-task workspaces (grant-gated);
+            // raw import would bypass it, so no adapter port is connected here
+            // and the capability registry says so.
+            .officeDocument: OfficeDesignAdapter(kind: .document, exportPort: nil, workspacePath: nil),
+            .presentation: OfficeDesignAdapter(kind: .presentation, exportPort: nil, workspacePath: nil)
+        ]
     }
 
     /// In-memory environment for tests and SwiftUI previews.

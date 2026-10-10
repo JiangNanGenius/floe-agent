@@ -13,6 +13,9 @@ public enum ArtifactNamespace: String, CaseIterable, Sendable {
     case presentation = "PresentationArtifacts"
     case change = "ChangeArtifacts"
     case jobDownloads = "JobDownloads"
+    /// Design-revision payloads, stored content-addressed under the existing
+    /// artifact authority (never a parallel material library).
+    case designRevisions = "DesignRevisions"
 }
 
 /// Resolves and verifies app-storage artifact references produced by tools

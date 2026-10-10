@@ -411,6 +411,7 @@
 		E7F2B9E23C0AB5DFBA8A8223 /* GuestRuntimeAssembly.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC330B4DFDA361217E319768 /* GuestRuntimeAssembly.swift */; };
 		E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */; };
 		E848083DD6CD8D1D0C33B8EE /* ThreadComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0878619F1F1230D0EC1AF2D /* ThreadComposerView.swift */; };
+		E86FFDEFF7350B2384E7BBB8 /* DesignAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55B47C3466916F8019B472B4 /* DesignAdapters.swift */; };
 		E9075DDE4B9BCC5B1C61D735 /* Whisper in Resources */ = {isa = PBXBuildFile; fileRef = 7858BFEF9F60D96BAA0E621E /* Whisper */; };
 		E947100032EDA1AA075473D5 /* NotesDocumentTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5369FD272644A35E60E42386 /* NotesDocumentTabs.swift */; };
 		E9672D64A729A03CBEAEA1BB /* WhisperSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D251245A1790D84521F016 /* WhisperSettingsView.swift */; };
@@ -663,6 +664,7 @@
 		5369FD272644A35E60E42386 /* NotesDocumentTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesDocumentTabs.swift; sourceTree = "<group>"; };
 		53DB8A733C897C4BC87129A9 /* NotesEngineeringCoverRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesEngineeringCoverRenderer.swift; sourceTree = "<group>"; };
 		54B2517BECF7DB9A35652B7A /* DesignAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAuthorization.swift; sourceTree = "<group>"; };
+		55B47C3466916F8019B472B4 /* DesignAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAdapters.swift; sourceTree = "<group>"; };
 		566A108E33736D5DD705D005 /* pdf-lib.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "pdf-lib.min.js"; sourceTree = "<group>"; };
 		56FD58BBA3D4A7B8FB00AE0F /* LinuxGuestImageDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxGuestImageDownloader.swift; sourceTree = "<group>"; };
 		577DF3FC3224D0985547747A /* NativeCADProposalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCADProposalStore.swift; sourceTree = "<group>"; };
@@ -1170,6 +1172,7 @@
 				8E8EBFAB4ED3E3A0AC4E178A /* CanvasSavedImageBatchCommitPlanner.swift */,
 				0820216531ADA023BF4AC6B5 /* CodeEditorCore.swift */,
 				D4286D5E31D703FF58F11B57 /* CreativeAssetIngestionService.swift */,
+				55B47C3466916F8019B472B4 /* DesignAdapters.swift */,
 				EB2D99FAE5ED1501A26B933F /* DesignAgentTools.swift */,
 				54B2517BECF7DB9A35652B7A /* DesignAuthorization.swift */,
 				D41E44F63E6F2C36D2E51E9A /* DesignWorkflowPanel.swift */,
@@ -2242,6 +2245,7 @@
 				90C63942E9AF35955B3FA0B9 /* CreativeAssetIngestionService.swift in Sources */,
 				B2561307059E6C4776EC8B06 /* CredentialManageTool.swift in Sources */,
 				9484845FCE5ED5231B66713F /* DataManagementView.swift in Sources */,
+				E86FFDEFF7350B2384E7BBB8 /* DesignAdapters.swift in Sources */,
 				B5B5BDFEC0A8503A436D2348 /* DesignAgentTools.swift in Sources */,
 				541B758A306D33BAA3C39F95 /* DesignAuthorization.swift in Sources */,
 				64C7876E6FD48478F53BB1FE /* DesignWorkflowPanel.swift in Sources */,

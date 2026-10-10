@@ -221,6 +221,10 @@ public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {
     public var createdAt: Date
     /// Relative app-storage path of the revision's payload, when persisted.
     public var payloadRelativePath: String?
+    /// The real content format of the payload bytes (e.g. "png", "pdf"), used
+    /// to choose the actual reopen parser on export. Optional so revisions
+    /// written before this field decode unchanged.
+    public var payloadFormat: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -230,7 +234,8 @@ public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {
         origin: DesignRevisionOrigin,
         parentRevisionID: String? = nil,
         createdAt: Date = Date(),
-        payloadRelativePath: String? = nil
+        payloadRelativePath: String? = nil,
+        payloadFormat: String? = nil
     ) {
         self.id = id
         self.artifactID = artifactID
@@ -240,6 +245,7 @@ public struct DesignRevision: Codable, Sendable, Equatable, Identifiable {
         self.parentRevisionID = parentRevisionID
         self.createdAt = createdAt
         self.payloadRelativePath = payloadRelativePath
+        self.payloadFormat = payloadFormat
     }
 }
 
@@ -572,10 +578,16 @@ public enum DesignWorkflowEngine {
         contentSHA256: String,
         origin: DesignRevisionOrigin,
         expectedRevisionID: String? = nil,
-        payloadRelativePath: String? = nil
+        payloadRelativePath: String? = nil,
+        payloadFormat: String? = nil,
+        revisionID: String? = nil
     ) throws -> DesignRevision {
         guard let index = project.artifacts.firstIndex(where: { $0.id == artifactID }) else {
             throw DesignWorkflowError.artifactNotFound(artifactID)
+        }
+        if let revisionID, project.artifacts[index].revisions.contains(where: { $0.id == revisionID }) {
+            // Explicit revision ids are caller-chosen and must be unique.
+            throw DesignWorkflowError.revisionConflict(expected: nil, actual: revisionID)
         }
         let current = project.artifacts[index].currentRevisionID
         if let expectedRevisionID, expectedRevisionID != current {
@@ -583,12 +595,14 @@ public enum DesignWorkflowEngine {
         }
         let number = (project.artifacts[index].revisions.map(\.number).max() ?? 0) + 1
         let revision = DesignRevision(
+            id: revisionID ?? UUID().uuidString.lowercased(),
             artifactID: artifactID,
             number: number,
             contentSHA256: contentSHA256,
             origin: origin,
             parentRevisionID: current,
-            payloadRelativePath: payloadRelativePath
+            payloadRelativePath: payloadRelativePath,
+            payloadFormat: payloadFormat
         )
         project.artifacts[index].revisions.append(revision)
         project.artifacts[index].currentRevisionID = revision.id
@@ -857,7 +871,8 @@ public enum DesignWorkflowEngine {
             contentSHA256: source.contentSHA256,
             origin: .restore,
             parentRevisionID: project.artifacts[index].currentRevisionID,
-            payloadRelativePath: source.payloadRelativePath
+            payloadRelativePath: source.payloadRelativePath,
+            payloadFormat: source.payloadFormat
         )
         project.artifacts[index].revisions.append(revision)
         project.artifacts[index].currentRevisionID = revision.id

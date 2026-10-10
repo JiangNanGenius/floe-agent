@@ -30,6 +30,9 @@ public actor DesignCanvasService {
     public struct Snapshot: Sendable {
         public let canvasID: UUID
         public let nodeID: UUID
+        /// The canvas document that contains the node (explicit identity for
+        /// generation ownership and editor bindings).
+        public let canvasDocumentID: UUID?
         public let canvasRevision: Int64
         public let nodeKind: CanvasNodeKind
         public let design: DesignProject?
@@ -69,6 +72,7 @@ public actor DesignCanvasService {
         return Snapshot(
             canvasID: canvasID,
             nodeID: nodeID,
+            canvasDocumentID: Self.document(containing: nodeID, in: project)?.id,
             canvasRevision: project.revision,
             nodeKind: node.kind,
             design: design,
@@ -110,10 +114,12 @@ public actor DesignCanvasService {
             contentType: contentType ?? DesignContentTypeMapper.contentType(for: node.kind)
         )
         // Replay check strictly before the revision check.
+        let containingDocumentID = project.documents[documentIndex].id
         if design.hasApplied(operationID: operationID) {
             return Snapshot(
                 canvasID: canvasID,
                 nodeID: nodeID,
+                canvasDocumentID: containingDocumentID,
                 canvasRevision: project.revision,
                 nodeKind: node.kind,
                 design: design,
@@ -129,8 +135,9 @@ public actor DesignCanvasService {
             // Defensive: recordOperation and hasApplied agree, but never write
             // twice if they were to diverge.
             return Snapshot(
-                canvasID: canvasID, nodeID: nodeID, canvasRevision: project.revision,
-                nodeKind: node.kind, design: design, operationReplayed: true
+                canvasID: canvasID, nodeID: nodeID, canvasDocumentID: containingDocumentID,
+                canvasRevision: project.revision, nodeKind: node.kind,
+                design: design, operationReplayed: true
             )
         }
         try body(&design)
@@ -145,6 +152,7 @@ public actor DesignCanvasService {
         return Snapshot(
             canvasID: canvasID,
             nodeID: nodeID,
+            canvasDocumentID: containingDocumentID,
             canvasRevision: project.revision,
             nodeKind: node.kind,
             design: design,
@@ -152,8 +160,86 @@ public actor DesignCanvasService {
         )
     }
 
+    private static func document(containing nodeID: UUID, in project: CanvasProject) -> CanvasDocument? {
+        project.documents.first { $0.nodes.contains { $0.id == nodeID } }
+    }
+
     public func designState(canvasID: UUID, nodeID: UUID) async throws -> DesignProject? {
         try await snapshot(canvasID: canvasID, nodeID: nodeID).design
+    }
+
+    /// Whole-project read-modify-write through the same Canvas CAS. This is
+    /// what ADOPTION and RESTORATION use: the design subdocument AND the real
+    /// node content (asset reference / text) commit in ONE transaction, so a
+    /// candidate is never "adopted" in metadata while the node still shows the
+    /// old bytes. Replay-before-conflict and the single revision advance are
+    /// identical to `mutate`.
+    @discardableResult
+    public func mutateProject(
+        runID: UUID? = nil,
+        canvasID: UUID,
+        nodeID: UUID,
+        expectedRevision: Int64,
+        operationID: String,
+        contentType: DesignContentType? = nil,
+        body: @Sendable (inout CanvasProject, inout DesignProject) async throws -> Void
+    ) async throws -> Snapshot {
+        guard !operationID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("operationID is required")
+        }
+        try await requireAuthorization(runID: runID, canvasID: canvasID)
+        var project = try await repository.project(canvasID: canvasID)
+        guard let documentIndex = project.documents.firstIndex(where: { document in
+            document.nodes.contains { $0.id == nodeID }
+        }), let nodeIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID }) else {
+            throw FloeError.validationFailed("Canvas node \(nodeID.uuidString.lowercased()) does not exist on this canvas")
+        }
+        let node = project.documents[documentIndex].nodes[nodeIndex]
+        var design = try DesignCanvasMetadata.loadOrCreate(
+            raw: node.metadata[DesignCanvasMetadata.key],
+            nodeID: nodeID.uuidString.lowercased(),
+            contentType: contentType ?? DesignContentTypeMapper.contentType(for: node.kind)
+        )
+        let containingDocumentID = project.documents[documentIndex].id
+        // Replay check strictly before the revision check.
+        if design.hasApplied(operationID: operationID) {
+            return Snapshot(
+                canvasID: canvasID,
+                nodeID: nodeID,
+                canvasDocumentID: containingDocumentID,
+                canvasRevision: project.revision,
+                nodeKind: node.kind,
+                design: design,
+                operationReplayed: true
+            )
+        }
+        guard project.revision == expectedRevision else {
+            throw FloeError.validationFailed(
+                "Canvas revision conflict: expected \(expectedRevision), current \(project.revision)"
+            )
+        }
+        _ = DesignWorkflowEngine.recordOperation(operationID, in: &design)
+        try await body(&project, &design)
+        // Persist the design subdocument next to whatever node content the
+        // body committed (find the node again: variant adoption may have
+        // added nodes but never removes the original).
+        if let updatedIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID }) {
+            project.documents[documentIndex].nodes[updatedIndex].metadata[DesignCanvasMetadata.key] = try DesignCanvasMetadata.encode(design)
+        } else {
+            project.documents[documentIndex].nodes[nodeIndex].metadata[DesignCanvasMetadata.key] = try DesignCanvasMetadata.encode(design)
+        }
+        project.revision = expectedRevision + 1
+        project.updatedAt = Date()
+        try await repository.save(project, expectedRevision: expectedRevision)
+        return Snapshot(
+            canvasID: canvasID,
+            nodeID: nodeID,
+            canvasDocumentID: containingDocumentID,
+            canvasRevision: project.revision,
+            nodeKind: node.kind,
+            design: design,
+            operationReplayed: false
+        )
     }
 
     private static func node(_ nodeID: UUID, in project: CanvasProject) -> CanvasNode? {

@@ -149,3 +149,143 @@ struct DesignCanvasServiceTests {
     }
 
 }
+
+// MARK: - Whole-project adoption (real node content in ONE CAS)
+
+@Suite("Design whole-project adoption")
+struct DesignCanvasProjectMutationTests {
+    private func makeFixture(text: String = "old content") throws -> (canvasID: UUID, nodeID: UUID, repo: InMemoryCanvasRepository, service: DesignCanvasService) {
+        let canvasID = UUID()
+        let nodeID = UUID()
+        var node = CanvasNode.placeholder(kind: .text, position: CanvasPoint(x: 10, y: 20), zIndex: 3)
+        node.id = nodeID
+        node.title = "Original"
+        node.text = text
+        node.size = CanvasSize(width: 300, height: 200)
+        node.rotation = 5
+        let document = CanvasDocument(id: UUID(), name: "doc", nodes: [node])
+        var project = CanvasProject(id: canvasID, name: "T", documents: [document], selectedDocumentID: document.id)
+        project.revision = 1
+        let repo = InMemoryCanvasRepository(project: project)
+        let service = DesignCanvasService(repository: repo)
+        return (canvasID, nodeID, repo, service)
+    }
+
+    @Test func adoptionUpdatesRealNodeTextInSameCommit() async throws {
+        let (canvasID, nodeID, repo, service) = try makeFixture()
+        // Create design + artifact + candidate via the normal flow.
+        var snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: 1,
+            operationID: "op-create", contentType: .notes
+        ) { design in
+            DesignWorkflowEngine.updateBrief(DesignBrief(goal: "g"), in: &design)
+        }
+        let artifact = DesignArtifact(contentType: .notes, canvasNodeID: nodeID.uuidString.lowercased(), identity: .init(name: "a", positionX: 0, positionY: 0, width: 0, height: 0))
+        snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-artifact"
+        ) { design in
+            DesignWorkflowEngine.addArtifact(artifact, to: &design)
+        }
+        let baseSHA = FloeDigest.sha256Hex(Data("old content".utf8))
+        snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-rev"
+        ) { design in
+            _ = try DesignWorkflowEngine.registerRevision(in: &design, artifactID: artifact.id, contentSHA256: baseSHA, origin: .importFile)
+        }
+        let proposedSHA = FloeDigest.sha256Hex(Data("new content".utf8))
+        snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-propose"
+        ) { design in
+            _ = try DesignWorkflowEngine.proposeCandidate(
+                in: &design, artifactID: artifact.id,
+                proposedContentSHA256: proposedSHA, summary: "s"
+            )
+        }
+        let candidateID = try #require(snapshot.design?.candidates.first?.id)
+        // Adopt with REAL node content in ONE commit.
+        let adopted = try await service.mutateProject(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-adopt"
+        ) { project, design in
+            _ = try DesignWorkflowEngine.adoptCandidate(in: &design, candidateID: candidateID, mode: .updateOriginal)
+            guard let d = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == nodeID }) }),
+                  let n = project.documents[d].nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            project.documents[d].nodes[n].text = "new content"
+        }
+        #expect(adopted.canvasRevision == snapshot.canvasRevision + 1)
+        let project = try await repo.project(canvasID: canvasID)
+        let node = try #require(project.documents.first?.nodes.first)
+        // Real content AND metadata advanced together.
+        #expect(node.text == "new content")
+        #expect(node.title == "Original")
+        #expect(node.position == .init(x: 10, y: 20))
+        #expect(node.size == .init(width: 300, height: 200))
+        #expect(node.rotation == 5)
+        #expect(node.zIndex == 3)
+        let design = try #require(adopted.design)
+        #expect(design.candidate(candidateID)?.status == .adopted)
+    }
+
+    @Test func variantCreatesActualNodeAndReplaySkipsContentWork() async throws {
+        let (canvasID, nodeID, repo, service) = try makeFixture()
+        var snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: 1,
+            operationID: "op-create", contentType: .notes
+        ) { design in
+            DesignWorkflowEngine.updateBrief(DesignBrief(goal: "g"), in: &design)
+        }
+        let artifact = DesignArtifact(contentType: .notes, canvasNodeID: nodeID.uuidString.lowercased(), identity: .init(name: "a", positionX: 0, positionY: 0, width: 0, height: 0))
+        snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-artifact"
+        ) { design in
+            DesignWorkflowEngine.addArtifact(artifact, to: &design)
+        }
+        let baseSHA = FloeDigest.sha256Hex(Data("old".utf8))
+        snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-rev"
+        ) { design in
+            _ = try DesignWorkflowEngine.registerRevision(in: &design, artifactID: artifact.id, contentSHA256: baseSHA, origin: .importFile)
+        }
+        let proposedSHA = FloeDigest.sha256Hex(Data("variant content".utf8))
+        snapshot = try await service.mutate(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-propose"
+        ) { design in
+            _ = try DesignWorkflowEngine.proposeCandidate(
+                in: &design, artifactID: artifact.id,
+                proposedContentSHA256: proposedSHA, summary: "s"
+            )
+        }
+        let candidateID = try #require(snapshot.design?.candidates.first?.id)
+        let adopted = try await service.mutateProject(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: snapshot.canvasRevision,
+            operationID: "op-variant"
+        ) { project, design in
+            _ = try DesignWorkflowEngine.adoptCandidate(in: &design, candidateID: candidateID, mode: .variant)
+            guard let d = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == nodeID }) }),
+                  let n = project.documents[d].nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            var variant = project.documents[d].nodes[n]
+            variant.id = UUID()
+            variant.text = "variant content"
+            project.documents[d].nodes.append(variant)
+        }
+        let project = try await repo.project(canvasID: canvasID)
+        #expect(project.documents.first?.nodes.count == 2)
+        // Replay returns before content work and without a revision bump.
+        let replay = try await service.mutateProject(
+            canvasID: canvasID, nodeID: nodeID, expectedRevision: adopted.canvasRevision,
+            operationID: "op-variant"
+        ) { project, _ in
+            project.documents[0].nodes.removeAll() // must never run
+        }
+        #expect(replay.operationReplayed)
+        #expect(replay.canvasRevision == adopted.canvasRevision)
+        let after = try await repo.project(canvasID: canvasID)
+        #expect(after.documents.first?.nodes.count == 2)
+    }
+}
