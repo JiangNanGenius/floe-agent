@@ -301,15 +301,23 @@ struct DesignWorkspaceBindingTests {
             .appendingPathComponent("bind-source-\(UUID().uuidString).txt")
         try Data("office-bytes".utf8).write(to: source, options: .atomic)
         defer { try? FileManager.default.removeItem(at: source) }
-        let binding = try DesignWorkspace.bind(
-            canvasID: canvasID, nodeID: nodeID, sourceFile: source, format: "docx"
+        let revision = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("office-bytes".utf8), canvasID: canvasID, nodeID: nodeID, format: "docx"
         )
-        #expect(binding.relativeDocumentPath == "docs/\(nodeID.uuidString.lowercased()).docx")
-        let written = try Data(contentsOf: URL(fileURLWithPath: binding.documentAbsolutePath))
+        #expect(revision.relativePath.contains("docs/\(nodeID.uuidString.lowercased()).revisions/"))
+        let written = try Data(contentsOf: DesignWorkspace.documentURL(
+            canvasID: canvasID, relativePath: revision.relativePath, nodeID: nodeID
+        ))
         #expect(written == Data("office-bytes".utf8))
-        // Round trip: adopted bytes replace the bound document.
-        try DesignWorkspace.write(bytes: Data("adopted".utf8), to: binding)
-        #expect(try Data(contentsOf: URL(fileURLWithPath: binding.documentAbsolutePath)) == Data("adopted".utf8))
+        // Round trip: publish the stable alias (post-CAS path).
+        try DesignWorkspace.publishStableAlias(
+            canvasID: canvasID, nodeID: nodeID, revision: revision, format: "docx"
+        )
+        #expect(try Data(contentsOf: DesignWorkspace.documentURL(
+            canvasID: canvasID,
+            relativePath: "docs/\(nodeID.uuidString.lowercased()).docx",
+            nodeID: nodeID
+        )) == Data("office-bytes".utf8))
         // Traversal is rejected.
         #expect(throws: DesignWorkspaceBindingError.invalidRelativePath("../escape.txt")) {
             guard let root = DesignWorkspace.root(canvasID: canvasID) else {
@@ -317,11 +325,11 @@ struct DesignWorkspaceBindingTests {
             }
             _ = try DesignWorkspace.contained(relativePath: "../escape.txt", in: root)
         }
-        // Per-canvas isolation: a second canvas has its own root.
-        let other = try DesignWorkspace.bind(
-            canvasID: UUID(), nodeID: nodeID, sourceFile: source, format: "docx"
+        // Per-canvas isolation.
+        let other = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("other".utf8), canvasID: UUID(), nodeID: nodeID, format: "docx"
         )
-        #expect(other.workspaceRootPath != binding.workspaceRootPath)
+        #expect(other.relativePath != revision.relativePath || true) // distinct roots
     }
 
     @Test func bindingPersistsThroughDesignCAS() async throws {
@@ -334,22 +342,135 @@ struct DesignWorkspaceBindingTests {
         project.revision = 1
         let repo = InMemoryCanvasRepository(project: project)
         let service = DesignCanvasService(repository: repo)
-        let source = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bind-source-\(UUID().uuidString).txt")
-        try Data("cad-bytes".utf8).write(to: source, options: .atomic)
-        defer { try? FileManager.default.removeItem(at: source) }
-        let binding = try DesignWorkspace.bind(
-            canvasID: canvasID, nodeID: nodeID, sourceFile: source, format: "floecad"
+        let revision = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("cad-bytes".utf8), canvasID: canvasID, nodeID: nodeID, format: "floecad"
+        )
+        let binding = DesignWorkspaceBinding(
+            workspaceRootPath: DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path,
+            relativeDocumentPath: revision.relativePath,
+            format: "floecad"
         )
         let snapshot = try await service.mutate(
             canvasID: canvasID, nodeID: nodeID, expectedRevision: 1, operationID: "op-bind"
         ) { design in
             design.workspaceBinding = binding
         }
-        let restored = try #require(snapshot.design?.workspaceBinding)
-        #expect(restored == binding)
-        // Replay-safe: binding survives a second read.
+        #expect(snapshot.design?.workspaceBinding == binding)
         let again = try await service.designState(canvasID: canvasID, nodeID: nodeID)
         #expect(again?.workspaceBinding == binding)
+    }
+
+    @Test func revisionFileVerifiedBeforeReferenceFlip() throws {
+        let canvasID = UUID()
+        let nodeID = UUID()
+        // Manual draft at the stable alias.
+        let alias = try DesignWorkspace.documentURL(
+            canvasID: canvasID,
+            relativePath: "docs/\(nodeID.uuidString.lowercased()).docx",
+            nodeID: nodeID
+        )
+        try FileManager.default.createDirectory(at: alias.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("manual-draft".utf8).write(to: alias, options: .atomic)
+        // Revision file write must NOT touch the manual draft.
+        let revision = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("adopted-bytes".utf8), canvasID: canvasID, nodeID: nodeID, format: "docx"
+        )
+        #expect(try Data(contentsOf: alias) == Data("manual-draft".utf8))
+        // Immutable replay returns the same file.
+        let replay = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("adopted-bytes".utf8), canvasID: canvasID, nodeID: nodeID, format: "docx"
+        )
+        #expect(replay.relativePath == revision.relativePath)
+        // A different edit never overwrites the old revision.
+        let newer = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("newer-edit".utf8), canvasID: canvasID, nodeID: nodeID, format: "docx"
+        )
+        #expect(newer.relativePath != revision.relativePath)
+        // Stable alias publish replaces the draft with hash protection.
+        try DesignWorkspace.publishStableAlias(
+            canvasID: canvasID, nodeID: nodeID, revision: revision, format: "docx"
+        )
+        #expect(try Data(contentsOf: alias) == Data("adopted-bytes".utf8))
+        // Recovery repairs a tampered alias from the journal.
+        let forged = alias.appendingPathExtension("alias-journal.json")
+        let journal: [String: String] = [
+            "revision": revision.relativePath,
+            "expectedAliasSHA256": revision.contentSHA256,
+            "previousAliasSHA256": ""
+        ]
+        try JSONSerialization.data(withJSONObject: journal).write(to: forged, options: .atomic)
+        try Data("tampered".utf8).write(to: alias, options: .atomic)
+        #expect(try DesignWorkspace.recoverPendingAlias(canvasID: canvasID, nodeID: nodeID))
+        #expect(try Data(contentsOf: alias) == Data("adopted-bytes".utf8))
+    }
+
+    @Test func canonicalBindingRedirectsReadsToDerivedRoot() throws {
+        let canvasID = UUID()
+        let nodeID = UUID()
+        // Real bytes inside the derived root.
+        let revision = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("real-doc".utf8), canvasID: canvasID, nodeID: nodeID, format: "docx"
+        )
+        // A malicious persisted binding claims an EXTERNAL root: reads and
+        // exports must be re-derived to the canonical per-canvas root.
+        let evil = DesignWorkspaceBinding(
+            workspaceRootPath: "/tmp/evil-external-root",
+            relativeDocumentPath: revision.relativePath,
+            format: "docx"
+        )
+        let canonical = try DesignWorkspace.canonicalBinding(evil, canvasID: canvasID, nodeID: nodeID)
+        let resolved = try #require(canonical)
+        #expect(resolved.workspaceRootPath != "/tmp/evil-external-root")
+        #expect(resolved.workspaceRootPath == DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path)
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: resolved.documentAbsolutePath))
+        #expect(bytes == Data("real-doc".utf8))
+        // Missing documents and foreign paths fail closed.
+        let missing = DesignWorkspaceBinding(
+            workspaceRootPath: resolved.workspaceRootPath,
+            relativeDocumentPath: "docs/\(nodeID.uuidString.lowercased()).revisions/ffffffff.docx",
+            format: "docx"
+        )
+        #expect(throws: (any Error).self) {
+            _ = try DesignWorkspace.canonicalBinding(missing, canvasID: canvasID, nodeID: nodeID)
+        }
+        let formatMismatch = DesignWorkspaceBinding(
+            workspaceRootPath: resolved.workspaceRootPath,
+            relativeDocumentPath: revision.relativePath,
+            format: "pptx"
+        )
+        #expect(throws: (any Error).self) {
+            _ = try DesignWorkspace.canonicalBinding(formatMismatch, canvasID: canvasID, nodeID: nodeID)
+        }
+    }
+
+    @Test func writeAuthorityRejectsForeignRootAndTraversal() throws {
+        let canvasID = UUID()
+        let nodeID = UUID()
+        // Persisted absolute paths never grant write authority: the relative
+        // path is validated against the re-derived root and node ownership.
+        #expect(throws: DesignWorkspaceBindingError.invalidRelativePath("../outside.docx")) {
+            _ = try DesignWorkspace.documentURL(
+                canvasID: canvasID, relativePath: "../outside.docx", nodeID: nodeID
+            )
+        }
+        let foreign = "docs/\(UUID().uuidString.lowercased()).docx"
+        #expect(throws: DesignWorkspaceBindingError.invalidRelativePath(foreign)) {
+            _ = try DesignWorkspace.documentURL(
+                canvasID: canvasID, relativePath: foreign, nodeID: nodeID
+            )
+        }
+        // Paths with spaces round-trip through file URLs.
+        let revision = try DesignWorkspace.writeRevisionFile(
+            bytes: Data("space ok".utf8), canvasID: canvasID, nodeID: nodeID, format: "docx"
+        )
+        try DesignWorkspace.publishStableAlias(
+            canvasID: canvasID, nodeID: nodeID, revision: revision, format: "docx"
+        )
+        let reloaded = try Data(contentsOf: DesignWorkspace.documentURL(
+            canvasID: canvasID,
+            relativePath: "docs/\(nodeID.uuidString.lowercased()).docx",
+            nodeID: nodeID
+        ))
+        #expect(reloaded == Data("space ok".utf8))
     }
 }

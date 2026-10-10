@@ -768,28 +768,60 @@ private struct DesignBindDocumentTool: AgentTool {
         let canvasID = try DesignToolOutput.requireUUID(args.canvasID, field: "canvasID")
         let nodeID = try DesignToolOutput.requireUUID(args.nodeID, field: "nodeID")
         // Ownership BEFORE touching the source.
-        _ = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
+        let preRead = try await service.snapshot(runID: context.runID, canvasID: canvasID, nodeID: nodeID)
+        let format = args.format.lowercased()
+        // Replay fingerprint BEFORE any file write: an identical recorded
+        // binding returns the recorded state; changed arguments are rejected.
+        if preRead.design?.hasApplied(operationID: args.operationID) == true {
+            guard let recorded = preRead.design?.workspaceBinding,
+                  recorded.format == format,
+                  recorded.relativeDocumentPath == "docs/\(nodeID.uuidString.lowercased()).\(format)" else {
+                throw FloeError.validationFailed("operationID '\(args.operationID)' was already applied to a different request")
+            }
+            return DesignToolOutput.make([
+                "bound": true, "operationReplayed": true,
+                "document": recorded.relativeDocumentPath,
+                "format": recorded.format,
+                "state": DesignToolOutput.state(preRead)
+            ])
+        }
         let source = try FloeArtifactStore.resolve(
             args.sourceRelativePath,
             allowed: DesignImportSourceTool.allowedSourceNamespaces,
             maxBytes: 64 * 1_024 * 1_024
         )
-        let format = args.format.lowercased()
-        let binding = try DesignWorkspace.bind(
-            canvasID: canvasID, nodeID: nodeID, sourceFile: source, format: format
+        let data = try Data(contentsOf: source, options: [.mappedIfSafe])
+        // Content-addressed revision file first, fully verified on disk.
+        // An existing manually-edited document at the stable path is never
+        // touched before the idempotency/CAS checks.
+        let revision = try DesignWorkspace.writeRevisionFile(
+            bytes: data, canvasID: canvasID, nodeID: nodeID, format: format
         )
-        let snapshot = try await service.mutate(
-            runID: context.runID,
-            canvasID: canvasID,
-            nodeID: nodeID,
-            expectedRevision: args.expectedRevision,
-            operationID: args.operationID
-        ) { design in
-            design.workspaceBinding = binding
+        let binding = DesignWorkspaceBinding(
+            workspaceRootPath: DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path,
+            relativeDocumentPath: revision.relativePath,
+            format: format
+        )
+        let snapshot: DesignCanvasService.Snapshot
+        do {
+            snapshot = try await service.mutate(
+                runID: context.runID,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: args.expectedRevision,
+                operationID: args.operationID
+            ) { design in
+                design.workspaceBinding = binding
+            }
+        } catch {
+            // Only an orphan revision file remains; nothing referenced it.
+            throw error
         }
+        try DesignWorkspace.publishStableAlias(
+            canvasID: canvasID, nodeID: nodeID, revision: revision, format: format
+        )
         return DesignToolOutput.make([
-            "bound": true,
-            "workspaceRoot": binding.workspaceRootPath,
+            "bound": true, "operationReplayed": false,
             "document": binding.relativeDocumentPath,
             "format": binding.format,
             "state": DesignToolOutput.state(snapshot)

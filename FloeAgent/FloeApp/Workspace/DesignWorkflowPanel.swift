@@ -229,6 +229,108 @@ final class DesignWorkflowPanelModel: ObservableObject {
         }
     }
 
+    /// Human feedback entry: anchored to the selected artifact revision with
+    /// an explicit region/time/page/object anchor.
+    func addFeedback(
+        artifactID: String,
+        anchor: DesignFeedbackAnchor,
+        comment: String
+    ) async {
+        guard let nodeID, let revision = snapshot?.canvasRevision,
+              !comment.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
+            _ = try DesignWorkflowEngine.addFeedback(
+                in: &design,
+                artifactID: artifactID,
+                anchor: anchor,
+                comment: comment,
+                author: .user
+            )
+        }
+    }
+
+    /// Relocates a stale anchor to the artifact's current revision after the
+    /// user confirms the new location.
+    func relocateFeedback(feedbackID: String, artifactID: String) async {
+        guard let nodeID, let revision = snapshot?.canvasRevision,
+              let artifact = design?.artifact(artifactID),
+              let anchor = design?.feedback(feedbackID)?.anchor else { return }
+        await mutate(nodeID: nodeID, expectedRevision: revision) { design in
+            try DesignWorkflowEngine.relocateAnchor(
+                in: &design, feedbackID: feedbackID, anchor: anchor,
+                toRevisionID: artifact.currentRevisionID
+            )
+        }
+    }
+
+    /// Human import: the adapter validates with the real editor boundary,
+    /// the payload is retained under the artifact authority and the revision
+    /// commits through the same Canvas CAS as the agent path.
+    @discardableResult
+    func importSourceFile(_ url: URL) async throws -> Bool {
+        guard let nodeID, let revision = snapshot?.canvasRevision, let environment else {
+            throw FloeError.invalidConfiguration("Design environment is unavailable")
+        }
+        let contentType = design?.contentType
+            ?? DesignContentTypeMapper.contentType(for: snapshot?.nodeKind ?? .file)
+        guard let adapter = await environment.designAdapterCenter.adapter(for: contentType) else {
+            throw FloeError.validationFailed("No design adapter is connected for \(contentType.rawValue)")
+        }
+        let imported = try await adapter.importSource(fileURL: url, canvasID: canvasID, nodeID: nodeID)
+        let digest = FloeDigest.sha256Hex(imported.bytes)
+        let artifactID = UUID().uuidString.lowercased()
+        let revisionID = UUID().uuidString.lowercased()
+        let staged = try await environment.designAdapterCenter.stageRevisionPayload(
+            canvasID: canvasID, nodeID: nodeID, artifactID: artifactID,
+            revisionID: revisionID, bytes: imported.bytes, expectedContentSHA256: digest
+        )
+        try await environment.designAdapterCenter.commitRevisionPayload(staged)
+        do {
+            snapshot = try await service.mutate(
+                canvasID: canvasID, nodeID: nodeID, expectedRevision: revision,
+                operationID: UUID().uuidString.lowercased()
+            ) { design in
+                let artifact = DesignArtifact(
+                    id: artifactID, contentType: contentType,
+                    canvasNodeID: nodeID.uuidString.lowercased(),
+                    identity: .init(
+                        name: url.lastPathComponent,
+                        positionX: 0, positionY: 0, width: 0, height: 0
+                    )
+                )
+                DesignWorkflowEngine.addArtifact(artifact, to: &design)
+                _ = try DesignWorkflowEngine.registerRevision(
+                    in: &design, artifactID: artifactID, contentSHA256: digest,
+                    origin: .importFile, payloadRelativePath: staged.relativePath,
+                    payloadFormat: imported.format, revisionID: revisionID
+                )
+            }
+        } catch {
+            try? await environment.designAdapterCenter.removeRevisionPayload(
+                canvasID: canvasID, nodeID: nodeID, artifactID: artifactID, revisionID: revisionID
+            )
+            throw error
+        }
+        lastSavedAt = Date()
+        return true
+    }
+
+    /// Human verified export: recorded format only, real reopen validation,
+    /// delivered through the existing share sheet with a scratch lease.
+    func exportCurrentRevision(artifactID: String) async throws -> NotesExport.Artifact? {
+        guard let nodeID, let environment,
+              let artifact = design?.artifact(artifactID),
+              let revision = artifact.currentRevision else {
+            throw FloeError.validationFailed("No current revision to export")
+        }
+        let export = try await environment.designAdapterCenter.exportVerifiedRevision(
+            canvasID: canvasID, nodeID: nodeID, artifactID: artifact.id,
+            revision: revision, artifact: artifact, requestedFormat: nil
+        )
+        let lease = await StorageCleanupLeaseCenter.shared.acquireToken(path: export.url.path)
+        return NotesExport.Artifact(url: export.url, lease: lease)
+    }
+
     // MARK: - Previews (actual bytes, never model text)
 
     struct RevisionPreview: Sendable {
@@ -457,6 +559,24 @@ struct DesignWorkflowPanel: View {
     @State private var fieldsDirty = false
     @State private var showsDesignMDImporter = false
     @State private var designMDExport: DesignMDExportItem?
+    @State private var showsSourceImporter = false
+    @State private var sourceImportError: String?
+    @State private var exportedArtifact: NotesExport.Artifact?
+    @State private var previewItem: PreviewItem?
+    @State private var feedbackDraft: FeedbackDraft = FeedbackDraft()
+
+    private struct FeedbackDraft {
+        var artifactID = ""
+        var anchorKind = 0 // 0 region, 1 time, 2 page, 3 object
+        var x = "", y = "", width = "", height = "", seconds = "", page = "", objectID = ""
+        var comment = ""
+    }
+
+    private struct PreviewItem: Identifiable {
+        let id = UUID()
+        let url: URL
+        let lease: ScratchLeaseToken?
+    }
 
     init(canvasID: UUID, nodeID: UUID?, environment: AppEnvironment? = nil) {
         _model = StateObject(wrappedValue: DesignWorkflowPanelModel(canvasID: canvasID, nodeID: nodeID, environment: environment))
@@ -582,6 +702,11 @@ struct DesignWorkflowPanel: View {
                         if design.artifacts.isEmpty {
                             Text("design.panel.no_value").foregroundStyle(.secondary)
                         }
+                        Button("design.panel.import_source") { showsSourceImporter = true }
+                            .buttonStyle(.bordered)
+                        if let sourceImportError {
+                            Text(sourceImportError).font(.caption2).foregroundStyle(.red)
+                        }
                         ForEach(design.artifacts) { artifact in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(artifact.identity.name)
@@ -591,11 +716,35 @@ struct DesignWorkflowPanel: View {
                                     Text("\(FloeL10n.l("design.panel.current_revision")): #\(current.number) · \(current.origin.rawValue)")
                                         .font(.caption2).foregroundStyle(.tertiary)
                                 }
-                                if artifact.revisions.count >= 2 {
-                                    Button("design.panel.restore_latest") {
-                                        Task { await model.restoreLatestRevision(artifactID: artifact.id) }
+                                HStack {
+                                    Button("design.panel.preview_current") {
+                                        Task {
+                                            do {
+                                                if let artifact2 = try await model.exportCurrentRevision(artifactID: artifact.id) {
+                                                    previewItem = PreviewItem(url: artifact2.url, lease: artifact2.lease)
+                                                }
+                                            } catch {
+                                                sourceImportError = error.localizedDescription
+                                            }
+                                        }
                                     }
                                     .buttonStyle(.bordered)
+                                    Button("design.panel.export_current") {
+                                        Task {
+                                            do {
+                                                exportedArtifact = try await model.exportCurrentRevision(artifactID: artifact.id)
+                                            } catch {
+                                                sourceImportError = error.localizedDescription
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    if artifact.revisions.count >= 2 {
+                                        Button("design.panel.restore_latest") {
+                                            Task { await model.restoreLatestRevision(artifactID: artifact.id) }
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
                                 }
                             }
                             .frame(minHeight: FloeTheme.minimumTarget)
@@ -606,11 +755,64 @@ struct DesignWorkflowPanel: View {
                         if design.feedback.isEmpty {
                             Text("design.panel.no_value").foregroundStyle(.secondary)
                         }
+                        if let firstArtifact = design.artifacts.first {
+                            Section("design.panel.add_feedback") {
+                                Picker("design.panel.feedback_anchor", selection: $feedbackDraft.anchorKind) {
+                                    Text("design.panel.anchor.region").tag(0)
+                                    Text("design.panel.anchor.time").tag(1)
+                                    Text("design.panel.anchor.page").tag(2)
+                                    Text("design.panel.anchor.object").tag(3)
+                                }
+                                switch feedbackDraft.anchorKind {
+                                case 0:
+                                    HStack {
+                                        TextField("x", text: $feedbackDraft.x).keyboardType(.decimalPad)
+                                        TextField("y", text: $feedbackDraft.y).keyboardType(.decimalPad)
+                                        TextField("design.panel.anchor.w", text: $feedbackDraft.width).keyboardType(.decimalPad)
+                                        TextField("design.panel.anchor.h", text: $feedbackDraft.height).keyboardType(.decimalPad)
+                                    }
+                                case 1:
+                                    TextField("design.panel.anchor.seconds", text: $feedbackDraft.seconds).keyboardType(.decimalPad)
+                                case 2:
+                                    TextField("design.panel.anchor.page_index", text: $feedbackDraft.page).keyboardType(.numberPad)
+                                default:
+                                    TextField("design.panel.anchor.object_id", text: $feedbackDraft.objectID)
+                                }
+                                TextField("design.panel.feedback_comment", text: $feedbackDraft.comment, axis: .vertical)
+                                Button("design.panel.submit_feedback") {
+                                    let anchor: DesignFeedbackAnchor
+                                    switch feedbackDraft.anchorKind {
+                                    case 0:
+                                        anchor = .region(
+                                            x: Double(feedbackDraft.x) ?? 0, y: Double(feedbackDraft.y) ?? 0,
+                                            width: Double(feedbackDraft.width) ?? 0, height: Double(feedbackDraft.height) ?? 0
+                                        )
+                                    case 1:
+                                        anchor = .time(seconds: Double(feedbackDraft.seconds) ?? 0)
+                                    case 2:
+                                        anchor = .page(index: Int(feedbackDraft.page) ?? 0)
+                                    default:
+                                        anchor = .objectID(feedbackDraft.objectID)
+                                    }
+                                    let comment = feedbackDraft.comment
+                                    feedbackDraft.comment = ""
+                                    Task { await model.addFeedback(artifactID: firstArtifact.id, anchor: anchor, comment: comment) }
+                                }
+                                .disabled(feedbackDraft.comment.trimmingCharacters(in: .whitespaces).isEmpty)
+                            }
+                        }
                         ForEach(design.feedback) { item in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.comment)
                                 Text("\(item.anchor.kind) · \(item.status.rawValue)")
                                     .font(.caption2).foregroundStyle(.secondary)
+                                if item.status == .staleAnchor,
+                                   let artifact = design.artifact(item.artifactID) {
+                                    Button("design.panel.relocate_anchor") {
+                                        Task { await model.relocateFeedback(feedbackID: item.id, artifactID: artifact.id) }
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
                             }
                         }
                     }
@@ -654,6 +856,24 @@ struct DesignWorkflowPanel: View {
                 // Refresh the canonical snapshot display, but never clobber
                 // edits the user is still typing.
                 loadFieldsIfNeeded(force: false)
+            }
+            .fileImporter(isPresented: $showsSourceImporter, allowedContentTypes: [.data]) { result in
+                guard let url = try? result.get() else { return }
+                sourceImportError = nil
+                Task {
+                    do { try await model.importSourceFile(url) }
+                    catch { sourceImportError = error.localizedDescription }
+                }
+            }
+            .sheet(item: $exportedArtifact) { item in
+                NotesShareSheet(url: item.url, lease: item.lease)
+            }
+            .sheet(item: $previewItem) { item in
+                NavigationStack {
+                    QuickLookView(url: item.url)
+                        .navigationTitle(item.url.lastPathComponent)
+                        .onDisappear { item.lease?.release() }
+                }
             }
             .fileImporter(isPresented: $showsDesignMDImporter, allowedContentTypes: [UTType(filenameExtension: "md") ?? .plainText]) { result in
                 guard let url = try? result.get(), let data = try? Data(contentsOf: url),

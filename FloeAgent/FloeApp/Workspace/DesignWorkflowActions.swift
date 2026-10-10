@@ -141,50 +141,56 @@ enum DesignWorkflowActions {
                   let proposed = artifact.revision(candidate.proposedRevisionID) else {
                 return .failed(FloeError.validationFailed("Candidate or its proposed revision no longer exists"))
             }
-            let update: DesignCanvasContentApplicator.PreparedUpdate?
-            var contentNote = "applied"
-            if proposed.payloadRelativePath != nil {
-                let bytes: Data
-                do {
-                    bytes = try await adapters.verifiedRevisionBytes(
-                        canvasID: canvasID, nodeID: nodeID, artifactID: artifact.id,
-                        revisionID: proposed.id, expectedContentSHA256: proposed.contentSHA256
-                    )
-                } catch {
-                    // Missing/corrupt payload: abort BEFORE the CAS so the
-                    // candidate stays pending.
-                    return .failed(error)
-                }
-                let prepared: DesignCanvasContentApplicator.PreparedUpdate
-                do {
-                    prepared = try await DesignCanvasContentApplicator.prepare(
-                        nodeKind: preRead.nodeKind, bytes: bytes,
-                        format: proposed.payloadFormat ?? "bin",
-                        displayName: artifact.identity.name,
-                        candidateRevisionID: proposed.id,
-                        contentSHA256: proposed.contentSHA256,
-                        environment: environment,
-                        canvasID: canvasID,
-                        nodeID: nodeID
-                    )
-                } catch {
-                    return .failed(error)
-                }
-                if prepared.asset == nil && prepared.text == nil {
-                    contentNote = prepared.provenance["design.adopt.cadDelegated"].map { "delegated:\($0)" } ?? "provenance-only"
-                }
-                update = prepared
-            } else {
-                update = nil
-                contentNote = "no-payload"
+            guard proposed.payloadRelativePath != nil else {
+                // Adoption without retained payload bytes is NOT an adoption:
+                // fail before the CAS and keep the candidate pending.
+                return .failed(FloeError.validationFailed("The proposed revision has no retained payload; the candidate stays pending"))
             }
-            let snapshot = try await service.mutateProject(
+            let update: DesignCanvasContentApplicator.PreparedUpdate
+            let bytes: Data
+            do {
+                bytes = try await adapters.verifiedRevisionBytes(
+                    canvasID: canvasID, nodeID: nodeID, artifactID: artifact.id,
+                    revisionID: proposed.id, expectedContentSHA256: proposed.contentSHA256
+                )
+            } catch {
+                // Missing/corrupt payload: abort BEFORE the CAS so the
+                // candidate stays pending.
+                return .failed(error)
+            }
+            do {
+                update = try await DesignCanvasContentApplicator.prepare(
+                    nodeKind: preRead.nodeKind, bytes: bytes,
+                    format: proposed.payloadFormat ?? "bin",
+                    displayName: artifact.identity.name,
+                    candidateRevisionID: proposed.id,
+                    contentSHA256: proposed.contentSHA256,
+                    environment: environment,
+                    canvasID: canvasID,
+                    nodeID: nodeID
+                )
+            } catch {
+                return .failed(error)
+            }
+            let contentNote: String
+            if update.asset == nil && update.text == nil && update.documentRevision == nil {
+                // Provenance-only would fake an adoption; fail and keep the
+                // candidate pending.
+                return .failed(FloeError.validationFailed("This adoption would change no real content; the candidate stays pending"))
+            } else if update.asset == nil && update.text == nil {
+                contentNote = "workspace-document"
+            } else {
+                contentNote = "applied"
+            }
+            let snapshot: DesignCanvasService.Snapshot
+            do {
+                snapshot = try await service.mutateProject(
                 runID: runID,
                 canvasID: canvasID,
                 nodeID: nodeID,
                 expectedRevision: expectedRevision,
                 operationID: operationID
-            ) { project, design in
+                ) { project, design in
                 let adopted = try DesignWorkflowEngine.adoptCandidate(
                     in: &design,
                     candidateID: candidateID,
@@ -195,7 +201,18 @@ enum DesignWorkflowActions {
                       let nodeIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID }) else {
                     throw FloeError.validationFailed("Canvas node disappeared during adoption")
                 }
-                if let update {
+                do {
+                    if let revision = update.documentRevision,
+                       let revisionFormat = update.documentRevisionFormat {
+                        // ONE CAS flips the binding reference to the
+                        // fully-verified revision file (never an in-place
+                        // overwrite of the editor's document).
+                        design.workspaceBinding = DesignWorkspaceBinding(
+                            workspaceRootPath: DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path,
+                            relativeDocumentPath: revision.relativePath,
+                            format: revisionFormat
+                        )
+                    }
                     switch mode {
                     case .updateOriginal:
                         designApplyContentUpdate(update, to: &project.documents[documentIndex].nodes[nodeIndex])
@@ -215,10 +232,28 @@ enum DesignWorkflowActions {
                         design.artifacts[adoptedIndex].canvasNodeID = variant.id.uuidString.lowercased()
                     }
                 }
+                }
+            } catch {
+                // CAS failed: only an orphan revision file remains
+                // (recyclable); the editor's document is untouched.
+                return .failed(error)
+            }
+            // Post-CAS stable-alias publish for existing editors (journaled,
+            // hash-protected; the revision file stays authoritative).
+            if let revision = update.documentRevision,
+               let revisionFormat = update.documentRevisionFormat {
+                do {
+                    try DesignWorkspace.publishStableAlias(
+                        canvasID: canvasID, nodeID: nodeID,
+                        revision: revision, format: revisionFormat
+                    )
+                } catch {
+                    return .failed(error)
+                }
             }
             return .succeeded(
                 snapshot,
-                contentApplied: update?.asset != nil || update?.text != nil,
+                contentApplied: true,
                 contentNote: contentNote
             )
         } catch {
@@ -295,20 +330,41 @@ enum DesignWorkflowActions {
         } catch {
             throw error
         }
-        return try await service.mutateProject(
-            runID: runID,
-            canvasID: canvasID,
-            nodeID: nodeID,
-            expectedRevision: expectedRevision,
-            operationID: operationID
-        ) { project, design in
-            _ = try DesignWorkflowEngine.restoreRevision(in: &design, artifactID: artifactID, revisionID: revisionID)
-            guard let documentIndex = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == nodeID }) }),
-                  let nodeIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID }) else {
-                throw FloeError.validationFailed("Canvas node disappeared during restore")
+        let snapshot: DesignCanvasService.Snapshot
+        do {
+            snapshot = try await service.mutateProject(
+                runID: runID,
+                canvasID: canvasID,
+                nodeID: nodeID,
+                expectedRevision: expectedRevision,
+                operationID: operationID
+            ) { project, design in
+                _ = try DesignWorkflowEngine.restoreRevision(in: &design, artifactID: artifactID, revisionID: revisionID)
+                if let revision = update.documentRevision,
+                   let revisionFormat = update.documentRevisionFormat {
+                    design.workspaceBinding = DesignWorkspaceBinding(
+                        workspaceRootPath: DesignWorkspace.root(canvasID: canvasID)!.standardizedFileURL.path,
+                        relativeDocumentPath: revision.relativePath,
+                        format: revisionFormat
+                    )
+                }
+                guard let documentIndex = project.documents.firstIndex(where: { $0.nodes.contains(where: { $0.id == nodeID }) }),
+                      let nodeIndex = project.documents[documentIndex].nodes.firstIndex(where: { $0.id == nodeID }) else {
+                    throw FloeError.validationFailed("Canvas node disappeared during restore")
+                }
+                designApplyContentUpdate(update, to: &project.documents[documentIndex].nodes[nodeIndex])
             }
-            designApplyContentUpdate(update, to: &project.documents[documentIndex].nodes[nodeIndex])
+        } catch {
+            throw error
         }
+        if let revision = update.documentRevision,
+           let revisionFormat = update.documentRevisionFormat {
+            try DesignWorkspace.publishStableAlias(
+                canvasID: canvasID, nodeID: nodeID,
+                revision: revision, format: revisionFormat
+            )
+        }
+        return snapshot
     }
 
     /// Applies a template: the manifest is recorded AND the stored payload

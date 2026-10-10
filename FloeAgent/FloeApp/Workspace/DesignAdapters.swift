@@ -617,7 +617,9 @@ struct CanvasCADDesignExportPort: DesignCADExportPort {
     func binding(for canvasID: UUID, nodeID: UUID) async -> DesignCADBinding? {
         let designService = DesignCanvasService(repository: FileCanvasDocumentRepository())
         if let design = try? await designService.designState(canvasID: canvasID, nodeID: nodeID),
-           let workspace = design.workspaceBinding {
+           case let workspace?? = try? await DesignWorkspace.canonicalBinding(
+            design.workspaceBinding, canvasID: canvasID, nodeID: nodeID
+           ) {
             let ext = (workspace.relativeDocumentPath as NSString).pathExtension.lowercased()
             let dimension: DesignCADBinding.Dimension
             if ext == "floecad" { dimension = .native3D }
@@ -977,6 +979,11 @@ enum DesignCanvasContentApplicator {
         var text: String?
         /// Provenance metadata recorded on the node (hashes, never paths).
         var provenance: [String: String]
+        /// Content-addressed revision file, fully verified on disk BEFORE
+        /// the CAS; the binding reference flips to it in the CAS.
+        var documentRevision: DesignWorkspace.RevisionFile?
+        /// Bound-document format for the stable alias publish after CAS.
+        var documentRevisionFormat: String?
     }
 
     static let provenancePrefix = "design.adopt."
@@ -1020,8 +1027,11 @@ enum DesignCanvasContentApplicator {
                let binding = try await boundWorkspaceDocument(
                 canvasID: canvasID, nodeID: nodeID, format: format
             ) {
-                try DesignWorkspace.write(bytes: bytes, to: binding)
-                update.provenance["\(provenancePrefix)workspaceDocument"] = binding.relativeDocumentPath
+                update.documentRevision = try DesignWorkspace.writeRevisionFile(
+                    bytes: bytes, canvasID: canvasID, nodeID: nodeID, format: format
+                )
+                update.documentRevisionFormat = format
+                update.provenance["\(provenancePrefix)workspaceDocument"] = update.documentRevision?.relativePath ?? ""
             } else {
                 let type = UTType(filenameExtension: format.lowercased())
                 let service = CreativeAssetIngestionService(assetStore: environment.creativeAssetStore)
@@ -1041,18 +1051,19 @@ enum DesignCanvasContentApplicator {
             }
             update.text = text
         case .scene3D:
-            // With an explicit Canvas-owned workspace binding, CAD bytes are
-            // written to the bound document (the CAD editor reopens it);
-            // without one, adoption stays provenance-only and says so.
-            if let canvasID, let nodeID,
-               let binding = try await boundWorkspaceDocument(
+            // Bound CAD: bytes are STAGED for post-CAS publish; unbound CAD
+            // cannot adopt content (the caller fails, candidate stays pending).
+            guard let canvasID, let nodeID,
+                  let binding = try await boundWorkspaceDocument(
                 canvasID: canvasID, nodeID: nodeID, format: format
-            ) {
-                try DesignWorkspace.write(bytes: bytes, to: binding)
-                update.provenance["\(provenancePrefix)workspaceDocument"] = binding.relativeDocumentPath
-            } else {
-                update.provenance["\(provenancePrefix)cadDelegated"] = "bind a design workspace document first (canvas.designBindDocument)"
+            ) else {
+                throw FloeError.validationFailed("CAD adoption requires a design workspace binding (canvas.designBindDocument); the candidate stays pending")
             }
+            update.documentRevision = try DesignWorkspace.writeRevisionFile(
+                bytes: bytes, canvasID: canvasID, nodeID: nodeID, format: format
+            )
+            update.documentRevisionFormat = format
+            update.provenance["\(provenancePrefix)workspaceDocument"] = update.documentRevision?.relativePath ?? ""
         case .card, .shape, .group, .generationTask, .audio:
             // No editable content body on these node kinds; provenance only.
             break
@@ -1070,7 +1081,9 @@ enum DesignCanvasContentApplicator {
     ) async throws -> DesignWorkspaceBinding? {
         let service = DesignCanvasService(repository: FileCanvasDocumentRepository())
         guard let design = try? await service.designState(canvasID: canvasID, nodeID: nodeID) else { return nil }
-        return design.workspaceBinding
+        return try await DesignWorkspace.canonicalBinding(
+            design.workspaceBinding, canvasID: canvasID, nodeID: nodeID
+        )
     }
 }
 
@@ -1220,9 +1233,11 @@ extension String {
 /// workspace binding recorded on the node's design subdocument.
 @MainActor
 enum DesignBindingResolution {
+    /// Canonical resolution: the recorded root is never trusted; reads,
+    /// previews and exports all land inside the re-derived per-canvas root.
     static let provider: DesignBindingProvider = { canvasID, nodeID in
         let service = DesignCanvasService(repository: FileCanvasDocumentRepository())
         guard let design = try? await service.designState(canvasID: canvasID, nodeID: nodeID) else { return nil }
-        return design.workspaceBinding
+        return try? await DesignWorkspace.canonicalBinding(design.workspaceBinding, canvasID: canvasID, nodeID: nodeID)
     }
 }
