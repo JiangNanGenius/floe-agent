@@ -446,6 +446,9 @@ final class MCPSettingsCenter: ObservableObject {
             await refresh(serverID: server.id)
         } else {
             MCPRemoteToolSource.unregister(configuration: server)
+            if let client = clients.removeValue(forKey: server.id) {
+                Task { await client.disconnect() }
+            }
             stateByServerID[server.id] = .inactive
             toolsByServerID[server.id] = []
         }
@@ -461,7 +464,9 @@ final class MCPSettingsCenter: ObservableObject {
         } else {
             invalidateRefresh(serverID: serverID)
             MCPRemoteToolSource.unregister(configuration: server)
-            clients.removeValue(forKey: serverID)
+            if let client = clients.removeValue(forKey: serverID) {
+                Task { await client.disconnect() }
+            }
             stateByServerID[serverID] = .inactive
         }
     }
@@ -484,7 +489,9 @@ final class MCPSettingsCenter: ObservableObject {
         guard let server = servers.first(where: { $0.id == serverID }) else { return }
         MCPRemoteToolSource.unregister(configuration: server)
         servers.removeAll { $0.id == serverID }
-        clients.removeValue(forKey: serverID)
+        if let client = clients.removeValue(forKey: serverID) {
+            Task { await client.disconnect() }
+        }
         toolsByServerID.removeValue(forKey: serverID)
         stateByServerID.removeValue(forKey: serverID)
         invalidateRefresh(serverID: serverID)
@@ -498,21 +505,35 @@ final class MCPSettingsCenter: ObservableObject {
         let generation = beginRefresh(serverID: serverID)
         stateByServerID[serverID] = .connecting
         errorMessage = nil
+        let previousClient = clients[serverID]
         do {
             let credentialData = try? keychain.read(account: credentialAccount(server))
             let credential = credentialData.map { String(decoding: $0, as: UTF8.self) }
             let client = try MCPRemoteClient(configuration: server, credential: credential)
             let tools = try await client.discoverTools()
             guard refreshGenerationByServerID[serverID] == generation,
-                  servers.first(where: { $0.id == serverID }) == server else { return }
+                  servers.first(where: { $0.id == serverID }) == server else {
+                // Superseded by a newer refresh: tear the new client down and do
+                // not touch the current registration.
+                await client.disconnect()
+                return
+            }
             clients[serverID] = client
             toolsByServerID[serverID] = tools
             MCPRemoteToolSource.register(configuration: server, client: client, tools: tools)
             stateByServerID[serverID] = .ready(tools.count)
+            if let previousClient, previousClient !== client {
+                await previousClient.disconnect()
+            }
         } catch {
             guard refreshGenerationByServerID[serverID] == generation else { return }
             MCPRemoteToolSource.unregister(configuration: server)
             clients.removeValue(forKey: serverID)
+            // A failed refresh must not leave its half-open client or a prior
+            // client's session alive.
+            if let previousClient {
+                await previousClient.disconnect()
+            }
             stateByServerID[serverID] = .failed(error.localizedDescription)
             errorMessage = "\(server.displayName)：\(error.localizedDescription)"
         }

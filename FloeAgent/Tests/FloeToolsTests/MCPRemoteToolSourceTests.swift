@@ -97,6 +97,11 @@ struct MCPRemoteToolSourceTests {
             "canvas.getState", "canvas.applyOperations", "canvas.delete",
             "canvas.assetSearch", "canvas.assetInsert", "canvas.assetImport",
             "canvas.generate", "canvas.generationStatus",
+            "canvas.designGetState", "canvas.designCapabilities",
+            "canvas.designCreate", "canvas.designUpdateBrief", "canvas.designUpdateSpec",
+            "canvas.designRegisterRevision", "canvas.designAddFeedback",
+            "canvas.designPropose", "canvas.designAdopt", "canvas.designReject",
+            "canvas.designRestore",
             "notes.read", "notes.search", "notes.edit", "notes.attachFile", "notes.export",
             "video.models",
         ])
@@ -408,5 +413,63 @@ struct MCPRemoteToolSourceTests {
 
         MCPRemoteToolSource.unregister(configuration: config, registry: registry)
         #expect(registry.allDescriptors.isEmpty)
+    }
+
+    @Test("Remote MCP error bodies and messages are redacted before surfacing")
+    func redactsRemoteErrorBodies() {
+        let http = MCPClientError.httpError(status: 500, body: "authorization: Bearer super-secret-token")
+        let httpText = http.errorDescription ?? ""
+        #expect(!httpText.contains("super-secret-token"))
+        #expect(httpText.contains("MCP HTTP 500"))
+
+        let remote = MCPClientError.remoteError(code: -32_000, message: "api_key=sk-live-abcdef123456")
+        let remoteText = remote.errorDescription ?? ""
+        #expect(!remoteText.contains("sk-live-abcdef123456"))
+        #expect(remoteText.contains("MCP error -32000"))
+    }
+
+    @Test("Transport failures distinguish cancellation, timeout phase and disconnect")
+    func normalizesTransportFailures() async throws {
+        if case MCPClientError.timedOut(let phase)? = MCPRemoteClient.normalized(URLError(.timedOut), phase: "call") as? MCPClientError {
+            #expect(phase == "call")
+        } else {
+            Issue.record("expected timedOut")
+        }
+        if case MCPClientError.cancelled? = MCPRemoteClient.normalized(URLError(.cancelled), phase: "connect") as? MCPClientError {
+            // expected
+        } else {
+            Issue.record("expected cancelled")
+        }
+        if case MCPClientError.cancelled? = MCPRemoteClient.normalized(CancellationError(), phase: "discover") as? MCPClientError {
+            // expected
+        } else {
+            Issue.record("expected cancelled for CancellationError")
+        }
+        #expect(MCPRemoteClient.phase(for: "tools/list") == "discover")
+        #expect(MCPRemoteClient.phase(for: "tools/call") == "call")
+        #expect(MCPRemoteClient.phase(for: "initialize") == "initialize")
+
+        let config = MCPServerConfiguration(
+            displayName: "Example", endpoint: URL(string: "https://example.test/mcp")!
+        )
+        let client = try MCPRemoteClient(configuration: config, credential: nil, session: session())
+        let before = await client.isDisconnected
+        #expect(before == false)
+        await client.disconnect()
+        let after = await client.isDisconnected
+        #expect(after == true)
+        let inFlight = await client.inFlightRequests
+        #expect(inFlight == 0)
+        do {
+            _ = try await client.discoverTools()
+            Issue.record("discoverTools should fail after disconnect")
+        } catch let error as MCPClientError {
+            guard case .disconnected = error else {
+                Issue.record("unexpected error \(error)")
+                return
+            }
+        } catch {
+            Issue.record("unexpected non-MCP error \(error)")
+        }
     }
 }

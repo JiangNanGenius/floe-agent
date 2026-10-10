@@ -130,14 +130,33 @@ public enum MCPClientError: Error, LocalizedError, Sendable {
     case remoteError(code: Int, message: String)
     case responseTooLarge(Int)
     case authenticationRequired
+    /// The user disabled/removed the server or the client was torn down.
+    case disconnected
+    /// The request was cancelled (task cancellation or session teardown).
+    case cancelled
+    /// The request timed out. `phase` is one of `connect`, `discover`, `initialize`
+    /// or `call` so callers can tell a first-response failure from a stall.
+    case timedOut(phase: String)
 
     public var errorDescription: String? {
         switch self {
-        case .invalidResponse(let detail): "Invalid MCP response: \(detail)"
-        case .httpError(let status, let body): "MCP HTTP \(status): \(body)"
-        case .remoteError(let code, let message): "MCP error \(code): \(message)"
-        case .responseTooLarge(let bytes): "MCP response exceeds the \(bytes)-byte limit"
-        case .authenticationRequired: "MCP server credential is missing"
+        case .invalidResponse(let detail):
+            "Invalid MCP response: \(SecretRedactor.redact(detail))"
+        case .httpError(let status, let body):
+            // Remote error bodies are untrusted and may echo credentials.
+            "MCP HTTP \(status): \(SecretRedactor.redact(body))"
+        case .remoteError(let code, let message):
+            "MCP error \(code): \(SecretRedactor.redact(message))"
+        case .responseTooLarge(let bytes):
+            "MCP response exceeds the \(bytes)-byte limit"
+        case .authenticationRequired:
+            "MCP server credential is missing"
+        case .disconnected:
+            "MCP server is disconnected"
+        case .cancelled:
+            "MCP request was cancelled"
+        case .timedOut(let phase):
+            "MCP request timed out during \(phase)"
         }
     }
 }
@@ -190,11 +209,17 @@ public actor MCPRemoteClient {
     private let credential: String?
     private let session: URLSession
     private let sessionDelegate: MCPNoRedirectSessionDelegate?
+    /// True when this client created (and therefore owns) the URLSession.
+    private let ownsSession: Bool
     private var transportEra = TransportEra.unknown
     private var sessionID: String?
     private var legacyInitialized = false
     private var nextRequestID = 1
     private var headerBindingsByToolName: [String: [HeaderBinding]] = [:]
+    /// Set by `disconnect()`; all further calls fail closed and no state is kept.
+    private var disconnected = false
+    /// Requests observed in flight (for diagnostics and teardown bookkeeping).
+    private var inFlightRequestCount = 0
 
     public init(
         configuration: MCPServerConfiguration,
@@ -217,6 +242,7 @@ public actor MCPRemoteClient {
         if let session {
             self.session = session
             self.sessionDelegate = nil
+            self.ownsSession = false
         } else {
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = configuration.timeoutSeconds
@@ -228,8 +254,35 @@ public actor MCPRemoteClient {
             let delegate = MCPNoRedirectSessionDelegate()
             self.sessionDelegate = delegate
             self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+            self.ownsSession = true
         }
     }
+
+    /// Tear the client down: refuse further calls, clear all cached session
+    /// state (protocol era, `Mcp-Session-Id`, mirrored header bindings) and
+    /// cancel any in-flight URLSession work. Idempotent. Called when the user
+    /// disables/removes a server and on credential changes, so a disabled server
+    /// cannot keep serving stale requests or retain a half-open connection.
+    public func disconnect() {
+        guard !disconnected else { return }
+        disconnected = true
+        transportEra = .unknown
+        sessionID = nil
+        legacyInitialized = false
+        headerBindingsByToolName = [:]
+        if ownsSession {
+            session.invalidateAndCancel()
+        } else {
+            // We do not own an injected session (tests/host); cancel its tasks
+            // without invalidating the caller-owned session object.
+            session.getAllTasks { tasks in
+                for task in tasks { task.cancel() }
+            }
+        }
+    }
+
+    public var isDisconnected: Bool { disconnected }
+    public var inFlightRequests: Int { inFlightRequestCount }
 
     public func discoverTools() async throws -> [MCPDiscoveredTool] {
         var cursor: String?
@@ -355,25 +408,57 @@ public actor MCPRemoteClient {
         params: [String: Any],
         mirroredHeaders: [String: String] = [:]
     ) async throws -> Any? {
-        switch transportEra {
-        case .current:
-            return try await currentRequest(method: method, params: params, mirroredHeaders: mirroredHeaders)
-        case .legacy:
-            return try await legacyRequest(method: method, params: params)
-        case .unknown:
-            do {
-                let result = try await currentRequest(
-                    method: method,
-                    params: params,
-                    mirroredHeaders: mirroredHeaders
-                )
-                transportEra = .current
-                return result
-            } catch let error as MCPClientError where Self.shouldFallBackToLegacy(error) {
-                transportEra = .legacy
-                try await ensureLegacyInitialized()
+        guard !disconnected else { throw MCPClientError.disconnected }
+        let phase = Self.phase(for: method)
+        do {
+            switch transportEra {
+            case .current:
+                return try await currentRequest(method: method, params: params, mirroredHeaders: mirroredHeaders)
+            case .legacy:
                 return try await legacyRequest(method: method, params: params)
+            case .unknown:
+                do {
+                    let result = try await currentRequest(
+                        method: method,
+                        params: params,
+                        mirroredHeaders: mirroredHeaders
+                    )
+                    transportEra = .current
+                    return result
+                } catch let error as MCPClientError where Self.shouldFallBackToLegacy(error) {
+                    transportEra = .legacy
+                    try await ensureLegacyInitialized()
+                    return try await legacyRequest(method: method, params: params)
+                }
             }
+        } catch {
+            // Distinguish cancellation from stall/timeout and label the phase so
+            // a failed connect/first-response is not reported as a call stall.
+            throw Self.normalized(error, phase: phase)
+        }
+    }
+
+    /// Map transport-level failures onto typed MCP errors. Cancellation is its
+    /// own outcome (never retried or reported as a network error).
+    static func normalized(_ error: Error, phase: String) -> Error {
+        if error is MCPClientError { return error }
+        if error is CancellationError { return MCPClientError.cancelled }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cancelled: return MCPClientError.cancelled
+            case .timedOut: return MCPClientError.timedOut(phase: phase)
+            default: return urlError
+            }
+        }
+        return error
+    }
+
+    static func phase(for method: String) -> String {
+        switch method {
+        case "tools/list": return "discover"
+        case "tools/call": return "call"
+        case "initialize": return "initialize"
+        default: return "connect"
         }
     }
 
@@ -470,6 +555,10 @@ public actor MCPRemoteClient {
         requestID: Int?,
         acceptsEmptyResponse: Bool = false
     ) async throws -> (Data, HTTPURLResponse) {
+        guard !disconnected else { throw MCPClientError.disconnected }
+        inFlightRequestCount += 1
+        defer { inFlightRequestCount -= 1 }
+        try Task.checkCancellation()
         var request = URLRequest(url: configuration.endpoint)
         request.httpMethod = "POST"
         request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
