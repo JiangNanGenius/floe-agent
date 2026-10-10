@@ -4,6 +4,15 @@
 
 Status: the full loop is implemented on the existing Canvas/editor services: brief/spec/DESIGN.md → import/generate where the real editor supports it → anchored feedback → revision-bound candidates → compare/adopt that updates the **actual node content in one Canvas CAS commit** → verified export with real reopen parsers. Canvas remains the owner of the project graph. Operations that require an explicit workspace binding (office/presentation/CAD) report that requirement as their reason. Last updated: 2026-10-10 (project-spec authority, current-node source entry, single durable decision transaction, template payload/digest authority, variant binding, built-in Markdown/HTML/SVG card sources, real Office/CAD reopen gates).
 
+## Quickstart (actual UI)
+
+1. Open a Canvas, select the node you want to design from (a text/card node, media/file node, or a built-in Markdown/HTML/SVG card), and add or import its content.
+2. Open the Canvas view menu and choose **Design workflow** (`canvas.designWorkflow`). The panel acts on the selected node and reports that node's real capabilities.
+3. Save the brief/spec (**Save brief**, **Save spec**); **Apply this spec to the whole canvas** writes the canvas-level spec authority in one Canvas CAS commit, and existing plus new design subdocuments inherit it.
+4. Freeze the source: **Use current node content** reads the node's real text, retained asset bytes, bound CAD/Office workspace document or built-in card source through the adapter guards; **Import source…** ingests an external file.
+5. Let the assistant/tools propose a revision, inspect it under the candidate section (**Show previews**), then **Adopt** or **Reject**. Assistant adoption additionally needs **Authorize assistant adoption**, which mints a single-use expiring grant.
+6. **Export verified…** exports only the recorded format and reopens the bytes with the real parser first; **Restore previous revision** appends a recovery revision instead of overwriting.
+
 ## Model / where things live
 
 | Piece | Location |
@@ -68,18 +77,16 @@ Adoption always updates the real node: media/file nodes get a new verified asset
 
 All take explicit `canvasID` + `nodeID` (+ `expectedRevision` and an `operationID` for mutations); they read/write only through the Canvas authority. `adopt` additionally requires a `grantID` from a single-use, expiring user grant minted by the panel (`DesignAdoptionGrantStore`) — the agent cannot self-adopt. `adopt`/`restore` are side-effecting and approval-gated. Input data cannot grant permissions.
 
-## Tests
-
-`Tests/FloeCoreTests/DesignWorkflowTests.swift`: freezing, candidate-not-applied-until-adopt, no-op proposal rejection, variant branching, anchor staleness/relocation, resolution requiring a real change, revision conflicts, restore, DESIGN.md round-trip and spec hashing, canvas-subdocument binding/malformed/newer-schema safety, operation-ID dedup and capability honesty.
-
 ## Templates
 
 Built-in templates ship with the app; user templates are stored in `Application Support/FloeAgent/DesignTemplates` with immutable version directories and atomic pointer swaps (rollback restores the real previous bytes). Templates delivered by the **signed content-update service** (kind `templates`) are materialized read-only into the same library with hash verification; install/update/rollback stay in Content Update settings. Template UI lives in the design panel (Creative), not Skills.
 
 ## Tests
 
+`Tests/FloeCoreTests/DesignWorkflowTests.swift`: freezing, candidate-not-applied-until-adopt, no-op proposal rejection, variant branching, anchor staleness/relocation, resolution requiring a real change, revision conflicts, restore, DESIGN.md round-trip and spec hashing, canvas-subdocument binding/malformed/newer-schema safety, operation-ID dedup and capability honesty.
+
 Beyond the engine suites: whole-project adoption (real node content in one CAS, layout preserved, replay skips content work), project-spec authority (three nodes inherited in one commit, repeated different payloads, changed operation payload rejected, stale revision conflict, unrelated node edit, frozen run preserved, new-node inheritance, reopen), the decision outbox (full fingerprint dedupe across relaunch, legacy-envelope backfill, first write/reopen, corrupt/newer-schema read-only with observable errors, pending never pruned, hard cap), the payload store (traversal/symlink/overwrite/cross-canvas), template persistence and signed-package digest authority, the retained-image evidence policy (real PNG/JPEG/WebP/GIF bytes, MIME spoof, over-limit pre-decode rejection, duplicate/two-result attribution, Chat/Responses/Anthropic serialization), and FloeAppTests integration (image end-to-end import→adopt→export with delivery-failure reconcile, missing-origin fail-closed, project-spec tools across three nodes, use-current-node text + precise localized unavailable reasons, built-in Markdown/HTML/SVG cards source→propose→adopt→restore→verified-export and precise unsupported states, cross-task capture fail-closed).
 
 ## Open gates
 
-Engine-command edits for office/presentation stay delegated to the office proposal flow even though a bound workspace document supports import/verified export; 3D CAD verified export (exchange/mesh formats and `.floecad` packages) has no connected single-payload reader yet and must not be claimed as verified; real-provider generation loops need configured credentials; visual acceptance and physical-device checks belong to the coordinator/user. See the private acceptance checklist.
+Engine-command edits for office/presentation stay delegated to the office proposal flow even though a bound workspace document supports import/verified export; 3D CAD verified export (exchange/mesh formats and `.floecad` packages) has no connected single-payload reader yet and must not be claimed as verified; real-provider generation loops need configured credentials; visual acceptance and physical-device checks remain pending and are never implied by a passing unit test or a green build.

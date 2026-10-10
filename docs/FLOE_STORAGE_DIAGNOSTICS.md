@@ -2,7 +2,7 @@
 
 <!-- docs-updated: 2026-10-10 -->
 
-Status: implemented in source, focused tests pass, **not yet device-accepted**. This document describes the current behavior. It does not claim the Settings figures match iOS Storage exactly — see “Honesty” below. Last updated: 2026-10-10 (corrected to the shipped code: no apparent-size cause claim, no logical=configured claim, no one-hour whole-`tmp` cleaner).
+Status: implemented in source, focused tests pass, **not yet device-accepted**. This document describes the current behavior. It does not claim the Settings figures match iOS Storage exactly — see “Honesty” below. Last updated: 2026-10-10 (corrected to the current candidate code: no apparent-size cause claim, no logical=configured claim, no one-hour whole-`tmp` cleaner).
 
 ## Why this exists / 背景
 

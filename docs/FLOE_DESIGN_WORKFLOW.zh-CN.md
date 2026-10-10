@@ -4,6 +4,15 @@
 
 状态：完整流程已接入既有画布/编辑器服务：简报/规格/DESIGN.md → 按真实编辑器能力导入/生成 → 锚定反馈 → 修订绑定的候选 → 比较/采纳（在**同一次画布 CAS 提交中更新真实节点内容**）→ 以真实解析器重新打开验证的导出。需要显式工作区绑定的能力（办公/演示/CAD）会把该绑定要求作为原因给出。画布始终是项目图的唯一所有者。最后更新：2026-10-10（画布工程规格权威、当前节点来源、单一日志化决策事务、模板负载/摘要权威、变体绑定、内置 Markdown/HTML/SVG 卡片来源、Office/CAD 真实重开校验）。
 
+## 快速上手（实际操作路径）
+
+1. 打开一个画布，选中要作为设计来源的节点（文本/卡片、媒体/文件，或内置 Markdown/HTML/SVG 卡片），先放入或导入内容。
+2. 打开画布视图菜单并选择 **设计流程**（`canvas.designWorkflow`）。面板作用于当前选中节点，并显示该节点的真实能力。
+3. 编辑并保存简报/规格（**保存简报**、**保存规格**）；**将此规格应用到整个画布** 会在同一次画布 CAS 提交中写入工程规格权威，已有与新建设计子文档都会继承。
+4. 冻结来源：**使用当前节点内容** 经由适配器守卫读取节点真实的文本、已留存素材字节、已绑定 CAD/Office 工作区文档或内置卡片来源；**导入源文件…** 用于外部文件。
+5. 由助手/工具提出新修订，在候选区查看（**显示预览**）后选择 **采纳** 或 **拒绝**。助手采纳还需先在面板 **授权助手采纳**，以签发一次性、带过期时间的凭据。
+6. **导出（已验证）…** 只按记录格式导出，并先用真实解析器重开字节；**恢复上一修订** 以追加新修订的方式恢复，不覆盖历史。
+
 ## 模型与位置
 
 | 组成 | 位置 |
@@ -39,7 +48,7 @@
 
 `DesignCapabilityRegistry` 只登记**实际接通**的操作。每个不可用操作必须带清晰原因（最低限度为 `Not connected in this build`，App 中使用更具体原因）。`canvas.designCapabilities` 向模型暴露该信息，App 注册诚实默认值（`designCoreDefaults()`）。
 
-所有类型的核心操作都可用：锚定反馈、修订绑定候选、比较/采纳/拒绝/恢复（与载荷无关、持久化、可调用）。各类型实际接通的来源/导出操作：
+所有类型都提供这些核心操作：锚定反馈、修订绑定候选、比较/采纳/拒绝/恢复（持久化、按 operationID 幂等可调用）。但采纳并不“与载荷无关”：提议与采纳都必须先由该内容类型的适配器用真实解析器校验负载（Office OOXML、CAD 同引擎重解析、SVG XML 根等），格式不匹配或无法解析会显式失败，而不会仅凭哈希相等放行。各类型实际接通的来源/导出操作：
 
 | 类型 | 已接通操作 | 真实路径 |
 |---|---|---|
@@ -63,14 +72,20 @@
 
 ## Agent 工具
 
-`canvas.designGetState`、`canvas.designCapabilities`、`canvas.designCreate`、`canvas.designUpdateBrief`、`canvas.designUpdateSpec`、`canvas.designGetProjectSpec`、`canvas.designSetProjectSpec`、`canvas.designRegisterRevision`、`canvas.designImportSource`、`canvas.designUseCurrentNode`、`canvas.designAddFeedback`、`canvas.designPropose`、`canvas.designAdopt`、`canvas.designReject`、`canvas.designRestore`。
+`canvas.designGetState`、`canvas.designCapabilities`、`canvas.designCreate`、`canvas.designUpdateBrief`、`canvas.designUpdateSpec`、`canvas.designGetProjectSpec`、`canvas.designSetProjectSpec`、`canvas.designRegisterRevision`、`canvas.designImportSource`、`canvas.designUseCurrentNode`、`canvas.designExportRevision`（只按记录格式导出，真实重开校验）、`canvas.designAddFeedback`、`canvas.designPropose`、`canvas.designAdopt`、`canvas.designReject`、`canvas.designRestore`。
 
 全部需要显式 `canvasID` + `nodeID`（变更还需 `expectedRevision` 与 `operationID`），只通过画布权威读写。`adopt` 额外要求由面板签发的一次性、带过期时间的用户凭据（`DesignAdoptionGrantStore`）中的 `grantID`——助手无法自行采纳。`adopt`/`restore` 有副作用并要求审批。输入数据不能授予权限。
+
+## 模板
+
+内置模板随 App 提供；用户模板存放在 `Application Support/FloeAgent/DesignTemplates`，使用不可变版本目录与原子指针切换（回滚会恢复真实的上一版字节）。由**签名内容更新服务**（kind `templates`）交付的模板经哈希校验后只读物化到同一库；安装/更新/回滚仍留在“内容更新”设置中。模板界面在设计面板（创作）中，不在技能中。
 
 ## 测试
 
 `Tests/FloeCoreTests/DesignWorkflowTests.swift` 覆盖：冻结、候选在采纳前不生效、无变更提案被拒、分支采纳、锚点过期/重定位、需要真实变更才能解决反馈、修订冲突、恢复、DESIGN.md 往返与规格哈希、画布子文档绑定/损坏/新 schema 安全、operationID 去重与能力诚实性。
 
+引擎套件之外还包括：整工程采纳（同一次 CAS 写入真实节点内容、布局保留、重放跳过内容工作）、工程规格权威（三节点在一次提交中继承、同 operationID 换负载被拒、过期修订冲突、无关节点编辑、冻结运行保留、新节点继承、重开）、决策 outbox（跨重启完整指纹去重、旧信封回填、首次写入/重开、损坏/新 schema 只读并暴露错误、pending 不被裁剪、硬上限）、负载存储（路径穿越/符号链接/覆盖/跨画布）、模板持久化与签名包摘要权威、保留图像证据策略（真实 PNG/JPEG/WebP/GIF 字节、MIME 伪装、解码前超限拒绝、重复/双结果归因、Chat/Responses/Anthropic 序列化），以及 FloeAppTests 集成（图像端到端 导入→采纳→导出 与送达失败对账、缺失来源失败关闭、工程规格工具跨三节点、使用当前节点文本 + 精确本地化不可用原因、内置 Markdown/HTML/SVG 卡片 来源→提议→采纳→恢复→已验证导出 与精确的不支持状态、跨任务采集失败关闭）。
+
 ## 待办门禁
 
-办公/演示的引擎命令编辑仍委托给办公提案流程（即使已绑定工作区文档支持导入/验证导出）；3D CAD 验证导出（交换/网格格式与 `.floecad` 包）尚无可用的单负载读取器，不能声称已验证；真实模型提供商的生成闭环需要已配置凭据；界面与真机验收由协调方/用户负责。当前门禁清单见私有验收清单。
+办公/演示的引擎命令编辑仍委托给办公提案流程（即使已绑定工作区文档支持导入/验证导出）；3D CAD 验证导出（交换/网格格式与 `.floecad` 包）尚无可用的单负载读取器，不能声称已验证；真实模型提供商的生成闭环需要已配置凭据；界面与真机验收仍待完成，且不会因为单元测试通过或构建变绿而自动成立。
